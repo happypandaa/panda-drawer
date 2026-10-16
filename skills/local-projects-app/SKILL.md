@@ -1,0 +1,164 @@
+---
+name: local-projects-app
+description: 接管、修改和验证 Local Projects 平台内的业务应用。用于外部 AI 阅读项目交接说明、编辑 React 源码、通过平台 CLI 操作 SQLite、构建并在桌面或浏览器验证；不用于开发平台自身的 Tauri/Rust 工程。
+---
+
+# Local Projects 应用开发
+
+为用户完成当前业务项目的功能，让用户在 AI 离线时仍能通过网页正常查看、录入和管理数据。用户的具体需求和已授权范围优先；不要因为本技能增加额外审批。普通兼容的页面和业务数据修改不强制进入维护；可能使旧网页失效的改表、大批量修正或整项目恢复使用下述维护流程。
+
+本技能随项目放在 `.agents/skills/local-projects-app/SKILL.md`。Codex、Claude Code 等工具可以直接读取它，不依赖客户端自动发现。下文的 `PROJECT_ROOT` 指包含 `project.json` 的**业务项目根目录**，不是本技能目录或平台源码目录；所有相对文件路径都从这里解析。
+
+## 接手项目
+
+先读 `PROJECT_ROOT/README.md`、`project.json`、`docs/database.md` 和 `docs/platform.md`。README 保存实际项目 ID、CLI 路径、业务目的、使用流程和上次交接；数据库说明解释业务含义，真实结构还需查询。若这些文件缺失，先检查现有目录、清单和平台详情，基于真实信息补齐，不能套用另一个项目的 ID 或 schema。
+
+从 README 或平台复制出的交接文字取得 CLI 的绝对路径。路径含空格时按 shell 规则引用。以下 `PROJECT_CLI`、`PROJECT_ID`、`TASK_ID` 是本次已核对的实际值，不是固定命令名称或示例 ID：
+
+```sh
+"$PROJECT_CLI" service status --json
+"$PROJECT_CLI" project info --project "$PROJECT_ID" --json
+"$PROJECT_CLI" db schema --project "$PROJECT_ID" --json
+```
+
+核对清单、返回 ID、项目目录和服务身份一致再写入。当前开发版为 `local-projects-dev`，服务标识为 `dev.localprojects.platform.m0`，环境为 `development`；开发数据与正式数据隔离。不要改服务发现配置来接入另一环境。CLI 会验证服务身份并处理管理认证，不要自己读取或复制控制令牌、猜端口或调用未认证管理地址。若应用迁移后 CLI 路径失效，从平台重新取得交接说明；若服务离线，启动对应桌面应用后重试诊断。CLI 本身不会启动服务。
+
+## 目录与运行边界
+
+| 路径 | 用途与修改方式 |
+| --- | --- |
+| `app/src/` | React + TypeScript 源码；通常从 `App.tsx` 开始 |
+| `app/public/` | 随构建发布的静态资源 |
+| `app/package.json`、`app/package-lock.json` | 依赖与精确锁定；有意改依赖时同步更新锁文件 |
+| `app/vendor/` | 项目自带的固定版本 SDK tarball，属于源码材料 |
+| `dist/`、`.platform/` | 平台发布产物、任务与来源状态；通过构建更新，不手工覆盖 |
+| `data/main.sqlite` | 此项目独立的持久化数据库 |
+| `data/attachments/` | 用户照片、音频、文档等持久化附件 |
+| `project.json`、`meta/` | 项目元数据和能力声明；保持 ID 与存储路径稳定 |
+
+标准新项目自带可打开的起始页，不需要用户先安装 Node 或执行构建。修改源码后才需要重新构建。旧项目是否可打开以其实际产物和平台状态为准，不自动补模板或升级 SDK。
+
+Rust 平台提供本地服务、SQLite 和附件访问；项目运行不需要独立 Node 后端、Vite 开发服务或 Docker。浏览器和桌面项目窗口使用同一份数据。业务持久化使用平台 SDK，不以 localStorage、IndexedDB 或源码中的 JSON 文件替代项目数据库。
+
+尽量复用项目已有的黑白风格组件和样式，可按用户需要扩展。不要为接手项目而重建组件体系或隐式升级依赖。SDK 接口、类型和行为以项目自己的 `docs/platform.md`、包版本及类型声明为准；平台更新不代表项目依赖已经更新。
+
+## 操作数据库与附件
+
+先查询 schema，再结合 `docs/database.md` 决定 SQL。外部 AI 使用 CLI，网页使用 `@local-projects/sdk`。将 JSON 请求写入文件，使用 `--input` 提交；不要把用户内容插入 SQL 文本。
+
+```sh
+"$PROJECT_CLI" db execute --project "$PROJECT_ID" --input request.json --json
+"$PROJECT_CLI" db transaction --project "$PROJECT_ID" --input transaction.json --json
+```
+
+单语句请求形如 `{"sql":"SELECT ? AS value","params":["hello"]}`。多语句请求为 `{"statements":[{"sql":"...","params":[]}]}`，由平台托管整个事务；不要跨请求发送 `BEGIN` / `COMMIT`。保存失败时展示实际错误，不将失败显示为成功。写入响应丢失或结果未知时，先查询确认是否已提交，再决定下一步，不能自动重放写入。
+
+每次 schema 变化都同步数据库说明：表用途、列类型与可空性、主外键、索引、默认值、单位、枚举、时间约定、变更 SQL 和已有数据兼容性。不要在构建脚本或页面启动时清空、重置业务数据库。尽量保持旧网页可继续使用变更后的数据：**构建失败保留旧网页，不会撤销此前已经提交的 schema 或数据变更**。
+
+保留已注册 SQLite 文件及其 WAL/SHM，不用替换文件、删除数据库或改注册状态来修复问题。常规写入走平台接口；若用户明确要求外部数据库工具操作，另行核实平台的运行限制，完成后用 `project refresh` 通知页面重新查询，不能把它当作构建或数据库恢复命令。
+
+## 备份、维护与恢复
+
+先用当前 CLI 的帮助和 `maintenance status` 核对能力；旧安装包可能尚不支持本节命令。管理接口只通过 CLI 使用，不读取控制令牌。项目持有的旧 SDK 仍按原版本使用，不为管理备份升级或改写它。
+
+```sh
+"$PROJECT_CLI" backup list --project "$PROJECT_ID" --json
+"$PROJECT_CLI" backup create --project "$PROJECT_ID" --json
+"$PROJECT_CLI" backup info --project "$PROJECT_ID" --backup "$BACKUP_ID" --json
+"$PROJECT_CLI" maintenance status --project "$PROJECT_ID" --json
+"$PROJECT_CLI" maintenance begin --project "$PROJECT_ID" --input maintenance.json --json
+```
+
+普通备份返回任务 ID；等待同一任务最终成功后才把它当作可恢复快照。快照覆盖源码、固定 SDK、skill 和隐藏持久资料、清单与图标、当前网页、SQLite 一致性副本及全部用户附件；`node_modules` 等工程依赖和本机控制状态不随归档。暂存期间业务 SQL 与附件短暂冻结，之后恢复原模式。备份及恢复期间暂停直接文件编辑、外部 SQLite 工具和其他写入；平台互斥不能锁住任意外部程序。
+
+进入维护的输入形如 `{"reason":"调整表结构及页面"}`。等待任务成功，再读取 `maintenance status`，确认 `readyForChanges: true`、`baselineBackupId` 及本轮 `maintenanceId` 后才修改文件或数据。基线失败仍处维护，不能继续改动；查明失败原因后以 `{"reason":"重试基线准备","maintenanceId":"实际ID"}` 重试同一轮。AI 退出或平台重启不会自动解除维护。
+
+维护中的 SQL、事务、构建、备份和恢复显式带本轮 ID。可在 JSON 输入里加入 `maintenanceId`，或用 CLI `--maintenance "$MAINTENANCE_ID"`；两处同时提供必须一致。业务网页在整个维护期间停用，不能通过重新取 Cookie 绕过。
+
+```sh
+"$PROJECT_CLI" db execute --project "$PROJECT_ID" --maintenance "$MAINTENANCE_ID" --input request.json --json
+"$PROJECT_CLI" project build --project "$PROJECT_ID" --maintenance "$MAINTENANCE_ID" --json
+"$PROJECT_CLI" maintenance end --project "$PROJECT_ID" --input end-maintenance.json --json
+```
+
+结束请求为 `{"maintenanceId":"实际ID"}`。先完成数据检查、源码修改和必要的成功构建，再结束维护。仅改 README、清单名称/简介、`meta/` 或业务数据不要求构建；维护期间改过构建输入或已有待构建要求，不能以建立新基线解除。合法的 `unbuilt` 项目可以结束为尚未构建，仍不能打开业务网页；已登记网页意外丢失不属于此例外。结束失败时保留维护和原因；**结束维护不会撤销任何修改**。
+
+需要撤销时，明确选定备份并恢复：
+
+```sh
+"$PROJECT_CLI" backup restore --project "$PROJECT_ID" --input restore.json --json
+```
+
+请求为 `{"backupId":"实际备份ID"}`；已在维护时另加 `maintenanceId`。恢复会让整个项目回到该快照，之后新增的业务数据不会自动合并。等待恢复任务最终成功，核对结果和维护状态；恢复成功后仍须显式结束维护。已验证的初始网页和用户构建网页可直接复用，恢复动作本身不要求 Node；归档原有的未完成构建要求继续保留。
+
+若出现 `recoveryRequired` 或任务中断，先查看同一任务、日志、维护状态及原现场提示，不自动重复恢复、删除现场或强行结束维护。原库损坏的恢复保留完整原目录及 WAL/SHM，它是待处理现场，不冒充健康备份。手动备份不自动清理；受保护基线和恢复现场不要手工删除。
+
+结束维护和恢复会推进文档身份。旧页面收到 `PROJECT_RELOAD_REQUIRED` 后保留未提交草稿并提供明确的重载决定；不能替换 SDK 内存中的旧代次或自动重放写入。结束后获取新 `launchUrl`，在浏览器和桌面验证实际功能。
+
+网页附件通过 SDK `files` 接口保存和读取。数据库保存相对 `data/attachments/` 的逻辑路径，不保存临时访问 URL。用户素材不放进 `app/public/` 或 `dist/`。SQL 与附件上传不是一个事务，业务流程需处理部分成功；SDK 的具体调用及限制见项目 `docs/platform.md`。
+
+## 导入导出、复制和回收站
+
+仅在用户任务涉及这些操作时使用；正常编辑项目不需要先复制或删除。先核对当前 CLI 帮助，旧安装包可能不支持 M4。所有变更返回任务 ID，等待原任务最终状态；写入响应丢失时查询任务和项目，不自动再次复制、导入或删除。
+
+```sh
+"$PROJECT_CLI" project export --project "$PROJECT_ID" --input export.json --json
+"$PROJECT_CLI" project import --input import.json --json
+"$PROJECT_CLI" project copy --project "$PROJECT_ID" --input copy.json --json
+"$PROJECT_CLI" project delete --project "$PROJECT_ID" --json
+"$PROJECT_CLI" trash list --json
+"$PROJECT_CLI" trash info --trash "$TRASH_ID" --json
+"$PROJECT_CLI" trash restore --trash "$TRASH_ID" --json
+```
+
+导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，已有文件只有显式 `overwrite: true` 才覆盖；导入为 `{"archivePath":"/绝对路径/project.zip","mode":"original"}` 或 `mode: "copy"`，可选 `name`。`copy.json` 可指定副本名称。维护中的导出、复制、删除须传本轮 `maintenanceId` 或 `--maintenance`。暂停外部直接文件写入后再做完整快照。
+
+原 ID 导入不能覆盖活跃项目、回收站或登记中的同 ID；副本得到新平台 ID，但业务主键、业务 UUID 和附件名保持。完成后使用返回的新 ID 和 `project handoff` 核对项目根，不依赖复制过来的业务 README 内旧路径或旧 ID。平台不会全局重写用户文字，也不因复制升级 SDK。已有可复用网页无需 Node 即可打开。
+
+维护/未知快照导入或复制后有独立的维护 ID 和新项目基线，原有待构建要求继续保留。任务返回 `registered_maintenance_not_ready` 时，项目已登记但基线未成功；查询该项目的维护状态，以同一维护 ID 重试基线，不重新导入制造另一个副本。确认 `readyForChanges` 后才修改。
+
+`project delete` 先完整移入回收站；恢复保留原 ID 并推进页面代次。坏库恢复保留字节，保持维护阻断而不创建空数据库。用户明确要求永久清除选定回收项时使用 `trash purge --trash "$TRASH_ID" --json`；它不删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 表示部分清除，不能再承诺完整恢复；检查原任务和回收项后再处理。
+
+## 工作区迁移后的继续工作
+
+工作区迁移影响全部项目，仅用于用户要求移动工作区的任务。使用 `workspace info --json` 查实际位置；迁移请求为 `workspace migrate --input migration.json --json`，文件内容为 `{"destinationPath":"/绝对路径/新的空工作区"}`。目标必须是独立、空、可写的本机 APFS 目录，不能是源的父子目录、同步盘、应用包或固定控制目录。不要直接改 settings、移动项目注册树或建立兼容链接绕过协议。
+
+迁移前停止外部编辑器、AI 和 SQLite 工具的写入，并处理未解决的 `recoveryRequired`；平台会等待自身任务，保留维护与全部历史现场后复制校验。只查询同一迁移任务，不因连接切换自动再次提交。提交新位置后即使目标暂不可用，也不自动回退到旧副本；旧根是保留现场，不继续编辑或手工清理。
+
+迁移完成后重新获取服务状态与 `project handoff`，改到返回的新项目绝对路径工作。旧编辑器工作目录不会自动跟随；旧管理凭据和网页会话失效，旧文档需要用户明确重开。固定开发身份不随工作区换位置。当前没有删除旧迁移根的 CLI 命令，也不把历史管理讨论稿当作可调用接口。
+
+## 修改、构建与验证
+
+1. 根据用户需求修改业务源码，设计可用的空状态、加载状态、表单校验、保存反馈和错误恢复。无需 AI 在线才能完成日常操作。
+2. 需要新依赖时有意修改 `app/package.json`，用 npm 更新并保留对应锁文件。不要删除锁文件绕过安装错误，也不要用不同内容覆盖同版本 SDK 包。SDK 升级应明确更新版本、vendor、锁文件和说明。
+3. 用 `env doctor --json` 检查**桌面服务实际选用**的 Node/npm。当前支持 Node `^22.12.0 || ^24.0.0`，推荐 24 LTS，系统自行安装；不是任意更高主版本都已支持。缺少 Node 影响构建，不影响已发布网页和数据操作。
+4. 提交平台构建，再检查任务结果和日志。构建脚本必须接受 `--outDir ABSOLUTE_DIRECTORY`；平台会在需要时执行 `npm ci`，构建到暂存目录并验证后发布。不要自行向 `dist/` 拷贝产物，也不要在构建中操作业务数据或启动常驻进程。
+
+```sh
+"$PROJECT_CLI" env doctor --json
+"$PROJECT_CLI" project build --project "$PROJECT_ID" --json
+# 从提交结果读取 taskId，再设置 TASK_ID。
+"$PROJECT_CLI" task wait --task "$TASK_ID" --timeout 30 --json
+"$PROJECT_CLI" task logs --task "$TASK_ID" --json
+"$PROJECT_CLI" project info --project "$PROJECT_ID" --json
+```
+
+`task wait` 返回 `waitTimedOut: true` 只表示本次等待结束，任务仍可能运行；继续查询同一任务。日志分页用返回的 `nextCursor` 传给 `task logs --cursor`。只有任务为 `succeeded` 才表示发布成功；失败时查明原因、修复并重新构建，旧产物与业务数据保留。构建输入在过程中变化会导致发布失败，构建期间不要继续编辑同一项目。`buildInfo.sourceState` 描述当前源码与发布产物的匹配情况，不代替任务结果或页面验证。
+
+成功后获取新的浏览器入口：
+
+```sh
+"$PROJECT_CLI" project url --project "$PROJECT_ID" --json
+```
+
+在浏览器打开刚返回的 `launchUrl`，验证核心操作与数据持久化；再通过平台独立项目窗口核对同一份数据。不把直接双击 HTML 或 Vite 地址作为平台集成验收。`launchUrl` 含短期、单次使用的入口凭据，不写进源码、文档或日志；平台重启或入口过期后重新获取。
+
+新构建通知 `project.updated` 应显示明确的重新加载入口。`PROJECT_RELOAD_REQUIRED` 表示需要重新打开页面；不要自动刷新丢弃草稿，也不要静默改变 SDK 持有的文档代次后重放操作。打开已有桌面项目通常复用窗口，仅聚焦不会载入新构建；验证新版本时使用明确的重新加载操作。若无法操作桌面窗口，完成可做的浏览器与数据验证，并如实记录桌面验证未完成。
+
+## 当前能力与交接
+
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+
+当前开发版资源限额标记为 `internalTest`，查询运行时限制并处理超限错误，不在业务说明中承诺这些数值是正式产品默认值。联网仅按项目 `runtimeRequirements` 声明的公开接口使用；不把私有 API 密钥、管理令牌放进前端、清单或数据库。录音、拍照等能力还需要浏览器权限和实际环境支持，声明本身不等于授权成功。
+
+把功能与用户操作方式、源码/依赖/schema 变化、构建任务 ID 和结果、浏览器及桌面验证、已知限制写回 README 和相应文档。只记录实际完成的检查；保留已有数据，不将开发测试结果扩张为正式环境保证。下一位 AI 应能仅凭项目文档继续工作，无需读取平台源码或依赖上一段聊天。

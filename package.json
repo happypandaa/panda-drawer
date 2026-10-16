@@ -1,0 +1,38 @@
+{
+  "name": "local-projects-platform",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0"
+  },
+  "scripts": {
+    "dev": "node scripts/desktop.mjs dev",
+    "build": "node scripts/desktop.mjs build",
+    "build:app": "node scripts/desktop.mjs build --bundles app",
+    "check": "npm run prepare:desktop && npm run build --workspace @local-projects/desktop && node scripts/rust.mjs check --locked --workspace --all-targets",
+    "test": "npm run prepare:desktop && node scripts/rust.mjs test --locked --workspace",
+    "rust": "node scripts/rust.mjs",
+    "cli": "node scripts/rust.mjs run -p platform-cli --",
+    "prepare:desktop": "node scripts/prepare-desktop.mjs",
+    "tauri": "node scripts/desktop.mjs",
+    "test:m1:live": "node scripts/m1-live-test.mjs",
+    "test:m1:restart": "node scripts/m1-restart-test.mjs",
+    "test:sdk": "node --test packages/sdk/test/*.test.mjs",
+    "package:sdk": "node scripts/package-sdk.mjs",
+    "test:m2:live": "node scripts/m2-live-test.mjs",
+    "test:m3:live": "node scripts/m3-live-test.mjs",
+    "test:m3:restart": "node scripts/m3-restart-test.mjs",
+    "test:m3:compatibility": "node scripts/m3-compatibility-test.mjs verify",
+    "test:runtime-notice": "node scripts/runtime-notice-test.mjs",
+    "test:m4:live": "node scripts/m4-live-test.mjs",
+    "test:m4:compatibility": "node scripts/m4-compatibility-test.mjs verify",
+    "test:m4:migration": "node scripts/m4-migration-test.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.3"
+  }
+}

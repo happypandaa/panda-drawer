@@ -1,0 +1,200 @@
+# 开发环境与数据隔离
+
+状态：M4 已实现并交付内部开发包，CLI/API、公开迁移及进程重启验收通过；生命周期 GUI 全流程受工具访问限制未完成。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)及 [M3 记录](m3-verification.md)。本轮生命周期与迁移结果见 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
+
+## 1 开发身份
+
+所有当前源码运行与内部打包产物均固定为：
+
+| 项目 | 值 |
+| --- | --- |
+| 显示名称 | Local Projects Dev / 本地项目 · 开发版 |
+| 应用标识 | `dev.localprojects.platform.m0` |
+| 环境 | `development` |
+| CLI | `local-projects-dev` |
+| 数据根 | `~/Library/Application Support/dev.localprojects.platform.m0/` |
+| 工作区 | 初始为数据根下 `workspace/`；公开迁移后为固定设置中已提交的新位置 |
+| 服务发现 | 数据根下 `runtime/connection.json` |
+| 凭据 | 数据根下 `runtime/control-token`，仅当前用户可读写 |
+
+这些名称是隔离的开发身份，不是已确定的正式品牌。当前暂不提供生产构建或根目录环境变量覆盖。用户通过公开工作区迁移选择新位置，不能直接编辑设置跳过迁移。CLI 编译时绑定相同身份，只查本开发环境，不回退连接其他平台实例；固定数据根、设置、凭据、发现文件及锁成套隔离。
+
+初始化验证开发环境标记和所选工作区；非默认位置必须有固定迁移日志、已发布的目标标记及匹配的目录身份。拒绝不明的已有非空目录、错误身份、符号链接和无依据的设置重定向；已提交目标缺失时拒绝启动业务，不重建为空目录或自动打开旧副本。回收站的显式永久清除只删除选中项目副本；没有清除全部数据或旧迁移根的命令。自动测试使用临时目录，真实实例脚本只修改明确新建的可丢弃项目。
+
+## 2 运行与构建
+
+在根目录执行 `npm ci` 后使用 `npm run dev`。准备步骤构建 CLI，在临时目录按锁文件构建标准模板，再生成包内 SDK、模板源码、预编译初始网页、skill 和说明资源副本；Tauri 启动管理界面和 Rust 服务。模板构建发生在平台开发／打包时，不发生在用户创建项目时。Vite 开发地址固定为 `127.0.0.1:1420`，端口被占用时不静默选择另一个端口。
+
+Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及系统 Node 构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；网页不启动 Node 服务。
+
+关闭管理窗口保留托盘和服务；关闭项目窗口会销毁该项目窗口。使用菜单“退出开发版”或 Cmd+Q 明确退出；重复启动聚焦已有管理窗口。退出先停止接收新工作、取消未发布的上传、结束构建子进程及其普通进程组、记录未完成任务状态，等待已接受的数据库工作与项目创建完成，再关闭服务并仅移除本实例发现与凭据。慢速下载在退出收尾时可能断开，已保存文件不受影响；锁文件本身不递归删除。异常中断留下的发现信息不能作为在线依据；CLI 会进行身份与实例握手。
+
+平台界面变更由 Vite 更新；Rust 变更由 Tauri 重新编译启动。开发构建和包构建属于相同开发环境，同一时刻只运行其中一个；先明确退出再切换，不能将单实例复用误当作运行了新二进制。
+
+`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.1` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
+
+## 3 工具链与校验
+
+Node 支持 `^22.12.0 || ^24.0.0`，使用系统 npm。可使用系统 Rust，也可安装到工程 `.tools/`；脚本优先使用项目私有 Cargo/Rustup 并只向子进程设置对应环境，不修改 shell 配置。Cargo 与 npm 依赖锁文件随工程保存。
+
+本次验证使用 Rust 1.99.0。没有系统 Rust 时，可在仓库根目录执行以下步骤安装同版本的工程私有工具链；安装脚本来自 Rust 官方，`.tools/` 不进入发行包：
+
+```sh
+mkdir -p .tools
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o .tools/rustup-init.sh
+CARGO_HOME="$PWD/.tools/cargo" RUSTUP_HOME="$PWD/.tools/rustup" \
+  sh .tools/rustup-init.sh -y --no-modify-path --profile minimal \
+  --default-toolchain 1.99.0 --default-host aarch64-apple-darwin
+```
+
+`npm run check` 和 `npm test` 自动准备 CLI 与资源后再校验，不依赖先启动一次桌面；`npm run test:sdk` 单独执行浏览器 SDK 测试。`node scripts/rust.mjs …` 将参数传给 Cargo；需要格式和 lint 检查时另装 rustfmt/clippy 组件。所有 macOS Rust 子进程统一使用 `MACOSX_DEPLOYMENT_TARGET=15.0`，桌面和包内 CLI 均按相同最低系统构建。
+
+工程开发依赖、Rust 工具链和中间产物分别位于仓库的 `node_modules/`、`.tools/` 和 `target/`，它们不是用户工作区。macOS/WebKit 可能在当前开发应用标识对应的 Library 缓存目录生成浏览器缓存；这些缓存不存储项目业务数据，也不与正式身份共享。自动测试用系统临时目录并在结束时清理。
+
+```sh
+npm run check
+npm test
+npm run cli -- service status --json
+npm run cli -- env doctor --json
+```
+
+CLI 的状态命令离线时报告结构化错误，不启动应用、不初始化数据、不仅凭端口可连接就认为服务正确。`env doctor` 在线时返回桌面服务实际选定的 Node/npm 路径、版本与可用性；离线时只报告平台连通性和构建环境尚未读取，不把 CLI 自己的 PATH 当作服务环境。项目 schema 使用 `db schema`。
+
+单元和服务测试重点覆盖目录身份、符号链接、互斥锁、文件权限、退出清理、HTTP 授权与 CLI 目标校验。开发测试和打包测试都要核对 UI 实际显示的资源状态；在只有浏览器页面时显示“需要桌面宿主”，不生成虚假的运行信息。
+
+## 4 内部包的限制
+
+最低打包系统设为 macOS 15，目标为 Apple Silicon。内部包采用 ad-hoc 签名；没有 Developer ID 公证、互联网下载首启或最低系统实机通过记录时，不称作已完成正式分发。正式名称、应用标识、签名资质与设备验收在相应发行阶段完成。
+
+当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式；Node、Rust 工具链也不放入最终桌面包。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
+
+## 5 当前项目和工具入口
+
+项目实际目录：`workspace/projects/{id}/`，包括 `project.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.agents/skills/local-projects-app/`、`docs/database.md`、`docs/platform.md`、`meta/`、`app/`、`dist/`、`data/main.sqlite`、`data/attachments/`、`.platform/`。新项目同时复制可构建的标准源码和平台预编译的欢迎应用，校验两者与打包摘要一致，再完成项目登记；不创建业务表或示例数据。新项目立即可在桌面和浏览器打开，创建及打开不调用 Node/npm、不下载依赖。项目登记与文档代次保存在工作区 `.platform/project-state/{id}.json`；登记还验证项目目录和数据库文件身份。数据库缺失、符号链接、硬链接或未经协调替换时拒绝操作，不创建空库蒙混通过。
+
+仓库 `skills/local-projects-app/` 是 skill 的维护源，准备步骤复制到包内资源，新建时复制到项目 `.agents/skills/local-projects-app/`。README、AGENTS.md 和 CLAUDE.md 引用它；`project handoff` 和“复制给 AI”提供实际项目、README、skill 和 CLI 绝对路径。skill 说明业务项目的读取、修改、数据库操作、构建、验证、备份维护、生命周期与迁移后的交接，不要求 AI 修改平台工程。资源更新只用于新建项目和安装包后备说明；旧项目的 skill、SDK、源码和文档不随升级覆盖，调用新能力前核对当前 CLI 帮助。它不是全局安装项，不承诺所有 AI 客户端自动识别；无法自动发现时按交接文本显式读取。
+
+项目 ID 由平台生成。下列命令均支持 `--json`，复杂输入使用文件或 `--input -` 从标准输入读取；不要把 SQL、令牌或多行 JSON 拼入 shell 命令。
+
+| 命令 | 当前行为 |
+| --- | --- |
+| `project list` | 项目列表及真实状态 |
+| `project create --input request.json` | 输入 `name`、可选 `description`；创建可直接打开的初始应用、匹配源码、skill、文档和独立空数据库 |
+| `project info --project ID` | 清单、目录、状态、代次和来源状态 |
+| `project url --project ID` | 60 秒单次使用的浏览器入口 |
+| `project refresh --project ID` | 通知页面重新查询 |
+| `project handoff --project ID` | 返回项目路径、README、skill、CLI 路径与可交给 AI 的说明；不改写项目文件 |
+| `project build --project ID` | 提交构建，立即返回任务 ID |
+| `task get --task ID` | 读取持久任务状态与结果 |
+| `task wait --task ID --timeout 30` | 有界等待；超时返回当前任务，不取消任务 |
+| `task logs --task ID --cursor N` | 读取日志片段；用返回的 `nextCursor` 继续 |
+| `env node set --path /绝对路径/node` | 检查并保存开发版的显式 Node 路径 |
+| `env node clear` | 恢复自动探测 |
+| `db schema --project ID` | 实际表、列、索引、外键、视图 |
+| `db execute --project ID --input request.json` | 一条 SQL 与位置参数 |
+| `db transaction --project ID --input request.json` | 有序语句整体提交或回滚 |
+
+例如 SQL 输入：`{"sql":"SELECT ? AS value","params":[{"$int64":"9223372036854775807"}]}`。大整数与字节按主契约无损传输；超预算结果报错，受事务保护的写入回滚。连接配置、附加数据库、扩展加载和调用方自行控制事务被拒绝。当前暂不提供 `VACUUM` 这类不能放入托管事务的维护 SQL；普通 DDL/DML 可用。
+
+管理 CLI 通过固定开发发现文件、实例握手和 Bearer 凭据访问。项目网页只拿到项目会话 Cookie；入口 HTML 注入 `platform-document-epoch` meta，SDK 在当前文档中固定读取一次并随请求携带。ticket 在 URL fragment 中传递，连接页兑换前移除 fragment。不同项目 Cookie 不能串用，服务重启会使旧会话失效。首版仍只运行用户信任的自建项目；共享 origin 不是恶意网页的隔离沙箱。
+
+`examples/m1-runtime` 仍只用于 M1 底层回归。当前新项目直接使用随包初始应用，后续源码修改通过持久构建任务发布；旧项目不自动补写或覆盖源码、SDK、锁文件、文档、skill 或初始网页。旧网页缺少构建来源时显示 `unknown`，仍允许使用；合法的旧项目没有产物时保留 `unbuilt`。旧项目未自带 skill 时，交接只读引用包内后备 skill；采纳新模板或写入项目 skill 需要 AI 按用户任务明确修改。
+
+## 6 M1 验证与参数状态
+
+`npm run test:m1:live` 需要已启动的开发实例和 `target/debug/local-projects-dev`。它新建两个明确命名的测试项目，只在这些可丢弃项目安装 M1 受控产物，不删除旧项目、不覆盖既有项目产物。当前带初始应用的运行时通过平台构建发布测试页面，因此该回归脚本需要可用的 Node/npm；历史 M1 运行时仍直接复制受控页面。这不改变普通新项目创建和打开无需 Node 的规则。可通过 `M1_TEST_CLI` 指向当前开发包内 CLI；该覆盖只选择测试客户端二进制，平台自身没有可绕过开发隔离的根目录覆盖参数。
+
+真实实例验证结果写入仓库忽略的 `artifacts/m1-live-test.json`。用于下一次重启验证的旧会话仅存入 `artifacts/m1-old-sessions.json`，权限为 0600，不进入项目源码或版本库。完整退出重启后运行 `npm run test:m1:restart`，结果保存到 `artifacts/m1-restart-test.json`。
+
+2026-10-15 用户选择继续把限额作为**内部测试参数**。目前 JSON 2 MB、SQL 默认 1,000 行／8 MB／30 秒、事务 100 条、上传 256 MB，以及队列和并发上限均有实现保护，但不是正式 SDK 参数承诺。接口上下文明确标注 `limitsStatus: internalTest`；正式限额验收仍待后续确认。
+
+
+## 7 M2 SDK、模板与构建
+
+`packages/sdk/` 保存 ES module、TypeScript 声明及匹配说明，无外部运行时依赖。`npm run package:sdk` 校验或生成 `packages/sdk/releases/local-projects-sdk-0.1.0.tgz`，模板通过 `file:vendor/local-projects-sdk-0.1.0.tgz` 引用，锁文件一同复制。已分发同版本包内容不得覆盖；修改 SDK 后明确升版本。`npm run prepare:desktop` 将这些固定资源打入开发包；升级平台不会重写已有项目。
+
+模板位于 `templates/react/app/`，版本元数据在 `templates/react/template.json`。当前固定 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4；脚本为 `tsc --noEmit && vite build`，资源基址为 `./`。默认页面显示项目连接和使用引导，不创建业务表。黑白灰 Button/Card/Badge 在 `src/components/ui.tsx`，主题在 `src/theme.css`；它们是小型本地 React 组件，扩展时建议 shadcn/ui，没有安装或强制依赖 antd。
+
+`scripts/package-template.mjs` 在临时副本执行 `npm ci` 和模板构建，核对构建未改写源码后，将 `starter/` 网页及 `starter.json` 来源写入包内模板资源。记录模板版本、源码／产物摘要及实际打包工具版本；用户新建时验证并复制这些资源，安装到项目 `dist/` 和不可变初始代，同时记录 `.platform/starter.json`。该来源表示平台提供的模板，不是用户在本机完成过构建；不会创建成功任务、任务日志或冒充本机构建的 Node/npm 环境。
+
+Node 先使用显式选择的绝对路径，否则探测 nvm、Volta、常见本机安装路径及可用 PATH。实际 Node/npm 版本经运行检查；npm 由所选 Node 执行，避免 shebang 选择另一个版本。本机选择保存到开发数据根 `toolchain.json`，不写入项目清单。平台不安装、升级或内置 Node；缺少工具只阻止构建，已发布网页和数据库仍可运行。首次依赖安装可能需要联网。
+
+构建按锁文件执行 `npm ci`，依赖指纹未变化且安装记录有效时可复用项目 `app/node_modules/`。共享 npm 缓存位于 `workspace/.platform/cache/npm/`。任务按项目互斥，并对输入取 SHA-256 基准，在依赖准备后和发布前复核；输入变化、依赖失败、脚本失败、无效产物均不发布新网页。构建只接受 `--outDir` 指定的平台暂存目录，不自动建表或重置数据库。
+
+构建脚本及 npm 生命周期脚本是具有当前用户权限的普通本机代码，**不是沙盒**。只运行用户信任的项目；脚本不得启动后台服务、脱离进程组的子进程，或写入用户数据。平台在正常结束、超时及退出时清理普通构建进程组；这不构成隔离任意本机代码的保证。
+
+主要持久位置如下：
+
+| 位置 | 用途 |
+| --- | --- |
+| 项目 `.platform/builds/{taskId}/` | 暂存输出、发布现场及恢复所需材料 |
+| 项目 `.platform/artifacts/{buildId}/dist/` | 不可变的各代网页资源 |
+| 项目 `.platform/starter.json` | 初始应用来源和本项目输入基线；初始代 ID 为 `starter_…` |
+| 项目 `dist/` | 当前发布产物的完整副本 |
+| 工作区 `.platform/project-state/builds/{projectId}.json` | 当前成功构建来源；作为发布提交点 |
+| 工作区 `.platform/project-state/builds/{projectId}.publication.json` | 中断发布核对日志 |
+| 工作区 `.platform/tasks/{taskId}/` | 持久任务记录和分段构建日志 |
+
+入口注入对应构建代的资源基址 `/p/{id}/_builds/{buildId}/`；旧页面继续引用同一代资源，新页面读取当前代。正常打开复用原桌面窗口；用户选择“重新加载项目”才替换页面。构建成功发送 `project.updated`，不自动丢弃表单。当前暂存和已发布旧代资源没有自动删除策略；正式保留期限及空间清理规则仍待确定，不把这些资源视为用户可选择的版本历史。
+
+`project info` 和管理窗口显示 `buildInfo.sourceState`、`checkedAt`、`stale`、`reason`。初始应用附 `origin: bundledTemplate`、`templateVersion` 和 `starter`，用户成功构建后使用 `origin: projectBuild` 和 `provenance`。状态为 `unbuilt`、`matched`、`modified`、`unknown`；新项目正常为 `matched`，不是 `unbuilt`，也没有伪造的成功任务。`matched` 只表示最近扫描匹配。首次用户构建失败仍保留初始应用，成功发布后旧初始页继续使用原 `starter_…` 代资源。产物不符合已登记摘要时报告异常。重启按发布日志和来源核对实际提交结果；无法确认时报告恢复错误，不凭脚本退出码推断成功。
+
+当前构建并发、队列、超时和日志预算都是**内部测试参数**：全局一个执行、等待队列 8、构建总预算 600 秒；单任务日志保留开头 2 MB 与末尾 8 MB，分页最多 64 KB，遗漏范围通过 `gaps`／`truncated` 明示。任务和旧代资源暂不按天数或数量自动删除。这些数值未冻结为正式产品默认值。
+
+管理窗口可创建项目、复制给 AI 的交接说明、发起构建、查看任务与日志、检测或指定 Node，并在桌面或浏览器打开产物。CLI 命令可在任意工作目录执行，但每次显式给出项目 ID；不提供任意源码编辑或 shell 代理接口。完整外部 AI、桌面与浏览器流程的实际结果记入 [M2 验证记录](m2-verification.md)，不能仅以工程构建通过替代。
+
+本轮初始应用与 skill 的补充验收单独记入[验证记录](starter-skill-verification.md)：应覆盖无可用 Node 时创建及打开、初始来源核对、首次失败保留、成功发布及旧初始页资源、独立 AI 读取交接说明，以及旧项目文件保持不变。历史 M2 结果不作为这些新增场景已通过的证据。
+
+## 8 M3 备份、维护与恢复
+
+基础入口为 `backup create/list/info/restore` 与 `maintenance status/begin/end`，均显式指定 `--project ID`。创建备份、进入/结束维护和恢复复用任务提交、`task wait` 和 `task logs`；超时后继续查同一任务，不重发写入请求。维护请求及恢复请求通过 `--input` 传 JSON；`begin` 需要原因，准备失败重试携带原 `maintenanceId`，`end` 需要该 ID，`restore` 必须指定 `backupId`。
+
+维护中的 SQL、事务、构建和备份使用 `--maintenance ID` 或输入 JSON 的 `maintenanceId`，两者同时提供必须一致。进入任务成功且 `readyForChanges` 为 true 后才允许修改；基线失败和平台重启都保留维护。结束检查数据库、网页和构建输入；已知待构建要求不能通过重复进入或恢复抹掉。恢复后仍须明确结束维护，旧页面必须由用户决定重载，失败的请求不会自动重放。
+
+```sh
+npm run cli -- backup create --project prj_实际ID --json
+npm run cli -- backup list --project prj_实际ID --json
+npm run cli -- backup info --project prj_实际ID --backup backup_实际ID --json
+npm run cli -- maintenance begin --project prj_实际ID --input maintenance.json --json
+npm run cli -- maintenance status --project prj_实际ID --json
+npm run cli -- backup restore --project prj_实际ID --input restore.json --json
+npm run cli -- maintenance end --project prj_实际ID --input end-maintenance.json --json
+```
+
+归档在 `workspace/backups/{projectId}/{backupId}.zip`，包含 `backup.json` 与 `project/`。数据库通过 SQLite Backup API 生成独立一致性副本，关闭副本后校验；不复制源 WAL/SHM 拼库。文件清单包含路径、字节数和 SHA-256。快照保留源码、固定 SDK、skill、隐藏资料、清单、图标、网页、附件；排除按已识别根路径进行，附件中的同名 `node_modules`、`.git`、`.platform` 不被递归误删。
+
+可移植 `buildProvenance` 保留 `bundledTemplate` 或 `projectBuild`、输入与产物摘要、规则及工具版本，去除本机执行路径、任务 ID 和凭据。恢复将网页安装为新的不可变资源代并重建来源，不依赖原来被排除的 `.platform/starter.json` 或原任务日志。已有可复用网页的恢复不运行 Node/npm；合法无产物项目仍可为 `unbuilt`，已登记产物缺失则报告异常。
+
+持久维护记录在工作区 `.platform/project-state/maintenance/{projectId}.json`，与旧项目登记、构建来源分开保存；升级读取默认 ready 状态，不重写已有项目文件。操作暂存、恢复候选、日志和原现场在 `.platform/operations/{taskId}/`。恢复先验证候选，再停止业务、保留完整原目录并切换；原库损坏时也保留 WAL/SHM。未解决现场不作为缓存清除，重启根据日志和目录身份核对完成、回退或待处理结果。
+
+手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。基础 UI 显示备份列表、详情、任务和维护/恢复状态；历史备份另存、手动删除、迁移旧根清理仍未按讨论稿提供。空间缓存失效不等于已经实现完整空间扫描页面。
+
+M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建可丢弃项目；`m3-restart-test.mjs prepare|verify` 在真正退出重启前后检查维护保留。`m3-compatibility-test.mjs prepare|verify` 只读核对升级前已有项目持久文件，不因 SQLite checkpoint 改变数据库字节而误判为平台覆盖。执行结果、故障模拟与交互证据见 [M3 验证记录](m3-verification.md)。
+
+## 9 M4 生命周期与工作区迁移
+
+以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
+
+| 命令 | 输入与结果 |
+| --- | --- |
+| `project export --project ID --input export.json` | `destinationPath` 为绝对 ZIP 路径；覆盖须显式 `overwrite: true`；维护时携带 `maintenanceId` |
+| `project import --input import.json` | `archivePath` 为绝对路径，`mode` 必须明确为 `original` 或 `copy`，可选 `name` |
+| `project copy --project ID --input copy.json` | 可选 `name`、`maintenanceId`；创建独立新平台 ID，保留业务主键 |
+| `project delete --project ID` | 移入回收站；维护中通过 `--maintenance ID` 或 `--input` 传本轮 ID |
+| `trash list` / `trash info --trash ID` | 回收项状态、原项目、路径和恢复可用性 |
+| `trash restore --trash ID` | 原 ID 恢复并推进文档身份；坏库保留原字节，转维护待处理 |
+| `trash purge --trash ID` | 永久删除选中回收项的项目文件，保留历史备份、外部导出和受保护现场 |
+| `workspace info` | 当前根目录、文件系统、迁移任务及保留旧根；未知统计为 `null` |
+| `workspace migrate --input migration.json` | `destinationPath` 为已存在、空、可写且独立的本机 APFS 目录 |
+
+这些命令均支持 `--json`。请求例子分别为 `{"destinationPath":"/绝对路径/project.zip"}`、`{"archivePath":"/绝对路径/project.zip","mode":"copy","name":"副本名称"}`、`{"destinationPath":"/绝对路径/新的空工作区"}`。导入原 ID 时，活跃项目、回收站和正在登记的操作均占用身份，不能覆盖冲突对象。复制与导入为副本不全局替换用户文字、业务 UUID 或附件名；不升级固定 SDK 或覆盖业务说明。已验证网页直接复用，不要求 Node 或重新构建。
+
+维护快照与来源不明的快照登记为新的本机维护会话，建立对应目标 ID 的完整基线；已知待构建要求继续保留。若登记成功而基线失败，任务会返回 `registered_maintenance_not_ready`，项目已经存在但 `readyForChanges: false`；先查询项目/维护状态，以该会话重试基线，不自动再次导入或复制。回收站恢复遇到坏库也不创建空库；恢复字节保留并阻断业务，修复或再次删除均按当前维护 ID 操作。清除部分失败时为 `purgeIncomplete`，不能承诺仍完整可恢复；按原回收项明确重试。
+
+迁移覆盖全部项目、历史备份、回收站、维护状态、身份注销记录、日志和受保护恢复现场。活跃项目的可重建依赖及指定空间缓存可以排除；受保护现场和回收站内部不按目录名递归过滤，符号链接保留为链接、不追随到树外。迁移前停止外部编辑器与 SQLite 工具写入，平台等待已接受任务并关闭业务连接后复制和校验，不运行项目脚本。
+
+固定 `dataRoot/migrations/{taskId}/` 保存迁移日志与任务，不在被复制树中写入进度。目标安置并验证后原子更新固定 settings，作为提交点；提交前失败可继续使用源，提交后只初始化目标。新位置重新生成服务实例和管理凭据，保持维护状态并推进活跃项目代次；旧 Cookie、旧管理凭据和旧页面不能恢复写入。目标缺失、身份不符或提交无法核实时保留两边并报告错误；不自动切回旧副本。旧源离线不阻止已验证的新根启动。
+
+完成后重新读取 `project handoff` 并在新绝对路径继续编辑；旧 AI 工作目录不会自动跟随。旧项目内业务说明及 skill 不批量重写，平台仅更新生成的本机交接信息。旧根保留并展示，不提供旧迁移根删除命令；历史备份另存、删除和完整空间页仍按后续范围处理。
+
+M4 实际验收已保存已有项目摘要和 M3 可恢复开发包。`m4-live-test.mjs` 只创建新的 `M4 可丢弃` 项目；`m4-migration-test.mjs prepare` 记录正常/维护/回收站样本及全部保护树，经公开迁移与完整退出重启后运行 `verify`。脚本不改 settings，不自动启动迁移，不通过复制单个数据库代替工作区协议。兼容结果与完整日志保存在 `.test-artifacts/`。本轮最终通过 132 项 Rust、12 项 SDK、8 组运行提示回归、10 组 live 行为与迁移后 26 项目/14 保护树检查；原 17 个项目在升级及迁移后摘要一致。实际迁移目标是固定开发数据根下 `workspaces/current/`，源 `workspace/` 实体树保留。重启采用已核验开发进程 SIGTERM 后从包内可执行文件重新启动，不能称为 GUI 正常退出验收；GUI 全流程未完成及最终包证据见 [M4 记录](m4-verification.md)。

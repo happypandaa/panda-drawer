@@ -1,0 +1,23 @@
+[package]
+name = "platform-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "local-projects-desktop-dev"
+
+[[bin]]
+name = "local-projects-desktop-dev"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+platform-core = { path = "../../../crates/platform-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+

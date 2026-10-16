@@ -1,0 +1,10 @@
+:root {
+  color-scheme: light;
+  --background: #fdfdfc;
+  --foreground: #202020;
+  --muted: #f2f2f0;
+  --muted-foreground: #777773;
+  --card: #ffffff;
+  --border: #e5e5e1;
+  --radius: 10px;
+}

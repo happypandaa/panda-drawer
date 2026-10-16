@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>M1 · 项目运行验证</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./client.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header><span class="badge">M1 / 内部验证项目</span><h1>单词与学习资料</h1><p>通过项目会话访问本机数据库。页面可在桌面和浏览器独立使用。</p></header>
+      <p id="status" role="status">正在连接本地项目…</p>
+      <section class="grid">
+        <article><div class="section-title"><h2>单词本</h2><button id="refresh" class="secondary">重新查询</button></div>
+          <form id="word-form"><label>英文单词<input name="word" id="word" placeholder="例如 apple" maxlength="120" required /></label><label>中文释义<input name="meaning" id="meaning" placeholder="例如 苹果" maxlength="300" required /></label><button type="submit">保存单词</button></form>
+          <ul id="words" aria-label="已保存单词"></ul>
+        </article>
+        <article><h2>学习资料</h2><p class="hint">附件保存在当前项目的 data/attachments 中。</p><form id="note-form"><label>文件名<input name="filename" id="filename" value="学习笔记.txt" maxlength="120" required /></label><label>笔记内容<textarea name="note" id="note" rows="4" placeholder="写下一段学习记录…" required></textarea></label><button type="submit">保存为附件</button></form><label class="upload">或上传文件<input type="file" id="upload" /></label><ul id="files" aria-label="已保存资料"></ul></article>
+      </section>
+      <details><summary>运行验证信息</summary><dl><dt>项目 ID</dt><dd id="project-id"></dd><dt>文档代次</dt><dd id="epoch"></dd><dt>客户端</dt><dd id="client-kind"></dd></dl><button class="secondary" id="native-check">检查项目窗口的原生命令权限</button><p id="native-result"></p><p class="hint">这是直接复制的受控测试产物，不代表已实现 M2 的 SDK 分发或 AI 构建。所有数据均可丢弃。</p></details>
+    </main>
+  </body>
+</html>
