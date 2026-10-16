@@ -25,7 +25,7 @@ npm run build
 
 `env doctor` 在线时读取桌面服务实际选定的 Node/npm、路径、版本和可用性；离线时不会把终端 PATH 当作桌面环境。最后两个命令分别生成内部测试 `.app`、`.app` 与 DMG。包使用开发标识和 ad-hoc 签名，未进行 Developer ID 签名、公证或对外发布。
 
-详情见[开发环境与隔离](docs/development.md)、[M0 验证记录](docs/m0-verification.md)、[M1 验证记录](docs/m1-verification.md)、[M2 验证记录](docs/m2-verification.md)、[M3 验证记录](docs/m3-verification.md)、[M4 验证记录](docs/m4-verification.md)、[M5 验证记录](docs/m5-verification.md)、[管理界面改造验证](docs/ui-refresh-verification.md)、[空间占用与 AI 接手说明验证](docs/storage-ai-handoff-verification.md)、[里程碑计划](docs/development-milestones.md)、[架构约定](docs/platform-development-contract.md)。开发、检查和打包命令按顺序执行；切换源码版与打包版前先退出当前开发实例。
+详情见[开发环境与隔离](docs/development.md)、[M0 验证记录](docs/m0-verification.md)、[M1 验证记录](docs/m1-verification.md)、[M2 验证记录](docs/m2-verification.md)、[M3 验证记录](docs/m3-verification.md)、[M4 验证记录](docs/m4-verification.md)、[M5 验证记录](docs/m5-verification.md)、[管理界面改造验证](docs/ui-refresh-verification.md)、[空间占用与 AI 接手说明验证](docs/storage-ai-handoff-verification.md)、[历史清理验证](docs/history-cleanup-verification.md)、[里程碑计划](docs/development-milestones.md)、[架构约定](docs/platform-development-contract.md)。开发、检查和打包命令按顺序执行；切换源码版与打包版前先退出当前开发实例。
 
 ## 工程边界
 
@@ -55,7 +55,7 @@ SQL、上传、构建、媒体与日志预算仍为内部测试参数；旧代�
 
 管理首页采用简洁项目卡片，详情集中在弹窗中的概览、空间与文件、备份维护和更多操作。删除入口先展示项目及回收范围确认；空间与工作区设有总览、位置和回收站页签。草稿关闭确认、键盘焦点、迟到响应和任务状态经过 React DOM 模拟回归，`npm run test:ui` 不打开浏览器或接触真实项目数据；它不替代实际 WebKit 视觉和原生交互验收。
 
-项目详情提供“复制 AI 接手说明”，新建完成后直接打开详情；说明包含软件用途、当前目录和实际开发入口。空间总览解释删除后仍保留的回收站、备份、恢复现场及迁移原目录。本轮 24 项 DOM 和 167 项 Rust 测试通过；实际只读核对为当前 0 项目、29 回收项，未清理保留资料。最新交付核验、资料保留和验收边界见[空间占用与 AI 接手说明记录](docs/storage-ai-handoff-verification.md)。
+项目详情提供“复制 AI 接手说明”。“空间与工作区 → 清理历史”可扫描旧工作区、已完成恢复原现场和回收项，展示目录与保护范围，再显式选择和确认；当前项目、当前备份和未解决现场继续保护。本轮 29 项 DOM、183 项 Rust、全目标 Clippy 与新 app/DMG 核验通过。当前开发目录的实际清理需先保存正在使用项目的草稿并切换新实例，尚未以夹具测试代替。交付摘要、实际状态及边界见[历史清理验证](docs/history-cleanup-verification.md)。
 
 ```sh
 npm run cli -- project list --json
