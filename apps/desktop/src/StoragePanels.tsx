@@ -75,8 +75,40 @@ export function WorkspaceStorageSummary({ revision, enabled, compact = true }: {
       <ScopeCard label="当前工作区" part={data?.workspace} compact={compact} />
       <div className="storage-category workspace-scope-card"><span>其他已知位置</span><strong title={exactBytes(partBytes(other))}>{bytesText(partBytes(other))}</strong><small>{scopeStatus(other)}</small><details className="workspace-disclosure" open={compact ? undefined : true}><summary>查看位置{data ? `（${data.otherLocalLocations.length}）` : ''}</summary><div className="workspace-disclosure-body"><p>迁移保留目录，以及工作区以外的设置、运行记录与统计缓存。</p>{data ? data.otherLocalLocations.length ? data.otherLocalLocations.map((part, index) => <div className="workspace-location-summary" key={String(part.root ?? index)}><h3>{scopeName(String((part.scope as Record<string, unknown> | undefined)?.kind ?? ''))}</h3><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong><ScopeDetails part={part} /></div>) : <p>没有其他已知位置。</p> : <p>尚未统计。</p>}</div></details></div>
     </div>
+    <StorageRetentionExplanation data={data} />
     <details className="workspace-disclosure workspace-measurement"><summary>统计口径与磁盘可用空间</summary><div className="workspace-disclosure-body"><p>数字为文件逻辑字节，不等于实际磁盘占块。不同范围各有统计时间；项目已包含在工作区内，不重复相加。外部 ZIP、下载的 DMG 与未登记的个人文件不计入。</p>{data?.knownLocalTotal && <p>已知范围合计：<strong title={exactBytes(partBytes(data.knownLocalTotal))}>{bytesText(partBytes(data.knownLocalTotal))}</strong> · {data.knownLocalTotal.complete ? '统计完整' : '部分统计，仍有未知范围'}</p>}{data?.disks?.map((disk, index) => <div className="workspace-disk-row" key={index}><code>{String(disk.exampleRoot ?? disk.path ?? disk.root ?? disk.mountPoint ?? '所在磁盘')}</code><span>磁盘可用 {bytesText((disk.availableBytes ?? null) as import('./types').ByteCount)}</span></div>)}</div></details>
     {error && <p role="alert" className="environment-issue">{error}</p>}
+  </section>;
+}
+function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }) {
+  const categories = data?.workspace.categories as Record<string, StoragePart> | undefined;
+  const rows: { key: string; label: string; part: StoragePart; parent: StoragePart; explanation: string }[] = [];
+  const add = (key: string, label: string, part: StoragePart | undefined, parent: StoragePart | undefined, explanation: string) => {
+    if (!part || !parent) return;
+    const value = partBytes(part);
+    try { if (value != null && (typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64)) === 0n && parent.complete && !parent.stale) return; } catch { /* Keep an unknown size visible. */ }
+    rows.push({ key, label, part, parent, explanation });
+  };
+  add('trash', '回收站 · 当前工作区', categories?.trash, data?.workspace, '保留可恢复的项目副本。在“回收站”页签核对后，可永久删除选中的回收项。');
+  add('backups', '历史备份 · 当前工作区', categories?.backups, data?.workspace, '永久删除回收项后仍保留历史备份；当前版本尚无历史备份删除入口。');
+  add('operations', '操作现场 · 当前工作区', categories?.operations, data?.workspace, '任务记录与为恢复保留的文件，不会随删除项目清空。');
+  add('sharedCache', '共享缓存 · 当前工作区', categories?.sharedCache, data?.workspace, '构建工具等共享的缓存，独立于单个项目保存。');
+  const retained = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'retainedWorkspace') ?? [];
+  if (retained.length) {
+    const part = combinedLocations(retained);
+    add('retained', '迁移保留目录 · 其他已知位置', part, part, '迁移前的原目录已停用，为恢复保留；删除当前工作区的项目不会清除这些副本。当前版本尚无旧目录清理入口。');
+  }
+  add('program', '平台程序', data?.platformProgram, data?.platformProgram, '软件自身的文件，不随项目数量变化。');
+  const applicationData = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'applicationData') ?? [];
+  if (applicationData.length) {
+    const part = combinedLocations(applicationData);
+    add('applicationData', '应用设置与运行记录 · 其他已知位置', part, part, '设置、运行记录与统计缓存，独立于项目保存。');
+  }
+  return <section className="overview-section workspace-retention-explanation" aria-labelledby="workspace-retention-title">
+    <h3 id="workspace-retention-title">为什么删除项目后仍有占用</h3>
+    <p>删除项目默认移入回收站。即使项目列表为空，历史备份、操作现场、迁移保留目录和程序文件仍可能占用空间；永久删除回收项也会保留历史备份。</p>
+    {rows.length > 0 && <><p>以下为上方范围中仍有占用或大小未知的项目，不再与上方数字相加：</p><dl className="workspace-retention-list">{rows.map(({ key, label, part, parent, explanation }) => <div key={key}><dt>{label}</dt><dd><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong>{Boolean(!parent.complete || parent.stale) && <small>{parent.stale ? ' · 已过期' : ' · 部分统计 / 未知'}</small>}<p>{explanation}</p></dd></div>)}</dl></>}
+    <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。请在“回收站”页签按项目核对处理；历史备份、迁移保留目录和恢复现场不会自动删除。</p>
   </section>;
 }
 function combinedLocations(parts: StoragePart[]): StoragePart {

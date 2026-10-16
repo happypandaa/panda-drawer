@@ -182,7 +182,72 @@ Resource limits exposed by this development runtime are internal test parameters
         } else {
             None
         };
-        json!({"projectId":id,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"cliPath":self.cli_path,"text":format!("请在这个业务项目目录中工作：{}\n先读取接管 skill：{}\n再完整阅读项目 README.md、project.json、docs/database.md 和 docs/platform.md。skill 中的相对路径均以业务项目目录为根。根据我的需求修改项目源码，使用下列当前平台 CLI 操作数据库和构建（若 README 中旧路径失效，以下列路径为准）；检查任务结果，再获取新的浏览器入口验证。不要修改平台源码，不要删除用户数据。\n项目 ID：{}\n平台 CLI：{}\n请把功能、schema 变化、验证和已知问题写回项目说明。",root.display(),skill.display(),id,self.cli_path.display())})
+        let generated_note = generated
+            .as_ref()
+            .map(|path| {
+                format!(
+                    "\n此项目还有平台管理的接管记录，请先阅读其当前路径：{}\n其中可能记录复制、导入或迁移后的项目身份；不要继续编辑保留的旧目录。\n",
+                    path.display()
+                )
+            })
+            .unwrap_or_default();
+        let cli = shell_quote(&self.cli_path.to_string_lossy());
+        let project_id = shell_quote(id);
+        let text = format!(
+            r#"请接手以下业务应用，并根据我接下来提供的需求继续开发。
+
+Local Projects Dev 是 macOS 上的本地业务应用平台。它管理各个项目的源码、独立 SQLite 数据库、附件、运行入口、构建发布、备份与维护。你要开发的是下面的业务项目；平台会把发布后的网页显示在项目窗口或普通浏览器中，用户应当能在 AI 离线时继续使用。
+
+业务项目 ID：{id}
+业务项目根目录：{project_root}
+当前平台 CLI：{cli_path}
+
+先读取当前接管 skill（{skill_source}）：{skill_path}
+{generated_note}
+然后读取项目清单：{manifest_path}
+根据清单中的 docs 声明完整阅读 README、数据库和平台集成说明，了解业务目的、现有功能、数据结构和平台约束。以下是默认模板的文档路径；若清单声明不同，请读取实际声明的文件：
+- 默认 README：{readme_path}
+- 默认数据库说明：{database_docs}
+- 默认平台集成说明：{platform_docs}
+文档和 skill 中的相对路径均以业务项目根目录为准。当前目录和 CLI 以上述路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
+
+源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
+
+使用当前平台 CLI 检查环境、项目和数据库，再通过平台管理的 SQL/事务与构建流程完成修改，例如：
+
+```sh
+{cli} service status --json
+{cli} project info --project {project_id} --json
+{cli} db schema --project {project_id} --json
+{cli} db execute --project {project_id} --input request.json --json
+{cli} db transaction --project {project_id} --input transaction.json --json
+{cli} project build --project {project_id} --json
+# 使用返回的 taskId；若 waitTimedOut 为 true，继续等待，不代表失败或取消。
+{cli} task wait --task TASK_ID --json
+{cli} task logs --task TASK_ID --json
+{cli} project url --project {project_id} --json
+```
+
+SQL 输入格式和维护规则以 skill、项目文档及 CLI 帮助为准；不要直接写入或替换运行中的 SQLite 文件或 WAL/SHM。涉及不兼容数据变更时，先进入维护并等待基线备份成功和 readyForChanges，再携带维护 ID 操作；验证后明确结束维护。
+
+保留现有用户数据、附件、备份和未保存草稿；不要为了修复构建或刷新页面清空数据。检查异步任务的最终状态与日志，使用平台重新取得的短期 launchUrl 验证发布结果；平台重启或工作区迁移后重新获取项目路径与入口，不要保存端口、令牌、票据、Cookie 或其他密钥。未知写入结果不要自动重放，刷新或重载前先处理草稿。
+
+完成后报告实际修改、数据库/schema 变化、构建任务结果、实际验证和已知限制；没有执行的验证请明确说明，并把这些信息写回项目说明。
+"#,
+            project_root = root.display(),
+            cli_path = self.cli_path.display(),
+            skill_source = if local_skill {
+                "项目自带"
+            } else {
+                "本机安装随附，旧项目文件保持原样"
+            },
+            skill_path = skill.display(),
+            readme_path = readme.display(),
+            manifest_path = root.join("project.json").display(),
+            database_docs = root.join("docs/database.md").display(),
+            platform_docs = root.join("docs/platform.md").display(),
+        );
+        json!({"projectId":id,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"cliPath":self.cli_path,"text":text})
     }
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
@@ -261,6 +326,135 @@ mod tests {
         let cli = root.join("CLI with ' quote");
         fs::write(&cli, "fixture").unwrap();
         cli
+    }
+    #[test]
+    fn handoff_explains_the_platform_with_current_paths_and_safe_cli_examples() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let root = paths.data_root().join("App's installation resources");
+        let cli = installation(&root);
+        let resources = ProjectResources::new(root, cli.clone()).unwrap();
+        let project_root = paths.workspace_root().join("业务 项目's directory");
+        let skill = project_root.join(".agents/skills/local-projects-app/SKILL.md");
+        let generated = project_root.join(".platform/handoff.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        let readme = b"Keep this project-owned README; private-fixture-value";
+        fs::write(project_root.join("README.md"), readme).unwrap();
+        fs::write(&skill, "Existing project skill").unwrap();
+        fs::write(&generated, "Existing platform-managed handoff").unwrap();
+
+        let handoff = resources.handoff(&project_root, "prj_current");
+        assert_eq!(handoff["projectId"], "prj_current");
+        assert_eq!(handoff["skillSource"], "project");
+        assert_eq!(handoff["skillPath"], skill.to_string_lossy().as_ref());
+        assert_eq!(
+            handoff["generatedHandoffPath"],
+            generated.to_string_lossy().as_ref()
+        );
+        assert_eq!(handoff["cliPath"], cli.to_string_lossy().as_ref());
+        let text = handoff["text"].as_str().unwrap();
+        for expected in [
+            "Local Projects Dev 是 macOS 上的本地业务应用平台",
+            "独立 SQLite 数据库",
+            "业务项目 ID：prj_current",
+            "先读取当前接管 skill（项目自带）",
+            "平台管理的接管记录",
+            "sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准",
+            "仅为默认模板示例",
+            "若清单声明不同，请读取实际声明的文件",
+            "不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录",
+            "@local-projects/sdk 0.1.0",
+            "未保存草稿",
+            "readyForChanges",
+            "检查异步任务的最终状态与日志",
+            "不要直接写入或替换运行中的 SQLite 文件",
+        ] {
+            assert!(
+                text.contains(expected),
+                "Missing handoff instruction: {expected}"
+            );
+        }
+        for path in [
+            project_root.clone(),
+            skill.clone(),
+            generated.clone(),
+            project_root.join("README.md"),
+            project_root.join("project.json"),
+            project_root.join("docs/database.md"),
+            project_root.join("docs/platform.md"),
+        ] {
+            assert!(text.contains(path.to_string_lossy().as_ref()));
+        }
+        let quoted_cli = shell_quote(&cli.to_string_lossy());
+        assert!(text.contains(&format!(
+            "{quoted_cli} project build --project 'prj_current' --json"
+        )));
+        assert!(text.contains(&format!(
+            "{quoted_cli} project url --project 'prj_current' --json"
+        )));
+        assert!(!text.contains("private-fixture-value"));
+        assert_eq!(fs::read(project_root.join("README.md")).unwrap(), readme);
+        assert_eq!(fs::read_to_string(skill).unwrap(), "Existing project skill");
+        assert_eq!(
+            fs::read_to_string(generated).unwrap(),
+            "Existing platform-managed handoff"
+        );
+    }
+    #[test]
+    fn old_project_handoff_uses_installation_skill_without_creating_or_rewriting_files() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let root = paths.data_root().join("test-install");
+        let cli = installation(&root);
+        let resources = ProjectResources::new(root.clone(), cli).unwrap();
+        let project_root = paths.workspace_root().join("old project");
+        fs::create_dir_all(&project_root).unwrap();
+        let readme = b"Unchanged older project README with old installation paths";
+        fs::write(project_root.join("README.md"), readme).unwrap();
+
+        let handoff = resources.handoff(&project_root, "prj_older");
+        let fallback = root.join("skills/local-projects-app/SKILL.md");
+        assert_eq!(handoff["skillSource"], "installation");
+        assert_eq!(handoff["skillPath"], fallback.to_string_lossy().as_ref());
+        assert!(handoff["generatedHandoffPath"].is_null());
+        let text = handoff["text"].as_str().unwrap();
+        assert!(text.contains("本机安装随附，旧项目文件保持原样"));
+        assert!(text.contains(fallback.to_string_lossy().as_ref()));
+        assert!(!text.contains("平台管理的接管记录"));
+        assert_eq!(fs::read(project_root.join("README.md")).unwrap(), readme);
+        assert_eq!(fs::read_dir(&project_root).unwrap().count(), 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn handoff_does_not_follow_project_skill_or_generated_handoff_symlinks() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let root = paths.data_root().join("test-install");
+        let cli = installation(&root);
+        let resources = ProjectResources::new(root.clone(), cli).unwrap();
+        let project_root = paths.workspace_root().join("linked project");
+        let skill = project_root.join(".agents/skills/local-projects-app/SKILL.md");
+        let generated = project_root.join(".platform/handoff.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        let outside = paths.data_root().join("outside-project.txt");
+        fs::write(&outside, "Do not follow this link").unwrap();
+        std::os::unix::fs::symlink(&outside, &skill).unwrap();
+        std::os::unix::fs::symlink(&outside, &generated).unwrap();
+
+        let handoff = resources.handoff(&project_root, "prj_linked");
+        assert_eq!(handoff["skillSource"], "installation");
+        assert_eq!(
+            handoff["skillPath"],
+            root.join("skills/local-projects-app/SKILL.md")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert!(handoff["generatedHandoffPath"].is_null());
+        assert!(fs::symlink_metadata(skill).unwrap().is_symlink());
+        assert!(fs::symlink_metadata(generated).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(outside).unwrap(),
+            "Do not follow this link"
+        );
     }
     #[tokio::test]
     async fn installed_template_is_ready_without_node_and_reopening_never_overwrites_it() {

@@ -525,6 +525,23 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .handoff-card .section-heading { padding: 0 0 16px; }
 .handoff-card h3 { margin: 0; font-size: 15px; font-weight: 550; }
 .handoff-card .section-heading p { color: #818b75; font-size: 12px; line-height: 1.7; }
+.handoff-card > .section-heading { align-items: flex-start; gap: 20px; padding-bottom: 8px; }
+.handoff-card > .section-heading .primary-button { flex-shrink: 0; }
+.handoff-card > .project-help { margin: 0; }
+.handoff-preview { margin-top: 18px; }
+.handoff-preview .section-heading { gap: 12px; align-items: center; padding-bottom: 10px; }
+.handoff-preview label { color: #627153; font-size: 12px; }
+.workspace-retention-explanation { margin: 20px 0; padding: 20px; border: 1px solid #e5e7df; border-radius: 10px; background: #fafbf8; }
+.workspace-retention-explanation h3 { margin: 0 0 10px; color: #4e663e; font-size: 15px; font-weight: 550; }
+.workspace-retention-explanation p { color: #738067; font-size: 12px; line-height: 1.8; margin: 8px 0; }
+.workspace-retention-list { display: grid; gap: 12px; margin: 16px 0; padding: 0; list-style: none; }
+.workspace-retention-list > div { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(0, 2fr); gap: 8px 20px; color: #69765e; font-size: 13px; line-height: 1.8; }
+.workspace-retention-list dt { color: #526343; }
+.workspace-retention-list dd { margin: 0; }
+.workspace-retention-list dd p { margin: 2px 0 0; }
+.workspace-retention-list small { font-size: 11px; }
+.workspace-retention-list strong { color: #526343; font-weight: 550; }
+@media (max-width: 760px) { .handoff-card > .section-heading { flex-direction: column; } .handoff-card > .section-heading .primary-button { width: 100%; justify-content: center; } .workspace-retention-explanation { padding: 16px; } .workspace-retention-list > div { grid-template-columns: 1fr; gap: 2px; } }
 .project-technical-details { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 20px; }
 .project-technical-details > summary { color: #7c8670; font-size: 13px; cursor: pointer; padding: 2px 0 12px; }
 .project-last-task { margin: 0 0 20px; padding: 12px 16px; border: 1px solid #e5e9de; border-radius: 8px; background: #fafbf8; }

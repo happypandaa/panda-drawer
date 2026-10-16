@@ -58,6 +58,7 @@ const { Modal } = await component('Modal.tsx');
 const { BackupMaintenancePanel } = await component('BackupMaintenancePanel.tsx');
 const { ProjectOverview } = await component('ProjectOverview.tsx');
 const { WorkspaceHub } = await component('WorkspaceHub.tsx');
+const { WorkspaceStorageSummary } = await component('StoragePanels.tsx');
 const { default: App } = await component('App.tsx');
 let root;
 let render;
@@ -361,6 +362,37 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
 
+test('Storage explains retained sizes within their scopes, aggregates old roots, and preserves unknown measurements', async () => {
+  await setup();
+  let data = {
+    platformProgram: { totalBytes: 100, complete: true },
+    workspace: { totalBytes: 2000, complete: true, categories: {
+      trash: { totalBytes: 0 }, backups: { totalBytes: null }, operations: { totalBytes: 1500 }, sharedCache: { totalBytes: 500 },
+    } },
+    otherLocalLocations: [
+      { scope: { kind: 'retainedWorkspace' }, totalBytes: 1000, complete: true },
+      { scope: { kind: 'retainedWorkspace' }, totalBytes: { $int64: '2000' }, complete: true },
+      { scope: { kind: 'applicationData' }, totalBytes: 321, complete: true },
+    ],
+  };
+  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_storage'); return data; };
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
+  const rows = () => [...document.querySelectorAll('.workspace-retention-list > div')];
+  const row = (prefix) => rows().find((element) => element.querySelector('dt').textContent.startsWith(prefix));
+  assert.equal(row('回收站'), undefined, 'A known complete zero category should not imply retained content');
+  assert.match(row('历史备份').textContent, /尚未统计/);
+  assert.equal(row('操作现场').querySelector('strong').title, '1500 字节');
+  assert.equal(row('共享缓存').querySelector('strong').title, '500 字节');
+  assert.equal(row('迁移保留目录').querySelector('strong').title, '3000 字节');
+  assert.equal(row('应用设置').querySelector('strong').title, '321 字节');
+  assert.equal(rows().filter((element) => element.querySelector('dt').textContent.startsWith('迁移保留目录')).length, 1);
+  assert.match(document.querySelector('.workspace-retention-explanation').textContent, /不再与上方数字相加|不等于可以释放/);
+  data = { ...data, workspace: { ...data.workspace, complete: false, stale: true }, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
+  await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
+  assert.match(row('回收站').textContent, /0 B.*已过期/);
+  assert.match(row('迁移保留目录').textContent, /尚未统计.*部分统计/);
+});
+
 test('Trash ignores out-of-order details, keeps confirmation bound to its selected ID, and resets it after tab changes', async () => {
   await setup(); const first = deferred(); const second = deferred();
   const entries = ['A', 'B'].map((id) => ({ trashId: `trash_${id}`, projectId: `prj_${id}`, name: 'Same display name', state: 'trashed', restoreAvailable: true, issues: [] }));
@@ -465,13 +497,97 @@ test('App rejects a late AI handoff for a closed project after another project i
     assert.equal(command, 'project_handoff');
     return args.projectId === 'prj_A' ? first.promise : { text: 'Current handoff for B' };
   });
-  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制给 AI'));
-  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制给 AI'));
+  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制 AI 接手说明'));
+  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制 AI 接手说明'));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current handoff for B');
   await act(async () => first.resolve({ text: 'Stale handoff for A' }));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current handoff for B');
   assert.deepEqual(copied, ['Current handoff for B']);
   assert.doesNotMatch(dialog().textContent, /Stale handoff for A|已复制「Fixture A」/);
+});
+
+test('Creating a project opens its details and offers AI handoff without copying until explicitly requested', async () => {
+  await setup(); const prepared = deferred(); const copied = []; let handoffs = 0;
+  const created = appProject('prj_new', 'New disposable fixture');
+  const state = { projects: [] };
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
+  mockApp(state, async (command, args) => {
+    if (command === 'project_create') { assert.equal(args.input.name, created.name); state.projects = [created]; return created; }
+    assert.equal(command, 'project_handoff'); assert.equal(args.projectId, created.id); handoffs++; return prepared.promise;
+  });
+  await render(h(App));
+  await click([...document.querySelectorAll('.heading-actions button')].find((button) => button.textContent.trim() === '新建项目'));
+  await inputValue(document.getElementById('project-name'), created.name);
+  await submit(document.querySelector('.create-project-form'));
+  assert.ok(dialog()); assert.match(dialog().textContent, /New disposable fixture/);
+  assert.equal(document.querySelector('.create-project-form'), null);
+  assert.equal(handoffs, 0); assert.deepEqual(copied, []);
+  assert.match(document.querySelector('.handoff-card').textContent, /软件介绍、当前项目目录/);
+  await click(buttonNamed('复制 AI 接手说明'));
+  assert.equal(buttonNamed('正在准备说明…').disabled, true);
+  await click(buttonNamed('正在准备说明…'));
+  assert.equal(handoffs, 1);
+  await act(async () => prepared.resolve({ text: `Platform description and project root: ${created.projectRoot}` }));
+  assert.deepEqual(copied, [`Platform description and project root: ${created.projectRoot}`]);
+  assert.equal(buttonNamed('复制 AI 接手说明').disabled, false);
+  assert.match(dialog().querySelector('[role="status"]').textContent, /已复制/);
+});
+
+test('AI handoff remains selectable when the clipboard rejects access', async () => {
+  await setup(); let attempts = 0;
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { attempts++; throw new Error('Clipboard fixture denied'); } } });
+  mockApp({ projects: [appProject('prj_A', 'Fixture A')] }, async (command) => {
+    assert.equal(command, 'project_handoff'); return { text: 'Complete platform introduction and current project paths' };
+  });
+  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制 AI 接手说明'));
+  const text = document.querySelector('[aria-label="给 AI 的完整说明"]');
+  assert.equal(text.value, 'Complete platform introduction and current project paths');
+  await act(async () => text.focus());
+  assert.equal(text.selectionStart, 0); assert.equal(text.selectionEnd, text.value.length);
+  assert.equal(attempts, 1);
+  assert.match(dialog().querySelector('[role="status"]').textContent, /可以选中下面的文字并复制/);
+  assert.doesNotMatch(dialog().textContent, /已复制「/);
+  await click(buttonNamed('收起全文'));
+  assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
+  assert.ok(buttonNamed('复制 AI 接手说明'));
+});
+
+test('Clipboard writes stay ordered across project changes when an older system write is still pending', async () => {
+  await setup(); const firstWrite = deferred(); const started = []; const completed = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => {
+    started.push(text);
+    if (text === 'Handoff A') await firstWrite.promise;
+    completed.push(text);
+  } } });
+  mockApp({ projects: [appProject('prj_A', 'Fixture A'), appProject('prj_B', 'Fixture B')] }, async (command, args) => {
+    assert.equal(command, 'project_handoff'); return { text: args.projectId === 'prj_A' ? 'Handoff A' : 'Handoff B' };
+  });
+  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制 AI 接手说明'));
+  assert.deepEqual(started, ['Handoff A']);
+  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制 AI 接手说明'));
+  assert.deepEqual(started, ['Handoff A'], 'The new write must wait for an already-started system write');
+  assert.equal(buttonNamed('正在准备说明…').disabled, true);
+  await act(async () => firstWrite.resolve());
+  assert.deepEqual(completed, ['Handoff A', 'Handoff B']);
+  assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Handoff B');
+  assert.match(dialog().querySelector('[role="status"]').textContent, /已复制「Fixture B」/);
+});
+
+test('A refreshed project removal invalidates an in-flight AI handoff without discarding the detail draft', async () => {
+  await setup(); const prepared = deferred(); const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
+  const state = { projects: [appProject('prj_A', 'Fixture A')] };
+  mockApp(state, async (command) => { assert.equal(command, 'project_handoff'); return prepared.promise; });
+  await render(h(App)); await openDetails('Fixture A');
+  await inputValue(document.querySelector('.overview-section form input'), 'Preserve handoff fixture draft');
+  await click(buttonNamed('复制 AI 接手说明'));
+  await click(hubTab('备份维护')); state.projects = [];
+  await click([...document.querySelectorAll('.backup-panel button')].find((button) => button.textContent.trim() === '刷新状态'));
+  await act(async () => prepared.resolve({ text: 'Removed project must not be copied' }));
+  assert.deepEqual(copied, []); assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
+  assert.equal(buttonNamed('复制 AI 接手说明').disabled, true);
+  await click(hubTab('概览'));
+  assert.equal(document.querySelector('.overview-section form input').value, 'Preserve handoff fixture draft');
 });
 
 test('App retains a failed delete dialog and closes it only after its accepted task succeeds', async () => {

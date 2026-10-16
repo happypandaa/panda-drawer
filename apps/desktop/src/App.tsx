@@ -48,6 +48,7 @@ function App() {
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
   const [building, setBuilding] = useState<string[]>([]);
   const [handoff, setHandoff] = useState<string | null>(null);
+  const [handoffCopying, setHandoffCopying] = useState(false);
   const buildPending = useRef(new Set<string>());
   const requestId = useRef(0);
   const createPending = useRef(false);
@@ -55,22 +56,29 @@ function App() {
   const inDesktop = isTauri();
   const instanceId = useRef<string | null>(null);
   const handoffRequest = useRef(0);
+  const handoffInFlight = useRef<number | null>(null);
+  const clipboardQueue = useRef<Promise<void>>(Promise.resolve());
   const selectedOverviewId = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
-  const dismissOverview = useCallback(() => {
+  const clearHandoff = useCallback(() => {
     handoffRequest.current++;
-    selectedOverviewId.current = null;
-    setOverview(null); setHandoff(null); setReloadProjectId(null);
+    handoffInFlight.current = null;
+    setHandoff(null); setHandoffCopying(false);
   }, []);
+  const dismissOverview = useCallback(() => {
+    clearHandoff();
+    selectedOverviewId.current = null;
+    setOverview(null); setReloadProjectId(null);
+  }, [clearHandoff]);
   function openOverview(project: ProjectInfo, tab: OverviewTab) {
-    handoffRequest.current++;
+    clearHandoff();
     selectedOverviewId.current = project.id;
-    setHandoff(null); setReloadProjectId(null); setNotice(null);
+    setReloadProjectId(null); setNotice(null);
     setOverview({ project, tab });
   }
   const migrating = Boolean(workspace?.activeTask) || ['running', 'paused', 'migrating'].includes(workspace?.migrationState ?? '') || Object.values(lifecycleTasks).some((task) => task.type === 'workspaceMigration' && !task.final);
-  useEffect(() => { if (migrating) { handoffRequest.current++; setHandoff(null); } }, [migrating]);
+  useEffect(() => { if (migrating) clearHandoff(); }, [migrating, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
     setLifecycleTasks((current) => ({ ...current, [task.taskId]: task }));
   }, []);
@@ -93,10 +101,10 @@ function App() {
       if (currentWorkspace.workspaceRoot !== runtime.workspaceRoot) runtime = await invoke<BootstrapInfo>('bootstrap_info');
       if (current !== requestId.current) return;
       if (instanceId.current && instanceId.current !== runtime.instanceId) {
-        handoffRequest.current++;
-        setHandoff(null);
+        clearHandoff();
         setNotice('工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
+      if (selectedOverviewId.current && !list.some((project) => project.id === selectedOverviewId.current)) clearHandoff();
       instanceId.current = runtime.instanceId;
       setWorkspace(currentWorkspace);
       const workspaceTaskId = (typeof currentWorkspace.activeTask === 'string' ? currentWorkspace.activeTask : currentWorkspace.activeTask?.taskId) ?? currentWorkspace.lastTaskId;
@@ -129,7 +137,7 @@ function App() {
     } finally {
       if (current === requestId.current) setLoading(false);
     }
-  }, [acceptLifecycleTask]);
+  }, [acceptLifecycleTask, clearHandoff]);
 
   useEffect(() => {
     void refresh();
@@ -151,8 +159,8 @@ function App() {
       setName('');
       setDescription('');
       setShowCreate(false);
-      setHandoff(null);
-      setNotice(`已创建「${project.name}」。初始应用已准备好，可以直接打开，也可以交给 AI 继续修改。`);
+      openOverview(project, 'overview');
+      setNotice(`已创建「${project.name}」。可以直接进入项目；点击“复制 AI 接手说明”，粘贴给其他 AI 并补充你的需求。`);
       await refresh();
     } catch (cause) {
       setError(messageFrom(cause));
@@ -245,22 +253,33 @@ function App() {
   }
 
   async function copyHandoff(project: ProjectInfo) {
-    if (selectedOverviewId.current !== project.id || migrating || !projects.some((value) => value.id === project.id)) return;
+    if (selectedOverviewId.current !== project.id || migrating || !projects.some((value) => value.id === project.id) || handoffInFlight.current !== null) return;
     const sequence = ++handoffRequest.current;
+    handoffInFlight.current = sequence;
     const initialInstance = instanceId.current;
     const current = () => sequence === handoffRequest.current && selectedOverviewId.current === project.id && initialInstance === instanceId.current;
-    setError(null);
+    setError(null); setNotice(null); setHandoffCopying(true);
     try {
       const data = await invoke<{ text: string }>('project_handoff', { projectId: project.id });
       if (!current()) return;
       setHandoff(data.text);
       try {
-        await navigator.clipboard.writeText(data.text);
-        if (current()) setNotice(`已复制「${project.name}」的项目路径、接管 skill 和操作说明，可直接交给外部 AI。`);
+        // A system clipboard write cannot be cancelled after closing a detail.
+        // Keep writes ordered across projects so an older write cannot finish last.
+        const write = clipboardQueue.current.then(async () => {
+          if (current()) await navigator.clipboard.writeText(data.text);
+        });
+        clipboardQueue.current = write.catch(() => {});
+        await write;
+        if (current()) setNotice(`已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。`);
       } catch {
         if (current()) setNotice('说明已准备好，可以选中下面的文字并复制给 AI。');
       }
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
+    finally {
+      if (handoffInFlight.current === sequence) handoffInFlight.current = null;
+      if (current()) setHandoffCopying(false);
+    }
   }
 
   function acceptTask(task: TaskRecord) {
@@ -398,14 +417,13 @@ function App() {
           <div className="project-dialog-actions">
             <button className="primary-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Monitor size={16} />进入项目</button>
             <button className="refresh-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'browser')}><Globe size={16} />浏览器打开</button>
-            <button className="refresh-button" disabled={overviewUnavailable} onClick={() => void copyHandoff(overviewProject)}><Copy size={16} />复制给 AI</button>
             <button className="refresh-button" disabled={overviewUnavailable || migrating || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={16} />{building.includes(overviewProject.id) ? '构建中…' : '构建项目'}</button>
           </div>
-          {handoff && <section className="handoff-card" aria-labelledby="handoff-title"><div className="section-heading"><div><h3 id="handoff-title">交给外部 AI</h3><p>允许 AI 访问项目目录，再描述你想增加的功能。</p></div><button className="icon-button" onClick={() => { handoffRequest.current++; setHandoff(null); }} aria-label="收起 AI 说明"><X size={18} /></button></div><textarea readOnly value={handoff} rows={6} aria-label="给 AI 的完整说明" onFocus={(event) => event.currentTarget.select()} /></section>}
+          <section className="handoff-card" aria-labelledby="handoff-title"><div className="section-heading"><div><h3 id="handoff-title">让其他 AI 继续开发</h3><p>一键复制软件介绍、当前项目目录和开发操作说明。粘贴给 AI 后，再告诉它你的需求。</p></div><button className="primary-button" disabled={overviewUnavailable || migrating || handoffCopying} onClick={() => void copyHandoff(overviewProject)}><Copy size={16} />{handoffCopying ? '正在准备说明…' : '复制 AI 接手说明'}</button></div><p className="project-help">接收说明的 AI 需要能访问这台电脑上的项目目录。仅聊天的 AI 也能了解背景，但不能直接修改本机文件。</p>{handoff && <div className="handoff-preview"><div className="section-heading"><label htmlFor="ai-handoff-text">完整说明 · 可核对或手动复制</label><button className="text-button" onClick={clearHandoff}>收起全文</button></div><textarea id="ai-handoff-text" readOnly value={handoff} rows={9} aria-label="给 AI 的完整说明" onFocus={(event) => event.currentTarget.select()} /></div>}</section>
           {tasks[overviewProject.id] && (tasks[overviewProject.id].final && tasks[overviewProject.id].status === 'succeeded'
             ? <details className="project-last-task"><summary>最近任务已完成 · 查看结果与日志</summary><ProjectTask task={tasks[overviewProject.id]} /></details>
             : <ProjectTask task={tasks[overviewProject.id]} />)}
-          <ProjectOverview key={overviewProject.id} project={overviewProject} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={tasks[overviewProject.id]} onTask={(task) => { acceptTask(task); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onHandoff={() => void copyHandoff(overviewProject)} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} disabled={overviewUnavailable || migrating || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
+          <ProjectOverview key={overviewProject.id} project={overviewProject} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={tasks[overviewProject.id]} onTask={(task) => { acceptTask(task); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} disabled={overviewUnavailable || migrating || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
           <details className="project-technical-details"><summary>运行信息与项目路径</summary><BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />
             {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />重新加载项目窗口</button>}
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>}
