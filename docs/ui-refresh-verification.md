@@ -1,0 +1,59 @@
+# 管理界面改造验证记录
+
+日期：2026-10-16。状态：管理界面改造、19 项 React DOM 交互回归、最终 app/DMG 只读核验和 28 个已有项目资料保留核对全部通过。当前开发进程保持运行，没有新建测试项目、删除、迁移或重启。真实 WebKit 视觉和管理 GUI 全流程仍未实测。此前 M5 功能及历史交付摘要见 [M5 验证记录](m5-verification.md)。
+
+## 本轮改动
+
+首页项目卡片保留名称、简介、状态和主要入口，项目技术路径和操作集中到详情弹窗。详情分为概览、空间与文件、备份维护和更多操作；AI 交接说明在同一弹窗内展开。工作区页面分为空间总览、工作区位置和回收站，避免长期并列全部高级操作。
+
+共享弹窗提供名称及说明、背景禁用、焦点约束和关闭后的焦点恢复。Esc、背景和关闭按钮遵守相同的待完成操作与草稿确认。已访问的备份及管理表单切换页签后保留内容，但恢复、结束维护、删除和永久清除确认需要重新核对。项目被其他操作移出列表时，详情仍保留已有编辑并暂停项目操作；本弹窗发起的删除任务只有最终成功才自动关闭详情。
+
+本轮只调整管理界面和验证依赖，不改变固定 SDK、业务模板、后端协议或现有项目文件。界面实现阶段已提交推送为 `bdf245a`。DOM 测试模拟原生命令返回，不连接真实本地服务，不创建、删除、导入或迁移开发项目。
+
+## DOM 回归
+
+执行 `npm run test:ui`，19 项全部通过；完整输出保存为 `.test-artifacts/ui-refresh-dom-validation.log`。脚本为 `scripts/ui-interactions-test.mjs`，使用真实 React 组件及 React DOM、现有 TypeScript 转译器和固定 `jsdom 26.1.0`。该版本的 Node 要求为 18+，没有提高工程的 Node 22.12+ 门槛。本机执行为 Node v24.14.1；安装后 npm audit 为 0 项漏洞。
+
+| 范围 | 已验证的行为 |
+| --- | --- |
+| 共享弹窗，4 项 | ARIA 名称及说明、标题焦点、背景 inert 与滚动锁恢复；Tab/Shift+Tab 循环排除隐藏/禁用控件；Esc/背景/关闭按钮共用草稿门禁；pending 禁止关闭且更新属性不抢走编辑焦点 |
+| 备份维护，4 项 | 内嵌页签保留备注和维护原因且不滚动背景；pending 状态上报并阻止重复提交；成功仅清除已提交字段，失败保留内容与错误；离开页签撤销恢复/结束维护确认 |
+| 项目概览，3 项 | 元数据及备份草稿跨页签保留，关闭需显式放弃；图标选择期间阻止关闭，卸载后迟到路径不写入；页签键盘导航和删除确认重置 |
+| 工作区与回收站，4 项 | 打开默认只读摘要，快捷入口切换后焦点转到对应页签；迟到的 A 详情不替换已选择并确认的 B；不可恢复记录禁止恢复；迁移提交后切走标签，失败仍能完成 pending 收尾并显示错误 |
+| 应用集成，4 项 | 列表外部移除仍保留详情和草稿、禁用操作；A 的迟到 AI 说明不污染 B 或写入剪贴板；删除失败保留、排队不关闭、最终成功关闭；创建期间禁止关闭、失败显示在弹窗内、重新打开仍保留名称 |
+
+定向回归发现并修复了迁移提交期间切换页签后 pending 无法结束的问题，补上备份列表成功刷新时保留未解决操作错误，以及迟到图标选择和 AI 交接响应的生命周期检查。回收项确认绑定记录身份与最新详情；不是仅凭相同显示名称执行。
+
+## 交付核验
+
+最终 TypeScript/Vite 和 `npm run build` 成功，打包日志为 `.test-artifacts/ui-refresh-build-dmg.log`。使用已有的 `scripts/m5-package-verify.mjs` 只读核对交付包，报告为 `.test-artifacts/ui-refresh-package-final/verification.json`，完整输出为 `ui-refresh-package-verify.log`。该脚本不修改签名包、不启动应用。
+
+| 项目 | 最终结果 |
+| --- | --- |
+| app | `target/release/bundle/macos/Local Projects Dev.app` |
+| DMG | `target/release/bundle/dmg/Local Projects Dev_0.0.0_aarch64.dmg` |
+| DMG 字节数 | `8075568` |
+| DMG SHA-256 | `444d2f80448da52b0c553e3d9dd1916dc581335ac9d1a15465b71dee1ccf096a` |
+| 身份与架构 | `dev.localprojects.platform.m0`、版本 `0.0.0`；桌面和 CLI 均为 `arm64`，Mach-O 最低系统 `15.0` |
+| 签名 | 源 app 与 DMG 内 app 均通过严格深度校验，ad-hoc、runtime、无 TeamIdentifier |
+| 媒体配置 | 相机/麦克风用途说明及实际 camera/audio-input 权利存在；未增加 Sandbox 或调试放宽权利 |
+| 归档一致性 | DMG 校验通过；只读挂载的 app 54 个条目与源 app 类型、内容摘要及符号链接一致，已安全卸载 |
+| 固定 SDK | 8 处副本 SHA-256 均为 `334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9` |
+| 包内说明 | 资源 README 与本轮 `docs/development.md` 逐字一致 |
+
+M4 保留包的 DMG 摘要与 49 个 app 条目仍一致。M5 保留包位于 `.test-artifacts/m5-delivered/8e76040db59d07c69c76381ce57758aae0d6114d80b8eab75ca7c13ce89d21a7/`：DMG 仍为 8065405 字节、同名目录 SHA-256，54 个 app 条目逐项等于历史 inventory，证据为 `.test-artifacts/ui-refresh-retained-m5.json`。
+
+## 真实服务与资料保留
+
+本轮保持已有开发进程 PID `32513` 及其运行现场，不终止服务、不重新加载已有项目窗口。新包内 CLI 可以读取该服务，28 个项目仍列出，工作区选择未变；28 个数据库主文件 SHA-256 全部不变，证据为 `.test-artifacts/ui-packaged-cli-readonly.json`。这是新 CLI 对现有实例的只读核对，不表示新管理窗口已启动或完成 GUI 验收。此前真实进程重启证据见 M5 记录，不计入本轮新增验收。
+
+`.test-artifacts/ui-original-projects-verification.json` 记录 28 个已有项目的源码、SDK、README、元数据、网页和附件逐文件不变。`.test-artifacts/ui-durable-verification.json` 另核对备份 42、operations 2881、回收站 6、project-state 84，以及保留旧工作区 10406 个记录条目，文件内容均不变；数字是摘要清单条目数，不是项目或备份份数。
+
+开发数据根保持 `/Users/ethan/Library/Application Support/dev.localprojects.platform.m0`；当前工作区为其下 `workspaces/current`，M4 保留源为 `workspace`。没有直接修改 settings、清理保留源或改写历史项目。
+
+## 明确保留的边界
+
+- 本轮未使用 CUA 或其他浏览器、桌面 UI 自动化；此前工具 URL 访问限制没有被绕过。DOM 回归不代表真实 WKWebView 或 Safari/Chrome 的视觉布局、滚动、窗口尺寸、键盘平台差异和原生对话框已验收。
+- jsdom 只模拟 DOM 和命令响应，不提供浏览器布局计算。代码包含弹窗高度、滚动及响应式样式，真实小屏和长内容视觉检查仍待可用的人工验收。
+- 模拟的删除、恢复和迁移仅验证管理组件状态及调用边界；真实后端生命周期能力的已有证据仍以 M3/M4/M5 记录为准。本轮不重做或扩大这些阶段的实际 GUI 结论。
+- 开发包继续使用隔离身份和 ad-hoc 签名，不含 Developer ID、公证、互联网发行或 macOS 15 实机兼容验收。

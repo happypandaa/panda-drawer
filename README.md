@@ -16,6 +16,7 @@ npm run dev
 ```sh
 npm run check
 npm test
+npm run test:ui
 npm run cli -- service status --json
 npm run cli -- env doctor --json
 npm run build:app
@@ -24,7 +25,7 @@ npm run build
 
 `env doctor` 在线时读取桌面服务实际选定的 Node/npm、路径、版本和可用性；离线时不会把终端 PATH 当作桌面环境。最后两个命令分别生成内部测试 `.app`、`.app` 与 DMG。包使用开发标识和 ad-hoc 签名，未进行 Developer ID 签名、公证或对外发布。
 
-详情见[开发环境与隔离](docs/development.md)、[M0 验证记录](docs/m0-verification.md)、[M1 验证记录](docs/m1-verification.md)、[M2 验证记录](docs/m2-verification.md)、[M3 验证记录](docs/m3-verification.md)、[M4 验证记录](docs/m4-verification.md)、[M5 验证记录](docs/m5-verification.md)、[里程碑计划](docs/development-milestones.md)、[架构约定](docs/platform-development-contract.md)。开发、检查和打包命令按顺序执行；切换源码版与打包版前先退出当前开发实例。
+详情见[开发环境与隔离](docs/development.md)、[M0 验证记录](docs/m0-verification.md)、[M1 验证记录](docs/m1-verification.md)、[M2 验证记录](docs/m2-verification.md)、[M3 验证记录](docs/m3-verification.md)、[M4 验证记录](docs/m4-verification.md)、[M5 验证记录](docs/m5-verification.md)、[管理界面改造验证](docs/ui-refresh-verification.md)、[里程碑计划](docs/development-milestones.md)、[架构约定](docs/platform-development-contract.md)。开发、检查和打包命令按顺序执行；切换源码版与打包版前先退出当前开发实例。
 
 ## 工程边界
 
@@ -51,6 +52,10 @@ M5 的元数据修改带 `expectedRevision` 冲突检查，不改项目 ID、不
 SQL、上传、构建、媒体与日志预算仍为内部测试参数；旧代产物及任务暂不自动删除，正式保留规则未定。合法的旧项目可能仍为“等待构建”，已有项目的源码、SDK、锁文件和说明不会随平台升级重写。初始应用与 skill 的实际补充验收见[验证记录](docs/starter-skill-verification.md)。
 
 从管理窗口可创建项目、复制交接说明给外部 AI、构建、查看日志和 Node 环境；已有网页产物的项目可在独立桌面窗口或浏览器打开。`⌘⇧H` 返回项目管理，同项目重复打开只聚焦。
+
+管理首页采用简洁项目卡片，详情集中在弹窗中的概览、空间与文件、备份维护和更多操作。删除入口先展示项目及回收范围确认；空间与工作区设有总览、位置和回收站页签。草稿关闭确认、键盘焦点、迟到响应和任务状态经过 React DOM 模拟回归，`npm run test:ui` 不打开浏览器或接触真实项目数据；它不替代实际 WebKit 视觉和原生交互验收。
+
+本轮界面改造的 19 项 DOM 回归与最终 app/DMG 只读核验通过，28 个已有项目及备份、回收站、恢复现场和保留旧工作区的资料摘要不变。当前开发进程继续运行，本轮未重新启动或刷新业务窗口。最新交付包摘要和验收边界见[管理界面改造记录](docs/ui-refresh-verification.md)。
 
 ```sh
 npm run cli -- project list --json
