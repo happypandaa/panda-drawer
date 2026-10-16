@@ -1,6 +1,6 @@
 # 开发环境与数据隔离
 
-状态：M5 功能与内部包已交付，164 项 Rust、12 项 SDK 及真实服务、进程重启、26 个已有项目兼容验证通过。管理界面完整 GUI 交互、真实录音拍照、Safari/Chrome 权限与原生保存框尚未实测，不以模拟测试替代。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)；M5 证据与边界见 [M5 记录](m5-verification.md)。正式产品身份尚未命名。
+状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
 
 ## 管理界面入口
 
@@ -247,4 +247,4 @@ M5 管理界面提供项目概览、基本信息与 PNG 图标、运行需求、
 
 桌面项目下载先进入平台私有暂存，再由非阻塞原生保存对话框让用户选择目标；完成文件上限为 256 MiB，这不是网络传输中途的流量上限。保存前后核对目录及文件身份，拒绝当前工作区、固定数据根和应用包内部目标。外链请求先进入原生确认，确认后交给默认浏览器，源项目窗口不导航到外部；程序发起的请求也可能进入确认，因此不宣称已识别可信鼠标点击。相机/麦克风已配置 macOS 用途说明和 hardened runtime 权限，宿主按声明与项目状态决定是否交给系统提示；浏览器既有授权可能跳过新的权限回调。
 
-本轮源码已通过 164 项 Rust（147 core、12 CLI、5 desktop）、全目标 Clippy、fmt、12 项 SDK、9 组运行提示及 15 项媒体助手模拟测试。实际包真实服务验证 7 组通过，包括 109 附件的 40/40/29 分页；进程 SIGTERM 后从包内可执行文件重启，元数据、图标、数据库、附件、SDK 和网页保留，旧 revision/cookie 拒绝，26 个原有项目兼容核对通过。此退出方式不是 GUI 正常退出验收；受已发生的计算机使用工具访问限制影响，本轮不绕过限制测试管理 GUI、真实设备、Safari/Chrome 或原生保存框。最终产物签名、架构、权限和 DMG 摘要以 [M5 验证记录](m5-verification.md) 为准。
+M5 首轮源码通过 164 项 Rust（147 core、12 CLI、5 desktop）、全目标 Clippy、fmt、12 项 SDK、9 组运行提示及 15 项媒体助手模拟测试。首轮真实服务验证 7 组通过，包括 109 附件的 40/40/29 分页；SIGTERM 进程重启后元数据、图标、数据库、附件、SDK 和网页保留，旧 revision/cookie 拒绝，26 个原有项目兼容核对通过。该首轮记录没有声称 GUI 正常退出、真实设备、Safari/Chrome 或原生保存框通过；历史包与边界保留在 [M5 原验证](m5-verification.md)。后续真实窗口补验、修复及当前交付分别记录于[清理历史 GUI 验证](history-cleanup-gui-verification.md)和 [M5 浏览器实测续记](m5-browser-real-verification.md)，不重复套用首轮测试数量。

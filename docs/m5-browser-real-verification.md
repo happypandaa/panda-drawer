@@ -2,6 +2,8 @@
 
 日期：2026-10-17（Asia/Shanghai）。本记录补充 [M5 原验收](m5-verification.md)，仅将实际操作通过的原生 WKWebView 项目窗口流程记为通过。Safari、Chrome、拒绝权限、独立系统设备释放测量及物理断网仍未完成；此前普通浏览器的工具 URL 访问限制没有通过其他工具绕过。不能据此将 M5 三端浏览器验收标成全部完成。
 
+本机实际系统为 macOS `27.0.1 (26A434)`、arm64；本轮不重用最低 macOS 15 的配置检查充当实机验收，也没有获得 Safari/Chrome 的新版本运行记录。
+
 ## 样本与原数据保护
 
 固定身份为 `dev.localprojects.platform.m0`，工作区仍为固定开发数据根下 `workspaces/current`。通过原生管理界面新建唯一样本「M5 可丢弃 · 浏览器真实验收 · 20261017」，ID 为 `prj_508739f6cc624a16a477b534cdcb8dba`，只对该样本写入测试资料。
@@ -41,8 +43,28 @@
 
 用户明确允许仅在该样本中启用麦克风和摄像头，素材仅留本机。实际出现 WKWebView 的麦克风和摄像头 Allow / Don’t Allow 提示，许可后调用真实浏览器采集 API，没有注入虚拟 getUserMedia 或模拟 MediaRecorder。
 
-- 录音停止后得到 `audio/webm; codecs=opus`、373852 字节、15120 毫秒；计划约 2 秒，授权弹窗与窗口切换造成停止延后，实际为约 15.1 秒，已向用户说明。文件以 `.webm` 保存，没有假定 MP4 或改写扩展名。
+- 录音停止后得到 `audio/webm; codecs=opus`、373852 字节、15120 毫秒；计划约 2 秒，本轮操作中停止延后，实际为约 15.1 秒，已向用户说明。未独立测量延后的具体原因。文件以 `.webm` 保存，没有假定 MP4 或改写扩展名。
 - 原生音频控件点击播放后从 0 秒推进至结尾 14 秒，见 `10-real-recording-stopped` 和 `11-real-recording-playback`。这是浏览器实际解码和播放进度，不代表测量了扬声器物理输出。
 - 摄像头许可后出现本地预览与拍摄按钮；仅点击拍下一张照片，预览转为 JPEG，停止采集按钮禁用；点击保存得到 `.jpg` 附件和业务行。为减少额外保存设备画面，照片过程仅记录 AX，见 `12-real-photo-stopped-ax.txt`、`13-real-photo-saved-ax.txt`，没有将照片放入仓库或交付文档。
 
 `real-capture-files.json` 核对总共 3 行：原文本、录音和一张照片；每行附件长度、路径、MIME 与实际文件一致，录音具有 WebM/EBML 文件头，37595 字节照片具有完整 JPEG 起止标记，另存 SHA-256。设备仅在明确点击后申请，停止/拍摄后界面退出采集模式；尚未独立测量系统设备占用或验证维护、隐藏、拒绝权限的硬件分支，不把界面提示或模拟 track.stop 断言扩张为这些结论。
+
+## 修复后的真实窗口及网络补验
+
+仅向该样本显式复制已经审查的 MediaToolsPanel 修复，固定 SDK 摘要保持不变；另加该样本专用的只读验收面板，不进入平台或新项目模板。它只在点击后查询现有业务行、取得当前会话持久附件 URL 或执行两个固定公开 GET，不采集设备、上传或建表。样本 README 和联网声明同步说明发送范围；仅声明 `network.connect` 的 `https://httpbin.org`，设备素材不传往公网。
+
+首个样本构建 `task_ce7d1e3d1f494b7fa0807e32a71bd360` 因验收面板 TS2783 重复字段失败，原欢迎页及 3 行资料保留；修正样本测试代码后，平台构建 `task_7de3eb27c5cb406b87f123b18c4a011a` 成功，严格 TypeScript/Vite 完成。此失败属于新增的样本验收工具，不是把未通过构建的内容发布为产品。`fixture-build.json`、`fixture-build-2.json` 保留两次真实任务。
+
+明确重载后，通过只读按钮从数据库读取 3 份保存资料；附件地址是当前会话的 HTTP 文件接口，不是旧页面 blob。JPEG 实际解码为 640 × 480，持久 WebM 在点击播放后推进到 14.04 / 14.04 秒并收到 ended，见 `14-persisted-assets-loaded-ax.txt`、`15-declared-connect-ax.txt`。原生控件舍入显示 14 秒与业务记录的采集墙钟 15120 毫秒分开记录，没有将两者伪作相同。
+
+在真实 WKWebView 点击已声明 `https://httpbin.org/json` 请求按钮，返回 HTTP 200、type=cors、application/json、429 个可读取字符且可解析 JSON。点击故意未声明的 `https://example.com/` 后，fetch 失败并收到 `securitypolicyviolation`：`directive=connect-src`、`blockedURI=https://example.com/`、`disposition=enforce`。这是实际浏览器执行结果，不只是检查 HTTP 头，也没有仅凭 fetch 失败臆断 CORS 原因。证据 `15-declared-connect-ax.txt`、`16-undeclared-csp-ax.txt`；另存 `public-endpoint-readiness.json` 只是先行 HTTP 可用性探测，不替代 GUI 证据。尚未实测 images/media 分组或外站故障矩阵。
+
+随后再次只对该样本进入维护：`task_59ef58d5be764e9b949ef3382859f2e0` 成功、维护 ID `maintenance_a09493b13af5448696455afc815a2f93`、新基线 `backup_0e9b658405714fb7b0a70a7ed5bd8981` 均保留。已声明的两个采集按钮和保存立即禁用，本地预览及草稿仍在；再次用原生选择器选择同一 PNG 后仍不能采集或保存，预览、下载及文字工具保持可用，准确覆盖原触发条件。证据 `17-fixed-maintenance-gate`、`18-fixed-maintenance-reselect` 的 PNG/AX。
+
+结束维护 `task_d4f576480303483a8dc30087d69051fe` 成功后，旧页仍显示需明确重载，采集与保存没有自动恢复。明确处理测试草稿并重载后，新页恢复采集按钮、停止仍禁用，没有自动申请设备或保存。见 `19-fixed-reload-gate-ax.txt`、`20-fixed-normal-after-explicit-reload-ax.txt`。`maintenance-fixed-ended.json` 核对仍恰好 3 行、3 份附件 SHA-256 不变，样本组件字节与已审查模板修复一致。本轮没有再次采集照片或录音。
+
+## 打包前保护复核
+
+`browser-before-package-protected.json` 的 14 个原保护范围全部不变，来源审计 `browser-before-package-provenance.json` 通过。新增只有唯一样本、3 份对应状态、2 个 maintenanceBaseline ZIP（690008 字节合计）、2 个基线 snapshot 操作和 10 个 final 任务。10 个任务包括 4 次 storageScan、2 次 maintenanceBegin、2 次 maintenanceEnd、2 次 build；唯一失败为上述已记录的首个样本构建，其他 9 个成功。两份 ZIP 的归档清单 owner 均为该样本。原 46 个备份继续不变，加上新样本两份基线共 48 个备份文件、7382412 字节；5 个既有回收项全部保留且可恢复。样本为 ready，busy、recoveryRequired 为 false，activeTask 为空。
+
+当前交付 app/DMG 在覆盖输出前完整保留到本轮私有 `prior-package/`：DMG 为 8282103 字节，SHA-256 `c08f7b51bf868bea3dd3795df2d6c97bf48866879508719a28980b6e8b2f3909`。源与副本的 55 个 app 条目（含根）类型、权限、长度、SHA 和链接目标一致，复制后再次扫描源确认未变。证据为 `prior-package-manifest.json`、`prior-package-summary.json`。新包构建、严格签名/DMG 校验及最终启动复核将在完成后另补记录，不把已保留的旧包标作本轮新交付。
