@@ -1,6 +1,6 @@
 # 历史副本显式清理验证记录
 
-日期：2026-10-16。实现提交 `e5d65ec` 已提交并推送。29 项 React DOM 测试、183 项 Rust 测试、全目标 Clippy、格式检查、前端构建及最终 app/DMG 只读核验通过。当前“打僵尸”项目有活跃开发，已请求先确认未保存内容已处理，再切换新后端执行实际开发残留清理；目前没有删除这些开发资料。
+日期：2026-10-16。实现提交 `e5d65ec` 已提交并推送。29 项 React DOM 测试、183 项 Rust 测试、全目标 Clippy、格式检查、前端构建及最终 app/DMG 只读核验通过。用户确认“已保存，可以重启并继续验证清理”后，已切换新后端，通过公开预览与确认流程清理 1 个旧工作区、27 个明确测试回收项的 payload 和 12 个已完成恢复的 original payload，合计 `1306928185` 逻辑字节。当前“打僵尸”项目、44 个当前备份文件、5 个保留回收项及既有恢复/迁移证据核对通过，清理后重启复核也通过。
 
 本轮范围依据用户明确授权，为迁移旧工作区、已完成恢复保留的原现场、回收站提供范围预览及确认清理入口，并处理明确不再需要的平台测试残留。精确边界见[历史副本清理补充](history-cleanup.md)。本轮没有将历史接口讨论稿整体转为已确认契约；当前工作区的历史备份删除、备份另存与自动保留期限不在本次范围。
 
@@ -8,7 +8,7 @@
 
 先前记录的 0 个活跃项目、29 项回收站不是本轮开始时的状态。本轮新审计发现 **1 个活跃项目、32 项回收站记录**。唯一活跃项目为 `prj_1bf930d58ac347979d55d62e7129de85`「打僵尸」，状态 `ready`、维护模式 `ready`、`recoveryRequired: false`、`busy: false`，源码状态为 `modified`。审计期间 `app/src/game/engine.ts` 又发生外部修改，增加 1295 字节；本轮没有写入或回滚该文件，不能宣称活跃源码从审计开始一直完全不变。
 
-固定开发身份仍为 `dev.localprojects.platform.m0`，数据根为 `/Users/ethan/Library/Application Support/dev.localprojects.platform.m0`，当前工作区为其下 `workspaces/current/`，旧迁移源为 `workspace/`。审计与实现验证期间保持原开发服务 PID `56852`，没有启动本轮新 app 或在该服务执行新清理接口。
+固定开发身份仍为 `dev.localprojects.platform.m0`，数据根为 `/Users/ethan/Library/Application Support/dev.localprojects.platform.m0`，当前工作区为其下 `workspaces/current/`，旧迁移源为 `workspace/`。审计与实现验证期间保持原开发服务 PID `56852`；获得上述保存确认后，向核对过可执行路径和实例身份的该进程发送 SIGTERM，再直接启动新 app 包内的桌面可执行文件，得到 PID `29739`、实例 `e498d195-e7b3-4baf-a18d-8889f16f8e7e`。清理后按同一方式再次重启，最终 PID `31114`、实例 `5305ebd0-03c3-4bb4-a2e4-21b48975e20e`，固定身份与当前工作区不变。过程未使用强制 SIGKILL，也不作为 GUI 菜单退出验收。
 
 私有审计目录：`.test-artifacts/cleanup-candidate-audit-2026-10-16T12-10-21-388Z/`。`protected-baseline.json` 记录 settings、当前项目树、全部当前备份和 project-state 的路径、类型、文件长度、SHA-256 与符号链接 target，不跟随链接；`current-settings.json` 保存设置原件的私有副本。审计当时的保护范围如下：
 
@@ -19,11 +19,11 @@
 | 当前工作区备份树 | 44 | 6415971 |
 | 当前 project-state | 99 | 40050 |
 
-首次复核中 settings、备份和 project-state 全部不变；当前项目树只发现上述外部修改的 `engine.ts`，报告为 `protected-initial-verification.json`，状态如实记为 `changed`。这不是清理后的验证结果。后续核对须重新采样并区分用户开发变化与本轮操作，不能恢复旧源码来制造通过结果。
+首次复核中 settings、备份和 project-state 全部不变；当前项目树只发现上述外部修改的 `engine.ts`，报告为 `protected-initial-verification.json`，状态如实记为 `changed`。这不是清理后的验证结果。实际清理前已重新采样，后文保持断言针对新基线，未恢复旧源码来制造通过结果。
 
 ## 只读审计得到的候选与保留项
 
-下表只是有来源依据的审计候选，不是已接受的服务计划，也不代表已删除。最终执行必须用新服务重新预览，重新检查任务、维护状态、保护引用、目录身份及内容指纹。仍被维护保护的原现场不能因列入审计候选就绕过门禁。
+下表记录执行前的只读审计候选。实际执行另用新服务分三次重新预览，重新检查任务、维护状态、保护引用、目录身份及内容指纹，见后文实际操作记录。原现场在测试回收项经公开清理解除其保护后才重新预览，没有因列入候选就绕过门禁。
 
 | 范围 | 审计数量 | 普通文件逻辑字节 | 归属依据 |
 | --- | ---: | ---: | --- |
@@ -33,7 +33,7 @@
 
 12 个恢复任务均已 `committed: true`、`resolved: true`，任务结果为 `succeeded/restored`，项目名为明确的 M3/M4 可丢弃验证。它们经迁移复制，当前 `original/` inode 与 journal 中原 inode 不同；审计逐项核对了当前 journal 的 SHA-256、长度和权限，以及 payload 全树的路径、类型、内容摘要、字节、链接 target 和权限，均与已提交迁移的 `target-manifest.json` 一致。证明见 `restore-migration-provenance.json`、`candidate-audit.json` 和各 `original-任务ID-inventory.json`。只允许清理经新预览确认的 `original/`，不删除该任务 journal、快照元数据、任务记录或整个 operations 目录。
 
-旧根归属迁移任务 `task_1b8462ebb4e846eba48d4e1190423516`。迁移已 published、committed、resolved，阶段为 `completed`；实际源/目标身份与 journal 相符，目标仍是当前工作区。旧根持久文件与源 manifest 完全一致，旧根 42 个备份文件、4974449 字节均在当前备份树中找到相同长度及 SHA-256 的副本。旧根内 26 个历史项目目前都能对应到可恢复的当前回收项；历史 trash 的恢复或清除结果也有当前记录。审计详情见 `retained-current-ownership-with-trash.json`。
+旧根归属迁移任务 `task_1b8462ebb4e846eba48d4e1190423516`。迁移已 published、committed、resolved，阶段为 `completed`；实际源/目标身份与 journal 相符，目标仍是当前工作区。审计时旧根持久文件与源 manifest 完全一致，旧根 42 个备份文件、4974449 字节均在当前备份树中找到相同长度及 SHA-256 的副本。旧根内 26 个历史项目当时都能对应到可恢复的当前回收项；历史 trash 的恢复或清除结果也有当前记录。审计详情见 `retained-current-ownership-with-trash.json`。
 
 旧根是完整迁移时点副本，包含「测试 1」等历史名称，不能将整根称为纯缓存。清理该范围会删除这份旧快照，也包括用户后来从当前工作区主动删除的历史内容；当前副本和保护资料仍须可访问。上述字节是互不重叠路径中的逻辑文件长度，不承诺会释放同样多的物理磁盘块，尤其不能忽略 APFS 共享块和元数据。
 
@@ -47,7 +47,7 @@
 | `trash_7c872c96d787443bbd5d26b91ca357ae` | 打僵尸 | trashed |
 | `trash_ada7eb58e2094cabb0053820104e457e` | 测试 1 | trashed |
 
-`protected-user-trash-baseline.json` 保存这 5 个回收目录的完整摘要，第一次重扫全部通过，证据为 `protected-user-trash-initial-verification.json`。当前活跃项目、全部当前备份及这些保留项继续保护。17 条维护控制记录中有 3 条 maintenance、0 条 recoveryRequired，所有已知基线/保护备份引用均存在。未发现未解决的 restore/lifecycle journal，但其余 100 个 operations 目录不因此自动变成缓存，继续保留。
+`protected-user-trash-baseline.json` 保存这 5 个回收目录的完整摘要，第一次重扫全部通过，证据为 `protected-user-trash-initial-verification.json`。当前活跃项目、全部当前备份及这些保留项继续保护。审计时 17 条维护控制记录中有 3 条 maintenance、0 条 recoveryRequired，所有已知基线/保护备份引用均存在。未发现未解决的 restore/lifecycle journal，但既有 100 个 operations 目录不因此自动变成缓存，继续保留。
 
 ## 新机制的保护与失败语义
 
@@ -85,7 +85,7 @@ Rust 测试在隔离临时数据根中实际创建目录、项目、备份、恢
 - 已接受计划在退休 marker 删除后模拟失败，通过新的显式预览、确认只清理已授权剩余范围；不自动重放、不扩大到新增路径。
 - 损坏/重复清单、错误控制列表和超出 JavaScript 安全整数范围的字节数不被静默忽略、当零或浮点舍入。
 
-这些是真实文件系统夹具行为，不是当前开发资料已被清理的证据，也不代表原生 GUI 或普通浏览器已实测。
+这些是真实文件系统夹具行为；当前开发资料的实际操作由后文单独记录，也不代表原生 GUI 或普通浏览器已实测。
 
 ## 历史交付保留与本轮交付核验
 
@@ -105,12 +105,40 @@ Rust 测试在隔离临时数据根中实际创建目录、项目、备份、恢
 | 固定 SDK | 8 处 `0.1.0` 副本 SHA-256 为 `334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9` |
 | 媒体配置 | 相机、麦克风用途及 camera/audio-input 权利保持，未增加调试放宽权利 |
 
-实际开发目录的清理仍待安全切换到新实例后执行，不把上述包核验或隔离夹具当作本机残留已删除的证据。后续应重新取得服务计划，分别记录清理旧根、明确测试回收项及解除保护后的测试原现场的实际任务与回执，并复核当前项目、44 个当前备份文件、5 个保留回收项和恢复/迁移元数据。私有 `.test-artifacts/history-cleanup-live/` 已准备限定审计 ID 的预览、执行与保护库存脚本，尚未执行删除。
+## 当前开发目录的实际清理与重启复核
+
+用户确认已保存后才执行两次进程重启。私有证据均位于 `.test-artifacts/history-cleanup-live/`，没有将应用、DMG、用户目录库存或本地证据提交 Git。`restart-1-before.json`、`restart-1-result.json`、`restart-2-before.json`、`restart-2-result.json` 记录核对后的进程身份、工作区、项目和回收项数量。
+
+第一次重启后、任何清理前重新采样 `protected-baseline.json` 的 34 个范围。此时活跃项目为 **3922 个普通文件、170651946 字节**，包括用户审计之后的开发变化；全部当前备份仍为 **44 文件、6415971 字节**，5 个保留回收项共 **710 普通文件、68038455 字节**。内容校验记录路径、类型、长度、SHA-256 和链接 target，不跟随符号链接。旧根清理期间、当前回收和 original 清理之前，另采样 `supplement-baseline.json` 的 5517 个保留条目 device/inode/mode 和完整当前 project-state，用于核对当前目录身份与非选中项目控制记录。
+
+三次计划均由实际新后端 `workspace cleanup-plan` 生成，只选择审计文件 `explicit-test-candidate-ids.json` 内相应 ID，核对完整路径、归属、保护范围及 `canClean: true`，再用 `workspace cleanup` 提交准确确认文本。没有通过任意路径删除或手工改写状态来代替公开流程。
+
+| 执行顺序 | 实际清理任务 | 完成范围 | 删除逻辑字节 | 文件及链接 / 全部条目 |
+| --- | --- | --- | ---: | ---: |
+| 1 | `task_bbb75c7b8cc04a808fb4e08d5af7e8d7` | 迁移保留旧工作区 1 个 | 1017882669 | 10406 / 13043 |
+| 2 | `task_2cd7fb03f64b46459151fffb40d40777` | 明确平台测试回收 payload 27 个 | 23602343 | 1151 / 1820 |
+| 3 | `task_a190ad121eac449b8705add887c08b95` | 已完成恢复的 original payload 12 个 | 265443173 | 2653 / 3307 |
+| 合计 | 全部 succeeded、completed | 40 个明确范围 | **1306928185** | **14210 / 18170** |
+
+各任务的 `*-preview-final.json`、`*-selection.json` 和 `*-cleanup-final.json` 保存实际计划、准确选择及结果。固定数据根 `cleanup/receipts/<任务ID>/` 保留逐项回执和 unlink 意图/完成进度。全部项均为 removed，`accountingComplete: true`、`countsAreLowerBounds: false`，无 failed 或 skipped；上述数值是逻辑长度，约 1.22 GiB，不承诺等量物理磁盘块释放。
+
+清理后及第二次重启后的复核分别记录为 `after-cleanup-final-report.json`、`after-restart-final-report.json`，内容保持校验分别为 `protected-verification.json`、`protected-verification-after-restart.json`，均通过：
+
+- 项目列表精确保留唯一「打僵尸」ID，manifest、注册目录一致，状态 ready、issues 为空，维护 ready、无 busy 或 recoveryRequired。其整树内容、SDK、数据库、附件、产物及控制记录与新采样基线相同，没有回滚旧源码。
+- 当前全部 44 个备份文件、5 个保留回收目录、固定迁移证明及原有 operations 证据内容不变。5 个保留项 ID、名称和项目归属准确，均为 trashed、restoreAvailable；27 个选中项为 purged、不可恢复，其 payload 路径实际不存在，回收元数据继续保留。
+- 旧工作区及 12 个 original 路径实际不存在；每个恢复任务其余 journal/快照证据仍在。既有 operations 条目除已确认 original 外均不变，新增 54 个路径精确归属本轮 27 个成功 child purge 任务（目录和 journal），无未知新增归属。
+- 清理后的 5517 个保留条目 device/inode/mode 均不变；重启后只有 settings.json 因启动时原子保存替换 inode，其 device、mode 和完整内容摘要相同，其余保留身份不变。当前 project-state 的 91 个变化均属于选中的测试回收 owner 的公开 purge，其他 owner 记录不变。
+- 重启后旧根仍不存在，workspace info 持久显示 cleaned 及原回执，迁移状态 ready，空间扫描不再报告 missing/unknown 的旧工作区。重提同一已消费计划及同一选择返回原 `task_bbb75c7b8cc04a808fb4e08d5af7e8d7` 和完全相同结果，没有新删除；证据 `restart-idempotent-replay.json`。
+- 重启后的新预览只剩 5 个保留回收项，无已删旧根或 original 候选；只预览，没有提交它们，证据 `after-restart-preview.json`。该预览及幂等重提之后再核对全部 34 个保护范围，`protected-verification-after-final-preview.json` 仍全部通过。
+
+空间扫描保留原有“普通文件逻辑长度”口径：保留的当前项目和回收副本内 `node_modules/.bin` 链接不跟随、不计字节，报告 `symlink_not_counted`，所以 workspace 与 knownLocalTotal 的 complete 仍为 false。复核逐项证实这些链接已在保护基线中，未出现其他扫描异常；不能将该结果写成全量物理占用已精确测完。第二次重启后的记录时点，当前工作区普通文件合计 `275641925` 字节，后续预览/任务记录会继续增加少量元数据。
+
+实际执行未发现需修改实现的错误。初版补充核对脚本过度断言空间扫描必须 complete，以及重启后 settings inode 必须相同；检查实际原因后，分别按既有链接口径和相同内容的原子设置保存记录并核对，没有变更业务数据或关闭后端保护。最终再次核对 app 严格深度签名及 DMG SHA-256，仍与上表一致。本次后续仅改仓库 README 和本验证记录，不改已打包资源。
 
 ## 验证限制
 
-- 当前开发服务仍为原 PID `56852`，未启动本轮新 app、未在原服务运行新清理模块、未清理开发残留。新 CLI 对既有服务的只读查询不能证明新后端已上线。
-- 活跃源码有外部持续编辑；未改写或回滚该变化，不能用旧 0/29 状态或审计起点的整树完全不变断言掩盖它。
+- 新 app 已实际启动，公开服务已执行上述清理及重启复核；进程使用已批准的 SIGTERM 和直接启动包内可执行文件，不声称已验证菜单退出、窗口恢复或原生按钮操作。
+- 审计阶段源码有外部编辑，未改写或回滚该变化；实际清理前重新采样，清理及重启后的整树内容保持断言仅针对这一新基线。
 - 未执行真实管理 GUI 点击或浏览器自动化，也没有绕过此前工具 URL 访问限制。jsdom 不证明 WebKit 布局、滚动、窗口尺寸、原生确认、系统权限或 Safari/Chrome 兼容。
-- 隔离夹具中的删除、迁移与重启测试不替代当前开发数据的实际操作证据。实际执行必须重新预览，并记录最终状态；部分失败不能声称完整可恢复或保证释放同等物理磁盘空间。
+- 隔离夹具不替代实际操作证据；本轮实际范围、任务及最终状态另有上述记录，不推及未选择内容、未确认的备份删除或物理磁盘块释放量。
 - 文件系统核对要求外部工具停止写入所选历史目录，不承诺隔离同一 macOS 用户的恶意并发篡改。开发包仍为固定开发身份和 ad-hoc 签名，不据此声称 Developer ID、公证或互联网发行通过。
