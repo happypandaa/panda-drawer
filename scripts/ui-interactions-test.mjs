@@ -409,6 +409,110 @@ async function acknowledgeCleanup() {
   await click(cleanupConfirmation().querySelector('input[type="checkbox"]'));
 }
 
+test('Cleanup controls identify same-name projects and copy or submit only the associated scope', async () => {
+  await setup(); const copied = []; const submissions = [];
+  const items = ['kept', 'disposable'].map((suffix) => ({ id: `trash_${suffix}`, kind: 'trash', label: '回收站完整项目', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/workspace/.platform/trash/trash_${suffix}`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));
+  const plan = cleanupPlan({ items });
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    if (command === 'workspace_cleanup_preview') return cleanupPreview(plan);
+    assert.equal(command, 'workspace_cleanup'); submissions.push(args.input);
+    return { taskId: 'task_cleanup_named_scope', type: 'workspaceCleanup', projectId: null, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
+  };
+  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
+  const rows = [...document.querySelectorAll('.workspace-cleanup-item')];
+  const names = rows.map((row) => row.querySelector('input').getAttribute('aria-label'));
+  assert.equal(new Set(names).size, items.length);
+  for (const [index, row] of rows.entries()) {
+    const checkbox = row.querySelector('input'); const copy = row.querySelector('button');
+    for (const control of [checkbox, copy]) {
+      const name = control.getAttribute('aria-label');
+      assert.ok(name.includes('回收站项目')); assert.ok(name.includes(items[index].name));
+      assert.ok(name.includes(items[index].projectId)); assert.ok(name.includes(items[index].path));
+    }
+    await click(copy);
+  }
+  assert.deepEqual(copied, items.map((item) => item.path));
+  await click(rows[1].querySelector('input')); await acknowledgeCleanup();
+  assert.equal(rows[0].querySelector('input').checked, false);
+  await click(buttonNamed('确认永久清理所选内容'));
+  assert.deepEqual(submissions, [{ planId: plan.planId, itemIds: ['trash_disposable'], confirmation: plan.confirmationText }]);
+});
+
+test('Cleanup review reveals its heading, keeps typing focus and restores the review action on cancel', async () => {
+  await setup(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = function (options) { scrolled.push({ element: this, options }); };
+  try {
+    globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan()); };
+    const props = cleanupProps();
+    await render(h(WorkspaceCleanupPanel, props)); await click(buttonNamed('扫描可清理范围'));
+    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0);
+    await click(document.querySelector('.workspace-cleanup-item input'));
+    const review = buttonNamed('核对所选清理范围'); review.focus(); await click(review);
+    const heading = cleanupConfirmation().querySelector('h3');
+    assert.equal(document.activeElement, heading); assert.equal(scrolled.at(-1).element, heading);
+    assert.equal(scrolled.at(-1).options.block, 'start');
+    const input = cleanupConfirmation().querySelector('input:not([type="checkbox"])'); input.focus();
+    await inputValue(input, '永久清理所选内容'); await click(cleanupConfirmation().querySelector('input[type="checkbox"]'));
+    await render(h(WorkspaceCleanupPanel, { ...props }));
+    assert.equal(document.activeElement, input); assert.equal(scrolled.length, 1);
+    buttonNamed('取消，继续保留').focus(); await click(buttonNamed('取消，继续保留'));
+    assert.equal(cleanupConfirmation(), null); assert.equal(document.activeElement, review);
+    assert.equal(scrolled.at(-1).element, review); assert.equal(scrolled.length, 2);
+    await click(review);
+    assert.equal(document.activeElement, cleanupConfirmation().querySelector('h3'));
+    // Explicitly reviewing again should reveal the scope anew.
+    review.focus(); await click(review);
+    assert.equal(document.activeElement, cleanupConfirmation().querySelector('h3')); assert.equal(scrolled.length, 4);
+  } finally { HTMLElement.prototype.scrollIntoView = scrollIntoView; }
+});
+
+test('Cleanup acceptance and its first final transition reveal results without ordinary updates stealing focus', async () => {
+  await setup(); const accepted = deferred(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this); };
+  try {
+    const oldTask = { taskId: 'task_cleanup_historical', type: 'workspaceCleanup', projectId: null, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
+    let props = cleanupProps({ cleanupTask: oldTask });
+    globalThis.__UI_TEST_INVOKE__ = async (command) => {
+      if (command === 'workspace_cleanup_preview') return cleanupPreview(cleanupPlan());
+      assert.equal(command, 'workspace_cleanup'); return accepted.promise;
+    };
+    await render(h(WorkspaceCleanupPanel, props));
+    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0, 'Historical results must not take focus on entry');
+    await click(buttonNamed('扫描可清理范围')); await click(document.querySelector('.workspace-cleanup-item input')); await acknowledgeCleanup();
+    await click(buttonNamed('确认永久清理所选内容')); document.getElementById('trigger').focus();
+    const running = { ...oldTask, taskId: 'task_cleanup_new', final: false, status: 'queued', phase: 'queued', result: null };
+    await act(async () => accepted.resolve(running));
+    const resultHeading = document.querySelector('.workspace-cleanup-result h3');
+    assert.equal(document.activeElement, resultHeading); assert.equal(scrolled.at(-1), resultHeading);
+    const acceptedScrollCount = scrolled.length;
+    document.getElementById('trigger').focus();
+    props = { ...props, cleanupTask: { ...running, status: 'running', phase: 'cleaning-trash' } };
+    await render(h(WorkspaceCleanupPanel, props));
+    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, acceptedScrollCount);
+    const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
+    props = { ...props, cleanupTask: final }; await render(h(WorkspaceCleanupPanel, props));
+    assert.equal(document.activeElement, resultHeading); assert.equal(scrolled.length, acceptedScrollCount + 1);
+    document.getElementById('trigger').focus(); await render(h(WorkspaceCleanupPanel, { ...props, cleanupTask: { ...final } }));
+    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, acceptedScrollCount + 1, 'Duplicate final polls must not take focus again');
+  } finally { HTMLElement.prototype.scrollIntoView = scrollIntoView; }
+});
+
+test('Cleanup completion in a hidden tab does not move focus then or when returning to the tab', async () => {
+  await setup(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this); };
+  try {
+    const running = { taskId: 'task_cleanup_hidden', type: 'workspaceCleanup', projectId: null, final: false, status: 'running', phase: 'cleaning-trash', result: null };
+    const props = cleanupProps({ active: false, cleanupTask: running });
+    await render(h(WorkspaceCleanupPanel, props));
+    const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
+    await render(h(WorkspaceCleanupPanel, { ...props, cleanupTask: final }));
+    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0);
+    await render(h(WorkspaceCleanupPanel, { ...props, active: true, cleanupTask: final }));
+    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0);
+  } finally { HTMLElement.prototype.scrollIntoView = scrollIntoView; }
+});
+
 test('Historical cleanup is read-only until selected IDs and the exact irreversible scope are confirmed', async () => {
   await setup(); const plan = cleanupPlan(); const accepted = deferred(); const requests = []; let refreshes = 0;
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {

@@ -56,6 +56,13 @@ function countText(value: ByteCount | undefined) {
   if (value == null) return '文件数尚未统计';
   try { const count = typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64); return count < 0n ? '文件数未知' : `${count} 个文件`; } catch { return '文件数未知'; }
 }
+function itemDescription(item: CleanupItem) {
+  return [kinds[item.kind], item.name || item.label, item.projectId ? `项目 ${item.projectId}` : null, item.path].filter(Boolean).join('，');
+}
+function focusAndReveal(element: HTMLElement | null) {
+  element?.focus({ preventScroll: true });
+  element?.scrollIntoView({ block: 'start' });
+}
 
 export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
@@ -71,9 +78,15 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
   const [notice, setNotice] = useState('');
+  const [focusRequest, setFocusRequest] = useState<{ target: 'review' | 'result'; taskId?: string } | null>(null);
   const alive = useRef(true);
   const operation = useRef(false);
   const finalTasks = useRef(new Set<string>());
+  const runningCleanupTasks = useRef(new Set<string>());
+  const reviewButton = useRef<HTMLButtonElement>(null);
+  const reviewHeading = useRef<HTMLHeadingElement>(null);
+  const resultHeading = useRef<HTMLHeadingElement>(null);
+  const handledFocusRequest = useRef(focusRequest);
   const callbacks = useRef(props); callbacks.current = props;
   const id = useId();
   const clearConfirmation = useCallback(() => { setReviewed(null); setTypedConfirmation(''); setAcknowledged(false); }, []);
@@ -81,7 +94,10 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
     if (report) callbacks.current.onTask(task);
     if (!alive.current) return;
     if (task.type === 'workspaceCleanupPreview') setPreviewTask(task);
-    else if (task.type === 'workspaceCleanup') setCleanupTask(task);
+    else if (task.type === 'workspaceCleanup') {
+      setCleanupTask(task);
+      if (!task.final) runningCleanupTasks.current.add(task.taskId);
+    }
     else return;
     setPollError('');
     if (!task.final || finalTasks.current.has(task.taskId)) return;
@@ -93,6 +109,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       }
     } else {
       clearConfirmation();
+      if (runningCleanupTasks.current.delete(task.taskId)) setFocusRequest({ target: 'result', taskId: task.taskId });
       void callbacks.current.onRefresh().catch((cause) => { if (alive.current) setError(`清理任务已结束，但重新读取空间失败：${messageFrom(cause)}`); });
     }
   }, [clearConfirmation]);
@@ -126,6 +143,16 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   const selectedItems = plan?.items.filter((item) => selected.includes(item.id)) ?? [];
   const fingerprint = JSON.stringify([plan, [...selected].sort(), props.workspaceRoot, props.revision]);
   const confirmationCurrent = reviewed === fingerprint && selectedItems.length > 0 && selectedItems.every((item) => item.canClean && !item.blockedReasons.length);
+  useEffect(() => {
+    if (!focusRequest || handledFocusRequest.current === focusRequest) return;
+    // Consume hidden-tab requests too, so returning to a tab never steals focus.
+    handledFocusRequest.current = focusRequest;
+    if (!props.active) return;
+    if (focusRequest.target === 'review' && confirmationCurrent) focusAndReveal(reviewHeading.current);
+    else if (focusRequest.target === 'result' && focusRequest.taskId === cleanupTask?.taskId) focusAndReveal(resultHeading.current);
+  }, [focusRequest, props.active, confirmationCurrent, cleanupTask?.taskId]);
+  function beginReview() { clearConfirmation(); setReviewed(fingerprint); setFocusRequest({ target: 'review' }); }
+  function cancelReview() { clearConfirmation(); focusAndReveal(reviewButton.current); }
   async function preview() {
     if (blocked || operation.current) return;
     operation.current = true; setPending('preview'); setError(''); setPollError(''); setNotice(''); setPlan(null); setSelected([]); clearConfirmation();
@@ -138,7 +165,11 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
     operation.current = true; setPending('cleanup'); setConsumed(true); setError(''); setPollError(''); setNotice(''); callbacks.current.onPendingChange?.(true);
     const input = { planId: plan.planId, itemIds: selectedItems.map((item) => item.id), confirmation: typedConfirmation };
     clearConfirmation();
-    try { track(await invoke<TaskRecord>('workspace_cleanup', { input })); }
+    try {
+      const task = await invoke<TaskRecord>('workspace_cleanup', { input });
+      track(task);
+      if (alive.current && task.type === 'workspaceCleanup') setFocusRequest({ target: 'result', taskId: task.taskId });
+    }
     catch (cause) { if (alive.current) setError(`${messageFrom(cause)}。写入结果可能需要核对；请重新扫描，不会自动重复提交。`); }
     finally { operation.current = false; callbacks.current.onPendingChange?.(false); if (alive.current) setPending(null); }
   }
@@ -151,15 +182,15 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       <div className="workspace-cleanup-plan"><span>本次扫描工作区</span><code>{plan.workspaceRoot}</code><p>确认有效至 {timeText(plan.expiresAt)} · 计划 {plan.planId}</p><p>以下大小为普通文件的逻辑字节，不等于实际可释放的物理磁盘空间。</p>{plan.items.some((item) => item.kind === 'retainedWorkspace') && <p>迁移保留目录是迁移时点的完整副本，可能包含后来已删除的项目及当时的备份副本。选择清理会删除该目录中的全部文件；当前工作区的历史备份保留。</p>}</div>
       {(expired || wrongWorkspace || consumed) && <p className="workspace-operation-status" role="status">{wrongWorkspace ? '工作区已改变，请重新扫描。' : consumed ? '本次范围已经提交过，请等待最终结果后重新扫描核对，不能直接重复提交。' : '本次范围已过期，请重新扫描后再选择和确认。'}</p>}
       {plan.items.length ? <div className="workspace-cleanup-items" aria-label="历史清理候选范围">{plan.items.map((item) => <article className={`workspace-cleanup-item${item.canClean && !item.blockedReasons.length ? '' : ' is-blocked'}`} key={item.id}>
-        <div className="workspace-cleanup-item-heading"><label className="checkbox-label"><input type="checkbox" checked={selected.includes(item.id)} disabled={planBlocked || !item.canClean || Boolean(item.blockedReasons.length)} onChange={(event) => { setSelected((current) => event.target.checked ? [...current.filter((value) => value !== item.id), item.id] : current.filter((value) => value !== item.id)); clearConfirmation(); }} /><span><strong>{item.label || item.name || kinds[item.kind]}</strong><small>{kinds[item.kind]}</small></span></label><strong title={exactBytes(item.totalBytes)}>{bytesText(item.totalBytes)}</strong></div>
-        <code className="workspace-cleanup-path">{item.path}</code><div className="workspace-cleanup-item-meta"><span>{countText(item.fileCount)}</span>{item.projectId && <span>项目 ID：<code>{item.projectId}</code></span>}{item.name && <span>项目名称：{item.name}</span>}<button className="text-button" onClick={() => void copyPath(item.path)}><Copy size={13} />复制目录</button></div>
+        <div className="workspace-cleanup-item-heading"><label className="checkbox-label"><input type="checkbox" aria-label={`选择${itemDescription(item)}`} checked={selected.includes(item.id)} disabled={planBlocked || !item.canClean || Boolean(item.blockedReasons.length)} onChange={(event) => { setSelected((current) => event.target.checked ? [...current.filter((value) => value !== item.id), item.id] : current.filter((value) => value !== item.id)); clearConfirmation(); }} /><span><strong>{item.label || item.name || kinds[item.kind]}</strong><small>{kinds[item.kind]}</small></span></label><strong title={exactBytes(item.totalBytes)}>{bytesText(item.totalBytes)}</strong></div>
+        <code className="workspace-cleanup-path">{item.path}</code><div className="workspace-cleanup-item-meta"><span>{countText(item.fileCount)}</span>{item.projectId && <span>项目 ID：<code>{item.projectId}</code></span>}{item.name && <span>项目名称：{item.name}</span>}<button className="text-button" aria-label={`复制${itemDescription(item)}的目录`} onClick={() => void copyPath(item.path)}><Copy size={13} />复制目录</button></div>
         {(!item.canClean || item.blockedReasons.length > 0) && <div className="workspace-cleanup-blocked"><strong>暂不可清理</strong>{item.blockedReasons.length ? item.blockedReasons.map((reason, index) => <p key={index}>{reason}</p>) : <p>此条目未获得清理许可，请检查关联任务与恢复状态。</p>}</div>}
       </article>)}</div> : <div className="workspace-empty-state"><Trash2 size={26} /><p>本次没有发现可列出的历史清理范围</p><span>无需为了让空间数字归零而删除平台程序、备份或当前项目。</span></div>}
       <div className="workspace-cleanup-preserved"><h3>本次始终保留</h3>{plan.preserved.length ? <ul>{plan.preserved.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>扫描未列出可删除的其他位置。范围之外的文件保持原样。</p>}</div>
-      <div className="workspace-cleanup-review-action"><p>已选择 {selectedItems.length} 项。每项均会删除显示目录中的完整历史副本。</p><button className="danger-button" disabled={planBlocked || !selectedItems.length || selectedItems.some((item) => !item.canClean || item.blockedReasons.length)} onClick={() => { clearConfirmation(); setReviewed(fingerprint); }}><ArrowRight size={14} />核对所选清理范围</button></div>
-      {confirmationCurrent && <div className="operation-confirmation workspace-cleanup-confirmation" aria-label="历史清理范围确认"><h3>永久清理以下 {selectedItems.length} 项？</h3><p>所选目录会直接永久删除。其中全部文件，包括源码、数据库、附件、网页、说明和历史副本，都将无法恢复。</p><ul>{selectedItems.map((item) => <li key={item.id}><strong>{item.label}</strong><code>{item.path}</code><span>{bytesText(item.totalBytes)}{item.projectId ? ` · 项目 ${item.projectId}` : ''}</span></li>)}</ul><p>当前工作区：<code>{plan.workspaceRoot}</code>。上方“本次始终保留”范围不会删除。</p><label htmlFor={`${id}-confirmation`}>输入“{plan.confirmationText}”确认<input id={`${id}-confirmation`} value={typedConfirmation} disabled={planBlocked} autoComplete="off" onChange={(event) => setTypedConfirmation(event.target.value)} /></label><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={planBlocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对全部目录及保留内容，并已停止外部 AI、编辑器和工具使用或写入这些历史目录</label><div className="confirmation-actions"><button className="danger-button" disabled={planBlocked || typedConfirmation !== plan.confirmationText || !acknowledged} onClick={() => void submit()}>{pending === 'cleanup' ? '正在提交…' : '确认永久清理所选内容'}</button><button className="refresh-button" disabled={pending === 'cleanup' || cleanupRunning} onClick={clearConfirmation}>取消，继续保留</button></div></div>}
+      <div className="workspace-cleanup-review-action"><p>已选择 {selectedItems.length} 项。每项均会删除显示目录中的完整历史副本。</p><button ref={reviewButton} className="danger-button" disabled={planBlocked || !selectedItems.length || selectedItems.some((item) => !item.canClean || item.blockedReasons.length)} onClick={beginReview}><ArrowRight size={14} />核对所选清理范围</button></div>
+      {confirmationCurrent && <div className="operation-confirmation workspace-cleanup-confirmation" aria-label="历史清理范围确认"><h3 ref={reviewHeading} tabIndex={-1}>永久清理以下 {selectedItems.length} 项？</h3><p>所选目录会直接永久删除。其中全部文件，包括源码、数据库、附件、网页、说明和历史副本，都将无法恢复。</p><ul>{selectedItems.map((item) => <li key={item.id}><strong>{item.label}</strong><code>{item.path}</code><span>{bytesText(item.totalBytes)}{item.projectId ? ` · 项目 ${item.projectId}` : ''}</span></li>)}</ul><p>当前工作区：<code>{plan.workspaceRoot}</code>。上方“本次始终保留”范围不会删除。</p><label htmlFor={`${id}-confirmation`}>输入“{plan.confirmationText}”确认<input id={`${id}-confirmation`} value={typedConfirmation} disabled={planBlocked} autoComplete="off" onChange={(event) => setTypedConfirmation(event.target.value)} /></label><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={planBlocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对全部目录及保留内容，并已停止外部 AI、编辑器和工具使用或写入这些历史目录</label><div className="confirmation-actions"><button className="danger-button" disabled={planBlocked || typedConfirmation !== plan.confirmationText || !acknowledged} onClick={() => void submit()}>{pending === 'cleanup' ? '正在提交…' : '确认永久清理所选内容'}</button><button className="refresh-button" disabled={pending === 'cleanup' || cleanupRunning} onClick={cancelReview}>取消，继续保留</button></div></div>}
     </>}
-    {cleanupTask && <div className="workspace-cleanup-result"><h3>清理任务与实际结果</h3><ProjectTask task={cleanupTask} /><CleanupResult task={cleanupTask} /></div>}
+    {cleanupTask && <div className="workspace-cleanup-result"><h3 ref={resultHeading} tabIndex={-1}>清理任务与实际结果</h3><ProjectTask task={cleanupTask} /><CleanupResult task={cleanupTask} /></div>}
     {(pending === 'cleanup' || cleanupRunning) && <p className="workspace-operation-status" role="status">清理任务会持续执行，切换页签不会取消。请等待最终结果；迁移和回收站写操作暂时停用。</p>}
     {(error || pollError) && <p className="task-error" role="alert">{error || pollError}</p>}{notice && <p className="workspace-inline-notice" role="status">{notice}</p>}
   </section>;

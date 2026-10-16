@@ -654,6 +654,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .retained-root-record details > summary { cursor: pointer; color: #8a967c; font-size: 11px; }
 .retained-root-receipt { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e5e8df; }
 .retained-root-receipt > span { display: block; font-size: 11px; color: #8a987d; margin-bottom: 6px; }
+.retained-root-receipt > code { display: block; overflow-wrap: anywhere; user-select: text; }
 
 .workspace-cleanup-card > .section-heading { align-items: flex-start; gap: 24px; }
 .workspace-cleanup-card > .section-heading p { margin: 10px 0 0; font-size: 13px; line-height: 1.8; color: #78886a; }
