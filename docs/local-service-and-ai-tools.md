@@ -1,11 +1,12 @@
 # 本地服务与 AI 工具接口
 
-状态：v0.14，本地服务及配套接口已确认；M1 至 M3 已有内部验证，M4 生命周期与迁移 CLI/API 已验证，GUI 全流程未完成，完整首版仍待后续阶段  
+状态：v0.15，本地服务及配套接口已确认；M1 至 M5 已有内部实现与 CLI/API 验证，M5 重启及兼容通过，GUI/设备/浏览器完整验收与发行仍待完成
+
 更新日期：2026-10-16
 
 本文细化[平台开发约定](platform-development-contract.md)中的运行服务、数据库访问、浏览器连接和外部 AI 工具。已确认的基础为 Tauri 2 + Rust + SQLite；Node 使用系统安装版本，最低 22.12.0，推荐 24 LTS。
 
-以下方案已确认，作为第一版实现依据。当前开发接口包括 M1 项目、SQL、会话与附件、M2 SDK、模板、构建与任务、M3 备份维护，以及 M4 项目导入导出、复制、回收站和工作区迁移；实际命令见[开发说明](development.md)，M4 包、真实迁移结果与 GUI 验证边界见 [M4 记录](m4-verification.md)。完整空间、基本信息与发行仍待后续阶段，不能按整份契约理解为已经上线。`platform` 是正式命令名称占位符；开发 CLI 为 `local-projects-dev`。示例中的项目 ID、端口和路径为说明性取值。项目目录、SDK 方法和数据类型沿用主文档；仍需补齐的字段、管理入口及验证见[技术决策与实施清单](remaining-technical-decisions.md)。
+以下方案已确认，作为第一版实现依据。当前开发接口包括 M1 项目、SQL、会话与附件、M2 SDK、模板、构建与任务、M3 备份维护，以及 M4 项目导入导出、复制、回收站和工作区迁移；实际命令见[开发说明](development.md)，M4 包、真实迁移结果与 GUI 验证边界见 [M4 记录](m4-verification.md)。M5 增加基本信息、空间与附件管理、运行声明及模板浏览器助手，见 [M5 记录](m5-verification.md)；GUI/真实设备、少量规划接口与发行仍待后续验收，不能按整份契约理解为已经上线。`platform` 是正式命令名称占位符；开发 CLI 为 `local-projects-dev`。示例中的项目 ID、端口和路径为说明性取值。项目目录、SDK 方法和数据类型沿用主文档；仍需补齐的字段、管理入口及验证见[技术决策与实施清单](remaining-technical-decisions.md)。
 
 ## 1 已确认方案
 
@@ -175,6 +176,7 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `GET /api/v1/projects` | 列出项目基本信息、状态与带时效的空间摘要 | 管理凭据 |
 | `POST /api/v1/projects` | 创建项目目录、模板和空数据库 | 管理凭据 |
 | `GET /api/v1/projects/{id}` | 读取项目基本信息与 revision、状态、路径和文档入口 | 管理凭据 |
+| `GET /api/v1/projects/{id}/metadata` | 读取基本信息、图标诊断及 metadataRevision | 管理凭据 |
 | `PATCH /api/v1/projects/{id}/metadata` | 带期望 revision 修改名称、简介或图标引用 | 管理凭据 |
 | `GET /api/v1/projects/{id}/db/schema` | 查看实际 schema | 管理凭据 |
 | `POST /api/v1/projects/{id}/db/execute` | 执行一条 SQL | 管理凭据 |
@@ -208,7 +210,7 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `POST /api/v1/projects/{id}/storage/cleanups` | 清理明确白名单类别，返回任务 ID | 管理凭据 |
 | `GET /api/v1/workspace/storage` | 平台程序、工作区与已知其他本机占用，按互斥范围统计 | 管理凭据 |
 
-M2 已实现上表中的环境、项目列表/创建/详情、SQL、构建、交接、launch、refresh、任务及日志；M3 增加备份和维护；M4 增加 exports、imports、copies、trash 和 workspace 迁移。M1 的 `/healthz` 和 `/api/v1/runtime` 保持兼容。详情目前含真实清单、目录、状态、文档代次、`buildInfo` 和维护信息，尚不提供后续的 metadata revision、完整概览或空间扫描结果。其他表项仍是后续实现契约，未实现路由返回明确错误。实际验证见 [M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。
+M2 已实现上表中的环境、项目列表/创建/详情、SQL、构建、交接、launch、refresh、任务及日志；M3 增加备份和维护；M4 增加 exports、imports、copies、trash 和 workspace 迁移。M5 增加 metadata GET/PATCH、storage 与 workspace/storage。M1 的 `/healthz` 和 `/api/v1/runtime` 保持兼容。详情提供真实清单、目录、状态、文档代次、`buildInfo`、维护、metadata revision 和图标诊断，空间接口提供扫描结果及其完整性。实际验证见 [M3 记录](m3-verification.md)、[M4 记录](m4-verification.md)及 [M5 记录](m5-verification.md)。
 
 `PUT /api/v1/environment/node` 的输入为 `{"nodePath":"/绝对路径/node"}`，或以 `null` 恢复自动探测；检查有效后保存本机设置。环境结果含 `ready`、`node`／`npm`（各含实际 `path` 与 `version`）、`selection`（`explicit`／`detected`）、`configuredNodePath`、`supportedNodeRange`、`recommendedNode`、`downloadUrl` 和 `issues`。不将本机路径写进可移植清单，不安装 Node。
 
@@ -291,7 +293,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 
 ### 8.2 第一版命令
 
-下表同时保留后续阶段的已确认命令设计；M2 当前实现列表在表后单独列出。
+下表保留首版命令设计；当前开发版实际范围在表后单独列出，未实现入口不返回占位成功。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -303,6 +305,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform project list --json` | 列出项目 |
 | `platform project create --input request.json --json` | 创建项目，返回目录和文档入口 |
 | `platform project info --project ID --json` | 查看项目清单、基本信息 revision、状态与空间摘要 |
+| `platform project metadata get --project ID --json` | 读取基本信息、图标诊断与 metadataRevision |
 | `platform project metadata set --project ID --input request.json --json` | 修改名称、简介或已有本地图标引用，使用 expectedRevision |
 | `platform project url --project ID --json` | 返回短期可进入的 launchUrl、有效期和干净的 url |
 | `platform project build --project ID --json` | 提交构建任务 |
@@ -337,7 +340,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform storage cleanup --project ID --input request.json --json` | 清理明确类别，保护素材及恢复现场 |
 | `platform workspace storage --json` | 查看平台程序、工作区与已知其他本机占用 |
 
-M2 当前可调用命令为 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait/logs`。其余命令仍待对应里程碑，当前不返回占位成功。
+当前可调用命令包括 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait/logs`；M3 的 `backup create/list/info/restore`、`maintenance status/begin/end`；M4 的 `project export/import/copy/delete`、`trash list/info/restore/purge`、`workspace info/migrate`；M5 的 `project metadata get/set`、`storage info/scan/files/cleanup` 和 `workspace storage`。`service start`、历史备份另存/删除及旧根清理没有因此加入。
 
 对既有项目的操作显式指定项目 ID，不依赖当前目录猜测目标。创建项目请求至少包含 `name`，可包含 `description`；平台生成稳定 ID 和标准目录。恢复请求必须包含明确的 `backupId`，不能默认恢复某个未知备份。
 
@@ -432,7 +435,7 @@ queued → running → succeeded
 
 构建是具有本机用户权限的普通代码执行，不能作为不可信脚本沙盒。项目必须遵守临时输出契约，禁止修改业务数据和启动后台或脱离进程组的子进程；平台结束普通构建进程组。当前全局并发、等待队列、超时和日志预算是内部测试参数，见[开发说明](development.md)。各代产物、任务及发布现场暂不按期限自动删除；正式保留规则仍待确认。
 
-### 9.2 备份与维护任务（后续阶段）
+### 9.2 备份与维护任务（M3 已实现）
 
 备份、恢复、进入维护及结束维护复用同一任务状态与等待协议，用 `type`、`phase` 和结果区分操作。进入任务的内部基线备份属于同一任务阶段，不再次申请一个冲突的外部任务。AI 只有在进入任务成功、`readyForChanges` 为真且有可用基线时才开始修改。
 
@@ -441,7 +444,7 @@ queued → running → succeeded
 ## 10 一次完整的 AI 操作流程
 
 1. AI 从平台复制出的说明获得 CLI 路径、项目 ID 和 README 位置。
-2. 调用 `service status`；当前 M2 未运行时先打开桌面应用，等待服务就绪。`service start` 的自动启动入口留待后续实现。
+2. 调用 `service status`；服务未运行时先打开桌面应用，等待服务就绪。`service start` 的自动启动入口留待后续实现。
 3. 调用 `project info`、`db schema`，阅读源码和项目文档。
 4. 普通修改直接编辑工程文件；可能使旧页面失效的改表或大批量修正先进入维护，等基线成功后再修改。需要操作数据时调用 `db execute` 或 `db transaction`，维护中携带维护 ID，表结构说明同步更新。
 5. 调用 `env doctor` 确认构建环境，再调用 `project build` 获得任务 ID。
@@ -455,7 +458,7 @@ queued → running → succeeded
 
 ## 11 后续 MCP 接入
 
-第一版以 CLI 作为外部 AI 的平台操作入口；M2 当前支持范围以第 8.2 节的实施列表为准。后续可以增加原生程序的 `mcp serve` 模式，以本地 stdio 连接 AI 客户端，再转发至同一平台服务。
+第一版以 CLI 作为外部 AI 的平台操作入口；当前支持范围以第 8.2 节的实施列表为准。后续可以增加原生程序的 `mcp serve` 模式，以本地 stdio 连接 AI 客户端，再转发至同一平台服务。
 
 MCP 适配器复用项目、SQL、构建和任务接口，不直接打开另一套数据库，不启动另一套项目运行服务，也不依赖额外 Node 运行时。该扩展不改变项目源码、数据库或 README 的基本结构。
 

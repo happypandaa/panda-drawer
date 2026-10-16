@@ -1,11 +1,12 @@
 # 本地应用平台开发约定
 
-状态：v0.19，首版架构与配套契约已确认；M0 至 M3 已有内部验证记录，M4 已实现并通过 CLI/API、迁移及进程重启验证，GUI 全流程未完成，完整首版尚未实现  
+状态：v0.20，首版架构与配套契约已确认；M0 至 M5 功能已有内部实现与验证记录，M5 真实服务、重启及兼容通过，GUI/媒体设备/浏览器全流程仍待实测，完整发行尚未完成
+
 更新日期：2026-10-16
 
 本约定面向平台开发者，以及使用平台创建和维护项目的外部 AI。平台安装在用户电脑上，负责运行项目网页、保存数据库和文件；外部 AI 编辑各项目的源码，调用构建工具，并通过浏览器验证结果。
 
-本文定义完整首版目录、接口和流程。当前已实现 [M0 开发骨架](m0-verification.md)和 [M1 项目与数据核心](m1-verification.md)：项目创建、每项目 SQLite、附件、会话、CLI 与桌面／浏览器访问。M2 固定 SDK、模板、Node 检测与构建见 [M2 记录](m2-verification.md)，M3 完整备份维护恢复见 [M3 记录](m3-verification.md)。M4 导入导出、复制、回收站和工作区迁移的本轮实施与验证见 [M4 记录](m4-verification.md)。完整管理、历史清理讨论稿和发行仍有后续工作，不能按全文理解为已可调用。`platform` 为正式命令名称占位符；临时开发 CLI 为 `local-projects-dev`，正式品牌与发行身份尚未确定。
+本文定义完整首版目录、接口和流程。当前已实现 [M0 开发骨架](m0-verification.md)和 [M1 项目与数据核心](m1-verification.md)：项目创建、每项目 SQLite、附件、会话、CLI 与桌面／浏览器访问。M2 固定 SDK、模板、Node 检测与构建见 [M2 记录](m2-verification.md)，M3 完整备份维护恢复见 [M3 记录](m3-verification.md)。M4 导入导出、复制、回收站和工作区迁移的本轮实施与验证见 [M4 记录](m4-verification.md)。M5 概览、基本信息、空间及浏览器辅助能力见 [M5 记录](m5-verification.md)；真实设备/GUI 验收、历史清理讨论稿和发行仍有后续工作，不能按全文理解为已完整验收。`platform` 为正式命令名称占位符；临时开发 CLI 为 `local-projects-dev`，正式品牌与发行身份尚未确定。
 
 本地服务与 AI 工具的已确认方案见[本地服务与 AI 工具接口](local-service-and-ai-tools.md)。核心技术、SDK 兼容、[备份维护](backup-and-maintenance.md)、[首版发行](release-and-updates.md)、[项目生命周期与工作区迁移](project-lifecycle-and-workspace.md)、[联网与浏览器能力](project-capabilities-and-secrets.md)、[空间占用与素材管理](project-storage-and-assets.md)、[项目基本信息与概览](project-metadata-and-overview.md)、构建输入检测及独立项目窗口均已确认。[技术决策与实施清单](remaining-technical-decisions.md)记录决定及尚需落实的参数、验证与发布准备。
 
