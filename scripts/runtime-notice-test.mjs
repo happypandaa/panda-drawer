@@ -36,6 +36,8 @@ const requests = [];
 const streams = [];
 const documentEvents = {};
 const windowEvents = {};
+const platformEvents = [];
+let runtimePolicyFingerprint = "initial-policy";
 const body = new Element('body');
 const draft = new Element('textarea');
 draft.value = 'Unsaved project draft: keep this content.';
@@ -53,8 +55,10 @@ function forbiddenNativeConfirm() {
 
 const context = {
   URL, AbortController, setTimeout, clearTimeout, Date, Error, JSON,
+  setInterval:()=>1, clearInterval:()=>{},
+  CustomEvent: class { constructor(type,options){this.type=type;this.detail=options.detail;} },
   document: {
-    querySelector: () => ({ content: epoch }),
+    querySelector: selector => ({content:selector.includes("platform-runtime-policy")?"initial-policy":epoch}),
     currentScript: { nonce: 'test-nonce' },
     body,
     readyState: 'complete',
@@ -63,6 +67,7 @@ const context = {
     addEventListener: (name, handler) => { documentEvents[name] = handler; },
   },
   window: {
+    dispatchEvent: event => platformEvents.push(event),
     addEventListener: (name, handler) => { windowEvents[name] = handler; },
     confirm: forbiddenNativeConfirm,
   },
@@ -79,7 +84,7 @@ const context = {
       status: responseError === 'INVALID_SESSION' ? 401 : responseError ? 409 : 200,
       json: async () => responseError ? ({ ok: false, error: { code: responseError } }) : ({
         ok: true, apiVersion: 1,
-        data: { projectId: 'project_test', state: { ...state } },
+        data: { projectId: 'project_test', state: { ...state }, runtimePolicyFingerprint },
       }),
     };
   },
@@ -225,6 +230,16 @@ await flush();
 assert.match(heading.textContent, /连接已失效/, 'an expired session cannot keep claiming an old trash state');
 assertDraftPreserved();
 responseError = null;
+state = { mode: 'normal', reloadRequired: false };
+runtimePolicyFingerprint = 'changed-policy';
+retry.listeners.click();
+await flush();
+assert.match(heading.textContent,/运行需求已变化/);
+assert.equal(reloads,1,'new network/device policy must never silently reload drafts');
+assert.ok(platformEvents.some(event=>event.type==='platform:state'&&event.detail.workspaceMigrating));
+assert.ok(platformEvents.some(event=>event.type==='platform:state'&&event.detail.expired));
+assert.equal(platformEvents.at(-1).detail.reloadRequired,true,'media helpers receive a stop signal on policy changes');
+assertDraftPreserved();
 windowEvents.pagehide();
 assert.equal(streams[0].closed, true);
 windowEvents.pageshow({ persisted: true });
@@ -251,6 +266,7 @@ console.log(JSON.stringify({
     'immutable document epoch',
     'read-only requests',
     'back/forward cache reconnection',
+    'runtime policy changes preserve drafts and signal media shutdown',
   ],
   requests: requests.length,
 }));

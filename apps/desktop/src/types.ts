@@ -16,6 +16,7 @@ export interface BootstrapInfo {
     cli: boolean;
   };
   cliPath: string | null;
+  platform?: Record<string, unknown>;
 }
 
 export interface ProjectInfo {
@@ -27,7 +28,15 @@ export interface ProjectInfo {
   state: 'ready' | 'unbuilt' | 'missing' | 'error' | 'maintenance' | 'recoveryRequired';
   issues: string[];
   buildInfo?: BuildInfo;
+  iconDataUrl?: string | null;
+  iconStatus?: ProjectMetadata['iconStatus'];
+  metadataRevision?: string | null;
+  storage?: ProjectStorage;
   manifest: {
+    name?: string;
+    description?: string;
+    icon?: string;
+    runtimeRequirements?: { network?: Record<string, { origin: string; purpose?: string; dataSent?: string }[]>; devices?: Record<string, { purpose?: string }> };
     database: string;
     attachmentsDir: string;
     sourceDir: string;
@@ -151,3 +160,27 @@ export interface WorkspaceInfo {
   lastTaskId?: string | null;
   retainedRoots: (string | { path?: string; sourcePath?: string })[];
 }
+
+export type ByteCount = number | { $int64: string } | null;
+export interface ProjectMetadata {
+  projectId: string; projectRoot: string; name: string; description: string;
+  icon: string | null; metadataRevision: string | null; iconDataUrl: string | null;
+  iconStatus: { state: 'default' | 'valid' | 'invalid'; path?: string; message?: string; width?: number; height?: number };
+  metadataIssues: string[];
+  manifest: ProjectInfo['manifest'];
+  iconLimits?: { maxBytes: number; maxDimension: number; maxPixels: number; classification: string };
+}
+export interface StoragePart {
+  bytes?: ByteCount; sizeBytes?: ByteCount; totalBytes?: ByteCount; complete?: boolean;
+  issues?: unknown[]; [key: string]: unknown;
+}
+export interface ProjectStorage {
+  currentProject: StoragePart & { status?: string; scanId?: string; startedAt?: string | number; completedAt?: string | number; stale?: boolean; categories?: Record<string, StoragePart> };
+  relatedHistory?: Record<string, StoragePart>;
+  activeTask?: string | { taskId: string } | null;
+}
+export interface StoredFile {
+  path: string; sizeBytes?: ByteCount; size?: ByteCount; modifiedAt?: string | number;
+  mimeType?: string; mediaType?: string; contentType?: string; displayType?: string;
+}
+export interface StorageFiles { files: StoredFile[]; nextCursor: string | null; complete: boolean; issues: unknown[]; scope?: unknown; startedAt?: string | number; completedAt?: string | number }

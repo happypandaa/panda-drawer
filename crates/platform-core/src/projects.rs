@@ -27,7 +27,11 @@ pub struct ProjectManifest {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "display_icon",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub icon: Option<String>,
     pub sdk_api_version: u32,
     pub source_dir: String,
@@ -43,6 +47,14 @@ pub struct ProjectManifest {
     pub extra: MapExtras,
 }
 type MapExtras = serde_json::Map<String, Value>;
+fn display_icon<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    // Invalid display metadata must not disable the project's business app.
+    // The manager reads the raw value independently and reports its problem.
+    let value = Value::deserialize(deserializer)?;
+    Ok(value.as_str().map(str::to_owned))
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateProjectInput {
@@ -1324,6 +1336,7 @@ pub(crate) fn validate_manifest(
             .ok_or_else(|| invalid("docs must provide readme, database and platform paths"))?;
         checked_relative(root, path, true)?;
     }
+    crate::runtime_policy::RuntimePolicy::parse(&manifest.runtime_requirements)?;
     Ok(())
 }
 fn identity(path: &Path) -> Result<FileIdentity, ApiError> {

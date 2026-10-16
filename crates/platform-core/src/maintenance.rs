@@ -804,6 +804,17 @@ impl MaintenanceManager {
         result
     }
     pub(crate) fn invalidate_storage(workspace: &Path, id: &str) -> Result<(), ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        let invalidations = workspace.join(".platform/cache/storage/invalidations");
+        check_no_symlinks(&invalidations, true)?;
+        let token = json!({"generation":Uuid::new_v4().to_string()});
+        builds::atomic_json(
+            &invalidations.join("projects").join(format!("{id}.json")),
+            &token,
+        )?;
+        builds::atomic_json(&invalidations.join("workspace.json"), &token)?;
         for path in [
             workspace
                 .join(".platform/cache/storage/projects")

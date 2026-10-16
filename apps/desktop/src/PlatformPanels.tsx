@@ -1,0 +1,20 @@
+import { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { bytesText, partBytes, timeText } from './storage-utils';
+import { messageFrom } from './ui-utils';
+import type { StoragePart } from './types';
+import { Check, FolderOpen, Info, ShieldCheck, X } from 'lucide-react';
+import type { BootstrapInfo } from './types';
+export function AboutPlatform({ info }: { info: BootstrapInfo | null }) {
+  const [program, setProgram] = useState<StoragePart | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  async function scanProgram() { if (busy) return; setBusy(true); setError(''); try { const value = await invoke<{ platformProgram: StoragePart }>('workspace_storage'); setProgram(value.platformProgram); } catch (cause) { setError(messageFrom(cause)); } finally { setBusy(false); } }
+  const platform = info?.platform; const updates = platform?.updates as { available?: boolean; reason?: string } | undefined;
+  return <section className="diagnostics-card about-platform"><div className="section-heading"><div><h2><Info size={18} />关于平台</h2><p>以下信息来自当前运行的程序。平台程序的大小与项目数据分开统计。</p></div></div><dl className="about-grid">{[['名称', platform?.name ?? info?.displayName], ['版本', platform?.version ?? info?.version], ['构建', platform?.build ?? platform?.buildNumber ?? '内部开发包'], ['架构', platform?.architecture], ['应用标识', platform?.identifier ?? info?.identifier], ['安装位置', platform?.installationPath ?? '未从应用包启动'], ['可执行文件', platform?.executablePath], ['发行来源', platform?.distribution]].map(([label, value]) => <div key={String(label)}><dt>{String(label)}</dt><dd><code>{typeof value === 'string' || typeof value === 'number' ? value : '尚未读取'}</code></dd></div>)}</dl><div className="platform-update"><strong>当前安装程序体积</strong><p>{bytesText(partBytes(program ?? undefined))}{program ? program.complete ? ' · 扫描完整' : ' · 部分统计 / 未知' : ''} · 扫描时间：{timeText(program?.completedAt as string | number | undefined)}</p><button className="refresh-button" disabled={!info || busy} onClick={() => void scanProgram()}>{busy ? '统计中…' : '统计当前程序体积'}</button>{error && <p role="alert">{error}</p>}</div><div className="platform-update"><strong>更新状态</strong><p>{updates?.reason ?? '正式发行源尚未配置。内部开发包由项目交付。'}</p><button className="refresh-button" disabled>当前版本不提供自动更新</button></div></section>;
+}
+const GUIDE_KEY = 'local-projects:dev:onboarding:v1';
+export function FirstStartGuide({ enabled, onCreate, onEnvironment, onStorage }: { enabled: boolean; onCreate: () => void; onEnvironment: () => void; onStorage: () => void }) {
+  const [show, setShow] = useState(() => { try { return localStorage.getItem(GUIDE_KEY) !== 'complete'; } catch { return true; } });
+  const complete = () => { try { localStorage.setItem(GUIDE_KEY, 'complete'); } catch { /* The guide can still be dismissed for this session. */ } setShow(false); };
+  if (!show) return <button className="text-button guide-reopen" onClick={() => setShow(true)}><Info size={13} />查看开始使用指南</button>;
+  return <section className="first-start-guide" aria-label="开始使用指南"><div className="storage-heading"><div><span className="eyebrow">GET STARTED</span><h2>从一个自己的项目开始</h2><p>项目数据保存到当前工作区。桌面和浏览器打开的是同一个项目。</p></div><button className="icon-button" aria-label="暂时收起指南" onClick={() => setShow(false)}><X size={17} /></button></div><div className="guide-steps"><div><span>01</span><h3>创建与打开</h3><p>新项目带有可直接打开的初始应用。每个项目拥有独立数据库和素材目录。</p><button className="text-button" disabled={!enabled} onClick={onCreate}><FolderOpen size={13} />创建第一个项目</button></div><div><span>02</span><h3>交给 AI 改进</h3><p>复制项目的 AI 说明，修改前进入维护。改动源码后构建，再处理草稿并明确重新加载。</p><button className="text-button" onClick={onEnvironment}>检查 Node 构建环境</button></div><div><span>03</span><h3>保留与管理数据</h3><p>项目概览中可修改名称和图标、扫描空间及浏览素材。删除项目会先移入回收站。</p><button className="text-button" onClick={onStorage}>查看工作区与回收站</button></div></div><div className="guide-footer"><span><ShieldCheck size={14} />当前为独立开发环境</span><button className="refresh-button" onClick={complete}><Check size={14} />已了解，完成引导</button></div></section>;
+}

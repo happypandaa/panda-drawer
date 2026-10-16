@@ -7,8 +7,12 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ProjectTask } from './ProjectTask';
-import { BackupMaintenancePanel } from './BackupMaintenancePanel';
-import { ImportPanel, ProjectLifecyclePanel, StoragePage } from './LifecyclePanels';
+import { ImportPanel, StoragePage } from './LifecyclePanels';
+import { ProjectOverview } from './ProjectOverview';
+import type { OverviewTab } from './ProjectOverview';
+import { WorkspaceStorageSummary, ProjectSpaceRanking } from './StoragePanels';
+import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
+import { bytesText, timeText } from './storage-utils';
 import { messageFrom } from './ui-utils';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
@@ -23,7 +27,7 @@ const projectStates: Record<ProjectInfo['state'], string> = {
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [page, setPage] = useState<'projects' | 'runtime' | 'storage'>('projects');
+  const [page, setPage] = useState<'projects' | 'runtime' | 'storage' | 'about'>('projects');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,8 +44,7 @@ function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
   const [showImport, setShowImport] = useState(false);
-  const [lifecycleProjectId, setLifecycleProjectId] = useState<string | null>(null);
-  const [backupProjectId, setBackupProjectId] = useState<string | null>(null);
+  const [overview, setOverview] = useState<{ projectId: string; tab: OverviewTab } | null>(null);
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
   const [building, setBuilding] = useState<string[]>([]);
   const [handoff, setHandoff] = useState<string | null>(null);
@@ -93,6 +96,7 @@ function App() {
       if (current !== requestId.current) return;
       const next: Record<string, MaintenanceStatus> = {};
       const activeTasks: Record<string, TaskRecord> = {};
+      for (const project of list) { const scanning = project.storage?.activeTask; if (scanning && typeof scanning === 'object' && 'status' in scanning) activeTasks[project.id] = scanning as TaskRecord; }
       for (const result of statuses) {
         if (result.status === 'fulfilled') {
           next[result.value.projectId] = result.value.status;
@@ -250,10 +254,9 @@ function App() {
     return migrating || !status || status.mode === 'maintenance' || status.recoveryRequired;
   }
 
-  const backupProject = projects.find((project) => project.id === backupProjectId);
-  const lifecycleProject = projects.find((project) => project.id === lifecycleProjectId);
+  const overviewProject = projects.find((project) => project.id === overview?.projectId);
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
-  const title = page === 'projects' ? '我的项目' : page === 'storage' ? '回收站与工作区' : '运行环境';
+  const title = page === 'projects' ? '我的项目' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
 
   return (
     <div className="app-shell">
@@ -266,15 +269,16 @@ function App() {
         <nav className="side-nav">
           <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} onClick={() => setPage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{projects.length}</small></button>
           <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} onClick={() => setPage('runtime')}><Activity size={17} /><span>运行环境</span></button>
-          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} onClick={() => setPage('storage')}><Trash2 size={17} /><span>回收站与工作区</span></button>
+          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} onClick={() => setPage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
+          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} onClick={() => setPage('about')}><Package size={17} /><span>关于平台</span></button>
         </nav>
         <div className="sidebar-stage">
           <span className="eyebrow">LOCAL FIRST</span>
           <strong>项目各自独立，数据留在本机。</strong>
           <p>桌面窗口和浏览器连接同一个本地服务，实时读取项目数据。</p>
-          <span className="subtle-tag">M4 · 开发验证</span>
+          <span className="subtle-tag">M5 · 开发验证</span>
         </div>
-        <div className="sidebar-bottom"><span className="environment-dot" />内部开发版<span className="version">{info ? `v${info.version}` : 'M4'}</span></div>
+        <div className="sidebar-bottom"><span className="environment-dot" />内部开发版<span className="version">{info ? `v${info.version}` : 'M5'}</span></div>
       </aside>
 
       <div className="content-shell">
@@ -305,7 +309,7 @@ function App() {
           {handoff && <section className="handoff-card" aria-labelledby="handoff-title"><div className="section-heading"><div><h2 id="handoff-title">交给外部 AI</h2><p>说明中包含接管 skill 的位置。允许 AI 访问这个项目目录，再告诉它你想增加的功能。</p></div><button className="icon-button" onClick={() => setHandoff(null)} aria-label="关闭 AI 说明"><X size={18} /></button></div><textarea readOnly value={handoff} rows={9} aria-label="给 AI 的完整说明" onFocus={(event) => event.currentTarget.select()} /></section>}
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || migrating} />}
-            {lifecycleProject && <ProjectLifecyclePanel key={lifecycleProject.id} project={lifecycleProject} status={maintenance[lifecycleProject.id]} onTask={acceptLifecycleTask} onClose={() => setLifecycleProjectId(null)} disabled={migrating || Object.values(lifecycleTasks).some((task) => task.projectId === lifecycleProject.id && !task.final)} />}
+            {overviewProject && overview && <ProjectOverview key={overviewProject.id} project={overviewProject} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={tasks[overviewProject.id]} onTask={(task) => { acceptTask(task); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onHandoff={() => void copyHandoff(overviewProject)} onClose={() => setOverview(null)} disabled={migrating || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />}
             {showCreate && <section className="create-card" aria-labelledby="create-title">
               <div className="section-heading"><div><h2 id="create-title">新建项目</h2><p>创建后即可打开初始应用，随时交给 AI 添加功能。</p></div><button className="icon-button" aria-label="取消新建项目" onClick={() => setShowCreate(false)} disabled={creating}><X size={18} /></button></div>
               <form onSubmit={(event) => void createProject(event)}>
@@ -317,20 +321,20 @@ function App() {
               </form>
             </section>}
 
-            {backupProject && <BackupMaintenancePanel key={backupProject.id} project={backupProject} disabled={migrating} status={maintenance[backupProject.id]} task={tasks[backupProject.id]} onTask={acceptTask} onChanged={refresh} onClose={() => setBackupProjectId(null)} />}
+            <FirstStartGuide enabled={Boolean(info) && !migrating} onCreate={() => setShowCreate(true)} onEnvironment={() => setPage('runtime')} onStorage={() => setPage('storage')} />
             <div className="project-list-heading"><span>{info ? `${projects.length} 个项目` : '项目列表'}</span><span>{loading ? '正在读取…' : checkedAt ? `读取于 ${checkedAt}` : '等待桌面连接'}</span></div>
             {projects.length > 0 ? <section className="project-grid" aria-label="项目列表">
               {projects.map((project) => <article className={`project-card ${expanded === project.id ? 'project-card-expanded' : ''}`} key={project.id}>
-                <div className="project-card-top"><span className="project-icon"><FolderOpen size={24} strokeWidth={1.4} /></span><span className={`project-state state-${maintenance[project.id]?.recoveryRequired ? 'error' : maintenance[project.id]?.mode === 'maintenance' ? 'maintenance' : project.state}`}><span />{maintenance[project.id]?.recoveryRequired ? '恢复待处理' : maintenance[project.id]?.mode === 'maintenance' ? '维护中' : projectStates[project.state]}</span></div>
+                <div className="project-card-top"><span className="project-icon">{project.iconDataUrl ? <img src={project.iconDataUrl} alt="" /> : <FolderOpen size={24} strokeWidth={1.4} />}</span><span className={`project-state state-${maintenance[project.id]?.recoveryRequired ? 'error' : maintenance[project.id]?.mode === 'maintenance' ? 'maintenance' : project.state}`}><span />{maintenance[project.id]?.recoveryRequired ? '恢复待处理' : maintenance[project.id]?.mode === 'maintenance' ? '维护中' : projectStates[project.state]}</span></div>
                 <h2>{project.name}</h2>
                 <p className="project-description">{project.description || '尚未填写简介'}</p>
                 <code className="project-id">{project.id}</code><BuildState project={project} />
-                <div className="project-space"><Database size={13} /><span>独立 SQLite</span><span>空间尚未统计</span></div>
-                <div className="project-actions">
+                <div className="project-space"><Database size={13} /><span>独立 SQLite</span><button className="text-button" onClick={() => setOverview({ projectId: project.id, tab: 'storage' })}>{bytesText(project.storage?.currentProject.totalBytes)}{project.storage?.currentProject.stale ? ' · 待重新扫描' : project.storage?.currentProject.complete === false ? ' · 部分统计' : ''}</button></div>
+                <p className="storage-timestamp">{project.storage?.currentProject.completedAt ? `扫描于 ${timeText(project.storage.currentProject.completedAt)}` : '尚无空间扫描结果'}</p>{project.iconStatus?.state === 'invalid' && <p className="environment-issue">图标不可用，已使用默认图标。</p>}<div className="project-actions">
                   <button className="primary-button" disabled={project.state !== 'ready' || projectBlocked(project) || opening !== null} onClick={() => void openProject(project, 'desktop')}><Monitor size={14} />{opening === `${project.id}:desktop` ? '打开中…' : '打开项目'}</button>
                   <button className="refresh-button" disabled={project.state !== 'ready' || projectBlocked(project) || opening !== null} onClick={() => void openProject(project, 'browser')} aria-label={`在浏览器打开${project.name}`}><Globe size={14} />{opening === `${project.id}:browser` ? '打开中…' : '浏览器打开'}</button>
                 </div>
-                <div className="project-secondary-actions"><button className="refresh-button" disabled={migrating || building.includes(project.id) || Boolean(tasks[project.id] && !tasks[project.id].final) || !maintenance[project.id] || maintenance[project.id]?.recoveryRequired || (maintenance[project.id]?.mode === 'maintenance' && !maintenance[project.id]?.readyForChanges) || project.state === 'missing' || project.state === 'error'} onClick={() => void buildProject(project)}><Hammer size={14} />{building.includes(project.id) ? '构建中…' : '构建项目'}</button><button className="refresh-button" onClick={() => void copyHandoff(project)}><Copy size={14} />复制给 AI</button><button className="refresh-button" disabled={migrating} onClick={() => setBackupProjectId(project.id)}><Archive size={14} />备份与维护</button><button className="refresh-button" onClick={() => setLifecycleProjectId(project.id)}><Settings2 size={14} />管理项目</button></div>
+                <div className="project-secondary-actions"><button className="refresh-button" disabled={migrating || building.includes(project.id) || Boolean(tasks[project.id] && !tasks[project.id].final) || !maintenance[project.id] || maintenance[project.id]?.recoveryRequired || (maintenance[project.id]?.mode === 'maintenance' && !maintenance[project.id]?.readyForChanges) || project.state === 'missing' || project.state === 'error'} onClick={() => void buildProject(project)}><Hammer size={14} />{building.includes(project.id) ? '构建中…' : '构建项目'}</button><button className="refresh-button" onClick={() => void copyHandoff(project)}><Copy size={14} />复制给 AI</button><button className="refresh-button" disabled={migrating} onClick={() => setOverview({ projectId: project.id, tab: 'backup' })}><Archive size={14} />备份与维护</button><button className="refresh-button" onClick={() => setOverview({ projectId: project.id, tab: 'overview' })}><Settings2 size={14} />项目概览</button></div>
                 <button className="details-toggle" aria-expanded={expanded === project.id} onClick={() => setExpanded(expanded === project.id ? null : project.id)}>{expanded === project.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}查看详情</button>
                 {expanded === project.id && <><ProjectDetails project={project} />{project.state === 'ready' && !projectBlocked(project) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(project.id)}><RefreshCw size={13} />重新加载项目</button>}{reloadProjectId === project.id && <div className="operation-confirmation"><strong>重新加载会丢弃当前窗口未保存的内容</strong><p>请先复制草稿或保存到别处。取消会保留当前页面，旧页面在维护或恢复后仍不能继续保存。</p><div className="confirmation-actions"><button className="refresh-button" disabled={opening !== null || projectBlocked(project)} onClick={() => { setReloadProjectId(null); void openProject(project, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>}{tasks[project.id] && <ProjectTask key={tasks[project.id].taskId} task={tasks[project.id]} />}</>}
               </article>)}
@@ -339,8 +343,8 @@ function App() {
               <div className="workspace-message"><span className="subtle-tag">独立测试工作区</span><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始。' : '连接桌面应用，查看项目。'}</h2><p>{info ? '给项目起一个名字。平台保存数据和文件，项目网页可以由外部 AI 编辑，再在桌面或浏览器中使用。' : '实际项目列表由桌面应用读取；此页面不会生成演示数据。'}</p><div className="workspace-footnote"><ShieldCheck size={15} />开发数据与正式数据保持分离</div></div>
             </section>}
             <div className="workspace-location"><Folder size={14} /><span>工作区</span><code>{info?.workspaceRoot ?? '尚未读取'}</code></div>
-            <footer className="page-footer"><span>M4 · 项目管理与工作区</span><span>源码修改后重新构建；已打开的页面由你决定何时重新加载。</span></footer>
-          </> : page === 'storage' ? <StoragePage workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} onTask={acceptLifecycleTask} onRefresh={refresh} /> : <>
+            <footer className="page-footer"><span>M5 · 项目概览与空间管理</span><span>源码修改后重新构建；已打开的页面由你决定何时重新加载。</span></footer>
+          </> : page === 'storage' ? <><WorkspaceStorageSummary revision={refreshVersion} enabled={Boolean(info) && !migrating} /><ProjectSpaceRanking projects={projects} onSelect={(projectId) => { setOverview({ projectId, tab: 'storage' }); setPage('projects'); }} /><StoragePage workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} onTask={acceptLifecycleTask} onRefresh={refresh} /></> : page === 'about' ? <AboutPlatform info={info} /> : <>
             <section className="status-grid" aria-label="运行状态">
               <StatusCard icon={<Activity size={18} />} label="本地服务" value={info ? '已启动' : loading ? '读取中' : '未读取'} detail={info ? info.baseUrl : '由 Rust 提供本机服务'} good={Boolean(info)} />
               <StatusCard icon={<Database size={18} />} label="内置 SQLite" value={info ? `SQLite ${info.sqliteVersion}` : loading ? '读取中' : '未读取'} detail="每个项目使用独立数据库文件" good={Boolean(info)} />
@@ -369,7 +373,7 @@ function ProjectDetails({ project }: { project: ProjectInfo }) {
     {project.buildInfo?.reason && <p className="project-help">构建来源：{project.buildInfo.reason}</p>}
     {project.buildInfo?.provenance && <p className="project-help">{project.buildInfo.origin === 'bundledTemplate' ? '初始应用打包时间' : '最近成功构建'}：{new Date(project.buildInfo.provenance.completedAt).toLocaleString('zh-CN', { hour12: false })} · Node {project.buildInfo.provenance.node?.version ?? project.buildInfo.provenance.nodeVersion ?? '版本未记录'}</p>}
     {project.issues.length > 0 && <ul className="project-issues">{project.issues.map((issue, index) => <li key={`${index}:${issue}`}>{issue}</li>)}</ul>}
-    <dl><div><dt>项目目录</dt><dd><code>{project.projectRoot}</code></dd></div><div><dt>数据库</dt><dd><code>{location(project.manifest?.database)}</code></dd></div><div><dt>用户素材</dt><dd><code>{location(project.manifest?.attachmentsDir)}</code></dd></div><div><dt>给 AI 的说明</dt><dd><code>{location(project.manifest?.docs?.readme)}</code></dd></div><div><dt>项目体积</dt><dd>尚未统计 · 空间扫描将在后续阶段接入</dd></div></dl>
+    <dl><div><dt>项目目录</dt><dd><code>{project.projectRoot}</code></dd></div><div><dt>数据库</dt><dd><code>{location(project.manifest?.database)}</code></dd></div><div><dt>用户素材</dt><dd><code>{location(project.manifest?.attachmentsDir)}</code></dd></div><div><dt>给 AI 的说明</dt><dd><code>{location(project.manifest?.docs?.readme)}</code></dd></div><div><dt>项目体积</dt><dd>请从项目概览的“空间与素材”查看扫描结果</dd></div></dl>
   </div>;
 }
 const sourceLabels = { unbuilt: '尚未构建', matched: '源码与网页一致', modified: '源码已修改 · 网页仍为旧版', unknown: '构建来源未知' };

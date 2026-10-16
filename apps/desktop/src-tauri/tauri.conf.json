@@ -10,29 +10,47 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{
-      "label": "manager",
+    "windows": [
+      {
+        "label": "manager",
         "create": false,
-      "title": "本地项目 · 开发版",
-      "width": 1160,
-      "height": 800,
-      "minWidth": 880,
-      "minHeight": 640,
-      "backgroundColor": "#F7F7F5"
-    }],
+        "title": "本地项目 · 开发版",
+        "width": 1160,
+        "height": 800,
+        "minWidth": 880,
+        "minHeight": 640,
+        "backgroundColor": "#F7F7F5"
+      }
+    ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost; media-src 'self' data:",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; media-src 'self' data:"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "DeveloperTool",
-    "shortDescription": "Isolated M4 project lifecycle and workspace development build",
-    "externalBin": ["binaries/local-projects-dev"],
-    "resources": {"resources/": "resources/"},
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
-    "macOS": {"minimumSystemVersion": "15.0", "signingIdentity": "-"}
+    "shortDescription": "Isolated M5 project management and browser capabilities development build",
+    "externalBin": [
+      "binaries/local-projects-dev"
+    ],
+    "resources": {
+      "resources/": "resources/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "15.0",
+      "signingIdentity": "-",
+      "entitlements": "./Entitlements.plist"
+    }
   }
 }

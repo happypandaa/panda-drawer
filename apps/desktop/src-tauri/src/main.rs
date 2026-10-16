@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser_download;
+
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
     APP_IDENTIFIER, DISPLAY_NAME,
@@ -35,6 +37,7 @@ struct DesktopInfo {
     version: String,
     resources: ResourceInfo,
     cli_path: Option<String>,
+    platform: Value,
 }
 
 struct StartupFailure(String);
@@ -82,6 +85,7 @@ fn bootstrap_info(
     let state = app.state::<AppState>();
     let mut info = state.info.clone();
     info.runtime = state.handle.info();
+    info.platform = state.handle.platform_info();
     Ok(info)
 }
 
@@ -91,6 +95,7 @@ enum PathChoice {
     Import,
     Export,
     Workspace,
+    Icon,
 }
 
 #[tauri::command]
@@ -115,6 +120,12 @@ async fn choose_path(
             .set_file_name(suggested_name.unwrap_or_else(|| "project.zip".to_owned()))
             .add_filter("完整项目归档", &["zip"])
             .save_file(move |path| {
+                let _ = sender.send(path);
+            }),
+        PathChoice::Icon => dialog
+            .set_title("选择项目 PNG 图标")
+            .add_filter("PNG 图标", &["png"])
+            .pick_file(move |path| {
                 let _ = sender.send(path);
             }),
         PathChoice::Workspace => dialog
@@ -155,6 +166,212 @@ async fn project_list(
 }
 
 #[tauri::command]
+async fn project_metadata(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_metadata(&project_id).await
+}
+#[tauri::command]
+async fn project_metadata_set(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    input: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let result = state
+        .handle
+        .project_metadata_set(&project_id, input)
+        .await?;
+    if let Some(project) = app.get_webview_window(&project_label(&project_id)) {
+        if let Some(name) = result["name"].as_str() {
+            let _ = project.set_title(&project_title(name));
+        }
+    }
+    Ok(result)
+}
+#[tauri::command]
+async fn project_icon_import(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    source_path: String,
+    input: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .project_icon_import(&project_id, std::path::Path::new(&source_path), input)
+        .await
+}
+#[tauri::command]
+async fn storage_info(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.storage_info(&project_id).await
+}
+#[tauri::command]
+async fn storage_scan(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.storage_scan(&project_id).await
+}
+#[tauri::command]
+async fn storage_files(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    input: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.storage_files(&project_id, input).await
+}
+#[tauri::command]
+async fn storage_cleanup(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    input: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.storage_cleanup(&project_id, input).await
+}
+#[tauri::command]
+async fn workspace_storage(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.workspace_storage().await
+}
+#[tauri::command]
+async fn storage_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    path: String,
+    document_epoch: String,
+) -> Result<Value, ApiError> {
+    use base64::Engine;
+    use std::io::Read;
+    require_manager(&window)?;
+    let (file, lease, info) = state
+        .handle
+        .attachment_read(&project_id, &path, &document_epoch)
+        .await?;
+    let mime = info["mediaType"].as_str().unwrap_or("").to_owned();
+    if ![
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "audio/mpeg",
+        "audio/wav",
+        "audio/mp4",
+        "audio/ogg",
+        "audio/webm",
+        "video/mp4",
+        "video/webm",
+    ]
+    .contains(&mime.as_str())
+    {
+        return Err(ApiError::new(
+            "PREVIEW_UNSUPPORTED",
+            "此格式提供下载，不在管理页执行",
+        ));
+    }
+    if info["size"].as_u64().unwrap_or(u64::MAX) > 16_000_000 {
+        return Err(ApiError::new(
+            "PREVIEW_TOO_LARGE",
+            "预览上限为内部测试参数 16 MB；请下载完整文件",
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {let _lease=lease;let mut bytes=Vec::new();file.take(16_000_001).read_to_end(&mut bytes)?;if bytes.len()>16_000_000{return Err(ApiError::new("PREVIEW_TOO_LARGE","文件在读取期间超出预览上限"));} Ok(serde_json::json!({"dataUrl":format!("data:{mime};base64,{}",base64::engine::general_purpose::STANDARD.encode(&bytes)),"mimeType":mime,"sizeBytes":bytes.len()}))}).await.map_err(|_|ApiError::new("PREVIEW_FAILED","预览读取未完成"))?
+}
+#[tauri::command]
+async fn storage_download(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    path: String,
+    document_epoch: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("attachment")
+        .to_owned();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("保存项目附件")
+        .set_file_name(name)
+        .save_file(move |value| {
+            let _ = sender.send(value);
+        });
+    let Some(destination) = receiver
+        .await
+        .map_err(|_| ApiError::new("DIALOG_FAILED", "保存选择未完成"))?
+    else {
+        return Ok(Value::Null);
+    };
+    let destination = destination
+        .into_path()
+        .map_err(|e| ApiError::new("INVALID_PATH", e.to_string()))?;
+    state.handle.validate_download_destination(&destination)?;
+    let (file, lease, _) = state
+        .handle
+        .attachment_read(&project_id, &path, &document_epoch)
+        .await?;
+    let handle = state.handle.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        browser_download::publish_file(file, &destination, |path| {
+            handle.validate_download_destination(path)
+        })?;
+        Ok(serde_json::json!({"savedPath":destination}))
+    })
+    .await
+    .map_err(|_| ApiError::new("DOWNLOAD_FAILED", "附件保存未完成"))?
+}
+#[tauri::command]
+async fn project_reveal(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    target: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    let location = state.handle.project_location(&project_id, &target).await?;
+    let mut command = Command::new("/usr/bin/open");
+    if target == "readme" {
+        command.arg("-R");
+    }
+    command.arg(location);
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(ApiError::new("REVEAL_FAILED", "无法打开项目位置"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn project_create(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -192,6 +409,44 @@ fn is_project_url(url: &Url, base: &Url, id: &str) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && (url.path() == "/_platform/connect" || url.path().starts_with(&format!("/p/{id}/")))
+}
+
+fn external_link_allowed(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.as_str().len() <= 4096
+        && host.contains('.')
+        && host.parse::<std::net::IpAddr>().is_err()
+        && !host.ends_with(".local")
+        && !host.ends_with(".localhost")
+}
+fn request_external_link(app: &tauri::AppHandle, url: Url) {
+    if !external_link_allowed(&url) {
+        return;
+    }
+    app.dialog()
+        .message(format!(
+            "将在默认浏览器打开：\n{}\n\n项目窗口仍保留当前内容。",
+            url.as_str()
+        ))
+        .title("打开外部链接")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+            "打开浏览器".into(),
+            "取消".into(),
+        ))
+        .show(move |approved| {
+            if approved {
+                let _ = Command::new("/usr/bin/open")
+                    .arg(url.as_str())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+            }
+        });
 }
 
 #[tauri::command]
@@ -278,6 +533,10 @@ async fn project_open(
             }
             let allowed_id = project_id.clone();
             let runtime_handle = state.handle.clone();
+            let permission_handle = state.handle.clone();
+            let permission_id = project_id.clone();
+            let navigation_app = app.clone();
+            let new_window_app = app.clone();
             tauri::WebviewWindowBuilder::new(
                 &app,
                 project_label(&project_id),
@@ -287,12 +546,46 @@ async fn project_open(
             .inner_size(1080.0, 780.0)
             .min_inner_size(640.0, 480.0)
             .on_navigation(move |url| {
-                Url::parse(&runtime_handle.info().base_url)
-                    .is_ok_and(|current| is_project_url(url, &current, &allowed_id))
+                let local = Url::parse(&runtime_handle.info().base_url)
+                    .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
+                if !local {
+                    request_external_link(&navigation_app, url.clone());
+                }
+                local
             })
-            // M1 grants no remote capabilities and opens no secondary native
-            // webviews. External navigation is deferred to the capability stage.
-            .on_new_window(|_, _| NewWindowResponse::Deny)
+            .on_download(browser_download::handler(
+                app.clone(),
+                state.handle.clone(),
+                project_id.clone(),
+            ))
+            .disable_drag_drop_handler()
+            .on_permission_request(move |webview, kind| {
+                use tauri::webview::{PermissionKind, PermissionResponse};
+                let Some(device) = (match kind {
+                    PermissionKind::Camera => Some("camera"),
+                    PermissionKind::Microphone => Some("microphone"),
+                    _ => None,
+                }) else {
+                    return PermissionResponse::Deny;
+                };
+                let info = permission_handle.info();
+                let allowed = webview
+                    .url()
+                    .ok()
+                    .zip(Url::parse(&info.base_url).ok())
+                    .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
+                    && permission_handle.device_permission_declared(&permission_id, device);
+                if allowed {
+                    PermissionResponse::Default
+                } else {
+                    PermissionResponse::Deny
+                }
+            })
+            // Project windows have browser APIs, never native management access.
+            .on_new_window(move |url, _| {
+                request_external_link(&new_window_app, url);
+                NewWindowResponse::Deny
+            })
             .build()
             .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，请重新打开项目"))?;
         }
@@ -711,6 +1004,8 @@ fn main() {
             workspace_migrate,
             project_list,
             project_create,
+            project_metadata,project_metadata_set,project_icon_import,project_reveal,
+            storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,
             project_open,
             project_build,
             backup_list,
@@ -757,8 +1052,9 @@ fn main() {
                 version: app.package_info().version.to_string(),
                 resources,
                 cli_path,
+                platform: runtime.handle().platform_info(),
             };
-            eprintln!("M4 development runtime ready: {}", info.runtime.base_url);
+            eprintln!("M5 development runtime ready: {}", info.runtime.base_url);
             Ok(AppState {
                 info,
                 handle: runtime.handle(),
@@ -812,7 +1108,7 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("Unable to start isolated M3 desktop application");
+        .expect("Unable to start isolated M5 desktop application");
 
     app.run(|app, event| match event {
         // Cocoa's Dock/AppleEvent quit may deliver Exit without ExitRequested.

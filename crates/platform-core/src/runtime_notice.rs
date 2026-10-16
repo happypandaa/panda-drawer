@@ -7,6 +7,8 @@ pub(crate) fn script() -> &'static str {
   const epoch = document.querySelector('meta[name="platform-document-epoch"]')?.content;
   const projectId = location.pathname.match(/^\/p\/([a-z][a-z0-9_-]{0,63})(?:\/|$)/)?.[1];
   const nonce = document.currentScript?.nonce;
+  const policyFingerprint = document.querySelector('meta[name="platform-runtime-policy"]')?.content;
+  let policyChanged = false;
   if (!epoch || !projectId || !/^http:\/\/127\.0\.0\.1:\d+$/.test(location.origin)) return;
   const endpoint = new URL(`/p/${projectId}/api/v1/context`, location.origin);
   const eventsUrl = new URL(`/p/${projectId}/api/v1/events`, location.origin);
@@ -19,6 +21,7 @@ pub(crate) fn script() -> &'static str {
   let queryAgain = false;
   let stopped = false;
   let stream;
+  let polling;
   let host;
   let title;
   let detail;
@@ -50,6 +53,9 @@ pub(crate) fn script() -> &'static str {
     } else if (expired) {
       heading = '本地项目连接已失效';
       explanation = '平台重启或工作区迁移后，需要从平台重新进入此项目。当前页面保留未提交内容，请先复制草稿或保存到别处。';
+    } else if (policyChanged) {
+      heading = '运行需求已变化，需要重新加载';
+      explanation = '联网或设备声明已变化。请先处理草稿，再重新加载以使用新策略；已授予的设备权限不会被瞬间撤销。';
     } else if (reloadRequired) {
       heading = '项目已更新，需要重新加载';
       explanation = '维护或恢复已完成，当前页面不能继续保存。请先复制未保存内容或保存到别处，再决定是否重新加载。';
@@ -66,6 +72,7 @@ pub(crate) fn script() -> &'static str {
       heading = '暂时无法连接本地平台';
       explanation = '请确认桌面平台仍在运行。未提交内容仍在当前页面中，平台不会自动重试保存。';
     }
+    window.dispatchEvent(new CustomEvent('platform:state', {detail:{...state, offline, expired, reloadRequired}}));
     host.hidden = !heading;
     if (title.textContent !== heading) title.textContent = heading;
     if (detail.textContent !== explanation) detail.textContent = explanation;
@@ -100,6 +107,7 @@ pub(crate) fn script() -> &'static str {
         else throw new Error('Status unavailable');
       } else if (value.apiVersion === 1 && value.data?.projectId === projectId && value.data?.state) {
         state = value.data.state;
+        if (policyFingerprint && value.data.runtimePolicyFingerprint && policyFingerprint !== value.data.runtimePolicyFingerprint) { policyChanged = true; reloadRequired = true; }
         reloadRequired = reloadRequired || state.reloadRequired === true;
         expired = false;
       } else throw new Error('Invalid project status');
@@ -188,6 +196,9 @@ pub(crate) fn script() -> &'static str {
     connectEvents();
   }
   function connectEvents() {
+    if (!polling) polling = setInterval(() => {
+      if (!stopped && document.visibilityState === 'visible') void check();
+    }, 10000);
     if (typeof EventSource === 'function') {
       stream?.close();
       stream = new EventSource(eventsUrl, { withCredentials: true });
@@ -212,7 +223,7 @@ pub(crate) fn script() -> &'static str {
   }
   window.addEventListener('focus', () => { void check(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void check(); });
-  window.addEventListener('pagehide', () => { stopped = true; stream?.close(); });
+  window.addEventListener('pagehide', () => { stopped = true; stream?.close(); clearInterval(polling); polling = undefined; });
   window.addEventListener('pageshow', (event) => { if (event.persisted) { stopped = false; void check(); connectEvents(); } });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', createNotice, { once: true });
   else createNotice();

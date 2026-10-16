@@ -63,6 +63,11 @@ enum Command {
         #[command(subcommand)]
         command: TrashCommand,
     },
+    /// Inspect project files, measured storage, and explicit safe cleanup.
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     /// Inspect or migrate the complete workspace.
     Workspace {
         #[command(subcommand)]
@@ -142,6 +147,10 @@ struct OutputOptions {
 #[derive(Subcommand)]
 enum ProjectCommand {
     List(OutputOptions),
+    Metadata {
+        #[command(subcommand)]
+        command: MetadataCommand,
+    },
     Create(InputOptions),
     Info(ProjectOptions),
     /// Get a single-use browser launch URL, valid for 60 seconds.
@@ -182,8 +191,22 @@ struct TrashOptions {
 #[derive(Subcommand)]
 enum WorkspaceCommand {
     Info(OutputOptions),
+    Storage(OutputOptions),
     /// Migrate to destinationPath in JSON. Old root is retained; never resubmit on a timeout.
     Migrate(InputOptions),
+}
+
+#[derive(Subcommand)]
+enum MetadataCommand {
+    Get(ProjectOptions),
+    Set(ProjectInputOptions),
+}
+#[derive(Subcommand)]
+enum StorageCommand {
+    Info(ProjectOptions),
+    Scan(ProjectOptions),
+    Files(ProjectInputOptions),
+    Cleanup(ProjectInputOptions),
 }
 
 #[derive(Subcommand)]
@@ -309,6 +332,7 @@ fn main() -> ExitCode {
         Command::Maintenance { command } => maintenance_command(command),
         Command::Trash { command } => trash_command(command),
         Command::Workspace { command } => workspace_command(command),
+        Command::Storage { command } => storage_command(command),
     };
     let (output, code) = match result {
         Ok(value) => {
@@ -341,6 +365,20 @@ fn main() -> ExitCode {
 
 fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
     match command {
+        ProjectCommand::Metadata { command } => match command {
+            MetadataCommand::Get(options) => (
+                options.output.json,
+                project_request(&options.project, "GET", "/metadata", None),
+            ),
+            MetadataCommand::Set(options) => (
+                options.input.output.json,
+                read_input(&options.input.input)
+                    .and_then(|body| merge_maintenance(body, options.maintenance.as_deref()))
+                    .and_then(|body| {
+                        project_request(&options.project, "PATCH", "/metadata", Some(body))
+                    }),
+            ),
+        },
         ProjectCommand::List(options) => (
             options.json,
             business_request("GET", "/api/v1/projects", None, None),
@@ -421,6 +459,10 @@ fn trash_command(command: TrashCommand) -> (bool, Result<Value>) {
 
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
+        WorkspaceCommand::Storage(options) => (
+            options.json,
+            business_request("GET", "/api/v1/workspace/storage", None, None),
+        ),
         WorkspaceCommand::Info(options) => (
             options.json,
             business_request("GET", "/api/v1/workspace", None, None),
@@ -430,6 +472,55 @@ fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
             read_input(&options.input).and_then(|input| {
                 validate_path_field(&input, "destinationPath")?;
                 business_request("POST", "/api/v1/workspace/migrations", None, Some(input))
+            }),
+        ),
+    }
+}
+
+fn storage_command(command: StorageCommand) -> (bool, Result<Value>) {
+    match command {
+        StorageCommand::Info(options) => (
+            options.output.json,
+            project_request(&options.project, "GET", "/storage", None),
+        ),
+        StorageCommand::Scan(options) => (
+            options.output.json,
+            project_request(&options.project, "POST", "/storage/scans", Some(json!({}))),
+        ),
+        StorageCommand::Cleanup(options) => (
+            options.input.output.json,
+            input_request(options, "/storage/cleanups"),
+        ),
+        StorageCommand::Files(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|input| {
+                let mut query = reqwest::Url::parse("http://127.0.0.1/").expect("fixed URL");
+                for (key, value) in input.as_object().expect("validated object") {
+                    if ![
+                        "type", "prefix", "query", "sort", "order", "limit", "cursor",
+                    ]
+                    .contains(&key.as_str())
+                    {
+                        return Err(CliError::new("INPUT_INVALID", "Unknown attachment filter"));
+                    }
+                    let text = match value {
+                        Value::String(v) => v.clone(),
+                        Value::Number(n) if key == "limit" => n.to_string(),
+                        _ => {
+                            return Err(CliError::new(
+                                "INPUT_INVALID",
+                                "Attachment filters must be strings; limit must be an integer",
+                            ))
+                        }
+                    };
+                    query.query_pairs_mut().append_pair(key, &text);
+                }
+                project_request(
+                    &options.project,
+                    "GET",
+                    &format!("/storage/files?{}", query.query().unwrap_or("")),
+                    None,
+                )
             }),
         ),
     }

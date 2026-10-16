@@ -100,6 +100,8 @@ struct HttpState {
     paths: RuntimePaths,
     shared: Weak<RuntimeSwitch>,
     lifecycle: Arc<crate::lifecycle::LifecycleManager>,
+    metadata: crate::metadata::MetadataManager,
+    storage: Arc<crate::storage::StorageManager>,
     info: BootstrapInfo,
     token: String,
     expected_host: String,
@@ -181,7 +183,198 @@ impl RuntimeHandle {
                 "maintenance"
             });
         }
+        let state = self.current();
+        match state.metadata.info(id).await {
+            Ok(metadata) => {
+                for key in [
+                    "metadataRevision",
+                    "iconStatus",
+                    "iconDataUrl",
+                    "metadataIssues",
+                ] {
+                    value[key] = metadata[key].clone();
+                }
+            }
+            Err(error) => {
+                value["metadataRevision"] = Value::Null;
+                value["iconStatus"] = json!({"state":"default","message":error.message});
+                value["iconDataUrl"] = Value::Null;
+                value["metadataIssues"] = json!([error.message]);
+            }
+        }
+        value["storage"] = state.storage.info(id).await.unwrap_or_else(
+            |error| json!({"currentProject":null,"issues":[error],"state":"unavailable"}),
+        );
         Ok(value)
+    }
+    pub fn platform_info(&self) -> Value {
+        crate::platform_info::info()
+    }
+    pub fn validate_download_destination(
+        &self,
+        destination: &std::path::Path,
+    ) -> std::result::Result<(), ApiError> {
+        let state = self.current();
+        if !destination.is_absolute() {
+            return Err(ApiError::new(
+                "INVALID_PATH",
+                "Choose an absolute download destination",
+            ));
+        }
+        crate::projects::check_no_symlinks(destination, true)?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| ApiError::new("INVALID_PATH", "Download parent missing"))?;
+        let parent = std::fs::canonicalize(parent)?;
+        let actual = parent.join(
+            destination
+                .file_name()
+                .ok_or_else(|| ApiError::new("INVALID_PATH", "Download filename missing"))?,
+        );
+        let retained = crate::workspace::info(&state.paths, &state.store)?;
+        if retained["retainedRoots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry["path"].as_str())
+            .any(|path| actual.starts_with(path))
+        {
+            return Err(ApiError::new(
+                "UNSAFE_DOWNLOAD_DESTINATION",
+                "Save outside retained migration snapshots",
+            ));
+        }
+        if [
+            Some(state.paths.data_root().to_path_buf()),
+            Some(state.paths.workspace_root().to_path_buf()),
+            crate::platform_info::installation_root(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|root| actual.starts_with(root))
+        {
+            return Err(ApiError::new(
+                "UNSAFE_DOWNLOAD_DESTINATION",
+                "Save outside platform data, projects and the application bundle",
+            ));
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(&actual) {
+            use std::os::unix::fs::MetadataExt;
+            if !metadata.is_file() || metadata.nlink() != 1 {
+                return Err(ApiError::new(
+                    "INVALID_PATH",
+                    "Download target must be an independent regular file",
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub fn device_permission_declared(&self, id: &str, device: &str) -> bool {
+        let state = self.current();
+        let Ok(project) = state.store.project(id) else {
+            return false;
+        };
+        if project.validate_epoch(None).is_err() {
+            return false;
+        }
+        let Ok(policy) =
+            crate::runtime_policy::RuntimePolicy::parse(&project.manifest.runtime_requirements)
+        else {
+            return false;
+        };
+        match device {
+            "camera" => policy.devices().camera.is_some(),
+            "microphone" => policy.devices().microphone.is_some(),
+            _ => false,
+        }
+    }
+    pub async fn project_metadata(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        self.current().metadata.info(id).await
+    }
+    pub async fn project_location(
+        &self,
+        id: &str,
+        target: &str,
+    ) -> std::result::Result<PathBuf, ApiError> {
+        let state = self.current();
+        let (root, manifest) = state.store.metadata_root(id)?;
+        match target {
+            "root" => Ok(root),
+            "readme" => {
+                let readme = manifest
+                    .as_ref()
+                    .and_then(|m| m.docs["readme"].as_str())
+                    .unwrap_or("README.md");
+                crate::projects::checked_relative(&root, readme, false)
+            }
+            _ => Err(ApiError::new(
+                "INVALID_INPUT",
+                "Only project root and README locations are supported",
+            )),
+        }
+    }
+    pub async fn project_metadata_set(
+        &self,
+        id: &str,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
+        self.current().metadata.update(id, input).await
+    }
+    pub async fn project_icon_import(
+        &self,
+        id: &str,
+        source: &std::path::Path,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
+        let expected = input["expectedRevision"]
+            .as_str()
+            .ok_or_else(|| ApiError::new("INVALID_INPUT", "expectedRevision required"))?;
+        self.current()
+            .metadata
+            .import_icon(id, source, expected, input["maintenanceId"].as_str())
+            .await
+    }
+    pub async fn storage_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        self.current().storage.info(id).await
+    }
+    pub async fn storage_scan(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().storage.submit_scan(id).await?))
+    }
+    pub async fn storage_files(
+        &self,
+        id: &str,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
+        self.current().storage.files(id, input).await
+    }
+    pub async fn storage_cleanup(
+        &self,
+        id: &str,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
+        Ok(json!(
+            self.current().storage.submit_cleanup(id, input).await?
+        ))
+    }
+    pub async fn workspace_storage(&self) -> std::result::Result<Value, ApiError> {
+        self.current().storage.workspace_info().await
+    }
+    /// Native manager attachment access keeps the gate until the descriptor has
+    /// been consumed. It shares the browser's epoch and maintenance checks.
+    pub async fn attachment_read(
+        &self,
+        id: &str,
+        path: &str,
+        epoch: &str,
+    ) -> std::result::Result<(std::fs::File, tokio::sync::OwnedRwLockReadGuard<()>, Value), ApiError>
+    {
+        let project = self.current().store.project(id)?;
+        let lease = project.operation_gate.clone().read_owned().await;
+        project.validate_epoch(Some(epoch))?;
+        let root = files::root(&project.root.join(&project.manifest.attachments_dir))?;
+        let file = files::read(&root, path)?;
+        let info = json!(files::info(path, &file)?);
+        Ok((file, lease, info))
     }
     pub async fn projects(&self) -> std::result::Result<Value, ApiError> {
         let mut items = Vec::new();
@@ -499,6 +692,7 @@ impl RuntimeService {
             }
             notified.await;
         }
+        state.storage.shutdown().await;
         state.lifecycle.shutdown().await;
         state.maintenance.shutdown().await;
         state.builds.shutdown().await;
@@ -600,6 +794,13 @@ fn make_state(
         builds.clone(),
         maintenance.clone(),
     )?;
+    let metadata = crate::metadata::MetadataManager::new(store.clone(), info.instance_id.clone());
+    let storage = crate::storage::StorageManager::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        maintenance.clone(),
+    )?;
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
     let state = Arc::new(HttpState {
@@ -615,6 +816,8 @@ fn make_state(
         builds,
         maintenance,
         lifecycle,
+        metadata,
+        storage,
         resources,
         tickets: Mutex::new(HashMap::new()),
         sessions: Mutex::new(HashMap::new()),
@@ -651,7 +854,19 @@ fn make_state(
     let mut stop = state.stop.subscribe();
     tokio::spawn(async move {
         loop {
-            tokio::select! {_=stop.changed()=>break,event=receiver.recv()=>match event{Ok(event) if event.status==TaskStatus::Succeeded=>{let Some(state)=weak.upgrade()else{break};let _=state.events.send(Change{project_id:event.project_id,request_id:event.task_id,source:"build".into(),event:"project.updated".into()});},Ok(_)=>(),Err(broadcast::error::RecvError::Lagged(_))=>(),Err(_)=>break}}
+            tokio::select! {
+                _=stop.changed()=>break,
+                event=receiver.recv()=>match event {
+                    Ok(event) => {
+                        let Some(state)=weak.upgrade() else {break};
+                        let task_type=state.builds.task(&event.task_id).map(|t|t.task_type).unwrap_or_default();
+                        if task_type=="build" && event.status==TaskStatus::Succeeded {
+                            let _=state.events.send(Change{project_id:event.project_id,request_id:event.task_id,source:"build".into(),event:"project.updated".into()});
+                        }
+                    },
+                    Err(broadcast::error::RecvError::Lagged(_))=>(),Err(_)=>break
+                }
+            }
         }
     });
     Ok(state)
@@ -678,6 +893,7 @@ async fn submit_migration(
         Ok(task) => task,
         Err(error) => {
             state.store.resume_workspace();
+            state.storage.resume();
             shared.migration_active.store(false, Ordering::Release);
             return Err(error);
         }
@@ -711,6 +927,7 @@ async fn submit_migration(
                     .detail("projectId", project.id));
                 }
             }
+            state.storage.quiesce().await;
             state.store.pause_workspace().await;
             let mut guards = vec![];
             for project in state.store.list().await? {
@@ -775,6 +992,7 @@ async fn submit_migration(
                 .map_err(|e| ApiError::new("WORKSPACE_REOPEN_FAILED", e.to_string()))?;
             shared.install(new.clone());
             let _ = state.stop.send(true);
+            state.storage.shutdown().await;
             state.lifecycle.shutdown().await;
             state.maintenance.shutdown().await;
             state.builds.shutdown().await;
@@ -830,6 +1048,7 @@ async fn submit_migration(
                 committed || crate::workspace::is_committed(&state.paths, &id).unwrap_or(true);
             if !committed {
                 state.store.resume_workspace();
+                state.storage.resume();
                 if let Ok(projects) = state.store.list().await {
                     for project in projects {
                         let _ = state.events.send(Change {
@@ -1017,6 +1236,8 @@ fn status(error: &ApiError) -> StatusCode {
             StatusCode::NOT_FOUND
         }
         "FILE_EXISTS"
+        | "METADATA_CHANGED"
+        | "STORAGE_CURSOR_INVALID"
         | "PROJECT_RELOAD_REQUIRED"
         | "PROJECT_ID_CONFLICT"
         | "PROJECT_TRASHED"
@@ -1082,7 +1303,11 @@ fn admin(state: &HttpState, headers: &HeaderMap) -> std::result::Result<(), ApiE
 }
 async fn runtime(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> Response {
     match admin(&state, &headers) {
-        Ok(()) => Json(state.info.clone()).into_response(),
+        Ok(()) => {
+            let mut info = json!(state.info);
+            info["platform"] = crate::platform_info::info();
+            Json(info).into_response()
+        }
         Err(error) => failure(error, None),
     }
 }
@@ -1131,6 +1356,11 @@ async fn input<T: DeserializeOwned>(request: Request) -> std::result::Result<T, 
     serde_json::from_slice(&bytes).map_err(|e| ApiError::new("INVALID_INPUT", e.to_string()))
 }
 fn changed(state: &HttpState, id: &str, request_id: &str, source: &str) {
+    if let Err(error) =
+        crate::maintenance::MaintenanceManager::invalidate_storage(state.paths.workspace_root(), id)
+    {
+        eprintln!("Storage invalidation failed: {error}");
+    }
     let _ = state.events.send(Change {
         project_id: id.into(),
         request_id: request_id.into(),
@@ -1185,6 +1415,7 @@ async fn management(
                 | ["projects", "imports"]
                 | ["trash", _, "restore" | "purge"]
                 | ["workspace", "migrations"]
+                | ["projects", _, "storage", "scans" | "cleanups"]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -1231,7 +1462,44 @@ async fn management(
                     .set_node_path(input::<NodeConfig>(request).await?.node_path)
                     .await
             }
+            (Method::GET, ["workspace", "storage"]) => handle.workspace_storage().await,
             (Method::GET, ["workspace"]) => handle.workspace_info().await,
+            (Method::GET, ["projects", id, "metadata"]) => handle.project_metadata(id).await,
+            (Method::PATCH, ["projects", id, "metadata"]) => {
+                handle
+                    .project_metadata_set(id, input::<Value>(request).await?)
+                    .await
+            }
+            (Method::GET, ["projects", id, "storage"]) => handle.storage_info(id).await,
+            (Method::POST, ["projects", id, "storage", "scans"]) => {
+                let body = optional_json(request).await?;
+                if body != json!({}) {
+                    return Err(ApiError::new("INVALID_INPUT", "Scan input must be empty"));
+                }
+                handle.storage_scan(id).await
+            }
+            (Method::POST, ["projects", id, "storage", "cleanups"]) => {
+                handle
+                    .storage_cleanup(id, input::<Value>(request).await?)
+                    .await
+            }
+            (Method::GET, ["projects", id, "storage", "files"]) => {
+                let mut body = serde_json::Map::new();
+                for (key, value) in query(&request)? {
+                    if key == "limit" {
+                        body.insert(
+                            key,
+                            json!(value.parse::<u64>().map_err(|_| ApiError::new(
+                                "INVALID_INPUT",
+                                "limit must be an integer"
+                            ))?),
+                        );
+                    } else {
+                        body.insert(key, Value::String(value));
+                    }
+                }
+                handle.storage_files(id, Value::Object(body)).await
+            }
             (Method::POST, ["workspace", "migrations"]) => {
                 handle
                     .workspace_migrate(input::<Value>(request).await?)
@@ -1531,7 +1799,7 @@ async fn project_api(
     }
     let outcome:std::result::Result<Value,ApiError>=async {
         match(method,tail.as_str()) {
-            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.name,"sdkApiVersion":API_VERSION,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"limits":crate::sql_limits(SqlCaller::Browser),"state":state.maintenance.browser_status(&id,&epoch)})),
+            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.name,"sdkApiVersion":API_VERSION,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
             (Method::GET,"db/schema")=>Ok(json!(state.store.schema(&id,Some(&epoch)).await?)),
             (Method::POST,"db/execute")=>{let value=state.store.execute(&id,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
             (Method::POST,"db/transaction")=>{let value=state.store.transaction(&id,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
@@ -1613,6 +1881,7 @@ async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Resp
         }
     }
 }
+#[cfg(test)]
 fn network_origins(requirements: &Value, kind: &str) -> std::result::Result<String, ApiError> {
     let Some(entries) = requirements.get("network").and_then(|v| v.get(kind)) else {
         return Ok(String::new());
@@ -1661,32 +1930,24 @@ fn network_origins(requirements: &Value, kind: &str) -> std::result::Result<Stri
     Ok(output)
 }
 fn policy(project: &ProjectHandle) -> std::result::Result<(String, String), ApiError> {
-    let requirements = &project.manifest.runtime_requirements;
-    let connect = network_origins(requirements, "connect")?;
-    let images = network_origins(requirements, "images")?;
-    let media = network_origins(requirements, "media")?;
-    let csp=format!("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{images}; media-src 'self' blob:{media}; connect-src 'self'{connect}; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
-    let device = |name| {
-        if requirements
-            .get("devices")
-            .and_then(|v| v.get(name))
-            .and_then(|v| v.get("purpose"))
-            .and_then(Value::as_str)
-            .is_some_and(|v| !v.trim().is_empty())
-        {
-            "(self)"
-        } else {
-            "()"
-        }
-    };
+    let policy =
+        crate::runtime_policy::RuntimePolicy::parse(&project.manifest.runtime_requirements)?;
     Ok((
-        csp,
-        format!(
-            "camera={}, microphone={}, geolocation=(), display-capture=()",
-            device("camera"),
-            device("microphone")
-        ),
+        policy.content_security_policy(),
+        policy.permissions_policy(),
     ))
+}
+fn browser_limits() -> Value {
+    let mut limits = crate::sql_limits(SqlCaller::Browser);
+    limits["fileUploadMaxBytes"] = json!(FILE_MAX);
+    limits
+}
+fn policy_fingerprint(requirements: &Value) -> String {
+    use sha2::Digest;
+    format!(
+        "{:x}",
+        sha2::Sha256::digest(serde_json::to_vec(requirements).unwrap_or_default())
+    )
 }
 async fn project_entry(
     State(state): State<Arc<HttpState>>,
@@ -1803,10 +2064,11 @@ async fn serve_project(
             let nonce=secret();
             csp=csp.replace("script-src 'self'",&format!("script-src 'self' 'nonce-{nonce}'"));
             let meta = format!(
-                "{}<meta name=\"platform-document-epoch\" content=\"{}\"><script nonce=\"{nonce}\">{}</script>",
+                "{}<meta name=\"platform-document-epoch\" content=\"{}\"><meta name=\"platform-runtime-policy\" content=\"{}\"><script nonce=\"{nonce}\">{}</script>",
                 base.map(|base| format!("<base href=\"{base}\">"))
                     .unwrap_or_default(),
                 safe_epoch,
+                policy_fingerprint(&project.manifest.runtime_requirements),
                 crate::runtime_notice::script()
             );
             let lower = html.to_ascii_lowercase();
@@ -2850,3 +3112,7 @@ mod m3_tests;
 #[cfg(test)]
 #[path = "service_m4_tests.rs"]
 mod m4_tests;
+
+#[cfg(test)]
+#[path = "service_m5_tests.rs"]
+mod m5_tests;

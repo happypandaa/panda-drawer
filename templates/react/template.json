@@ -1,5 +1,5 @@
 {
-  "templateVersion": "react-ts-vite-0.1.1",
+  "templateVersion": "react-ts-vite-0.1.2",
   "sdkPackage": "@local-projects/sdk",
   "sdkVersion": "0.1.0",
   "sdkApiVersion": 1,

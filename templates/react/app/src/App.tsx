@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { platform, PlatformError } from '@local-projects/sdk'
 import type { ProjectContext } from '@local-projects/sdk'
 import { Badge, Button, Card } from './components/ui'
+import { MediaToolsPanel } from './components/MediaToolsPanel'
 
 function message(error: unknown) {
   return error instanceof PlatformError ? `${error.message} (${error.code})` : '读取项目时发生错误，请重试。'
@@ -55,6 +56,8 @@ export default function App() {
       <Card><span className="step">01</span><h2>把项目交给 AI</h2><p>回到平台，点击“复制给 AI”。AI 会读取项目说明，编写页面，并构建新的版本。</p></Card>
       <Card><span className="step">02</span><h2>随时打开，继续使用</h2><p>这里是你的初始应用。以后添加的功能也可以在桌面或浏览器使用，AI 关闭后仍能运行，数据保存在本机。</p></Card>
     </div>
+
+    <MediaToolsPanel context={context} />
 
     <footer className="footer">
       <span>{tableCount === undefined ? '等待读取项目数据' : tableCount === 0 ? '新项目 · 暂无业务数据表' : `已连接 · ${tableCount} 张业务数据表`}</span>

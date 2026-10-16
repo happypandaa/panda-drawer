@@ -2823,6 +2823,7 @@ dependencies = [
  "futures-util",
  "libc",
  "mime_guess",
+ "png 0.18.1",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
@@ -2843,6 +2844,7 @@ dependencies = [
 name = "platform-desktop"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "platform-core",
  "serde",
  "serde_json",

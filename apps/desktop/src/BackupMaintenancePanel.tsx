@@ -23,9 +23,9 @@ function timestamp(value: string | number | null | undefined) {
 
 function fileSize(value: number | undefined) {
   if (value === undefined || !Number.isFinite(value)) return '大小未知';
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value < 1000) return `${value} B`;
+  if (value < 1000 * 1000) return `${(value / 1000).toFixed(1)} KB`;
+  return `${(value / 1000 / 1000).toFixed(1)} MB`;
 }
 
 const kindLabels: Record<string, string> = {

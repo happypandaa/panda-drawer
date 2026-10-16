@@ -30,7 +30,11 @@
     "test:runtime-notice": "node scripts/runtime-notice-test.mjs",
     "test:m4:live": "node scripts/m4-live-test.mjs",
     "test:m4:compatibility": "node scripts/m4-compatibility-test.mjs verify",
-    "test:m4:migration": "node scripts/m4-migration-test.mjs"
+    "test:m4:migration": "node scripts/m4-migration-test.mjs",
+    "test:m5:live": "node scripts/m5-live-test.mjs",
+    "test:m5:restart": "node scripts/m5-restart-test.mjs",
+    "test:m5:compatibility": "node scripts/m5-compatibility-test.mjs verify",
+    "test:browser-tools": "node --test scripts/m5-browser-tools-test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3"

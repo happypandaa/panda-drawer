@@ -313,6 +313,53 @@ impl BuildManager {
             .insert(record.task_id.clone(), record.clone());
         Ok((record, lease))
     }
+    pub(crate) fn create_readonly_operation(
+        &self,
+        project_id: &str,
+        kind: &str,
+    ) -> Result<TaskRecord, ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        self.store.check_workspace_available()?;
+        if !crate::projects::valid_id(project_id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        let record = TaskRecord {
+            task_id: format!("task_{}", Uuid::new_v4().simple()),
+            project_id: Some(project_id.into()),
+            task_type: kind.into(),
+            status: TaskStatus::Queued,
+            phase: "queued".into(),
+            result: None,
+            error: None,
+        };
+        ensure_dir(&self.task_dir(&record.task_id))?;
+        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
+        self.registry
+            .lock()
+            .unwrap()
+            .records
+            .insert(record.task_id.clone(), record.clone());
+        Ok(record)
+    }
+    pub(crate) fn finish_partial(
+        &self,
+        id: &str,
+        result: Value,
+        error: ApiError,
+    ) -> Result<(), ApiError> {
+        let mut registry = self.registry.lock().unwrap();
+        let record = registry
+            .records
+            .get_mut(id)
+            .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task not found"))?;
+        record.status = TaskStatus::Failed;
+        record.phase = "failed".into();
+        record.result = Some(result);
+        record.error = Some(error);
+        atomic_json(&self.task_dir(id).join("task.json"), record)
+    }
     pub(crate) fn reconcile_operation(&self, id: &str, outcome: &str) -> Result<(), ApiError> {
         self.reconcile_operation_result(id, json!({"operationOutcome":outcome,"recovered":true}))
     }
@@ -450,8 +497,19 @@ impl BuildManager {
             task_id: id.into(),
             status: record.status,
         };
+        let is_build = record.task_type == "build";
+        if !matches!(record.task_type.as_str(), "storageScan" | "storageCleanup") {
+            if let Err(error) = crate::maintenance::MaintenanceManager::invalidate_storage(
+                self.paths.workspace_root(),
+                &event.project_id,
+            ) {
+                eprintln!("Storage invalidation failed: {error}");
+            }
+        }
         atomic_json(&self.task_dir(id).join("task.json"), record)?;
-        registry.active.remove(&event.project_id);
+        if is_build {
+            registry.active.remove(&event.project_id);
+        }
         registry.leases.remove(id);
         let _ = self.events.send(event);
         Ok(())
