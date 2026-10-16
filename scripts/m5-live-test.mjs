@@ -8,7 +8,7 @@ const project=cli(['project','create','--input','-'],{name:`M5 可丢弃 管理�
 assert.match(project.name,/^M5 可丢弃/);const id=project.id;const root=project.projectRoot;
 const document=await session(current,id);
 const initialEpoch=info(id).documentEpoch;
-assert.equal(project.buildInfo.templateVersion,'react-ts-vite-0.1.2');
+assert.equal(project.buildInfo.templateVersion,'react-ts-vite-0.1.3');
 assert.equal(await readFile(join(root,'app/src/lib/browser-tools.js'),'utf8'),await readFile('templates/react/app/src/lib/browser-tools.js','utf8'));assert.ok((await readFile(join(root,'app/BROWSER_TOOLS.md'),'utf8')).includes('browser-tools'));
 const sdkHash=sha256(await readFile(join(root,'app/vendor/local-projects-sdk-0.1.0.tgz')));
 const entryHash=sha256(await readFile(join(root,'dist/index.html')));

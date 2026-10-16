@@ -10,10 +10,30 @@ function purpose(context: ProjectContext | undefined, device: string) {
   return value && typeof value === 'object' && 'purpose' in value && typeof value.purpose === 'string' ? value.purpose : ''
 }
 
+type RuntimeState = Partial<ProjectContext['state']> & {
+  offline?: boolean; expired?: boolean; recoveryRequired?: boolean; trashed?: boolean
+  workspaceMigrating?: boolean; instanceChanged?: boolean
+}
+
+function currentContext(context: ProjectContext | undefined, runtime: RuntimeState) {
+  return context && { ...context, state: { ...context.state, ...runtime } }
+}
+
+function projectIsReady(context: ProjectContext | undefined, runtime: RuntimeState) {
+  const state: RuntimeState | undefined = context && { ...context.state, ...runtime }
+  return Boolean(state && ['normal', 'ready'].includes(state.mode ?? '') && !state.busy && !state.reloadRequired && !state.offline && !state.expired && !state.recoveryRequired && !state.trashed && !state.workspaceMigrating && !state.instanceChanged)
+}
+
 // This demonstration performs no schema or file writes until the explicit Save button.
 export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
   const tools = useRef<MediaTools | null>(null)
   const video = useRef<HTMLVideoElement>(null)
+  const contextRef = useRef(context)
+  contextRef.current = context
+  const runtimeRef = useRef<RuntimeState>({})
+  const savingRef = useRef(false)
+  const savedRef = useRef<SaveState | undefined>(undefined)
+  const [runtime, setRuntime] = useState<RuntimeState>({})
   const [state, setState] = useState<MediaState>({ phase: 'idle', reason: '', asset: null, stream: null })
   const [preview, setPreview] = useState('')
   const [error, setError] = useState('')
@@ -25,14 +45,32 @@ export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
   const micPurpose = purpose(context, 'microphone')
   const cameraPurpose = purpose(context, 'camera')
   const active = ['requesting', 'recording', 'camera'].includes(state.phase)
-  const projectReady = Boolean(context && ['normal', 'ready'].includes(context.state.mode) && !context.state.busy && !context.state.reloadRequired)
+  const projectReady = projectIsReady(context, runtime)
 
   useEffect(() => {
-    const current = createMediaTools({ onChange: setState })
+    const current = createMediaTools({ context: currentContext(contextRef.current, runtimeRef.current), onChange: setState })
     tools.current = current
-    return () => { current.dispose(); tools.current = null }
+    const updateRuntime = (value: RuntimeState) => {
+      // Ref updates are immediate: a click before React renders must see this gate.
+      runtimeRef.current = { ...runtimeRef.current, ...value }
+      setRuntime(runtimeRef.current)
+      current.updateContext(currentContext(contextRef.current, runtimeRef.current))
+    }
+    const platformState = (event: Event) => {
+      const value = (event as CustomEvent<RuntimeState>).detail
+      if (value && typeof value === 'object') updateRuntime(value)
+    }
+    const offline = () => updateRuntime({ offline: true })
+    window.addEventListener('platform:state', platformState)
+    window.addEventListener('offline', offline)
+    return () => {
+      window.removeEventListener('platform:state', platformState)
+      window.removeEventListener('offline', offline)
+      current.dispose(); tools.current = null
+    }
   }, [])
-  useEffect(() => { tools.current?.updateContext(context) }, [context])
+  // A late context response cannot undo a more recent runtime notice.
+  useEffect(() => { tools.current?.updateContext(currentContext(context, runtimeRef.current)) }, [context])
   useEffect(() => {
     const current = tools.current
     if (!current || !state.asset) { setPreview(''); return }
@@ -50,26 +88,38 @@ export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
     setError('')
     try { await action() } catch (cause) { setError(explainMediaError(cause)) }
   }
+  function assertProjectReady() {
+    if (!projectIsReady(contextRef.current, runtimeRef.current)) throw new Error('项目当前不能采集或保存素材。请先处理维护、连接或重新加载提示；本地预览仍会保留。')
+  }
+  function updateSaved(value?: SaveState) { savedRef.current = value; setSaved(value) }
   function choose(file?: File) {
-    if (!file || saving) return
-    void act(() => { tools.current?.selectFile(file); setSaved(undefined) })
+    if (!file || savingRef.current) return
+    void act(() => { tools.current?.selectFile(file); updateSaved() })
   }
   async function save() {
-    if (!state.asset || saving || saved) return
+    const asset = tools.current?.state.asset
+    if (!asset || savingRef.current || savedRef.current || ['requesting', 'recording', 'camera'].includes(tools.current?.state.phase ?? '')) return
+    try { assertProjectReady() } catch (cause) { setError(explainMediaError(cause)); return }
+    setError('')
+    savingRef.current = true
     setSaving(true)
     const id = crypto.randomUUID()
-    const path = `media-samples/${id}.${state.asset.extension}`
+    const path = `media-samples/${id}.${asset.extension}`
     try {
       await saveMediaAsset({
-        asset: state.asset, path,
+        asset, path,
         upload: (logicalPath, blob) => platform.files.put({ path: logicalPath, content: blob }),
-        writeRecord: metadata => platform.db.transaction({ statements: [
+        writeRecord: metadata => {
+          // An accepted upload may finish after maintenance or disconnect begins.
+          assertProjectReady()
+          return platform.db.transaction({ statements: [
           { sql: 'CREATE TABLE IF NOT EXISTS media_samples (id TEXT PRIMARY KEY, attachment_path TEXT NOT NULL, mime_type TEXT NOT NULL, extension TEXT NOT NULL, size_bytes INTEGER NOT NULL, duration_ms INTEGER, original_name TEXT NOT NULL, created_at TEXT NOT NULL)' },
           { sql: 'INSERT INTO media_samples (id, attachment_path, mime_type, extension, size_bytes, duration_ms, original_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', params: [id, metadata.path, metadata.mimeType, metadata.extension, metadata.size, metadata.durationMs, metadata.name, new Date().toISOString()] },
-        ] }),
-        onState: setSaved,
+          ] })
+        },
+        onState: updateSaved,
       })
-    } finally { setSaving(false) }
+    } finally { savingRef.current = false; setSaving(false) }
   }
   async function copy(text: string) {
     const result = await copyTextFromGesture(text)
@@ -83,11 +133,12 @@ export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
       <p>录音、拍照和选择文件先留在当前页面。点击“保存素材示例”才上传附件并写入 <code>media_samples</code> 演示表；打开页面不会创建业务数据。</p>
       <p className="muted">录音和摄像头预览最多持续 60 秒，文件最多 10 MiB，并受平台返回的上传限制约束。页面隐藏、离开或项目状态变化会停止设备。刷新会丢失未保存内容。</p>
       <div className="media-actions">
-        <Button disabled={!projectReady || !micPurpose || active || saving} onClick={() => void act(async () => { await tools.current?.startRecording(); setSaved(undefined) })}>开始录音</Button>
-        <Button disabled={!projectReady || !cameraPurpose || active || saving} onClick={() => void act(async () => { await tools.current?.startCamera(); setSaved(undefined) })}>打开摄像头 / 重拍</Button>
+        <Button disabled={!projectReady || !micPurpose || active || saving} onClick={() => void act(async () => { assertProjectReady(); await tools.current?.startRecording(); updateSaved() })}>开始录音</Button>
+        <Button disabled={!projectReady || !cameraPurpose || active || saving} onClick={() => void act(async () => { assertProjectReady(); await tools.current?.startCamera(); updateSaved() })}>打开摄像头 / 重拍</Button>
         <Button className="quiet" disabled={!active} onClick={() => tools.current?.stop('user-stopped')}>停止采集</Button>
       </div>
       <p className="muted">麦克风：{micPurpose || '未声明，不启用'}<br />摄像头：{cameraPurpose || '未声明，不启用'}。需要时请让 AI 在项目运行声明中填写具体用途，之后明确重新加载页面。</p>
+      {context && !projectReady && <p role="status">项目当前暂停采集和保存素材。请先处理平台的维护、连接或重新加载提示；仍可选择文件、预览、下载本地副本和复制文字。</p>}
       {state.phase === 'requesting' && <p role="status">等待设备许可，可随时停止。</p>}
       {state.phase === 'recording' && <p role="status">正在录音…</p>}
       <video ref={video} hidden={state.phase !== 'camera'} muted autoPlay playsInline aria-label="摄像头本地预览" />
@@ -101,7 +152,7 @@ export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
         <div className="media-actions">
           <Button disabled={!projectReady || active || saving || Boolean(saved)} onClick={() => void save()}>保存素材示例</Button>
           <Button className="quiet" onClick={() => state.asset && downloadBlobFromGesture(state.asset.blob, state.asset.name || `media.${state.asset.extension}`)}>下载本地副本</Button>
-          <Button className="quiet" disabled={saving} onClick={() => { tools.current?.discard(); setSaved(undefined) }}>清除页面预览</Button>
+          <Button className="quiet" disabled={saving} onClick={() => { tools.current?.discard(); updateSaved() }}>清除页面预览</Button>
         </div>
       </div>}
       {saved && <div role="status" className="save-state">
@@ -113,7 +164,7 @@ export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
         <code>{saved.path}</code><Button className="quiet" onClick={() => void copy(saved.path)}>复制附件路径</Button>
       </div>}
       {(error || state.error) && <p role="alert">{error || state.error}</p>}
-      {state.reason && !active && <p className="muted">采集已停止；设备已释放。页面中的预览尚未自动保存。</p>}
+      {state.reason && !active && <p className="muted">{state.reason === 'file-selected' ? '文件仅在当前页面预览，不会自动保存。' : '采集当前未运行；页面预览不会自动保存。'}</p>}
       <label className="paste-field">手动粘贴文字（仅处理您的粘贴或输入操作）<textarea value={paste} onChange={event => setPaste(event.target.value)} placeholder="在此按 ⌘V 粘贴；不自动读取剪贴板" /></label>
       <Button className="quiet" onClick={() => void copy(paste)}>复制文字</Button>
       {copyStatus && <p role="status">{copyStatus}</p>}

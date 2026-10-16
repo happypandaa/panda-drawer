@@ -1,6 +1,6 @@
 # React / TypeScript / Vite 标准模板
 
-模板版本 `react-ts-vite-0.1.2`；SDK `@local-projects/sdk 0.1.0`；接口 API v1。版本元数据在 `template.json`。平台仅在新建项目时复制 `app/`，保留固定版本的本地 SDK 包与依赖锁文件，不覆盖旧项目。
+模板版本 `react-ts-vite-0.1.3`；SDK `@local-projects/sdk 0.1.0`；接口 API v1。版本元数据在 `template.json`。平台仅在新建项目时复制 `app/`，保留固定版本的本地 SDK 包与依赖锁文件，不覆盖旧项目。
 
 模板使用 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4。Node 使用系统安装，支持 `^22.12.0 || ^24.0.0`，推荐 24 LTS；不包含 Node 二进制。第三方依赖首次构建仍需下载。`app/vendor/` 内 SDK tarball 不属于缓存。
 
