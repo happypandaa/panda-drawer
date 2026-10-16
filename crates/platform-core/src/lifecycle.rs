@@ -1141,6 +1141,95 @@ impl LifecycleManager {
         journal.committed = true;
         self.finish_journal(journal)
     }
+    /// A history cleanup owns the workspace gate. It supplies the exact,
+    /// preview-bound file deletion; lifecycle intent and retirement stay here.
+    pub(crate) fn cleanup_trash_with<F>(
+        &self,
+        trash_id: &str,
+        parent_task_id: &str,
+        remove: F,
+    ) -> Result<Value, ApiError>
+    where
+        F: FnOnce(&Path) -> Result<Value, ApiError>,
+    {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        if self.store.check_workspace_available().is_ok()
+            || self.tasks.task(parent_task_id)?.task_type != "workspaceCleanup"
+        {
+            return Err(ApiError::new(
+                "CLEANUP_NOT_EXCLUSIVE",
+                "History cleanup must hold the workspace operation gate",
+            ));
+        }
+        let mut trash = self.read_trash(trash_id)?;
+        if !active_trash(&trash.state) {
+            return Err(ApiError::new(
+                "TRASH_NOT_AVAILABLE",
+                "Trash entry is no longer available",
+            ));
+        }
+        self.check_protection(&trash.project_id, trash_id, None)?;
+        self.store
+            .check_identity_available(&trash.project_id, Some(trash_id), None)?;
+        let root = self.trash_root(trash_id)?.join("project");
+        if identity(&root)? != trash.root_identity {
+            return Err(ApiError::new(
+                "TRASH_IDENTITY_CHANGED",
+                "Trash directory was replaced after preview",
+            ));
+        }
+        let task = self.tasks.create_workspace_operation("trashPurge")?;
+        let mut journal = Self::journal(&task, "trashPurge", &trash.project_id);
+        journal.trash_id = Some(trash_id.into());
+        journal.directory_identity = Some(trash.root_identity);
+        journal.control = Some(trash.control.clone());
+        let result = (|| {
+            self.save(&journal)?;
+            trash.last_task_id = task.task_id.clone();
+            trash.state = "purging".into();
+            trash.issues.clear();
+            self.save_trash(&trash)?;
+            self.phase(&mut journal, "purge-intent")?;
+            let removed = remove(&root)?;
+            match fs::symlink_metadata(&root) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(ApiError::new(
+                        "CLEANUP_INCOMPLETE",
+                        "Trash payload still exists after deletion",
+                    ))
+                }
+            }
+            self.finish_purge(&mut journal, &mut trash)?;
+            let mut result = removed.as_object().cloned().ok_or_else(|| {
+                ApiError::new(
+                    "CLEANUP_RESULT_INVALID",
+                    "Deletion summary must be an object",
+                )
+            })?;
+            result.insert("childTaskId".into(), json!(task.task_id));
+            result.insert("lifecycle".into(), journal.result.clone());
+            Ok(Value::Object(result))
+        })();
+        match &result {
+            Ok(value) => self.tasks.finish(&task.task_id, Ok(value.clone()))?,
+            Err(error) => {
+                if trash.state != "purged" {
+                    trash.state = "purgeIncomplete".into();
+                    trash.issues.push(error.clone());
+                    self.save_trash(&trash)?;
+                    journal.error = Some(error.clone());
+                    journal.resolved = true;
+                    journal.result = json!({"projectId":trash.project_id,"trashId":trash_id,"operationOutcome":"purge_incomplete","remainingPath":root,"parentTaskId":parent_task_id});
+                    self.save(&journal)?;
+                }
+                self.tasks.finish(&task.task_id, Err(error.clone()))?;
+            }
+        }
+        result.map_err(|error| error.detail("childTaskId", task.task_id))
+    }
     pub async fn trash_list(&self) -> Result<Value, ApiError> {
         let mut result = vec![];
         for entry in fs::read_dir(self.paths.workspace_root().join(".platform/trash"))? {

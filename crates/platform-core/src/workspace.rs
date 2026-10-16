@@ -798,7 +798,10 @@ pub(crate) fn info(paths: &RuntimePaths, store: &ProjectStore) -> Result<Value, 
         }
         if j.committed && j.source_path != paths.workspace_root() {
             let actual = identity(&j.source_path).ok();
-            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":actual.as_ref()==Some(&j.source_identity),"canDelete":false,"reason":"Retained migration snapshot; explicit cleanup interface is not yet finalized"}));
+            let cleanup = crate::history_cleanup::retired_cleanup_status(paths, &id)?;
+            let cleaned = cleanup.is_some()
+                && matches!(fs::symlink_metadata(&j.source_path), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":actual.as_ref()==Some(&j.source_identity),"canDelete":false,"cleaned":cleaned,"cleanup":cleanup,"reason":if cleaned {"Retained snapshot was explicitly cleaned; the cleanup receipt remains"}else{"Inspect this registered snapshot in the history cleanup preview"}}));
         }
     }
     Ok(

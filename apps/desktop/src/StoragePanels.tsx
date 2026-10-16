@@ -91,12 +91,12 @@ function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }
   };
   add('trash', '回收站 · 当前工作区', categories?.trash, data?.workspace, '保留可恢复的项目副本。在“回收站”页签核对后，可永久删除选中的回收项。');
   add('backups', '历史备份 · 当前工作区', categories?.backups, data?.workspace, '永久删除回收项后仍保留历史备份；当前版本尚无历史备份删除入口。');
-  add('operations', '操作现场 · 当前工作区', categories?.operations, data?.workspace, '任务记录与为恢复保留的文件，不会随删除项目清空。');
+  add('operations', '操作现场 · 当前工作区', categories?.operations, data?.workspace, '任务记录与恢复前的原现场，不随删除项目清空。已完成且无保护引用的原现场可在“清理历史”核对后删除，操作记录继续保留。');
   add('sharedCache', '共享缓存 · 当前工作区', categories?.sharedCache, data?.workspace, '构建工具等共享的缓存，独立于单个项目保存。');
   const retained = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'retainedWorkspace') ?? [];
   if (retained.length) {
     const part = combinedLocations(retained);
-    add('retained', '迁移保留目录 · 其他已知位置', part, part, '迁移前的原目录已停用，为恢复保留；删除当前工作区的项目不会清除这些副本。当前版本尚无旧目录清理入口。');
+    add('retained', '迁移保留目录 · 其他已知位置', part, part, '迁移前的原目录已停用，为恢复保留；删除项目不会清除这份完整历史副本。可在“清理历史”扫描并确认符合条件的目录。');
   }
   add('program', '平台程序', data?.platformProgram, data?.platformProgram, '软件自身的文件，不随项目数量变化。');
   const applicationData = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'applicationData') ?? [];
@@ -108,7 +108,7 @@ function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }
     <h3 id="workspace-retention-title">为什么删除项目后仍有占用</h3>
     <p>删除项目默认移入回收站。即使项目列表为空，历史备份、操作现场、迁移保留目录和程序文件仍可能占用空间；永久删除回收项也会保留历史备份。</p>
     {rows.length > 0 && <><p>以下为上方范围中仍有占用或大小未知的项目，不再与上方数字相加：</p><dl className="workspace-retention-list">{rows.map(({ key, label, part, parent, explanation }) => <div key={key}><dt>{label}</dt><dd><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong>{Boolean(!parent.complete || parent.stale) && <small>{parent.stale ? ' · 已过期' : ' · 部分统计 / 未知'}</small>}<p>{explanation}</p></dd></div>)}</dl></>}
-    <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。请在“回收站”页签按项目核对处理；历史备份、迁移保留目录和恢复现场不会自动删除。</p>
+    <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。回收项可在“回收站”处理；旧工作区与已完成的恢复原现场可在“清理历史”核对范围后显式处理。当前历史备份和未解决现场仍保留，不会自动删除。</p>
   </section>;
 }
 function combinedLocations(parts: StoragePart[]): StoragePart {

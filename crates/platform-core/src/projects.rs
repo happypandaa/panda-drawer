@@ -194,6 +194,7 @@ pub struct ProjectStore {
     stopping: AtomicBool,
     lifecycle_gate: RwLock<()>,
     workspace_migrating: AtomicBool,
+    workspace_cleaning: AtomicBool,
     workspace_paused: Arc<AtomicBool>,
     controls: Mutex<HashMap<String, Arc<crate::control::ProjectControl>>>,
     active_tasks: Arc<Mutex<HashMap<String, String>>>,
@@ -223,6 +224,7 @@ impl ProjectStore {
             stopping: AtomicBool::new(false),
             lifecycle_gate: RwLock::new(()),
             workspace_migrating: AtomicBool::new(false),
+            workspace_cleaning: AtomicBool::new(false),
             workspace_paused: Arc::new(AtomicBool::new(false)),
             resources,
             controls: Mutex::new(HashMap::new()),
@@ -739,6 +741,9 @@ impl ProjectStore {
     }
     pub(crate) fn check_workspace_available(&self) -> Result<(), ApiError> {
         if self.workspace_migrating.load(Ordering::Acquire) {
+            if self.workspace_cleaning.load(Ordering::Acquire) {
+                return Err(ApiError::new("WORKSPACE_BUSY", "History cleanup is in progress; wait for its final result before another management write").outcome("not_started"));
+            }
             Err(ApiError::new(
                 "WORKSPACE_MIGRATING",
                 "A workspace migration is in progress",
@@ -766,6 +771,11 @@ impl ProjectStore {
     pub(crate) fn has_active_tasks(&self) -> bool {
         !self.active_tasks.lock().unwrap().is_empty()
     }
+    pub(crate) fn begin_workspace_cleanup(&self) -> Result<(), ApiError> {
+        self.begin_workspace_migration()?;
+        self.workspace_cleaning.store(true, Ordering::Release);
+        Ok(())
+    }
     pub(crate) async fn pause_workspace(&self) {
         let _lifecycle = self.lifecycle_gate.write().await;
         self.workspace_paused.store(true, Ordering::Release);
@@ -788,6 +798,7 @@ impl ProjectStore {
     }
     pub(crate) fn resume_workspace(&self) {
         self.workspace_paused.store(false, Ordering::Release);
+        self.workspace_cleaning.store(false, Ordering::Release);
         self.workspace_migrating.store(false, Ordering::Release);
     }
     fn retirement_path(&self, id: &str) -> PathBuf {

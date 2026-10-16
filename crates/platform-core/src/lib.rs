@@ -7,6 +7,7 @@ mod database;
 pub mod environment;
 mod error;
 mod files;
+mod history_cleanup;
 mod lifecycle;
 mod maintenance;
 mod metadata;

@@ -149,6 +149,22 @@ export interface TrashEntry {
   lastTaskId?: string | null;
   activeTask?: string | { taskId: string } | null;
 }
+export interface RetainedWorkspaceRoot {
+  path?: string;
+  sourcePath?: string;
+  taskId?: string;
+  available?: boolean;
+  identityMatches?: boolean;
+  cleaned?: boolean;
+  reason?: string;
+  cleanup?: {
+    completed?: boolean;
+    status?: string;
+    completedAt?: string | number | null;
+    receiptPath?: string;
+    removed?: Record<string, unknown>;
+  } | null;
+}
 export interface WorkspaceInfo {
   workspaceRoot: string;
   formatVersion: number;
@@ -158,7 +174,8 @@ export interface WorkspaceInfo {
   migrationState: string;
   activeTask: string | { taskId: string } | null;
   lastTaskId?: string | null;
-  retainedRoots: (string | { path?: string; sourcePath?: string })[];
+  cleanupTask?: TaskRecord | null;
+  retainedRoots: (string | RetainedWorkspaceRoot)[];
 }
 
 export type ByteCount = number | { $int64: string } | null;

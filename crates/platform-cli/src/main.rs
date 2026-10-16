@@ -192,6 +192,10 @@ struct TrashOptions {
 enum WorkspaceCommand {
     Info(OutputOptions),
     Storage(OutputOptions),
+    /// Inspect registered historical cleanup candidates without deleting files.
+    CleanupPlan(OutputOptions),
+    /// Permanently clean explicitly selected IDs from an unexpired preview plan.
+    Cleanup(InputOptions),
     /// Migrate to destinationPath in JSON. Old root is retained; never resubmit on a timeout.
     Migrate(InputOptions),
 }
@@ -459,6 +463,21 @@ fn trash_command(command: TrashCommand) -> (bool, Result<Value>) {
 
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
+        WorkspaceCommand::CleanupPlan(options) => (
+            options.json,
+            business_request(
+                "POST",
+                "/api/v1/workspace/cleanup-plans",
+                None,
+                Some(json!({})),
+            ),
+        ),
+        WorkspaceCommand::Cleanup(options) => (
+            options.output.json,
+            read_input(&options.input).and_then(|input| {
+                business_request("POST", "/api/v1/workspace/cleanups", None, Some(input))
+            }),
+        ),
         WorkspaceCommand::Storage(options) => (
             options.json,
             business_request("GET", "/api/v1/workspace/storage", None, None),

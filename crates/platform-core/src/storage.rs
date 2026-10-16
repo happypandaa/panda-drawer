@@ -1537,6 +1537,25 @@ fn workspace_scan(
             if !file.is_file() {
                 continue;
             }
+            if let Some(id) = file
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+            {
+                if valid_id(id)
+                    && crate::history_cleanup::retired_cleanup_status(paths, id)?.is_some()
+                {
+                    if let Ok(record) = read_json::<Value>(&file) {
+                        if record["sourcePath"].as_str().is_some_and(|source| {
+                            matches!(fs::symlink_metadata(source), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+                        }) {
+                            // A durable cleanup receipt explains the missing old copy.
+                            // Keep the migration proof; do not count an unknown phantom root.
+                            continue;
+                        }
+                    }
+                }
+            }
             match read_json::<Value>(&file) {Ok(j) if j["committed"]==true=>{if let Some(source)=j["sourcePath"].as_str(){let p=PathBuf::from(source);if p!=workspace.path && !roots.iter().any(|(_,old)|old==&p){match root_identity(&p){Ok(actual)=>{let expected=&j["sourceIdentity"];if expected["device"]==actual.device && expected["inode"]==actual.inode {roots.push(("retainedWorkspace".into(),actual.path));}else{missing.push(unknown_scope("retainedWorkspace",Some(&p),"retained_root_identity_changed"));}},Err(_)=>missing.push(unknown_scope("retainedWorkspace",Some(&p),"retained_root_unavailable"))}}}},Ok(_)=>{},Err(e)=>missing.push(json!({"scope":{"kind":"retainedWorkspace"},"root":null,"totalBytes":null,"complete":false,"stale":true,"issues":[problem(file,"unreadable_migration_record",e)]}))}
         }
     }

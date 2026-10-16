@@ -255,6 +255,23 @@ async fn workspace_storage(
     state.handle.workspace_storage().await
 }
 #[tauri::command]
+async fn workspace_cleanup_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.workspace_cleanup_preview().await
+}
+#[tauri::command]
+async fn workspace_cleanup(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.workspace_cleanup(input).await
+}
+#[tauri::command]
 async fn storage_preview(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1005,7 +1022,7 @@ fn main() {
             project_list,
             project_create,
             project_metadata,project_metadata_set,project_icon_import,project_reveal,
-            storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,
+            storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,workspace_cleanup_preview,workspace_cleanup,
             project_open,
             project_build,
             backup_list,

@@ -102,6 +102,7 @@ struct HttpState {
     lifecycle: Arc<crate::lifecycle::LifecycleManager>,
     metadata: crate::metadata::MetadataManager,
     storage: Arc<crate::storage::StorageManager>,
+    history_cleanup: Arc<crate::history_cleanup::CleanupManager>,
     info: BootstrapInfo,
     token: String,
     expected_host: String,
@@ -359,6 +360,30 @@ impl RuntimeHandle {
     pub async fn workspace_storage(&self) -> std::result::Result<Value, ApiError> {
         self.current().storage.workspace_info().await
     }
+    pub async fn workspace_cleanup_preview(&self) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        if self.shared.closing.load(Ordering::Acquire)
+            || !Arc::ptr_eq(&state, &self.shared.snapshot())
+        {
+            return Err(ApiError::new(
+                "SERVICE_INSTANCE_CHANGED",
+                "Refresh the current workspace before checking cleanup",
+            ));
+        }
+        Ok(json!(state.history_cleanup.preview()?))
+    }
+    pub async fn workspace_cleanup(&self, input: Value) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        if self.shared.closing.load(Ordering::Acquire)
+            || !Arc::ptr_eq(&state, &self.shared.snapshot())
+        {
+            return Err(ApiError::new(
+                "SERVICE_INSTANCE_CHANGED",
+                "Refresh the current workspace before submitting cleanup",
+            ));
+        }
+        Ok(json!(state.history_cleanup.submit(input)?))
+    }
     /// Native manager attachment access keeps the gate until the descriptor has
     /// been consumed. It shares the browser's epoch and maintenance checks.
     pub async fn attachment_read(
@@ -569,7 +594,9 @@ impl RuntimeHandle {
     }
     pub async fn workspace_info(&self) -> std::result::Result<Value, ApiError> {
         let state = self.current();
-        crate::workspace::info(&state.paths, &state.store)
+        let mut value = crate::workspace::info(&state.paths, &state.store)?;
+        value["cleanupTask"] = json!(state.history_cleanup.latest_task()?);
+        Ok(value)
     }
     pub async fn workspace_migrate(&self, input: Value) -> std::result::Result<Value, ApiError> {
         let state = self.current();
@@ -693,6 +720,7 @@ impl RuntimeService {
             notified.await;
         }
         state.storage.shutdown().await;
+        state.history_cleanup.shutdown().await;
         state.lifecycle.shutdown().await;
         state.maintenance.shutdown().await;
         state.builds.shutdown().await;
@@ -801,6 +829,13 @@ fn make_state(
         builds.clone(),
         maintenance.clone(),
     )?;
+    let history_cleanup = crate::history_cleanup::CleanupManager::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        lifecycle.clone(),
+        info.instance_id.clone(),
+    )?;
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
     let state = Arc::new(HttpState {
@@ -818,6 +853,7 @@ fn make_state(
         lifecycle,
         metadata,
         storage,
+        history_cleanup,
         resources,
         tickets: Mutex::new(HashMap::new()),
         sessions: Mutex::new(HashMap::new()),
@@ -993,6 +1029,7 @@ async fn submit_migration(
             shared.install(new.clone());
             let _ = state.stop.send(true);
             state.storage.shutdown().await;
+            state.history_cleanup.shutdown().await;
             state.lifecycle.shutdown().await;
             state.maintenance.shutdown().await;
             state.builds.shutdown().await;
@@ -1414,7 +1451,7 @@ async fn management(
             ] | ["projects", _, "maintenance", "end"]
                 | ["projects", "imports"]
                 | ["trash", _, "restore" | "purge"]
-                | ["workspace", "migrations"]
+                | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
         );
     let rid = Uuid::new_v4().to_string();
@@ -1463,6 +1500,14 @@ async fn management(
                     .await
             }
             (Method::GET, ["workspace", "storage"]) => handle.workspace_storage().await,
+            (Method::POST, ["workspace", "cleanup-plans"]) => {
+                handle.workspace_cleanup_preview().await
+            }
+            (Method::POST, ["workspace", "cleanups"]) => {
+                handle
+                    .workspace_cleanup(input::<Value>(request).await?)
+                    .await
+            }
             (Method::GET, ["workspace"]) => handle.workspace_info().await,
             (Method::GET, ["projects", id, "metadata"]) => handle.project_metadata(id).await,
             (Method::PATCH, ["projects", id, "metadata"]) => {
@@ -3116,3 +3161,7 @@ mod m4_tests;
 #[cfg(test)]
 #[path = "service_m5_tests.rs"]
 mod m5_tests;
+
+#[cfg(test)]
+#[path = "service_history_cleanup_tests.rs"]
+mod history_cleanup_tests;

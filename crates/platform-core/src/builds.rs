@@ -343,6 +343,29 @@ impl BuildManager {
             .insert(record.task_id.clone(), record.clone());
         Ok(record)
     }
+    /// Workspace management holds its own exclusive gate and has no project lease.
+    pub(crate) fn create_workspace_operation(&self, kind: &str) -> Result<TaskRecord, ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        let record = TaskRecord {
+            task_id: format!("task_{}", Uuid::new_v4().simple()),
+            project_id: None,
+            task_type: kind.into(),
+            status: TaskStatus::Queued,
+            phase: "queued".into(),
+            result: None,
+            error: None,
+        };
+        ensure_dir(&self.task_dir(&record.task_id))?;
+        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
+        self.registry
+            .lock()
+            .unwrap()
+            .records
+            .insert(record.task_id.clone(), record.clone());
+        Ok(record)
+    }
     pub(crate) fn finish_partial(
         &self,
         id: &str,
@@ -492,8 +515,11 @@ impl BuildManager {
                 record.error = Some(error);
             }
         }
+        let Some(project_id) = record.project_id.clone() else {
+            return atomic_json(&self.task_dir(id).join("task.json"), record);
+        };
         let event = BuildEvent {
-            project_id: record.project_id.clone().unwrap(),
+            project_id,
             task_id: id.into(),
             status: record.status,
         };
