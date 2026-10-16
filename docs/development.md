@@ -1,6 +1,6 @@
 # 开发环境与数据隔离
 
-状态：M4 已实现并交付内部开发包，CLI/API、公开迁移及进程重启验收通过；生命周期 GUI 全流程受工具访问限制未完成。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)及 [M3 记录](m3-verification.md)。本轮生命周期与迁移结果见 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
+状态：M5 功能已实现，164 项 Rust、12 项 SDK 及真实服务、进程重启、26 个已有项目兼容验证通过；最终文档同步包正在核验。管理界面完整交互、真实录音拍照、Safari/Chrome 权限与原生保存框尚未实测，不以模拟测试替代。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)；本轮证据与边界见 [M5 记录](m5-verification.md)。正式产品身份尚未命名。
 
 ## 1 开发身份
 
@@ -31,7 +31,7 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 平台界面变更由 Vite 更新；Rust 变更由 Tauri 重新编译启动。开发构建和包构建属于相同开发环境，同一时刻只运行其中一个；先明确退出再切换，不能将单实例复用误当作运行了新二进制。
 
-`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.1` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
+`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.2` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
 
 ## 3 工具链与校验
 
@@ -81,6 +81,13 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `project list` | 项目列表及真实状态 |
 | `project create --input request.json` | 输入 `name`、可选 `description`；创建可直接打开的初始应用、匹配源码、skill、文档和独立空数据库 |
 | `project info --project ID` | 清单、目录、状态、代次和来源状态 |
+| `project metadata get --project ID` | 基本信息、图标状态及 `metadataRevision` |
+| `project metadata set --project ID --input metadata.json` | 带 `expectedRevision` 修改名称、简介或图标；维护时携带 `--maintenance ID` |
+| `storage info --project ID` | 已扫描空间摘要、完整性、过期状态与问题；未知值不当作零 |
+| `storage scan --project ID` | 提交只读空间扫描任务 |
+| `storage files --project ID --input filters.json` | 附件筛选及游标分页 |
+| `storage cleanup --project ID --input cleanup.json` | 显式白名单清理任务；维护时携带 `--maintenance ID` |
+| `workspace storage` | 工作区与关联历史、保留旧根、平台程序空间信息 |
 | `project url --project ID` | 60 秒单次使用的浏览器入口 |
 | `project refresh --project ID` | 通知页面重新查询 |
 | `project handoff --project ID` | 返回项目路径、README、skill、CLI 路径与可交给 AI 的说明；不改写项目文件 |
@@ -113,7 +120,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 `packages/sdk/` 保存 ES module、TypeScript 声明及匹配说明，无外部运行时依赖。`npm run package:sdk` 校验或生成 `packages/sdk/releases/local-projects-sdk-0.1.0.tgz`，模板通过 `file:vendor/local-projects-sdk-0.1.0.tgz` 引用，锁文件一同复制。已分发同版本包内容不得覆盖；修改 SDK 后明确升版本。`npm run prepare:desktop` 将这些固定资源打入开发包；升级平台不会重写已有项目。
 
-模板位于 `templates/react/app/`，版本元数据在 `templates/react/template.json`。当前固定 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4；脚本为 `tsc --noEmit && vite build`，资源基址为 `./`。默认页面显示项目连接和使用引导，不创建业务表。黑白灰 Button/Card/Badge 在 `src/components/ui.tsx`，主题在 `src/theme.css`；它们是小型本地 React 组件，扩展时建议 shadcn/ui，没有安装或强制依赖 antd。
+模板位于 `templates/react/app/`，版本元数据在 `templates/react/template.json`。当前固定 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4；脚本为 `tsc --noEmit && vite build`，资源基址为 `./`。默认页面显示项目连接、使用引导与可展开的媒体工具示例；打开和构建不创建业务表，只有用户明确选择示例保存才建立其业务表。黑白灰 Button/Card/Badge 在 `src/components/ui.tsx`，主题在 `src/theme.css`；它们是小型本地 React 组件，扩展时建议 shadcn/ui，没有安装或强制依赖 antd。
 
 `scripts/package-template.mjs` 在临时副本执行 `npm ci` 和模板构建，核对构建未改写源码后，将 `starter/` 网页及 `starter.json` 来源写入包内模板资源。记录模板版本、源码／产物摘要及实际打包工具版本；用户新建时验证并复制这些资源，安装到项目 `dist/` 和不可变初始代，同时记录 `.platform/starter.json`。该来源表示平台提供的模板，不是用户在本机完成过构建；不会创建成功任务、任务日志或冒充本机构建的 Node/npm 环境。
 
@@ -167,7 +174,7 @@ npm run cli -- maintenance end --project prj_实际ID --input end-maintenance.js
 
 持久维护记录在工作区 `.platform/project-state/maintenance/{projectId}.json`，与旧项目登记、构建来源分开保存；升级读取默认 ready 状态，不重写已有项目文件。操作暂存、恢复候选、日志和原现场在 `.platform/operations/{taskId}/`。恢复先验证候选，再停止业务、保留完整原目录并切换；原库损坏时也保留 WAL/SHM。未解决现场不作为缓存清除，重启根据日志和目录身份核对完成、回退或待处理结果。
 
-手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。基础 UI 显示备份列表、详情、任务和维护/恢复状态；历史备份另存、手动删除、迁移旧根清理仍未按讨论稿提供。空间缓存失效不等于已经实现完整空间扫描页面。
+手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。基础 UI 显示备份列表、详情、任务和维护/恢复状态；历史备份另存、手动删除、迁移旧根清理仍未按讨论稿提供。M5 已实现统一空间扫描和白名单清理；其当前用法见第 10 节。
 
 M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建可丢弃项目；`m3-restart-test.mjs prepare|verify` 在真正退出重启前后检查维护保留。`m3-compatibility-test.mjs prepare|verify` 只读核对升级前已有项目持久文件，不因 SQLite checkpoint 改变数据库字节而误判为平台覆盖。执行结果、故障模拟与交互证据见 [M3 验证记录](m3-verification.md)。
 
@@ -195,6 +202,33 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 
 固定 `dataRoot/migrations/{taskId}/` 保存迁移日志与任务，不在被复制树中写入进度。目标安置并验证后原子更新固定 settings，作为提交点；提交前失败可继续使用源，提交后只初始化目标。新位置重新生成服务实例和管理凭据，保持维护状态并推进活跃项目代次；旧 Cookie、旧管理凭据和旧页面不能恢复写入。目标缺失、身份不符或提交无法核实时保留两边并报告错误；不自动切回旧副本。旧源离线不阻止已验证的新根启动。
 
-完成后重新读取 `project handoff` 并在新绝对路径继续编辑；旧 AI 工作目录不会自动跟随。旧项目内业务说明及 skill 不批量重写，平台仅更新生成的本机交接信息。旧根保留并展示，不提供旧迁移根删除命令；历史备份另存、删除和完整空间页仍按后续范围处理。
+完成后重新读取 `project handoff` 并在新绝对路径继续编辑；旧 AI 工作目录不会自动跟随。旧项目内业务说明及 skill 不批量重写，平台仅更新生成的本机交接信息。旧根保留并展示，不提供旧迁移根删除命令；历史备份另存、删除与旧根清理仍未定稿；M5 空间页只展示这些保留资料，不新增删除旧根的命令。
 
 M4 实际验收已保存已有项目摘要和 M3 可恢复开发包。`m4-live-test.mjs` 只创建新的 `M4 可丢弃` 项目；`m4-migration-test.mjs prepare` 记录正常/维护/回收站样本及全部保护树，经公开迁移与完整退出重启后运行 `verify`。脚本不改 settings，不自动启动迁移，不通过复制单个数据库代替工作区协议。兼容结果与完整日志保存在 `.test-artifacts/`。本轮最终通过 132 项 Rust、12 项 SDK、8 组运行提示回归、10 组 live 行为与迁移后 26 项目/14 保护树检查；原 17 个项目在升级及迁移后摘要一致。实际迁移目标是固定开发数据根下 `workspaces/current/`，源 `workspace/` 实体树保留。重启采用已核验开发进程 SIGTERM 后从包内可执行文件重新启动，不能称为 GUI 正常退出验收；GUI 全流程未完成及最终包证据见 [M4 记录](m4-verification.md)。
+
+
+## 10 M5 概览、空间与浏览器能力
+
+M5 管理界面提供项目概览、基本信息与 PNG 图标、运行需求、空间分类与附件浏览，以及关于和环境诊断。名称、简介与图标属于持久项目资料；修改不会改变项目 ID、触发构建、覆盖其他清单字段或重载已有业务页面。图标由清单引用 `meta/` 下 PNG，原生选择器导入为独立文件；CLI 的 `icon` 是项目内相对路径，不能把任意本机源文件路径当作上传接口。坏图标回退到默认图标并保留问题提示。
+
+先执行 `project metadata get`，再把刚读取的 `metadataRevision` 放入修改输入：
+
+```json
+{"expectedRevision":"刚读取的 metadataRevision","name":"新的名称","description":"新的简介"}
+```
+
+`METADATA_CHANGED` 表示读取后清单已改变，应重新读取、核对再决定修改，不自动覆盖。`icon: null` 移除图标引用；维护中还需本轮 `maintenanceId`。元数据入口不修改 `runtimeRequirements` 或任意业务源码。
+
+空间扫描按逻辑文件字节分类，附扫描时间、完整性、`stale` 和问题列表；扫描不是文件系统原子快照。`storage info` 可返回尚未扫描或过期摘要并安排重新扫描，不能把未知容量显示为零。`storage scan` 返回任务，使用原任务 ID 等待完成。附件查询例子为 `{"type":"image","limit":50}`；支持 `type`、`prefix`、`query`、`sort`、`order`、`limit`、`cursor`，下一页使用返回的 `nextCursor` 并保持筛选条件不变。文件变化导致 `STORAGE_CURSOR_INVALID` 时从第一页重新读取，不能假定旧游标仍指向同一组文件。
+
+清理输入只接受明确分类，例如 `{"categories":["dependencies","buildCache","logs"]}`。`dependencies` 是可重建依赖，`buildCache` 只处理已识别且无保护引用的构建缓存，`logs` 只处理可清理的已结束任务日志；数据库、附件、备份、当前产物、未知目录和未解决现场不归入缓存。清理返回持久任务，结果中的跳过项与部分失败须保留，不把任务结束等同于全部删除。没有任意路径删除、历史备份删除或旧迁移根删除命令。
+
+`runtimeRequirements` 是 `project.json` 中独立的可选运行需求，不改变固定 SDK 的 `capabilities`。公开联网需求分别放在 `network.connect`、`network.images`、`network.media`，每项包含精确 HTTPS `origin`、`purpose` 与 `dataSent`；不接受路径、凭据、通配符、IP 或本地名称。CSP 只放行对应资源类型，公开服务器仍须允许浏览器 CORS。摄像头与麦克风分别通过 `devices.camera`、`devices.microphone` 的 `purpose` 声明；默认新项目不声明设备。更改需求后已有页面提示明确重载，不自动重载，也不声称瞬间撤销已有系统权限。平台不提供保密密钥代理。
+
+模板 `react-ts-vite-0.1.2` 新增独立浏览器助手 `app/src/lib/browser-tools.js`，用法见项目 `app/BROWSER_TOOLS.md`。它探测安全上下文、浏览器 API 和实际 MIME，支持用户主动选择或拖入文件、下载、写入剪贴板及降级提示、短录音和拍照。运行上下文的正常模式是 `normal`。维护、忙碌、迁移、回收、离线、实例或文档失效，以及隐藏和离开页面都会停止采集并释放设备；权限请求的晚到结果也会被释放。当前录音/预览上限为 60 秒，素材上限为 10 MiB 与服务上传上限的较小值，均为内部测试保护，未定稿为正式限额。
+
+示例只有用户明确保存时才先写附件，再用事务建立或更新 `media_samples` 记录；保存路径、MIME、扩展名、大小、时长、原文件名与创建时间。附件已写入而 SQL 失败时显示已保存路径和未关联状态，不自动重传、不把失败称为整体回滚。打开、构建和升级不创建该表，也不覆盖旧项目的源码、SDK、skill 或说明；新模板与说明只进入新项目和安装包后备资源。固定 SDK 仍为 0.1.0。
+
+桌面项目下载先进入平台私有暂存，再由非阻塞原生保存对话框让用户选择目标；完成文件上限为 256 MiB，这不是网络传输中途的流量上限。保存前后核对目录及文件身份，拒绝当前工作区、固定数据根和应用包内部目标。外链请求先进入原生确认，确认后交给默认浏览器，源项目窗口不导航到外部；程序发起的请求也可能进入确认，因此不宣称已识别可信鼠标点击。相机/麦克风已配置 macOS 用途说明和 hardened runtime 权限，宿主按声明与项目状态决定是否交给系统提示；浏览器既有授权可能跳过新的权限回调。
+
+本轮源码已通过 164 项 Rust（147 core、12 CLI、5 desktop）、全目标 Clippy、fmt、12 项 SDK、9 组运行提示及 15 项媒体助手模拟测试。实际包真实服务验证 7 组通过，包括 109 附件的 40/40/29 分页；进程 SIGTERM 后从包内可执行文件重启，元数据、图标、数据库、附件、SDK 和网页保留，旧 revision/cookie 拒绝，26 个原有项目兼容核对通过。此退出方式不是 GUI 正常退出验收；受已发生的计算机使用工具访问限制影响，本轮不绕过限制测试管理 GUI、真实设备、Safari/Chrome 或原生保存框。最终产物签名、架构、权限和 DMG 摘要以 [M5 验证记录](m5-verification.md) 为准。
