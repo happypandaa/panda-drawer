@@ -1,12 +1,14 @@
 # React / TypeScript / Vite 标准模板
 
-模板版本 `react-ts-vite-0.1.3`；SDK `@local-projects/sdk 0.1.0`；接口 API v1。版本元数据在 `template.json`。平台仅在新建项目时复制 `app/`，保留固定版本的本地 SDK 包与依赖锁文件，不覆盖旧项目。
+模板版本 `react-ts-vite-0.1.4`；SDK `@local-projects/sdk 0.1.0`；接口 API v1。版本元数据在 `template.json`。平台仅在新建项目时复制 `app/`，保留固定版本的本地 SDK 包与依赖锁文件，不覆盖旧项目。
 
 模板使用 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4。Node 使用系统安装，支持 `^22.12.0 || ^24.0.0`，推荐 24 LTS；不包含 Node 二进制。第三方依赖首次构建仍需下载。`app/vendor/` 内 SDK tarball 不属于缓存。
 
 初始页面提供项目连接状态、使用引导和可展开的媒体组件示例。打开页面和构建不创建业务表、不插入样例数据，也不请求设备。只有用户明确点“保存素材示例”，才先上传附件，再用事务创建 `media_samples` 演示表并关联记录。AI 根据业务需要替换演示功能，维护对应数据库文档；项目根 README 和 docs 由平台填入实际 ID、路径和工具入口。
 
 浏览器助手独立位于 `app/src/lib/browser-tools.js`，版本 `0.1.0`，附类型声明；没有修改固定 SDK。`app/BROWSER_TOOLS.md` 说明设备用途声明、精确 HTTPS origin、离线与联网边界、采集的内部时长/字节限制、设备释放、文件与 SQL 两阶段保存、附件保留规则。默认运行声明为空，摄像头和麦克风按钮禁用；文件选择、拖入、下载和显式剪贴板操作可直接使用。实际运行时模式是 `normal`。模拟测试不能替代真机权限、录音/拍照、Safari/Chrome 和原生保存框验收。
+
+无法满足采集要求的 `OverconstrainedError` 显示中文检查设备或选择已有文件提示，不把它等同于权限拒绝，不推断某一具体约束有误，也不自动降低约束或重试采集。
 
 组件在 `app/src/components/ui.tsx`，主题变量在 `app/src/theme.css`；默认黑白灰。基础 Button/Card/Badge 是本项目的小型 React 组件，不冒充已安装 shadcn/ui。扩展时优先采用 shadcn/ui 并保持主题；不强制固定组件，也不引入 antd。
 

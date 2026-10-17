@@ -98,7 +98,7 @@ async function signedBundle(bundle, prefix) {
   const resources = path.join(bundle, 'Contents/Resources/resources')
   const template = JSON.parse(await readFile(path.join(resources, 'template/template.json'), 'utf8'))
   const starter = JSON.parse(await readFile(path.join(resources, 'template/starter.json'), 'utf8'))
-  assert.equal(template.templateVersion, 'react-ts-vite-0.1.3')
+  assert.equal(template.templateVersion, 'react-ts-vite-0.1.4')
   assert.equal(starter.templateVersion, template.templateVersion)
   assert.equal(template.sdkVersion, '0.1.0')
   for (const relative of ['template/app/src/lib/browser-tools.js', 'template/app/src/lib/browser-tools.d.ts', 'template/app/src/components/MediaToolsPanel.tsx', 'template/app/BROWSER_TOOLS.md']) assert.ok((await stat(path.join(resources, relative))).isFile(), `${relative} missing`)

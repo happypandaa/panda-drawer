@@ -460,7 +460,7 @@ M2 已实现这套探测：显式路径优先，否则检查 nvm、Volta、常�
 
 ### 7.5 M2 已落实的字段与实施边界
 
-当前模板版本为 `react-ts-vite-0.1.1`，固定 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4。初始页只展示连接和使用引导，不创建业务表或样例数据；平台包携带匹配的预编译网页，新建后立即可打开。本地基础组件位于 `app/src/components/ui.tsx`，主题在 `app/src/theme.css`，使用黑白灰风格；扩展建议 shadcn/ui，不强制组件选择，也不把基础组件称为已安装 shadcn/ui。
+当前模板版本为 `react-ts-vite-0.1.4`，固定 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4。初始页只展示连接和使用引导，不创建业务表或样例数据；平台包携带匹配的预编译网页，新建后立即可打开。本地基础组件位于 `app/src/components/ui.tsx`，主题在 `app/src/theme.css`，使用黑白灰风格；扩展建议 shadcn/ui，不强制组件选择，也不把基础组件称为已安装 shadcn/ui。
 
 本机构建来源 schema 为 `1`，包含 `buildId`、`taskId`、`completedAt`（Unix 毫秒）、`digestRuleVersion: 1`、`inputDigest`、`artifactDigest`、`node`／`npm` 的路径与版本、可选 `sdkVersion`、`entryRelative`。`buildInfo` 含 `sourceState`、`checkedAt`（Unix 毫秒）、`stale`、`reason`；用户构建附 `origin: projectBuild` 和 `provenance`。初始应用附 `origin: bundledTemplate`、`templateVersion` 和 `starter`，记录保存在项目 `.platform/starter.json`，代 ID 为 `starter_…`，没有任务 ID 或虚构成功日志。新项目的正常初始状态为 `ready`、`sourceState: matched`。M3 在 `backup.json.buildProvenance` 中携带两类来源的可移植字段；恢复后生成新的本地资源代，保留原 origin，不伪造成功任务，不依赖被排除的原项目 `.platform/`。M4 导入和复制复用该可移植来源，实际结果见 [M4 记录](m4-verification.md)。
 

@@ -1,6 +1,6 @@
 # Browser tools 0.1.0
 
-This helper is copied with template `react-ts-vite-0.1.3`. It is independent of the unchanged `@local-projects/sdk 0.1.0` package. `src/lib/browser-tools.js` contains browser behavior; its `.d.ts` describes the API. `src/components/MediaToolsPanel.tsx` demonstrates the controls. A platform update does not copy these files into existing projects.
+This helper is copied with template `react-ts-vite-0.1.4`. It is independent of the unchanged `@local-projects/sdk 0.1.0` package. `src/lib/browser-tools.js` contains browser behavior; its `.d.ts` describes the API. `src/components/MediaToolsPanel.tsx` demonstrates the controls. A platform update does not copy these files into existing projects.
 
 The initial page does not request devices or write a schema. All network lists and device declarations are empty by default. Standard file picking, drag/drop, local previews, anchor downloads, manual paste and user-gesture clipboard writes work without device declarations. Clipboard denial displays selectable text; the helper never reads the clipboard silently. Browser downloads use the browser's normal download behavior. The native host uses a private temporary download, then a separate save-location dialog; cancelling that dialog removes only the temporary download.
 
@@ -19,6 +19,8 @@ To add a device, document a concrete purpose in `project.json`, then obtain a fr
 ```
 
 Declare only devices the application actually uses. There is no screen capture, system audio, background recording or automatic transcription. `startRecording` / `startCamera` must be called directly from a user action. The helper checks the current declaration, secure context and project state before asking the browser; the operating system and browser can still refuse permission. Show `explainMediaError` and retain the file picker fallback. A persisted browser permission is not a new per-project OS permission.
+
+`OverconstrainedError` receives a Chinese message explaining that the device cannot meet the capture requirements or may be temporarily unavailable. This is distinct from a permission denial and does not diagnose a specific constraint. The helper keeps the requested constraints and never retries or lowers them automatically. Another capture attempt requires an explicit user action.
 
 Recording probes `MediaRecorder.isTypeSupported` and records the actual resulting MIME type, extension, bytes and measured foreground duration. Never assume WebM support or silently rename MP4 audio to WebM. Photo capture uses a video preview and canvas JPEG capture rather than requiring the newer ImageCapture API. Images are scaled to a maximum 1920-pixel long edge. These are internal template defaults, not finalized platform product limits.
 

@@ -43,7 +43,7 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 平台界面变更由 Vite 更新；Rust 变更由 Tauri 重新编译启动。开发构建和包构建属于相同开发环境，同一时刻只运行其中一个；先明确退出再切换，不能将单实例复用误当作运行了新二进制。
 
-`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.3` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
+`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.4` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
 
 ## 3 工具链与校验
 
@@ -239,9 +239,11 @@ M5 管理界面提供项目概览、基本信息与 PNG 图标、运行需求、
 
 `runtimeRequirements` 是 `project.json` 中独立的可选运行需求，不改变固定 SDK 的 `capabilities`。公开联网需求分别放在 `network.connect`、`network.images`、`network.media`，每项包含精确 HTTPS `origin`、`purpose` 与 `dataSent`；不接受路径、凭据、通配符、IP 或本地名称。CSP 只放行对应资源类型，公开服务器仍须允许浏览器 CORS。摄像头与麦克风分别通过 `devices.camera`、`devices.microphone` 的 `purpose` 声明；默认新项目不声明设备。更改需求后已有页面提示明确重载，不自动重载，也不声称瞬间撤销已有系统权限。平台不提供保密密钥代理。
 
-模板自 `react-ts-vite-0.1.2` 提供独立浏览器助手 `app/src/lib/browser-tools.js`，用法见项目 `app/BROWSER_TOOLS.md`；当前模板为 `react-ts-vite-0.1.3`。它探测安全上下文、浏览器 API 和实际 MIME，支持用户主动选择或拖入文件、下载、写入剪贴板及降级提示、短录音和拍照。运行上下文的正常模式是 `normal`。维护、忙碌、迁移、回收、离线、实例或文档失效，以及隐藏和离开页面都会停止采集并释放设备；权限请求的晚到结果也会被释放。当前录音/预览上限为 60 秒，素材上限为 10 MiB 与服务上传上限的较小值，均为内部测试保护，未定稿为正式限额。
+模板自 `react-ts-vite-0.1.2` 提供独立浏览器助手 `app/src/lib/browser-tools.js`，用法见项目 `app/BROWSER_TOOLS.md`；当前模板为 `react-ts-vite-0.1.4`。它探测安全上下文、浏览器 API 和实际 MIME，支持用户主动选择或拖入文件、下载、写入剪贴板及降级提示、短录音和拍照。运行上下文的正常模式是 `normal`。维护、忙碌、迁移、回收、离线、实例或文档失效，以及隐藏和离开页面都会停止采集并释放设备；权限请求的晚到结果也会被释放。当前录音/预览上限为 60 秒，素材上限为 10 MiB 与服务上传上限的较小值，均为内部测试保护，未定稿为正式限额。
 
 0.1.3 修复真实 WKWebView 中“已提示维护，但重新选文件后仍可点击保存”的问题。示例采集与保存按钮同步最新运行提示，迟到的 context 不解除门槛；保存开始及附件完成后写 SQL 前各自重新核对。暂停时仍可选择文件、预览、下载本地副本和手动复制，不自动重放保存。16 项新增组件 DOM 检查与模板 TypeScript/Vite 构建通过；实际窗口复测、新包和三端设备验收的准确状态见 [M5 浏览器实测续记](m5-browser-real-verification.md)。旧项目不会因平台升级收到这些源码修改。
+
+0.1.4 为真实返回的 `OverconstrainedError` 增加中文设备不可用或不满足采集要求提示，不把空约束字段推断为某个参数，也不将其当作权限拒绝。相机约束、权限请求与重试策略不变，固定 SDK 不变。18 项助手模拟回归、16 项组件检查及模板 TypeScript/Vite 构建通过；这些检查不代表摄像头已恢复可用。
 
 示例只有用户明确保存时才先写附件，再用事务建立或更新 `media_samples` 记录；保存路径、MIME、扩展名、大小、时长、原文件名与创建时间。附件已写入而 SQL 失败时显示已保存路径和未关联状态，不自动重传、不把失败称为整体回滚。打开、构建和升级不创建该表，也不覆盖旧项目的源码、SDK、skill 或说明；新模板与说明只进入新项目和安装包后备资源。固定 SDK 仍为 0.1.0。
 

@@ -8,7 +8,7 @@ export function extensionForMime(mime) {
 }
 
 export function explainMediaError(error) {
-  return ({ NotAllowedError: '未获得设备权限。请在浏览器或系统设置中允许访问，或选择已有文件。', NotFoundError: '未找到设备，请选择已有文件。', NotReadableError: '设备暂时不可用，可能正被其他应用占用。', SecurityError: '当前页面不允许使用设备，请从平台重新打开。', AbortError: '操作已停止，未保存。', NotSupportedError: '此浏览器不支持该录制格式，请选择已有文件。' })[error?.name] ?? error?.message ?? '媒体操作失败，请选择已有文件。'
+  return ({ NotAllowedError: '未获得设备权限。请在浏览器或系统设置中允许访问，或选择已有文件。', NotFoundError: '未找到设备，请选择已有文件。', NotReadableError: '设备暂时不可用，可能正被其他应用占用。', OverconstrainedError: '当前设备无法满足采集要求，也可能暂时不可用。请检查设备，或选择已有文件。', SecurityError: '当前页面不允许使用设备，请从平台重新打开。', AbortError: '操作已停止，未保存。', NotSupportedError: '此浏览器不支持该录制格式，请选择已有文件。' })[error?.name] ?? error?.message ?? '媒体操作失败，请选择已有文件。'
 }
 
 function failure(message, name = 'Error') { return Object.assign(new Error(message), { name }) }

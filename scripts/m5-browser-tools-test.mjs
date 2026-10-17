@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createMediaTools, saveMediaAsset, copyTextFromGesture, downloadBlobFromGesture, droppedFiles, extensionForMime } from '../templates/react/app/src/lib/browser-tools.js'
+// Browser behavior is simulated here. Real permission/device evidence is separate.
+import { createMediaTools, saveMediaAsset, copyTextFromGesture, downloadBlobFromGesture, droppedFiles, extensionForMime, explainMediaError } from '../templates/react/app/src/lib/browser-tools.js'
 
 const context = () => ({ runtimeRequirements: { devices: { microphone: { purpose: 'Audio note' }, camera: { purpose: 'Receipt photo' } } }, limits: { fileUploadMaxBytes: 100 }, state: { mode: 'normal', busy: false, reloadRequired: false } })
 const tick = () => new Promise(resolve => queueMicrotask(resolve))
@@ -53,6 +54,60 @@ test('no device request at construction; declarations and user gesture required'
   tools.updateContext(context()); h.env.navigator.userActivation.isActive = false
   await assert.rejects(tools.startCamera(), /点击/)
   assert.equal(h.captures.length, 0); tools.dispose()
+})
+
+test('the observed OverconstrainedError shape has actionable Chinese feedback without claiming permission denial or a specific constraint', () => {
+  // Reproduce the name/message/empty constraint observed in WKWebView. This
+  // constructed exception is a regression fixture, not a hardware diagnosis.
+  const error = Object.assign(new DOMException('Invalid constraint', 'OverconstrainedError'), { constraint: '' })
+  const message = explainMediaError(error)
+  assert.match(message, /采集要求/)
+  assert.match(message, /检查设备/)
+  assert.match(message, /选择已有文件/)
+  assert.doesNotMatch(message, /Invalid constraint|权限|facingMode/)
+  assert.match(explainMediaError(new DOMException('Permission denied', 'NotAllowedError')), /未获得设备权限/)
+})
+
+test('constraint failure preserves the request and does not lower constraints or retry until another explicit action', async () => {
+  const error = Object.assign(new DOMException('Invalid constraint', 'OverconstrainedError'), { constraint: '' })
+  let granted
+  const h = harness({ getUserMedia: async () => { if (!granted) throw error; return granted } })
+  const tools = createMediaTools({ environment: h.env, context: context() })
+  await assert.rejects(tools.startCamera(), cause => cause === error)
+  assert.equal(tools.state.phase, 'error'); assert.equal(tools.state.stream, null); assert.equal(tools.state.asset, null)
+  assert.match(tools.state.error, /采集要求/)
+  tools.updateContext(context()); h.dispatch({ mode: 'normal', busy: false, reloadRequired: false }); await tick()
+  assert.deepEqual(h.captures, [{ video: { facingMode: 'environment' }, audio: false }])
+  assert.equal(h.timers.size, 0); assert.equal(h.recorders.length, 0)
+  granted = h.stream()
+  await tools.startCamera()
+  assert.equal(tools.state.phase, 'camera')
+  assert.deepEqual(h.captures, Array.from({ length: 2 }, () => ({ video: { facingMode: 'environment' }, audio: false })))
+  tools.dispose()
+})
+
+test('permission denial permits an explicit new user attempt but state updates never replay the denied request', async () => {
+  for (const method of ['startRecording', 'startCamera']) {
+    let allow = false
+    const denied = new DOMException('Permission denied', 'NotAllowedError')
+    const h = harness({ getUserMedia: async () => { if (!allow) throw denied; return h.stream() } })
+    const tools = createMediaTools({ environment: h.env, context: context() })
+    await assert.rejects(tools[method](), cause => cause === denied)
+    assert.equal(tools.state.phase, 'error'); assert.equal(tools.state.stream, null)
+    assert.match(tools.state.error, /未获得设备权限/)
+    tools.updateContext(context()); h.dispatch({ mode: 'normal', busy: false, reloadRequired: false }); await tick()
+    assert.equal(h.captures.length, 1); assert.equal(h.recorders.length, 0)
+    allow = true
+    h.env.navigator.userActivation.isActive = false
+    await assert.rejects(tools[method](), { name: 'NotAllowedError' })
+    assert.equal(h.captures.length, 1, 'A fresh attempt still needs a user gesture')
+    h.env.navigator.userActivation.isActive = true
+    await tools[method]()
+    assert.equal(h.captures.length, 2)
+    assert.deepEqual(h.captures[1], h.captures[0])
+    assert.equal(tools.state.phase, method === 'startRecording' ? 'recording' : 'camera')
+    tools.dispose(); await tick()
+  }
 })
 
 test('recording detects supported MIME and persists the actual type and extension', async () => {

@@ -35,7 +35,7 @@ npm run build
 | `crates/platform-core` | 开发隔离、SQLite、本地服务、会话/附件、构建、备份恢复、项目生命周期及工作区迁移 |
 | `crates/platform-cli` | 只连接固定开发环境的原生 CLI |
 | `packages/sdk` | 内部 SDK `@local-projects/sdk 0.1.0`、类型、说明与固定 tarball |
-| `templates/react` | `react-ts-vite-0.1.3` 标准模板、组件、锁文件和项目自带 SDK；打包时生成匹配的初始网页 |
+| `templates/react` | `react-ts-vite-0.1.4` 标准模板、组件、锁文件和项目自带 SDK；打包时生成匹配的初始网页 |
 | `skills/local-projects-app` | 外部 AI 接管业务项目的 skill，随新项目保存 |
 | `docs` | 已确认架构、计划及实际验证记录 |
 
