@@ -68,3 +68,25 @@
 `browser-before-package-protected.json` 的 14 个原保护范围全部不变，来源审计 `browser-before-package-provenance.json` 通过。新增只有唯一样本、3 份对应状态、2 个 maintenanceBaseline ZIP（690008 字节合计）、2 个基线 snapshot 操作和 10 个 final 任务。10 个任务包括 4 次 storageScan、2 次 maintenanceBegin、2 次 maintenanceEnd、2 次 build；唯一失败为上述已记录的首个样本构建，其他 9 个成功。两份 ZIP 的归档清单 owner 均为该样本。原 46 个备份继续不变，加上新样本两份基线共 48 个备份文件、7382412 字节；5 个既有回收项全部保留且可恢复。样本为 ready，busy、recoveryRequired 为 false，activeTask 为空。
 
 当前交付 app/DMG 在覆盖输出前完整保留到本轮私有 `prior-package/`：DMG 为 8282103 字节，SHA-256 `c08f7b51bf868bea3dd3795df2d6c97bf48866879508719a28980b6e8b2f3909`。源与副本的 55 个 app 条目（含根）类型、权限、长度、SHA 和链接目标一致，复制后再次扫描源确认未变。证据为 `prior-package-manifest.json`、`prior-package-summary.json`。新包构建、严格签名/DMG 校验及最终启动复核将在完成后另补记录，不把已保留的旧包标作本轮新交付。
+
+## 新包构建与校验
+
+实测记录及修复分步提交推送为 `cd91bad`、`806b54c`、`48b2e8a`。当前原生进程 PID `48728` 通过 CUA 原生 `⌘Q` 退出；随后 AX 返回 procNotFound，独立检查旧进程已不存在、CLI 返回 `SERVICE_NOT_RUNNING`。证据为 `before-new-package-restart.json`、`new-package-gui-quit.json`。没有用 SIGTERM 代替这次正常退出。
+
+`npm run build` 退出码为 0，新 app 与 DMG 生成，日志 `build-dmg.log`。`node scripts/m5-package-verify.mjs --output …/package-verification` 为 passed，报告和完整日志分别为 `package-verification/verification.json`、`package-verification.log`：
+
+| 项目 | 新包结果 |
+| --- | --- |
+| app | `target/release/bundle/macos/Local Projects Dev.app` |
+| DMG | `target/release/bundle/dmg/Local Projects Dev_0.0.0_aarch64.dmg` |
+| DMG 长度 | `8283876` 字节 |
+| DMG SHA-256 | `7b72754295eeaa3401b57f0d4a537d9986efbb66a73201c7d02f5ccd3bca6680` |
+| 身份 / 版本 | `dev.localprojects.platform.m0` / `0.0.0`，development |
+| 签名 / 架构 | 源 app 及 DMG app 严格深度签名通过，ad-hoc、runtime、arm64；最低系统配置 `15.0` |
+| 模板 / SDK | `react-ts-vite-0.1.3`；固定 SDK `0.1.0` 的 8 处副本摘要仍为 `334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9` |
+| DMG 内容 | `hdiutil verify` 通过；只读挂载后 54 个包内条目与源 app 完全一致，已卸载 |
+| 配置 | 相机/麦克风用途、实际签名权利和固定开发身份均保留；源 app 内资源 README 与本次打包的 `docs/development.md` 一致 |
+
+原 c08 包再次核对仍与保留清单一致，证据 `prior-package-final-verification.json`。额外离线保护 `browser-after-package-offline-protected.json` 为 14/14 通过；脚本不导入 CLI、不请求服务或启动程序，所有原数据文件、类型、权限和链接目标仍一致。它不替代重启后 API 身份与维护状态验证。
+
+构建后尝试通过 CUA 从新 app 的准确路径启动时，工具明确返回 Mac 已锁定、自动解锁失败，要求用户手动解锁；已请求用户解锁，没有改用 CLI 或其他 UI 方式绕过。因此新包最终 GUI 启动、重启后的 API/维护状态和持久附件复测目前尚未通过，待手动解锁后继续。此前的真实采集、回放和维护复测运行于被保留的 c08 原生宿主及样本的公开构建流程，不能改写成新 7b 包已完成启动复核。
