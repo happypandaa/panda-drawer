@@ -59,6 +59,33 @@
 
 上轮 7b app/DMG 已完整保留到本轮私有 `prior-package/`，含根 55 个 app 条目的类型、权限、长度、摘要及链接目标与源一致。旧 DMG 为 8283876 字节、SHA-256 `7b72754295eeaa3401b57f0d4a537d9986efbb66a73201c7d02f5ccd3bca6680`；更早的 c08 保留包也再次通过原清单核对。
 
-新 0.1.4 模板 app/DMG、严格签名与内容校验、真实新包启动以及最终保护审计将在完成后补充。本段不将已保留旧包或样本公开构建称作新原生包。
+实测记录分步提交推送为 `8cb525a`。旧进程 PID `57930` 通过 CUA 原生 `⌘Q` 正常退出，随后 AX 为 procNotFound，独立核对旧 PID 不存在、CLI 为 `SERVICE_NOT_RUNNING`，见 `new-package-native-quit.json`。没有用强制终止代替正常退出。
+
+`npm run build` 退出码 0，生成本轮新 app 和 DMG，日志 `build-dmg.log`。包验证首个命令因 `--output` 使用相对路径被参数检查拒绝，尚未执行校验；改为要求的绝对路径后，`package-verification/verification.json` 为 passed，两次命令日志均保留，没有更改检查门槛。
+
+| 项目 | 本轮交付结果 |
+| --- | --- |
+| app | `target/release/bundle/macos/Local Projects Dev.app` |
+| DMG | `target/release/bundle/dmg/Local Projects Dev_0.0.0_aarch64.dmg` |
+| DMG 长度 / SHA-256 | `8284493` 字节 / `95b525bd3477a0cd676b664f551137feb3e09e48e4df439db02b360d9f1ca491` |
+| 身份 / 版本 / 架构 | `dev.localprojects.platform.m0` / `0.0.0` development / arm64 |
+| 签名与用途 | 源 app 与 DMG app 严格深度签名通过，内部 ad-hoc、runtime；相机/麦克风用途及 camera/audio-input 权利保留 |
+| 模板 / SDK | `react-ts-vite-0.1.4` / 固定 SDK `0.1.0`，8 处 SDK 副本摘要仍为 `334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9` |
+| DMG / 资源 | `hdiutil verify` 通过，54 个包内条目与源 app 完全一致，只读挂载已卸载；包内资源 README 与本次打包的 `docs/development.md` 一致 |
+| 最低系统 | 配置及 Mach-O 为 macOS 15.0；本轮实际仍是上述 macOS 27.0.1，没有冒充最低版本实机通过 |
+
+从准确新 app 路径通过 CUA 实际启动，PID `67121`、instanceId `e845bf1c-b057-466e-b447-0d96a687f169`，均不同于旧进程/实例。`new-package-restart.json` 核对安装路径、固定工作区、模板 0.1.4、SDK 摘要、2 个项目和 5 个可恢复回收项，样本五行业务数据和五份附件摘要与退出前完全一致，ready、busy/recoveryRequired 为 false、无 activeTask；样本已实测助手与包内模板助手逐字节一致。
+
+新包原生管理页实际显示原项目和样本，进入样本后明确点击读取，显示 5 份持久资料并解码原 JPEG 为 640 × 480，见 `34-new-package-manager-ax.txt`、`35-new-package-five-persisted-materials-ax.txt`。新宿主的麦克风复测仅停在“等待设备许可”，未观察到可操作的许可框；明确点击停止后采集按钮恢复、停止禁用，随后关闭该页面，没有把它记为新宿主拒绝或采集通过。重新打开干净样本页，相机仍给出修复后的中文不可用提示，见 `36`—`38` AX；本阶段没有新增录音、照片或保存记录。
+
+本轮前述麦克风实际拒绝/采集/释放和物理断网 GUI 验证运行于已保留的 7b 宿主，最后五素材读取、取消许可等待和中文相机提示运行于本次 95 新宿主。两阶段分开记录；新宿主完整设备授权与采集复测仍需补齐。
+
+最终 `final-protected-checkpoint-reviewed.json` 为 passed，pending 和 forbidden 均为空，`final-independent-data-package-audit.json` 独立总审计也通过。14 个范围继续保护原用户项目、全部 48 个既有备份、402 个历史任务、原三份素材及全部回收/恢复证据；只对已审查的样本源码、成功构建产物、维护状态和两个精确文本逐项登记差异，没有重建原基线。关闭/重启后的样本 SQLite checkpoint 改变主库摘要并使原 WAL/SHM 运行文件消失，首次审计正确要求复核；在只读副本中独立比较结构、完整性及原三行加两个回执恰好五行后，按实际前后状态精确登记。早先 review-required 报告保留，没有重建、替换或手工删除业务数据库与运行文件来消除差异。
+
+全轮新增 12 个 final 任务全部成功：6 storageScan、2 build、2 maintenanceBegin、2 maintenanceEnd。重启后新增扫描 `task_6afdbbc2100343d4a6f25d92063062e6` 属于样本；`task_61e2783830514e7b83c0901afda71d63` 属于原项目“打僵尸”，已按精确 ID、owner、storageScan 类型及结果范围单项审计，仅为只读管理扫描，未默许任何原项目写操作。两份新基线及 snapshot 与打包前相同，当前仍共 50 个备份文件、8497688 字节，样本 ready、无 activeTask。原用户项目内容、原有历史证据及 5 个可恢复回收项不变。
+
+最终另核对新 DMG 长度/摘要、固定新实例、SDK 和样本助手与包内模板的一致性，并再次复核 7b、c08 两份保留 app 各 55 个条目及 DMG 均与原清单一致。系统设备结论只引用先前 16:51:45（UTC+8）的匿名只读快照：默认输入未运行、摄像头 suspended；没有在锁屏期间重新操作设备或把此快照当作摄像头释放通过。
+
+随后进一步通过 CUA 只读打开系统许可入口时，工具明确报告 Mac 已锁定、自动解锁失败，要求手动解锁；已向用户发出解锁请求并暂停 GUI，没有用 CLI 或其他 UI 工具绕过。没有据此反推此前许可等待的具体原因，也没有将尚未完成的系统许可检查写成通过。新宿主许可问题须在用户解锁后继续核对。
 
 本轮尚未完成摄像头的拒绝和释放、macOS 宿主授权撤销、Safari/Chrome，以及最低 macOS 15 实机等验收；不标记 M5 三端设备矩阵全部完成，也不改变 M6 未开始的状态。
