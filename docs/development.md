@@ -6,6 +6,8 @@
 
 Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、Node/npm、Rust 和 MSVC/SDK；`node scripts/windows-environment.mjs --json` 输出可保存的 JSON。脚本不安装工具、不扫描或初始化平台工作区，不执行平台 CLI，也不证明默认路径的 ACL、链接或磁盘边界已通过。仓库本地 Rust 放在 `.tools/cargo` 与 `.tools/rustup`，Windows 的 `cargo.exe` 仅加入子进程环境，保留原 PATH，不改全局设置；`npm run test:process` 验证这项环境选择逻辑。
 
+MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立 C 静态库与 Rust 的 x64 编译、链接和运行。该命令在唯一的 `.test-artifacts/windows-w1-toolchain-smoke-*` 中保存源码、产物和报告，不清理旧证据、不构建或启动平台；它与只读环境盘点是不同检查。需要纯 JSON 时执行 `node scripts/windows-toolchain-smoke.mjs --json`。成功只证明本机开发工具链小样，不代表 Windows 产品兼容或 bundled SQLite 通过。
+
 平台使用者与平台开发者的要求不同：运行带有效网页产物的项目不需要 Node/npm、Rust、Visual Studio 或独立 SQLite 服务；修改业务源码后构建才需要系统 Node/npm，Rust/MSVC/Windows SDK 只用于开发平台本身。Node 内置分发没有在本轮确认，已有完整项目 ZIP 和拟议网页应用包的规则也没有因此改变。
 
 ## 管理界面入口
