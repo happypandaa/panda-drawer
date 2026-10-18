@@ -1,10 +1,12 @@
 # 首发、安装与软件更新方案
 
-状态：v0.5，Mac 发行及平台基本信息规则已确认；Windows 10 22H2 x64 与 Windows 11 x64 目标已确认，安装细节待定；正式发行尚未完成
+状态：v0.6，Mac 发行及平台基本信息规则已确认；Windows 两个系统目标已确认，允许基础链路内部版先行，安装细节待定；正式发行尚未完成
 
 更新日期：2026-10-18
 
 用户原已确认 Mac 首发支持 macOS 15+、Apple Silicon 原生 arm64，采用签名并公证的 DMG，第一版检查更新后手动覆盖安装。2026-10-18 新增确认 Windows 10 22H2 x64 和 Windows 11 x64 支持目标；具体安装方式和发行批次仍待落实，不能从支持目标推导同时发布。Intel Mac、Windows ARM64/x86、Linux 和应用内更新未纳入本次确认。
+
+同日用户要求 Windows 稳定优先、拆细步骤并把备份等复杂功能后置；[Windows 计划](windows-support-plan.md)允许先交付限定已验收能力和可丢弃新样本的内部验证版。它不承担真实历史数据接管，不表示完整 Windows 支持或正式发行；M6 的数据、浏览器、设备及安装验收门槛不因此减少。未开放功能必须在后端和启动路径禁用执行并保护已有现场，Mac 已有功能不变。
 
 基础架构、系统 Node、SDK 兼容以及备份维护按[主约定](platform-development-contract.md)与[备份维护契约](backup-and-maintenance.md)执行。项目基本信息与平台基本信息的边界见[项目元数据与概览](project-metadata-and-overview.md)，空间口径见[空间管理契约](project-storage-and-assets.md)。本文件不增加程序实现、安装器或更新服务。
 
