@@ -4,7 +4,9 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 [网页应用包安装与分享设计](docs/web-app-package-design.md)整理了外部构建产物的说明文件、目录检测与报错、GitHub 分发、环境要求和初始数据方案。需求方向已确认，具体协议仍为讨论稿，尚未实现，不改变当前完整项目导入与备份规则。
 
-已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。早期内部版仅面向可丢弃样本，完整支持与正式发行仍需后续验收；目前尚未进行 Windows 移植、构建或实测。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
+已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。当前已开始 W1.1 本机工具准备和只读环境检查，初期范围为本机内置 NTFS 与固定默认工作区，实际结果及剩余项见 [W1 记录](docs/windows-w1-verification.md)；平台 Windows 编译、启动和安装仍未验收。早期内部版仅面向可丢弃样本。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
+
+Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行带有效网页产物的项目无需 Node；Node/npm 仅在修改源码后构建时需要，Rust/MSVC/SDK 仅用于开发平台本身。
 
 ## 开发
 

@@ -16,6 +16,8 @@
     "check": "npm run prepare:desktop && npm run build --workspace @local-projects/desktop && node scripts/rust.mjs check --locked --workspace --all-targets",
     "test": "npm run prepare:desktop && node scripts/rust.mjs test --locked --workspace",
     "rust": "node scripts/rust.mjs",
+    "env:windows": "node scripts/windows-environment.mjs",
+    "test:process": "node --test scripts/process-test.mjs",
     "cli": "node scripts/rust.mjs run -p platform-cli --",
     "prepare:desktop": "node scripts/prepare-desktop.mjs",
     "tauri": "node scripts/desktop.mjs",

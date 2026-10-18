@@ -1,8 +1,8 @@
 # 项目导入导出、复制、删除与工作区迁移
 
-状态：v0.6，已确认的开发契约；Mac M4 实现与验证边界见 [M4 记录](m4-verification.md)，Windows 支持目标已确认、对应移植尚未实施
+状态：v0.7，已确认的开发契约；Mac M4 实现与验证边界见 [M4 记录](m4-verification.md)，Windows 初期内置 NTFS 默认根已确认，生命周期移植后置至 W3
 
-更新日期：2026-10-18
+更新日期：2026-10-19
 
 本文规定已由用户确认的项目导入导出、复制、删除和工作区迁移方案。首发 macOS 15+、Apple Silicon、DMG、手动覆盖更新同样属于确定项，见[发行契约](release-and-updates.md)。本文不再重新选择桌面框架、数据库或安装方式，也不包含实现代码。
 
@@ -195,7 +195,7 @@ workspace/
 
 ### 7.1 范围与目标限制
 
-Mac 首版支持本机内置磁盘及直接连接的外置磁盘，目标使用 APFS，目录可写、为空且独立。APFS 是当前 Mac 的标准文件系统之一，见 [Apple 文件系统说明](https://support.apple.com/en-euro/guide/disk-utility/dsku19ed921c/mac)；把 Mac 首版迁移目标限定为 APFS 是产品支持范围，不是声称 SQLite 无法用于其他文件系统。Windows 支持目标已确认，首批文件系统建议本机 NTFS，具体磁盘、路径与权限范围仍待 W1 确定，不把当前 APFS 实现视为已经支持 Windows 迁移。
+Mac 首版支持本机内置磁盘及直接连接的外置磁盘，目标使用 APFS，目录可写、为空且独立。APFS 是当前 Mac 的标准文件系统之一，见 [Apple 文件系统说明](https://support.apple.com/en-euro/guide/disk-utility/dsku19ed921c/mac)；把 Mac 首版迁移目标限定为 APFS 是产品支持范围，不是声称 SQLite 无法用于其他文件系统。Windows 起步范围已确认为本机内置 NTFS、固定默认工作区，卷/路径/权限保护仍待实现；这不开放迁移入口。外置盘、网络/映射盘、同步目录和 Windows 迁移目标另行评估，同机迁移实现与验收后置至 W3.7，不把当前 APFS 实现视为已经支持 Windows 迁移。
 
 不将活跃工作区放到 NAS、网络文件系统或由 iCloud Drive、Dropbox 等同步的目录中；已完成的 ZIP 可以另存或转移。SQLite WAL 依赖同一机器的协调机制，不支持跨机器的网络文件系统用法，见 [SQLite WAL](https://www.sqlite.org/wal.html)。平台应说明限制并检测能够识别的位置，不宣称能识别所有第三方同步目录。
 
