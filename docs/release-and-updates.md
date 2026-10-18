@@ -1,9 +1,10 @@
 # 首发、安装与软件更新方案
 
-状态：v0.4，首版发行方案及平台基本信息、关于页面、程序占用规则已确认，尚未实现  
-更新日期：2026-10-15
+状态：v0.5，Mac 发行及平台基本信息规则已确认；Windows 10 22H2 x64 与 Windows 11 x64 目标已确认，安装细节待定；正式发行尚未完成
 
-用户已确认：首发支持 macOS 15+、Apple Silicon 原生 arm64，采用签名并公证的 DMG，第一版检查更新后手动覆盖安装。本文规定这套首版发行契约；Intel、其他操作系统和应用内更新仅保留后续参考，不属于首版交付范围。
+更新日期：2026-10-18
+
+用户原已确认 Mac 首发支持 macOS 15+、Apple Silicon 原生 arm64，采用签名并公证的 DMG，第一版检查更新后手动覆盖安装。2026-10-18 新增确认 Windows 10 22H2 x64 和 Windows 11 x64 支持目标；具体安装方式和发行批次仍待落实，不能从支持目标推导同时发布。Intel Mac、Windows ARM64/x86、Linux 和应用内更新未纳入本次确认。
 
 基础架构、系统 Node、SDK 兼容以及备份维护按[主约定](platform-development-contract.md)与[备份维护契约](backup-and-maintenance.md)执行。项目基本信息与平台基本信息的边界见[项目元数据与概览](project-metadata-and-overview.md)，空间口径见[空间管理契约](project-storage-and-assets.md)。本文件不增加程序实现、安装器或更新服务。
 
@@ -19,7 +20,8 @@
 | 分发渠道 | 官方 HTTPS 下载页，第一版不进应用商店 | 先验证本地文件、CLI 和系统构建环境的完整流程 |
 | 第一版更新 | 检查更新、查看说明、下载新版 DMG、退出后覆盖安装 | 初期不引入后台安装或自动重启 |
 | 后续更新 | Tauri updater 作为后续参考，另行确定启用版本 | 首版只交付手动覆盖更新 |
-| Windows/Linux | 后置；Windows 后续候选为 Windows 11 x64 | 不把 Mac 首发同时扩大成多平台发行 |
+| Windows | Windows 10 22H2 x64、Windows 11 x64 目标已确认；安装与发行细节待定 | 同一 Windows 工作线，两版系统分别验收 |
+| 其他平台 | Intel Mac、Windows ARM64/x86、Linux 未纳入本次确认 | 不以可编译或模拟运行扩大支持范围 |
 
 macOS 15 是已确定的产品支持线，不是 Tauri 的最低技术要求。Tauri 的最低系统版本可配置；本项目的桌面 WebView、默认组件、文件和媒体操作需要在 macOS 15 上验收。系统 Node 24 的官方平台要求也需核对，但运行已有项目不需要 Node，不能把构建环境和平台运行环境混为一谈。参见 [Tauri macOS 配置](https://v2.tauri.app/distribute/macos-application-bundle/)与 [Node 24 平台支持表](https://github.com/nodejs/node/blob/v24.x/BUILDING.md)。
 
@@ -141,17 +143,21 @@ macOS 首次及手动安装使用 DMG；Tauri updater 使用其生成的 `.app.t
 
 启用自动检查或后台下载可以之后作为用户偏好讨论。第一版仍按上一节的手动覆盖流程设计，不把“以后可接入”写成已经实现的功能。
 
-## 7 Windows 后续候选方案
+## 7 Windows 支持目标与待定发行细节
 
-Windows 不属于已确定的 Mac 首发交付范围；以下只保留后续方向，尚未确认：
+Windows 10 22H2 x64 与 Windows 11 x64 均已确认为产品支持目标。适配范围、数据保护、W1–W4 阶段和分平台验收见[Windows 规划](windows-support-plan.md)。本轮仅整理文档，没有 Windows 可运行或安装验证结果。
 
-- Windows 11 x64，使用 NSIS `setup.exe`，优先当前用户安装。
+以下仍为工程与发行建议，尚未因系统目标确认而定稿：
+
+- 使用 NSIS `setup.exe`，优先当前用户安装，争取两个系统共用同一 x64 包，实际依赖及兼容性分别验证。
 - 安装器检测 WebView2 Evergreen 运行环境，缺失时用内嵌 bootstrapper 下载并安装；需要离线分发时另提供包含 Evergreen 离线安装器的包。
 - 不默认使用固定版本 WebView2，不跳过运行环境检查。Windows 11 通常已有运行环境，也仍需处理缺失和最低版本。
 - 程序、CLI 与安装器安排代码签名；不承诺签名后所有机器都没有系统信誉提示。
-- 工作区放用户本机应用数据目录，与程序安装目录分离；普通更新不要求用户手动迁移数据库。
+- Windows 工作区具体位置通过系统 API 获取，建议放用户本地应用数据目录，首批文件系统建议为本机 NTFS；位置、磁盘及权限方案在 W1 确定。程序与数据分离、普通更新保留数据的既有原则不变。
 
-Tauri 提供 [NSIS 与 WebView2 安装选项](https://v2.tauri.app/distribute/windows-installer/)，微软解释了 [Evergreen 在线及离线分发](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)。离线运行环境安装不代表首次 npm 依赖下载也能离线完成。Windows ARM64、Windows 10 和 Linux 不自动纳入首版支持范围。
+Tauri 提供 [NSIS 与 WebView2 安装选项](https://v2.tauri.app/distribute/windows-installer/)，微软解释了 [Evergreen 在线及离线分发](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)。离线运行环境安装不代表首次 npm 依赖下载也能离线完成。Windows 10 目标仅为 22H2 x64，不自动覆盖更早版本、32 位、LTSC 或特殊精简环境。
+
+Windows 的代码签名、WebView2 缺失/版本不足、普通用户安装、覆盖更新、维护和恢复日志保留、卸载默认保留数据及重装发现均需真实验收。Mac 已定的 DMG、公证和 APFS 条件不直接套用到 Windows，也不因新增 Windows 目标而改变现有 Mac 开发身份或资料。
 
 ## 8 实现验收与发布准备
 
