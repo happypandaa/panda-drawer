@@ -17,6 +17,32 @@ h1 { font-size: 28px; letter-spacing: -.6px; margin: 0 0 10px; font-weight: 650;
 .host-refresh { border: 1px solid #d7dde6; background: #fff; color: #34455c; border-radius: 8px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; cursor: pointer; white-space: nowrap; font-size: 13px; }
 .host-refresh:hover:not(:disabled) { background: #eff3f8; border-color: #b6c3d6; }
 .host-refresh:disabled { opacity: .65; cursor: wait; }
+.host-toolbar { display: flex; align-items: center; gap: 10px; }
+.host-primary { border: 1px solid #315c91; background: #365f94; color: #fff; border-radius: 8px; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 15px; cursor: pointer; white-space: nowrap; font-size: 13px; }
+.host-primary:hover:not(:disabled) { background: #294e7d; }
+.host-primary:disabled { opacity: .5; cursor: not-allowed; }
+.host-notice { color: #426c50; border: 1px solid #d7e6db; background: #f0f7f2; font-size: 13px; line-height: 1.7; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; }
+.host-workspace, .host-create, .host-projects { margin-bottom: 20px; }
+.host-root-message { font-size: 13px; line-height: 1.8; color: #667383; margin: 14px 0 0; overflow-wrap: anywhere; }
+.host-icon-button { border: 0; background: transparent; color: #788391; display: grid; place-items: center; border-radius: 6px; cursor: pointer; padding: 5px; }
+.host-icon-button:hover:not(:disabled) { background: #eff2f6; }
+.host-create label { display: block; font-size: 12px; font-weight: 600; color: #526278; margin-bottom: 8px; }
+.host-create input, .host-create textarea { display: block; width: 100%; padding: 11px 12px; background: #fff; border: 1px solid #d8e0e9; border-radius: 7px; margin-bottom: 18px; font-family: inherit; font-size: 13px; line-height: 1.7; color: #34455c; resize: vertical; }
+.host-create input:focus, .host-create textarea:focus { outline: 2px solid #bbd0ea; outline-offset: 1px; }
+.host-create-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.host-create-footer p { color: #788391; font-size: 12px; line-height: 1.8; margin: 0; max-width: 620px; }
+.host-project-list { list-style: none; margin: 0; padding: 0; }
+.host-project-list > li { display: flex; justify-content: space-between; align-items: center; gap: 24px; border-top: 1px solid #edf0f3; padding: 20px 0; }
+.host-project-list > li:first-child { border-top: 0; padding-top: 4px; }
+.host-project-list > li:last-child { padding-bottom: 0; }
+.host-project-title { display: flex; align-items: center; gap: 10px; }
+.host-project-title h3 { font-size: 15px; line-height: 1.6; margin: 0; overflow-wrap: anywhere; }
+.host-project-summary { min-width: 0; }
+.host-project-summary > p { color: #778290; font-size: 13px; line-height: 1.7; margin: 8px 0 0; overflow-wrap: anywhere; }
+.host-project-id { display: block; color: #8a94a1; font-size: 11px; font-family: Consolas, monospace; margin-top: 8px; overflow-wrap: anywhere; }
+.host-project-summary > .host-project-issues { color: #96613b; font-size: 12px; }
+.host-project-actions { display: flex; gap: 9px; flex: none; }
+.host-diagnostic-result { margin-top: 12px; }
 .host-protection { display: flex; gap: 12px; padding: 18px 20px; background: #edf3fa; border: 1px solid #dce7f4; border-radius: 10px; color: #31597f; margin-bottom: 24px; }
 .host-protection > svg { flex: none; margin-top: 1px; }
 .host-protection strong { font-size: 14px; }
@@ -32,6 +58,7 @@ h1 { font-size: 28px; letter-spacing: -.6px; margin: 0 0 10px; font-weight: 650;
 .host-path { padding: 12px 13px; background: #f6f8fa; border: 1px solid #e8ecf1; border-radius: 7px; font: 12px/1.8 Consolas, "Microsoft YaHei UI", monospace; overflow-wrap: anywhere; color: #4b5c71; }
 .host-pill { padding: 4px 8px; font-size: 11px; border-radius: 5px; background: #eef2f6; color: #5b6b7f; white-space: nowrap; }
 .host-pill.blocked, .host-pill.unavailable { background: #fff3e6; color: #95642e; }
+.host-pill.ready { background: #edf4ef; color: #52775f; }
 .host-checks { list-style: none; margin: 18px 0 0; padding: 0; }
 .host-checks li { display: flex; gap: 10px; padding: 12px 0; border-bottom: 1px solid #f0f2f5; }
 .host-checks li:last-child { border-bottom: 0; }
@@ -60,4 +87,5 @@ h1 { font-size: 28px; letter-spacing: -.6px; margin: 0 0 10px; font-weight: 650;
 .host-footer summary { cursor: pointer; text-align: right; }
 .host-footer dl { display: grid; grid-template-columns: auto auto; gap: 8px 16px; padding: 14px; background: #fff; border: 1px solid #e1e6ec; border-radius: 7px; margin-bottom: 0; }
 .host-footer dd { margin: 0; color: #657285; overflow-wrap: anywhere; }
+@media (max-width: 1000px) { .host-intro { align-items: flex-start; flex-direction: column; } .host-project-list > li { align-items: flex-start; flex-direction: column; gap: 14px; } }
 @media (max-width: 900px) { .host-main { padding: 28px 24px; } .host-header { padding: 0 24px; } .host-columns { grid-template-columns: 1fr; } .host-evidence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -4,9 +4,11 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 [网页应用包安装与分享设计](docs/web-app-package-design.md)整理了外部构建产物的说明文件、目录检测与报错、GitHub 分发、环境要求和初始数据方案。需求方向已确认，具体协议仍为讨论稿，尚未实现，不改变当前完整项目导入与备份规则。
 
-已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步。当前 Windows 只读桌面宿主已在本机 Win11 实际开窗，可查看固定目录检查并刷新；项目、数据库、构建、备份恢复及其他业务能力仍未开放。Windows 的 `npm run build` 生成 `target/release/local-projects-desktop-dev.exe`，可以独立启动，不需要 Vite 服务；安装器、Win10 和完整业务验收尚未完成。实际结果及命令见 [W1 记录](docs/windows-w1-verification.md)和[开发说明](docs/development.md)。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，以下全量业务开发与打包流程仍以 Mac 为准。
+已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步。W1 只读宿主已有本机 Win11 开窗记录；当前代码进入 W2.1，已实现固定默认根下的新建可丢弃样本、欢迎应用的桌面/浏览器打开和真实空库结构只读查询。只接受本阶段已完成登记的样本，旧历史和未知现场保留并阻断接管；SQL、附件、构建、备份、恢复、导入及迁移仍关闭。本机 Win11 release 已实际创建样本并在桌面显示已连接、空库与只读提示；Chrome 已被请求打开，页面验收因工具 URL 识别限制停止，桌面重启仍待补验。W1 与 W2.1 均不标为整体通过；Win10、Mac 回归及安装器仍待验收。实际结果见 [W1 记录](docs/windows-w1-verification.md)、[W2 记录](docs/windows-w2-verification.md)和[开发说明](docs/development.md)。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，以下全量业务流程仍以 Mac 为准。
 
-Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行带有效网页产物的项目无需 Node；Node/npm 仅在修改源码后构建时需要，Rust/MSVC/SDK 仅用于开发平台本身。
+Windows 开发机执行 `npm run build` 会先用 Node/npm 准备匹配的初始源码、固定 SDK 和预编译网页，再将资源内嵌到 `target/release/local-projects-desktop-dev.exe`。成品 exe 不调用 Node，不需要 Vite 或资源旁文件；无 Node 干净机器和物理断网尚未实测，安装包尚未确定。
+
+Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示完整 Windows 兼容已通过。Node/npm 用于开发机准备平台资源及后续用户源码构建，Rust/MSVC/SDK 仅用于开发平台本身。
 
 macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。修复保留原记录和项目资料，实际交付与验证以对应记录为准。
 
@@ -41,6 +43,8 @@ npm run build
 | --- | --- |
 | `apps/desktop` | 平台管理界面与 Tauri 宿主 |
 | `crates/platform-core` | 开发隔离、SQLite、本地服务、会话/附件、构建、备份恢复、项目生命周期及工作区迁移 |
+| `crates/platform-host` | Windows 宿主观察、安全文件原语及仅面向新样本的 W2.1 受限服务；不初始化完整业务管理器 |
+| `crates/platform-project-format` | 共用项目/初始来源格式、摘要、HTTP 协议与运行策略，不访问文件系统 |
 | `crates/platform-preflight` | 无文件访问的遗留记录字节分类；可单独原生测试，不提供运行或恢复许可 |
 | `crates/platform-cli` | 只连接固定开发环境的原生 CLI |
 | `packages/sdk` | 内部 SDK `@local-projects/sdk 0.1.0`、类型、说明与固定 tarball |

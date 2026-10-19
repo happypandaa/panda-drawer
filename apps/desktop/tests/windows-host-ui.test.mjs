@@ -23,7 +23,7 @@ const modulePath = path.join(output, 'WindowsHost.mjs');
 await writeFile(modulePath, compiled);
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://tauri.localhost/windows.html', pretendToBeVisual: true });
-for (const name of ['window', 'document', 'Node', 'HTMLElement', 'Event', 'MouseEvent', 'MutationObserver']) {
+for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'Event', 'MouseEvent', 'MutationObserver']) {
   Object.defineProperty(globalThis, name, { value: name === 'window' ? dom.window : dom.window[name], configurable: true });
 }
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
@@ -35,8 +35,24 @@ const { WindowsHost } = await import(pathToFileURL(modulePath).href);
 let root;
 let commands;
 let responder;
+let calls;
 
-function report(status = 'blocked') {
+function status(rootStatus = 'blocked', projects = []) {
+  return {
+    stage: 'createReadOnly', rootStatus, projects,
+    dataRoot: 'C:\\synthetic-host-fixture\\dev.localprojects.platform.m0',
+    message: rootStatus === 'blocked' ? '合成保留现场：未解决的旧记录' : '合成目录状态',
+  };
+}
+function project(state = 'ready') {
+  return {
+    id: 'prj_fixture', name: '合成样本', description: '可丢弃验证',
+    projectRoot: 'C:\\synthetic-project-fixture', documentEpoch: 'synthetic-epoch',
+    state, issues: state === 'ready' ? [] : ['合成项目缺失'],
+    manifest: null, buildInfo: { origin: 'bundledTemplate', sourceState: 'matched' },
+  };
+}
+function report() {
   return {
     schemaVersion: 1,
     identifier: 'dev.localprojects.platform.m0',
@@ -47,21 +63,23 @@ function report(status = 'blocked') {
     runtimeAvailable: false,
     probe: {
       dataRoot: 'C:\\synthetic-host-fixture\\dev.localprojects.platform.m0',
-      status,
-      checks: [{ code: 'SYNTHETIC_CHECK', status: status === 'blocked' ? 'blocked' : 'passed', message: '合成测试目录检查结果' }],
+      status: 'blocked',
+      checks: [{ code: 'SYNTHETIC_CHECK', status: 'blocked', message: '合成测试目录检查结果' }],
       evidence: [{ kind: 'migrationEntries', count: 3 }],
     },
   };
 }
 
-async function setup(value = report()) {
+async function setup(value = status()) {
   commands = [];
-  responder = async () => value;
+  calls = [];
+  responder = async command => command === 'host_status' ? report() : value;
   globalThis.__HOST_IS_TAURI__ = true;
-  globalThis.__HOST_INVOKE__ = async (command) => {
+  globalThis.__HOST_INVOKE__ = async (command, args) => {
     commands.push(command);
-    assert.equal(command, 'host_status', 'Windows UI must never invoke deferred business commands');
-    return responder();
+    calls.push({ command, args });
+    assert.ok(['project_status', 'project_create', 'project_open', 'project_open_browser', 'host_status'].includes(command), 'Windows UI invoked a deferred business command: ' + command);
+    return responder(command, args);
   };
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
@@ -69,10 +87,25 @@ async function setup(value = report()) {
 }
 
 async function refresh() {
-  const button = document.querySelector('button');
+  const button = findButton('刷新状态');
   assert.ok(button);
-  assert.equal(button.textContent, '刷新检查');
   await act(async () => { button.click(); });
+}
+function findButton(label) { return [...document.querySelectorAll('button')].find(button => button.textContent === label); }
+async function click(label) { const button = findButton(label); assert.ok(button, label); await act(async () => { button.click(); }); }
+async function fill(selector, value) {
+  const input = document.querySelector(selector);
+  assert.ok(input);
+  const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+}
+async function submit() {
+  const form = document.querySelector('form');
+  assert.ok(form);
+  await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })); });
 }
 
 afterEach(async () => {
@@ -84,40 +117,130 @@ after(async () => {
   dom.window.close();
 });
 
-test('mount reads only host_status and shows actual blocked checks and retained record counts', async () => {
+test('mount reads actual project status and blocks creation for retained unresolved roots', async () => {
   await setup();
-  assert.deepEqual(commands, ['host_status']);
-  assert.match(document.body.textContent, /检查受阻/);
-  assert.match(document.body.textContent, /合成测试目录检查结果/);
-  assert.equal(document.querySelector('.host-path').textContent, report().probe.dataRoot);
-  assert.match(document.querySelector('.host-evidence').textContent, /迁移目录内条目3/);
-  assert.match(document.body.textContent, /项目运行时未启动/);
-  assert.equal(document.querySelectorAll('button').length, 1);
+  assert.deepEqual(commands, ['project_status']);
+  assert.match(document.body.textContent, /现有目录受保护/);
+  assert.match(document.body.textContent, /未解决的旧记录/);
+  assert.equal(document.querySelector('.host-path').textContent, status().dataRoot);
+  assert.equal(findButton('新建验证样本').disabled, true);
+  assert.doesNotMatch(document.querySelector('.host-projects').textContent, /尚无项目/);
+  await click('读取目录诊断');
+  assert.deepEqual(commands, ['project_status', 'host_status']);
+  assert.match(document.querySelector('.host-evidence').textContent, /迁移目录内条目：3/);
 });
 
-test('refresh replaces successful probe data without opening business operations', async () => {
-  await setup();
-  const next = report('missing');
-  next.probe.dataRoot = 'C:\\synthetic-new-root';
-  next.probe.evidence = [];
+test('ready project status never starts an independent root diagnostic', async () => {
+  await setup(status('ready', [project()]));
+  assert.deepEqual(commands, ['project_status']);
+  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
+  assert.match(document.querySelector('.host-projects').textContent, /可只读打开/);
+  assert.equal(findButton('读取目录诊断'), undefined);
+  assert.equal(findButton('桌面打开').disabled, false);
+  assert.equal(document.querySelectorAll('.host-capability:not(.available)').length, 1);
+});
+
+test('refresh replaces successful status without creating projects or opening windows', async () => {
+  await setup(status('missing'));
+  const next = status('ready', [project()]);
+  next.dataRoot = 'C:\\synthetic-new-root';
   responder = async () => next;
   await refresh();
-  assert.deepEqual(commands, ['host_status', 'host_status']);
-  assert.equal(document.querySelector('.host-path').textContent, next.probe.dataRoot);
-  assert.match(document.body.textContent, /未发现数据根/);
-  assert.match(document.body.textContent, /本次未列出现场记录/);
-  assert.match(document.body.textContent, /项目运行时未启动/);
-  assert.equal(document.querySelectorAll('.host-capability:not(.available)').length, 2);
+  assert.deepEqual(commands, ['project_status', 'project_status']);
+  assert.equal(document.querySelector('.host-path').textContent, next.dataRoot);
+  assert.match(document.body.textContent, /工作区已就绪/);
+  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
 });
 
-test('a failed refresh preserves the prior probe and marks it as an older result', async () => {
-  await setup();
+test('a failed refresh preserves old status but blocks creation and opening until a successful refresh', async () => {
+  await setup(status('ready', [project()]));
   responder = async () => { throw { code: 'HOST_CHECK_FAILED', message: '合成检查中断' }; };
   await refresh();
-  assert.match(document.querySelector('[role="alert"]').textContent, /合成检查中断.*上次成功检查结果/);
-  assert.equal(document.querySelector('.host-path').textContent, report().probe.dataRoot);
-  assert.match(document.querySelector('.host-evidence').textContent, /迁移目录内条目3/);
-  assert.deepEqual(commands, ['host_status', 'host_status']);
+  assert.match(document.querySelector('[role="alert"]').textContent, /合成检查中断.*上次成功读取/);
+  assert.equal(document.querySelector('.host-path').textContent, status().dataRoot);
+  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
+  assert.equal(findButton('新建验证样本').disabled, true);
+  assert.equal(findButton('桌面打开').disabled, true);
+  responder = async () => status('ready', [project()]);
+  await refresh();
+  assert.equal(findButton('桌面打开').disabled, false);
+});
+
+test('creation is explicit, keeps metadata limits, and waits for a real acknowledgement', async () => {
+  await setup(status('missing'));
+  await click('新建验证样本');
+  assert.equal(findButton('创建样本').disabled, true);
+  assert.equal(document.querySelector('input').maxLength, 200);
+  assert.equal(document.querySelector('textarea').maxLength, 2000);
+  await fill('input', '  合成样本  ');
+  await fill('textarea', '  可丢弃验证  ');
+  let resolveCreation;
+  responder = command => command === 'project_create'
+    ? new Promise(resolve => { resolveCreation = resolve; })
+    : Promise.resolve(status('ready', [project()]));
+  await submit();
+  await submit();
+  assert.deepEqual(commands, ['project_status', 'project_create']);
+  assert.deepEqual(calls[1].args, { input: { name: '合成样本', description: '可丢弃验证' } });
+  assert.equal(findButton('正在创建…').disabled, true);
+  assert.doesNotMatch(document.body.textContent, /已创建「/);
+  await act(async () => { resolveCreation(project()); });
+  assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
+  assert.match(document.body.textContent, /已创建「合成样本」/);
+  assert.equal(document.querySelector('form'), null);
+});
+
+test('an ambiguous creation failure preserves the draft and never retries or claims success', async () => {
+  await setup(status('missing'));
+  await click('新建验证样本');
+  await fill('input', '待确认样本');
+  responder = async () => { throw { code: 'DISCONNECTED', message: '合成创建响应中断', details: { operationOutcome: 'unknown' } }; };
+  await submit();
+  assert.deepEqual(commands, ['project_status', 'project_create']);
+  assert.match(document.querySelector('[role="alert"]').textContent, /合成创建响应中断/);
+  assert.equal(document.querySelector('input').value, '待确认样本');
+  assert.equal(findButton('创建样本').disabled, true);
+  assert.doesNotMatch(document.body.textContent, /已创建「/);
+});
+
+test('desktop and browser actions send only the project ID to their separate native commands', async () => {
+  await setup(status('ready', [project()]));
+  responder = async () => ({ projectId: 'prj_fixture', reused: false });
+  await click('桌面打开');
+  assert.deepEqual(calls[1], { command: 'project_open', args: { projectId: 'prj_fixture' } });
+  assert.match(document.body.textContent, /已打开「合成样本」项目窗口/);
+  await click('浏览器打开');
+  assert.deepEqual(calls[2], { command: 'project_open_browser', args: { projectId: 'prj_fixture' } });
+  assert.match(document.body.textContent, /已请求默认浏览器/);
+});
+
+test('a failed project opening preserves the last status and requires a successful refresh before retrying', async () => {
+  await setup(status('ready', [project()]));
+  responder = async () => { throw { code: 'PROJECT_CHANGED', message: '合成项目身份已变化' }; };
+  await click('桌面打开');
+  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.match(document.querySelector('[role="alert"]').textContent, /合成项目身份已变化.*请刷新确认后再操作/);
+  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
+  assert.doesNotMatch(document.body.textContent, /已打开「/);
+  assert.equal(findButton('新建验证样本').disabled, true);
+  assert.equal(findButton('桌面打开').disabled, true);
+  assert.equal(findButton('浏览器打开').disabled, true);
+  responder = async () => { throw { code: 'HOST_CHECK_FAILED', message: '合成刷新中断' }; };
+  await refresh();
+  assert.equal(findButton('桌面打开').disabled, true);
+  assert.equal(findButton('浏览器打开').disabled, true);
+  responder = async () => status('ready', [project()]);
+  await refresh();
+  assert.equal(findButton('新建验证样本').disabled, false);
+  assert.equal(findButton('桌面打开').disabled, false);
+  assert.equal(findButton('浏览器打开').disabled, false);
+});
+
+test('a project with a missing artifact is visible but cannot be opened', async () => {
+  await setup(status('ready', [project('missing')]));
+  assert.match(document.querySelector('.host-projects').textContent, /合成项目缺失/);
+  assert.equal(findButton('桌面打开').disabled, true);
+  assert.equal(findButton('浏览器打开').disabled, true);
 });
 
 test('a browser preview cannot invent a local probe or invoke native commands', async () => {
@@ -130,5 +253,5 @@ test('a browser preview cannot invent a local probe or invoke native commands', 
   await act(async () => { root.render(createElement(WindowsHost)); });
   assert.deepEqual(commands, []);
   assert.match(document.querySelector('[role="alert"]').textContent, /从 Windows 桌面应用打开/);
-  assert.match(document.querySelector('.host-path').textContent, /尚未取得检查结果/);
+  assert.match(document.querySelector('.host-path').textContent, /尚未取得项目状态/);
 });

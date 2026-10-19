@@ -1,5 +1,5 @@
 // Developer-only resource assembly. This never starts the app or a project.
-import { cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,23 @@ import { packageTemplate } from './package-template.mjs';
 
 const generatedParent = path.join(root, 'apps/desktop/src-tauri/resources');
 const destination = path.join(generatedParent, 'windows');
+
+export async function embeddedResourceFiles(directory) {
+  const files = [];
+  async function visit(relative = '') {
+    const entries = await readdir(path.join(directory, relative), { withFileTypes: true });
+    entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+    for (const entry of entries) {
+      const label = relative ? relative + '/' + entry.name : entry.name;
+      if (label === 'embedded-project-resources.json') continue;
+      if (entry.isDirectory()) await visit(label);
+      else if (entry.isFile()) files.push([label, [...await readFile(path.join(directory, label))]]);
+      else throw new Error('Embedded resources accept ordinary files and directories only: ' + label);
+    }
+  }
+  await visit();
+  return files;
+}
 
 export async function prepareWindowsResources() {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
@@ -39,6 +56,12 @@ export async function prepareWindowsResources() {
     cliIncluded: false,
     preparedAt: Date.now(),
   }, null, 2) + '\n');
+  // All SDK, source, starter, skill and documentation bytes are compiled into
+  // the executable. Runtime creation needs neither Node nor resource sidecars.
+  await writeFile(path.join(stage, 'embedded-project-resources.json'), JSON.stringify({
+    schemaVersion: 1,
+    files: await embeddedResourceFiles(stage),
+  }) + '\n');
   const previous = await stat(destination).catch(error => {
     if (error.code === 'ENOENT') return null;
     throw error;

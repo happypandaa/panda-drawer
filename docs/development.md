@@ -2,9 +2,27 @@
 
 状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
 
-2026-10-19：Windows 已推进至独立只读宿主，本机 Win11 x64 的 release exe 实际开窗、状态刷新、单实例及正常退出通过。该宿主不链接完整业务 core，也不启动 HTTP/CLI 服务；项目和数据库等业务运行时仍由共享策略拒绝，不能据此认为完整 Windows 功能或安装通过。后续 Mac 运行/打包命令和历史实测保持原含义。实际版本、检查及剩余项见 [Windows W1 记录](windows-w1-verification.md)。
+2026-10-19：W1 独立只读宿主已有本机 Win11 x64 的 release 开窗、状态刷新、单实例及正常退出记录。当前代码进入 W2.1：已实现固定默认根下创建可丢弃新样本、桌面/普通浏览器打开预编译欢迎应用，以及真实空库结构只读查询和会话事件。受限 HTTP 服务不链接完整业务 core；完整 core/CLI 仍受门禁保护，SQL 执行、附件、构建、维护、备份、恢复、导入、回收、迁移和清理未开放。仅识别本 W2 阶段已完成登记且完整匹配的样本，旧历史、创建残留、未知条目或外部修改均保留并阻断，不自动修复、补登记或接管。
 
-Windows 开发者可执行 `npm run check:host`、`npm run test:host`、`npm run test:windows:ui` 和 `npm run test:desktop`，分别检查原生宿主、原生策略/文件夹具/来源限制、合成只读界面以及开发构建路由。`npm run build` 在 Windows 仅生成内嵌页面的 `target/release/local-projects-desktop-dev.exe`，不生成安装包或准备尚未开放的 CLI/业务资源；可直接打开该 exe。开发调试可用 `npm run dev`；`node scripts/desktop.mjs build --debug -- --locked` 生成内嵌页面的 debug exe。运行 exe 不需要 Node/Vite 服务，当前机器仍使用已安装的 WebView2。全量业务核心及 Mac 宿主回归继续在相应 Mac 环境执行。
+本轮原生 host 后端 60 项、共享格式 14 项、desktop 3 项和 preflight 96 项测试及相关 Clippy 通过，Windows 界面、构建入口及资源测试 19 项通过。本机 Win11 的 release 已从资源管理器实际创建新样本并在桌面显示已连接、真实空库与只读提示；应用进程树没有启动 Node。Chrome 打开请求已执行，但页面验收因自动化无法可靠识别 URL 而停止；W2 桌面正常关闭重启尚未补验。W1/W2.1 退出条件仍未全部满足。Win10、Mac 回归、无 Node 干净机器、物理断网、跨登录会话与断电均未实测。当前机器使用已安装的 WebView2，安装器及 WebView2 分发仍未确定。证据分别见 [W1 记录](windows-w1-verification.md)和 [W2 记录](windows-w2-verification.md)。
+
+Windows 开发机运行 `npm run dev` 或 `npm run build` 会先执行资源准备：Node/npm 在打包时构建欢迎网页，核对源码/产物摘要及 SDK 0.1.0 原字节，再把源码、SDK、网页、skill 和文档内嵌到 exe。`npm run build` 生成 `target/release/local-projects-desktop-dev.exe`；`node scripts/desktop.mjs build --debug -- --locked` 生成 debug exe，均不生成安装器或捆绑尚未开放的 CLI。成品 exe 创建/打开样本不调用 Node/npm，不依赖 Vite 或资源旁文件；这一实现边界不代替无 Node、物理断网实测。
+
+直接运行 Rust 宿主检查前先生成嵌入资源。以下命令检查新样本实现，不调用平台 CLI 或接管已有用户项目：
+
+```powershell
+node scripts/prepare-windows-resources.mjs
+npm run check:host
+npm run test:host
+node scripts/rust.mjs test --locked -p platform-project-format --lib
+npm run test:preflight
+npm run test:windows:ui
+npm run test:desktop
+node --test scripts/windows-resources-test.mjs
+npm run build
+```
+
+`prepare-windows-resources.mjs` 只生成忽略目录内的平台资源，不创建业务数据根；首次准备可能需要下载构建依赖。合成 DOM 与资源测试不替代真实 WebView2、普通浏览器或系统权限验收。全量业务核心和 Mac 宿主回归继续在相应 Mac 环境执行，下面全量管理流程仍指 Mac 已有路径。
 
 Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、Node/npm、Rust 和 MSVC/SDK；`node scripts/windows-environment.mjs --json` 输出可保存的 JSON。脚本不安装工具、不扫描或初始化平台工作区，不执行平台 CLI，也不证明默认路径的 ACL、链接或磁盘边界已通过。仓库本地 Rust 放在 `.tools/cargo` 与 `.tools/rustup`，Windows 的 `cargo.exe` 仅加入子进程环境，保留原 PATH，不改全局设置；`npm run test:process` 验证这项环境选择逻辑。
 
