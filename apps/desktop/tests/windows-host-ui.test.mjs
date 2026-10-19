@@ -190,6 +190,55 @@ test('creation is explicit, keeps metadata limits, and waits for a real acknowle
   assert.equal(document.querySelector('form'), null);
 });
 
+test('cancelling a creation submits nothing and preserves the existing project view and local draft', async () => {
+  const original = status('ready', [project()]);
+  const before = structuredClone(original);
+  await setup(original);
+  await click('新建验证样本');
+  await fill('input', '尚未提交的新样本');
+  await fill('textarea', '取消不会调用项目写入或删除');
+  const cancel = document.querySelector('button[aria-label="关闭新建表单"]');
+  assert.ok(cancel);
+  await act(async () => { cancel.click(); });
+  assert.equal(document.querySelector('form'), null);
+  assert.deepEqual(commands, ['project_status']);
+  assert.equal(document.querySelector('.host-path').textContent, before.dataRoot);
+  assert.equal(document.querySelectorAll('.host-project-list li').length, 1);
+  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
+  assert.doesNotMatch(document.body.textContent, /已创建「/);
+  assert.deepEqual(original, before);
+  await click('新建验证样本');
+  assert.equal(document.querySelector('input').value, '尚未提交的新样本');
+  assert.equal(document.querySelector('textarea').value, '取消不会调用项目写入或删除');
+  assert.deepEqual(commands, ['project_status']);
+});
+
+test('a successful creation refreshes both projects and opens the newly returned ID without replacing the old one', async () => {
+  const original = project();
+  const created = { ...project(), id: 'prj_created_fixture', name: '新建合成样本', documentEpoch: 'new-synthetic-epoch' };
+  await setup(status('ready', [original]));
+  await click('新建验证样本');
+  await fill('input', created.name);
+  responder = async command => {
+    if (command === 'project_create') return created;
+    if (command === 'project_status') return status('ready', [original, created]);
+    if (command === 'project_open') return { projectId: created.id, reused: false };
+    throw new Error('Unexpected command: ' + command);
+  };
+  await submit();
+  assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
+  assert.equal(document.querySelectorAll('.host-project-list li').length, 2);
+  const card = [...document.querySelectorAll('.host-project-list li')].find(item => item.querySelector('.host-project-id').textContent === created.id);
+  assert.ok(card);
+  const open = [...card.querySelectorAll('button')].find(button => button.textContent === '桌面打开');
+  assert.ok(open);
+  await act(async () => { open.click(); });
+  assert.deepEqual(calls.at(-1), { command: 'project_open', args: { projectId: created.id } });
+  assert.match(document.querySelector('[role="status"].host-notice').textContent, /已打开「新建合成样本」/);
+  assert.equal(document.querySelectorAll('.host-project-list li').length, 2);
+  assert.ok([...document.querySelectorAll('.host-project-id')].some(item => item.textContent === original.id));
+});
+
 test('an ambiguous creation failure preserves the draft and never retries or claims success', async () => {
   await setup(status('missing'));
   await click('新建验证样本');
@@ -200,6 +249,17 @@ test('an ambiguous creation failure preserves the draft and never retries or cla
   assert.match(document.querySelector('[role="alert"]').textContent, /合成创建响应中断/);
   assert.equal(document.querySelector('input').value, '待确认样本');
   assert.equal(findButton('创建样本').disabled, true);
+  assert.doesNotMatch(document.body.textContent, /已创建「/);
+  await click('创建样本');
+  assert.deepEqual(commands, ['project_status', 'project_create']);
+  const committed = { ...project(), id: 'prj_ambiguous_committed', name: '待确认样本' };
+  responder = async () => status('ready', [committed]);
+  await refresh();
+  assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
+  assert.ok([...document.querySelectorAll('.host-project-id')].some(item => item.textContent === committed.id));
+  assert.equal(document.querySelector('input').value, '待确认样本');
+  assert.equal(findButton('创建样本').disabled, false);
+  assert.equal(commands.filter(command => command === 'project_create').length, 1);
   assert.doesNotMatch(document.body.textContent, /已创建「/);
 });
 
@@ -212,6 +272,42 @@ test('desktop and browser actions send only the project ID to their separate nat
   await click('浏览器打开');
   assert.deepEqual(calls[2], { command: 'project_open_browser', args: { projectId: 'prj_fixture' } });
   assert.match(document.body.textContent, /已请求默认浏览器/);
+});
+
+test('a pending project opening blocks duplicate and competing actions until its acknowledgement', async () => {
+  await setup(status('ready', [project()]));
+  let resolveOpen;
+  responder = command => {
+    assert.equal(command, 'project_open');
+    return new Promise(resolve => { resolveOpen = resolve; });
+  };
+  await click('桌面打开');
+  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.equal(findButton('正在打开…').disabled, true);
+  assert.equal(findButton('浏览器打开').disabled, true);
+  assert.equal(findButton('新建验证样本').disabled, true);
+  assert.equal(findButton('刷新状态').disabled, true);
+  assert.doesNotMatch(document.body.textContent, /已打开「/);
+  await click('正在打开…');
+  await click('浏览器打开');
+  await click('新建验证样本');
+  await refresh();
+  assert.deepEqual(commands, ['project_status', 'project_open']);
+  await act(async () => { resolveOpen({ projectId: 'prj_fixture', reused: false }); });
+  assert.match(document.body.textContent, /已打开「合成样本」/);
+  assert.equal(findButton('桌面打开').disabled, false);
+  assert.equal(findButton('浏览器打开').disabled, false);
+  assert.deepEqual(commands, ['project_status', 'project_open']);
+});
+
+test('project modification, deletion and deferred lifecycle features have no actionable manager entry', async () => {
+  await setup(status('ready', [project()]));
+  const deferred = /修改|编辑|重命名|删除|构建|备份|恢复|导入|导出|复制|回收|迁移|清理|SQL/;
+  const actionNames = [...document.querySelectorAll('button, a, [role="menuitem"]')]
+    .map(element => element.getAttribute('aria-label') ?? element.textContent);
+  for (const name of actionNames) assert.doesNotMatch(name, deferred);
+  assert.match(document.querySelector('.host-capabilities').textContent, /业务写入与管理.*未开放/);
+  assert.deepEqual(commands, ['project_status']);
 });
 
 test('a failed project opening preserves the last status and requires a successful refresh before retrying', async () => {

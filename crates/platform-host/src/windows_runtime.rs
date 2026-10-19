@@ -612,7 +612,12 @@ pub fn open_project_browser(value: &str) -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        os::windows::fs::MetadataExt,
+        path::{Path as FsPath, PathBuf},
+    };
 
     fn fixture() -> PathBuf {
         let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -655,6 +660,219 @@ mod tests {
             .to_owned();
         assert!(cookie.contains("HttpOnly; SameSite=Strict"));
         (cookie.split(';').next().unwrap().to_owned(), ticket)
+    }
+
+    // Run only after shutdown releases instance.lock. Include empty directories
+    // and every file's bytes so a refused request cannot hide a newly created
+    // task, recovery record, staging directory, or SQLite sidecar.
+    fn persistent_snapshot(parent: &FsPath) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn visit(
+            parent: &FsPath,
+            path: &FsPath,
+            snapshot: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
+        ) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert_eq!(
+                metadata.file_attributes() & 0x400,
+                0,
+                "fixture reparse point"
+            );
+            let relative = path.strip_prefix(parent).unwrap().to_owned();
+            if metadata.is_dir() {
+                snapshot.insert(relative, None);
+                for child in fs::read_dir(path).unwrap() {
+                    visit(parent, &child.unwrap().path(), snapshot);
+                }
+            } else {
+                assert!(metadata.is_file());
+                snapshot.insert(relative, Some(fs::read(path).unwrap()));
+            }
+        }
+        let mut snapshot = BTreeMap::new();
+        visit(parent, parent, &mut snapshot);
+        snapshot
+    }
+
+    #[test]
+    fn real_loopback_closed_crud_and_lifecycle_preserve_the_complete_workspace() {
+        let _serial = crate::WINDOWS_FILESYSTEM_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let artifacts = FsPath::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join(".test-artifacts");
+                fs::create_dir_all(&artifacts).unwrap();
+                let parent = artifacts.join(format!(
+                    "windows-workspace-disposable-runtime-crud-rejections-{}",
+                    Uuid::new_v4().simple()
+                ));
+                crate::windows_workspace::create_private_fixture_directory(&parent).unwrap();
+                let initial = WindowsProjectRuntime::start_store(Arc::new(
+                    WindowsProjectStore::for_test(
+                        crate::windows_projects::test_bundle(),
+                        parent.clone(),
+                    )
+                    .unwrap(),
+                ))
+                .await
+                .unwrap();
+                let a = initial
+                    .create(CreateProjectInput {
+                        name: "Disposable closed CRUD target".into(),
+                        description: Some("Preserve all bytes when operations are unavailable".into()),
+                    })
+                    .await
+                    .unwrap();
+                let b = initial
+                    .create(CreateProjectInput {
+                        name: "Disposable closed CRUD isolation control".into(),
+                        description: None,
+                    })
+                    .await
+                    .unwrap();
+                initial.shutdown().await;
+                let before = persistent_snapshot(&parent);
+                let root = parent.join(APP_IDENTIFIER);
+                for project in [&a, &b] {
+                    for file in [
+                        project.project_root.join("project.json"),
+                        project.project_root.join("app/src/App.tsx"),
+                        project
+                            .project_root
+                            .join("app/vendor/local-projects-sdk-0.1.0.tgz"),
+                        project.project_root.join("data/main.sqlite"),
+                        root.join("workspace/.platform/project-state")
+                            .join(format!("{}.json", project.id)),
+                    ] {
+                        assert!(before[file.strip_prefix(&parent).unwrap()].is_some());
+                    }
+                }
+
+                let runtime = WindowsProjectRuntime::start_store(Arc::new(
+                    WindowsProjectStore::for_test(
+                        crate::windows_projects::test_bundle(),
+                        parent.clone(),
+                    )
+                    .unwrap(),
+                ))
+                .await
+                .unwrap();
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .unwrap();
+                let (cookie, _) = connect(&runtime, &client, &a.id).await;
+                let base = &runtime.base_url;
+                let endpoint = format!("{base}/p/{}/api/v1", a.id);
+                let management = format!("{base}/api/v1/projects/{}", a.id);
+                let trash = format!("trash_{}", Uuid::new_v4().simple());
+                let backup = format!("backup_{}", Uuid::new_v4().simple());
+
+                // These requests go through the real listener, API router and
+                // stage gate with a valid project session and document epoch.
+                // PATCH/trash/builds/restore/purge are the documented management
+                // routes; PUT/DELETE also verify that alternate verbs cannot
+                // open an unimplemented metadata or project-delete shortcut.
+                let requests = vec![
+                    ("sql create", Method::POST, format!("{endpoint}/db/execute"), json!({"sql":"CREATE TABLE closed_crud(id TEXT PRIMARY KEY, amount INTEGER NOT NULL)"})),
+                    ("sql insert", Method::POST, format!("{endpoint}/db/execute"), json!({"sql":"INSERT INTO closed_crud(id,amount) VALUES (?,?)","params":["entry-a",120]})),
+                    ("sql read", Method::POST, format!("{endpoint}/db/execute"), json!({"sql":"SELECT id,amount FROM closed_crud WHERE id=?","params":["entry-a"]})),
+                    ("sql update", Method::POST, format!("{endpoint}/db/execute"), json!({"sql":"UPDATE closed_crud SET amount=? WHERE id=?","params":[240,"entry-a"]})),
+                    ("sql delete", Method::POST, format!("{endpoint}/db/execute"), json!({"sql":"DELETE FROM closed_crud WHERE id=?","params":["entry-a"]})),
+                    ("sql transaction", Method::POST, format!("{endpoint}/db/transaction"), json!({"statements":[{"sql":"INSERT INTO closed_crud(id,amount) VALUES (?,?)","params":["entry-b",60]},{"sql":"UPDATE closed_crud SET amount=? WHERE id=?","params":[90,"entry-b"]},{"sql":"DELETE FROM closed_crud WHERE id=?","params":["entry-b"]}]})),
+                    ("management sql", Method::POST, format!("{management}/db/execute"), json!({"sql":"DELETE FROM closed_crud"})),
+                    ("management transaction", Method::POST, format!("{management}/db/transaction"), json!({"statements":[{"sql":"DELETE FROM closed_crud"}]})),
+                    ("metadata patch", Method::PATCH, format!("{management}/metadata"), json!({"expectedRevision":"closed-stage-revision","name":"Must not replace the original name"})),
+                    ("metadata put", Method::PUT, format!("{management}/metadata"), json!({"expectedRevision":"closed-stage-revision","name":"Must not replace the original name"})),
+                    ("project delete verb", Method::DELETE, management.clone(), json!({})),
+                    ("project trash", Method::POST, format!("{management}/trash"), json!({})),
+                    ("backup create", Method::POST, format!("{management}/backups"), json!({})),
+                    ("backup restore", Method::POST, format!("{management}/restore"), json!({"backupId":backup})),
+                    ("trash restore", Method::POST, format!("{base}/api/v1/trash/{trash}/restore"), json!({})),
+                    ("trash purge", Method::POST, format!("{base}/api/v1/trash/{trash}/purge"), json!({})),
+                    ("build", Method::POST, format!("{management}/builds"), json!({})),
+                    ("copy", Method::POST, format!("{management}/copies"), json!({"name":"Must not create a copy"})),
+                    ("export", Method::POST, format!("{management}/exports"), json!({})),
+                    ("maintenance", Method::POST, format!("{management}/maintenance"), json!({"reason":"Closed stage validation"})),
+                    ("cleanup", Method::POST, format!("{management}/storage/cleanups"), json!({"categories":["logs","buildCache"]})),
+                    ("workspace migration", Method::POST, format!("{base}/api/v1/workspace/migrations"), json!({"destination":"closed-stage-disposable-target"})),
+                    ("attachment delete", Method::DELETE, format!("{endpoint}/file?path=closed-crud.txt"), json!({})),
+                ];
+                for (label, method, url, body) in requests {
+                    let response = client
+                        .request(method, url)
+                        .header("origin", base)
+                        .header("cookie", &cookie)
+                        .header("x-platform-document-epoch", &a.document_epoch)
+                        .json(&body)
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), 400, "{label}");
+                    let result: Value = response.json().await.unwrap();
+                    assert_eq!(result["apiVersion"], API_VERSION, "{label}");
+                    assert_eq!(result["ok"], false, "{label}");
+                    assert_eq!(result["error"]["code"], "PLATFORM_STAGE_UNAVAILABLE", "{label}");
+                    assert_eq!(result["error"]["details"]["operationOutcome"], "not_started", "{label}");
+                    assert!(result.get("data").is_none(), "{label}");
+                    assert!(result.get("taskId").is_none(), "{label}");
+                }
+                let uploaded: Value = client
+                    .put(format!("{endpoint}/file?path=closed-crud.txt"))
+                    .header("origin", base)
+                    .header("cookie", &cookie)
+                    .header("x-platform-document-epoch", &a.document_epoch)
+                    .header("content-type", "application/octet-stream")
+                    .body("Must not create an attachment or temporary upload")
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                assert_eq!(uploaded["error"]["code"], "PLATFORM_STAGE_UNAVAILABLE");
+                assert_eq!(uploaded["error"]["details"]["operationOutcome"], "not_started");
+
+                // Both retained samples still validate and expose the real
+                // unchanged empty database, rather than a successful fake write.
+                let status = runtime.status().await;
+                assert_eq!(status.root_status, "ready");
+                assert_eq!(status.projects.len(), 2);
+                for project in [&a, &b] {
+                    let retained = status.projects.iter().find(|p| p.id == project.id).unwrap();
+                    assert_eq!(retained.name, project.name);
+                    assert_eq!(retained.document_epoch, project.document_epoch);
+                    let (project_cookie, _) = connect(&runtime, &client, &project.id).await;
+                    let schema: Value = client
+                        .get(format!("{base}/p/{}/api/v1/db/schema", project.id))
+                        .header("cookie", project_cookie)
+                        .header("x-platform-document-epoch", &project.document_epoch)
+                        .send()
+                        .await
+                        .unwrap()
+                        .json()
+                        .await
+                        .unwrap();
+                    assert_eq!(schema["ok"], true);
+                    assert_eq!(schema["data"]["tables"], json!([]));
+                }
+                runtime.shutdown().await;
+                let after = persistent_snapshot(&parent);
+                assert_eq!(after, before, "closed operations changed retained workspace evidence");
+                assert!(after.keys().all(|path| {
+                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    !name.ends_with("-wal") && !name.ends_with("-shm") && name != "tasks"
+                }));
+            });
     }
 
     #[test]
