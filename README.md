@@ -12,6 +12,8 @@ PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs
 
 Windows 开发机执行 `npm run build` 会先用 Node/npm 准备匹配的初始源码、固定 SDK 和预编译网页，再将资源内嵌到 `target/release/local-projects-desktop-dev.exe`。成品 exe 不调用 Node，不需要 Vite 或资源旁文件；无 Node 干净机器和物理断网尚未实测，安装包尚未确定。
 
+Windows 与 macOS 管理页共用布局、卡片、搜索筛选、创建弹窗和 `styles.css`，平台控制器按实际能力保留门禁；未开放功能不会因共用界面而调用完整管理器。自动化、Windows 实机结果和重启窗口/Mac 原生待验范围见[共用管理界面记录](docs/shared-manager-ui-verification.md)。
+
 Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示完整 Windows 兼容已通过。Node/npm 用于开发机准备平台资源及后续用户源码构建，Rust/MSVC/SDK 仅用于开发平台本身。
 
 macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。当前数据已完成公开修复，新包启动、样本保存/备份/删除恢复及应用重启结果见[实际验收记录](docs/workspace-identity-repair-verification.md)。
