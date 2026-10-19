@@ -17,7 +17,7 @@ futures-util = "0.3"
 mime_guess = "2"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-rusqlite = { version = "0.38", features = ["bundled", "serialize"] }
+rusqlite = { version = "0.39", features = ["bundled", "serialize", "hooks"] }
 url = "2"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
@@ -32,6 +32,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_IO",
     "Win32_System_Ioctl",
+    "Win32_System_SystemInformation",
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
 ] }

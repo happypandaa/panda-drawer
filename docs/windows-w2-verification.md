@@ -2,7 +2,7 @@
 
 更新日期：2026-10-19
 
-范围：Windows x64 创建并只读打开本轮可丢弃新项目，及 W2.2a 数据库对象 lease 安全原语。公开 SQL 仍关闭；完整 Windows 兼容、SQL 写入、附件、构建、维护及生命周期仍按支持方案逐项验收。
+范围：Windows x64 创建并只读打开本轮可丢弃新项目，及 W2.2a/b1 文件原语、b2 私有 WAL 连接实验。公开 SQL 仍关闭；完整 Windows 兼容、SQL 写入、附件、构建、维护及生命周期仍按支持方案逐项验收。
 
 当前本机结果：欢迎应用、自写费用分摊计算器的创建、桌面打开与正常退出重启已通过，见第 6 节；取消、页面修改/校验和后置 CRUD/生命周期拒绝检查见第 7 节。前文保留各步当时的结果与待办，不将后续补验倒填为历史通过；真实持久数据增删改、项目删除恢复、浏览器页面及完整 W1/W2.1 矩阵仍待验。
 
@@ -139,3 +139,39 @@ data 目录仅接受精确命名的三文件，缺失、其他条目、目录、
 新增 4 项原生测试通过，覆盖中文/空格目录及三文件的真实相对读写句柄、缺失集合不创建、未知/空 journal 保留、大小写别名拒绝、另一项目 data/旁文件身份不接管，以及准入后出现 journal/硬链接时停止。测试使用新命名的字节夹具，未伪称 SQLite 数据库。host 74、desktop 3、共享格式 14，共 91 项 Rust 回归通过，相同三包 all-targets Clippy `-D warnings`、host fmt 和 diff 空白检查通过。
 
 这只是 b1 文件准入，不代表 VFS、SHM 锁、WAL 初始化、串行执行器或 SQL 成功流程完成。公开 SQL 和后置操作仍关闭，旧四个项目、固定身份/根、SDK 及登记均不修改。b2 继续把 SHM 映射和锁建立在相对打开的已核对 HANDLE 上；不能依靠默认 Win32 SHM 的路径打开来宣称同等绑定。GUI 补验与其他系统/设备缺口不变。
+
+## 11 W2.2b2：受限 VFS 与私有 WAL 连接
+
+b1 已单独提交并推送为 `ce3cad0`；第一次 push 连接中断，重试成功。本片实现不被管理 IPC、HTTP、CLI 或后台任务调用的 `BoundSqliteDatabase`，只接受已有的完整 WAL 文件集合，不提供原始连接或任意 SQL 方法。没有接管既有四个样本，没有登记格式升级、用户构建或新的应用能力。
+
+实现边界：
+
+- 每连接注册唯一的非默认 VFS，复用 bundled Win32 的主库/WAL I/O、同步与文件锁，只接受精确路径及相符文件类型；剥除 CREATE，拒绝临时磁盘库、rollback journal、删除及动态扩展。原生打开后通过 `WIN32_GET_HANDLE` 核对实际对象，不把路径相同当身份相同。原 Win32 对象及文件名指针寿命保持，未使用其私有结构布局或全局 syscall hook。
+- 四个 `xShm*` 均由独立层处理。映射/DMS 与连接锁使用两次相对打开、核对身份的 SHM HANDLE，不再经过默认 Win32 SHM 的路径创建/清理；沿用锁区 120–127、DMS 128 和真实系统映射对齐。同进程第二自定义节点按文件 ID 拒绝，普通 SQLite 客户端仍用原生字节锁协调。映射扩容由 `CreateFileMappingW` 完成，旧视图保持；没有在已有视图上先 `SetEndOfFile` 或移走指针，依据 [Microsoft 映射语义](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw)。
+- 在读取 schema 前设置并核对 `PERSIST_WAL=1`，同时启用 `NO_CKPT_ON_CLOSE`，防止诊断失败的关闭过程把 WAL 自动 checkpoint 到 main。正常写入仍提交并同步 WAL；有界 checkpoint 及增长策略留待 b3。连接核对 WAL、外键 ON、synchronous FULL、busy_timeout 5000、temp_store MEMORY 和真实 quick_check，不静默转换日志模式。
+- 在 SQLite 介入前读取真实主库头，流式验证非空 WAL 的版本、页尺寸、双字序滚动校验、帧盐和最终提交。坏头、坏页/帧校验及半帧拒绝，原字节保留；不依靠 SQLite 可能忽略坏 WAL 后的空日志状态。URI 可指定另一个 VFS，因此私有连接另拒绝 ATTACH/DETACH、危险配置和文件函数；这不替代后续共享请求执行器的完整 SQL 策略。
+- 显式关闭连接成功后才注销 VFS/释放 lease。SQLite 不一定传播 `xClose`/`xShmUnmap` 错误，故单独收集本轮回调诊断及最终绑定检查，不沿用之前已处理的 SQL 错误。存在未结束语句而关闭 BUSY 时保留连接、VFS 与文件保护到进程退出，防止后续语句回调悬垂；不报告成功关闭或擅自解除保护。
+
+审查确认原锁定 SQLite 3.51.1 不含 WAL-reset 修复；[官方说明](https://sqlite.org/wal.html#walresetbug)列明 3.51.3 起修复。选择同一 3.51 系列的 [3.51.3 修复版](https://sqlite.org/releaselog/3_51_3.html)，统一 core/host 为 rusqlite 0.39.0、libsqlite3-sys 0.37.0，并更新同一 Cargo.lock；保留 cache、bundled、hooks、limits、backup、serialize 等原有适用功能。新连接还核对实际 SQLite 至少为 3.51.3。两版 crate 的 config/limits/backup/serialize/cache 和现用 FFI/Win32 VFS 经静态比较未发现需改的项目调用；这不替代 Mac 原生 SQL、备份及恢复回归，合主线条件没有放宽。
+
+实际验证均使用新命名的 `.test-artifacts/windows-workspace-disposable-*`。夹具先相对 create-new 三个私有空文件，再由真实原生 SQLite 初始化、建表/插入并 checkpoint TRUNCATE，保持原三个对象身份；该 stock 连接仅为测试生成器，不是已完成的生产安全初始化。随后受控连接实际提交参数化写入、回滚事务及关闭重开；没有序列化内存库后覆盖数据库来模拟持久化。
+
+新增 22 项测试通过，包含 11 项真实文件/SQLite 集成、3 项 SHM 规则和 8 项 WAL 校验：
+
+- 真实写入、事务回滚、关闭重开、连接配置和 URI/越界写出拒绝。
+- 与同进程 stock Win32 SQLite 的读快照/写锁协调；独立进程持有写锁时明确 BUSY，释放后读到其提交。
+- 独立进程 FULL 同步提交后直接退出、未执行连接析构/关闭 checkpoint：main 字节未变且 WAL 保留已提交记录，受控连接重开实际读到。它是受控进程退出，不是 GUI 重启、跨登录或硬件断电。
+- SHM 第 0/1/2 区扩容后旧指针和值仍有效；不扩容读取缺失区不改变文件，第二自定义节点拒绝。
+- 坏主库头，以及真实非空 WAL 的坏 magic、头校验、页校验和半帧，在 SQLite 介入前拒绝且三文件字节不变。有效主库头但独立业务页损坏、同时仍有未 checkpoint 的有效 WAL 时诊断失败，main/WAL 字节仍保持；SHM 缓存可能重建，不能称完整坏库历史证据已归档。
+- 新出现 journal 时停止读取并保留所有字节，关闭也返回实际绑定错误。未结束语句导致 BUSY 关闭后，实际再执行/结束该语句仍安全，文件及 VFS 保持，直到该可丢弃测试进程退出。
+
+最终命令 `node scripts/rust.mjs test --locked -p platform-host -p platform-desktop -p platform-project-format --quiet`：host 96、desktop 3、共享格式 14，共 **113 项通过**。另有 1 项子进程入口默认 ignored，由父集成测试用 `--ignored --exact` 实际调用，不把默认 ignored 计为通过。三包 all-targets Clippy `-D warnings`、host fmt、diff 空白检查通过。前端未变，本片未重建/启动 release；现有 exe 摘要仍为 `e4e93fe673fd0c3ecba877c46c0251a3e7d2fa0d9d1aa7cdfd27737fbd8cf086`。原有四样本、SDK、数据根、控制及恢复证据没有被这些测试修改或清理。
+
+本片只完成私有实验连接，b3 及 W2.2 整体仍未通过：
+
+1. WAL 预检要求输入静止；目前前后长度相同不证明没有同长重写。运行期接入前必须建立串行/静止准入与外部占用诊断。
+2. 盐变化、header-only、未提交尾和旧代 stale 尾均保守拒绝。其中一些可来自正常 checkpoint 后的 WAL 复用，不能把拒绝当通用重启/崩溃恢复已实现；需在完整现场留存后实现并验证正确处理，不直接截断或删除旁文件。
+3. SHM 是可重建缓存，诊断可能改动它。接入前补完整坏库现场/原缓存证据留存；主库和 WAL 保持测试不替代完整恢复或维护基线。
+4. 生产安全 WAL 初始化、每项目专用线程/串行队列、排空/取消、预算及共享 SQL 结果策略、有界 checkpoint 仍待实现；实际 API/SSE、文档代次、两新项目的 CRUD/事务 GUI 验收随后进行。
+
+公开 SQL、管理写入与所有后置能力继续门禁。Win10、Mac 原生、当前包 GUI 重启正文、普通浏览器、无 Node 净机、物理断网和设备/安装证据保持待验；不能以本片原生数据库夹具替代。

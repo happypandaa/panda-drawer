@@ -17,6 +17,12 @@ pub mod windows_projects;
 #[cfg(windows)]
 pub mod windows_runtime;
 #[cfg(windows)]
+pub mod windows_sqlite;
+#[cfg(windows)]
+mod windows_sqlite_shm;
+#[cfg(windows)]
+mod windows_sqlite_wal;
+#[cfg(windows)]
 mod windows_workspace;
 #[cfg(windows)]
 pub use windows_runtime::open_project_browser;
