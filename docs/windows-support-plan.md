@@ -10,6 +10,8 @@
 
 同日用户进一步要求多拆步骤、以稳定为先，并允许备份等容易出问题的复杂功能精简前期范围、放到后面。本版据此安排 20 个验收小步：先验证启动、创建、数据保存和构建，再逐项开放备份、恢复和生命周期。这里精简的是早期内部版的开放范围，不永久删除原目标，不降低已开放操作的数据保护，也不改变 Mac 已有功能。
 
+接续执行使用[20 步执行与验收清单](windows-execution-checklist.md)，区分待实现、待验证与环境缺口，并将 W2.2 按安全连接、执行器、API 和实机验证拆为可审查片段；退出条件仍以本文及既有契约为准。
+
 主架构沿用[平台开发约定](platform-development-contract.md)，项目与数据规则沿用[生命周期](project-lifecycle-and-workspace.md)、[备份维护](backup-and-maintenance.md)及[历史清理](history-cleanup.md)契约。安装与更新边界见[发行方案](release-and-updates.md)，总里程碑见[开发计划](development-milestones.md)。
 
 ## 1 已确认目标与尚未确定的范围
