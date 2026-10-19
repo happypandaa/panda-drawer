@@ -203,6 +203,7 @@ impl ProjectStore {
         workspace: PathBuf,
         resources: Option<Arc<crate::resources::ProjectResources>>,
     ) -> Result<Self, ApiError> {
+        crate::platform_support::require_runtime().map_err(ApiError::from)?;
         check_no_symlinks(&workspace, false)?;
         for path in [
             workspace.join("projects"),

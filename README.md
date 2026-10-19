@@ -4,7 +4,9 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 [网页应用包安装与分享设计](docs/web-app-package-design.md)整理了外部构建产物的说明文件、目录检测与报错、GitHub 分发、环境要求和初始数据方案。需求方向已确认，具体协议仍为讨论稿，尚未实现，不改变当前完整项目导入与备份规则。
 
-已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；当前仅完成[方案与 W1–W4 规划](docs/windows-support-plan.md)，尚未进行 Windows 移植、构建或实测。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
+已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。当前 W1.1 本机工具准备和 W1.2 首片共享启动门禁进行中，初期范围为本机内置 NTFS 与固定默认工作区；Windows 运行时在安全文件及现场识别就绪前继续关闭。实际结果及剩余项见 [W1 记录](docs/windows-w1-verification.md)；平台 Windows 编译、启动和安装仍未验收。早期内部版仅面向可丢弃样本。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
+
+Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行带有效网页产物的项目无需 Node；Node/npm 仅在修改源码后构建时需要，Rust/MSVC/SDK 仅用于开发平台本身。
 
 macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。修复保留原记录和项目资料，实际交付与验证以对应记录为准。
 
@@ -39,6 +41,7 @@ npm run build
 | --- | --- |
 | `apps/desktop` | 平台管理界面与 Tauri 宿主 |
 | `crates/platform-core` | 开发隔离、SQLite、本地服务、会话/附件、构建、备份恢复、项目生命周期及工作区迁移 |
+| `crates/platform-preflight` | 无文件访问的遗留记录字节分类；可单独原生测试，不提供运行或恢复许可 |
 | `crates/platform-cli` | 只连接固定开发环境的原生 CLI |
 | `packages/sdk` | 内部 SDK `@local-projects/sdk 0.1.0`、类型、说明与固定 tarball |
 | `templates/react` | `react-ts-vite-0.1.4` 标准模板、组件、锁文件和项目自带 SDK；打包时生成匹配的初始网页 |

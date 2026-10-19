@@ -627,6 +627,7 @@ impl RuntimeService {
         resource_root: PathBuf,
         cli_path: PathBuf,
     ) -> Result<Self> {
+        crate::platform_support::require_runtime()?;
         let resources = Arc::new(ProjectResources::new(resource_root, cli_path)?);
         Self::start_inner(paths, lock, Some(resources)).await
     }
@@ -635,6 +636,7 @@ impl RuntimeService {
         lock: InstanceLock,
         resources: Option<Arc<ProjectResources>>,
     ) -> Result<Self> {
+        crate::platform_support::require_runtime()?;
         paths.verify_lock(&lock)?;
         crate::workspace::recover_startup(&paths)?;
         let listener = bind_loopback(paths.last_port()?).await?;

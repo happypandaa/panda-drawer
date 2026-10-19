@@ -65,6 +65,7 @@ impl EnvironmentManager {
         Ok(settings.node_path)
     }
     pub async fn configure_node(&self, path: Option<PathBuf>) -> Result<EnvironmentInfo, ApiError> {
+        crate::platform_support::require_runtime().map_err(ApiError::from)?;
         if let Some(path) = &path {
             if !path.is_absolute() {
                 return Err(ApiError::new(

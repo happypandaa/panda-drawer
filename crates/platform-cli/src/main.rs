@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use platform_core::{
-    Discovery, RuntimePaths, API_VERSION, APP_IDENTIFIER, DISPLAY_NAME, ENVIRONMENT,
+    platform_support::RuntimeSupportError, Discovery, RuntimePaths, API_VERSION, APP_IDENTIFIER,
+    DISPLAY_NAME, ENVIRONMENT,
 };
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::Serialize;
@@ -1058,6 +1059,15 @@ fn validate_business_response(
 
 fn discover_paths() -> Result<RuntimePaths> {
     RuntimePaths::discover().map_err(|error| {
+        if let Some(gate) = error.downcast_ref::<RuntimeSupportError>() {
+            let api_error = platform_core::ApiError::from(*gate);
+            return CliError {
+                code: gate.code,
+                message: api_error.message,
+                details: api_error.details,
+                retryable: api_error.retryable,
+            };
+        }
         let missing = error.chain().any(|cause| {
             cause.downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)

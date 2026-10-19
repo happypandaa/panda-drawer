@@ -37,6 +37,15 @@ impl std::fmt::Display for ApiError {
 }
 impl std::error::Error for ApiError {}
 
+impl From<crate::platform_support::RuntimeSupportError> for ApiError {
+    fn from(value: crate::platform_support::RuntimeSupportError) -> Self {
+        Self::new(value.code, value.message)
+            .detail("platform", value.platform.as_str())
+            .detail("capability", "runtime")
+            .outcome("not_started")
+    }
+}
+
 impl From<std::io::Error> for ApiError {
     fn from(value: std::io::Error) -> Self {
         Self::io(value)

@@ -1,10 +1,12 @@
 # 首发、安装与软件更新方案
 
-状态：v0.5，Mac 发行及平台基本信息规则已确认；Windows 10 22H2 x64 与 Windows 11 x64 目标已确认，安装细节待定；正式发行尚未完成
+状态：v0.7，Mac 发行及平台基本信息规则已确认；Windows W1.1 环境准备已开始，初期内置 NTFS 默认根已确认，安装细节待定；正式发行尚未完成
 
-更新日期：2026-10-18
+更新日期：2026-10-19
 
 用户原已确认 Mac 首发支持 macOS 15+、Apple Silicon 原生 arm64，采用签名并公证的 DMG，第一版检查更新后手动覆盖安装。2026-10-18 新增确认 Windows 10 22H2 x64 和 Windows 11 x64 支持目标；具体安装方式和发行批次仍待落实，不能从支持目标推导同时发布。Intel Mac、Windows ARM64/x86、Linux 和应用内更新未纳入本次确认。
+
+同日用户要求 Windows 稳定优先、拆细步骤并把备份等复杂功能后置；[Windows 计划](windows-support-plan.md)允许先交付限定已验收能力和可丢弃新样本的内部验证版。它不承担真实历史数据接管，不表示完整 Windows 支持或正式发行；M6 的数据、浏览器、设备及安装验收门槛不因此减少。未开放功能必须在后端和启动路径禁用执行并保护已有现场，Mac 已有功能不变。
 
 基础架构、系统 Node、SDK 兼容以及备份维护按[主约定](platform-development-contract.md)与[备份维护契约](backup-and-maintenance.md)执行。项目基本信息与平台基本信息的边界见[项目元数据与概览](project-metadata-and-overview.md)，空间口径见[空间管理契约](project-storage-and-assets.md)。本文件不增加程序实现、安装器或更新服务。
 
@@ -145,7 +147,7 @@ macOS 首次及手动安装使用 DMG；Tauri updater 使用其生成的 `.app.t
 
 ## 7 Windows 支持目标与待定发行细节
 
-Windows 10 22H2 x64 与 Windows 11 x64 均已确认为产品支持目标。适配范围、数据保护、W1–W4 阶段和分平台验收见[Windows 规划](windows-support-plan.md)。本轮仅整理文档，没有 Windows 可运行或安装验证结果。
+Windows 10 22H2 x64 与 Windows 11 x64 均已确认为产品支持目标。适配范围、数据保护、W1–W4 阶段和分平台验收见[Windows 规划](windows-support-plan.md)。当前已开始 W1.1 开发工具准备和只读诊断，没有平台 Windows 可运行或安装通过结果，证据见 [W1 记录](windows-w1-verification.md)。初期范围已确认为本机内置 NTFS、由系统 API 解析的固定默认工作区；程序与数据分离，普通更新保留数据。外置盘、网络/映射盘、同步目录及迁移目标后续评估，私有 ACL 和安全路径仍需实现。
 
 以下仍为工程与发行建议，尚未因系统目标确认而定稿：
 
@@ -153,7 +155,6 @@ Windows 10 22H2 x64 与 Windows 11 x64 均已确认为产品支持目标。适�
 - 安装器检测 WebView2 Evergreen 运行环境，缺失时用内嵌 bootstrapper 下载并安装；需要离线分发时另提供包含 Evergreen 离线安装器的包。
 - 不默认使用固定版本 WebView2，不跳过运行环境检查。Windows 11 通常已有运行环境，也仍需处理缺失和最低版本。
 - 程序、CLI 与安装器安排代码签名；不承诺签名后所有机器都没有系统信誉提示。
-- Windows 工作区具体位置通过系统 API 获取，建议放用户本地应用数据目录，首批文件系统建议为本机 NTFS；位置、磁盘及权限方案在 W1 确定。程序与数据分离、普通更新保留数据的既有原则不变。
 
 Tauri 提供 [NSIS 与 WebView2 安装选项](https://v2.tauri.app/distribute/windows-installer/)，微软解释了 [Evergreen 在线及离线分发](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)。离线运行环境安装不代表首次 npm 依赖下载也能离线完成。Windows 10 目标仅为 22H2 x64，不自动覆盖更早版本、32 位、LTSC 或特殊精简环境。
 

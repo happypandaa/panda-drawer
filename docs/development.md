@@ -2,6 +2,18 @@
 
 状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
 
+2026-10-19：Windows 已进入 W1.1 本机开发环境准备和 W1.2 首片启动门禁，平台编译、启动和安装未验收。安全文件与已有现场识别就绪前，共享策略明确拒绝 Windows 运行时初始化、发现和启动。当前可以运行下述独立探针；后续 Mac 运行/打包命令和历史实测保持原含义，不能直接作为 Windows 可运行说明。实际版本、检查及剩余项见 [Windows W1 记录](windows-w1-verification.md)。
+
+Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、Node/npm、Rust 和 MSVC/SDK；`node scripts/windows-environment.mjs --json` 输出可保存的 JSON。脚本不安装工具、不扫描或初始化平台工作区，不执行平台 CLI，也不证明默认路径的 ACL、链接或磁盘边界已通过。仓库本地 Rust 放在 `.tools/cargo` 与 `.tools/rustup`，Windows 的 `cargo.exe` 仅加入子进程环境，保留原 PATH，不改全局设置；`npm run test:process` 验证这项环境选择逻辑。
+
+MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立 C 静态库与 Rust 的 x64 编译、链接和运行。该命令在唯一的 `.test-artifacts/windows-w1-toolchain-smoke-*` 中保存源码、产物和报告，不清理旧证据、不构建或启动平台；它与只读环境盘点是不同检查。需要纯 JSON 时执行 `node scripts/windows-toolchain-smoke.mjs --json`。成功只证明本机开发工具链小样，不代表 Windows 产品兼容或 bundled SQLite 通过。
+
+平台使用者与平台开发者的要求不同：运行带有效网页产物的项目不需要 Node/npm、Rust、Visual Studio 或独立 SQLite 服务；修改业务源码后构建才需要系统 Node/npm，Rust/MSVC/Windows SDK 只用于开发平台本身。Node 内置分发没有在本轮确认，已有完整项目 ZIP 和拟议网页应用包的规则也没有因此改变。
+
+`npm run test:platform-support` 直接使用所选 Rust 编译、运行 `platform_support.rs` 的无依赖生产策略测试，输出位于新的 `.test-artifacts/w1-platform-support-*`，不启动平台或读取用户工作区。Windows 使用真实 `x86_64-pc-windows-msvc` 目标；Mac 分支的策略断言不是 Mac 实机回归。这个独立检查不编译整个 core、CLI 或 Tauri，不能替代后续完整构建、入口拒绝和现场保护验收。
+
+`npm run test:preflight` 通过根 Cargo 锁文件单独编译、测试 `platform-preflight` 生产库和合成的维护/恢复记录字节，不编译整个 core 或启动任何服务。该库只有 JSON 解码依赖，不接受文件路径，也不执行恢复、修复或写入；它不会访问平台数据根。首次测试需要取得锁定的 Rust 依赖，不能据此承诺离线平台构建。解码分类与安全文件读取分别验收，后者及完整现场汇总尚未完成。
+
 ## 管理界面入口
 
 “我的项目”以图标、名称、简介及“进入项目 / 详情”展示项目，支持名称、简介或 ID 搜索及状态筛选。每张卡片直接提供“删除项目”，进入绑定该项目的确认；核对后移入回收站，可在“空间与工作区 → 回收站”恢复。

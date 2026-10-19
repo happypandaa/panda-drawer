@@ -73,6 +73,7 @@ impl RuntimePaths {
 
     /// There is intentionally no environment variable or public custom-root override.
     pub fn initialize() -> Result<Self> {
+        crate::platform_support::require_runtime()?;
         Self::initialize_at(Self::default_root()?)
     }
 
@@ -106,6 +107,7 @@ impl RuntimePaths {
 
     /// Read an existing development runtime without creating directories or settings.
     pub fn discover() -> Result<Self> {
+        crate::platform_support::require_runtime()?;
         let mut paths = Self::at(Self::default_root()?);
         paths.validate_marker()?;
         let settings: Settings = read_private_json(&paths.settings_path())?;
@@ -134,6 +136,7 @@ impl RuntimePaths {
     }
 
     fn initialize_at(root: PathBuf) -> Result<Self> {
+        crate::platform_support::require_runtime()?;
         require_absolute_clean_path(&root)?;
         ensure_directory_tree(&root)?;
         let marker = root.join(MARKER);
@@ -292,6 +295,7 @@ impl RuntimePaths {
     }
 
     pub fn acquire_lock(&self) -> Result<InstanceLock> {
+        crate::platform_support::require_runtime()?;
         self.validate_existing()?;
         let path = self.data_root.join("instance.lock");
         let file = open_private(&path, true, false)?;

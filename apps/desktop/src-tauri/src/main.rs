@@ -1001,6 +1001,12 @@ fn shutdown_runtime(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    // Reject before Tauri plugins, setup and WebView creation. In particular,
+    // do not turn an unopened Windows stage into a workspace-repair prompt.
+    if let Err(error) = platform_core::platform_support::require_runtime() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
