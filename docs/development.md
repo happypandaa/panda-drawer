@@ -116,6 +116,8 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `workspace storage` | 工作区与关联历史、保留旧根、平台程序空间信息 |
 | `workspace cleanup-plan` | 检查已登记历史范围并返回异步预检任务，不删除文件 |
 | `workspace cleanup --input cleanup.json` | 以计划 ID、已选择对象 ID 和明确确认词提交历史清理任务 |
+| `workspace identity-repair-plan` | 服务离线时只读预检旧版已完成迁移目标的身份兼容范围，不初始化环境 |
+| `workspace identity-repair --input repair.json` | 服务离线时以精确计划、工作区、卷 UUID 和 `confirm: true` 绑定已核对旧记录，保留原件 |
 | `project url --project ID` | 60 秒单次使用的浏览器入口 |
 | `project refresh --project ID` | 通知页面重新查询 |
 | `project handoff --project ID` | 返回项目路径、README、skill、CLI 路径与可交给 AI 的说明；不改写项目文件 |
