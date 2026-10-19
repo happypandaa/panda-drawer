@@ -9,6 +9,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::fmt;
 
+mod migration;
+
 pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,9 +30,18 @@ pub enum EvidenceInput<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnvironmentIdentity<'a> {
+    pub identifier: &'a str,
+    pub environment: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvidenceContext<'a> {
     pub kind: EvidenceKind,
     pub owner_id: &'a str,
+    /// Trusted host configuration, never values copied from the input record.
+    /// Required for migration journals; not used by the two project records.
+    pub expected_environment: Option<EnvironmentIdentity<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,15 +66,24 @@ pub struct Assessment {
     pub status: EvidenceStatus,
 }
 
-/// `owner_id` is a project ID for maintenance and a task ID for restoration.
+/// `owner_id` is a project ID for maintenance and a task ID for restoration or
+/// migration. Migration additionally requires the trusted host environment.
 /// No result, including absent evidence or a resolved history record, grants
 /// permission to read a workspace or start its runtime.
 pub fn inspect_record(context: EvidenceContext<'_>, input: EvidenceInput<'_>) -> Assessment {
-    let status = if !valid_id(context.owner_id) {
+    let invalid_environment = context.kind == EvidenceKind::MigrationJournal
+        && !context.expected_environment.is_some_and(|expected| {
+            [expected.identifier, expected.environment]
+                .iter()
+                .all(|value| !value.is_empty() && !value.contains('\0'))
+        });
+    let status = if !valid_id(context.owner_id) || invalid_environment {
         EvidenceStatus::IdentityMismatch
     } else if !matches!(
         context.kind,
-        EvidenceKind::MaintenanceControl | EvidenceKind::RestoreJournal
+        EvidenceKind::MaintenanceControl
+            | EvidenceKind::RestoreJournal
+            | EvidenceKind::MigrationJournal
     ) {
         EvidenceStatus::UnsupportedKind
     } else {
@@ -80,6 +100,11 @@ pub fn inspect_record(context: EvidenceContext<'_>, input: EvidenceInput<'_>) ->
                         .map(|record| record.status)
                         .unwrap_or(EvidenceStatus::UnrecognizedRecord),
                     EvidenceKind::RestoreJournal => restore(&value.0, context.owner_id),
+                    EvidenceKind::MigrationJournal => migration::classify(
+                        &value.0,
+                        context.owner_id,
+                        context.expected_environment.unwrap(),
+                    ),
                     _ => EvidenceStatus::UnsupportedKind,
                 },
             },
@@ -354,3 +379,6 @@ impl<'de> Deserialize<'de> for UniqueValue {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod migration_tests;

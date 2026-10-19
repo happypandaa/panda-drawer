@@ -12,7 +12,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 `npm run test:platform-support` 直接使用所选 Rust 编译、运行 `platform_support.rs` 的无依赖生产策略测试，输出位于新的 `.test-artifacts/w1-platform-support-*`，不启动平台或读取用户工作区。Windows 使用真实 `x86_64-pc-windows-msvc` 目标；Mac 分支的策略断言不是 Mac 实机回归。这个独立检查不编译整个 core、CLI 或 Tauri，不能替代后续完整构建、入口拒绝和现场保护验收。
 
-`npm run test:preflight` 通过根 Cargo 锁文件单独编译、测试 `platform-preflight` 生产库和合成的维护/恢复记录字节，不编译整个 core 或启动任何服务。该库只有 JSON 解码依赖，不接受文件路径，也不执行恢复、修复或写入；它不会访问平台数据根。首次测试需要取得锁定的 Rust 依赖，不能据此承诺离线平台构建。解码分类与安全文件读取分别验收，后者及完整现场汇总尚未完成。
+`npm run test:preflight` 通过根 Cargo 锁文件单独编译、测试 `platform-preflight` 生产库和合成的维护/恢复/迁移记录字节，不编译整个 core 或启动任何服务。该库只有 JSON 解码依赖，不接受用于读取文件的路径，也不执行恢复、修复或写入；它不会访问平台数据根。迁移记录中的路径只作为文本识别，可信环境身份由调用方提供，不能从待检查记录中自行取作期望值。首次测试需要取得锁定的 Rust 依赖，不能据此承诺离线平台构建。解码分类与安全文件读取分别验收，后者及完整现场汇总尚未完成。
 
 ## 管理界面入口
 
