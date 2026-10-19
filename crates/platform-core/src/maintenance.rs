@@ -3,6 +3,7 @@ use crate::{
     backups::{self, PendingBuild, SnapshotOptions, SnapshotState},
     builds::{self, BuildManager},
     control::{ControlState, Freeze},
+    file_identity::PersistedIdentity,
     projects::{check_no_symlinks, valid_id},
     ApiError, ProjectStore, RuntimePaths, TaskRecord,
 };
@@ -35,8 +36,8 @@ struct RestoreJournal {
     task_id: String,
     project_id: String,
     backup_id: String,
-    original_identity: (u64, u64),
-    candidate_identity: (u64, u64),
+    original_identity: PersistedIdentity,
+    candidate_identity: PersistedIdentity,
     committed: bool,
     resolved: bool,
     final_control: Option<ControlState>,
@@ -52,6 +53,14 @@ fn identity(path: &Path) -> Result<(u64, u64), ApiError> {
         ));
     }
     Ok((m.dev(), m.ino()))
+}
+fn persistent_identity(path: &Path) -> Result<PersistedIdentity, ApiError> {
+    identity(path)?;
+    PersistedIdentity::capture(path)
+        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
+}
+fn matches_identity(expected: &PersistedIdentity, path: &Path) -> bool {
+    identity(path).is_ok() && expected.matches_path(path).unwrap_or(false)
 }
 fn sync_parent(path: &Path) -> Result<(), ApiError> {
     File::open(path.parent().unwrap())?.sync_all()?;
@@ -725,8 +734,8 @@ impl MaintenanceManager {
             task_id: task.into(),
             project_id: id.into(),
             backup_id: backup.clone(),
-            original_identity: identity(&root)?,
-            candidate_identity: identity(&candidate)?,
+            original_identity: persistent_identity(&root)?,
+            candidate_identity: persistent_identity(&candidate)?,
             committed: false,
             resolved: false,
             final_control: None,
@@ -891,7 +900,7 @@ impl MaintenanceManager {
         let control = store.control(&journal.project_id)?;
         let result = (|| {
             if journal.committed {
-                if identity(&root).ok() != Some(journal.candidate_identity) {
+                if !matches_identity(&journal.candidate_identity, &root) {
                     return Err(ApiError::new(
                         "RECOVERY_REQUIRED",
                         "Committed restore root identity cannot be verified",
@@ -912,13 +921,13 @@ impl MaintenanceManager {
                 Ok("restored")
             } else {
                 match (identity(&root).ok(), identity(&original).ok()) {
-                    (Some(current), None) if current == journal.original_identity => {}
-                    (None, Some(old)) if old == journal.original_identity => {
+                    (Some(_), None) if matches_identity(&journal.original_identity, &root) => {}
+                    (None, Some(_)) if matches_identity(&journal.original_identity, &original) => {
                         move_dir(&original, &root)?
                     }
-                    (Some(current), Some(old))
-                        if current == journal.candidate_identity
-                            && old == journal.original_identity
+                    (Some(_), Some(_))
+                        if matches_identity(&journal.candidate_identity, &root)
+                            && matches_identity(&journal.original_identity, &original)
                             && !candidate.exists() =>
                     {
                         move_dir(&root, &candidate)?;
@@ -1221,7 +1230,7 @@ mod tests {
         stop(manager, tasks, store).await;
     }
     #[tokio::test]
-    async fn restart_reconciles_actual_directory_moves_on_both_sides_of_commit() {
+    async fn restart_reconciles_directory_moves_and_stable_identity_device_renumbering() {
         for phase in 0..4 {
             let (_temp, paths, store, tasks, manager, id) = fixture().await;
             let backup = perform(&manager, &id, "backup", json!({})).await;
@@ -1249,14 +1258,24 @@ mod tests {
                 task_id: task,
                 project_id: id.clone(),
                 backup_id: backup,
-                original_identity: identity(&root).unwrap(),
-                candidate_identity: identity(&candidate).unwrap(),
+                original_identity: persistent_identity(&root).unwrap(),
+                candidate_identity: persistent_identity(&candidate).unwrap(),
                 committed: false,
                 resolved: false,
                 previous_control: state.clone(),
                 final_control: None,
                 previous_provenance: None,
             };
+            // Simulate the persisted mount number changing across reboot while
+            // preserving the real volume UUID and directory inode.
+            #[cfg(target_os = "macos")]
+            {
+                assert!(!journal.original_identity.is_legacy());
+                assert!(!journal.candidate_identity.is_legacy());
+                journal.original_identity.device = journal.original_identity.device.wrapping_add(1);
+                journal.candidate_identity.device =
+                    journal.candidate_identity.device.wrapping_add(1);
+            }
             let path = op.join("journal.json");
             builds::atomic_json(&path, &journal).unwrap();
             if phase >= 1 {
@@ -1284,17 +1303,59 @@ mod tests {
                     "rolled_back"
                 }
             );
-            assert_eq!(
-                identity(&root).unwrap(),
+            assert!(matches_identity(
                 if phase == 3 {
-                    journal.candidate_identity
+                    &journal.candidate_identity
                 } else {
-                    journal.original_identity
-                }
-            );
+                    &journal.original_identity
+                },
+                &root,
+            ));
             assert_eq!(restarted.control(&id).unwrap().get().mode, "maintenance");
             assert!(!restarted.control(&id).unwrap().get().recovery_required);
             restarted.project(&id).unwrap().check().unwrap();
+            stop(manager, tasks, store).await;
+        }
+    }
+    #[tokio::test]
+    async fn legacy_restore_journal_tuples_recover_only_on_a_verified_device() {
+        for renumbered in [false, true] {
+            let (_temp, paths, store, tasks, manager, id) = fixture().await;
+            let root = store.project(&id).unwrap().root;
+            let before = identity(&root).unwrap();
+            let task = format!("task_{}", Uuid::new_v4().simple());
+            let operation = paths
+                .workspace_root()
+                .join(".platform/operations")
+                .join(&task);
+            fs::create_dir_all(operation.join("candidate")).unwrap();
+            let state = store
+                .control(&id)
+                .unwrap()
+                .begin("Legacy restore recovery".into(), None, false)
+                .unwrap();
+            builds::atomic_json(&operation.join("journal.json"), &json!({
+                "taskId":task,"projectId":id,"backupId":"backup_legacy_fixture",
+                "originalIdentity":[if renumbered { before.0.wrapping_add(1) } else { before.0 },before.1],
+                "candidateIdentity":identity(&operation.join("candidate")).unwrap(),
+                "committed":false,"resolved":false,"finalControl":null,
+                "previousControl":state,"previousProvenance":null
+            })).unwrap();
+            let outcomes = MaintenanceManager::recover(&paths, &store).unwrap();
+            assert_eq!(
+                outcomes[0].1,
+                if renumbered {
+                    "needs_attention"
+                } else {
+                    "rolled_back"
+                }
+            );
+            assert_eq!(identity(&root).unwrap(), before);
+            assert!(operation.join("candidate").is_dir());
+            assert_eq!(
+                store.control(&id).unwrap().get().recovery_required,
+                renumbered
+            );
             stop(manager, tasks, store).await;
         }
     }
@@ -1317,8 +1378,8 @@ mod tests {
             task_id: task,
             project_id: id.clone(),
             backup_id: "backup_test".into(),
-            original_identity: (0, 0),
-            candidate_identity: identity(&op.join("candidate")).unwrap(),
+            original_identity: serde_json::from_value(json!([0, 0])).unwrap(),
+            candidate_identity: persistent_identity(&op.join("candidate")).unwrap(),
             committed: false,
             resolved: false,
             previous_control: state,

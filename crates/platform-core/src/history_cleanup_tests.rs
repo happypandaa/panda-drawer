@@ -214,6 +214,7 @@ fn candidate(root: &Path) -> Candidate {
         root.into(),
     );
     item.root_identity = Some(directory_identity(root).unwrap());
+    item.persistent_root_identity = Some(persistent_identity(root).unwrap());
     item.parents = parent_identities(root).unwrap();
     item.entries = scan(root).unwrap();
     item.can_clean = true;
@@ -221,6 +222,70 @@ fn candidate(root: &Path) -> Candidate {
 }
 fn input(plan: &Value, ids: Vec<String>) -> Value {
     json!({"planId":plan["planId"],"itemIds":ids,"confirmation":CONFIRMATION})
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn cleanup_preview_uses_stable_trash_identity_and_rejects_unbound_legacy_renumbering() {
+    let fixture = Fixture::new().await;
+    let trash = fixture.delete().await;
+    let directory = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/trash")
+        .join(&trash);
+    let path = directory.join("record.json");
+    let original = read_json(&path).unwrap();
+    let actual = directory_identity(&directory.join("project")).unwrap();
+    for (identity, allowed) in [
+        (
+            json!({"device":actual.device.wrapping_add(1),"inode":actual.inode,"volumeUuid":original["rootIdentity"]["volumeUuid"]}),
+            true,
+        ),
+        (
+            json!({"device":actual.device,"inode":actual.inode,"volumeUuid":Uuid::new_v4().to_string()}),
+            false,
+        ),
+        (json!([actual.device.wrapping_add(1), actual.inode]), false),
+        (json!([actual.device, actual.inode]), true),
+    ] {
+        let mut record = original.clone();
+        record["rootIdentity"] = identity;
+        builds::atomic_json(&path, &record).unwrap();
+        let preview = fixture.preview().await;
+        let item = preview["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == format!("trash_{trash}"))
+            .unwrap();
+        assert_eq!(item["canClean"], allowed, "{item}");
+        assert_eq!(
+            fs::read(directory.join("project/data/attachments/keep.txt")).unwrap(),
+            b"persistent attachment"
+        );
+    }
+    fixture.stop().await;
+}
+
+#[test]
+fn persisted_chain_comparison_never_equates_unverified_mixed_or_distinct_legacy_records() {
+    let missing = Path::new("/unavailable-identity-chain-fixture");
+    let first: PersistedIdentity = serde_json::from_value(json!([7, 42])).unwrap();
+    let same: PersistedIdentity = serde_json::from_value(json!({"device":7,"inode":42})).unwrap();
+    let other_device: PersistedIdentity = serde_json::from_value(json!([8, 42])).unwrap();
+    let stable: PersistedIdentity = serde_json::from_value(
+        json!({"device":7,"inode":42,"volumeUuid":Uuid::new_v4().to_string()}),
+    )
+    .unwrap();
+    assert!(same_persisted_record(&first, &same, missing));
+    assert!(!same_persisted_record(&first, &other_device, missing));
+    assert!(!same_persisted_record(&first, &stable, missing));
+    let mut renumbered = stable.clone();
+    renumbered.device = 8;
+    assert!(same_persisted_record(&stable, &renumbered, missing));
+    renumbered.inode = 43;
+    assert!(!same_persisted_record(&stable, &renumbered, missing));
 }
 
 #[test]
@@ -823,6 +888,78 @@ async fn explicit_repreview_after_partial_marker_removal_uses_only_accepted_unli
         .unwrap();
     assert!(source.exists());
     assert!(!source.join(RETIRED).exists());
+    // This old plan remains unexecutable. Only its confirmed unlink progress is
+    // reusable after a simulated reboot changes runtime device numbers.
+    let prior = plan.items.iter_mut().find(|item| item.id == id).unwrap();
+    prior.root_identity.as_mut().unwrap().device =
+        prior.root_identity.as_ref().unwrap().device.wrapping_add(1);
+    let durable = prior.persistent_root_identity.as_mut().unwrap();
+    assert!(!durable.is_legacy());
+    durable.device = durable.device.wrapping_add(1);
+    let valid_inode = durable.inode;
+    durable.inode = durable.inode.wrapping_add(1);
+    plan.instance_id = "prior-runtime".into();
+    builds::atomic_json(&plan_path, &plan).unwrap();
+    let blocked = fixture.preview().await;
+    assert_eq!(
+        blocked["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["canClean"],
+        false
+    );
+    plan.items
+        .iter_mut()
+        .find(|item| item.id == id)
+        .unwrap()
+        .persistent_root_identity
+        .as_mut()
+        .unwrap()
+        .inode = valid_inode;
+    builds::atomic_json(&plan_path, &plan).unwrap();
+    // Old plans without the companion keep their strict same-device behavior.
+    let saved = plan
+        .items
+        .iter()
+        .find(|item| item.id == id)
+        .unwrap()
+        .clone();
+    plan.items
+        .iter_mut()
+        .find(|item| item.id == id)
+        .unwrap()
+        .persistent_root_identity = None;
+    builds::atomic_json(&plan_path, &plan).unwrap();
+    let unbound = fixture.preview().await;
+    assert_eq!(
+        unbound["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["canClean"],
+        false
+    );
+    plan.items
+        .iter_mut()
+        .find(|item| item.id == id)
+        .unwrap()
+        .root_identity = Some(directory_identity(&source).unwrap());
+    builds::atomic_json(&plan_path, &plan).unwrap();
+    let legacy = fixture.preview().await;
+    assert_eq!(
+        legacy["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["canClean"],
+        true
+    );
+    *plan.items.iter_mut().find(|item| item.id == id).unwrap() = saved;
+    builds::atomic_json(&plan_path, &plan).unwrap();
     let retry = fixture.preview().await;
     let item = retry["items"]
         .as_array()

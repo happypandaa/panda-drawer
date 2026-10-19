@@ -1,6 +1,31 @@
 use super::*;
 use crate::{CreateProjectInput, SqlCaller, SqlRequest};
 use std::sync::Arc;
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn stable_selected_workspace_survives_device_renumbering_but_rejects_wrong_volume_or_inode() {
+    let (_temp, paths, store, _id, dest) = fixture().await;
+    let (_selected, mut journal) = commit(&paths, &store, &dest).await;
+    let original = journal.destination_identity.clone().unwrap();
+    assert!(!original.is_legacy());
+    journal.destination_identity.as_mut().unwrap().device ^= 0x1000;
+    save_journal(&paths, &journal).unwrap();
+    assert!(paths.reinitialize_for_test().is_ok());
+    for change_volume in [true, false] {
+        let mut changed = original.clone();
+        if change_volume {
+            changed.volume_uuid = Some(Uuid::new_v4().to_string());
+        } else {
+            changed.inode += 1;
+        }
+        journal.destination_identity = Some(changed);
+        save_journal(&paths, &journal).unwrap();
+        assert!(paths.reinitialize_for_test().is_err());
+        assert!(dest.join("projects").is_dir());
+    }
+    store.shutdown().await;
+}
 async fn fixture() -> (
     tempfile::TempDir,
     RuntimePaths,

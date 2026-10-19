@@ -137,6 +137,79 @@ fn good(task: &TaskRecord) -> &Value {
     task.result.as_ref().unwrap()
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fail_closed() {
+    for legacy in [false, true] {
+        let fixture = Fixture::new().await;
+        let deleted = fixture.project("delete", json!({})).await;
+        let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
+        let directory = fixture.lifecycle.trash_root(&trash).unwrap();
+        let root = directory.join("project");
+        let attachment = fs::read(root.join("data/attachments/original.txt")).unwrap();
+        let mut record = fixture.lifecycle.read_trash(&trash).unwrap();
+        assert!(!record.root_identity.is_legacy());
+        if legacy {
+            record.root_identity.volume_uuid = None;
+        }
+        record.root_identity.device = record.root_identity.device.wrapping_add(1);
+        fixture.lifecycle.save_trash(&record).unwrap();
+        let request = fixture
+            .lifecycle
+            .submit_trash(&trash, "restore")
+            .await
+            .unwrap();
+        let restored = fixture.wait(&request).await;
+        if legacy {
+            assert_eq!(restored.status, TaskStatus::Failed, "{restored:?}");
+            assert_eq!(restored.error.unwrap().code, "TRASH_IDENTITY_CHANGED");
+            assert_eq!(
+                fs::read(root.join("data/attachments/original.txt")).unwrap(),
+                attachment
+            );
+            assert!(!fixture
+                .paths
+                .workspace_root()
+                .join("projects")
+                .join(&fixture.id)
+                .exists());
+        } else {
+            good(&restored);
+            assert_eq!(
+                fs::read(
+                    fixture
+                        .store
+                        .project(&fixture.id)
+                        .unwrap()
+                        .root
+                        .join("data/attachments/original.txt")
+                )
+                .unwrap(),
+                attachment,
+            );
+        }
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn legacy_tuple_trash_record_remains_restorable_on_its_verified_device() {
+    let fixture = Fixture::new().await;
+    let deleted = fixture.project("delete", json!({})).await;
+    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
+    let directory = fixture.lifecycle.trash_root(&trash).unwrap();
+    let mut record: Value = read_json(&directory.join("record.json")).unwrap();
+    record["rootIdentity"] = json!(identity(&directory.join("project")).unwrap());
+    builds::atomic_json(&directory.join("record.json"), &record).unwrap();
+    let request = fixture
+        .lifecycle
+        .submit_trash(&trash, "restore")
+        .await
+        .unwrap();
+    good(&fixture.wait(&request).await);
+    fixture.stop().await;
+}
+
 async fn migrate_fixture(fixture: Fixture) -> (Fixture, PathBuf, String) {
     fixture.lifecycle.shutdown().await;
     fixture.maintenance.shutdown().await;
@@ -203,7 +276,7 @@ async fn migration_rebinds_verified_trash_and_real_restore_keeps_source_unchange
     let (fixture, source, migration) = migrate_fixture(fixture).await;
     let copied_root = fixture.lifecycle.trash_root(&trash).unwrap();
     let copied_record: Value = read_json(&copied_root.join("record.json")).unwrap();
-    let new_identity = identity(&copied_root.join("project")).unwrap();
+    let new_identity = persistent_identity(&copied_root.join("project")).unwrap();
     assert_ne!(old_record["rootIdentity"], json!(new_identity));
     let mut expected = old_record.clone();
     expected["rootIdentity"] = json!(new_identity);
@@ -834,7 +907,7 @@ async fn interrupted_purge_keeps_retryable_residual_record_and_never_replays_del
         .unwrap();
     let mut journal = LifecycleManager::journal(&task, "trashPurge", &fixture.id);
     journal.trash_id = Some(trash.clone());
-    journal.directory_identity = Some(identity(&root).unwrap());
+    journal.directory_identity = Some(persistent_identity(&root).unwrap());
     journal.phase = "purge-intent".into();
     fixture.lifecycle.save(&journal).unwrap();
     let mut record = fixture.lifecycle.read_trash(&trash).unwrap();

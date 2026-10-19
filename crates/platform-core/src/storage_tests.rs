@@ -516,6 +516,54 @@ async fn workspace_ranges_are_disjoint_include_retained_copy_and_exclude_program
         .is_file());
     f.stop().await;
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn retained_workspace_accounting_uses_persisted_identity_without_weakening_runtime_scans() {
+    let f = Fixture::new().await;
+    let retained = f
+        ._temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("retained-identity");
+    fs::create_dir(&retained).unwrap();
+    fs::write(retained.join("evidence"), b"retained").unwrap();
+    let actual = PersistedIdentity::capture(&retained).unwrap();
+    let mut renumbered = actual.clone();
+    renumbered.device = renumbered.device.wrapping_add(1);
+    let mut different_volume = actual.clone();
+    different_volume.volume_uuid = Some(Uuid::new_v4().to_string());
+    let mut legacy = renumbered.clone();
+    legacy.volume_uuid = None;
+    for (expected, allowed) in [
+        (renumbered, true),
+        (different_volume, false),
+        (legacy, false),
+    ] {
+        builds::atomic_json(
+            &f.paths
+                .migrations_dir()
+                .join("task_retained_identity/journal.json"),
+            &json!({"committed":true,"sourcePath":retained,"sourceIdentity":expected}),
+        )
+        .unwrap();
+        let result = workspace_scan(&f.paths, None, "identity-test").unwrap();
+        let scope = result["otherLocalLocations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|scope| scope["scope"]["kind"] == "retainedWorkspace")
+            .unwrap();
+        assert_eq!(
+            scope["totalBytes"],
+            if allowed { json!(8) } else { Value::Null },
+            "{scope}"
+        );
+    }
+    assert_eq!(fs::read(retained.join("evidence")).unwrap(), b"retained");
+    f.stop().await;
+}
 #[test]
 fn zero_and_large_integer_counters_remain_exact() {
     assert_eq!(int(0), json!(0));

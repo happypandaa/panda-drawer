@@ -1,6 +1,7 @@
 //! Project files are portable; local registration and document epochs belong to the workspace.
 use crate::{
     database::{self, Budget, DatabaseWorker, QueueBudget, Work, WorkResult},
+    file_identity::PersistedIdentity as FileIdentity,
     ApiError, SchemaInfo, SqlCaller, SqlRequest, SqlResult, TransactionRequest,
 };
 use serde::{Deserialize, Serialize};
@@ -75,12 +76,6 @@ pub struct ProjectInfo {
     pub manifest: Option<ProjectManifest>,
     pub build_info: Value,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Registration {
@@ -130,7 +125,7 @@ impl ProjectHandle {
             }
         }
         check_no_symlinks(&self.root, false)?;
-        if identity(&self.root)? != self.registration.root_identity {
+        if !identity_matches(&self.registration.root_identity, &self.root)? {
             return Err(ApiError::new(
                 "PROJECT_IDENTITY_CHANGED",
                 "Project directory has been replaced; explicit re-registration is required",
@@ -149,7 +144,7 @@ impl ProjectHandle {
                 "Database hard links are not supported",
             ));
         }
-        if identity(&db)? != self.registration.database_identity {
+        if !identity_matches(&self.registration.database_identity, &db)? {
             return Err(ApiError::new("PROJECT_IDENTITY_CHANGED","The registered database file has been replaced; explicit re-registration is required"));
         }
         let current: Registration = read_json(&self.state_path)?;
@@ -468,8 +463,8 @@ impl ProjectStore {
                     .unwrap_or(true)
                 || state.project_root != root
                 || state.database_path != manifest.database
-                || state.root_identity != identity(&root)?
-                || state.database_identity != identity(&database)?
+                || !identity_matches(&state.root_identity, &root)?
+                || !identity_matches(&state.database_identity, &database)?
             {
                 return Err(ApiError::new("PROJECT_IDENTITY_CHANGED","Project root or database identity differs from its registration; explicit re-registration is required"));
             }
@@ -879,7 +874,7 @@ impl ProjectStore {
         let root = self.workspace.join("projects").join(id);
         if !root.is_dir()
             || registration.project_root != root
-            || registration.root_identity != identity(&root)?
+            || !identity_matches(&registration.root_identity, &root)?
         {
             return Ok(None);
         }
@@ -1066,7 +1061,7 @@ impl ProjectStore {
             let root = self.workspace.join("projects").join(id);
             if registration.document_epoch == epoch
                 && registration.project_root == root
-                && registration.root_identity == identity(&root)?
+                && identity_matches(&registration.root_identity, &root)?
                 && self.is_retired(id)?.is_none()
             {
                 let matches = if registration.database_path.is_empty() {
@@ -1074,20 +1069,11 @@ impl ProjectStore {
                 } else {
                     let db = checked_relative(&root, &registration.database_path, true)?;
                     if db.is_file() {
-                        registration.database_identity == identity(&db)?
+                        identity_matches(&registration.database_identity, &db)?
                             || (allow_damaged
-                                && registration.database_identity
-                                    == (FileIdentity {
-                                        device: 0,
-                                        inode: 0,
-                                    }))
+                                && is_missing_identity(&registration.database_identity))
                     } else {
-                        allow_damaged
-                            && registration.database_identity
-                                == (FileIdentity {
-                                    device: 0,
-                                    inode: 0,
-                                })
+                        allow_damaged && is_missing_identity(&registration.database_identity)
                     }
                 };
                 if matches {
@@ -1151,6 +1137,7 @@ impl ProjectStore {
                         FileIdentity {
                             device: 0,
                             inode: 0,
+                            volume_uuid: None,
                         }
                     } else {
                         return Err(ApiError::new(
@@ -1165,6 +1152,7 @@ impl ProjectStore {
             None if allow_damaged => FileIdentity {
                 device: 0,
                 inode: 0,
+                volume_uuid: None,
             },
             None => {
                 return Err(ApiError::new(
@@ -1209,6 +1197,7 @@ impl ProjectStore {
             record.database_identity = FileIdentity {
                 device: 0,
                 inode: 0,
+                volume_uuid: None,
             };
             crate::builds::atomic_json(&path, &record)?;
         }
@@ -1352,11 +1341,21 @@ pub(crate) fn validate_manifest(
     Ok(())
 }
 fn identity(path: &Path) -> Result<FileIdentity, ApiError> {
-    let metadata = fs::symlink_metadata(path)?;
-    Ok(FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
+    FileIdentity::capture(path)
+        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
+}
+fn identity_matches(expected: &FileIdentity, path: &Path) -> Result<bool, ApiError> {
+    // A preserved damaged database has no registered file identity. It must
+    // remain blocked until an explicit maintenance/lifecycle rebind occurs.
+    if is_missing_identity(expected) {
+        return Ok(false);
+    }
+    expected
+        .matches_path(path)
+        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
+}
+fn is_missing_identity(identity: &FileIdentity) -> bool {
+    identity.is_legacy() && identity.legacy_pair() == (0, 0)
 }
 pub fn checked_relative(
     root: &Path,
@@ -1524,6 +1523,161 @@ mod tests {
                 .rows[0]["value"],
             "hello"
         );
+    }
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn stable_project_registration_survives_device_renumbering_without_rewriting() {
+        let (temp, store) = store();
+        let project = create(&store, "Disposable stable registration").await;
+        let path = store
+            .workspace
+            .join(".platform/project-state")
+            .join(format!("{}.json", project.id));
+        let mut registration: Registration = read_json(&path).unwrap();
+        assert!(!registration.root_identity.is_legacy());
+        assert!(!registration.database_identity.is_legacy());
+        registration.root_identity.device += 1;
+        registration.database_identity.device += 1;
+        let bytes = serde_json::to_vec_pretty(&registration).unwrap();
+        fs::write(&path, &bytes).unwrap();
+
+        let mut handle = store.project(&project.id).unwrap();
+        handle.check().unwrap();
+        assert_eq!(
+            store.registered_epoch(&project.id).unwrap(),
+            Some(project.document_epoch.clone())
+        );
+        store
+            .register_lifecycle(
+                &project.id,
+                &project.document_epoch,
+                "completed-task",
+                false,
+            )
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        handle.registration.root_identity.inode += 1;
+        assert_eq!(handle.check().unwrap_err().code, "PROJECT_IDENTITY_CHANGED");
+        handle.registration.root_identity = registration.root_identity.clone();
+        handle.registration.database_identity.inode += 1;
+        assert_eq!(handle.check().unwrap_err().code, "PROJECT_IDENTITY_CHANGED");
+        handle.registration.database_identity = registration.database_identity.clone();
+        handle.registration.database_identity.volume_uuid = Some(Uuid::new_v4().to_string());
+        assert_eq!(handle.check().unwrap_err().code, "PROJECT_IDENTITY_CHANGED");
+
+        store.shutdown().await;
+        drop(store);
+        let reopened = ProjectStore::new(temp.path().canonicalize().unwrap()).unwrap();
+        reopened.project(&project.id).unwrap().check().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        registration.root_identity.volume_uuid = Some(Uuid::new_v4().to_string());
+        fs::write(&path, serde_json::to_vec_pretty(&registration).unwrap()).unwrap();
+        assert_eq!(
+            reopened.project(&project.id).err().unwrap().code,
+            "PROJECT_IDENTITY_CHANGED"
+        );
+        assert!(reopened.registered_epoch(&project.id).unwrap().is_none());
+        reopened.shutdown().await;
+    }
+    #[tokio::test]
+    async fn legacy_project_registration_stays_strict_and_is_not_implicitly_upgraded() {
+        let (_temp, store) = store();
+        let project = create(&store, "Disposable legacy registration").await;
+        let path = store
+            .workspace
+            .join(".platform/project-state")
+            .join(format!("{}.json", project.id));
+        let mut registration: Registration = read_json(&path).unwrap();
+        registration.root_identity.volume_uuid = None;
+        registration.database_identity.volume_uuid = None;
+        let bytes = serde_json::to_vec_pretty(&registration).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut handle = store.project(&project.id).unwrap();
+        handle.check().unwrap();
+        assert_eq!(
+            store.registered_epoch(&project.id).unwrap(),
+            Some(project.document_epoch.clone())
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        handle.registration.root_identity.device += 1;
+        assert_eq!(handle.check().unwrap_err().code, "PROJECT_IDENTITY_CHANGED");
+        registration.root_identity.device += 1;
+        fs::write(&path, serde_json::to_vec_pretty(&registration).unwrap()).unwrap();
+        assert_eq!(
+            store.project(&project.id).err().unwrap().code,
+            "PROJECT_IDENTITY_CHANGED"
+        );
+        assert!(store.registered_epoch(&project.id).unwrap().is_none());
+
+        registration.root_identity.device -= 1;
+        registration.database_identity.device += 1;
+        let rejected = serde_json::to_vec_pretty(&registration).unwrap();
+        fs::write(&path, &rejected).unwrap();
+        assert_eq!(
+            store.project(&project.id).err().unwrap().code,
+            "PROJECT_IDENTITY_CHANGED"
+        );
+        assert_eq!(
+            store
+                .register_lifecycle(
+                    &project.id,
+                    &project.document_epoch,
+                    "completed-task",
+                    false
+                )
+                .unwrap_err()
+                .code,
+            "PROJECT_ID_CONFLICT"
+        );
+        assert_eq!(fs::read(&path).unwrap(), rejected);
+        store.shutdown().await;
+    }
+    #[tokio::test]
+    async fn damaged_database_identity_requires_an_explicit_rebind() {
+        let (_temp, store) = store();
+        let project = create(&store, "Disposable damaged registration").await;
+        let path = store
+            .workspace
+            .join(".platform/project-state")
+            .join(format!("{}.json", project.id));
+        store
+            .retain_migrated_diagnostic(
+                &project.id,
+                ApiError::new("PROJECT_IDENTITY_CHANGED", "Disposable source diagnostic"),
+            )
+            .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let registration: Registration = serde_json::from_slice(&bytes).unwrap();
+        assert!(is_missing_identity(&registration.database_identity));
+        assert!(!identity_matches(
+            &registration.database_identity,
+            &project.project_root.join("data/main.sqlite")
+        )
+        .unwrap());
+        assert_eq!(
+            store.project(&project.id).err().unwrap().code,
+            "PROJECT_IDENTITY_CHANGED"
+        );
+        store
+            .register_lifecycle(&project.id, &project.document_epoch, "completed-task", true)
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        assert_eq!(
+            store.rebind(&project.id, false).unwrap(),
+            project.document_epoch
+        );
+        let rebound: Registration = read_json(&path).unwrap();
+        assert!(!is_missing_identity(&rebound.database_identity));
+        #[cfg(target_os = "macos")]
+        {
+            assert!(!rebound.root_identity.is_legacy());
+            assert!(!rebound.database_identity.is_legacy());
+        }
+        store.project(&project.id).unwrap().check().unwrap();
+        store.shutdown().await;
     }
     #[tokio::test]
     async fn transaction_and_returning_budget_failures_roll_back() {
@@ -1734,6 +1888,33 @@ mod tests {
                 .code,
             "PROJECT_IDENTITY_CHANGED"
         );
+    }
+    #[tokio::test]
+    async fn replaced_project_directory_is_rejected_even_with_the_same_manifest_and_database() {
+        let (_temp, store) = store();
+        let project = create(&store, "Disposable replaced directory").await;
+        let handle = store.project(&project.id).unwrap();
+        let retained = project.project_root.with_file_name("retained-original");
+        fs::rename(&project.project_root, &retained).unwrap();
+        fs::create_dir_all(project.project_root.join("data")).unwrap();
+        fs::copy(
+            retained.join("project.json"),
+            project.project_root.join("project.json"),
+        )
+        .unwrap();
+        fs::copy(
+            retained.join("data/main.sqlite"),
+            project.project_root.join("data/main.sqlite"),
+        )
+        .unwrap();
+        assert_eq!(handle.check().unwrap_err().code, "PROJECT_IDENTITY_CHANGED");
+        assert_eq!(
+            store.project(&project.id).err().unwrap().code,
+            "PROJECT_IDENTITY_CHANGED"
+        );
+        assert!(store.registered_epoch(&project.id).unwrap().is_none());
+        assert!(retained.join("data/main.sqlite").is_file());
+        store.shutdown().await;
     }
     #[tokio::test]
     async fn transaction_rows_share_one_budget() {

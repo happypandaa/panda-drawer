@@ -610,3 +610,127 @@ fn assessment_does_not_echo_control_reasons_or_error_payloads() {
     assert_eq!(assessment.status, EvidenceStatus::MaintenanceActive);
     assert!(!format!("{assessment:?}").contains(PRIVATE_MARKER));
 }
+
+#[test]
+fn restore_identity_tuple_legacy_object_and_stable_object_formats_can_coexist() {
+    let identities = [
+        json!([1, 200]),
+        json!({"device":1,"inode":200}),
+        json!({"device":1,"inode":200,"volumeUuid":"6b4045a5-f1cb-472d-9581-70d079b17a6f"}),
+        json!({"device":1,"inode":200,"volumeUuid":"6B4045A5-F1CB-472D-9581-70D079B17A6F"}),
+    ];
+    for original in &identities {
+        for candidate in &identities {
+            for committed in [false, true] {
+                for resolved in [false, true] {
+                    let mut record = restore_journal(committed, resolved);
+                    record["originalIdentity"] = original.clone();
+                    record["candidateIdentity"] = candidate.clone();
+                    check_restore(
+                        &record,
+                        if resolved {
+                            EvidenceStatus::HistoricalResolved
+                        } else {
+                            EvidenceStatus::UnresolvedOperation
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn malformed_or_future_identity_objects_are_not_recognized_as_history() {
+    for malformed in [
+        json!({}),
+        json!({"device":1}),
+        json!({"inode":200}),
+        json!({"device":"1","inode":200}),
+        json!({"device":1,"inode":-1}),
+        json!({"device":1.0,"inode":200}),
+        json!({"device":1,"inode":200,"futureIdentity":true}),
+        json!({"device":1,"inode":200,"volumeUuid":null}),
+        json!({"device":1,"inode":200,"volumeUuid":true}),
+        json!({"device":1,"inode":200,"volume_uuid":"6b4045a5-f1cb-472d-9581-70d079b17a6f"}),
+        json!({"device":1,"inode":200,"volumeUuid":"6b4045a5-f1cb-472d-9581-70d079b17a6f","futureIdentity":true}),
+    ] {
+        for field in ["originalIdentity", "candidateIdentity"] {
+            let mut record = restore_journal(true, true);
+            record[field] = malformed.clone();
+            check_restore(&record, EvidenceStatus::UnrecognizedRecord);
+        }
+    }
+}
+
+#[test]
+fn stable_identity_requires_an_exact_non_nil_hyphenated_uuid() {
+    for uuid in [
+        "",
+        "invalid",
+        "00000000-0000-0000-0000-000000000000",
+        "6b4045a5f1cb472d958170d079b17a6f",
+        "6b4045a5-f1cb-472d-9581-70d079b17a6",
+        "6b4045a5-f1cb-472d-9581-70d079b17a6ff",
+        "6b4045a5-f1cb-472d-9581-70d079b17a6g",
+        "6b4045a5_f1cb-472d-9581-70d079b17a6f",
+        "6b4045a5-f1cb-472d-9581-70d079b17aé",
+        "{6b4045a5-f1cb-472d-9581-70d079b17a6f}",
+        "urn:uuid:6b4045a5-f1cb-472d-9581-70d079b17a6f",
+    ] {
+        let mut record = restore_journal(true, true);
+        record["originalIdentity"] = json!({"device":1,"inode":200,"volumeUuid":uuid});
+        check_restore(&record, EvidenceStatus::UnrecognizedRecord);
+    }
+}
+
+#[test]
+fn duplicate_identity_keys_are_invalid_even_when_escaped_or_nested() {
+    let mut record = restore_journal(true, true);
+    record["originalIdentity"] =
+        json!({"device":1,"inode":200,"volumeUuid":"6b4045a5-f1cb-472d-9581-70d079b17a6f"});
+    record["candidateIdentity"] = record["originalIdentity"].clone();
+    let serialized = serde_json::to_string(&record).unwrap();
+    for (field, key, value) in [
+        ("originalIdentity", "device", "9"),
+        (
+            "candidateIdentity",
+            "\\u0076olumeUuid",
+            "\"0875f92b-f48e-46d1-b569-e0bd2a076c5c\"",
+        ),
+    ] {
+        let duplicate = serialized.replacen(
+            &format!("\"{field}\":{{"),
+            &format!("\"{field}\":{{\"{key}\":{value},"),
+            1,
+        );
+        assert_ne!(duplicate, serialized);
+        check_bytes(
+            EvidenceKind::RestoreJournal,
+            TASK,
+            duplicate.as_bytes(),
+            EvidenceStatus::InvalidRecord,
+        );
+    }
+}
+
+#[test]
+fn well_formed_stable_identity_classifies_history_without_verifying_any_volume() {
+    // These synthetic numbers and UUID are deliberately not captured from the
+    // host. This pure classifier cannot determine whether they name anything.
+    for resolved in [false, true] {
+        let mut record = restore_journal(true, resolved);
+        record["originalIdentity"] = json!({"device":u64::MAX,"inode":200,
+            "volumeUuid":"0875f92b-f48e-46d1-b569-e0bd2a076c5c"});
+        record["candidateIdentity"] = json!({"device":u64::MAX,"inode":201,
+            "volumeUuid":"6b4045a5-f1cb-472d-9581-70d079b17a6f"});
+        check_restore(
+            &record,
+            if resolved {
+                EvidenceStatus::HistoricalResolved
+            } else {
+                EvidenceStatus::UnresolvedOperation
+            },
+        );
+    }
+}

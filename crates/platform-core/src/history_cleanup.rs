@@ -2,6 +2,7 @@
 //! every removable tree; no arbitrary path or force-delete operation is exposed.
 use crate::{
     builds::{self, BuildManager},
+    file_identity::PersistedIdentity,
     lifecycle::LifecycleManager,
     projects::{check_no_symlinks, valid_id},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord, APP_IDENTIFIER, ENVIRONMENT,
@@ -76,6 +77,11 @@ struct Candidate {
     blocked_reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     root_identity: Option<Identity>,
+    // Runtime identities above still protect this exact preview and fd-relative
+    // removal. This companion only binds durable progress to the same root after
+    // a reboot, when the preview itself can no longer be executed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    persistent_root_identity: Option<PersistedIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     parents: Vec<(PathBuf, Identity)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -97,6 +103,7 @@ impl Candidate {
             can_clean: false,
             blocked_reasons: vec![],
             root_identity: None,
+            persistent_root_identity: None,
             parents: vec![],
             entries: vec![],
             guards: BTreeMap::new(),
@@ -248,6 +255,34 @@ fn directory_identity(path: &Path) -> Result<Identity, ApiError> {
         return Err(error("Expected an ordinary directory"));
     }
     Ok(Identity::of(&meta))
+}
+fn persistent_identity(path: &Path) -> Result<PersistedIdentity, ApiError> {
+    directory_identity(path)?;
+    PersistedIdentity::capture(path).map_err(error)
+}
+fn matches_persisted_root(
+    expected: &PersistedIdentity,
+    item: &Candidate,
+) -> Result<bool, ApiError> {
+    if item.root_identity.as_ref() != Some(&directory_identity(&item.path)?) {
+        return Ok(false);
+    }
+    expected.matches_path(&item.path).map_err(error)
+}
+fn same_persisted_record(
+    first: &PersistedIdentity,
+    second: &PersistedIdentity,
+    path: &Path,
+) -> bool {
+    match (first.is_legacy(), second.is_legacy()) {
+        (true, true) => first.legacy_pair() == second.legacy_pair(),
+        (false, false) => first.matches_captured(second),
+        // A mixed historical chain has no safe equivalence without a current
+        // path independently verified by both records and the explicit binding.
+        _ => {
+            first.matches_path(path).unwrap_or(false) && second.matches_path(path).unwrap_or(false)
+        }
+    }
 }
 fn normalized(path: &Path) -> bool {
     path.is_absolute()
@@ -769,6 +804,7 @@ impl CleanupManager {
         let result = (|| {
             self.validate_location(item)?;
             item.root_identity = Some(directory_identity(&item.path)?);
+            item.persistent_root_identity = Some(persistent_identity(&item.path)?);
             item.parents = parent_identities(&item.path)?;
             item.entries = scan(&item.path)?;
             item.total_bytes = Some(item.entries.iter().try_fold(0u64, |total, entry| {
@@ -876,7 +912,7 @@ impl CleanupManager {
         {
             return Err(error("Restore operation is not committed and resolved"));
         }
-        let _: (u64, u64) = serde_json::from_value(journal["candidateIdentity"].clone())
+        let _: PersistedIdentity = serde_json::from_value(journal["candidateIdentity"].clone())
             .map_err(|_| error("Unrecognized restore candidate identity"))?;
         let _: crate::control::ControlState = validated_control(journal["previousControl"].clone())
             .map_err(|_| error("Unrecognized previous restore control state"))?;
@@ -903,13 +939,9 @@ impl CleanupManager {
             ));
         }
         self.check_references(Some(id), Some(task))?;
-        let expected: (u64, u64) = serde_json::from_value(journal["originalIdentity"].clone())?;
-        if item.root_identity.as_ref()
-            != Some(&Identity {
-                device: expected.0,
-                inode: expected.1,
-            })
-        {
+        let expected: PersistedIdentity =
+            serde_json::from_value(journal["originalIdentity"].clone())?;
+        if !matches_persisted_root(&expected, item)? {
             self.validate_migrated_original(item, task, &path)?;
         }
         let record = self.tasks.task(task)?;
@@ -987,13 +1019,8 @@ impl CleanupManager {
         if record["trashId"] != trash || record["schemaVersion"] != 1 {
             return Err(error("Trash record identity is invalid"));
         }
-        let expected: (u64, u64) = serde_json::from_value(record["rootIdentity"].clone())?;
-        if item.root_identity.as_ref()
-            != Some(&Identity {
-                device: expected.0,
-                inode: expected.1,
-            })
-        {
+        let expected: PersistedIdentity = serde_json::from_value(record["rootIdentity"].clone())?;
+        if !matches_persisted_root(&expected, item)? {
             return Err(error("Trash root identity changed"));
         }
         self.store.check_identity_available(id, Some(trash), None)?;
@@ -1008,8 +1035,9 @@ impl CleanupManager {
     ) -> Result<(), ApiError> {
         Self::guard_file(item, path)?;
         self.validate_migration_chain(migration_id, journal)?;
-        let expected: Identity = serde_json::from_value(journal["sourceIdentity"].clone())?;
-        if item.root_identity.as_ref() != Some(&expected) {
+        let expected: PersistedIdentity =
+            serde_json::from_value(journal["sourceIdentity"].clone())?;
+        if !matches_persisted_root(&expected, item)? {
             return Err(error("Retained workspace identity changed"));
         }
         let removed = self.known_removals(item)?;
@@ -1125,15 +1153,11 @@ impl CleanupManager {
                     {
                         return Err(error("Current trash ownership is not safely resolved"));
                     }
-                    let expected: (u64, u64) =
+                    let expected: PersistedIdentity =
                         serde_json::from_value(record["rootIdentity"].clone())?;
                     let root = directory.join("project");
-                    if directory_identity(&root)?
-                        != (Identity {
-                            device: expected.0,
-                            inode: expected.1,
-                        })
-                    {
+                    directory_identity(&root)?;
+                    if !expected.matches_path(&root).map_err(error)? {
                         return Err(error(
                             "Current retained trash payload is missing or replaced",
                         ));
@@ -1278,7 +1302,22 @@ impl CleanupManager {
                     "Cleanup progress is not bound to an accepted eligible selection",
                 ));
             }
-            if prior.path != item.path || prior.root_identity != item.root_identity {
+            if prior.path != item.path {
+                continue;
+            }
+            let Some(prior_runtime) = &prior.root_identity else {
+                return Err(error("Cleanup progress has no original root identity"));
+            };
+            let expected = match &prior.persistent_root_identity {
+                Some(identity) => {
+                    if identity.legacy_pair() != (prior_runtime.device, prior_runtime.inode) {
+                        return Err(error("Cleanup progress root identity records disagree"));
+                    }
+                    identity.clone()
+                }
+                None => serde_json::from_value(serde_json::to_value(prior_runtime)?)?,
+            };
+            if !matches_persisted_root(&expected, item)? {
                 continue;
             }
             check_no_symlinks(&log_path, false)?;
@@ -1338,9 +1377,10 @@ impl CleanupManager {
                 .map(PathBuf::from)
                 .ok_or_else(|| error("Migration target is missing"))?;
             if destination == self.paths.workspace_root() {
-                let expected: Identity =
+                let expected: PersistedIdentity =
                     serde_json::from_value(current["destinationIdentity"].clone())?;
-                if directory_identity(&destination)? != expected {
+                directory_identity(&destination)?;
+                if !expected.matches_path(&destination).map_err(error)? {
                     return Err(error("Committed workspace identity changed"));
                 }
                 let marker = read_json(&destination.join(SELECTION))?;
@@ -1364,10 +1404,11 @@ impl CleanupManager {
                     && value["committed"] == true
                     && value["resolved"] == true
                 {
-                    let source: Identity = serde_json::from_value(value["sourceIdentity"].clone())?;
-                    let target: Identity =
+                    let source: PersistedIdentity =
+                        serde_json::from_value(value["sourceIdentity"].clone())?;
+                    let target: PersistedIdentity =
                         serde_json::from_value(current["destinationIdentity"].clone())?;
-                    if source != target || next.is_some() {
+                    if !same_persisted_record(&source, &target, &destination) || next.is_some() {
                         return Err(error("Migration chain identity is ambiguous"));
                     }
                     next = Some((directory.file_name().to_string_lossy().into_owned(), value));

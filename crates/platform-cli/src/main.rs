@@ -193,6 +193,10 @@ struct TrashOptions {
 enum WorkspaceCommand {
     Info(OutputOptions),
     Storage(OutputOptions),
+    /// Preview an offline legacy identity repair; does not initialize or start the app.
+    IdentityRepairPlan(OutputOptions),
+    /// Confirm the exact offline preview. Preserves original migration records and project data.
+    IdentityRepair(InputOptions),
     /// Inspect registered historical cleanup candidates without deleting files.
     CleanupPlan(OutputOptions),
     /// Permanently clean explicitly selected IDs from an unexpired preview plan.
@@ -464,6 +468,31 @@ fn trash_command(command: TrashCommand) -> (bool, Result<Value>) {
 
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
+        WorkspaceCommand::IdentityRepairPlan(options) => (
+            options.json,
+            platform_core::platform_support::require_runtime()
+                .map_err(runtime_gate_error)
+                .and_then(|_| {
+                    RuntimePaths::identity_repair_preview()
+                        .map(success)
+                        .map_err(|e| {
+                            CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
+                        })
+                }),
+        ),
+        WorkspaceCommand::IdentityRepair(options) => (
+            options.output.json,
+            platform_core::platform_support::require_runtime()
+                .map_err(runtime_gate_error)
+                .and_then(|_| read_input(&options.input))
+                .and_then(|input| {
+                    RuntimePaths::identity_repair(input)
+                        .map(success)
+                        .map_err(|e| {
+                            CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
+                        })
+                }),
+        ),
         WorkspaceCommand::CleanupPlan(options) => (
             options.json,
             business_request(
@@ -1037,16 +1066,20 @@ fn validate_business_response(
     Ok(())
 }
 
+fn runtime_gate_error(gate: RuntimeSupportError) -> CliError {
+    let api_error = platform_core::ApiError::from(gate);
+    CliError {
+        code: gate.code,
+        message: api_error.message,
+        details: api_error.details,
+        retryable: api_error.retryable,
+    }
+}
+
 fn discover_paths() -> Result<RuntimePaths> {
     RuntimePaths::discover().map_err(|error| {
         if let Some(gate) = error.downcast_ref::<RuntimeSupportError>() {
-            let api_error = platform_core::ApiError::from(*gate);
-            return CliError {
-                code: gate.code,
-                message: api_error.message,
-                details: api_error.details,
-                retryable: api_error.retryable,
-            };
+            return runtime_gate_error(*gate);
         }
         let missing = error.chain().any(|cause| {
             cause.downcast_ref::<std::io::Error>()
@@ -1439,6 +1472,15 @@ mod tests {
             vec!["cli", "trash", "restore", "--trash", "trash_a"],
             vec!["cli", "trash", "purge", "--trash", "trash_a"],
             vec!["cli", "workspace", "info", "--json"],
+            vec!["cli", "workspace", "identity-repair-plan", "--json"],
+            vec![
+                "cli",
+                "workspace",
+                "identity-repair",
+                "--input",
+                "-",
+                "--json",
+            ],
             vec!["cli", "workspace", "migrate", "--input", "-"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
@@ -1448,6 +1490,7 @@ mod tests {
             vec!["cli", "project", "import"],
             vec!["cli", "trash", "purge"],
             vec!["cli", "workspace", "migrate"],
+            vec!["cli", "workspace", "identity-repair"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
