@@ -38,3 +38,7 @@ Windows 复用完整工作台布局，但资料修改、SQL、附件、构建、
 本轮 exe 为 `target/release/local-projects-desktop-dev.exe`，14317056 字节，SHA-256 `e4e93fe673fd0c3ecba877c46c0251a3e7d2fa0d9d1aa7cdfd27737fbd8cf086`。共同资产为 `/assets/styles-C3RsUmLX.css` 和 `/assets/styles-QcJJ7JWj.js`，两个 HTML 入口引用一致。旧 exe、前后快照、共同资产清单和回执保留在忽略的 `.test-artifacts/windows-shared-ui-disposable-5c244e2376ca415899fde65bbe7f0e6e/`，不提交 exe、生成资源或项目数据。未修改已有项目的源码、SDK、数据库、登记、工作区指向或 ACL。
 
 浏览器正文、无 Node 干净机器、物理断网、Win10、Mac 原生回归及完整 Windows 阶段仍待验；不能因 UI 共用而扩大功能准入或合主线的验收结论。
+
+## 4 接续补验尝试
+
+2026-10-19 接续会话重新读取 Computer Use 技能并初始化新会话，`list_apps` 返回实际运行中的唯一管理窗口。按返回对象选择、绑定并请求窗口状态时，工具返回 `Computer Use app approval timed out`，未取得管理正文或项目页面。本轮没有据此标记当前包 GUI 重启通过，也没有更换自动化方式绕过许可；不依赖窗口工具的 W2.2a 文件原语工作另见 [W2 记录](windows-w2-verification.md#9-w22a数据库对象-lease-安全原语)。当前 exe 未重建，摘要仍为本记录第 3 节的 `e4e93fe673fd0c3ecba877c46c0251a3e7d2fa0d9d1aa7cdfd27737fbd8cf086`。

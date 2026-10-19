@@ -1,10 +1,13 @@
 //! Real Windows primitives, exclusively inside new named disposable paths.
 //! No test initializes the actual application data root or removes evidence.
 use super::*;
-use std::{fs, process::Command, sync::MutexGuard};
+use std::{fs, os::windows::io::AsHandle, process::Command, sync::MutexGuard};
 use windows_sys::Win32::{
     Foundation::GENERIC_WRITE,
-    Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW,
+    Security::{
+        Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, SetSecurityInfo},
+        GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+    },
     Storage::FileSystem::{BusTypeUnknown, BusTypeUsb, BusTypeVirtual, CreateDirectoryW},
     System::{Com::CoCreateGuid, Ioctl::FSCTL_SET_REPARSE_POINT},
 };
@@ -469,6 +472,326 @@ fn existing_writer_hardlinks_and_size_bounds_are_rejected() {
     assert_eq!(
         fs::read(root.path().join("sample.txt")).unwrap(),
         b"retained content"
+    );
+}
+
+#[test]
+fn sqlite_leases_allow_native_read_write_handles_and_verify_the_actual_object() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let data = workspace.root().create_directory("data").unwrap();
+    for kind in [
+        SqliteFileKind::Main,
+        SqliteFileKind::Wal,
+        SqliteFileKind::Shm,
+    ] {
+        let id = data
+            .write_new(kind.name(), b"disposable handle fixture")
+            .unwrap();
+        let before_acl = acl_text(data.lease_sqlite_file(kind, &id).unwrap().file.raw());
+        let lease = data.lease_sqlite_file(kind, &id).unwrap();
+        assert_eq!(lease.identity(), &id);
+        let mut native = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lease.path())
+            .unwrap();
+        lease.verify_native_handle(native.as_handle()).unwrap();
+        native.write_all(b"native RW").unwrap();
+        native.sync_all().unwrap();
+        lease.verify_binding().unwrap();
+        assert_eq!(acl_text(lease.file.raw()), before_acl);
+        // A second reader lease may coexist with the native writer. Ordinary
+        // snapshot reads deliberately continue to reject that writer.
+        data.lease_sqlite_file(kind, &id).unwrap();
+        assert!(data.read_bounded(kind.name(), 100).is_err());
+    }
+    assert_eq!(data.list().unwrap().len(), 3);
+}
+
+#[test]
+fn sqlite_lease_rejects_missing_or_changed_registration_without_creating_files() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let data = workspace.root().create_directory("data").unwrap();
+    let id = data.write_new("main.sqlite", b"retained original").unwrap();
+    let absent = workspace.root().create_directory("absent").unwrap();
+    for kind in [
+        SqliteFileKind::Main,
+        SqliteFileKind::Wal,
+        SqliteFileKind::Shm,
+    ] {
+        assert_eq!(
+            code(absent.lease_sqlite_file(kind, &id)),
+            "WORKSPACE_NAME_MISSING"
+        );
+        assert!(!absent.path().join(kind.name()).exists());
+    }
+    assert!(absent.list().unwrap().is_empty());
+    // Check all 128 file-ID bits and the full volume serial, not an inode-like
+    // suffix or a path match. No identity is adopted from the candidate file.
+    for index in 0..16 {
+        let mut changed = id.clone();
+        changed.file_id128[index] ^= 1;
+        assert_eq!(
+            code(data.lease_sqlite_file(SqliteFileKind::Main, &changed)),
+            "WORKSPACE_DATABASE_IDENTITY_CHANGED"
+        );
+    }
+    let mut changed = id.clone();
+    changed.volume_serial ^= 1;
+    assert_eq!(
+        code(data.lease_sqlite_file(SqliteFileKind::Main, &changed)),
+        "WORKSPACE_DATABASE_IDENTITY_CHANGED"
+    );
+    assert_eq!(data.list().unwrap().len(), 1);
+    assert_eq!(
+        fs::read(data.path().join("main.sqlite")).unwrap(),
+        b"retained original"
+    );
+}
+
+#[test]
+fn sqlite_lease_pins_files_ancestors_and_workspace_reservation_until_drop() {
+    let _serial = serial();
+    let parent = fixture();
+    let workspace = WindowsWorkspace::for_test_path(parent.clone(), true).unwrap();
+    let data = workspace.root().create_directory("data").unwrap();
+    let id = data
+        .write_new("main.sqlite", b"retained pinned object")
+        .unwrap();
+    let lease = data.lease_sqlite_file(SqliteFileKind::Main, &id).unwrap();
+    let database_path = lease.path().to_owned();
+    let data_path = data.path().to_owned();
+    let root_path = workspace.path().to_owned();
+    drop(data);
+    drop(workspace);
+    assert_eq!(
+        code(WindowsWorkspace::for_test_path(parent.clone(), false)),
+        "WORKSPACE_INSTANCE_LOCKED"
+    );
+    assert!(fs::rename(&database_path, data_path.join("moved.sqlite")).is_err());
+    assert!(fs::remove_file(&database_path).is_err());
+    assert!(fs::rename(&data_path, root_path.join("moved-data")).is_err());
+    assert!(fs::rename(&root_path, parent.join("moved-root")).is_err());
+    assert!(fs::rename(&parent, parent.with_extension("moved-parent")).is_err());
+    lease.verify_binding().unwrap();
+    assert_eq!(fs::read(&database_path).unwrap(), b"retained pinned object");
+    drop(lease);
+    // Preserve evidence after release as well; reopening must find the same ID.
+    let reopened = WindowsWorkspace::for_test_path(parent, false).unwrap();
+    let data = reopened.root().open_directory("data").unwrap();
+    assert_eq!(data.read_bounded("main.sqlite", 100).unwrap().identity, id);
+    // Real release control: the previously blocked rename now succeeds. Keep
+    // the renamed fixture rather than deleting it.
+    let retained = data.path().join("retained-after-lease.sqlite");
+    fs::rename(&database_path, &retained).unwrap();
+    assert_eq!(fs::read(retained).unwrap(), b"retained pinned object");
+}
+
+#[test]
+fn sqlite_lease_rejects_another_native_handle_even_with_identical_bytes_and_leaf_name() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let root = workspace.root();
+    let a = root.create_directory("project-a-data").unwrap();
+    let b = root.create_directory("project-b-data").unwrap();
+    let id = a.write_new("main.sqlite", b"same bytes").unwrap();
+    b.write_new("main.sqlite", b"same bytes").unwrap();
+    let lease = a.lease_sqlite_file(SqliteFileKind::Main, &id).unwrap();
+    let wrong = fs::File::open(b.path().join("main.sqlite")).unwrap();
+    assert_eq!(
+        code(lease.verify_native_handle(wrong.as_handle())),
+        "WORKSPACE_DATABASE_IDENTITY_CHANGED"
+    );
+    // Borrowing must not close the caller's handle on either result.
+    assert_eq!(wrong.metadata().unwrap().len(), 10);
+    let right = fs::File::open(lease.path()).unwrap();
+    lease.verify_native_handle(right.as_handle()).unwrap();
+    assert_eq!(right.metadata().unwrap().len(), 10);
+    assert_eq!(a.list().unwrap().len(), 1);
+    assert_eq!(b.list().unwrap().len(), 1);
+}
+
+#[test]
+fn sqlite_lease_rechecks_hardlinks_added_while_pinned_and_does_not_repair_them() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let data = workspace.root().create_directory("data").unwrap();
+    let id = data
+        .write_new("main.sqlite", b"retained dynamic hardlink")
+        .unwrap();
+    let lease = data.lease_sqlite_file(SqliteFileKind::Main, &id).unwrap();
+    let native = fs::File::open(lease.path()).unwrap();
+    lease.verify_native_handle(native.as_handle()).unwrap();
+    // No-delete sharing does not prevent adding a hardlink on native Windows.
+    // This requires revalidation; it is not a permanent single-link lock.
+    let alias = data.path().join("retained-alias.sqlite");
+    fs::hard_link(lease.path(), &alias).unwrap();
+    assert_eq!(code(lease.verify_binding()), "WORKSPACE_HARDLINK_REJECTED");
+    assert_eq!(
+        code(lease.verify_native_handle(native.as_handle())),
+        "WORKSPACE_HARDLINK_REJECTED"
+    );
+    assert_eq!(fs::read(&alias).unwrap(), b"retained dynamic hardlink");
+    assert_eq!(
+        fs::read(lease.path()).unwrap(),
+        b"retained dynamic hardlink"
+    );
+    assert_eq!(data.list().unwrap().len(), 2);
+}
+
+#[test]
+fn sqlite_lease_rechecks_changed_acl_without_restoring_permissions() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let data = workspace.root().create_directory("data").unwrap();
+    let id = data
+        .write_new("main.sqlite", b"retain ACL change evidence")
+        .unwrap();
+    let lease = data.lease_sqlite_file(SqliteFileKind::Main, &id).unwrap();
+    lease.verify_binding().unwrap();
+    let path = wide(lease.path().as_os_str()).unwrap();
+    let raw = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            windows_sys::Win32::Storage::FileSystem::WRITE_DAC | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    assert_ne!(raw, INVALID_HANDLE_VALUE);
+    let acl_writer = unsafe { Handle::own(raw) };
+    let before_acl = acl_text(acl_writer.raw());
+    // Deliberately broaden only this freshly created fixture's ACL. Keep the
+    // altered permissions as evidence; production must reject, never repair.
+    let sddl = wide(OsStr::new(&format!(
+        "D:P(A;;FA;;;{})(A;;GR;;;WD)",
+        user_sid().unwrap()
+    )))
+    .unwrap();
+    let mut raw_security = null_mut();
+    assert_ne!(
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut raw_security,
+                null_mut(),
+            )
+        },
+        0
+    );
+    let security = Allocation(raw_security);
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = null_mut();
+    assert_ne!(
+        unsafe { GetSecurityDescriptorDacl(security.0, &mut present, &mut dacl, &mut defaulted) },
+        0
+    );
+    assert_ne!(present, 0);
+    assert_eq!(
+        unsafe {
+            SetSecurityInfo(
+                acl_writer.raw(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                dacl,
+                null(),
+            )
+        },
+        0
+    );
+    let changed_acl = acl_text(acl_writer.raw());
+    assert_ne!(changed_acl, before_acl);
+    assert_eq!(
+        code(lease.verify_binding()),
+        "WORKSPACE_PRIVATE_ACL_REJECTED"
+    );
+    let native = fs::File::open(lease.path()).unwrap();
+    assert_eq!(
+        code(lease.verify_native_handle(native.as_handle())),
+        "WORKSPACE_PRIVATE_ACL_REJECTED"
+    );
+    assert_eq!(acl_text(acl_writer.raw()), changed_acl);
+    assert_eq!(
+        fs::read(lease.path()).unwrap(),
+        b"retain ACL change evidence"
+    );
+    assert_eq!(data.list().unwrap().len(), 1);
+}
+
+#[test]
+fn sqlite_lease_rejects_hardlinks_wrong_types_and_inherited_acl_without_repair() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let root = workspace.root();
+    let linked = root.create_directory("linked").unwrap();
+    let id = linked
+        .write_new("main.sqlite", b"retained hardlink")
+        .unwrap();
+    fs::hard_link(
+        linked.path().join("main.sqlite"),
+        linked.path().join("alias"),
+    )
+    .unwrap();
+    assert_eq!(
+        code(linked.lease_sqlite_file(SqliteFileKind::Main, &id)),
+        "WORKSPACE_HARDLINK_REJECTED"
+    );
+    let wrong_type = root.create_directory("wrong-type").unwrap();
+    wrong_type.create_directory("main.sqlite").unwrap();
+    assert!(wrong_type
+        .lease_sqlite_file(SqliteFileKind::Main, &id)
+        .is_err());
+    let inherited = root.create_directory("inherited").unwrap();
+    let path = inherited.path().join("main.sqlite");
+    fs::write(&path, b"retain unprotected ACL").unwrap();
+    let native = fs::File::open(&path).unwrap();
+    let before_acl = acl_text(native.as_raw_handle());
+    assert_eq!(
+        code(inherited.lease_sqlite_file(SqliteFileKind::Main, &id)),
+        "WORKSPACE_PRIVATE_ACL_UNVERIFIED"
+    );
+    assert_eq!(acl_text(native.as_raw_handle()), before_acl);
+    assert_eq!(fs::read(path).unwrap(), b"retain unprotected ACL");
+    assert_eq!(
+        fs::read(linked.path().join("alias")).unwrap(),
+        b"retained hardlink"
+    );
+}
+
+#[test]
+fn sqlite_lease_rejects_reparse_sidecars_and_preserves_outside_evidence() {
+    let _serial = serial();
+    let parent = fixture();
+    let outside = parent.join("retained-sqlite-outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("evidence.txt"), b"never follow sqlite sidecar").unwrap();
+    let workspace = WindowsWorkspace::for_test_path(parent, true).unwrap();
+    let root = workspace.root();
+    let data = root.create_directory("data").unwrap();
+    let id = data
+        .write_new("main.sqlite", b"retained database fixture")
+        .unwrap();
+    for kind in [SqliteFileKind::Wal, SqliteFileKind::Shm] {
+        junction(&data.path().join(kind.name()), &outside);
+        assert!(data.lease_sqlite_file(kind, &id).is_err());
+    }
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+    assert_eq!(
+        fs::read(outside.join("evidence.txt")).unwrap(),
+        b"never follow sqlite sidecar"
+    );
+    assert_eq!(
+        fs::read(data.path().join("main.sqlite")).unwrap(),
+        b"retained database fixture"
     );
 }
 

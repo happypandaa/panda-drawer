@@ -22,8 +22,9 @@ mod windows_workspace;
 pub use windows_runtime::open_project_browser;
 #[cfg(windows)]
 pub use windows_workspace::{
-    fixed_workspace_data_root, WindowsObjectIdentity, WindowsWorkspace, WorkspaceDirectory,
-    WorkspaceEntry, WorkspaceError, WorkspaceFile, WorkspaceLock,
+    fixed_workspace_data_root, SqliteFileKind, SqliteFileLease, WindowsObjectIdentity,
+    WindowsWorkspace, WorkspaceDirectory, WorkspaceEntry, WorkspaceError, WorkspaceFile,
+    WorkspaceLock,
 };
 
 // Native probes briefly hold strict ancestor handles. Their fixtures share
