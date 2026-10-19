@@ -136,7 +136,9 @@ example-app-1.0.0/
 │   ├── index.html                    web.entry，相对 web.root
 │   └── assets/
 ├── meta/icon.png                     可选
-├── docs/                             可选使用/开发说明
+├── docs/
+│   ├── USER_GUIDE.md                  给用户的使用/配置说明
+│   └── DEVELOPMENT.md                 给AI的技术/开发说明
 ├── source/                           可选源码资料，不在安装时构建
 └── initial-data/                     seed 候选方案才使用，见第 6 节
 ```
@@ -165,7 +167,7 @@ example-app-1.0.0/
 | `requires` | 是 | 必需唯一字符串数组 `capabilities`；非空数组要求正整数 `apiVersion`；可选 `minPlatformVersion`，版本格式同上 |
 | `runtimeRequirements` | 是 | 网络/设备对象，无需求写 `{}`，不接受 `null` |
 | `data` | 是，设计候选 | `formatVersion` 为 0–2147483647，`initialization` 按下表描述；Schema 编码候选结构，不代表已具备安装初始化能力 |
-| `documentation` | 否 / 条件必需 | 可含包根相对文件路径 `readme`、`data`、`development`；候选 seed 要求 `data` |
+| `documentation` | 否 / 条件必需 | `readme` 为用户使用/配置说明，`development` 为独立AI技术/架构/开发说明，两者声明时为Markdown路径；`data` 为业务数据说明，候选 seed 要求 `data`；当前可选性保留，强制存在策略在AP0.1定稿 |
 | `source` | 否 | 仅有 `root`，包根相对源码资料目录；不自动认定产物来源匹配 |
 | `distribution` | 否 | `repository`、`releaseUrl` 为无凭据 HTTPS URL，`releaseTag` 为非空资料；不触发联网获取 |
 | `extensions` | 否 | 自定义展示元数据对象，不得改变权限、路径、初始化或更新语义 |
@@ -182,6 +184,12 @@ example-app-1.0.0/
 需要表但无初始记录也属于 seed 候选。如何初始化、数据版本绑定、更新仅接受相同数据版本、更新后维护结束等细则仍待单独确认；不执行安装 SQL/脚本的设计边界保留。不能将候选种子要求反向用于拒绝保全已有坏库和 WAL/SHM 现场。完整方案及未决项见[原设计](web-app-package-design.md)。
 
 最小外部包见[示例目录说明](project-format-v1/examples/minimal-app/README.md)、[清单](project-format-v1/examples/minimal-app/local-app.json)和[静态 HTML](project-format-v1/examples/minimal-app/dist/index.html)。该示例不使用 SDK、设备、网络或业务表，仅展示文件格式；不代表当前平台能安装它，也不提供持久便签等业务功能。
+
+### 6.1 用户说明与 AI 开发说明
+
+用户已确认两类文档分开，具体内容、字段、渲染及兼容边界见[应用文档分工](application-documentation.md)。目标示例提供两份独立 UTF-8 Markdown：`documentation.readme` 指向用户的使用与配置步骤，`documentation.development` 指向 AI 的技术架构、目录、数据契约与开发维护流程；不要把两者都指向同一文件或其别名。JSON Schema只检查后缀及基本路径，文件独立性、字节与内容需语义检查。
+
+短简介仍为 `app.description` 的最多 2000 字符纯文本。Markdown 正文单文件上限尚未定稿，64 KiB 只是此前建议，不作为正式限制；展示和资源读取仍需受控预算。现有 `project.json.docs.readme`/根README 的 AI 接管角色不改变，不因新规范自动重写旧项目。两类资料的安装预览/详情/AI入口属于 AP 待实现项，本轮只补文档和 Schema。
 
 ## 7 路径、运行需求与身份
 
@@ -316,6 +324,7 @@ project Schema 是面向新编写的规范，不是当前 Rust 解析器的逐�
 | --- | --- |
 | current project v1 识别、默认新建、元数据、构建、数据库/附件、完整 ZIP 与生命周期 | 已实现，各阶段实际验收和限制仍以原记录为准 |
 | 两类目录角色、专用清单分工、集中规范及 Schema/最小示例 | 本轮文档交付；Schema 未接入程序 |
+| 用户使用/配置说明与 AI 技术/架构/开发说明分开 | 已确认分工；文档/Schema/示例已区分，Markdown展示、正文限额及强制携带策略仍按AP落实 |
 | local-app 包解析/检测、暂存范围、确认安装、新实例登记、无源码类型、来源、备份/维护兼容 | 待实现；不能调用或声称已经安装通过 |
 | 静态网页路由/完整资源检测、无源码无 Node 运行、跨机器 GitHub 分享与真实验收 | 待实现与验证；源码可移植不等于所有系统已支持 |
 | PWA 安装、manifest、Service Worker 与平台会话/发布代兼容 | 不强制、可选增强的方向已确认；完整兼容与真实浏览器安装未验收，不阻塞基础网页安装 |

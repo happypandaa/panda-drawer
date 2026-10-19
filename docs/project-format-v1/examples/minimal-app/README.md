@@ -9,14 +9,17 @@
 ```text
 minimal-app/
 ├── local-app.json
-├── README.md
+├── README.md                 仓库规范示例说明，未声明进入安装范围
+├── docs/
+│   ├── USER_GUIDE.md          给用户的使用/配置说明
+│   └── DEVELOPMENT.md         给AI的技术/开发说明
 └── dist/
     └── index.html
 ```
 
 清单中的网页根为 `dist`，入口 `index.html` 相对网页根，使用实际文件导航 `files`。此页面没有 JavaScript、内联事件、外部资源、SDK 调用或数据保存；网络与设备需求为空。候选 `empty` 模式的数据版本为 0，不携带业务库、种子附件或建表脚本。此处只展示声明，不执行初始化。
 
-`documentation.readme` 明确把本说明列入资料范围；它不成为网页根。上述规范链接用于在本仓库中查阅，示例独立复制后可保留文字说明；平台未来保留资料不代表这些仓库外链在安装目录中继续存在。
+`documentation.readme` 指向[用户使用说明](docs/USER_GUIDE.md)，`documentation.development` 指向[AI / 开发说明](docs/DEVELOPMENT.md)。它们都明确进入目标安装资料范围，且不成为网页根。本根 README 仅用于在仓库解释规范示例，未声明进入包复制范围；规范链接只供本仓库查阅，不假设安装后仍能访问仓库相对路径。分工见[两类应用说明](../../../application-documentation.md)。
 
 [local-app.schema.json](../../local-app.schema.json) 使用 JSON Schema Draft 2020-12，文件自身包含全部定义。验证前须按严格 UTF-8 JSON 解析，拒绝重复键、注释、尾逗号、非有限数字和不合法的 Unicode。Schema 只检查结构与部分字符串规则，不修改或补齐清单。
 

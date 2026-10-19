@@ -423,16 +423,25 @@
       "additionalProperties": false,
       "properties": {
         "readme": {
-          "$ref": "#/$defs/relativePath"
+          "$ref": "#/$defs/markdownPath",
+          "description": "给普通用户的独立使用/配置说明，推荐 docs/USER_GUIDE.md；不是AI架构或开发交接入口。"
         },
         "data": {
           "$ref": "#/$defs/relativePath"
         },
         "development": {
-          "$ref": "#/$defs/relativePath"
+          "$ref": "#/$defs/markdownPath",
+          "description": "给AI和开发者的独立技术/架构/开发说明，推荐 docs/DEVELOPMENT.md；没有源码时如实说明不可构建。"
         }
       },
-      "description": "相对包根的资料文件；seed 模式必须声明 data，资料不作为网页资源根。"
+      "description": "两类独立Markdown说明，路径相对包根；保留字段可选性，强制携带策略在AP0.1定稿。seed候选仍要求data，资料不作为网页资源根；正文大小/渲染需另检，64KiB尚未确认。"
+    },
+    "markdownPath": {
+      "allOf": [
+        { "$ref": "#/$defs/relativePath" },
+        { "pattern": "\\.(?:[mM][dD]|[mM][aA][rR][kK][dD][oO][wW][nN])$" }
+      ],
+      "description": "声明时使用UTF-8 Markdown（.md/.markdown）；Schema只检查路径和后缀，不证明文件存在、编码、正文大小或安全渲染。"
     },
     "source": {
       "type": "object",
