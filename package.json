@@ -19,6 +19,7 @@
     "env:windows": "node scripts/windows-environment.mjs",
     "check:windows:toolchain": "node scripts/windows-toolchain-smoke.mjs",
     "test:process": "node --test scripts/process-test.mjs",
+    "test:platform-support": "node scripts/platform-support-test.mjs",
     "cli": "node scripts/rust.mjs run -p platform-cli --",
     "prepare:desktop": "node scripts/prepare-desktop.mjs",
     "tauri": "node scripts/desktop.mjs",

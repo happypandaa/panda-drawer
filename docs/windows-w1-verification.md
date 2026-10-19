@@ -1,6 +1,6 @@
 # Windows W1 环境与工程验证记录
 
-日期：2026-10-19（Asia/Shanghai）。当前仅推进 W1.1 的本机环境准备和开发辅助脚本；W1.2–W1.4 未开始，平台 Windows 编译、启动和安装未验收，W1.1 也未整体通过。
+日期：2026-10-19（Asia/Shanghai）。W1.1 的本机环境准备与 W1.2 首片共享启动门禁进行中；W1.3/W1.4 未开始，平台 Windows 编译、启动和安装未验收，W1.1/W1.2 均未整体通过。
 
 ## 1 本轮授权与范围
 
@@ -53,10 +53,29 @@ Rust 官方 Windows 安装器下载后按同源 SHA-256 校验通过；组件安
 
 完整平台的无条件 Unix API、Mac 打包入口、Windows 文件安全与宿主适配仍待后续小步完成。本轮不以绕过这些检查、关闭安全测试或运行平台初始化来代替工具链验证。
 
-## 5 待完成与下一步
+## 5 W1.2 首片：先关闭尚未准备好的运行时
+
+用户要求继续按小步骤推进。本片仅建立整体运行时门禁，不同时移植安全文件或开放业务操作。`platform_support.rs` 是不依赖第三方库的共享生产策略，按真实编译目标判断：Mac 维持原运行路径，Windows 返回 `PLATFORM_STAGE_UNAVAILABLE`，其他未支持系统返回 `PLATFORM_UNSUPPORTED`。没有参数、环境变量或测试开关能放行当前 Windows 运行时；显式平台描述函数只提供诊断数据，不能授权真实入口。
+
+代码接入与副作用顺序经独立源码复核：
+
+- 桌面 `main` 在 Tauri Builder、插件、setup 和 WebView 创建前拒绝，避免进入“连接磁盘或修路径”的既有工作区故障提示。本片的早期桌面错误只写标准错误并非零退出；Windows 图形提示尚未实现或验收。
+- `RuntimePaths::initialize`、内部 `initialize_at`、`discover`、`acquire_lock` 在默认根解析、目录/marker/settings、发现文件及锁操作前检查策略；没有为 Windows 增加新数据根或公开自选根参数。
+- `RuntimeService::start_with_resources` 和共用 `start_inner` 在资源读取、锁验证、迁移恢复、端口监听和管理器初始化前检查；`ProjectStore::with_resources` 在创建控制目录前检查。独立的 Node 配置写入口也先拒绝。
+- CLI 发现入口保留共享阶段错误，转换为现有错误封装中的 `platform`、`capability: runtime` 与 `operationOutcome: not_started`，`retryable` 为 false；不包装成 `SERVICE_NOT_RUNNING` 或在 `env doctor` 中返回普通离线成功。
+
+`npm run test:platform-support` 直接将同一个生产策略源文件用 Rust `--test --edition=2021 --target x86_64-pc-windows-msvc -D warnings` 编译成原生测试程序并运行，5 项全部通过，覆盖 Windows 明确拒绝、Mac 策略保留、其他平台拒绝、诊断与策略一致、实际编译目标选择。构建与结果回执只写新建的 `.test-artifacts/w1-platform-support-Dfl0mX/`；子进程临时目录也在本次证据目录，移除可能覆盖链接输出位置的继承参数，不更改全局环境。
+
+新增脚本语法检查、未知参数非零拒绝及 `git diff --check` 通过；复跑既有 `npm run test:process` 5 项通过。新增策略模块的 `rustfmt --check` 通过。没有改动业务 SDK、模板或前端，本片未重复运行无关业务构建与设备测试。
+
+这是纯策略模块的真实原生编译和运行，未编译 core 的其余部分、ApiError/CLI 适配或 Tauri；不是实际桌面/CLI 拒绝和不写入行为的端到端证明。Mac 仅做显式策略分支断言，未执行 Mac 实机回归。测试没有读取或初始化平台工作区；不能由此声称已经识别已有维护、迁移、恢复或清理现场。
+
+完整 W1.2 的逐操作能力门禁、UI 能力展示、管理器隔离及只读现场识别继续待完成，Windows 运行时仍整体关闭；W1.3 的 ACL、文件身份、重解析点与安全发布也未实施。本片不声称已隔离所有接受任意路径的底层文件 API，更不通过关闭原有安全测试实现移植。
+
+## 6 待完成与下一步
 
 1. 本机工具安装、独立编译链接与环境干扰回归已完成；不再把系统许可列为当前阻塞。后续修改工具链或脚本时按影响重新验证，不能沿用旧版本证据。
 2. Windows 10 22H2 x64 测试环境尚未落实，本轮 Mac 回归未执行。W1.1 的双系统环境安排未满足，故保留进行中；不能把当前机器检查推广为两个系统或 Mac 通过。
-3. W1.2 的能力/启动门禁随后单独实施，W1.3 再实现实际安全文件行为。安装形式、WebView2 分发/最低版本和正式发行条件继续待定。
+3. W1.2 首片完成后，继续拆解只读现场识别、管理器依赖和逐操作能力门禁；实际 Windows 运行时开放须等待相应保护与 W1.3 安全文件检查就绪。安装形式、WebView2 分发/最低版本和正式发行条件继续待定。
 
 成品用户运行带有效网页产物的项目无需 Node、Rust 或 C++ 工具；修改业务源码后才需要系统 Node/npm 来构建。内置 Node、外部网页应用文件夹安装和资源限额讨论稿没有在本轮获得新确认。

@@ -13,6 +13,7 @@ mod maintenance;
 mod metadata;
 mod paths;
 mod platform_info;
+pub mod platform_support;
 pub mod projects;
 pub mod resources;
 mod runtime_notice;
