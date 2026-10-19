@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 platform-host = { path = "../platform-host" }
 platform-preflight = { path = "../platform-preflight" }
+platform-project-format = { path = "../platform-project-format" }
 anyhow = "1"
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }

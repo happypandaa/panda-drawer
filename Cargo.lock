@@ -2825,6 +2825,7 @@ dependencies = [
  "mime_guess",
  "platform-host",
  "platform-preflight",
+ "platform-project-format",
  "png 0.18.1",
  "regex",
  "reqwest 0.12.28",
@@ -2862,6 +2863,7 @@ dependencies = [
 name = "platform-host"
 version = "0.0.0"
 dependencies = [
+ "platform-project-format",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -2873,6 +2875,17 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "platform-project-format"
+version = "0.0.0"
+dependencies = [
+ "http",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
 ]
 
 [[package]]

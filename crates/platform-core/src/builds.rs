@@ -33,7 +33,9 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(600);
 const LOG_HEAD: usize = 2_000_000;
 const LOG_TAIL: usize = 8_000_000;
 const LOG_PAGE: usize = 64_000;
-const DIGEST_RULE: u32 = 1;
+const DIGEST_RULE: u32 = platform_project_format::DIGEST_RULE_VERSION;
+pub(crate) use platform_project_format::{StarterDistribution, StarterProvenance};
+use platform_project_format::build_config;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,32 +58,6 @@ pub struct BuildProvenance {
     pub npm: crate::environment::ExecutableInfo,
     pub sdk_version: Option<String>,
     pub entry_relative: String,
-}
-/// Built once while packaging the platform, never a user build task.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct StarterDistribution {
-    pub schema_version: u32,
-    pub origin: String,
-    pub template_version: String,
-    pub sdk_version: String,
-    pub source_digest: String,
-    pub artifact_digest: String,
-    pub entry_relative: String,
-    pub built_at: u64,
-    pub node_version: String,
-    pub npm_version: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct StarterProvenance {
-    pub schema_version: u32,
-    pub origin: String,
-    pub build_id: String,
-    pub installed_at: u64,
-    pub digest_rule_version: u32,
-    pub input_digest: String,
-    pub distribution: StarterDistribution,
 }
 #[derive(Clone, Debug)]
 pub struct ArtifactGeneration {
@@ -982,7 +958,12 @@ fn collect_files(
     let dir = root.join(relative);
     check_no_symlinks(&dir, false)?;
     let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by(|left, right| {
+        platform_project_format::compare_logical_paths(
+            &left.file_name().to_string_lossy(),
+            &right.file_name().to_string_lossy(),
+        )
+    });
     for entry in entries {
         let name = entry.file_name();
         let name = name.to_str().ok_or_else(|| {
@@ -1019,16 +1000,15 @@ fn hash_tree(root: &Path, source: bool, hasher: &mut Sha256) -> Result<(), ApiEr
     let mut files = vec![];
     collect_files(root, Path::new(""), source, &mut files)?;
     for path in &files {
-        let label = path.to_str().unwrap();
-        hasher.update((label.len() as u64).to_le_bytes());
-        hasher.update(label.as_bytes());
+        let label = platform_project_format::logical_path(path)
+            .map_err(|message| ApiError::new("BUILD_INPUT_INVALID", message))?;
         let full = root.join(path);
         let before = fs::symlink_metadata(&full)?;
         let mut file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&full)?;
-        hasher.update(before.len().to_le_bytes());
+        platform_project_format::update_file_header(hasher, &label, before.len());
         let mut buffer = [0u8; 65536];
         loop {
             let count = file.read(&mut buffer)?;
@@ -1083,9 +1063,6 @@ pub fn input_digest(project: &ProjectHandle) -> Result<String, ApiError> {
     let manifest = read_manifest(project)?;
     digest_manifest(project, &manifest)
 }
-fn build_config(manifest: &ProjectManifest) -> Value {
-    json!({"manifestVersion":manifest.manifest_version,"sdkApiVersion":manifest.sdk_api_version,"sourceDir":manifest.source_dir,"outputDir":manifest.output_dir,"entry":manifest.entry,"build":manifest.build})
-}
 fn read_manifest(project: &ProjectHandle) -> Result<ProjectManifest, ApiError> {
     Ok(serde_json::from_slice(&fs::read(checked_relative(
         &project.root,
@@ -1122,9 +1099,7 @@ pub(crate) fn digest_project_inputs(
     root: &Path,
     manifest: &ProjectManifest,
 ) -> Result<String, ApiError> {
-    let mut digest = Sha256::new();
-    digest.update(b"local-projects-input-v1\0");
-    digest.update(serde_json::to_vec(&build_config(manifest))?);
+    let mut digest = platform_project_format::input_hasher(manifest)?;
     let source = checked_relative(root, &manifest.source_dir, false)?;
     hash_tree(&source, true, &mut digest)?;
     Ok(format!("{:x}", digest.finalize()))

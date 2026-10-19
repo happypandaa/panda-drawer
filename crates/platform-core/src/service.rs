@@ -1265,40 +1265,7 @@ async fn validate_host(
         .insert("referrer-policy", "no-referrer".parse().unwrap());
     response
 }
-fn status(error: &ApiError) -> StatusCode {
-    match error.code.as_str() {
-        "UNAUTHENTICATED" | "INVALID_SESSION" | "INVALID_TICKET" => StatusCode::UNAUTHORIZED,
-        "INVALID_HOST" | "INVALID_ORIGIN" | "BROWSER_MANAGEMENT_DENIED" | "FILE_ACCESS_DENIED" => {
-            StatusCode::FORBIDDEN
-        }
-        "PROJECT_NOT_FOUND" | "FILE_NOT_FOUND" | "NOT_FOUND" | "TRASH_NOT_FOUND" => {
-            StatusCode::NOT_FOUND
-        }
-        "FILE_EXISTS"
-        | "METADATA_CHANGED"
-        | "STORAGE_CURSOR_INVALID"
-        | "PROJECT_RELOAD_REQUIRED"
-        | "PROJECT_ID_CONFLICT"
-        | "PROJECT_TRASHED"
-        | "PROJECT_REGISTRATION_PENDING"
-        | "WORKSPACE_MIGRATING"
-        | "SERVICE_INSTANCE_CHANGED"
-        | "PROJECT_NOT_BUILT"
-        | "DATABASE_MISSING"
-        | "PROJECT_CHANGED"
-        | "PROJECT_BUSY"
-        | "PROJECT_MAINTENANCE"
-        | "MAINTENANCE_ID_MISMATCH"
-        | "RECOVERY_REQUIRED"
-        | "BUILD_REQUIRED" => StatusCode::CONFLICT,
-        "SERVICE_BUSY" | "SERVICE_STOPPING" | "SQL_QUEUE_FULL" | "SQL_BUSY" => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
-        "REQUEST_TOO_LARGE" | "FILE_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
-        "FILE_IO_ERROR" | "INTERNAL_ERROR" => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
-    }
-}
+fn status(error: &ApiError) -> StatusCode { StatusCode::from_u16(platform_project_format::http_protocol::status(error)).unwrap() }
 fn failure(error: ApiError, project_id: Option<&str>) -> Response {
     let status = status(&error);
     (status,Json(json!({"apiVersion":API_VERSION,"ok":false,"requestId":Uuid::new_v4().to_string(),"projectId":project_id,"error":error}))).into_response()
@@ -1350,26 +1317,7 @@ async fn runtime(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> Res
         Err(error) => failure(error, None),
     }
 }
-fn origin(
-    state: &HttpState,
-    headers: &HeaderMap,
-    required: bool,
-) -> std::result::Result<(), ApiError> {
-    let values = headers.get_all(header::ORIGIN);
-    let count = values.iter().count();
-    if (required && count == 0)
-        || count > 1
-        || (count == 1
-            && values.iter().next().and_then(|v| v.to_str().ok())
-                != Some(state.info.base_url.as_str()))
-    {
-        return Err(ApiError::new(
-            "INVALID_ORIGIN",
-            "Request must originate from this platform instance",
-        ));
-    }
-    Ok(())
-}
+fn origin(state: &HttpState, headers: &HeaderMap, required: bool) -> std::result::Result<(), ApiError> { platform_project_format::http_protocol::origin(headers, &state.info.base_url, required) }
 async fn input<T: DeserializeOwned>(request: Request) -> std::result::Result<T, ApiError> {
     if request
         .headers()
@@ -1689,9 +1637,7 @@ async fn management(
     }
     response
 }
-fn cookie_name(id: &str) -> String {
-    format!("lp_{id}")
-}
+fn cookie_name(id: &str) -> String { platform_project_format::http_protocol::cookie_name(id) }
 fn session(
     state: &HttpState,
     id: &str,
@@ -1699,28 +1645,10 @@ fn session(
     mutating: bool,
 ) -> std::result::Result<ProjectHandle, ApiError> {
     origin(state, headers, mutating)?;
-    let name = cookie_name(id);
-    let mut found = Vec::new();
-    for line in headers.get_all(header::COOKIE).iter() {
-        if let Ok(line) = line.to_str() {
-            for pair in line.split(';') {
-                if let Some((key, value)) = pair.trim().split_once('=') {
-                    if key == name {
-                        found.push(value);
-                    }
-                }
-            }
-        }
-    }
-    if found.len() != 1 {
-        return Err(ApiError::new(
-            "INVALID_SESSION",
-            "Open this project from the platform to connect",
-        ));
-    }
+    let cookie = platform_project_format::http_protocol::session_cookie(headers, id)?;
     let sessions = state.sessions.lock().unwrap();
     let _session = sessions
-        .get(found[0])
+        .get(cookie)
         .filter(|s| s.project_id == id)
         .ok_or_else(|| {
             ApiError::new(
@@ -1741,32 +1669,7 @@ fn session(
     project.check()?;
     Ok(project)
 }
-fn epoch<'a>(
-    headers: &'a HeaderMap,
-    query: &'a HashMap<String, String>,
-) -> std::result::Result<&'a str, ApiError> {
-    let values = headers.get_all("x-platform-document-epoch");
-    if values.iter().count() > 1 {
-        return Err(ApiError::new(
-            "PROJECT_RELOAD_REQUIRED",
-            "Provide one document epoch",
-        ));
-    }
-    let header = values.iter().next().and_then(|v| v.to_str().ok());
-    let param = query.get("documentEpoch").map(String::as_str);
-    if header.is_some() && param.is_some() && header != param {
-        return Err(ApiError::new(
-            "PROJECT_RELOAD_REQUIRED",
-            "Conflicting document epochs",
-        ));
-    }
-    header.or(param).filter(|v| !v.is_empty()).ok_or_else(|| {
-        ApiError::new(
-            "PROJECT_RELOAD_REQUIRED",
-            "Reload this project to establish its document epoch",
-        )
-    })
-}
+fn epoch<'a>(headers: &'a HeaderMap, query: &'a HashMap<String, String>) -> std::result::Result<&'a str, ApiError> { platform_project_format::http_protocol::epoch(headers, query.get("documentEpoch").map(String::as_str)) }
 fn query(request: &Request) -> std::result::Result<HashMap<String, String>, ApiError> {
     axum::extract::Query::<HashMap<String, String>>::try_from_uri(request.uri())
         .map(|q| q.0)
@@ -1989,13 +1892,7 @@ fn browser_limits() -> Value {
     limits["fileUploadMaxBytes"] = json!(FILE_MAX);
     limits
 }
-fn policy_fingerprint(requirements: &Value) -> String {
-    use sha2::Digest;
-    format!(
-        "{:x}",
-        sha2::Sha256::digest(serde_json::to_vec(requirements).unwrap_or_default())
-    )
-}
+fn policy_fingerprint(requirements: &Value) -> String { platform_project_format::http_protocol::policy_fingerprint(requirements) }
 async fn project_entry(
     State(state): State<Arc<HttpState>>,
     Path(id): Path<String>,

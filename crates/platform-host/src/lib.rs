@@ -106,6 +106,15 @@ pub fn show_startup_error(message: &str) {
     webview_policy::show_startup_error(message);
 }
 
+impl From<platform_support::RuntimeSupportError> for platform_project_format::ApiError {
+    fn from(value: platform_support::RuntimeSupportError) -> Self {
+        Self::new(value.code, value.message)
+            .detail("platform", value.platform.as_str())
+            .detail("capability", "runtime")
+            .outcome("not_started")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

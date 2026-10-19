@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -8,8 +9,25 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ignored = new Set(['node_modules', 'dist', '.git', '.hg', '.svn', '.vite', '.cache']);
 
+// npm.cmd requires a shell on Windows. Execute npm's JS CLI with the same Node
+// instead, keeping paths and build arguments separate from shell syntax.
+export function templateNpmCommand({ platform = process.platform, executable = process.execPath, environment = process.env, fileExists = existsSync } = {}) {
+  if (platform !== 'win32') return { command: 'npm', prefix: [] };
+  const npmEnvironment = Object.keys(environment).find(key => key.toLowerCase() === 'npm_execpath');
+  const candidates = [
+    npmEnvironment && environment[npmEnvironment],
+    path.win32.join(path.win32.dirname(executable), 'node_modules/npm/bin/npm-cli.js'),
+  ];
+  const cli = candidates.find(candidate => typeof candidate === 'string'
+    && path.win32.isAbsolute(candidate)
+    && path.win32.basename(candidate).toLowerCase() === 'npm-cli.js'
+    && fileExists(candidate));
+  if (!cli) throw new Error('Cannot locate npm-cli.js. Run through npm or use a Node installation that includes npm.');
+  return { command: executable, prefix: [cli] };
+}
+
 // Match platform-core's tree digest: sorted depth-first paths, byte lengths and content.
-async function treeDigest(directory) {
+export async function treeDigest(directory) {
   const digest = createHash('sha256');
   const length = n => { const value = Buffer.alloc(8); value.writeBigUInt64LE(BigInt(n)); return value; };
   async function visit(relative = '') {
@@ -45,9 +63,10 @@ export async function packageTemplate(output) {
     const sourceFilter = file => !path.relative(templateSource, file).split(path.sep).some(part => ignored.has(part));
     await cp(templateSource, source, { recursive: true, filter: sourceFilter });
     const sourceDigest = await treeDigest(source);
+    const npmCommand = templateNpmCommand();
     const npm = (args) => {
-      const result = spawnSync('npm', args, { cwd: source, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-      if (result.status !== 0) throw new Error(result.stderr || result.stdout || 'Template npm command failed');
+      const result = spawnSync(npmCommand.command, [...npmCommand.prefix, ...args], { cwd: source, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+      if (result.status !== 0) throw new Error(result.error?.message || result.stderr || result.stdout || 'Template npm command failed');
       return result.stdout.trim();
     };
     const npmVersion = npm(['--version']);

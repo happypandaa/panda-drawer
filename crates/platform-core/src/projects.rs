@@ -20,62 +20,8 @@ use std::{
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectManifest {
-    pub manifest_version: u32,
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(
-        default,
-        deserialize_with = "display_icon",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub icon: Option<String>,
-    pub sdk_api_version: u32,
-    pub source_dir: String,
-    pub output_dir: String,
-    pub entry: String,
-    pub database: String,
-    pub attachments_dir: String,
-    pub build: Value,
-    pub docs: Value,
-    #[serde(default)]
-    pub runtime_requirements: Value,
-    #[serde(flatten)]
-    pub extra: MapExtras,
-}
+pub use platform_project_format::{CreateProjectInput, ProjectInfo, ProjectManifest};
 type MapExtras = serde_json::Map<String, Value>;
-fn display_icon<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    // Invalid display metadata must not disable the project's business app.
-    // The manager reads the raw value independently and reports its problem.
-    let value = Value::deserialize(deserializer)?;
-    Ok(value.as_str().map(str::to_owned))
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateProjectInput {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub project_root: PathBuf,
-    pub document_epoch: String,
-    pub state: String,
-    pub issues: Vec<String>,
-    pub manifest: Option<ProjectManifest>,
-    pub build_info: Value,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Registration {

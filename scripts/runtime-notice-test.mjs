@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 // Resolve from this script, so callers do not need a particular working directory.
-const sourceUrl = new URL('../crates/platform-core/src/runtime_notice.rs', import.meta.url);
+const sourceUrl = new URL('../crates/platform-project-format/src/runtime_notice.rs', import.meta.url);
 const source = fs.readFileSync(sourceUrl, 'utf8');
 const embeddedScript = source.match(/r#"([\s\S]*)"#\s*\}/)?.[1];
 assert.ok(embeddedScript, 'runtime_notice.rs must expose its embedded JavaScript');
