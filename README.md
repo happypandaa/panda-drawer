@@ -4,6 +4,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
+PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs/app-package-implementation-plan.md)拆为 AP0–AP6 共 7 阶段、20 小步，先做检测和无源码类型的保护基础，再开放静态安装，之后扩展数据应用与手动更新；本轮仅规划，尚未开始安装实现，也不改变 M0–M6 或 Windows 的完成状态。
+
 已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步。W1 只读宿主已有本机 Win11 开窗记录；当前代码进入 W2.1，已实现固定默认根下的新建可丢弃样本、初始应用的桌面/浏览器打开和真实空库结构只读查询。只接受本阶段已完成登记的样本，旧历史和未知现场保留并阻断接管；SQL、附件、构建、备份、恢复、导入及迁移仍关闭。本机 Win11 release 已实际创建并打开欢迎应用及自写的费用分摊计算器，正常退出重启后两者仍可用，原项目文件摘要一致。计算器由开发机预编译，只在内存中计算，不代表成品已开放源码导入或用户构建。Chrome 页面验收因工具 URL 识别限制停止。W1 与 W2.1 均不标为整体通过；Win10、Mac 回归及安装器仍待验收。实际结果见 [W1 记录](docs/windows-w1-verification.md)、[W2 记录](docs/windows-w2-verification.md)和[开发说明](docs/development.md)。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，以下全量业务流程仍以 Mac 为准。
 
 Windows 开发机执行 `npm run build` 会先用 Node/npm 准备匹配的初始源码、固定 SDK 和预编译网页，再将资源内嵌到 `target/release/local-projects-desktop-dev.exe`。成品 exe 不调用 Node，不需要 Vite 或资源旁文件；无 Node 干净机器和物理断网尚未实测，安装包尚未确定。
