@@ -4,6 +4,12 @@
 
 2026-10-19 新增方向：平台内置 Node，运行用户应用自己的 Node 后端，统一启动、停止及展示运行状态；总体方案见[受管 Node 运行时](node-app-runtime.md)，说明文件与协议见[启动规范草案](node-app-startup-spec.md)，小步安排见[实施计划](node-app-implementation-plan.md)。共享运行时资源，各应用独立受管进程；AI、TTS、音乐和业务 SDK 由应用实现，Claude Code 不是平台必需依赖。该方向取代固定 Claude Code／网易云连接器设想，本轮仅整理方案，未写运行代码；当前程序仍是静态网页与 Rust 核心，未内置 Node 或实现应用后端。现有静态 v1 格式、SDK/CLI/HTTP 和系统 Node 构建流程保持原语义，新类型及协议仍为草案。受管进程不是沙箱，平台密钥管理没有因此实现。
 
+2026-10-20 新增需求：作者声明 Node 应用所需变量的用途、获取方式与必填项，由平台提供 API 地址、AI Key 等可视化配置；普通使用者无需编辑 `.env` 或配置终端。目标后端运行凭据管理已纳入路线，见[应用配置草案](node-app-configuration.md)，不再一概后置。配置表单、系统凭据库存储、启动环境注入及相应 SDK/API 均未实现，具体保护和重启策略仍为草案建议，尚未逐项确认。
+
+草案建议秘密只在受信管理页输入时短暂持有，保存后仅返回已设置状态；业务网页、普通 GET 接口和 AI 交接不获得 Key，目标 Node 后端会读取自己的注入值。秘密使用操作系统凭据库、普通配置使用受管私有数据，Mac／Windows 分别验收；凭据库不可用明确失败，不回落明文。用户填写值不写清单、源码、`.env`、日志或分享 ZIP；只注入目标应用进程创建环境，不修改全局环境，并拒绝未声明及 Node／系统控制变量。保存后提示待重启，不自动重启后端。
+
+默认备份、导出和复制不携带秘密值或可用秘密绑定；原实例同机恢复保留当前绑定，不随旧备份回滚 Key，新副本及导入重新填写，重装失去绑定也重新填写。这些生命周期规则仍须随配置草案定稿；真实带 Key 运行前，先验证秘密存储、目标进程注入、日志与生命周期保护。现有静态 v1、系统 Node 构建和通用云连接器／任意代理范围不因该需求改变。
+
 2026-10-19：Windows 已进入 W1.1 本机开发环境准备和 W1.2 首片启动门禁，平台编译、启动和安装未验收。安全文件与已有现场识别就绪前，共享策略明确拒绝 Windows 运行时初始化、发现和启动。当前可以运行下述独立探针；后续 Mac 运行/打包命令和历史实测保持原含义，不能直接作为 Windows 可运行说明。实际版本、检查及剩余项见 [Windows W1 记录](windows-w1-verification.md)。
 
 Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、Node/npm、Rust 和 MSVC/SDK；`node scripts/windows-environment.mjs --json` 输出可保存的 JSON。脚本不安装工具、不扫描或初始化平台工作区，不执行平台 CLI，也不证明默认路径的 ACL、链接或磁盘边界已通过。仓库本地 Rust 放在 `.tools/cargo` 与 `.tools/rustup`，Windows 的 `cargo.exe` 仅加入子进程环境，保留原 PATH，不改全局设置；`npm run test:process` 验证这项环境选择逻辑。
@@ -255,7 +261,7 @@ M5 管理界面提供项目概览、基本信息与 PNG 图标、运行需求、
 
 清理输入只接受明确分类，例如 `{"categories":["dependencies","buildCache","logs"]}`。`dependencies` 是可重建依赖，`buildCache` 只处理已识别且无保护引用的构建缓存，`logs` 只处理可清理的已结束任务日志；数据库、附件、备份、当前产物、未知目录和未解决现场不归入缓存。清理返回持久任务，结果中的跳过项与部分失败须保留，不把任务结束等同于全部删除。没有任意路径或历史备份删除命令。旧迁移根及已完成恢复原现场使用独立的[显式历史清理计划](history-cleanup.md)，不混入项目缓存类别。
 
-`runtimeRequirements` 是 `project.json` 中独立的可选运行需求，不改变固定 SDK 的 `capabilities`。公开联网需求分别放在 `network.connect`、`network.images`、`network.media`，每项包含精确 HTTPS `origin`、`purpose` 与 `dataSent`；不接受路径、凭据、通配符、IP 或本地名称。CSP 只放行对应资源类型，公开服务器仍须允许浏览器 CORS。摄像头与麦克风分别通过 `devices.camera`、`devices.microphone` 的 `purpose` 声明；默认新项目不声明设备。更改需求后已有页面提示明确重载，不自动重载，也不声称瞬间撤销已有系统权限。平台不提供保密密钥代理。
+`runtimeRequirements` 是 `project.json` 中独立的可选运行需求，不改变固定 SDK 的 `capabilities`。公开联网需求分别放在 `network.connect`、`network.images`、`network.media`，每项包含精确 HTTPS `origin`、`purpose` 与 `dataSent`；不接受路径、凭据、通配符、IP 或本地名称。CSP 只放行对应资源类型，公开服务器仍须允许浏览器 CORS。摄像头与麦克风分别通过 `devices.camera`、`devices.microphone` 的 `purpose` 声明；默认新项目不声明设备。更改需求后已有页面提示明确重载，不自动重载，也不声称瞬间撤销已有系统权限。现有静态 v1 不提供保密密钥代理；新增 Node 配置另按前述规范设计。
 
 模板自 `react-ts-vite-0.1.2` 提供独立浏览器助手 `app/src/lib/browser-tools.js`，用法见项目 `app/BROWSER_TOOLS.md`；当前模板为 `react-ts-vite-0.1.4`。它探测安全上下文、浏览器 API 和实际 MIME，支持用户主动选择或拖入文件、下载、写入剪贴板及降级提示、短录音和拍照。运行上下文的正常模式是 `normal`。维护、忙碌、迁移、回收、离线、实例或文档失效，以及隐藏和离开页面都会停止采集并释放设备；权限请求的晚到结果也会被释放。当前录音/预览上限为 60 秒，素材上限为 10 MiB 与服务上传上限的较小值，均为内部测试保护，未定稿为正式限额。
 

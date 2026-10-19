@@ -10,6 +10,8 @@ PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs
 
 用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。本轮只整理文档，当前安装包尚未携带 Node，新格式、数据归属和协议仍待定稿；现有静态 v1 与系统 Node/npm 构建流程保持。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
 
+2026-10-20 用户进一步确认[可视化配置应用环境变量](docs/node-app-configuration.md)：作者在清单中声明变量、中文用途和获取步骤，用户在平台界面填写 AI 地址、API Key 等配置，无需编辑 `.env`。声明与实际值分开，秘密凭据保存、目标后端注入、生效及备份复制规则按草案纳入原 20 步；本轮仍只整理文档，没有配置界面或凭据运行实现。
+
 已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。当前 W1.1 本机工具准备和 W1.2 首片共享启动门禁进行中，初期范围为本机内置 NTFS 与固定默认工作区；Windows 运行时在安全文件及现场识别就绪前继续关闭。实际结果及剩余项见 [W1 记录](docs/windows-w1-verification.md)；平台 Windows 编译、启动和安装仍未验收。早期内部版仅面向可丢弃样本。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
 
 Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行当前静态项目无需系统 Node；系统 Node/npm 在修改源码后构建时需要，Rust/MSVC/SDK 用于开发平台本身。未来 Node 后端使用另行验证的私有运行时。
