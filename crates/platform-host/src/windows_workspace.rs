@@ -112,7 +112,11 @@ fn nt_result(status: i32, code: &'static str) -> Result<()> {
         let win32 = unsafe { RtlNtStatusToDosError(status) };
         Err(error(
             code,
-            std::io::Error::from_raw_os_error(win32 as i32).to_string(),
+            format!(
+                "NTSTATUS=0x{:08X}, Win32={win32}: {}",
+                status as u32,
+                std::io::Error::from_raw_os_error(win32 as i32)
+            ),
         ))
     } else {
         Ok(())
@@ -825,7 +829,11 @@ fn open_parent(path: &Path) -> Result<Chain> {
             DIRECTORY_ACCESS,
             DIRECTORY_SHARING,
             None,
-        )?;
+        )
+        .map_err(|mut failure| {
+            failure.message = format!("打开固定祖先片段“{name}”失败：{}", failure.message);
+            failure
+        })?;
         if next.identity.volume_serial != objects[0].identity.volume_serial {
             return Err(error("WORKSPACE_VOLUME_CHANGED", "固定目录跨越了其他卷。"));
         }

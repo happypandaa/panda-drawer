@@ -30,11 +30,12 @@ use windows_sys::Win32::{
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileIdBothDirectoryInfo,
         FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo, GetDriveTypeW,
-        GetFileInformationByHandle, GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
-        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-        FILE_READ_DATA, FILE_SHARE_READ, FILE_STANDARD_INFO, OPEN_EXISTING, READ_CONTROL,
+        GetFileInformationByHandle, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+        GetVolumeInformationByHandleW, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_STANDARD_INFO, OPEN_EXISTING,
+        READ_CONTROL, VOLUME_NAME_GUID,
     },
     System::{
         Com::{CoCreateGuid, CoTaskMemFree},
@@ -444,6 +445,25 @@ fn private_acl(object: &Opened, current_user: &str) -> Result<()> {
     Ok(())
 }
 
+fn diagnostic_object_path(object: &Opened) -> String {
+    let mut buffer = vec![0u16; 32768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            object.handle.raw(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_GUID,
+        )
+    };
+    if length == 0 {
+        return format!("<unavailable: {}>", std::io::Error::last_os_error());
+    }
+    if length >= buffer.len() as u32 {
+        return "<unavailable: path exceeds diagnostic limit>".into();
+    }
+    String::from_utf16_lossy(&buffer[..length as usize])
+}
+
 fn current_owner(object: &Opened, current_user: &str) -> Result<()> {
     let mut owner = null_mut();
     let mut descriptor = null_mut();
@@ -466,10 +486,14 @@ fn current_owner(object: &Opened, current_user: &str) -> Result<()> {
             "浏览器缓存父目录的所有者无法确认；未修改现有权限。",
         ));
     }
-    if sid_text(owner)? != current_user {
+    let observed_owner = sid_text(owner)?;
+    if observed_owner != current_user {
         return Err(blocked(
             "CACHE_PARENT_OWNER_REJECTED",
-            "浏览器缓存父目录不属于当前用户；未修改所有者或权限。",
+            &format!(
+                "浏览器缓存父目录不属于当前用户；未修改所有者或权限。 expectedSid={current_user}; observedSid={observed_owner}; actualObject={}",
+                diagnostic_object_path(object)
+            ),
         ));
     }
     drop(allocation);
@@ -799,7 +823,13 @@ fn cache_under(parent: &Path) -> Result<WebviewCache> {
         pins.last()
             .ok_or_else(|| blocked("CACHE_PARENT_UNAVAILABLE", "浏览器缓存父目录不可用。"))?,
         &user,
-    )?;
+    )
+    .map_err(|mut failure| {
+        if failure.code == "CACHE_PARENT_OWNER_REJECTED" {
+            failure.message = format!("{}; knownFolderPath={}", failure.message, parent.display());
+        }
+        failure
+    })?;
     let path = parent.join(new_guid_name()?);
     // CreateDirectoryW is create-new: an existing name is rejected and is
     // never adopted. This cache is separate from APP_IDENTIFIER's data root.

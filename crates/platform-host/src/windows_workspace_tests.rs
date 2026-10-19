@@ -1,4 +1,4 @@
-//! Real Windows primitives, exclusively inside new disposable repository paths.
+//! Real Windows primitives, exclusively inside new named disposable paths.
 //! No test initializes the actual application data root or removes evidence.
 use super::*;
 use std::{fs, process::Command, sync::MutexGuard};
@@ -100,6 +100,103 @@ fn junction(link: &Path, target: &Path) {
     );
 }
 
+fn canonical_fixture_path(raw: HANDLE) -> String {
+    let mut buffer = vec![0u16; 32768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            raw,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_GUID,
+        )
+    };
+    assert!(length > 0 && length < buffer.len() as u32);
+    String::from_utf16(&buffer[..length as usize]).unwrap()
+}
+
+fn absolute_fixture_directory(path: &Path) -> Arc<Object> {
+    let path = wide(path.as_os_str()).unwrap();
+    let raw = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            DIRECTORY_ACCESS,
+            DIRECTORY_SHARING,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    assert_ne!(raw, INVALID_HANDLE_VALUE);
+    object(unsafe { Handle::own(raw) }, true).unwrap()
+}
+
+#[test]
+fn known_folder_exact_binding_succeeds_or_redirect_is_rejected_without_initialization() {
+    let _serial = serial();
+    let local = known_folder().unwrap();
+    let mut guid = windows_sys::core::GUID::default();
+    assert!(unsafe { CoCreateGuid(&mut guid) } >= 0);
+    let name = format!(
+        "local-projects-dev-w2-disposable-{:08x}{:04x}{:04x}{}",
+        guid.data1,
+        guid.data2,
+        guid.data3,
+        guid.data4
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let parent = local.join(&name);
+    // Create only a unique diagnostic sibling. A redirected Win32 create may
+    // land elsewhere; determine the actual binding before trying the backend.
+    fs::create_dir(&parent).unwrap();
+    let ancestors = open_parent(&local).unwrap();
+    let fixed_parent = ancestors.objects.last().unwrap();
+    let absolute_leaf = absolute_fixture_directory(&parent);
+    let canonical_parent = canonical_fixture_path(fixed_parent.raw());
+    let canonical_leaf = canonical_fixture_path(absolute_leaf.raw());
+    let expected_leaf = format!("{}\\{name}", canonical_parent.trim_end_matches('\\'));
+    eprintln!("KnownFolder canonical parent: {canonical_parent}");
+    eprintln!("Win32 disposable canonical leaf: {canonical_leaf}");
+    let before_acl = acl_text(absolute_leaf.raw());
+    let outcome = WindowsWorkspace::for_test_path(parent.clone(), true);
+    if canonical_leaf != expected_leaf {
+        let failure = match outcome {
+            Ok(_) => panic!("redirected KnownFolder fixture was incorrectly admitted"),
+            Err(failure) => failure,
+        };
+        eprintln!("Redirect rejected ({failure}); this demonstrates rejection, not support for this launch context.");
+        assert!(!parent.join(crate::APP_IDENTIFIER).exists());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        assert_eq!(acl_text(absolute_leaf.raw()), before_acl);
+        absolute_leaf.verify().unwrap();
+        return;
+    }
+
+    let workspace = outcome.unwrap();
+    assert_eq!(workspace.path(), parent.join(crate::APP_IDENTIFIER));
+    assert_eq!(
+        workspace.ancestor_identities().last(),
+        Some(&absolute_leaf.identity)
+    );
+    let root = workspace.root();
+    owner_and_acl(root.object().raw(), &user_sid().unwrap(), true).unwrap();
+    let identity = root
+        .write_new(
+            "relative-write.txt",
+            b"strict KnownFolder disposable evidence",
+        )
+        .unwrap();
+    let file = root.read_bounded("relative-write.txt", 100).unwrap();
+    assert_eq!(file.identity, identity);
+    assert_eq!(file.bytes, b"strict KnownFolder disposable evidence");
+    assert_eq!(acl_text(absolute_leaf.raw()), before_acl);
+    root.verify_binding().unwrap();
+    workspace.verify_binding().unwrap();
+    eprintln!("Unredirected KnownFolder binding supports strict fixture creation and write.");
+    // Retain the uniquely named fixture; never initialize the actual app root.
+}
 #[test]
 fn missing_candidate_is_not_initialized_and_only_missing_has_missing_code() {
     let _serial = serial();
