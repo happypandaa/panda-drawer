@@ -66,9 +66,9 @@ wordbook-1.0.0/
 ├── meta/
 │   └── icon.png                可选
 ├── docs/
-│   ├── README.md               可选使用说明
+│   ├── USER_GUIDE.md           用户使用/配置说明
 │   ├── data.md                 使用初始数据库时必需
-│   └── development.md          附带源码时的可选说明
+│   └── DEVELOPMENT.md          AI技术/架构/开发说明，未附源码时如实说明
 ├── initial-data/               仅 seed 模式需要
 │   ├── main.sqlite
 │   └── attachments/            可选初始附件
@@ -146,7 +146,7 @@ wordbook-1.0.0/
 | `requires.minPlatformVersion` | 否 | 最低平台版本，格式同 `app.version`；按数值逐段比较。不得用 SDK 包版本代替平台版本 |
 | `runtimeRequirements` | 是 | 复用既有网络、设备结构；无需求为 `{}`。错误声明阻断，不能默认为全部开放 |
 | `data` | 是 | 数据格式版本与初始化方式，见第 7 节 |
-| `documentation` | 否 | 对象，可含 `readme`、`data`、`development`，值为相对包根的文件路径；seed 模式必须有 `data` |
+| `documentation` | 否 / 条件必需 | `readme` 为用户使用/配置Markdown，`development` 为独立AI技术/架构/开发Markdown，`data` 为数据说明；值相对包根。seed候选仍要求data；可选性暂不扩大，存在策略在AP0.1定稿，见[分工规范](application-documentation.md) |
 | `source` | 否 | 对象，唯一字段 `root` 指向可选源码目录；不验证其与产物一致，也不据此自动开放构建 |
 | `distribution` | 否 | 对象，可含 `repository`、`releaseUrl`、`releaseTag`；前两者为不含凭据的 HTTPS URL，后一项是非空显示文本；安装不自动联网访问 |
 | `extensions` | 否 | 仅供展示的自定义元数据；不影响安装语义 |
@@ -306,7 +306,8 @@ v1 建议只支持 `empty` 和 `seed`。安装器不执行包内 SQL、JS、shel
     }
   },
   "documentation": {
-    "readme": "docs/README.md",
+    "readme": "docs/USER_GUIDE.md",
+    "development": "docs/DEVELOPMENT.md",
     "data": "docs/data.md"
   }
 }
@@ -427,6 +428,8 @@ GitHub、应用 ID 和校验摘要不是发布者身份签名。摘要可用于�
 不写死开发者电脑路径、localhost 开发端口、旧项目 ID 或旧会话入口。能打包成网页不代表可脱离所依赖的服务；应用明确需要本机后端时必须拒绝，而不是指导普通用户额外搭一套不受管运行环境。
 
 ## 11 实现边界与验收计划
+
+用户说明与 AI / 开发说明分别提供入口，已确认分工见[应用文档规范](application-documentation.md)。Markdown正文预算和渲染/链接/资源策略在AP0/AP1明确，64 KiB仍是建议；不因为文档存在就自动执行配置、脚本或获得构建能力。
 
 实施时需要独立的包解析/检测、初始化和安装发布流程，并复用持久任务、受管目录、会话、不可变网页代、备份和维护机制。现有清单强制源码及构建字段，来源记录含本机构建信息，维护结束也依赖源码摘要；这些地方必须显式理解“安装应用”类型，不能用空源码或伪造构建记录兼容。
 

@@ -260,3 +260,9 @@ NSIS/当前用户安装、Evergreen 在线/离线分发、最低 WebView2、具�
 用户要求先整理[外部应用包实现步骤与里程碑](app-package-implementation-plan.md)，不写代码。AP0–AP6 共 7 阶段、20 小步：协议/门禁、检测/暂存、已安装类型保护、静态安装、种子数据、手动更新、实机交付。AP 目前仅有规划，先补齐无源码维护/备份恢复和当前生命周期兼容，再开放持久安装事务与 GUI。PWA 独立可选，不改变主里程碑、Windows 门禁或既有数据保护。
 
 empty/seed、`user_version`、数据版本更新、计划预算/TTL、内部类型与归档/API 等按 AP0 和相应后阶段依赖逐项明确；列入计划不等于批准所有候选方案或授权本轮编写运行实现。
+
+## 25 用户说明与 AI 开发说明分工（2026-10-19）
+
+用户明确两份说明分别面向用户和AI/开发者。[分工规范](application-documentation.md)复用外部包 `documentation.readme`（使用、配置、常见问题）与 `documentation.development`（技术、架构、开发维护），提供两份独立UTF-8 Markdown示例，并将文件检查、受控展示和独立交接纳入既有AP步骤。
+
+字段可选性和seed条件保持，声明的用户/开发说明路径使用Markdown；是否所有包强制携带、正文/图片/链接预算与错误分级由AP0明确。64KiB仅是此前建议，不当成已确认限额。现有项目README、skill、SDK及实际资料不自动改写；无源码不伪称可构建，本轮没有实现安装、Markdown渲染或新命令。

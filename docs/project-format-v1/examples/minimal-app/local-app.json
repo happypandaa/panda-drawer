@@ -24,6 +24,7 @@
     }
   },
   "documentation": {
-    "readme": "README.md"
+    "readme": "docs/USER_GUIDE.md",
+    "development": "docs/DEVELOPMENT.md"
   }
 }
