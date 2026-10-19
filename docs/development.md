@@ -10,6 +10,8 @@ Windows 开发机运行 `npm run dev` 或 `npm run build` 会先执行资源准�
 
 开发机可用 `node scripts/desktop.mjs build --windows-template "D:\完整模板目录" -- --locked` 预编译独立验证样本。目录须包含 `app/`、`template.json` 和 `README.md`，固定 SDK 原字节不变；先复制完整普通文件快照，再编译该快照。费用分摊示例使用独立版本 `windows-split-bill-0.1.0`，旧欢迎样本继续可读。未提供参数时仍使用原欢迎模板，Mac 流程不变。这是构建平台 exe 时选择初始资源的开发选项，不是成品软件的源码导入、`local-app.json` 安装或用户构建/发布入口；不能直接覆盖已有受管项目源码或登记。
 
+两端管理界面现共同使用 `ManagerView.tsx`、`ProjectCard`、`Modal` 和 `styles.css`；平台控制器保留真实请求及阶段门禁。Windows 只使用已有五个管理 IPC，不挂载完整维护、元数据、回收站和构建面板。Windows 管理页 18 项、原管理页 34 项 DOM 回归与双入口生产前端构建通过，实机状态及 Mac 原生回归边界见[共用界面记录](shared-manager-ui-verification.md)。
+
 直接运行 Rust 宿主检查前先生成嵌入资源。以下命令检查新样本实现，不调用平台 CLI 或接管已有用户项目：
 
 ```powershell

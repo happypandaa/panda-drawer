@@ -13,20 +13,55 @@ await mkdir(evidenceParent, { recursive: true });
 const output = await mkdtemp(path.join(evidenceParent, 'windows-host-ui-'));
 const mock = path.join(output, 'tauri-mock.mjs');
 await writeFile(mock, 'export const invoke = (...args) => globalThis.__HOST_INVOKE__(...args); export const isTauri = () => globalThis.__HOST_IS_TAURI__;\n');
-const componentPath = path.join(repo, 'apps/desktop/src/WindowsHost.tsx');
-let compiled = ts.transpileModule(await readFile(componentPath, 'utf8'), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
-  fileName: componentPath,
-}).outputText;
-compiled = compiled.replaceAll(/(['"])@tauri-apps\/api\/core\1/g, JSON.stringify(pathToFileURL(mock).href));
-const modulePath = path.join(output, 'WindowsHost.mjs');
-await writeFile(modulePath, compiled);
+const sourceRoot = path.join(repo, 'apps/desktop/src');
+const compiled = new Map();
+const dependencies = new Map();
+async function compile(file) {
+  if (compiled.has(file)) return compiled.get(file);
+  const target = path.join(output, path.relative(sourceRoot, file).replace(/\.tsx?$/, '.mjs'));
+  compiled.set(file, target);
+  dependencies.set(file, []);
+  let source = ts.transpileModule(await readFile(file, 'utf8'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
+    fileName: file,
+  }).outputText;
+  const parsed = ts.createSourceFile(target, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  const replacements = [];
+  for (const statement of parsed.statements) {
+    if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!specifier || !ts.isStringLiteral(specifier)) continue;
+    let replacement;
+    if (specifier.text === '@tauri-apps/api/core') replacement = mock;
+    else if (specifier.text.startsWith('.')) {
+      const base = path.resolve(path.dirname(file), specifier.text);
+      let dependency;
+      for (const candidate of [base, `${base}.tsx`, `${base}.ts`, path.join(base, 'index.tsx'), path.join(base, 'index.ts')]) {
+        try { await readFile(candidate); dependency = candidate; break; }
+        catch (error) { if (!['ENOENT', 'EISDIR'].includes(error.code)) throw error; }
+      }
+      assert.ok(dependency, `Cannot resolve ${specifier.text} in ${file}`);
+      assert.ok(!path.relative(sourceRoot, dependency).startsWith('..'), `UI dependency leaves source tree: ${dependency}`);
+      dependencies.get(file).push(dependency);
+      replacement = await compile(dependency);
+    }
+    if (replacement) replacements.push({ start: specifier.getStart(parsed), end: specifier.end, text: JSON.stringify(pathToFileURL(replacement).href) });
+  }
+  for (const replacement of replacements.reverse()) source = source.slice(0, replacement.start) + replacement.text + source.slice(replacement.end);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, source);
+  return target;
+}
+const modulePath = await compile(path.join(sourceRoot, 'WindowsHost.tsx'));
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://tauri.localhost/windows.html', pretendToBeVisual: true });
-for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'Event', 'MouseEvent', 'MutationObserver']) {
+for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLSelectElement', 'Event', 'MouseEvent', 'KeyboardEvent', 'FocusEvent', 'CustomEvent', 'MutationObserver']) {
   Object.defineProperty(globalThis, name, { value: name === 'window' ? dom.window : dom.window[name], configurable: true });
 }
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
+globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 globalThis.__HOST_IS_TAURI__ = true;
 const { createElement, act } = await import('react');
@@ -87,12 +122,25 @@ async function setup(value = status()) {
 }
 
 async function refresh() {
-  const button = findButton('刷新状态');
+  const button = document.querySelector('[aria-label="刷新项目和运行状态"]');
   assert.ok(button);
   await act(async () => { button.click(); });
 }
-function findButton(label) { return [...document.querySelectorAll('button')].find(button => button.textContent === label); }
-async function click(label) { const button = findButton(label); assert.ok(button, label); await act(async () => { button.click(); }); }
+function findButton(label, scope = document) { return [...scope.querySelectorAll('button')].find(button => button.textContent.trim() === label); }
+async function click(label, scope = document) { const button = findButton(label, scope); assert.ok(button, label); await act(async () => { button.click(); }); }
+async function clickElement(element) { assert.ok(element); await act(async () => { element.click(); }); }
+const dialog = () => document.querySelector('[role="dialog"]');
+const closeButton = () => dialog()?.querySelector('button[aria-label^="关闭"]');
+const createButton = () => findButton('新建项目', document.querySelector('.heading-actions'));
+const cards = () => [...document.querySelectorAll('.project-card')];
+const card = (name = '合成样本') => cards().find(element => element.getAttribute('aria-label') === name);
+const enterButton = (name = '合成样本') => card(name)?.querySelector('.project-actions .primary-button');
+const navButton = (label) => [...document.querySelectorAll('.side-nav button')].find(element => element.querySelector('span')?.textContent === label);
+async function beginCreate() { await clickElement(createButton()); }
+async function details(name = '合成样本') { await clickElement(card(name)?.querySelector('button[aria-label^="查看项目"]')); }
+async function key(value) {
+  await act(async () => { document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true })); });
+}
 async function fill(selector, value) {
   const input = document.querySelector(selector);
   assert.ok(input);
@@ -103,7 +151,7 @@ async function fill(selector, value) {
   });
 }
 async function submit() {
-  const form = document.querySelector('form');
+  const form = document.querySelector('.create-project-form');
   assert.ok(form);
   await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })); });
 }
@@ -117,27 +165,87 @@ after(async () => {
   dom.window.close();
 });
 
+test('Windows loads the actual shared manager shell, project cards and create modal', async () => {
+  await setup(status('ready', [project()]));
+  const reachable = new Set();
+  function visit(file) { if (reachable.has(file)) return; reachable.add(file); for (const dependency of dependencies.get(file) ?? []) visit(dependency); }
+  visit(path.join(sourceRoot, 'WindowsHost.tsx'));
+  for (const name of ['ManagerView.tsx', 'ProjectCard.tsx', 'Modal.tsx']) assert.ok(reachable.has(path.join(sourceRoot, name)), `WindowsHost must load actual ${name}`);
+  for (const selector of ['.app-shell > .sidebar', '.content-shell > .topbar', '.page-heading .heading-actions', '.project-toolbar .project-search', '.project-filter select', '.project-grid .project-card', '.workspace-location', '.page-footer']) assert.ok(document.querySelector(selector), selector);
+  assert.equal(document.querySelector('.page-heading h1').textContent, '我的项目');
+  assert.deepEqual([...document.querySelectorAll('.side-nav button > span')].map(element => element.textContent), ['我的项目', '运行环境', '空间与工作区', '关于平台']);
+  assert.ok(card().querySelector('.project-card-top'));
+  assert.ok(card().querySelector('.project-card-identity h2'));
+  assert.ok(card().querySelector('.project-card-meta .project-delete'));
+  assert.ok(card().querySelector('.project-actions [aria-label="进入项目「合成样本」"]'));
+  await beginCreate();
+  assert.equal(dialog().getAttribute('aria-modal'), 'true');
+  assert.equal(dialog().querySelector('h2').textContent, '新建项目');
+  assert.equal(document.activeElement, dialog().querySelector('h2'));
+  assert.ok(document.getElementById('root').hasAttribute('inert'));
+  assert.equal(document.querySelector('#project-name').maxLength, 200);
+  assert.equal(document.querySelector('#project-description').maxLength, 2000);
+  await key('Escape');
+  assert.equal(dialog(), null);
+  assert.equal(document.getElementById('root').hasAttribute('inert'), false);
+  assert.deepEqual(commands, ['project_status']);
+});
+
+test('Windows search and status filters use real events without invoking project or environment commands', async () => {
+  const ready = { ...project(), id: 'prj_ready_fixture', name: '课堂费用', description: 'Split Bill sample' };
+  const missing = { ...project('missing'), id: 'prj_missing_fixture', name: '另一个项目', description: 'Needs checking' };
+  await setup(status('ready', [ready, missing]));
+  assert.equal(cards().length, 2);
+  await fill('.project-search input', '  SPLIT bill  ');
+  assert.deepEqual(cards().map(element => element.getAttribute('aria-label')), [ready.name]);
+  await fill('.project-search input', 'PRJ_MISSING_FIXTURE');
+  assert.deepEqual(cards().map(element => element.getAttribute('aria-label')), [missing.name]);
+  await fill('.project-search input', '');
+  const filter = document.querySelector('.project-filter select');
+  const select = async value => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(filter, value);
+    filter.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+  await select('ready');
+  assert.deepEqual(cards().map(element => element.getAttribute('aria-label')), [ready.name]);
+  await select('attention');
+  assert.deepEqual(cards().map(element => element.getAttribute('aria-label')), [missing.name]);
+  assert.equal(enterButton(missing.name).disabled, true);
+  await fill('.project-search input', 'not in either project');
+  assert.equal(cards().length, 0);
+  assert.ok(document.querySelector('.project-search-empty'));
+  await click('显示全部项目');
+  assert.equal(document.querySelector('.project-search input').value, '');
+  assert.equal(filter.value, 'all');
+  assert.equal(cards().length, 2);
+  assert.deepEqual(commands, ['project_status']);
+});
+
 test('mount reads actual project status and blocks creation for retained unresolved roots', async () => {
   await setup();
   assert.deepEqual(commands, ['project_status']);
-  assert.match(document.body.textContent, /现有目录受保护/);
   assert.match(document.body.textContent, /未解决的旧记录/);
-  assert.equal(document.querySelector('.host-path').textContent, status().dataRoot);
-  assert.equal(findButton('新建验证样本').disabled, true);
-  assert.doesNotMatch(document.querySelector('.host-projects').textContent, /尚无项目/);
+  assert.equal(createButton().disabled, true);
+  assert.equal(cards().length, 0);
+  assert.doesNotMatch(document.querySelector('.empty-projects').textContent, /从第一个项目开始/);
+  await clickElement(navButton('运行环境'));
+  assert.match(document.body.textContent, /现有目录受保护/);
+  assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
   await click('读取目录诊断');
   assert.deepEqual(commands, ['project_status', 'host_status']);
-  assert.match(document.querySelector('.host-evidence').textContent, /迁移目录内条目：3/);
+  assert.match(document.body.textContent, /迁移目录内条目：3/);
 });
 
 test('ready project status never starts an independent root diagnostic', async () => {
   await setup(status('ready', [project()]));
   assert.deepEqual(commands, ['project_status']);
-  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
-  assert.match(document.querySelector('.host-projects').textContent, /可只读打开/);
+  assert.ok(card());
+  assert.match(card().querySelector('.project-state').textContent, /可只读打开/);
   assert.equal(findButton('读取目录诊断'), undefined);
-  assert.equal(findButton('桌面打开').disabled, false);
-  assert.equal(document.querySelectorAll('.host-capability:not(.available)').length, 1);
+  assert.equal(enterButton().disabled, false);
+  await clickElement(navButton('运行环境'));
+  assert.equal(findButton('读取目录诊断'), undefined);
+  assert.deepEqual(commands, ['project_status']);
 });
 
 test('refresh replaces successful status without creating projects or opening windows', async () => {
@@ -147,9 +255,10 @@ test('refresh replaces successful status without creating projects or opening wi
   responder = async () => next;
   await refresh();
   assert.deepEqual(commands, ['project_status', 'project_status']);
-  assert.equal(document.querySelector('.host-path').textContent, next.dataRoot);
+  assert.ok(card());
+  await clickElement(navButton('运行环境'));
+  assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, next.dataRoot);
   assert.match(document.body.textContent, /工作区已就绪/);
-  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
 });
 
 test('a failed refresh preserves old status but blocks creation and opening until a successful refresh', async () => {
@@ -157,23 +266,25 @@ test('a failed refresh preserves old status but blocks creation and opening unti
   responder = async () => { throw { code: 'HOST_CHECK_FAILED', message: '合成检查中断' }; };
   await refresh();
   assert.match(document.querySelector('[role="alert"]').textContent, /合成检查中断.*上次成功读取/);
-  assert.equal(document.querySelector('.host-path').textContent, status().dataRoot);
-  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
-  assert.equal(findButton('新建验证样本').disabled, true);
-  assert.equal(findButton('桌面打开').disabled, true);
+  assert.ok(card());
+  assert.equal(createButton().disabled, true);
+  assert.equal(enterButton().disabled, true);
+  await clickElement(navButton('运行环境'));
+  assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
+  await clickElement(navButton('我的项目'));
   responder = async () => status('ready', [project()]);
   await refresh();
-  assert.equal(findButton('桌面打开').disabled, false);
+  assert.equal(enterButton().disabled, false);
 });
 
 test('creation is explicit, keeps metadata limits, and waits for a real acknowledgement', async () => {
   await setup(status('missing'));
-  await click('新建验证样本');
-  assert.equal(findButton('创建样本').disabled, true);
-  assert.equal(document.querySelector('input').maxLength, 200);
-  assert.equal(document.querySelector('textarea').maxLength, 2000);
-  await fill('input', '  合成样本  ');
-  await fill('textarea', '  可丢弃验证  ');
+  await beginCreate();
+  assert.equal(findButton('创建项目', dialog()).disabled, true);
+  assert.equal(document.querySelector('#project-name').maxLength, 200);
+  assert.equal(document.querySelector('#project-description').maxLength, 2000);
+  await fill('#project-name', '  合成样本  ');
+  await fill('#project-description', '  可丢弃验证  ');
   let resolveCreation;
   responder = command => command === 'project_create'
     ? new Promise(resolve => { resolveCreation = resolve; })
@@ -182,34 +293,38 @@ test('creation is explicit, keeps metadata limits, and waits for a real acknowle
   await submit();
   assert.deepEqual(commands, ['project_status', 'project_create']);
   assert.deepEqual(calls[1].args, { input: { name: '合成样本', description: '可丢弃验证' } });
-  assert.equal(findButton('正在创建…').disabled, true);
+  assert.equal(findButton('正在创建…', dialog()).disabled, true);
+  assert.equal(closeButton().disabled, true);
+  await key('Escape');
+  await clickElement(dialog().parentElement);
+  await clickElement(closeButton());
+  assert.ok(dialog(), 'Pending create blocks Escape, backdrop and close button');
   assert.doesNotMatch(document.body.textContent, /已创建「/);
   await act(async () => { resolveCreation(project()); });
   assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
   assert.match(document.body.textContent, /已创建「合成样本」/);
-  assert.equal(document.querySelector('form'), null);
+  assert.equal(document.querySelector('.create-project-form'), null);
 });
 
 test('cancelling a creation submits nothing and preserves the existing project view and local draft', async () => {
   const original = status('ready', [project()]);
   const before = structuredClone(original);
   await setup(original);
-  await click('新建验证样本');
-  await fill('input', '尚未提交的新样本');
-  await fill('textarea', '取消不会调用项目写入或删除');
-  const cancel = document.querySelector('button[aria-label="关闭新建表单"]');
+  await beginCreate();
+  await fill('#project-name', '尚未提交的新样本');
+  await fill('#project-description', '取消不会调用项目写入或删除');
+  const cancel = closeButton();
   assert.ok(cancel);
   await act(async () => { cancel.click(); });
-  assert.equal(document.querySelector('form'), null);
+  assert.equal(document.querySelector('.create-project-form'), null);
   assert.deepEqual(commands, ['project_status']);
-  assert.equal(document.querySelector('.host-path').textContent, before.dataRoot);
-  assert.equal(document.querySelectorAll('.host-project-list li').length, 1);
-  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
+  assert.equal(cards().length, 1);
+  assert.ok(card());
   assert.doesNotMatch(document.body.textContent, /已创建「/);
   assert.deepEqual(original, before);
-  await click('新建验证样本');
-  assert.equal(document.querySelector('input').value, '尚未提交的新样本');
-  assert.equal(document.querySelector('textarea').value, '取消不会调用项目写入或删除');
+  await beginCreate();
+  assert.equal(document.querySelector('#project-name').value, '尚未提交的新样本');
+  assert.equal(document.querySelector('#project-description').value, '取消不会调用项目写入或删除');
   assert.deepEqual(commands, ['project_status']);
 });
 
@@ -217,8 +332,8 @@ test('a successful creation refreshes both projects and opens the newly returned
   const original = project();
   const created = { ...project(), id: 'prj_created_fixture', name: '新建合成样本', documentEpoch: 'new-synthetic-epoch' };
   await setup(status('ready', [original]));
-  await click('新建验证样本');
-  await fill('input', created.name);
+  await beginCreate();
+  await fill('#project-name', created.name);
   responder = async command => {
     if (command === 'project_create') return created;
     if (command === 'project_status') return status('ready', [original, created]);
@@ -227,38 +342,38 @@ test('a successful creation refreshes both projects and opens the newly returned
   };
   await submit();
   assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
-  assert.equal(document.querySelectorAll('.host-project-list li').length, 2);
-  const card = [...document.querySelectorAll('.host-project-list li')].find(item => item.querySelector('.host-project-id').textContent === created.id);
-  assert.ok(card);
-  const open = [...card.querySelectorAll('button')].find(button => button.textContent === '桌面打开');
+  assert.equal(cards().length, 2);
+  const createdCard = card(created.name);
+  assert.ok(createdCard);
+  const open = enterButton(created.name);
   assert.ok(open);
   await act(async () => { open.click(); });
   assert.deepEqual(calls.at(-1), { command: 'project_open', args: { projectId: created.id } });
-  assert.match(document.querySelector('[role="status"].host-notice').textContent, /已打开「新建合成样本」/);
-  assert.equal(document.querySelectorAll('.host-project-list li').length, 2);
-  assert.ok([...document.querySelectorAll('.host-project-id')].some(item => item.textContent === original.id));
+  assert.match(document.body.textContent, /已打开「新建合成样本」/);
+  assert.equal(cards().length, 2);
+  assert.ok(card(original.name));
 });
 
 test('an ambiguous creation failure preserves the draft and never retries or claims success', async () => {
   await setup(status('missing'));
-  await click('新建验证样本');
-  await fill('input', '待确认样本');
+  await beginCreate();
+  await fill('#project-name', '待确认样本');
   responder = async () => { throw { code: 'DISCONNECTED', message: '合成创建响应中断', details: { operationOutcome: 'unknown' } }; };
   await submit();
   assert.deepEqual(commands, ['project_status', 'project_create']);
-  assert.match(document.querySelector('[role="alert"]').textContent, /合成创建响应中断/);
-  assert.equal(document.querySelector('input').value, '待确认样本');
-  assert.equal(findButton('创建样本').disabled, true);
+  assert.match(dialog().querySelector('[role="alert"]').textContent, /合成创建响应中断/);
+  assert.equal(document.querySelector('#project-name').value, '待确认样本');
+  assert.equal(findButton('创建项目', dialog()).disabled, true);
   assert.doesNotMatch(document.body.textContent, /已创建「/);
-  await click('创建样本');
+  await click('创建项目', dialog());
   assert.deepEqual(commands, ['project_status', 'project_create']);
   const committed = { ...project(), id: 'prj_ambiguous_committed', name: '待确认样本' };
   responder = async () => status('ready', [committed]);
-  await refresh();
+  await click('刷新状态', dialog());
   assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
-  assert.ok([...document.querySelectorAll('.host-project-id')].some(item => item.textContent === committed.id));
-  assert.equal(document.querySelector('input').value, '待确认样本');
-  assert.equal(findButton('创建样本').disabled, false);
+  assert.ok(card(committed.name));
+  assert.equal(document.querySelector('#project-name').value, '待确认样本');
+  assert.equal(findButton('创建项目', dialog()).disabled, false);
   assert.equal(commands.filter(command => command === 'project_create').length, 1);
   assert.doesNotMatch(document.body.textContent, /已创建「/);
 });
@@ -266,77 +381,168 @@ test('an ambiguous creation failure preserves the draft and never retries or cla
 test('desktop and browser actions send only the project ID to their separate native commands', async () => {
   await setup(status('ready', [project()]));
   responder = async () => ({ projectId: 'prj_fixture', reused: false });
-  await click('桌面打开');
+  await clickElement(enterButton());
   assert.deepEqual(calls[1], { command: 'project_open', args: { projectId: 'prj_fixture' } });
   assert.match(document.body.textContent, /已打开「合成样本」项目窗口/);
-  await click('浏览器打开');
+  await details();
+  assert.deepEqual(commands, ['project_status', 'project_open'], 'Opening read-only details makes no native request');
+  await click('浏览器打开', dialog());
   assert.deepEqual(calls[2], { command: 'project_open_browser', args: { projectId: 'prj_fixture' } });
   assert.match(document.body.textContent, /已请求默认浏览器/);
 });
 
 test('a pending project opening blocks duplicate and competing actions until its acknowledgement', async () => {
   await setup(status('ready', [project()]));
+  await details();
   let resolveOpen;
   responder = command => {
     assert.equal(command, 'project_open');
     return new Promise(resolve => { resolveOpen = resolve; });
   };
-  await click('桌面打开');
+  await click('进入项目', dialog());
   assert.deepEqual(commands, ['project_status', 'project_open']);
-  assert.equal(findButton('正在打开…').disabled, true);
-  assert.equal(findButton('浏览器打开').disabled, true);
-  assert.equal(findButton('新建验证样本').disabled, true);
-  assert.equal(findButton('刷新状态').disabled, true);
+  const desktopAction = dialog().querySelector('.project-dialog-actions button');
+  assert.equal(desktopAction.disabled, true);
+  assert.equal(findButton('浏览器打开', dialog()).disabled, true);
+  assert.equal(createButton().disabled, true);
+  assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]').disabled, true);
   assert.doesNotMatch(document.body.textContent, /已打开「/);
-  await click('正在打开…');
-  await click('浏览器打开');
-  await click('新建验证样本');
-  await refresh();
+  await clickElement(desktopAction);
+  await click('浏览器打开', dialog());
   assert.deepEqual(commands, ['project_status', 'project_open']);
   await act(async () => { resolveOpen({ projectId: 'prj_fixture', reused: false }); });
   assert.match(document.body.textContent, /已打开「合成样本」/);
-  assert.equal(findButton('桌面打开').disabled, false);
-  assert.equal(findButton('浏览器打开').disabled, false);
+  assert.equal(findButton('进入项目', dialog()).disabled, false);
+  assert.equal(findButton('浏览器打开', dialog()).disabled, false);
   assert.deepEqual(commands, ['project_status', 'project_open']);
 });
 
-test('project modification, deletion and deferred lifecycle features have no actionable manager entry', async () => {
+test('opening a project blocks a same-tick refresh before React renders the disabled controls', async () => {
   await setup(status('ready', [project()]));
-  const deferred = /修改|编辑|重命名|删除|构建|备份|恢复|导入|导出|复制|回收|迁移|清理|SQL/;
-  const actionNames = [...document.querySelectorAll('button, a, [role="menuitem"]')]
-    .map(element => element.getAttribute('aria-label') ?? element.textContent);
-  for (const name of actionNames) assert.doesNotMatch(name, deferred);
-  assert.match(document.querySelector('.host-capabilities').textContent, /业务写入与管理.*未开放/);
+  const enter = enterButton();
+  const refreshButton = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  assert.equal(enter.disabled, false);
+  assert.equal(refreshButton.disabled, false);
+  assert.equal(dialog(), null);
+  assert.equal(enter.closest('[inert]'), null);
+  assert.equal(refreshButton.closest('[inert]'), null);
+  let resolveOpen;
+  const pending = new Promise(resolve => { resolveOpen = resolve; });
+  responder = command => command === 'project_open' ? pending : Promise.resolve(status('ready', [project()]));
+  try {
+    await act(async () => {
+      enter.click();
+      assert.equal(refreshButton.disabled, false, 'The second event must run against the pre-render enabled refresh button');
+      refreshButton.click();
+    });
+    assert.deepEqual(commands, ['project_status', 'project_open'], 'The user refresh handler must see the pending open synchronously');
+    assert.equal(refreshButton.disabled, true);
+    assert.doesNotMatch(document.body.textContent, /已打开「/);
+  } finally {
+    await act(async () => { resolveOpen({ projectId: project().id, reused: false }); });
+  }
+  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.match(document.body.textContent, /已打开「合成样本」/);
+});
+
+test('a blocked-root diagnostic rejects duplicate diagnostics and refreshes in the same tick', async () => {
+  await setup(status('blocked'));
+  await clickElement(navButton('运行环境'));
+  const diagnosticButton = findButton('读取目录诊断');
+  const refreshButton = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  assert.equal(diagnosticButton.disabled, false);
+  assert.equal(refreshButton.disabled, false);
+  assert.equal(dialog(), null);
+  assert.equal(diagnosticButton.closest('[inert]'), null);
+  assert.equal(refreshButton.closest('[inert]'), null);
+  let resolveDiagnostic;
+  const pending = new Promise(resolve => { resolveDiagnostic = resolve; });
+  responder = command => command === 'host_status' ? pending : Promise.resolve(status('blocked'));
+  try {
+    await act(async () => {
+      diagnosticButton.click();
+      assert.equal(diagnosticButton.disabled, false, 'The duplicate event must precede the pending-state render');
+      assert.equal(refreshButton.disabled, false, 'The refresh event must precede the pending-state render');
+      diagnosticButton.click();
+      refreshButton.click();
+    });
+    assert.deepEqual(commands, ['project_status', 'host_status'], 'One pending diagnostic must exclude a second diagnostic and a project-status refresh');
+    assert.equal(diagnosticButton.disabled, true);
+    assert.equal(refreshButton.disabled, true);
+  } finally {
+    await act(async () => { resolveDiagnostic(report()); });
+  }
+  assert.deepEqual(commands, ['project_status', 'host_status']);
+  assert.match(document.body.textContent, /合成测试目录检查结果/);
+  assert.equal(findButton('读取目录诊断').disabled, false);
+});
+
+test('deferred manager entries explain their disabled state and never mount business panels', async () => {
+  await setup(status('ready', [project()]));
+  const disabled = [findButton('空间与工作区'), findButton('关于平台'), findButton('导入项目'), card().querySelector('.project-delete')];
+  for (const element of disabled) {
+    assert.ok(element);
+    assert.equal(element.disabled, true);
+    assert.ok(element.title.trim(), 'A deferred visible entry needs its reason');
+    await clickElement(element);
+  }
+  assert.equal(document.querySelector('.page-heading h1').textContent, '我的项目');
+  await click('运行环境');
+  assert.equal(document.querySelector('.page-heading h1').textContent, '运行环境');
+  assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
+  assert.equal(findButton('读取目录诊断'), undefined, 'A ready root must not be independently inspected');
+  await clickElement(navButton('我的项目'));
+  await details();
+  assert.equal(dialog().querySelector('h2').textContent, project().name);
+  assert.match(dialog().textContent, /只读/);
+  assert.match(dialog().textContent, /prj_fixture/);
+  assert.match(dialog().textContent, /synthetic-project-fixture/);
+  assert.equal(dialog().querySelector('form, input, textarea, [role="tab"]'), null, 'Read-only details must not mount metadata or maintenance editors');
+  for (const selector of ['.overview-panel', '.backup-panel', '.workspace-hub', '.workspace-cleanup-panel', '.build-environment', '.handoff-card', '.import-panel']) assert.equal(document.querySelector(selector), null, selector);
+  for (const element of dialog().querySelectorAll('button')) {
+    const name = element.getAttribute('aria-label') ?? element.textContent;
+    if (/修改|编辑|重命名|构建|备份|恢复|导入|导出|复制|回收|迁移|清理|SQL/.test(name)) {
+      assert.equal(element.disabled, true, `${name} must not be actionable`);
+      assert.ok(element.title.trim(), `${name} needs its unavailable reason`);
+      await clickElement(element);
+    }
+  }
+  await key('Escape');
+  assert.equal(dialog(), null);
   assert.deepEqual(commands, ['project_status']);
 });
 
 test('a failed project opening preserves the last status and requires a successful refresh before retrying', async () => {
   await setup(status('ready', [project()]));
   responder = async () => { throw { code: 'PROJECT_CHANGED', message: '合成项目身份已变化' }; };
-  await click('桌面打开');
+  await clickElement(enterButton());
   assert.deepEqual(commands, ['project_status', 'project_open']);
   assert.match(document.querySelector('[role="alert"]').textContent, /合成项目身份已变化.*请刷新确认后再操作/);
-  assert.match(document.querySelector('.host-projects').textContent, /合成样本/);
+  assert.ok(card());
   assert.doesNotMatch(document.body.textContent, /已打开「/);
-  assert.equal(findButton('新建验证样本').disabled, true);
-  assert.equal(findButton('桌面打开').disabled, true);
-  assert.equal(findButton('浏览器打开').disabled, true);
+  assert.equal(createButton().disabled, true);
+  assert.equal(enterButton().disabled, true);
+  await details();
+  assert.equal(findButton('浏览器打开', dialog()).disabled, true);
+  await clickElement(closeButton());
   responder = async () => { throw { code: 'HOST_CHECK_FAILED', message: '合成刷新中断' }; };
   await refresh();
-  assert.equal(findButton('桌面打开').disabled, true);
-  assert.equal(findButton('浏览器打开').disabled, true);
+  assert.equal(enterButton().disabled, true);
   responder = async () => status('ready', [project()]);
   await refresh();
-  assert.equal(findButton('新建验证样本').disabled, false);
-  assert.equal(findButton('桌面打开').disabled, false);
-  assert.equal(findButton('浏览器打开').disabled, false);
+  assert.equal(createButton().disabled, false);
+  assert.equal(enterButton().disabled, false);
+  await details();
+  assert.equal(findButton('浏览器打开', dialog()).disabled, false);
 });
 
 test('a project with a missing artifact is visible but cannot be opened', async () => {
   await setup(status('ready', [project('missing')]));
-  assert.match(document.querySelector('.host-projects').textContent, /合成项目缺失/);
-  assert.equal(findButton('桌面打开').disabled, true);
-  assert.equal(findButton('浏览器打开').disabled, true);
+  assert.equal(enterButton().disabled, true);
+  await details();
+  assert.match(dialog().textContent, /合成项目缺失/);
+  assert.equal(findButton('进入项目', dialog()).disabled, true);
+  assert.equal(findButton('浏览器打开', dialog()).disabled, true);
 });
 
 test('a browser preview cannot invent a local probe or invoke native commands', async () => {
@@ -349,5 +555,6 @@ test('a browser preview cannot invent a local probe or invoke native commands', 
   await act(async () => { root.render(createElement(WindowsHost)); });
   assert.deepEqual(commands, []);
   assert.match(document.querySelector('[role="alert"]').textContent, /从 Windows 桌面应用打开/);
-  assert.match(document.querySelector('.host-path').textContent, /尚未取得项目状态/);
+  assert.equal(cards().length, 0);
+  assert.doesNotMatch(document.body.textContent, /synthetic-host-fixture|合成目录状态/);
 });

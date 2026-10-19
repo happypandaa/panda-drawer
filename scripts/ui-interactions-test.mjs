@@ -14,31 +14,46 @@ const output = await mkdtemp(path.join(outputParent, 'ui-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 await writeFile(mockPath, 'export const invoke = (...args) => globalThis.__UI_TEST_INVOKE__(...args); export const isTauri = () => true;\n');
 const compiled = new Map();
+const dependencies = new Map();
+const sourceRoot = path.join(repo, 'apps/desktop/src');
 async function component(name) {
   async function compile(file) {
     if (compiled.has(file)) return compiled.get(file);
-    const target = path.join(output, `${path.basename(file).replace(/\.tsx?$/, '')}.mjs`);
+    const target = path.join(output, path.relative(sourceRoot, file).replace(/\.tsx?$/, '.mjs'));
     compiled.set(file, target);
+    dependencies.set(file, []);
     let source = ts.transpileModule(await readFile(file, 'utf8'), {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
       fileName: file,
     }).outputText;
-    for (const match of [...source.matchAll(/from\s+(['"])(\.[^'"]+)\1/g)]) {
-      const relative = match[2];
-      const base = path.resolve(path.dirname(file), relative);
-      let dependency;
-      for (const candidate of [base, `${base}.tsx`, `${base}.ts`]) {
-        try { await readFile(candidate); dependency = candidate; break; } catch { /* Try the next TS extension. */ }
+    const parsed = ts.createSourceFile(target, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+    const replacements = [];
+    for (const statement of parsed.statements) {
+      if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+      const specifier = statement.moduleSpecifier;
+      if (!specifier || !ts.isStringLiteral(specifier)) continue;
+      let replacement;
+      if (specifier.text === '@tauri-apps/api/core') replacement = mockPath;
+      else if (specifier.text.startsWith('.')) {
+        const base = path.resolve(path.dirname(file), specifier.text);
+        let dependency;
+        for (const candidate of [base, `${base}.tsx`, `${base}.ts`, path.join(base, 'index.tsx'), path.join(base, 'index.ts')]) {
+          try { await readFile(candidate); dependency = candidate; break; }
+          catch (error) { if (!['ENOENT', 'EISDIR'].includes(error.code)) throw error; }
+        }
+        assert.ok(dependency, `Cannot resolve ${specifier.text} in ${file}`);
+        assert.ok(!path.relative(sourceRoot, dependency).startsWith('..'), `UI dependency leaves source tree: ${dependency}`);
+        dependencies.get(file).push(dependency);
+        replacement = await compile(dependency);
       }
-      assert.ok(dependency, `Cannot resolve ${relative} in ${file}`);
-      const result = await compile(dependency);
-      source = source.replaceAll(`${match[1]}${relative}${match[1]}`, JSON.stringify(pathToFileURL(result).href));
+      if (replacement) replacements.push({ start: specifier.getStart(parsed), end: specifier.end, text: JSON.stringify(pathToFileURL(replacement).href) });
     }
-    source = source.replaceAll(/(['"])@tauri-apps\/api\/core\1/g, JSON.stringify(pathToFileURL(mockPath).href));
+    for (const replacement of replacements.reverse()) source = source.slice(0, replacement.start) + replacement.text + source.slice(replacement.end);
+    await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, source);
     return target;
   }
-  return import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src', name))).href);
+  return import(pathToFileURL(await compile(path.join(sourceRoot, name))).href);
 }
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
@@ -681,6 +696,49 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
   };
 }
 const openDetails = (name) => click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
+
+test('App loads the shared manager presentation and keeps project search/filter local to the view', async () => {
+  await setup();
+  const state = { projects: [
+    { ...appProject('prj_A', 'Fixture Alpha'), description: '课堂费用' },
+    { ...appProject('prj_B', 'Fixture Beta'), state: 'missing', issues: ['Fixture unavailable'] },
+  ] };
+  mockApp(state);
+  const invoke = globalThis.__UI_TEST_INVOKE__;
+  const requests = [];
+  globalThis.__UI_TEST_INVOKE__ = async (...args) => { requests.push(args[0]); return invoke(...args); };
+  await render(h(App));
+  const reachable = new Set();
+  function visit(file) { if (reachable.has(file)) return; reachable.add(file); for (const dependency of dependencies.get(file) ?? []) visit(dependency); }
+  visit(path.join(sourceRoot, 'App.tsx'));
+  for (const name of ['ManagerView.tsx', 'ProjectCard.tsx', 'Modal.tsx']) assert.ok(reachable.has(path.join(sourceRoot, name)), `App must load actual ${name}`);
+  for (const selector of ['.app-shell > .sidebar', '.content-shell > .topbar', '.page-heading .heading-actions', '.project-toolbar .project-search', '.project-filter select', '.project-grid .project-card', '.workspace-location', '.page-footer']) assert.ok(document.querySelector(selector), selector);
+  assert.equal(document.querySelectorAll('.project-card').length, 2);
+  assert.deepEqual([...document.querySelectorAll('.side-nav button')].map(button => button.textContent.replace(/\d+$/, '').trim()), ['我的项目', '运行环境', '空间与工作区', '关于平台']);
+  assert.ok([...document.querySelectorAll('.side-nav button')].every(button => !button.disabled), 'Mac retains its supported manager pages');
+  assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]').disabled, false);
+  assert.equal(buttonNamed('导入项目').disabled, false);
+  assert.equal(document.querySelector('[aria-label="删除项目「Fixture Alpha」"]').disabled, false);
+  const initialRequests = [...requests];
+  await inputValue(document.querySelector('.project-search input'), '  课堂  ');
+  assert.equal(document.querySelectorAll('.project-card').length, 1);
+  assert.equal(document.querySelector('.project-card').getAttribute('aria-label'), 'Fixture Alpha');
+  await inputValue(document.querySelector('.project-search input'), 'PRJ_B');
+  assert.equal(document.querySelector('.project-card').getAttribute('aria-label'), 'Fixture Beta');
+  await inputValue(document.querySelector('.project-search input'), '');
+  const filter = document.querySelector('.project-filter select');
+  await act(async () => { filter.value = 'ready'; filter.dispatchEvent(new window.Event('change', { bubbles: true })); });
+  assert.equal(document.querySelector('.project-card').getAttribute('aria-label'), 'Fixture Alpha');
+  await act(async () => { filter.value = 'attention'; filter.dispatchEvent(new window.Event('change', { bubbles: true })); });
+  assert.equal(document.querySelector('.project-card').getAttribute('aria-label'), 'Fixture Beta');
+  await inputValue(document.querySelector('.project-search input'), 'no fixture matches this');
+  assert.ok(document.querySelector('.project-search-empty'));
+  await click(buttonNamed('显示全部项目'));
+  assert.equal(document.querySelector('.project-search input').value, '');
+  assert.equal(filter.value, 'all');
+  assert.equal(document.querySelectorAll('.project-card').length, 2);
+  assert.deepEqual(requests, initialRequests, 'Search and filtering must not invoke native operations');
+});
 
 test('App keeps the selected project and its draft after an external list removal, while disabling mutations', async () => {
   await setup();

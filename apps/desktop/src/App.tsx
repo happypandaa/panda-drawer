@@ -1,8 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
-  Activity, ArrowUpRight, Boxes, Check, CircleAlert,
-  Database, Folder, FolderOpen, Globe, LayoutGrid, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info,
+  Activity, Check, CircleAlert,
+  Database, Folder, FolderOpen, Globe, Monitor, Package,
+  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -13,7 +13,8 @@ import type { OverviewTab } from './ProjectOverview';
 import { WorkspaceHub } from './WorkspaceHub';
 import { Modal } from './Modal';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
-import { ProjectCard } from './ProjectCard';
+import { ManagerShell, ManagerActions, ProjectCollection, CreateProjectForm } from './ManagerView';
+import { MAC_MANAGER_CAPABILITIES as capabilities } from './manager-capabilities';
 import { messageFrom } from './ui-utils';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
@@ -311,11 +312,6 @@ function App() {
   const currentOverviewProject = projects.find((project) => project.id === overview?.project.id);
   const overviewProject = currentOverviewProject ?? overview?.project;
   const overviewUnavailable = Boolean(overview && !currentOverviewProject);
-  const filteredProjects = projects.filter((project) => {
-    const matchesQuery = `${project.name} ${project.description ?? ''} ${project.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const ready = project.state === 'ready' && !projectBlocked(project);
-    return matchesQuery && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
-  });
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
   const modalOpen = Boolean(overviewProject && overview) || showCreate;
@@ -328,46 +324,14 @@ function App() {
   const title = page === 'projects' ? '我的项目' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar" aria-label="工作台导航">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true"><Boxes size={22} strokeWidth={1.6} /></span>
-          <div><strong>本地项目</strong><span>一个属于你的工作空间</span></div>
-        </div>
-        <div className="sidebar-section-label">工作台</div>
-        <nav className="side-nav">
-          <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} onClick={() => setPage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{projects.length}</small></button>
-          <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} onClick={() => setPage('runtime')}><Activity size={17} /><span>运行环境</span></button>
-          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} onClick={() => setPage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
-          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} onClick={() => setPage('about')}><Package size={17} /><span>关于平台</span></button>
-        </nav>
-        <div className="sidebar-stage">
-          <span className="eyebrow">LOCAL FIRST</span>
-          <strong>项目各自独立，数据留在本机。</strong>
-          <p>桌面窗口和浏览器连接同一个本地服务，实时读取项目数据。</p>
-          <span className="subtle-tag">M5 · 开发验证</span>
-        </div>
-        <div className="sidebar-bottom"><span className="environment-dot" />内部开发版<span className="version">{info ? `v${info.version}` : 'M5'}</span></div>
-      </aside>
-
-      <div className="content-shell">
-        <header className="topbar">
-          <span>工作台 <span className="breadcrumb-slash">/</span> <strong>{title}</strong></span>
-          <span className="development-badge"><ShieldCheck size={13} />独立开发环境</span>
-        </header>
-        <main>
-          <div className="page-heading">
-            <div>
-              <h1>{title}</h1>
-              <p>{page === 'projects' ? '选择项目开始使用，或在详情中查看信息和管理数据。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}</p>
-            </div>
-            <div className="heading-actions">
-              <button className="refresh-button" onClick={() => void refresh()} disabled={loading || !inDesktop} aria-label="刷新项目和运行状态"><RefreshCw size={15} className={loading ? 'rotating' : undefined} />{loading ? '读取中' : '刷新'}</button>
-              {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy} onClick={() => setShowImport(true)}><Upload size={15} />导入项目</button>}
-              {page === 'projects' && <button className="primary-button" onClick={() => { setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy}><Plus size={16} />新建项目</button>}
-            </div>
-          </div>
-
+    <ManagerShell page={page} onPageChange={setPage} projectCount={projects.length} title={title}
+      description={page === 'projects' ? '选择项目开始使用，或在详情中查看信息和管理数据。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}
+      versionLabel={info ? 'v' + info.version : 'M5'}
+      actions={<ManagerActions loading={loading} inDesktop={inDesktop} refreshDisabled={false}
+        createDisabled={!capabilities.create || !info || creating || workspaceBusy}
+        importDisabled={!capabilities.importProject || !info || workspaceBusy} showProjectActions={page === 'projects'}
+        onRefresh={refresh} onCreate={() => { setShowCreate(true); setNotice(null); }} onImport={() => setShowImport(true)} />}
+    >
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“浏览器打开”访问真实项目。</p></div></div>}
           {!modalOpen && feedback}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
@@ -376,20 +340,15 @@ function App() {
           {completedLifecycleTasks.length > 0 && <details className="recent-tasks"><summary>最近的管理任务 <span>{completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div></details>}
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
-            <div className="project-toolbar">
-              <label className="project-search"><Search size={17} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、简介或项目 ID" /></label>
-              <label className="project-filter"><span className="sr-only">筛选项目状态</span><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value as 'all' | 'ready' | 'attention')}><option value="all">全部项目</option><option value="ready">可进入</option><option value="attention">需要处理</option></select></label>
-            </div>
-            <div className="project-list-heading"><span>{query.trim() || projectFilter !== 'all' ? `${filteredProjects.length} / ${projects.length} 个项目` : `${projects.length} 个项目`}</span><span>{loading ? '正在读取…' : checkedAt ? `更新于 ${checkedAt}` : '等待桌面连接'}</span></div>
-            {filteredProjects.length > 0 ? <section className="project-grid" aria-label="项目列表">
-              {filteredProjects.map((project) => <ProjectCard key={project.id} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
-            </section> : projects.length > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
-              <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
-              <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
-            </section>}
-            <details className="guide-disclosure"><summary><Info size={16} />使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy} onCreate={() => setShowCreate(true)} onEnvironment={() => setPage('runtime')} onStorage={() => setPage('storage')} /></details>
-            <div className="workspace-location"><Folder size={14} /><span>工作区</span><code>{info?.workspaceRoot ?? '尚未读取'}</code></div>
-            <footer className="page-footer"><span>所有数据保存在当前工作区</span><span>删除后的项目可在回收站恢复</span></footer>
+            <ProjectCollection projects={projects} query={query} onQueryChange={setQuery} filter={projectFilter} onFilterChange={setProjectFilter}
+              isProjectReady={(project) => project.state === 'ready' && !projectBlocked(project)}
+              cardProps={(project) => ({ status: maintenance[project.id], task: tasks[project.id], blocked: projectBlocked(project) || opening !== null,
+                opening: opening === project.id + ':desktop', deletingDisabled: !capabilities.deleteProject || workspaceBusy,
+                onEnter: () => void openProject(project, 'desktop'), onDetails: () => openOverview(project, 'overview'), onDelete: () => openOverview(project, 'manage') })}
+              loading={loading} checkedAt={checkedAt} connected={Boolean(info)} createDisabled={workspaceBusy || !capabilities.create}
+              onCreate={() => setShowCreate(true)} workspaceRoot={info?.workspaceRoot}
+              guide={<FirstStartGuide enabled={Boolean(info) && !workspaceBusy} onCreate={() => setShowCreate(true)} onEnvironment={() => setPage('runtime')} onStorage={() => setPage('storage')} />}
+            />
           </> : page === 'storage' ? <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} /> : page === 'about' ? <AboutPlatform info={info} /> : <>
             <section className="status-grid" aria-label="运行状态">
               <StatusCard icon={<Activity size={18} />} label="本地服务" value={info ? '已启动' : loading ? '读取中' : '未读取'} detail={info ? info.baseUrl : '由 Rust 提供本机服务'} good={Boolean(info)} />
@@ -405,17 +364,8 @@ function App() {
             </section>
             <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。关闭管理窗口会保留本地服务；从应用菜单或托盘选择“退出开发版”后，服务才会停止。</p></div>
           </>}
-        </main>
-        {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
-          {feedback}
-          <form className="create-project-form" onSubmit={(event) => void createProject(event)}>
-            <label htmlFor="project-name">项目名称 <span className="required-label">必填</span></label>
-            <input id="project-name" required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：孩子的英语学习" readOnly={creating || workspaceBusy} autoComplete="off" />
-            <label htmlFor="project-description">简介 <span className="optional-label">选填</span></label>
-            <textarea id="project-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="这个项目准备帮你做什么？" rows={3} readOnly={creating || workspaceBusy} />
-            <div className="form-footer"><span><ShieldCheck size={14} />保存在当前开发工作区</span><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? '正在创建…' : '创建项目'}<ArrowUpRight size={15} /></button></div>
-          </form>
-        </Modal>}
+        {showCreate && <CreateProjectForm name={name} description={description} onNameChange={setName} onDescriptionChange={setDescription}
+          onSubmit={createProject} onClose={() => setShowCreate(false)} creating={creating} disabled={workspaceBusy} feedback={feedback} />}
         {overviewProject && overview && <Modal title={overviewProject.name} description="项目详情与维护" wide beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
           {feedback}
           {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作移入回收站或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
@@ -434,8 +384,7 @@ function App() {
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>}
           </details>
         </Modal>}
-      </div>
-    </div>
+    </ManagerShell>
   );
 }
 
