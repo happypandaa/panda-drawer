@@ -404,13 +404,25 @@ fn unknown_kinds_phases_and_outcomes_do_not_look_like_historical_completion() {
 }
 
 #[test]
-fn prepared_records_need_recognizable_control_and_tuple_identity() {
+fn prepared_records_need_recognizable_control_and_persisted_identity() {
     for field in ["control", "directoryIdentity"] {
         let mut journal = positive("copy");
         journal[field] = Value::Null;
         check(&journal, EvidenceStatus::UnrecognizedRecord);
     }
-    for identity in [json!([1]), json!([1, -1]), json!({"device":1,"inode":200})] {
+    for identity in [
+        json!([1]),
+        json!([1, -1]),
+        json!({"device":1}),
+        json!({"device":"1","inode":200}),
+        json!({"device":1,"inode":false}),
+        json!({"device":1,"inode":200,"futureField":true}),
+        json!({"device":1,"inode":200,"volumeUuid":null}),
+        json!({"device":1,"inode":200,"volumeUuid":1}),
+        json!({"device":1,"inode":200,"volumeUuid":"not-a-uuid"}),
+        json!({"device":1,"inode":200,"volumeUuid":"00000000-0000-0000-0000-000000000000"}),
+        json!({"device":1,"inode":200,"volumeUuid":"01234567-89ab-4cde-8fab-0123456789ab","futureField":true}),
+    ] {
         let mut journal = positive("delete");
         journal["directoryIdentity"] = identity;
         check(&journal, EvidenceStatus::UnrecognizedRecord);
@@ -423,6 +435,23 @@ fn prepared_records_need_recognizable_control_and_tuple_identity() {
     let mut journal = initial("copy");
     journal["control"] = ready_control();
     check(&journal, EvidenceStatus::UnrecognizedRecord);
+}
+
+#[test]
+fn stable_and_legacy_directory_identity_shapes_preserve_only_historical_classification() {
+    for kind in ["copy", "import", "delete", "trashRestore", "trashPurge"] {
+        for identity in [
+            json!([1, 200]),
+            json!({"device":1,"inode":200}),
+            json!({"device":1,"inode":200,"volumeUuid":"01234567-89ab-4cde-8fab-0123456789ab"}),
+        ] {
+            let mut journal = positive(kind);
+            journal["directoryIdentity"] = identity;
+            check(&journal, EvidenceStatus::HistoricalResolved);
+            journal["resolved"] = json!(false);
+            check(&journal, EvidenceStatus::UnresolvedOperation);
+        }
+    }
 }
 
 #[test]

@@ -183,8 +183,16 @@ fn record_types_control_defaults_and_error_shapes_are_never_coerced() {
         ("deletedAt", json!(-1)),
         ("state", json!(true)),
         ("control", json!({})),
-        ("rootIdentity", json!({"device":1,"inode":200})),
+        ("rootIdentity", json!({"device":1})),
         ("rootIdentity", json!([1, -1])),
+        ("rootIdentity", json!({"device":"1","inode":200})),
+        ("rootIdentity", json!({"device":1,"inode":false})),
+        ("rootIdentity", json!({"device":1,"inode":200,"futureField":true})),
+        ("rootIdentity", json!({"device":1,"inode":200,"volumeUuid":null})),
+        ("rootIdentity", json!({"device":1,"inode":200,"volumeUuid":1})),
+        ("rootIdentity", json!({"device":1,"inode":200,"volumeUuid":"not-a-uuid"})),
+        ("rootIdentity", json!({"device":1,"inode":200,"volumeUuid":"00000000-0000-0000-0000-000000000000"})),
+        ("rootIdentity", json!({"device":1,"inode":200,"volumeUuid":"01234567-89ab-4cde-8fab-0123456789ab","futureField":true})),
         ("deleteTaskId", json!(0)),
         ("lastTaskId", json!(false)),
         ("issues", Value::Null),
@@ -204,6 +212,28 @@ fn record_types_control_defaults_and_error_shapes_are_never_coerced() {
         .unwrap()
         .remove("recoveryRequired");
     check(&changed, EvidenceStatus::UnrecognizedRecord);
+}
+
+#[test]
+fn stable_and_legacy_root_identity_shapes_do_not_change_saved_trash_meaning() {
+    for (state, status) in [
+        ("trashed", EvidenceStatus::RetainedTrash),
+        ("purging", EvidenceStatus::UnresolvedOperation),
+        ("purgeIncomplete", EvidenceStatus::IncompleteOperation),
+        ("restored", EvidenceStatus::HistoricalResolved),
+        ("cancelled", EvidenceStatus::HistoricalResolved),
+        ("purged", EvidenceStatus::HistoricalResolved),
+    ] {
+        for identity in [
+            json!([1, 200]),
+            json!({"device":1,"inode":200}),
+            json!({"device":1,"inode":200,"volumeUuid":"01234567-89ab-4cde-8fab-0123456789ab"}),
+        ] {
+            let mut value = record(state);
+            value["rootIdentity"] = identity;
+            check(&value, status);
+        }
+    }
 }
 
 #[test]
