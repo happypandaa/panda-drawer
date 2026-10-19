@@ -232,9 +232,35 @@ const RESTORE_FIELDS: &[&str] = &[
 ];
 
 fn identity(value: &Value) -> bool {
-    value
-        .as_array()
-        .is_some_and(|parts| parts.len() == 2 && parts.iter().all(|part| part.as_u64().is_some()))
+    if let Some(parts) = value.as_array() {
+        return parts.len() == 2 && parts.iter().all(|part| part.as_u64().is_some());
+    }
+    // Historical tuples, legacy objects and the current UUID-bearing objects
+    // describe record formats only. No shape establishes that a file, inode or
+    // volume exists, authorizes a repair, or grants runtime admission.
+    if value["device"].as_u64().is_none() || value["inode"].as_u64().is_none() {
+        return false;
+    }
+    if exact_fields(value, &["device", "inode"]) {
+        return true;
+    }
+    exact_fields(value, &["device", "inode", "volumeUuid"])
+        && value["volumeUuid"].as_str().is_some_and(volume_uuid)
+}
+
+fn volume_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+        && bytes
+            .iter()
+            .any(|byte| byte.is_ascii_hexdigit() && *byte != b'0')
 }
 
 fn restore(value: &Value, owner: &str) -> EvidenceStatus {

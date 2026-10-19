@@ -79,16 +79,19 @@ impl RuntimePaths {
 
     /// Offline, read-only preview; never initializes a missing installation.
     pub fn identity_repair_preview() -> Result<serde_json::Value> {
+        crate::platform_support::require_runtime()?;
         let (paths, migration) = Self::identity_repair_paths(Self::default_root()?)?;
         crate::identity_upgrade::preview(&paths, migration.as_deref())
     }
 
     /// Explicit identity compatibility repair, serialized with desktop startup.
     pub fn identity_repair(input: serde_json::Value) -> Result<serde_json::Value> {
+        crate::platform_support::require_runtime()?;
         Self::identity_repair_at(Self::default_root()?, input)
     }
 
     fn identity_repair_paths(root: PathBuf) -> Result<(Self, Option<String>)> {
+        crate::platform_support::require_runtime()?;
         let mut paths = Self::at(root);
         paths.validate_marker()?;
         let settings: Settings = read_private_json(&paths.settings_path())?;

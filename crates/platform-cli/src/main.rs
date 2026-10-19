@@ -470,19 +470,28 @@ fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
         WorkspaceCommand::IdentityRepairPlan(options) => (
             options.json,
-            RuntimePaths::identity_repair_preview()
-                .map(success)
-                .map_err(|e| CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))),
+            platform_core::platform_support::require_runtime()
+                .map_err(runtime_gate_error)
+                .and_then(|_| {
+                    RuntimePaths::identity_repair_preview()
+                        .map(success)
+                        .map_err(|e| {
+                            CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
+                        })
+                }),
         ),
         WorkspaceCommand::IdentityRepair(options) => (
             options.output.json,
-            read_input(&options.input).and_then(|input| {
-                RuntimePaths::identity_repair(input)
-                    .map(success)
-                    .map_err(|e| {
-                        CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
-                    })
-            }),
+            platform_core::platform_support::require_runtime()
+                .map_err(runtime_gate_error)
+                .and_then(|_| read_input(&options.input))
+                .and_then(|input| {
+                    RuntimePaths::identity_repair(input)
+                        .map(success)
+                        .map_err(|e| {
+                            CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
+                        })
+                }),
         ),
         WorkspaceCommand::CleanupPlan(options) => (
             options.json,
@@ -1057,16 +1066,20 @@ fn validate_business_response(
     Ok(())
 }
 
+fn runtime_gate_error(gate: RuntimeSupportError) -> CliError {
+    let api_error = platform_core::ApiError::from(gate);
+    CliError {
+        code: gate.code,
+        message: api_error.message,
+        details: api_error.details,
+        retryable: api_error.retryable,
+    }
+}
+
 fn discover_paths() -> Result<RuntimePaths> {
     RuntimePaths::discover().map_err(|error| {
         if let Some(gate) = error.downcast_ref::<RuntimeSupportError>() {
-            let api_error = platform_core::ApiError::from(*gate);
-            return CliError {
-                code: gate.code,
-                message: api_error.message,
-                details: api_error.details,
-                retryable: api_error.retryable,
-            };
+            return runtime_gate_error(*gate);
         }
         let missing = error.chain().any(|cause| {
             cause.downcast_ref::<std::io::Error>()
