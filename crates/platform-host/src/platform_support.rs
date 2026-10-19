@@ -1,4 +1,4 @@
-//! Runtime admission policy for the current porting stage.
+//! Runtime admission policy shared by the core and the lightweight host.
 //!
 //! This module has no filesystem or process side effects. Its descriptions are
 //! policy information, not evidence that a workspace or recovery record has

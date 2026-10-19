@@ -2,7 +2,9 @@
 
 状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
 
-2026-10-19：Windows 已进入 W1.1 本机开发环境准备和 W1.2 首片启动门禁，平台编译、启动和安装未验收。安全文件与已有现场识别就绪前，共享策略明确拒绝 Windows 运行时初始化、发现和启动。当前可以运行下述独立探针；后续 Mac 运行/打包命令和历史实测保持原含义，不能直接作为 Windows 可运行说明。实际版本、检查及剩余项见 [Windows W1 记录](windows-w1-verification.md)。
+2026-10-19：Windows 已推进至独立只读宿主，本机 Win11 x64 的 release exe 实际开窗、状态刷新、单实例及正常退出通过。该宿主不链接完整业务 core，也不启动 HTTP/CLI 服务；项目和数据库等业务运行时仍由共享策略拒绝，不能据此认为完整 Windows 功能或安装通过。后续 Mac 运行/打包命令和历史实测保持原含义。实际版本、检查及剩余项见 [Windows W1 记录](windows-w1-verification.md)。
+
+Windows 开发者可执行 `npm run check:host`、`npm run test:host`、`npm run test:windows:ui` 和 `npm run test:desktop`，分别检查原生宿主、原生策略/文件夹具/来源限制、合成只读界面以及开发构建路由。`npm run build` 在 Windows 仅生成内嵌页面的 `target/release/local-projects-desktop-dev.exe`，不生成安装包或准备尚未开放的 CLI/业务资源；可直接打开该 exe。开发调试可用 `npm run dev`；`node scripts/desktop.mjs build --debug -- --locked` 生成内嵌页面的 debug exe。运行 exe 不需要 Node/Vite 服务，当前机器仍使用已安装的 WebView2。全量业务核心及 Mac 宿主回归继续在相应 Mac 环境执行。
 
 Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、Node/npm、Rust 和 MSVC/SDK；`node scripts/windows-environment.mjs --json` 输出可保存的 JSON。脚本不安装工具、不扫描或初始化平台工作区，不执行平台 CLI，也不证明默认路径的 ACL、链接或磁盘边界已通过。仓库本地 Rust 放在 `.tools/cargo` 与 `.tools/rustup`，Windows 的 `cargo.exe` 仅加入子进程环境，保留原 PATH，不改全局设置；`npm run test:process` 验证这项环境选择逻辑。
 

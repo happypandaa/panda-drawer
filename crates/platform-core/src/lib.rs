@@ -13,7 +13,7 @@ mod maintenance;
 mod metadata;
 mod paths;
 mod platform_info;
-pub mod platform_support;
+pub use platform_host::platform_support;
 pub mod projects;
 pub mod resources;
 mod runtime_notice;
@@ -28,10 +28,7 @@ pub use paths::{Discovery, InstanceLock, RuntimePaths};
 pub use platform_preflight as startup_preflight;
 pub use service::{BootstrapInfo, HealthInfo, LaunchInfo, RuntimeHandle, RuntimeService};
 
-pub const APP_IDENTIFIER: &str = "dev.localprojects.platform.m0";
-pub const DISPLAY_NAME: &str = "Local Projects Dev";
-pub const ENVIRONMENT: &str = "development";
-pub const API_VERSION: u32 = 1;
+pub use platform_host::{API_VERSION, APP_IDENTIFIER, DISPLAY_NAME, ENVIRONMENT};
 
 pub use database::{
     sql_limits, SchemaInfo, SqlCaller, SqlColumn, SqlOptions, SqlRequest, SqlResult, SqlStatement,

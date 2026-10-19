@@ -1,6 +1,6 @@
 # Windows W1 环境与工程验证记录
 
-日期：2026-10-19（Asia/Shanghai）。W1.1 的本机环境准备与 W1.2 共享启动门禁、记录分类进行中；W1.3/W1.4 未开始，平台 Windows 编译、启动和安装未验收，W1.1/W1.2 均未整体通过。
+日期：2026-10-19（Asia/Shanghai）。Windows 独立只读宿主已在本机 Win11 实际开窗，刷新、单实例与正常退出通过。W1 尚未整体通过，完整业务 core/CLI、Windows 10、Mac 回归和安装验收仍未完成。
 
 ## 1 本轮授权与范围
 
@@ -157,10 +157,47 @@ Windows 运行时仍整体关闭；本片不执行迁移、恢复、目录清理
 | 启动门禁回归 | `npm run test:platform-support` 原生 5 项通过；证据在新的 `.test-artifacts/w1-platform-support-EcgI67/`，Windows 继续拒绝运行时 |
 | 分支与范围 | fetch 后 `main`、`origin/main` 仍为 `81bd817`，本片继续在 `codex/windows-compatibility` 提交、推送；没有合入主线。未改 Cargo 锁文件、既有记录写入器或宿主；未编译整个 core、CLI、Tauri，也没有真实文件读取、GUI、Windows 10 或 Mac 实机回归通过结果 |
 
-## 9 待完成与下一步
+## 9 W1 只读宿主：隔离业务运行时后实际开窗
+
+用户明确授权继续做到 Windows 应用能够启动。本片开放的是原生桌面窗口与只读状态刷新；项目服务、创建/打开/构建、数据库、附件、维护、生命周期和历史清理仍未开放。
+
+桌面按真实编译目标分发。Mac 原宿主整体移至 `macos_host.rs`，仅调整入口与本地模块路径，正文保留；Windows 使用 `windows_host.rs`，目标依赖不包含 `platform-core`，没有假实现 core 或取消其原有 Unix 安全测试。固定身份、环境、接口版本和纯运行门禁移到轻量 `platform-host`，core 通过原公共路径重新导出，取值和业务运行策略不变。
+
+Windows 仅注册 `host_status`，绑定 manager 窗口、固定管理来源与 `/windows.html`。独立页面不会挂载原业务 App、创建任务或发起 HTTP 请求；未取得检查结果与刷新失败均明确展示，不能用空项目列表冒充正常工作区。拒绝导航至其他页面、新窗口、下载和设备许可；使用单实例插件，关闭管理窗口就退出。
+
+现场观察调用系统 KnownFolder 定位同一 `LocalAppData/dev.localprojects.platform.m0`，不接受任意根参数、不创建缺失根、不解析 settings 选择、不启动已有运行时。句柄逐级检查 NTFS 固定本地卷、重解析点、文件身份、控制文件硬链接、当前用户所有权和已识别私有 ACL，并有界浅枚举已知顶层目录及其他条目。所有已有根均阻断业务，不把未分类的快照、清理、任务或孤立载荷忽略为安全；计数仅是浅层条目，不代表记录已经解码或操作完成。
+
+该观察器没有读取控制记录内容、令牌、数据库、附件或源码；此前五类纯字节分类仍保留独立测试，尚未与完整文件扫描配对。本片不宣称 DRIVE_FIXED 等于物理内置盘，也没有验收 SUBST/DOS 别名、完整并发路径策略、业务私有文件写入或安全发布。因此 W1.2/W1.3 的完整退出条件仍未满足，开放项目写入前继续落实。
+
+WebView2 即使处于 InPrivate 模式也会使用用户数据目录。为避免 Tauri 默认创建业务根，本片通过 KnownFolder 在其外新建 `local-projects-dev-w1-webview-<GUID>` 可丢弃缓存，只采用 create-new，显式设置当前 SID/SYSTEM/Administrators 的受保护 DACL，验证目录/权限/卷后返回，不复用旧目录，也不自动清理缓存。它不是替代业务根或业务安全写入后端，不承诺隔离有权直接修改数据的同用户进程。
+
+真实原生测试否定了早期缓存长锁方案：只申请元数据访问时，共享标志没有提供预想的互斥；改成实际读取/列目录权限后，长期锁住祖先又阻碍了浏览器所需的子文件原子重命名。因此缓存仅在创建时持检查句柄，交给 WebView2 前全部释放。探针自身的短时保护测试继续保留；Windows 文件系统夹具因共用祖先而在该模块内串行，其他单测照常执行。没有把失败的长锁设计或静态推断记为通过。
+
+宿主还在开窗前只读拒绝 WebView2 的适用路径/参数覆盖环境变量与注册表策略，不读取或回显策略内容、不修改全局设置；创建失败用原生消息框说明并退出，不回落到默认 profile 或别的工作区。依据为[微软环境创建说明](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environmentwithoptions)。
+
+Windows 专用 Tauri 配置关闭安装器与 Mac sidecar/resources；开发脚本使用 Node 调用 Tauri 的 JS 入口，Windows 构建仅输出内嵌页面的原生 exe。没有顺便确认 NSIS/MSI、签名、离线 WebView2 或正式发行方案，也没有把 CLI、SDK、项目模板称为已随此 Windows 宿主交付。
+
+本机 LocalAppData 另有工具环境授予的权限；首次 release 启动在父目录私有 ACL 检查处拒绝并以 101 退出，未创建业务根，不记为开窗通过。随后明确区分要求：既有缓存父目录核对当前用户所有权、路径和卷，新缓存才采用并完整验证私有 DACL，父目录 ACL 不修改；业务根探针仍保留严格私有 ACL 拒绝规则。同时修复 Tauri setup 错误会转成 panic 的处理方式，在 setup 内先显示原生错误再退出。
+
+实际检查：
+
+| 检查 | 结果与范围 |
+| --- | --- |
+| 原生宿主测试 | `npm run test:host`：`platform-host` 26 项、桌面来源限制 1 项通过；含 13 项真实 Windows 文件夹具，全部位于新建的 `.test-artifacts/windows-host-disposable-*`，未用真实项目作夹具 |
+| 字节与界面回归 | `npm run test:preflight` 89 项；新 Windows DOM 4 项、原共用 UI DOM 33 项；构建路由 4 项与 process 环境 5 项通过。DOM 结果不替代真实 WebView2 验收 |
+| 检查与构建 | 两个宿主 package 的 `clippy --locked --all-targets -- -D warnings`、新 host 定向格式及差异检查通过；TypeScript/Vite 双入口、Windows 原生 debug 与内嵌页面 release 构建通过；外部 Cargo 版本/checksum 未变 |
+| 实际开窗与刷新 | 从 release exe 启动真实 WebView2/InPrivate 管理窗口；页面为 `http://tauri.localhost/windows.html`，显示真实固定根缺失；点击刷新后检查时间由 `09:44:25` 更新至 `09:44:50`（Asia/Shanghai），没有运行 Vite 或项目服务 |
+| 单实例与退出 | 再次启动同一 exe 后仍只有同一 manager 窗口与一个桌面进程；通过标准 Alt+F4 关闭后桌面进程数量为 0，没有借终止进程代替正常退出 |
+| 数据边界 | 首次启动前、开窗/刷新/再次启动后、正常退出后，固定业务根均不存在；没有为测试创建或切换业务根。浏览器只使用新建的私有可丢弃缓存；现有项目/SDK/备份/维护/回收/恢复证据未被应用访问或改写 |
+
+最终 release exe 为 `target/release/local-projects-desktop-dev.exe`，8,974,848 字节，SHA-256 `c356db298242fa2105b82f26b4e251710e7cb7584a56745e377bd587dc504250`。最终版本于 `09:48:09` 重新开窗，仍显示固定根缺失，桌面进程为 1；保留窗口供用户查看。实测摘要保存在忽略的 `.test-artifacts/w1-desktop-startup-joZHty/result.json`，exe、浏览器缓存及本机证据不进入 Git。
+
+上述真实宿主验收仅覆盖当前 Win11 x64、普通用户及已装 WebView2 `155.0.4283.62`；不推广为 Win10、物理设备、安装/更新或完整业务功能通过。Mac 仅核对入口正文和常量迁移不变并通过共用 UI 回归，没有 Mac 原生编译或实机结果。
+
+## 10 待完成与下一步
 
 1. 本机工具安装、独立编译链接与环境干扰回归已完成；不再把系统许可列为当前阻塞。后续修改工具链或脚本时按影响重新验证，不能沿用旧版本证据。
 2. Windows 10 22H2 x64 测试环境尚未落实，本轮 Mac 回归未执行。W1.1 的双系统环境安排未满足，故保留进行中；不能把当前机器检查推广为两个系统或 Mac 通过。
-3. W1.2 已实现整体启动门禁及维护、恢复、迁移、生命周期和回收记录的独立字节分类，继续补齐其他现场格式和汇总，再分离只读历史与恢复执行；实际 Windows 运行时开放须等待相应保护与 W1.3 安全文件检查就绪。安装形式、WebView2 分发/最低版本和正式发行条件继续待定。
+3. W1 已推进至独立只读宿主，完整业务运行时仍拒绝。W1.2 继续补齐现场格式/文件配对与能力隔离，W1.3 继续完善业务操作所需文件安全；W1.4 的 Win10 与其余宿主矩阵继续待完成。安装形式、WebView2 分发/最低版本和正式发行条件继续待定。
 
 成品用户运行带有效网页产物的项目无需 Node、Rust 或 C++ 工具；修改业务源码后才需要系统 Node/npm 来构建。内置 Node、外部网页应用文件夹安装和资源限额讨论稿没有在本轮获得新确认。

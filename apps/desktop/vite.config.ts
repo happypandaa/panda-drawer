@@ -11,5 +11,8 @@ export default defineConfig({
   },
   build: {
     target: 'safari18',
+    rolldownOptions: {
+      input: { main: 'index.html', windows: 'windows.html' },
+    },
   },
 });

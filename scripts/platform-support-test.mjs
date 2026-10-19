@@ -27,13 +27,13 @@ async function main() {
     RUSTUP_AUTO_INSTALL: '0', RUSTUP_NO_UPDATE_CHECK: '1' });
   const options = { cwd: directory, env: environment };
   const args = ['--edition=2021', '--test', '-D', 'warnings',
-    path.join(root, 'crates', 'platform-core', 'src', 'platform_support.rs'), '-o', executable];
+    path.join(root, 'crates', 'platform-host', 'src', 'platform_support.rs'), '-o', executable];
   if (process.platform === 'win32') args.push('--target', 'x86_64-pc-windows-msvc');
   await run('rustc', args, options);
   await run(executable, ['--nocapture'], options);
   await writeFile(path.join(directory, 'result.json'), `${JSON.stringify({
     result: 'passed', host: process.platform, architecture: process.arch,
-    source: 'crates/platform-core/src/platform_support.rs',
+    source: 'crates/platform-host/src/platform_support.rs',
     scope: 'Production policy module only; not platform-core, Tauri, CLI, filesystem safety or host startup validation.'
   }, null, 2)}\n`, { flag: 'wx' });
   console.log('Policy module tests passed.');

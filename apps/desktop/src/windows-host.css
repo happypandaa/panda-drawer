@@ -1,0 +1,63 @@
+:root { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #232b36; background: #f7f8fa; font-synthesis: none; text-rendering: optimizeLegibility; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 600px; }
+button { font: inherit; }
+button:focus-visible, summary:focus-visible { outline: 3px solid #82aee8; outline-offset: 3px; }
+.host-header { height: 76px; padding: 0 36px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e5e8ed; background: #fff; }
+.host-brand { display: flex; align-items: center; gap: 12px; }
+.host-brand strong { font-size: 18px; }
+.host-logo { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: #eaf0f8; color: #335f95; }
+.host-edition { padding-left: 14px; border-left: 1px solid #dee3e9; font-size: 13px; color: #667383; }
+.host-stage { color: #6c7785; font-size: 12px; }
+.host-main { max-width: 1180px; padding: 36px; margin: 0 auto; }
+.host-intro { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 26px; }
+.host-eyebrow { color: #6e7e92; font-size: 10px; font-weight: 700; letter-spacing: 1.6px; margin: 0 0 10px; }
+h1 { font-size: 28px; letter-spacing: -.6px; margin: 0 0 10px; font-weight: 650; }
+.host-intro p:last-child { color: #667383; font-size: 14px; line-height: 1.7; margin: 0; }
+.host-refresh { border: 1px solid #d7dde6; background: #fff; color: #34455c; border-radius: 8px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; cursor: pointer; white-space: nowrap; font-size: 13px; }
+.host-refresh:hover:not(:disabled) { background: #eff3f8; border-color: #b6c3d6; }
+.host-refresh:disabled { opacity: .65; cursor: wait; }
+.host-protection { display: flex; gap: 12px; padding: 18px 20px; background: #edf3fa; border: 1px solid #dce7f4; border-radius: 10px; color: #31597f; margin-bottom: 24px; }
+.host-protection > svg { flex: none; margin-top: 1px; }
+.host-protection strong { font-size: 14px; }
+.host-protection p { margin: 6px 0 0; line-height: 1.7; font-size: 13px; color: #536f8a; }
+.host-error { display: flex; gap: 10px; align-items: flex-start; background: #fff4ee; border: 1px solid #f0d7c9; color: #8a4d2a; padding: 14px 18px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; line-height: 1.6; }
+.host-error svg { flex: none; margin-top: 1px; }
+.host-columns { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); align-items: start; gap: 20px; margin-bottom: 20px; }
+.host-card { background: #fff; border: 1px solid #e1e6ec; border-radius: 11px; padding: 24px; }
+.host-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+.host-card h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 650; margin: 0; }
+.host-card h2 svg { color: #64758a; }
+.host-caption { color: #6c7888; font-size: 12px; line-height: 1.65; margin: 0 0 8px; }
+.host-path { padding: 12px 13px; background: #f6f8fa; border: 1px solid #e8ecf1; border-radius: 7px; font: 12px/1.8 Consolas, "Microsoft YaHei UI", monospace; overflow-wrap: anywhere; color: #4b5c71; }
+.host-pill { padding: 4px 8px; font-size: 11px; border-radius: 5px; background: #eef2f6; color: #5b6b7f; white-space: nowrap; }
+.host-pill.blocked, .host-pill.unavailable { background: #fff3e6; color: #95642e; }
+.host-checks { list-style: none; margin: 18px 0 0; padding: 0; }
+.host-checks li { display: flex; gap: 10px; padding: 12px 0; border-bottom: 1px solid #f0f2f5; }
+.host-checks li:last-child { border-bottom: 0; }
+.host-check-mark { flex: none; display: grid; place-items: center; width: 19px; height: 19px; font-size: 12px; font-weight: 700; border-radius: 50%; background: #fff2e3; color: #986934; }
+.host-check-mark.passed { background: #eaf3ee; color: #4b7a61; }
+.host-checks p { margin: 0 0 6px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.host-check-label { font-size: 11px; color: #906b43; }
+.host-check-label.passed { color: #63806c; }
+.host-check-time { border-top: 1px solid #edf0f3; padding-top: 14px; margin-top: 12px; font-size: 11px; color: #7b8694; }
+.host-capabilities ul { list-style: none; padding: 0; margin: 0; }
+.host-capabilities li { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid #edf0f3; }
+.host-capabilities li:first-child { padding-top: 4px; }
+.host-capabilities strong { font-size: 13px; font-weight: 600; }
+.host-capabilities li p { color: #788391; font-size: 12px; line-height: 1.7; margin: 6px 0 0; }
+.host-capability { flex: none; background: #f1f3f6; color: #7b8592; border-radius: 5px; padding: 4px 7px; font-size: 11px; }
+.host-capability.available { background: #edf4ef; color: #52775f; }
+.host-next-step { color: #778290; font-size: 12px; line-height: 1.8; margin: 18px 0 0; }
+.host-evidence .host-card-heading { margin-bottom: 18px; }
+.host-evidence-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 18px; }
+.host-evidence-grid > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid #e8ecf1; padding: 14px; border-radius: 7px; }
+.host-evidence-grid span { color: #647286; font-size: 12px; overflow-wrap: anywhere; }
+.host-evidence-grid strong { font-size: 20px; font-weight: 600; }
+.host-empty { color: #718094; font-size: 13px; line-height: 1.8; padding: 18px; background: #f8f9fb; border-radius: 7px; margin: 0 0 16px; }
+.host-evidence > .host-caption { margin-bottom: 0; }
+.host-footer { display: flex; align-items: flex-start; justify-content: space-between; color: #85909d; font-size: 11px; padding: 20px 0 6px; gap: 20px; }
+.host-footer summary { cursor: pointer; text-align: right; }
+.host-footer dl { display: grid; grid-template-columns: auto auto; gap: 8px 16px; padding: 14px; background: #fff; border: 1px solid #e1e6ec; border-radius: 7px; margin-bottom: 0; }
+.host-footer dd { margin: 0; color: #657285; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .host-main { padding: 28px 24px; } .host-header { padding: 0 24px; } .host-columns { grid-template-columns: 1fr; } .host-evidence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

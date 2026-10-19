@@ -13,12 +13,17 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-platform-core = { path = "../../../crates/platform-core" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
-tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-core = { path = "../../../crates/platform-core" }
+tauri-plugin-dialog = "2"
 base64 = "0.22"
 tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+platform-host = { path = "../../../crates/platform-host" }
 
