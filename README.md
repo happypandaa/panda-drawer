@@ -39,6 +39,7 @@ npm run build
 | --- | --- |
 | `apps/desktop` | 平台管理界面与 Tauri 宿主 |
 | `crates/platform-core` | 开发隔离、SQLite、本地服务、会话/附件、构建、备份恢复、项目生命周期及工作区迁移 |
+| `crates/platform-preflight` | 无文件访问的遗留记录字节分类；可单独原生测试，不提供运行或恢复许可 |
 | `crates/platform-cli` | 只连接固定开发环境的原生 CLI |
 | `packages/sdk` | 内部 SDK `@local-projects/sdk 0.1.0`、类型、说明与固定 tarball |
 | `templates/react` | `react-ts-vite-0.1.4` 标准模板、组件、锁文件和项目自带 SDK；打包时生成匹配的初始网页 |

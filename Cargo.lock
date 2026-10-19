@@ -2823,6 +2823,7 @@ dependencies = [
  "futures-util",
  "libc",
  "mime_guess",
+ "platform-preflight",
  "png 0.18.1",
  "regex",
  "reqwest 0.12.28",
@@ -2853,6 +2854,14 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tokio",
+]
+
+[[package]]
+name = "platform-preflight"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

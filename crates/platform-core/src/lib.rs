@@ -25,6 +25,7 @@ mod workspace;
 pub use tasks::{TaskRecord, TaskStatus};
 
 pub use paths::{Discovery, InstanceLock, RuntimePaths};
+pub use platform_preflight as startup_preflight;
 pub use service::{BootstrapInfo, HealthInfo, LaunchInfo, RuntimeHandle, RuntimeService};
 
 pub const APP_IDENTIFIER: &str = "dev.localprojects.platform.m0";
