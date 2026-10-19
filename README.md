@@ -8,11 +8,11 @@ PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs
 
 [应用文档分工](docs/application-documentation.md)区分用户的使用/配置说明与 AI 的技术/架构/开发说明，复用 `documentation.readme` 和 `documentation.development`，并提供两份独立 Markdown 示例；展示仍待实现，正文预算和强制携带策略待定。
 
-用户已确认[内置私有 Node 的方向](docs/bundled-node-and-connectors.md)，当前需求收敛为 Claude Code 桥接与网易云 SDK 适配；不开放通用项目后端。当前安装包尚未携带该运行时，连接器接口、凭据与生命周期规则待落实；已有系统 Node/npm 构建流程继续独立管理。SDK 脱离 HTTP 服务的离线探测不代表真实账号、播放或打包运行已验收。
+用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。本轮只整理文档，当前安装包尚未携带 Node，新格式、数据归属和协议仍待定稿；现有静态 v1 与系统 Node/npm 构建流程保持。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
 
 已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。当前 W1.1 本机工具准备和 W1.2 首片共享启动门禁进行中，初期范围为本机内置 NTFS 与固定默认工作区；Windows 运行时在安全文件及现场识别就绪前继续关闭。实际结果及剩余项见 [W1 记录](docs/windows-w1-verification.md)；平台 Windows 编译、启动和安装仍未验收。早期内部版仅面向可丢弃样本。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
 
-Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行带有效网页产物的项目无需 Node；Node/npm 仅在修改源码后构建时需要，Rust/MSVC/SDK 仅用于开发平台本身。
+Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行当前静态项目无需系统 Node；系统 Node/npm 在修改源码后构建时需要，Rust/MSVC/SDK 用于开发平台本身。未来 Node 后端使用另行验证的私有运行时。
 
 macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。当前数据已完成公开修复，新包启动、样本保存/备份/删除恢复及应用重启结果见[实际验收记录](docs/workspace-identity-repair-verification.md)。
 
