@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/happypandaa/postgresUI/main/docs/project-format-v1/project.schema.json",
+  "title": "受管开发项目 project.json v1 编写规范",
+  "description": "文档配套的编写检查，不是当前运行程序已接入的 Schema。保留现有扩展字段；文件、路径关系、登记及运行检查另行执行。",
+  "$comment": "此编写规范比部分旧记录读取更严格：不推荐非字符串图标、runtimeRequirements:null、含歧义的原始路径或非法构建脚本名；当前程序仍按已有兼容规则读取它们，不因本文件改变。",
+  "type": "object",
+  "required": ["manifestVersion", "id", "name", "sdkApiVersion", "sourceDir", "outputDir", "entry", "database", "attachmentsDir", "build", "docs"],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$", "not": { "pattern": "[^a-z0-9_-]" } },
+    "name": { "type": "string", "pattern": "\\S", "description": "非空名称。创建和元数据编辑入口还有各自长度限制，详见主文档。" },
+    "description": { "type": "string" },
+    "icon": {
+      "allOf": [{ "$ref": "#/$defs/relativePath" }, { "pattern": "^meta/.+\\.[pP][nN][gG]$" }],
+      "description": "可选本地静态 PNG；真实存在性及解码另查，当前坏图标可以回退默认显示。"
+    },
+    "sdkApiVersion": { "const": 1 },
+    "sourceDir": { "$ref": "#/$defs/relativePath" },
+    "outputDir": { "$ref": "#/$defs/relativePath" },
+    "entry": { "$ref": "#/$defs/relativePath" },
+    "database": { "$ref": "#/$defs/dataPath" },
+    "attachmentsDir": { "$ref": "#/$defs/dataPath" },
+    "build": {
+      "type": "object",
+      "required": ["script"],
+      "properties": {
+        "script": { "type": "string", "pattern": "^[A-Za-z0-9_:][A-Za-z0-9_:-]*$", "not": { "pattern": "[^A-Za-z0-9_:-]" }, "description": "源码 package.json 的脚本名；存在性在实际构建阶段校验。" }
+      },
+      "additionalProperties": true
+    },
+    "docs": {
+      "type": "object",
+      "required": ["readme", "database", "platform"],
+      "properties": {
+        "readme": { "$ref": "#/$defs/relativePath" },
+        "database": { "$ref": "#/$defs/relativePath" },
+        "platform": { "$ref": "#/$defs/relativePath" }
+      },
+      "additionalProperties": true
+    },
+    "runtimeRequirements": { "$ref": "#/$defs/runtimeRequirements" }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f]+(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f]+)*$",
+      "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" },
+      "description": "相对根目录、以 / 分隔，无空段、点段、反斜杠或控制字符；目标文件系统名称限制和真实路径边界必须另查。"
+    },
+    "dataPath": {
+      "allOf": [{ "$ref": "#/$defs/relativePath" }, { "pattern": "^data/.+" }]
+    },
+    "purposeText": {
+      "type": "string",
+      "pattern": "\\S",
+      "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" }
+    },
+    "networkEntry": {
+      "type": "object",
+      "required": ["origin", "purpose", "dataSent"],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "pattern": "^https://[^/?#@\\s]+$",
+          "not": { "pattern": "[\\s\\u0000-\\u001f\\u007f-\\u009f]" },
+          "description": "这里只做初筛；必须再按生产 RuntimePolicy 解析、核对精确规范 HTTPS origin、公共 DNS 名称、端口和保留后缀。"
+        },
+        "purpose": { "$ref": "#/$defs/purposeText" },
+        "dataSent": { "$ref": "#/$defs/purposeText" }
+      },
+      "additionalProperties": false
+    },
+    "networkEntries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/networkEntry" },
+      "uniqueItems": true,
+      "description": "同一分组的 origin 不能重复，即使其他字段不同；这种按字段去重由语义校验完成。"
+    },
+    "device": {
+      "type": "object",
+      "required": ["purpose"],
+      "properties": { "purpose": { "$ref": "#/$defs/purposeText" } },
+      "additionalProperties": false
+    },
+    "runtimeRequirements": {
+      "type": "object",
+      "properties": {
+        "network": {
+          "type": "object",
+          "properties": {
+            "connect": { "$ref": "#/$defs/networkEntries" },
+            "images": { "$ref": "#/$defs/networkEntries" },
+            "media": { "$ref": "#/$defs/networkEntries" }
+          },
+          "additionalProperties": false
+        },
+        "devices": {
+          "type": "object",
+          "properties": {
+            "camera": { "$ref": "#/$defs/device" },
+            "microphone": { "$ref": "#/$defs/device" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

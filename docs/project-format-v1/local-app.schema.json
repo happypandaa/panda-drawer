@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:local-projects:format:local-app:v1:candidate",
+  "title": "外部分发网页应用包 v1（设计候选，待确认/待实现）",
+  "description": "local-app.json 的拟议结构规范。当前应用尚未实现应用包检测、安装或更新；整理本 Schema 不代表批准旧草案中的 empty/seed 初始化、user_version、更新策略或检测预算。Schema 通过仅说明清单结构符合本候选规范，不说明目录可安装、来源可信或功能已经验证。",
+  "$comment": "按 docs/web-app-package-design.md 整理；不得用于替代当前受管 project.json。严格 UTF-8 JSON、重复键、路径/文件系统与 URL 语义、HTML/CSP、SQLite/user_version、实际平台能力和原数据保留仍须独立验证。无新增运行入口、安装器或正式资源配额。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packageFormat",
+    "formatVersion",
+    "runtime",
+    "app",
+    "web",
+    "requires",
+    "runtimeRequirements",
+    "data"
+  ],
+  "properties": {
+    "packageFormat": {
+      "const": "local-web-app"
+    },
+    "formatVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "runtime": {
+      "const": "static-web"
+    },
+    "app": {
+      "$ref": "#/$defs/app"
+    },
+    "web": {
+      "$ref": "#/$defs/web"
+    },
+    "requires": {
+      "$ref": "#/$defs/requires"
+    },
+    "runtimeRequirements": {
+      "$ref": "#/$defs/runtimeRequirements"
+    },
+    "data": {
+      "$ref": "#/$defs/data"
+    },
+    "documentation": {
+      "$ref": "#/$defs/documentation"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "distribution": {
+      "$ref": "#/$defs/distribution"
+    },
+    "extensions": {
+      "type": "object",
+      "description": "唯一自定义元数据扩展区，仅供展示。不能改变权限、路径、初始化或更新行为；忽略时需提示。"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "required": [
+              "initialization"
+            ],
+            "properties": {
+              "initialization": {
+                "required": [
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "seed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "documentation"
+        ],
+        "properties": {
+          "documentation": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyText": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "去除首尾空白后须非空；Schema 本身不修改字符串。"
+    },
+    "purposeText": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/nonEmptyText"
+        }
+      ],
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+      },
+      "description": "非空用途或发送内容说明，不含控制字符；沿用现有运行声明。"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 32,
+      "pattern": "^(?:0|[1-9][0-9]{0,8}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])\\.(?:0|[1-9][0-9]{0,8}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])\\.(?:0|[1-9][0-9]{0,8}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])$",
+      "not": {
+        "pattern": "[^0-9.]"
+      },
+      "description": "主版本.次版本.修订号；各段为 0 至 2147483647 的十进制整数，无前导零。不接受 v 前缀、范围、预发行或构建后缀。按数值逐段比较。"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f-\\u009f]+(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f]+)*$",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "(^|/)\\.{1,2}(/|$)"
+          },
+          {
+            "pattern": "^[A-Za-z]:"
+          },
+          {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        ]
+      },
+      "description": "相对包根的非空规范路径，使用 /，拒绝绝对/驱动器路径、空段、点段、反斜杠和控制字符；web.entry 改为相对网页根。UTF-8、名称碰撞、保留名、范围重叠、链接/挂载、文件类型及实际存在性须另检。"
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$",
+          "not": {
+            "pattern": "[^a-z0-9.-]"
+          },
+          "description": "跨版本稳定的应用标识，建议反向域名。各点分段以小写字母开头，其余为小写字母、数字或连字符；不是本机 projectId，也不证明作者身份。"
+        },
+        "name": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/nonEmptyText"
+            }
+          ],
+          "maxLength": 200
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000,
+          "default": ""
+        },
+        "icon": {
+          "$ref": "#/$defs/relativePath",
+          "description": "相对包根的 PNG 图标文件；出现时必须存在且内容可按 PNG 校验，不由后缀或 Schema 证明有效。"
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "entry",
+        "routing"
+      ],
+      "properties": {
+        "root": {
+          "$ref": "#/$defs/relativePath",
+          "description": "网页构建产物目录，独立于源码、文档及种子数据范围。"
+        },
+        "entry": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/relativePath"
+            }
+          ],
+          "pattern": "\\.[hH][tT][mM][lL]?$",
+          "description": "相对 web.root 的 .html/.htm 入口；必须按实际文件名精确匹配大小写并校验可读 HTML，Schema 不读取网页。"
+        },
+        "routing": {
+          "enum": [
+            "hash",
+            "files"
+          ],
+          "description": "hash 或实际 HTML 文件导航；不包含 history 回退。声明 hash 不代表已通过注入基址后的真实导航验证。"
+        }
+      }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capabilities"
+      ],
+      "properties": {
+        "apiVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "所需平台接口主版本；当前实现为 1，是否兼容由目标平台判断，不从 SDK npm 版本猜测。"
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyText"
+          },
+          "description": "不重复的必需平台接口能力。例：db.schema、db.execute、db.transaction、files、events。必须与目标平台实报能力集合核对，未知能力阻断；Schema 不将示例列表伪装成永久能力注册表。"
+        },
+        "minPlatformVersion": {
+          "$ref": "#/$defs/version"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capabilities": {
+                "type": "array",
+                "minItems": 1
+              }
+            },
+            "required": [
+              "capabilities"
+            ]
+          },
+          "then": {
+            "required": [
+              "apiVersion"
+            ]
+          }
+        }
+      ]
+    },
+    "runtimeRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "$ref": "#/$defs/network"
+        },
+        "devices": {
+          "$ref": "#/$defs/devices"
+        }
+      },
+      "description": "复用现有网络与设备声明。应用包中该对象必需，无需求为 {}；所有分组可省略。表示用途和需求，不表示系统已授权或网络可用。"
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connect": {
+          "$ref": "#/$defs/networkEntries"
+        },
+        "images": {
+          "$ref": "#/$defs/networkEntries"
+        },
+        "media": {
+          "$ref": "#/$defs/networkEntries"
+        }
+      }
+    },
+    "networkEntries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/networkEntry"
+      },
+      "$comment": "同一分组的 origin 不得重复；JSON Schema uniqueItems 无法按单个属性去重，故由语义检查执行。"
+    },
+    "networkEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "purpose",
+        "dataSent"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[0-9]+)?$",
+          "not": {
+            "pattern": "[\\u0000-\\u0020\\u007f-\\u009f]"
+          },
+          "description": "精确、规范化的公开 DNS HTTPS origin；无路径、凭据、通配符、查询或片段。正则仅检查基本形状；仍须沿用 RuntimePolicy 的 URL 解析、IP/保留域拒绝、端口与规范化检查，不保证 DNS 解析结果、CORS 或可达性。"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purposeText"
+        },
+        "dataSent": {
+          "$ref": "#/$defs/purposeText"
+        }
+      }
+    },
+    "devices": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "microphone": {
+          "$ref": "#/$defs/device"
+        },
+        "camera": {
+          "$ref": "#/$defs/device",
+          "description": "拍照需求；不扩展为录像、屏幕或系统声音捕获。"
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose"
+      ],
+      "properties": {
+        "purpose": {
+          "$ref": "#/$defs/purposeText"
+        }
+      }
+    },
+    "data": {
+      "description": "empty/seed、数据版本及 user_version 关系仍是设计候选，待确认/待实现；此处只表达草案字段关系，不执行数据库初始化。",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/emptyData"
+        },
+        {
+          "$ref": "#/$defs/seedData"
+        }
+      ]
+    },
+    "emptyData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "formatVersion",
+        "initialization"
+      ],
+      "properties": {
+        "formatVersion": {
+          "type": "integer",
+          "const": 0
+        },
+        "initialization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "empty"
+            }
+          },
+          "description": "候选空库模式：无业务表和初始附件，禁止 database/attachments。不是当前安装能力。"
+        }
+      }
+    },
+    "seedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "formatVersion",
+        "initialization"
+      ],
+      "properties": {
+        "formatVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "initialization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "database"
+          ],
+          "properties": {
+            "mode": {
+              "const": "seed"
+            },
+            "database": {
+              "$ref": "#/$defs/relativePath"
+            },
+            "attachments": {
+              "$ref": "#/$defs/relativePath"
+            }
+          },
+          "description": "候选快照模式：独立 SQLite、一致性快照及可选附件；必须另检 user_version、完整性、外键、伴随文件与数据说明，不执行包内初始化脚本。"
+        }
+      }
+    },
+    "documentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readme": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "data": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "development": {
+          "$ref": "#/$defs/relativePath"
+        }
+      },
+      "description": "相对包根的资料文件；seed 模式必须声明 data，资料不作为网页资源根。"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root"
+      ],
+      "properties": {
+        "root": {
+          "$ref": "#/$defs/relativePath"
+        }
+      },
+      "description": "可选源码资料目录；不证明与产物一致，不在安装时安装依赖、构建或执行。"
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "releaseUrl": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "releaseTag": {
+          "$ref": "#/$defs/nonEmptyText"
+        }
+      },
+      "description": "分发来源显示资料；不授权自动联网、克隆、下载更新或凭据访问。"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^[hH][tT][tT][pP][sS]://[^/?#@\\s]+(?:[/?#][^\\s]*)?$",
+      "not": {
+        "pattern": "[\\u0000-\\u0020\\u007f-\\u009f]"
+      },
+      "description": "不含用户名/密码的 HTTPS URL；仍须真正的 URL 解析器验证主机、端口与凭据，不能只依赖正则或 format 注解。不自动联网。"
+    }
+  }
+}
