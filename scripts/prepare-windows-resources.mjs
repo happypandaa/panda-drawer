@@ -1,5 +1,5 @@
 // Developer-only resource assembly. This never starts the app or a project.
-import { cp, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,37 @@ import { packageTemplate } from './package-template.mjs';
 
 const generatedParent = path.join(root, 'apps/desktop/src-tauri/resources');
 const destination = path.join(generatedParent, 'windows');
+const excluded = new Set(['node_modules', 'dist', '.git', '.hg', '.svn', '.vite', '.cache', 'test', 'tests']);
+
+// This is a developer build input, never a runtime project-import entry point.
+// Compile only the copied snapshot, retaining its complete template metadata.
+export async function snapshotWindowsTemplate(templateDirectory, output) {
+  if (!path.isAbsolute(templateDirectory)) throw new Error('The Windows template directory must be absolute.');
+  const relativeOutput = path.relative(templateDirectory, output);
+  if (!relativeOutput || (!relativeOutput.startsWith('..' + path.sep) && !path.isAbsolute(relativeOutput))) {
+    throw new Error('The template snapshot output must be outside its source directory.');
+  }
+  for (const [relative, directory] of [['', true], ['app', true], ['template.json', false], ['README.md', false]]) {
+    const info = await lstat(path.join(templateDirectory, relative));
+    if (directory ? !info.isDirectory() : !info.isFile()) {
+      throw new Error('Windows templates require ordinary app/, template.json and README.md entries.');
+    }
+  }
+  await cp(templateDirectory, output, {
+    recursive: true, errorOnExist: true, force: false,
+    filter: async source => {
+      if (path.relative(templateDirectory, source).split(path.sep).some(part => excluded.has(part))) return false;
+      const info = await lstat(source);
+      if (!info.isDirectory() && !info.isFile()) throw new Error('Windows templates accept ordinary files and directories only.');
+      return true;
+    },
+  });
+  // SDK 0.1.0 is immutable. Check the exact copied vendor bytes, not a second
+  // read of the developer's source after its snapshot has already been taken.
+  const sdkRelease = await readFile(path.join(root, 'packages/sdk/releases/local-projects-sdk-0.1.0.tgz'));
+  const templateSdk = await readFile(path.join(output, 'app/vendor/local-projects-sdk-0.1.0.tgz'));
+  if (!sdkRelease.equals(templateSdk)) throw new Error('The template SDK differs from the immutable SDK 0.1.0 release.');
+}
 
 export async function embeddedResourceFiles(directory) {
   const files = [];
@@ -26,24 +57,21 @@ export async function embeddedResourceFiles(directory) {
   return files;
 }
 
-export async function prepareWindowsResources() {
+export async function prepareWindowsResources({ templateDirectory = path.join(root, 'templates/react') } = {}) {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Windows resource assembly currently requires Windows x64.');
   }
-  // SDK 0.1.0 is immutable. Use its retained original release bytes; do not
-  // regenerate the package on another OS under the same version.
-  const sdkRelease = await readFile(path.join(root, 'packages/sdk/releases/local-projects-sdk-0.1.0.tgz'));
-  const templateSdk = await readFile(path.join(root, 'templates/react/app/vendor/local-projects-sdk-0.1.0.tgz'));
-  if (!sdkRelease.equals(templateSdk)) throw new Error('The template SDK differs from the immutable SDK 0.1.0 release.');
+  if (!path.win32.isAbsolute(templateDirectory) || path.win32.parse(templateDirectory).root.length <= 1) {
+    throw new Error('The Windows template directory must be absolute.');
+  }
   await mkdir(generatedParent, { recursive: true });
   const stage = path.join(generatedParent, '.windows-preparing-' + randomUUID());
   await mkdir(stage);
-  const excluded = new Set(['node_modules', 'dist', '.git', '.hg', '.svn', '.vite', '.cache', 'test', 'tests']);
   const filter = source => !path.relative(root, source).split(path.sep).some(part => excluded.has(part));
   // Both a failed stage and earlier resource assemblies remain in this ignored,
   // generated-only directory. No existing projects or source are removed.
   await cp(path.join(root, 'packages/sdk'), path.join(stage, 'sdk'), { recursive: true, filter });
-  await cp(path.join(root, 'templates/react'), path.join(stage, 'template'), { recursive: true, filter });
+  await snapshotWindowsTemplate(templateDirectory, path.join(stage, 'template'));
   await cp(path.join(root, 'skills/local-projects-app'), path.join(stage, 'skills/local-projects-app'), { recursive: true, filter });
   const starter = await packageTemplate(path.join(stage, 'template'));
   await cp(path.join(root, 'docs/development.md'), path.join(stage, 'README.md'));

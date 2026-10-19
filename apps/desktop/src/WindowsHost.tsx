@@ -94,7 +94,7 @@ export function WindowsHost() {
       });
       if (!mounted.current) return;
       setName(''); setDescription(''); setShowCreate(false);
-      setNotice('已创建「' + project.name + '」。可以在桌面或浏览器打开欢迎应用。');
+      setNotice('已创建「' + project.name + '」。可以在桌面或浏览器打开初始应用。');
       await refresh();
     } catch (cause) {
       if (mounted.current) {
@@ -152,10 +152,10 @@ export function WindowsHost() {
     </header>
     <main className="host-main">
       <section className="host-intro" aria-labelledby="host-title">
-        <div><p className="host-eyebrow">WINDOWS COMPATIBILITY</p><h1 id="host-title">新建项目，打开欢迎应用</h1><p>当前仅用于可丢弃样本。创建和打开预编译欢迎页无需 Node 或联网。</p></div>
+        <div><p className="host-eyebrow">WINDOWS COMPATIBILITY</p><h1 id="host-title">新建项目，打开初始应用</h1><p>当前仅用于可丢弃样本。创建和打开预编译初始页面无需 Node 或联网。</p></div>
         <div className="host-toolbar"><button className="host-refresh" onClick={() => void refresh()} disabled={busy}><RefreshCw size={16} aria-hidden="true" />{loading ? '正在读取…' : '刷新状态'}</button><button className="host-primary" onClick={() => setShowCreate(true)} disabled={blocked || busy || showCreate}><Plus size={16} aria-hidden="true" />新建验证样本</button></div>
       </section>
-      <div className="host-protection"><ShieldCheck size={22} aria-hidden="true" /><div><strong>分阶段开放，现有目录继续保护</strong><p>本阶段只创建样本并读取欢迎页和真实数据库结构。SQL 写入、附件、构建、备份、恢复、回收、迁移及清理尚未开放。未知或未解决的旧现场保留并阻断接管。</p></div></div>
+      <div className="host-protection"><ShieldCheck size={22} aria-hidden="true" /><div><strong>分阶段开放，现有目录继续保护</strong><p>本阶段只创建样本并读取初始页面和真实数据库结构。SQL 写入、附件、构建、备份、恢复、回收、迁移及清理尚未开放。未知或未解决的旧现场保留并阻断接管。</p></div></div>
       {error && <div className="host-error" role="alert"><CircleAlert size={18} aria-hidden="true" /><span>{error}{status ? ' 下方保留上次成功读取的状态；请刷新确认后再操作。' : ''}</span></div>}
       {notice && <div className="host-notice" role="status">{notice}</div>}
       <section className="host-card host-workspace" aria-labelledby="host-root-title" aria-busy={loading}>
@@ -170,12 +170,12 @@ export function WindowsHost() {
         <form onSubmit={event => void createProject(event)}>
           <label htmlFor="host-project-name">项目名称</label><input id="host-project-name" value={name} onChange={event => setName(event.target.value)} maxLength={200} required disabled={creating} autoFocus placeholder="例如：Windows 可丢弃验证项目" />
           <label htmlFor="host-project-description">用途说明（可选）</label><textarea id="host-project-description" value={description} onChange={event => setDescription(event.target.value)} maxLength={2000} disabled={creating} rows={3} placeholder="填写本次要验证的内容，使用可丢弃数据。" />
-          <div className="host-create-footer"><p>复制固定 SDK、匹配源码和欢迎网页，并建立独立空库。不会安装依赖或运行项目脚本。</p><button className="host-primary" type="submit" disabled={creating || !name.trim() || blocked}>{creating ? '正在创建…' : '创建样本'}</button></div>
+          <div className="host-create-footer"><p>复制固定 SDK、匹配源码和初始网页，并建立独立空库。不会安装依赖或运行项目脚本。</p><button className="host-primary" type="submit" disabled={creating || !name.trim() || blocked}>{creating ? '正在创建…' : '创建样本'}</button></div>
         </form>
       </section>}
       <section className="host-card host-projects" aria-labelledby="host-projects-title">
         <div className="host-card-heading"><h2 id="host-projects-title">本轮项目</h2>{status && <span className="host-caption">{status.projects.length} 个项目</span>}</div>
-        {!status ? <p className="host-empty">等待真实项目状态…</p> : status.rootStatus === 'blocked' ? <p className="host-empty">当前目录未获准接管。请保留现有文件，并查看上方原因；本窗口不会创建空工作区覆盖它。</p> : status.projects.length === 0 ? <p className="host-empty">尚无项目。点击“新建验证样本”后，即可打开随包提供的欢迎应用。</p> : <ul className="host-project-list">{status.projects.map(project => <li key={project.id}>
+        {!status ? <p className="host-empty">等待真实项目状态…</p> : status.rootStatus === 'blocked' ? <p className="host-empty">当前目录未获准接管。请保留现有文件，并查看上方原因；本窗口不会创建空工作区覆盖它。</p> : status.projects.length === 0 ? <p className="host-empty">尚无项目。点击“新建验证样本”后，即可打开随包提供的初始应用。</p> : <ul className="host-project-list">{status.projects.map(project => <li key={project.id}>
           <div className="host-project-summary"><div className="host-project-title"><h3>{project.name}</h3><span className={'host-pill ' + (project.state === 'ready' ? 'ready' : 'blocked')}>{project.state === 'ready' ? '可只读打开' : '需要检查'}</span></div>{project.description && <p>{project.description}</p>}<span className="host-project-id">{project.id}</span>{project.issues.length > 0 && <p className="host-project-issues">{project.issues.join('；')}</p>}</div>
           <div className="host-project-actions"><button className="host-refresh" disabled={busy || blocked || project.state !== 'ready'} onClick={() => void openProject(project, 'desktop')}><Monitor size={15} aria-hidden="true" />{opening === project.id + ':desktop' ? '正在打开…' : '桌面打开'}</button><button className="host-refresh" disabled={busy || blocked || project.state !== 'ready'} onClick={() => void openProject(project, 'browser')}><Globe size={15} aria-hidden="true" />{opening === project.id + ':browser' ? '正在打开…' : '浏览器打开'}</button></div>
         </li>)}</ul>}
@@ -183,7 +183,7 @@ export function WindowsHost() {
       <div className="host-columns">
         <aside className="host-card host-capabilities" aria-labelledby="host-capabilities-title">
           <div className="host-card-heading"><h2 id="host-capabilities-title">当前可用范围</h2></div>
-          <ul><li><div><strong>新样本与欢迎应用</strong><p>创建、桌面打开、普通浏览器打开</p></div><span className="host-capability available">已开放</span></li><li><div><strong>数据库结构只读查询</strong><p>欢迎页读取真实 schema；创建时为空库</p></div><span className="host-capability available">已开放</span></li><li><div><strong>业务写入与管理</strong><p>SQL、附件、构建、备份、恢复及清理</p></div><span className="host-capability">未开放</span></li></ul>
+          <ul><li><div><strong>新样本与初始应用</strong><p>创建、桌面打开、普通浏览器打开</p></div><span className="host-capability available">已开放</span></li><li><div><strong>数据库结构只读查询</strong><p>初始页面读取真实 schema；创建时为空库</p></div><span className="host-capability available">已开放</span></li><li><div><strong>业务写入与管理</strong><p>SQL、附件、构建、备份、恢复及清理</p></div><span className="host-capability">未开放</span></li></ul>
         </aside>
         <section className="host-card host-evidence" aria-labelledby="host-diagnostics-title">
           <div className="host-card-heading"><h2 id="host-diagnostics-title">目录诊断</h2></div>

@@ -68,6 +68,82 @@ pub(super) fn test_bundle() -> BundledProject {
     }
 }
 
+fn versioned_test_bundle(version: &str, label: &str) -> BundledProject {
+    // Different synthetic source/artifact pairs exercise compatibility without
+    // claiming that an actual GUI, the real application or its SDK was run.
+    let mut files: BTreeMap<_, _> = test_bundle().files.into_iter().collect();
+    files.insert(
+        "template/app/src/App.tsx".into(),
+        format!("export default function App(){{return '{label}'}}").into_bytes(),
+    );
+    files.insert(
+        "template/starter/index.html".into(),
+        format!("<!doctype html><html><head></head><body>{label}</body></html>").into_bytes(),
+    );
+    let mut distribution: StarterDistribution =
+        strict_json(&files["template/starter.json"]).unwrap();
+    distribution.template_version = version.into();
+    distribution.source_digest = tree_digest(&tree(&files, "template/app/"));
+    distribution.artifact_digest = tree_digest(&tree(&files, "template/starter/"));
+    files.insert(
+        "template/starter.json".into(),
+        serde_json::to_vec(&distribution).unwrap(),
+    );
+    files.insert(
+        "template/template.json".into(),
+        serde_json::to_vec(&json!({"templateVersion":version,"sdkVersion":"0.1.0"})).unwrap(),
+    );
+    BundledProject {
+        files: files.into_iter().collect(),
+    }
+}
+
+fn sample_snapshot(store: &WindowsProjectStore, sample: &ProjectInfo) -> BTreeMap<String, Vec<u8>> {
+    let active = store.active.lock().unwrap();
+    let workspace = &active.as_ref().unwrap().workspace;
+    let root = workspace.root();
+    let work = root.open_directory("workspace").unwrap();
+    let project = work
+        .open_directory("projects")
+        .unwrap()
+        .open_directory(&sample.id)
+        .unwrap();
+    let mut result: BTreeMap<_, _> = collect(&project)
+        .unwrap()
+        .into_iter()
+        .map(|(path, (bytes, _))| (format!("project/{path}"), bytes))
+        .collect();
+    let platform = work.open_directory(".platform").unwrap();
+    let state = platform.open_directory("project-state").unwrap();
+    result.insert(
+        "registration.json".into(),
+        state
+            .read_bounded(&format!("{}.json", sample.id), FILE_LIMIT)
+            .unwrap()
+            .bytes,
+    );
+    result.insert(
+        "root/settings.json".into(),
+        root.read_bounded("settings.json", FILE_LIMIT)
+            .unwrap()
+            .bytes,
+    );
+    result.insert(
+        "root/.environment.json".into(),
+        root.read_bounded(".environment.json", FILE_LIMIT)
+            .unwrap()
+            .bytes,
+    );
+    result.insert(
+        "workspace/.platform/windows-stage.json".into(),
+        platform
+            .read_bounded("windows-stage.json", FILE_LIMIT)
+            .unwrap()
+            .bytes,
+    );
+    result
+}
+
 fn serial() -> MutexGuard<'static, ()> {
     crate::WINDOWS_FILESYSTEM_TESTS
         .lock()
@@ -285,6 +361,80 @@ fn repackaging_the_host_does_not_rewrite_or_invalidate_existing_project_distribu
         sample.document_epoch
     );
     assert_eq!(fs::read(starter_path).unwrap(), before);
+}
+
+#[test]
+fn welcome_and_split_bill_samples_keep_their_own_versions_and_bytes_across_bundle_switches() {
+    let _serial = serial();
+    let parent = fixture_parent();
+    let welcome_bundle = versioned_test_bundle("react-ts-vite-0.1.4", "Synthetic welcome sample");
+    let split_bundle =
+        versioned_test_bundle("windows-split-bill-0.1.0", "Synthetic split bill sample");
+    let original = WindowsProjectStore::for_test(welcome_bundle.clone(), parent.clone()).unwrap();
+    let welcome = create(&original, "Disposable original welcome sample");
+    let welcome_before = sample_snapshot(&original, &welcome);
+    assert_eq!(
+        original
+            .open(&welcome.id)
+            .unwrap()
+            .starter
+            .distribution
+            .template_version,
+        "react-ts-vite-0.1.4"
+    );
+    original.close().unwrap();
+    drop(original);
+
+    let updated = WindowsProjectStore::for_test(split_bundle.clone(), parent.clone()).unwrap();
+    assert_eq!(
+        updated.open(&welcome.id).unwrap().document_epoch,
+        welcome.document_epoch
+    );
+    assert_eq!(sample_snapshot(&updated, &welcome), welcome_before);
+    let split = create(&updated, "Disposable new split bill sample");
+    let split_before = sample_snapshot(&updated, &split);
+    assert_ne!(welcome.id, split.id);
+    assert_ne!(welcome.document_epoch, split.document_epoch);
+    assert_ne!(
+        welcome_before["project/app/src/App.tsx"],
+        split_before["project/app/src/App.tsx"]
+    );
+    assert_eq!(
+        welcome_before["project/app/vendor/local-projects-sdk-0.1.0.tgz"],
+        split_before["project/app/vendor/local-projects-sdk-0.1.0.tgz"]
+    );
+    assert_eq!(sample_snapshot(&updated, &welcome), welcome_before);
+    updated.close().unwrap();
+    drop(updated);
+
+    // Both default-resource choices run this current backend. This does not
+    // claim that an older executable understands a newly added template ID.
+    for bundle in [welcome_bundle, split_bundle] {
+        let restarted = WindowsProjectStore::for_test(bundle, parent.clone()).unwrap();
+        let ids: BTreeSet<_> = restarted
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|sample| sample.id)
+            .collect();
+        assert_eq!(ids, BTreeSet::from([welcome.id.clone(), split.id.clone()]));
+        for (sample, version, before) in [
+            (&welcome, "react-ts-vite-0.1.4", &welcome_before),
+            (&split, "windows-split-bill-0.1.0", &split_before),
+        ] {
+            let opened = restarted.open(&sample.id).unwrap();
+            assert_eq!(opened.manifest.id, sample.id);
+            assert_eq!(opened.document_epoch, sample.document_epoch);
+            assert_eq!(opened.starter.distribution.template_version, version);
+            assert_eq!(&sample_snapshot(&restarted, sample), before);
+            assert_eq!(restarted.schema(&sample.id).unwrap()["tables"], json!([]));
+            assert_eq!(
+                &restarted.read_static(&sample.id, "index.html").unwrap(),
+                &before["project/dist/index.html"]
+            );
+        }
+        restarted.close().unwrap();
+    }
 }
 
 #[test]

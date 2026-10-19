@@ -4,9 +4,11 @@
 
 2026-10-19：W1 独立只读宿主已有本机 Win11 x64 的 release 开窗、状态刷新、单实例及正常退出记录。当前代码进入 W2.1：已实现固定默认根下创建可丢弃新样本、桌面/普通浏览器打开预编译欢迎应用，以及真实空库结构只读查询和会话事件。受限 HTTP 服务不链接完整业务 core；完整 core/CLI 仍受门禁保护，SQL 执行、附件、构建、维护、备份、恢复、导入、回收、迁移和清理未开放。仅识别本 W2 阶段已完成登记且完整匹配的样本，旧历史、创建残留、未知条目或外部修改均保留并阻断，不自动修复、补登记或接管。
 
-本轮原生 host 后端 60 项、共享格式 14 项、desktop 3 项和 preflight 96 项测试及相关 Clippy 通过，Windows 界面、构建入口及资源测试 19 项通过。本机 Win11 的 release 已从资源管理器实际创建新样本并在桌面显示已连接、真实空库与只读提示；应用进程树没有启动 Node。Chrome 打开请求已执行，但页面验收因自动化无法可靠识别 URL 而停止；W2 桌面正常关闭重启尚未补验。W1/W2.1 退出条件仍未全部满足。Win10、Mac 回归、无 Node 干净机器、物理断网、跨登录会话与断电均未实测。当前机器使用已安装的 WebView2，安装器及 WebView2 分发仍未确定。证据分别见 [W1 记录](windows-w1-verification.md)和 [W2 记录](windows-w2-verification.md)。
+本轮原生 host 后端 61 项、共享格式 14 项、desktop 3 项及相关 Clippy/fmt 通过，Windows 界面、构建入口及资源测试 24 项通过；既有 preflight 96 项结果保留。另有自写费用分摊计算器的 10 项功能 DOM 测试通过。本机 Win11 的 release 已从资源管理器实际创建并打开欢迎应用和计算器，读取真实项目名与空库；100 元分给 3 人、刷新清空、正常退出并重启后两个项目再次打开及计算均通过。原项目 38 文件、创建后全部 73 文件的摘要一致，未产生 WAL/SHM，应用进程树没有启动 Node。Chrome 页面验收因自动化无法可靠识别 URL 而停止；旧浏览器会话跨实机重启失效尚未补验。W1/W2.1 退出条件仍未全部满足。Win10、Mac 回归、无 Node 干净机器、物理断网、跨登录会话与断电均未实测。当前机器使用已安装的 WebView2，安装器及 WebView2 分发仍未确定。证据分别见 [W1 记录](windows-w1-verification.md)和 [W2 记录](windows-w2-verification.md)。
 
 Windows 开发机运行 `npm run dev` 或 `npm run build` 会先执行资源准备：Node/npm 在打包时构建欢迎网页，核对源码/产物摘要及 SDK 0.1.0 原字节，再把源码、SDK、网页、skill 和文档内嵌到 exe。`npm run build` 生成 `target/release/local-projects-desktop-dev.exe`；`node scripts/desktop.mjs build --debug -- --locked` 生成 debug exe，均不生成安装器或捆绑尚未开放的 CLI。成品 exe 创建/打开样本不调用 Node/npm，不依赖 Vite 或资源旁文件；这一实现边界不代替无 Node、物理断网实测。
+
+开发机可用 `node scripts/desktop.mjs build --windows-template "D:\完整模板目录" -- --locked` 预编译独立验证样本。目录须包含 `app/`、`template.json` 和 `README.md`，固定 SDK 原字节不变；先复制完整普通文件快照，再编译该快照。费用分摊示例使用独立版本 `windows-split-bill-0.1.0`，旧欢迎样本继续可读。未提供参数时仍使用原欢迎模板，Mac 流程不变。这是构建平台 exe 时选择初始资源的开发选项，不是成品软件的源码导入、`local-app.json` 安装或用户构建/发布入口；不能直接覆盖已有受管项目源码或登记。
 
 直接运行 Rust 宿主检查前先生成嵌入资源。以下命令检查新样本实现，不调用平台 CLI 或接管已有用户项目：
 

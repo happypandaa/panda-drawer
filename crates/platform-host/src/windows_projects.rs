@@ -151,6 +151,7 @@ fn distribution_supported(value: &StarterDistribution) -> bool {
     value.schema_version == 1
         && value.origin == "bundledTemplate"
         && (value.template_version == "react-ts-vite-0.1.4"
+            || value.template_version == "windows-split-bill-0.1.0"
             || cfg!(test) && value.template_version == "synthetic-w2")
         && value.sdk_version == "0.1.0"
         && value.entry_relative == "index.html"

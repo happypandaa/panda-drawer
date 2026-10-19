@@ -1,11 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { root } from './process.mjs';
 import { templateNpmCommand, treeDigest } from './package-template.mjs';
-import { embeddedResourceFiles } from './prepare-windows-resources.mjs';
+import { embeddedResourceFiles, snapshotWindowsTemplate } from './prepare-windows-resources.mjs';
+
+async function templateFixture() {
+  const parent = path.join(root, '.test-artifacts');
+  await mkdir(parent, { recursive: true });
+  const fixture = await mkdtemp(path.join(parent, 'windows-template-snapshot-'));
+  // A source ancestor named tests must not exclude the complete template.
+  const template = path.join(fixture, 'tests', 'developer template');
+  await mkdir(path.join(template, 'app/vendor'), { recursive: true });
+  await mkdir(path.join(template, 'app/src'), { recursive: true });
+  await writeFile(path.join(template, 'template.json'), JSON.stringify({ templateVersion: 'windows-split-bill-0.1.0', sdkVersion: '0.1.0' }));
+  await writeFile(path.join(template, 'README.md'), 'Developer-provided initial sample\r\n');
+  await writeFile(path.join(template, 'app/src/sample.txt'), 'Exact sample source\r\n');
+  await writeFile(path.join(template, 'app/vendor/local-projects-sdk-0.1.0.tgz'),
+    await readFile(path.join(root, 'packages/sdk/releases/local-projects-sdk-0.1.0.tgz')));
+  return { fixture, template, output: path.join(fixture, 'snapshot') };
+}
 
 test('Windows template packaging invokes npm-cli.js with Node and separate arguments', () => {
   const node = 'C:\\Program Files\\Node\\node.exe';
@@ -66,4 +82,43 @@ test('embedded resource JSON preserves binary SDK bytes and uses portable logica
   assert.deepEqual(files.map(([label]) => label), ['README.md', 'sdk/releases/fixture.tgz']);
   const roundTrip = JSON.parse(JSON.stringify({ schemaVersion: 1, files }));
   assert.deepEqual(Buffer.from(roundTrip.files[1][1]), await readFile(path.join(fixture, 'sdk/releases/fixture.tgz')));
+});
+
+test('a developer template snapshot preserves metadata, source and SDK bytes while excluding generated files', async () => {
+  const { template, output } = await templateFixture();
+  await mkdir(path.join(template, 'app/node_modules'), { recursive: true });
+  await writeFile(path.join(template, 'app/node_modules/generated.txt'), 'Dependency cache');
+  await snapshotWindowsTemplate(template, output);
+  for (const relative of ['template.json', 'README.md', 'app/src/sample.txt', 'app/vendor/local-projects-sdk-0.1.0.tgz']) {
+    assert.deepEqual(await readFile(path.join(output, relative)), await readFile(path.join(template, relative)));
+  }
+  assert.equal(JSON.parse(await readFile(path.join(output, 'template.json'), 'utf8')).templateVersion, 'windows-split-bill-0.1.0');
+  await assert.rejects(lstat(path.join(output, 'app/node_modules')), { code: 'ENOENT' });
+  await writeFile(path.join(template, 'app/src/sample.txt'), 'Later developer edit');
+  assert.equal(await readFile(path.join(output, 'app/src/sample.txt'), 'utf8'), 'Exact sample source\r\n');
+});
+
+test('developer templates with different SDK 0.1.0 bytes are refused without changing their source', async () => {
+  const { template, output } = await templateFixture();
+  const vendor = path.join(template, 'app/vendor/local-projects-sdk-0.1.0.tgz');
+  const altered = Buffer.from('Different bytes under the same SDK version');
+  await writeFile(vendor, altered);
+  await assert.rejects(snapshotWindowsTemplate(template, output), /differs from the immutable SDK 0\.1\.0 release/);
+  assert.deepEqual(await readFile(vendor), altered);
+});
+
+test('developer template snapshots require complete ordinary directories and refuse links or self-copying', async () => {
+  const { fixture, template, output } = await templateFixture();
+  await assert.rejects(snapshotWindowsTemplate('relative-template', output), /must be absolute/);
+  await assert.rejects(snapshotWindowsTemplate(template, path.join(template, 'snapshot')), /outside its source/);
+  const incomplete = path.join(fixture, 'incomplete');
+  await mkdir(incomplete);
+  await assert.rejects(snapshotWindowsTemplate(incomplete, output), { code: 'ENOENT' });
+  const external = path.join(fixture, 'external');
+  await mkdir(external);
+  await symlink(external, path.join(template, 'app/linked-directory'), 'junction');
+  await assert.rejects(snapshotWindowsTemplate(template, output), /ordinary files and directories only/);
+  const linkedRoot = path.join(fixture, 'linked-template');
+  await symlink(template, linkedRoot, 'junction');
+  await assert.rejects(snapshotWindowsTemplate(linkedRoot, path.join(fixture, 'other-snapshot')), /ordinary app/);
 });
