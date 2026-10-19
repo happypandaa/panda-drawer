@@ -8,13 +8,14 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const usage = `Usage: node scripts/workspace-identity-live-test.mjs prepare|verify
+const usage = `Usage: node scripts/workspace-identity-live-test.mjs prepare|inspect|verify
 
 prepare creates exactly one project named M5 可丢弃 · 身份修复验收 · 20261019.
 It saves SQL and an attachment, creates a backup, deletes to trash, and restores
 that same project. The sample, backup, trash record, and task evidence are kept.
+inspect only completes evidence for the same instance after all three saved tasks succeeded; it never resubmits mutations.
 verify requires a different service instance and only reads that saved sample.
-Neither phase starts the desktop, migrates/repairs a workspace, or purges data.
+No phase starts the desktop, migrates/repairs a workspace, or purges data.
 This HTTP/CLI check does not prove GUI behavior or an actual OS device remount.
 
 IDENTITY_TEST_CLI (or M1_TEST_CLI): absolute path to the actual package CLI.
@@ -31,7 +32,7 @@ if (['--help', '-h'].includes(phase)) {
   console.log(usage);
   process.exit(0);
 }
-assert.ok(process.argv.length === 3 && ['prepare', 'verify'].includes(phase), usage);
+assert.ok(process.argv.length === 3 && ['prepare', 'inspect', 'verify'].includes(phase), usage);
 assert.equal(process.platform, 'darwin', 'This probe targets the fixed macOS development installation');
 const repository = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const artifactBase = join(repository, '.test-artifacts');
@@ -241,8 +242,10 @@ async function sampleEvidence(runtime) {
   assert.equal(attachment.status, 200, await attachment.clone().text());
   assert.equal(hash(Buffer.from(await attachment.arrayBuffer())), state.attachment.sha256);
   const backup = cli(['backup', 'info', '--project', state.projectId, '--backup', state.backupId]);
-  assert.equal(backup.manifest.projectId, state.projectId);
-  assert.equal(backup.manifest.backupId, state.backupId);
+  assert.equal(backup.projectId, state.projectId);
+  assert.equal(backup.backupId, state.backupId);
+  assert.equal(backup.verified, true);
+  assert.equal(backup.database.integrityOk, true);
   const archive = join(state.workspaceRoot, 'backups', state.projectId, `${state.backupId}.zip`);
   assert.equal(hash(await readFile(archive)), state.backupSha256);
   const trashPath = join(state.workspaceRoot, '.platform/trash', state.trashId, 'record.json');
@@ -271,6 +274,21 @@ async function sampleEvidence(runtime) {
     operations, control: { path: controlPath, mode: control.mode, recoveryRequired: control.recoveryRequired },
     protectionScope: 'Existing project/trash membership only; no original project writes or source/DB integrity claim',
     limitations: ['CLI and loopback HTTP, not GUI', 'Different instance proves service restart, not OS reboot or a changed device number'] };
+}
+
+async function completePreparationEvidence(runtime, recoveredFromEvidenceOnly = false) {
+  state.prepared = await sampleEvidence(runtime);
+  assert.notEqual(state.createdRegistration.documentEpoch, state.prepared.registration.documentEpoch);
+  for (const kind of ['root', 'database']) {
+    assert.equal(state.createdRegistration[kind].volumeUuid, state.prepared.registration[kind].volumeUuid);
+    assert.equal(state.createdRegistration[kind].inode, state.prepared.registration[kind].inode);
+  }
+  state.status = 'prepared';
+  state.preparedAt = now();
+  await checkpoint('ready-for-restart');
+  await saveJson(join(evidence, 'prepare.json'), { ok: true, phase, recoveredFromEvidenceOnly, projectId: state.projectId, projectRoot: state.projectRoot,
+    ...state.prepared, tasks: state.tasks, retainedForVerification: true });
+  console.log(`PASS prepare: ${state.projectId}; sample and backup retained. Restart separately, then run verify. Evidence: ${evidence}`);
 }
 
 try {
@@ -327,18 +345,23 @@ try {
     await matchesCurrentInode(state.trashedIdentity, join(state.workspaceRoot, '.platform/trash', state.trashId, 'project'), true);
     assertMembership();
     await task('trashRestore', ['trash', 'restore', '--trash', state.trashId]);
-    state.prepared = await sampleEvidence(runtime);
-    assert.notEqual(state.createdRegistration.documentEpoch, state.prepared.registration.documentEpoch);
-    for (const kind of ['root', 'database']) {
-      assert.equal(state.createdRegistration[kind].volumeUuid, state.prepared.registration[kind].volumeUuid);
-      assert.equal(state.createdRegistration[kind].inode, state.prepared.registration[kind].inode);
+    await completePreparationEvidence(runtime);
+  } else if (phase === 'inspect') {
+    state = await readJson(statePath);
+    assert.equal(state.schemaVersion, 1);
+    assert.equal(state.test, 'workspace-identity-live');
+    assert.equal(state.status, 'preparing');
+    assert.equal(state.step, 'completed:trashRestore');
+    assert.equal(runtime.instanceId, state.beforeRuntime.instanceId, 'Inspect evidence before restarting; no earlier checkpoint is replayed');
+    assert.equal(runtime.workspaceRoot, state.workspaceRoot);
+    assert.deepEqual(state.tasks.map(item => item.operation), ['backup', 'delete', 'trashRestore']);
+    for (const item of state.tasks) {
+      const saved = cli(['task', 'get', '--task', item.taskId]);
+      assert.equal(saved.projectId, state.projectId);
+      assert.equal(saved.status, 'succeeded');
+      assert.deepEqual(saved.result, item.completed.result);
     }
-    state.status = 'prepared';
-    state.preparedAt = now();
-    await checkpoint('ready-for-restart');
-    await saveJson(join(evidence, 'prepare.json'), { ok: true, phase, projectId: state.projectId, projectRoot: state.projectRoot,
-      ...state.prepared, tasks: state.tasks, retainedForVerification: true });
-    console.log(`PASS prepare: ${state.projectId}; sample and backup retained. Restart separately, then run verify. Evidence: ${evidence}`);
+    await completePreparationEvidence(runtime, true);
   } else {
     state = await readJson(statePath);
     assert.equal(state.schemaVersion, 1);

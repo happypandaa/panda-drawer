@@ -287,6 +287,8 @@ CLI 是独立 Rust 可执行文件，随对应操作系统和 CPU 架构的安�
 
 CLI 的普通操作只连接现有服务，不自行打开数据库或启动另一套后端。第一版不要求安装器修改全局 PATH；平台复制给 AI 的说明包含 CLI 的实际绝对路径。命令行快捷入口可以后续补充。
 
+工作区身份兼容另有离线入口 `workspace identity-repair-plan --json` 与 `workspace identity-repair --input repair.json --json`：它们不走 HTTP、不启动服务、不打开业务数据库、不初始化缺失环境，并且仍受平台运行门禁约束。后者需要精确计划、工作区、卷 UUID 与明确确认，只绑定有完整依据的旧迁移目标并保留原件；具体范围及实际执行记录见[工作区持久身份](workspace-identity.md)和[修复验收](workspace-identity-repair-verification.md)。普通命令的服务发现规则不因此改变。
+
 启动策略保持显式：`service status` 只检查状态；规划中的 `service start` 启动已安装的桌面程序并等待服务就绪，已运行时直接返回当前实例。当前尚未实现 `service start`，需先打开开发版桌面应用。其他依赖服务的命令在软件未运行时返回 `SERVICE_NOT_RUNNING`，包含启动提示。未来可由 AI 调用启动命令；当前用户通过桌面应用启动，不需要操作终端。
 
 `env doctor` 在服务运行时返回服务实际选定的 Node/npm 路径、版本和可用性。M2 在服务未启动时报告构建环境未读取，不做候选 Node 探测；未来若增加离线探测，结果必须明确标为候选，不能把 CLI 自己的 PATH 当作桌面服务的真实环境。诊断不会启动服务，CLI 退出也不停止桌面服务。
