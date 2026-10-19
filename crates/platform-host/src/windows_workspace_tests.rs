@@ -40,7 +40,7 @@ fn fixture() -> PathBuf {
             .collect::<String>()
     );
     let path = artifacts.join(name);
-    fs::create_dir(&path).unwrap();
+    create_private_fixture_directory(&path).unwrap();
     path
 }
 fn code<T>(value: Result<T>) -> &'static str {
@@ -150,9 +150,14 @@ fn known_folder_exact_binding_succeeds_or_redirect_is_rejected_without_initializ
     let parent = local.join(&name);
     // Create only a unique diagnostic sibling. A redirected Win32 create may
     // land elsewhere; determine the actual binding before trying the backend.
-    fs::create_dir(&parent).unwrap();
+    create_private_fixture_directory(&parent).unwrap();
     let ancestors = open_parent(&local).unwrap();
     let fixed_parent = ancestors.objects.last().unwrap();
+    let before_system_acl = acl_text(fixed_parent.raw());
+    let parent_security = crate::windows_parent_security::verify_system_parent(
+        fixed_parent.raw(),
+        &user_sid().unwrap(),
+    );
     let absolute_leaf = absolute_fixture_directory(&parent);
     let canonical_parent = canonical_fixture_path(fixed_parent.raw());
     let canonical_leaf = canonical_fixture_path(absolute_leaf.raw());
@@ -160,6 +165,21 @@ fn known_folder_exact_binding_succeeds_or_redirect_is_rejected_without_initializ
     eprintln!("KnownFolder canonical parent: {canonical_parent}");
     eprintln!("Win32 disposable canonical leaf: {canonical_leaf}");
     let before_acl = acl_text(absolute_leaf.raw());
+    match parent_security {
+        Ok(verified) => eprintln!(
+            "Native KnownFolder system-parent owner: {}",
+            verified.owner_sid
+        ),
+        Err(failure) => {
+            eprintln!("KnownFolder system-parent policy rejected ({failure:?}); rejection is not support for this launch context.");
+            assert!(!parent.join(crate::APP_IDENTIFIER).exists());
+            assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+            assert_eq!(acl_text(absolute_leaf.raw()), before_acl);
+            assert_eq!(acl_text(fixed_parent.raw()), before_system_acl);
+            absolute_leaf.verify().unwrap();
+            return;
+        }
+    }
     let outcome = WindowsWorkspace::for_test_path(parent.clone(), true);
     if canonical_leaf != expected_leaf {
         let failure = match outcome {

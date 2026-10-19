@@ -464,40 +464,26 @@ fn diagnostic_object_path(object: &Opened) -> String {
     String::from_utf16_lossy(&buffer[..length as usize])
 }
 
-fn current_owner(object: &Opened, current_user: &str) -> Result<()> {
-    let mut owner = null_mut();
-    let mut descriptor = null_mut();
-    let error = unsafe {
-        GetSecurityInfo(
-            object.handle.raw(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            &mut owner,
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            &mut descriptor,
-        )
-    };
-    let allocation = LocalAllocation(descriptor);
-    if error != 0 || descriptor.is_null() || unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
-        return Err(blocked(
-            "CACHE_PARENT_OWNER_UNVERIFIED",
-            "浏览器缓存父目录的所有者无法确认；未修改现有权限。",
-        ));
-    }
-    let observed_owner = sid_text(owner)?;
-    if observed_owner != current_user {
-        return Err(blocked(
-            "CACHE_PARENT_OWNER_REJECTED",
-            &format!(
-                "浏览器缓存父目录不属于当前用户；未修改所有者或权限。 expectedSid={current_user}; observedSid={observed_owner}; actualObject={}",
-                diagnostic_object_path(object)
-            ),
-        ));
-    }
-    drop(allocation);
-    Ok(())
+fn system_parent_security(object: &Opened, current_user: &str) -> Result<()> {
+    crate::windows_parent_security::verify_system_parent(object.handle.raw(), current_user)
+        .map(|verified| {
+            let _owner = verified.owner_sid;
+        })
+        .map_err(|failure| {
+            let code = if failure.code == "SYSTEM_PARENT_OWNER_REJECTED" {
+                "CACHE_PARENT_OWNER_REJECTED"
+            } else {
+                failure.code
+            };
+            blocked(
+                code,
+                &format!(
+                    "{}; actualObject={}",
+                    failure.message,
+                    diagnostic_object_path(object)
+                ),
+            )
+        })
 }
 
 fn known_local_app_data() -> Result<PathBuf> {
@@ -819,15 +805,13 @@ fn cache_under(parent: &Path) -> Result<WebviewCache> {
     // LocalAppData is an OS-owned parent for many applications. Its existing
     // DACL need not match a private business-control directory, and is never
     // repaired here. Only the newly created profile gets our protected DACL.
-    current_owner(
+    system_parent_security(
         pins.last()
             .ok_or_else(|| blocked("CACHE_PARENT_UNAVAILABLE", "浏览器缓存父目录不可用。"))?,
         &user,
     )
     .map_err(|mut failure| {
-        if failure.code == "CACHE_PARENT_OWNER_REJECTED" {
-            failure.message = format!("{}; knownFolderPath={}", failure.message, parent.display());
-        }
+        failure.message = format!("{}; knownFolderPath={}", failure.message, parent.display());
         failure
     })?;
     let path = parent.join(new_guid_name()?);

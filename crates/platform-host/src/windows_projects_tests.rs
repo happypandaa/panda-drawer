@@ -91,7 +91,7 @@ pub(crate) fn fixture_parent() -> PathBuf {
         "windows-workspace-disposable-{}",
         Uuid::new_v4().simple()
     ));
-    fs::create_dir(&path).unwrap();
+    crate::windows_workspace::create_private_fixture_directory(&path).unwrap();
     path
 }
 

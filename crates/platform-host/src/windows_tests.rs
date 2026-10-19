@@ -397,7 +397,7 @@ fn owner_check_rejects_a_different_trusted_expected_sid_without_changing_acl() {
         "S-1-5-18"
     };
     let object = open_object(&root, true).unwrap();
-    let failure = current_owner(&object, different).err().unwrap();
+    let failure = system_parent_security(&object, different).err().unwrap();
     assert_eq!(failure.code, "CACHE_PARENT_OWNER_REJECTED");
     assert!(failure
         .message

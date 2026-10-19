@@ -378,6 +378,13 @@ fn descriptor(sid: &str, directory: bool) -> Result<Allocation> {
     Ok(Allocation(raw))
 }
 fn owner_and_acl(raw: HANDLE, sid: &str, private: bool) -> Result<()> {
+    if !private {
+        return crate::windows_parent_security::verify_system_parent(raw, sid)
+            .map(|verified| {
+                let _owner = verified.owner_sid;
+            })
+            .map_err(|failure| error(failure.code, failure.message));
+    }
     let mut owner = null_mut();
     let mut dacl = null_mut();
     let mut descriptor = null_mut();
@@ -1432,6 +1439,37 @@ impl WorkspaceDirectory {
         self.verify()?;
         Ok(entries)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn create_private_fixture_directory(path: &Path) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| error("WORKSPACE_TEST_LABEL_INVALID", "夹具名称无效。"))?;
+    if !name.starts_with("windows-workspace-disposable-")
+        && !name.starts_with("local-projects-dev-w2-disposable-")
+    {
+        return Err(error(
+            "WORKSPACE_TEST_LABEL_INVALID",
+            "只为明确命名的全新可丢弃夹具创建私有父目录。",
+        ));
+    }
+    let sid = user_sid()?;
+    let security = descriptor(&sid, true)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: security.0,
+        bInheritHandle: 0,
+    };
+    let name = wide(path.as_os_str())?;
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::CreateDirectoryW(name.as_ptr(), &attributes)
+    } == 0
+    {
+        return Err(os_error("WORKSPACE_TEST_CREATE_NEW_FAILED"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

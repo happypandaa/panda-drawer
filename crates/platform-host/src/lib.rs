@@ -11,6 +11,8 @@ pub use windows::WebviewCache;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+mod windows_parent_security;
+#[cfg(windows)]
 pub mod windows_projects;
 #[cfg(windows)]
 pub mod windows_runtime;
