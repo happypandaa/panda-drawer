@@ -130,13 +130,9 @@ fn absent_and_unavailable_evidence_never_become_a_ready_control() {
 #[test]
 fn unsupported_evidence_kinds_are_explicit_even_when_given_a_control_record() {
     let bytes = serde_json::to_vec(&ready_control()).unwrap();
-    for kind in [
-        EvidenceKind::LifecycleJournal,
-        EvidenceKind::CleanupEvidence,
-    ] {
-        check_bytes(kind, TASK, &bytes, EvidenceStatus::UnsupportedKind);
-        check_bytes(kind, TASK, &[0xff], EvidenceStatus::UnsupportedKind);
-    }
+    let kind = EvidenceKind::CleanupEvidence;
+    check_bytes(kind, TASK, &bytes, EvidenceStatus::UnsupportedKind);
+    check_bytes(kind, TASK, &[0xff], EvidenceStatus::UnsupportedKind);
 }
 
 #[test]

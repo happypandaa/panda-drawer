@@ -34,17 +34,7 @@ fn directory_identity(value: &Value) -> bool {
 }
 
 fn epoch(value: &Value) -> bool {
-    let Some(text) = value.as_str() else {
-        return false;
-    };
-    text.len() == 36
-        && text.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+    value.as_str().is_some_and(super::uuid_text)
 }
 
 pub(super) fn classify(

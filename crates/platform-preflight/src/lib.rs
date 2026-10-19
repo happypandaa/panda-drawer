@@ -9,7 +9,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::fmt;
 
+mod lifecycle;
 mod migration;
+mod trash;
 
 pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
 
@@ -19,6 +21,7 @@ pub enum EvidenceKind {
     RestoreJournal,
     MigrationJournal,
     LifecycleJournal,
+    TrashRecord,
     CleanupEvidence,
 }
 
@@ -40,7 +43,7 @@ pub struct EvidenceContext<'a> {
     pub kind: EvidenceKind,
     pub owner_id: &'a str,
     /// Trusted host configuration, never values copied from the input record.
-    /// Required for migration journals; not used by the two project records.
+    /// Required for migration journals; not used by the other record kinds.
     pub expected_environment: Option<EnvironmentIdentity<'a>>,
 }
 
@@ -57,6 +60,10 @@ pub enum EvidenceStatus {
     MaintenanceActive,
     RecoveryRequired,
     UnresolvedOperation,
+    /// A purge can be resolved as a task while retained contents remain partial.
+    IncompleteOperation,
+    /// A saved trash record does not establish the payload's current location.
+    RetainedTrash,
     HistoricalResolved,
 }
 
@@ -67,7 +74,8 @@ pub struct Assessment {
 }
 
 /// `owner_id` is a project ID for maintenance and a task ID for restoration or
-/// migration. Migration additionally requires the trusted host environment.
+/// migration/lifecycle. For trash records it is the trash ID. Migration
+/// additionally requires the trusted host environment.
 /// No result, including absent evidence or a resolved history record, grants
 /// permission to read a workspace or start its runtime.
 pub fn inspect_record(context: EvidenceContext<'_>, input: EvidenceInput<'_>) -> Assessment {
@@ -77,13 +85,17 @@ pub fn inspect_record(context: EvidenceContext<'_>, input: EvidenceInput<'_>) ->
                 .iter()
                 .all(|value| !value.is_empty() && !value.contains('\0'))
         });
-    let status = if !valid_id(context.owner_id) || invalid_environment {
+    let invalid_owner = !valid_id(context.owner_id)
+        || (context.kind == EvidenceKind::TrashRecord && !trash_id(context.owner_id));
+    let status = if invalid_owner || invalid_environment {
         EvidenceStatus::IdentityMismatch
     } else if !matches!(
         context.kind,
         EvidenceKind::MaintenanceControl
             | EvidenceKind::RestoreJournal
             | EvidenceKind::MigrationJournal
+            | EvidenceKind::LifecycleJournal
+            | EvidenceKind::TrashRecord
     ) {
         EvidenceStatus::UnsupportedKind
     } else {
@@ -105,6 +117,10 @@ pub fn inspect_record(context: EvidenceContext<'_>, input: EvidenceInput<'_>) ->
                         context.owner_id,
                         context.expected_environment.unwrap(),
                     ),
+                    EvidenceKind::LifecycleJournal => {
+                        lifecycle::classify(&value.0, context.owner_id)
+                    }
+                    EvidenceKind::TrashRecord => trash::classify(&value.0, context.owner_id),
                     _ => EvidenceStatus::UnsupportedKind,
                 },
             },
@@ -129,6 +145,21 @@ fn backup_id(value: &str) -> bool {
     value.len() == 39
         && value.starts_with("backup_")
         && value.as_bytes()[7..].iter().all(u8::is_ascii_hexdigit)
+}
+
+fn trash_id(value: &str) -> bool {
+    value.starts_with("trash_") && valid_id(value)
+}
+
+fn uuid_text(text: &str) -> bool {
+    text.len() == 36
+        && text.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
 }
 
 fn exact_fields(value: &Value, fields: &[&str]) -> bool {
@@ -382,3 +413,9 @@ mod tests;
 
 #[cfg(test)]
 mod migration_tests;
+
+#[cfg(test)]
+mod lifecycle_tests;
+
+#[cfg(test)]
+mod trash_tests;
