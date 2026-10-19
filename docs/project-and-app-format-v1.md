@@ -2,9 +2,11 @@
 
 日期：2026-10-19
 
-状态：目录、清单分工及本文档整理已确认；现有开发项目格式继续有效。外部应用包是待实现的 v1 目标设计，配套 Schema 不代表安装器已经可用。初始数据和更新细则等候选方案仍按第 11 节区分，不因编写 Schema 自动批准实施。
+状态：目录、清单分工及本文档整理已确认；PWA 非强制、作为可选增强已确认；现有开发项目格式继续有效。外部应用包是待实现的 v1 目标设计，配套 Schema 不代表安装器已经可用。初始数据和更新细则等候选方案仍按第 11 节区分，不因编写 Schema 自动批准实施。
 
 本文是开发者和外部 AI 的格式入口，集中说明一个目录如何描述自己、必需文件、字段与校验层级。本轮只增加文档、JSON Schema 和说明性示例，没有修改运行代码、既有项目或安装包。
+
+外部安装的后续依赖、步骤与验收见[AP0–AP6 实施规划](app-package-implementation-plan.md)，共 7 阶段、20 小步；目前仅整理文档，运行实现尚未开始。
 
 ## 1 三种交付对象及当前状态
 
@@ -236,7 +238,7 @@ example-app-1.0.0/
 
 PWA（Progressive Web App）通过网页技术提供接近应用的体验。Web App Manifest 描述浏览器安装后的名称、图标、启动地址和显示模式；Service Worker 可以另行实现请求处理与离线缓存。浏览器的可安装性与离线能力需要分别判断，Service Worker 并非当前所有安装方式的前提。参见 [W3C Web App Manifest](https://www.w3.org/TR/appmanifest/)、[MDN 可安装性](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable)与[Service Worker](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers)。
 
-当前 project v1 与外部包目标均没有 PWA 必填条件。建议继续以可在平台服务下运行的静态网页为准入要求，把 PWA 作为后续可选增强；这是本次问题的取舍建议，不表示用户已经确认完整 PWA 协议或当前平台已经验收 PWA 兼容。普通网页没有 Web App Manifest 或 Service Worker，不应仅因此被当作格式不合格。
+用户于 2026-10-19 已确认 PWA 不强制、作为可选增强。project v1 与外部包目标继续以可在平台服务下运行的静态网页为准入要求；没有 Web App Manifest 或 Service Worker 不单因此格式不合格。完整 PWA 协议、Service Worker 与会话/发布代的兼容仍待设计和实测，方向确认不代表这些能力已经实现。
 
 | 方面 | PWA 的潜在收益 | 本平台的成本与边界 |
 | --- | --- | --- |
@@ -316,7 +318,7 @@ project Schema 是面向新编写的规范，不是当前 Rust 解析器的逐�
 | 两类目录角色、专用清单分工、集中规范及 Schema/最小示例 | 本轮文档交付；Schema 未接入程序 |
 | local-app 包解析/检测、暂存范围、确认安装、新实例登记、无源码类型、来源、备份/维护兼容 | 待实现；不能调用或声称已经安装通过 |
 | 静态网页路由/完整资源检测、无源码无 Node 运行、跨机器 GitHub 分享与真实验收 | 待实现与验证；源码可移植不等于所有系统已支持 |
-| PWA 安装、manifest、Service Worker 与平台会话/发布代兼容 | 当前不作为格式必填；可选增强为本次建议，完整兼容与真实浏览器安装未验收 |
+| PWA 安装、manifest、Service Worker 与平台会话/发布代兼容 | 不强制、可选增强的方向已确认；完整兼容与真实浏览器安装未验收，不阻塞基础网页安装 |
 | empty/seed、`user_version` 绑定、同数据版本更新、更新后显式结束维护 | 仍为具体设计候选，需确认再实现；Schema 只记录候选结构 |
 | 安装清单、来源及路径映射的内部格式、归档版本与公开 CLI/API | 待定稿，不新增现有项目必填或伪路由 |
 | 检测预算、计划 TTL、包大小及文件数、更新失败提交点和恢复交互 | 仍待确定/落实；不把建议数值变成正式限额 |
@@ -325,7 +327,7 @@ project Schema 是面向新编写的规范，不是当前 Rust 解析器的逐�
 
 ## 12 本轮文档检查
 
-2026-10-19 完成以下检查：
+首次格式整理（提交 `7494554`）于 2026-10-19 完成以下检查；不是后续 AP 运行验收：
 
 - 使用隔离环境中的 `jsonschema 4.23.0 / Draft202012Validator`，两份 Schema 均通过 2020-12 元模式检查；两个最小清单及字段/条件/路径/版本等共 164 个有效与无效用例通过。检查覆盖未知字段分工、缺失字段、empty/seed 候选关系、API 条件、点段/驱动器/反斜杠、控制字符和末尾换行、版本上限等。发现的路径控制字符及末尾换行遗漏已修正。
 - 用 Node 24.14.1 编译全部 28 个正则，确认 ECMAScript 语法可用；正文最小项目 JSON 与独立文件一致，正文运行需求对象通过两份 Schema 对应定义。
@@ -333,5 +335,7 @@ project Schema 是面向新编写的规范，不是当前 Rust 解析器的逐�
 - 10 份相关 Markdown 的 195 个本地链接及 1 个锚点检查通过，`git diff --check` 通过。独立复核已修正项目 `.platform/` 资料描述，并确认已实现/候选/未实现与原数据保护边界一致。
 
 私有验证脚本、隔离依赖和结果保留在忽略的 `.test-artifacts/project-format-v1-validation*` 下，不进入 Git。本轮只提交文档、Schema 和说明性示例；未改运行代码、工程依赖或锁文件，未启动服务、注册 Service Worker、创建项目或访问既有开发资料。没有新 `.app`/DMG、外部安装或 PWA 真实运行验收；原里程碑及设备/系统限制保持。
+
+后续 PWA 方向确认和 AP 规划仅更新 Markdown，当前文档交叉引用与步骤检查结果另记于[实施规划](app-package-implementation-plan.md)。上述 Schema 用例数量保留为首次整理记录，不冒充安装器测试。
 
 依据：[主开发契约](platform-development-contract.md)、[生命周期](project-lifecycle-and-workspace.md)、[备份](backup-and-maintenance.md)、[能力声明](project-capabilities-and-secrets.md)、[外部包原设计](web-app-package-design.md)。实现核对位置为 [ProjectManifest/清单](../crates/platform-core/src/projects.rs)、[构建](../crates/platform-core/src/builds.rs)、[归档](../crates/platform-core/src/backups.rs)、[运行声明](../crates/platform-core/src/runtime_policy.rs)及[基本信息](../crates/platform-core/src/metadata.rs)。
