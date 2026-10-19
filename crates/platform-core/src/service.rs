@@ -1236,15 +1236,7 @@ async fn validate_host(
     request: Request,
     next: Next,
 ) -> Response {
-    let hosts = request.headers().get_all(header::HOST);
-    if hosts.iter().count() != 1
-        || hosts.iter().next().and_then(|v| v.to_str().ok()) != Some(state.expected_host.as_str())
-    {
-        return failure(
-            ApiError::new("INVALID_HOST", "Use the discovered loopback address"),
-            None,
-        );
-    }
+    if let Err(error) = platform_project_format::http_protocol::host(request.headers(), &state.expected_host) { return failure(error, None); }
     state.active.fetch_add(1, Ordering::SeqCst);
     let _active = Active(state.clone());
     if state.stopping.load(Ordering::SeqCst) {
@@ -1268,14 +1260,14 @@ async fn validate_host(
 fn status(error: &ApiError) -> StatusCode { StatusCode::from_u16(platform_project_format::http_protocol::status(error)).unwrap() }
 fn failure(error: ApiError, project_id: Option<&str>) -> Response {
     let status = status(&error);
-    (status,Json(json!({"apiVersion":API_VERSION,"ok":false,"requestId":Uuid::new_v4().to_string(),"projectId":project_id,"error":error}))).into_response()
+    (status,Json(platform_project_format::http_protocol::envelope::<Value>(Err(error), project_id, &Uuid::new_v4().to_string()))).into_response()
 }
 fn result<T: Serialize>(
     data: std::result::Result<T, ApiError>,
     project_id: Option<&str>,
     request_id: &str,
 ) -> Response {
-    match data {Ok(data)=>Json(json!({"apiVersion":API_VERSION,"ok":true,"requestId":request_id,"projectId":project_id,"data":data})).into_response(),Err(error)=>(status(&error),Json(json!({"apiVersion":API_VERSION,"ok":false,"requestId":request_id,"projectId":project_id,"error":error}))).into_response()}
+    let status = data.as_ref().err().map(status).unwrap_or(StatusCode::OK); (status, Json(platform_project_format::http_protocol::envelope(data, project_id, request_id))).into_response()
 }
 async fn not_found() -> Response {
     failure(ApiError::new("NOT_FOUND", "Unknown platform route"), None)

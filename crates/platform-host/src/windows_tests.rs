@@ -1,17 +1,12 @@
 //! Real Windows objects, exclusively in new disposable repository artifacts.
 use super::*;
-use std::{
-    fs,
-    os::windows::fs::MetadataExt,
-    sync::{Mutex, MutexGuard},
-};
+use std::{fs, os::windows::fs::MetadataExt, sync::MutexGuard};
 
 // The probe intentionally takes short non-sharing ancestor handles. Independent
 // fixtures still share volume/repository ancestors, so serialize this module's
 // filesystem tests instead of pretending those native locks are independent.
-static WINDOWS_FILESYSTEM_TESTS: Mutex<()> = Mutex::new(());
 fn serial() -> MutexGuard<'static, ()> {
-    WINDOWS_FILESYSTEM_TESTS
+    crate::WINDOWS_FILESYSTEM_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

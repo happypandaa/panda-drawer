@@ -134,6 +134,12 @@ async function changeState(next) {
 }
 
 assert.equal(host.hidden, true);
+
+await changeState({ mode: 'normal', busy: false, reloadRequired: false, readOnly: true });
+assert.match(heading.textContent, /Windows 样本只读查看/);
+assert.equal(reload.hidden, true);
+await changeState({ mode: 'normal', busy: false, reloadRequired: false });
+assert.equal(host.hidden, true);
 assert.equal(style.nonce, 'test-nonce');
 await changeState({ mode: 'normal', busy: true, reloadRequired: false });
 assert.match(heading.textContent, /正在备份/);

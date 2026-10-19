@@ -71,6 +71,9 @@ pub fn script() -> &'static str {
     } else if (offline) {
       heading = '暂时无法连接本地平台';
       explanation = '请确认桌面平台仍在运行。未提交内容仍在当前页面中，平台不会自动重试保存。';
+    } else if (state?.readOnly) {
+      heading = 'Windows 样本只读查看';
+      explanation = '当前阶段可查看初始应用和数据库结构。SQL 写入、附件保存、构建和维护尚未开放。';
     }
     window.dispatchEvent(new CustomEvent('platform:state', {detail:{...state, offline, expired, reloadRequired}}));
     host.hidden = !heading;

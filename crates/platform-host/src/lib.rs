@@ -10,6 +10,24 @@ mod webview_policy;
 pub use windows::WebviewCache;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub mod windows_projects;
+#[cfg(windows)]
+pub mod windows_runtime;
+#[cfg(windows)]
+mod windows_workspace;
+#[cfg(windows)]
+pub use windows_runtime::open_project_browser;
+#[cfg(windows)]
+pub use windows_workspace::{
+    fixed_workspace_data_root, WindowsObjectIdentity, WindowsWorkspace, WorkspaceDirectory,
+    WorkspaceEntry, WorkspaceError, WorkspaceFile, WorkspaceLock,
+};
+
+// Native probes briefly hold strict ancestor handles. Their fixtures share
+// ancestry with the workspace tests, so serialize only actual filesystem tests.
+#[cfg(all(test, windows))]
+pub(crate) static WINDOWS_FILESYSTEM_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub mod platform_support;
 

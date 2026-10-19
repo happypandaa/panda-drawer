@@ -11,6 +11,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+futures-util = "0.3"
+mime_guess = "2"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+rusqlite = { version = "0.38", features = ["bundled", "serialize"] }
+url = "2"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
@@ -22,5 +30,11 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
 ] }
 
+[target.'cfg(windows)'.dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }

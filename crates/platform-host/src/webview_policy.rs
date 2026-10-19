@@ -159,7 +159,7 @@ pub(super) fn show_startup_error(message: &str) {
         .take(4096)
         .collect();
     let message = wide(&format!(
-        "Windows 只读应用未能启动。\n\n{safe_message}\n\n本次没有启动项目运行时，也没有创建或切换业务工作区。"
+        "Windows 应用未能启动。\n\n{safe_message}\n\nSQL 写入、附件、构建、恢复和清理尚未开放。已有数据与未完成现场保持保留。"
     ));
     let title = wide("本地项目 · 无法启动");
     // SAFETY: Both strings are NUL terminated and live for the synchronous call.
