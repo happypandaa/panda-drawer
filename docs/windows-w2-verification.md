@@ -129,3 +129,13 @@ Windows 原生测试：host 54 项（含新增 14 项安全原语、12 项项目
 本片没有 SQLite/VFS、串行 worker、登记格式或运行时消费者，没有更改 SDK/API、应用身份、根、旧样本及公开能力。未重建 release，当前 exe 摘要仍为第 8 节引用包的 `e4e93fe673fd0c3ecba877c46c0251a3e7d2fa0d9d1aa7cdfd27737fbd8cf086`。因此只标记 W2.2a 原语完成，公开 SQL/事务和所有后置入口继续拒绝，W2.2 不标为通过。
 
 下一片先完成受限 VFS、WAL/SHM 和每项目串行连接。Win32 SQLite 的 SHM 打开/清理有绕过顶层 VFS 回调的路径；初始化转 WAL 也涉及 rollback journal，不能仅包装 `xOpen` 或持有 main 句柄就开放。现有 schema 1 登记包含空库字节摘要，不能自动重写或升级旧四样本以获得写权限；后续需分别验证新样本可变数据库身份、旁文件安全、缺库/坏库保留、连接配置、关闭排空和重启，再接入 API/SSE 与实际 CRUD/事务小程序。Win10、Mac 原生、普通浏览器、无 Node 净机、物理断网及其余硬件/安装缺项保持原状态。
+
+## 10 W2.2b1：完整文件集合准入与相对读写句柄
+
+接续核对 `a573879` 已提交并推送，工作区干净；fetch 一次连接中断后重试成功，`origin/main` 仍为已合入的 `f855d80`。本片新增 `SqliteFileIdentities` 与 `SqliteFileSet`，前者只是调用方传入的可信身份集合，不新增或自动升级持久登记格式。data 目录自身和主库/WAL/SHM 的完整身份必须全部匹配，同一操作锁内取得三份 lease；克隆集合仍保留所有祖先与对象句柄。
+
+data 目录仅接受精确命名的三文件，缺失、其他条目、目录、大小写别名或任何 rollback journal（包括空 journal）均保留并拒绝。每次组复核及组读写句柄打开重复核对目录集合，不能把后出现的 journal 谎报为不存在。`open_readwrite_handle` 通过已固定父目录的 `NtCreateFile(FILE_OPEN)` 打开，复核实际完整身份和私有 ACL；没有路径重开、CREATE、截断、DELETE 权限或删除共享。获取句柄本身不写字节，也不授权 SQL。
+
+新增 4 项原生测试通过，覆盖中文/空格目录及三文件的真实相对读写句柄、缺失集合不创建、未知/空 journal 保留、大小写别名拒绝、另一项目 data/旁文件身份不接管，以及准入后出现 journal/硬链接时停止。测试使用新命名的字节夹具，未伪称 SQLite 数据库。host 74、desktop 3、共享格式 14，共 91 项 Rust 回归通过，相同三包 all-targets Clippy `-D warnings`、host fmt 和 diff 空白检查通过。
+
+这只是 b1 文件准入，不代表 VFS、SHM 锁、WAL 初始化、串行执行器或 SQL 成功流程完成。公开 SQL 和后置操作仍关闭，旧四个项目、固定身份/根、SDK 及登记均不修改。b2 继续把 SHM 映射和锁建立在相对打开的已核对 HANDLE 上；不能依靠默认 Win32 SHM 的路径打开来宣称同等绑定。GUI 补验与其他系统/设备缺口不变。

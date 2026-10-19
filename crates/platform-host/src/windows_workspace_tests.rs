@@ -727,6 +727,185 @@ fn sqlite_lease_rechecks_changed_acl_without_restoring_permissions() {
     assert_eq!(data.list().unwrap().len(), 1);
 }
 
+fn sqlite_set_fixture(
+    root: &WorkspaceDirectory,
+    name: &str,
+) -> (WorkspaceDirectory, SqliteFileIdentities) {
+    let data = root.create_directory(name).unwrap();
+    let expected = SqliteFileIdentities {
+        data_directory: data.identity().clone(),
+        main: data
+            .write_new("main.sqlite", b"main handle fixture")
+            .unwrap(),
+        wal: data
+            .write_new("main.sqlite-wal", b"WAL handle fixture")
+            .unwrap(),
+        shm: data
+            .write_new("main.sqlite-shm", b"SHM handle fixture")
+            .unwrap(),
+    };
+    (data, expected)
+}
+
+#[test]
+fn sqlite_file_set_binds_one_directory_and_all_three_relative_native_handles() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let (data, expected) = sqlite_set_fixture(&workspace.root(), "data 含空格");
+    let files = data.lease_sqlite_files(&expected).unwrap();
+    for (kind, id, bytes) in [
+        (
+            SqliteFileKind::Main,
+            &expected.main,
+            &b"main handle fixture"[..],
+        ),
+        (
+            SqliteFileKind::Wal,
+            &expected.wal,
+            &b"WAL handle fixture"[..],
+        ),
+        (
+            SqliteFileKind::Shm,
+            &expected.shm,
+            &b"SHM handle fixture"[..],
+        ),
+    ] {
+        let file = files.file(kind);
+        let handle = files.open_readwrite_handle(kind).unwrap();
+        file.verify_native_handle(handle.as_handle()).unwrap();
+        assert_eq!(file.identity(), id);
+        assert!(fs::rename(file.path(), data.path().join("not-renamed")).is_err());
+        let mut reader = fs::File::from(handle);
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).unwrap();
+        assert_eq!(read, bytes);
+    }
+    files.verify_binding().unwrap();
+    assert_eq!(data.list().unwrap().len(), 3);
+    let copied = files.clone();
+    drop(files);
+    drop(data);
+    drop(workspace);
+    copied.verify_binding().unwrap();
+    let main = copied.file(SqliteFileKind::Main);
+    assert!(fs::rename(main.path(), main.path().with_extension("not-renamed")).is_err());
+}
+
+#[test]
+fn sqlite_file_set_rejects_missing_or_unknown_sidecars_including_empty_journals() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let root = workspace.root();
+    let empty = root.create_directory("empty-data").unwrap();
+    let (complete, mut expected) = sqlite_set_fixture(&root, "complete-data");
+    expected.data_directory = empty.identity().clone();
+    assert_eq!(
+        code(empty.lease_sqlite_files(&expected)),
+        "WORKSPACE_DATABASE_LAYOUT_REJECTED"
+    );
+    assert!(empty.list().unwrap().is_empty());
+    for (index, name) in ["main.sqlite-journal", "unknown.sqlite", "main.sqlite-WAL"]
+        .iter()
+        .enumerate()
+    {
+        let (data, expected) = sqlite_set_fixture(&root, &format!("residual-{index}"));
+        if *name == "main.sqlite-WAL" {
+            // Even a same-object case alias is not an admitted spelling.
+            fs::rename(data.path().join("main.sqlite-wal"), data.path().join(name)).unwrap();
+        } else {
+            data.write_new(name, b"").unwrap();
+        }
+        let before: Vec<_> = data
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(
+            code(data.lease_sqlite_files(&expected)),
+            "WORKSPACE_DATABASE_LAYOUT_REJECTED"
+        );
+        let after: Vec<_> = data
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(after, before);
+        assert!(data.path().join(name).exists());
+        assert_eq!(
+            fs::read(data.path().join("main.sqlite")).unwrap(),
+            b"main handle fixture"
+        );
+    }
+    assert_eq!(complete.list().unwrap().len(), 3);
+}
+
+#[test]
+fn sqlite_file_set_does_not_adopt_other_directory_or_sidecar_identities() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let root = workspace.root();
+    let (a, expected_a) = sqlite_set_fixture(&root, "project-a-data");
+    let (b, expected_b) = sqlite_set_fixture(&root, "project-b-data");
+    assert_eq!(
+        code(b.lease_sqlite_files(&expected_a)),
+        "WORKSPACE_DATABASE_IDENTITY_CHANGED"
+    );
+    for kind in [
+        SqliteFileKind::Main,
+        SqliteFileKind::Wal,
+        SqliteFileKind::Shm,
+    ] {
+        let mut mixed = expected_a.clone();
+        match kind {
+            SqliteFileKind::Main => mixed.main = expected_b.main.clone(),
+            SqliteFileKind::Wal => mixed.wal = expected_b.wal.clone(),
+            SqliteFileKind::Shm => mixed.shm = expected_b.shm.clone(),
+        }
+        assert_eq!(
+            code(a.lease_sqlite_files(&mixed)),
+            "WORKSPACE_DATABASE_IDENTITY_CHANGED"
+        );
+    }
+    assert_eq!(a.list().unwrap().len(), 3);
+    assert_eq!(b.list().unwrap().len(), 3);
+    a.lease_sqlite_files(&expected_a).unwrap();
+    b.lease_sqlite_files(&expected_b).unwrap();
+}
+
+#[test]
+fn sqlite_file_set_rechecks_layout_and_relative_open_rejects_late_hardlinks() {
+    let _serial = serial();
+    let workspace = WindowsWorkspace::for_test_path(fixture(), true).unwrap();
+    let (data, expected) = sqlite_set_fixture(&workspace.root(), "data");
+    let files = data.lease_sqlite_files(&expected).unwrap();
+    // Do not hide a recovery record that appears after initial admission.
+    data.write_new("main.sqlite-journal", b"retained recovery evidence")
+        .unwrap();
+    assert_eq!(
+        code(files.verify_binding()),
+        "WORKSPACE_DATABASE_LAYOUT_REJECTED"
+    );
+    assert_eq!(
+        code(files.open_readwrite_handle(SqliteFileKind::Shm)),
+        "WORKSPACE_DATABASE_LAYOUT_REJECTED"
+    );
+    // Single-file relative opens independently repeat the safety checks too.
+    let shm = files.file(SqliteFileKind::Shm);
+    fs::hard_link(shm.path(), data.path().join("retained-shm-alias")).unwrap();
+    assert_eq!(
+        code(shm.open_readwrite_handle()),
+        "WORKSPACE_HARDLINK_REJECTED"
+    );
+    assert_eq!(fs::read(shm.path()).unwrap(), b"SHM handle fixture");
+    assert_eq!(
+        fs::read(data.path().join("main.sqlite-journal")).unwrap(),
+        b"retained recovery evidence"
+    );
+    assert_eq!(data.list().unwrap().len(), 5);
+}
+
 #[test]
 fn sqlite_lease_rejects_hardlinks_wrong_types_and_inherited_acl_without_repair() {
     let _serial = serial();

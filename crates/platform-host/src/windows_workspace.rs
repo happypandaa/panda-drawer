@@ -966,12 +966,74 @@ impl SqliteFileKind {
 /// SQL, or prevent same-user content/ACL/hardlink changes between validations.
 /// A future connection must retain main/WAL/SHM leases until after close
 /// and validate its actual VFS handle, not merely this lease's path string.
+#[derive(Clone)]
 pub struct SqliteFileLease {
     directory: WorkspaceDirectory,
     file: Arc<Object>,
     kind: SqliteFileKind,
     path: PathBuf,
 }
+
+/// Expected identities supplied by a trusted registration reader. This is not
+/// a persisted record or permission to adopt the current directory contents.
+#[derive(Clone, Debug)]
+pub struct SqliteFileIdentities {
+    pub data_directory: WindowsObjectIdentity,
+    pub main: WindowsObjectIdentity,
+    pub wal: WindowsObjectIdentity,
+    pub shm: WindowsObjectIdentity,
+}
+
+/// One complete, existing WAL file set in the same registered data directory.
+/// Admission rejects any other entry, including an unresolved rollback journal.
+/// SQLite format/configuration, project admission and queueing remain separate.
+#[derive(Clone)]
+pub struct SqliteFileSet {
+    directory: WorkspaceDirectory,
+    main: SqliteFileLease,
+    wal: SqliteFileLease,
+    shm: SqliteFileLease,
+}
+impl SqliteFileSet {
+    pub fn file(&self, kind: SqliteFileKind) -> &SqliteFileLease {
+        match kind {
+            SqliteFileKind::Main => &self.main,
+            SqliteFileKind::Wal => &self.wal,
+            SqliteFileKind::Shm => &self.shm,
+        }
+    }
+    fn verify(&self) -> Result<()> {
+        self.directory.verify_sqlite_layout()?;
+        self.main.verify()?;
+        self.wal.verify()?;
+        self.shm.verify()
+    }
+    pub fn verify_binding(&self) -> Result<()> {
+        let _operation = self
+            .directory
+            .context
+            .operation
+            .lock()
+            .map_err(|_| error("WORKSPACE_LOCK_POISONED", "工作区上次操作异常终止。"))?;
+        self.verify()
+    }
+    /// Recheck the complete set before and after opening one bound file. This
+    /// must be used by a future WAL backend so a late journal is not hidden by
+    /// checking just the particular file it is about to access.
+    pub fn open_readwrite_handle(&self, kind: SqliteFileKind) -> Result<OwnedHandle> {
+        let _operation = self
+            .directory
+            .context
+            .operation
+            .lock()
+            .map_err(|_| error("WORKSPACE_LOCK_POISONED", "工作区上次操作异常终止。"))?;
+        self.verify()?;
+        let handle = self.file(kind).open_readwrite_handle_verified()?;
+        self.verify()?;
+        Ok(handle)
+    }
+}
+
 impl SqliteFileLease {
     pub fn path(&self) -> &Path {
         &self.path
@@ -1018,6 +1080,44 @@ impl SqliteFileLease {
         }
         verify_leaf_name(candidate.raw(), self.kind.name())?;
         self.verify()
+    }
+    /// Obtain a native read/write handle through the pinned parent, not a path
+    /// reopen. The file must still exist with the expected identity and private
+    /// permissions. No CREATE, DELETE, truncation, or delete sharing is used.
+    pub fn open_readwrite_handle(&self) -> Result<OwnedHandle> {
+        let _operation = self
+            .directory
+            .context
+            .operation
+            .lock()
+            .map_err(|_| error("WORKSPACE_LOCK_POISONED", "工作区上次操作异常终止。"))?;
+        self.open_readwrite_handle_verified()
+    }
+    fn open_readwrite_handle_verified(&self) -> Result<OwnedHandle> {
+        self.verify()?;
+        let candidate = relative(
+            self.directory.object().raw(),
+            self.kind.name(),
+            false,
+            false,
+            FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+        )?;
+        owner_and_acl(candidate.raw(), &self.directory.context.sid, true)?;
+        if candidate.identity != self.file.identity {
+            return Err(error(
+                "WORKSPACE_DATABASE_IDENTITY_CHANGED",
+                "相对打开的数据库对象身份已变化；未返回读写句柄。",
+            ));
+        }
+        let handle = candidate
+            .handle
+            .0
+            .try_clone()
+            .map_err(|err| error("WORKSPACE_FILE_HANDLE_FAILED", err.to_string()))?;
+        self.verify()?;
+        Ok(handle)
     }
 }
 
@@ -1161,6 +1261,13 @@ impl WorkspaceDirectory {
             .operation
             .lock()
             .map_err(|_| error("WORKSPACE_LOCK_POISONED", "工作区上次操作异常终止。"))?;
+        self.lease_sqlite_file_verified(kind, expected)
+    }
+    fn lease_sqlite_file_verified(
+        &self,
+        kind: SqliteFileKind,
+        expected: &WindowsObjectIdentity,
+    ) -> Result<SqliteFileLease> {
         self.verify()?;
         let file = relative(
             self.object().raw(),
@@ -1188,6 +1295,52 @@ impl WorkspaceDirectory {
         };
         lease.verify()?;
         Ok(lease)
+    }
+    fn verify_sqlite_layout(&self) -> Result<()> {
+        let entries = self.list_verified()?;
+        if entries.len() != 3
+            || entries.iter().any(|entry| {
+                entry.is_directory
+                    || ![
+                        SqliteFileKind::Main.name(),
+                        SqliteFileKind::Wal.name(),
+                        SqliteFileKind::Shm.name(),
+                    ]
+                    .contains(&entry.name.as_str())
+            })
+        {
+            return Err(error(
+                "WORKSPACE_DATABASE_LAYOUT_REJECTED",
+                "WAL 文件集合缺失或包含未知、恢复中旁文件；已保留，未接管或修复。",
+            ));
+        }
+        Ok(())
+    }
+    /// Admit all three existing files under one operation lock. The caller must
+    /// supply the registered data-directory identity as well as every file ID.
+    /// This does not initialize WAL or open SQLite, and never upgrades v1 samples.
+    pub fn lease_sqlite_files(&self, expected: &SqliteFileIdentities) -> Result<SqliteFileSet> {
+        let _operation = self
+            .context
+            .operation
+            .lock()
+            .map_err(|_| error("WORKSPACE_LOCK_POISONED", "工作区上次操作异常终止。"))?;
+        self.verify()?;
+        if self.identity() != &expected.data_directory {
+            return Err(error(
+                "WORKSPACE_DATABASE_IDENTITY_CHANGED",
+                "data 目录与可信登记的完整 Windows 身份不符；未接管候选目录。",
+            ));
+        }
+        self.verify_sqlite_layout()?;
+        let files = SqliteFileSet {
+            directory: self.clone(),
+            main: self.lease_sqlite_file_verified(SqliteFileKind::Main, &expected.main)?,
+            wal: self.lease_sqlite_file_verified(SqliteFileKind::Wal, &expected.wal)?,
+            shm: self.lease_sqlite_file_verified(SqliteFileKind::Shm, &expected.shm)?,
+        };
+        files.verify()?;
+        Ok(files)
     }
     pub fn lock_file(&self, name: &str) -> Result<WorkspaceLock> {
         let _operation = self
@@ -1459,6 +1612,9 @@ impl WorkspaceDirectory {
             .operation
             .lock()
             .map_err(|_| error("WORKSPACE_LOCK_POISONED", "工作区上次操作异常终止。"))?;
+        self.list_verified()
+    }
+    fn list_verified(&self) -> Result<Vec<WorkspaceEntry>> {
         self.verify()?;
         let mut entries = Vec::new();
         let mut names = HashSet::new();
