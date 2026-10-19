@@ -76,6 +76,34 @@ impl RuntimePaths {
         Self::initialize_at(Self::default_root()?)
     }
 
+    /// Offline, read-only preview; never initializes a missing installation.
+    pub fn identity_repair_preview() -> Result<serde_json::Value> {
+        let (paths, migration) = Self::identity_repair_paths(Self::default_root()?)?;
+        crate::identity_upgrade::preview(&paths, migration.as_deref())
+    }
+
+    /// Explicit identity compatibility repair, serialized with desktop startup.
+    pub fn identity_repair(input: serde_json::Value) -> Result<serde_json::Value> {
+        Self::identity_repair_at(Self::default_root()?, input)
+    }
+
+    fn identity_repair_paths(root: PathBuf) -> Result<(Self, Option<String>)> {
+        let mut paths = Self::at(root);
+        paths.validate_marker()?;
+        let settings: Settings = read_private_json(&paths.settings_path())?;
+        Self::validate_settings_identity(&settings)?;
+        paths.workspace_root = settings.workspace_root;
+        Ok((paths, settings.migration_id))
+    }
+
+    fn identity_repair_at(root: PathBuf, input: serde_json::Value) -> Result<serde_json::Value> {
+        let (paths, migration) = Self::identity_repair_paths(root)?;
+        let file = open_private(&paths.data_root.join("instance.lock"), false, false)?;
+        file.try_lock_exclusive()
+            .context("Quit the desktop service before offline identity repair")?;
+        crate::identity_upgrade::apply(&paths, migration.as_deref(), input)
+    }
+
     /// Read an existing development runtime without creating directories or settings.
     pub fn discover() -> Result<Self> {
         let mut paths = Self::at(Self::default_root()?);
@@ -562,6 +590,22 @@ mod tests {
         drop(lock);
         assert!(paths.acquire_lock().is_ok());
         assert!(paths.data_root().join("instance.lock").exists());
+    }
+
+    #[test]
+    fn offline_identity_repair_never_initializes_missing_data_and_respects_instance_lock() {
+        let (_temp, root) = test_root();
+        assert!(RuntimePaths::identity_repair_paths(root.clone()).is_err());
+        assert!(!root.exists());
+        let paths = RuntimePaths::initialize_at(root.clone()).unwrap();
+        let lock = paths.acquire_lock().unwrap();
+        let error =
+            RuntimePaths::identity_repair_at(root.clone(), serde_json::json!({})).unwrap_err();
+        assert!(error.to_string().contains("Quit the desktop service"));
+        assert!(!root.join("identity-repairs").exists());
+        drop(lock);
+        assert!(RuntimePaths::identity_repair_at(root.clone(), serde_json::json!({})).is_err());
+        assert!(!root.join("identity-repairs").exists());
     }
 
     #[test]

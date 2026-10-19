@@ -53,8 +53,13 @@ async function compareMigratedTree(sourceWorkspace, targetWorkspace, relative, b
       const targetIdentity = await lstat(join(targetWorkspace, relative, projectPath));
       assert.ok(sourceIdentity.isDirectory() && !sourceIdentity.isSymbolicLink());
       assert.ok(targetIdentity.isDirectory() && !targetIdentity.isSymbolicLink());
-      assert.deepEqual(sourceRecord.rootIdentity, [sourceIdentity.dev, sourceIdentity.ino], `Source trash identity was not valid: ${path}`);
-      assert.deepEqual(targetRecord.rootIdentity, [targetIdentity.dev, targetIdentity.ino], `Target trash identity not rebound: ${path}`);
+      const sourcePair = Array.isArray(sourceRecord.rootIdentity) ? sourceRecord.rootIdentity : [sourceRecord.rootIdentity.device, sourceRecord.rootIdentity.inode];
+      assert.equal(sourcePair[1], sourceIdentity.ino, `Source trash inode was not valid: ${path}`);
+      if (sourceRecord.rootIdentity.volumeUuid) assert.match(sourceRecord.rootIdentity.volumeUuid, /^[0-9a-f-]{36}$/i);
+      else assert.equal(sourcePair[0], sourceIdentity.dev, `Legacy source trash device was not valid: ${path}`);
+      assert.deepEqual([targetRecord.rootIdentity.device, targetRecord.rootIdentity.inode], [targetIdentity.dev, targetIdentity.ino], `Target trash identity not rebound: ${path}`);
+      assert.match(targetRecord.rootIdentity.volumeUuid, /^[0-9a-f-]{36}$/i);
+      if (sourceRecord.rootIdentity.volumeUuid && sourceIdentity.dev === targetIdentity.dev) assert.equal(targetRecord.rootIdentity.volumeUuid, sourceRecord.rootIdentity.volumeUuid);
       assert.deepEqual({ ...targetRecord, rootIdentity: sourceRecord.rootIdentity }, sourceRecord, `Non-identity trash metadata changed: ${path}`);
       expected[path] = target[path];
       if (JSON.stringify(sourceRecord.rootIdentity) !== JSON.stringify(targetRecord.rootIdentity)) rebound++;

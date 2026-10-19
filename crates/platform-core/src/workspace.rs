@@ -2,6 +2,7 @@
 //! journal and task, so neither progress nor recovery writes modify the source.
 use crate::{
     builds,
+    file_identity::PersistedIdentity,
     projects::{check_no_symlinks, valid_id},
     ApiError, ProjectStore, RuntimePaths, TaskRecord, TaskStatus, APP_IDENTIFIER, ENVIRONMENT,
 };
@@ -16,19 +17,14 @@ use std::{
     io::{Read, Write},
     os::unix::{
         ffi::OsStrExt,
-        fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt},
+        fs::{symlink, OpenOptionsExt, PermissionsExt},
     },
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
 const MARKER: &str = ".platform/workspace-selection.json";
 const RETIRED: &str = ".platform/workspace-retired.json";
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DirectoryIdentity {
-    device: u64,
-    inode: u64,
-}
+pub(crate) type DirectoryIdentity = PersistedIdentity;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MigrationJournal {
@@ -80,10 +76,7 @@ fn identity(path: &Path) -> Result<DirectoryIdentity> {
     if !m.is_dir() || m.file_type().is_symlink() {
         bail!("Expected ordinary directory: {}", path.display())
     }
-    Ok(DirectoryIdentity {
-        device: m.dev(),
-        inode: m.ino(),
-    })
+    PersistedIdentity::capture(path)
 }
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     check_no_symlinks(path, false)?;
@@ -127,9 +120,12 @@ pub(crate) fn validate_selection(data: &Path, root: &Path, migration: Option<&st
         if marker["taskId"] != id
             || marker["identifier"] != APP_IDENTIFIER
             || marker["environment"] != ENVIRONMENT
-            || Some(identity(root)?) != j.destination_identity
+            || !j
+                .destination_identity
+                .as_ref()
+                .is_some_and(|expected| expected.matches_path(root).unwrap_or(false))
         {
-            bail!("Committed workspace identity cannot be verified at {}; both locations are retained",root.display())
+            bail!("Committed workspace identity cannot be verified at {}; existing data is unchanged. If this followed a reboot, inspect the offline workspace identity repair preview",root.display())
         }
     } else {
         if root != data.join("workspace") {
@@ -156,6 +152,48 @@ pub(crate) fn validate_selection(data: &Path, root: &Path, migration: Option<&st
         }
     }
     Ok(())
+}
+
+/// Only an explicit offline repair may bridge a pre-UUID migration record to
+/// this mounted volume. Completed journal and marker evidence is preserved.
+pub(crate) fn legacy_repair_identity(
+    data: &Path,
+    root: &Path,
+    id: &str,
+) -> Result<DirectoryIdentity> {
+    if !valid_id(id) {
+        bail!("Invalid migration selection")
+    }
+    let j: MigrationJournal = read_json(&journal_path(data, id))?;
+    validate_journal(&j, id)?;
+    if j.destination_path != root
+        || !j.published
+        || !j.committed
+        || !j.resolved
+        || !j.epochs_applied
+        || j.phase != "completed"
+    {
+        bail!("Identity repair requires a completed, resolved migration selecting this workspace")
+    }
+    let marker: Value = read_json(&root.join(MARKER))?;
+    if marker["schemaVersion"] != 1
+        || marker["taskId"] != id
+        || marker["identifier"] != APP_IDENTIFIER
+        || marker["environment"] != ENVIRONMENT
+    {
+        bail!("Workspace selection marker differs from its committed journal")
+    }
+    let expected = j
+        .destination_identity
+        .context("Committed destination identity is missing")?;
+    if !expected.is_legacy() {
+        bail!("Stable workspace identity cannot be rebound by legacy repair")
+    }
+    let actual = identity(root)?;
+    if expected.inode != actual.inode || expected.inode == 0 {
+        bail!("Workspace directory was replaced; legacy device repair cannot authorize it")
+    }
+    Ok(expected)
 }
 fn clean_absolute(path: &Path) -> Result<()> {
     if !path.is_absolute()
@@ -275,6 +313,7 @@ fn exclusions(root: &Path) -> Result<BTreeSet<PathBuf>> {
         PathBuf::from(".platform/cache/storage"),
         PathBuf::from(MARKER),
         PathBuf::from(RETIRED),
+        PathBuf::from(".platform/identity-binding.json"),
     ]);
     for entry in fs::read_dir(root.join("projects"))? {
         let entry = entry?;
@@ -521,8 +560,8 @@ pub(crate) fn copy_and_commit(
         validate_journal(&j, id)?;
         validate_idle(paths)?;
         preflight(paths, &j.destination_path)?;
-        if identity(&j.source_path)? != j.source_identity
-            || identity(&j.destination_path)? != j.target_empty_identity
+        if !j.source_identity.matches_path(&j.source_path)?
+            || !j.target_empty_identity.matches_path(&j.destination_path)?
         {
             bail!("Source or empty target directory identity changed")
         }
@@ -609,7 +648,7 @@ pub(crate) fn copy_and_commit(
         j.phase = "publishing".into();
         save_journal(paths, &j)?;
         phase(paths, id, "publishing")?;
-        if identity(&j.destination_path)? != j.target_empty_identity
+        if !j.target_empty_identity.matches_path(&j.destination_path)?
             || fs::read_dir(&j.destination_path)?.next().is_some()
         {
             bail!("Migration target was modified before publication")
@@ -709,7 +748,11 @@ pub(crate) fn completed_result(j: &MigrationJournal) -> Value {
 pub(crate) fn mark_old_retired(paths: &RuntimePaths, j: &MigrationJournal) -> Result<(), ApiError> {
     let mut done = j.clone();
     match identity(&j.source_path) {
-        Ok(actual) if actual == j.source_identity => {
+        Ok(_)
+            if j.source_identity
+                .matches_path(&j.source_path)
+                .unwrap_or(false) =>
+        {
             if let Err(error) = builds::atomic_json(
                 &j.source_path.join(RETIRED),
                 &json!({"schemaVersion":1,"taskId":j.task_id,"destinationPath":j.destination_path,"retired":true}),
@@ -801,7 +844,7 @@ pub(crate) fn info(paths: &RuntimePaths, store: &ProjectStore) -> Result<Value, 
             let cleanup = crate::history_cleanup::retired_cleanup_status(paths, &id)?;
             let cleaned = cleanup.is_some()
                 && matches!(fs::symlink_metadata(&j.source_path), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
-            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":actual.as_ref()==Some(&j.source_identity),"canDelete":false,"cleaned":cleaned,"cleanup":cleanup,"reason":if cleaned {"Retained snapshot was explicitly cleaned; the cleanup receipt remains"}else{"Inspect this registered snapshot in the history cleanup preview"}}));
+            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":j.source_identity.matches_path(&j.source_path).unwrap_or(false),"canDelete":false,"cleaned":cleaned,"cleanup":cleanup,"reason":if cleaned {"Retained snapshot was explicitly cleaned; the cleanup receipt remains"}else{"Inspect this registered snapshot in the history cleanup preview"}}));
         }
     }
     Ok(

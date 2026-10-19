@@ -6,6 +6,7 @@ use crate::{
     },
     builds::{self, BuildManager},
     control::{ControlState, Freeze},
+    file_identity::PersistedIdentity,
     maintenance::MaintenanceManager,
     projects::{check_no_symlinks, valid_id, validate_manifest, ProjectTaskLease},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
@@ -50,7 +51,7 @@ struct Journal {
     trash_id: Option<String>,
     target_epoch: String,
     phase: String,
-    directory_identity: Option<(u64, u64)>,
+    directory_identity: Option<PersistedIdentity>,
     control: Option<ControlState>,
     destination: Option<PathBuf>,
     published_sha256: Option<String>,
@@ -70,7 +71,7 @@ struct TrashRecord {
     deleted_at: u64,
     state: String,
     control: ControlState,
-    root_identity: (u64, u64),
+    root_identity: PersistedIdentity,
     delete_task_id: String,
     last_task_id: String,
     issues: Vec<ApiError>,
@@ -102,6 +103,17 @@ fn identity(path: &Path) -> Result<(u64, u64), ApiError> {
         ));
     }
     Ok((metadata.dev(), metadata.ino()))
+}
+fn persistent_identity(path: &Path) -> Result<PersistedIdentity, ApiError> {
+    identity(path)?;
+    PersistedIdentity::capture(path)
+        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
+}
+fn matches_identity(expected: &PersistedIdentity, path: &Path) -> Result<bool, ApiError> {
+    identity(path)?;
+    expected
+        .matches_path(path)
+        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
 }
 /// Rebind only verified trash directories in an independently verified workspace
 /// copy. The caller persists this evidence before publishing the new workspace.
@@ -151,12 +163,14 @@ pub(crate) fn rebind_migrated_trash(source: &Path, target: &Path) -> Result<Valu
             evidence.push(json!({"trashId":trash_id,"status":"unchanged","reason":"inactive_or_invalid_record"}));
             continue;
         }
-        let old_actual = identity(&source.join(&relative).join("project")).ok();
-        let new_actual = identity(&target.join(&relative).join("project")).ok();
-        if old_actual != Some(record.root_identity) {
+        let source_project = source.join(&relative).join("project");
+        let target_project = target.join(&relative).join("project");
+        let old_actual = persistent_identity(&source_project).ok();
+        let new_actual = persistent_identity(&target_project).ok();
+        if !matches_identity(&record.root_identity, &source_project).unwrap_or(false) {
             // Do not turn a previously replaced or missing directory into an
             // authorized restore/purge target merely because it was copied.
-            if new_actual == Some(record.root_identity) {
+            if matches_identity(&record.root_identity, &target_project).unwrap_or(false) {
                 return Err(ApiError::new(
                     "WORKSPACE_MIGRATION_FAILED",
                     "Copied trash would accidentally match an unverified historical identity",
@@ -611,7 +625,7 @@ impl LifecycleManager {
         let (mut record, lease) = self.tasks.create_operation(&trash.project_id, task_kind)?;
         let mut journal = Self::journal(&record, task_kind, &trash.project_id);
         journal.trash_id = Some(trash_id.into());
-        journal.directory_identity = Some(trash.root_identity);
+        journal.directory_identity = Some(trash.root_identity.clone());
         journal.control = Some(trash.control.clone());
         let prepared = (|| {
             self.save(&journal)?;
@@ -895,7 +909,7 @@ impl LifecycleManager {
         })
         .await
         .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
-        journal.directory_identity = Some(identity(&candidate)?);
+        journal.directory_identity = Some(persistent_identity(&candidate)?);
         journal.control = Some(state.clone());
         journal.result = json!({"projectId":journal.project_id,"targetProjectId":journal.project_id,"sourceProjectId":journal.source_project_id,"documentEpoch":journal.target_epoch,"mode":state.mode,"maintenanceId":state.maintenance_id,"readyForChanges":state.ready_for_changes,"baselineBackupId":state.baseline_backup_id,"pendingBuild":{"required":state.pending_build,"reason":state.pending_build_reason},"diagnostics":diagnostics,"operationOutcome":if baseline_error.is_some(){"registered_maintenance_not_ready"}else if journal.kind=="copy"{"copied"}else{"imported"}});
         self.phase(journal, "install-intent")?;
@@ -960,12 +974,12 @@ impl LifecycleManager {
             deleted_at: now_ms(),
             state: "trashed".into(),
             control: state.clone(),
-            root_identity: identity(&root)?,
+            root_identity: persistent_identity(&root)?,
             delete_task_id: journal.task_id.clone(),
             last_task_id: journal.task_id.clone(),
             issues: vec![],
         };
-        journal.directory_identity = Some(record.root_identity);
+        journal.directory_identity = Some(record.root_identity.clone());
         journal.control = Some(state);
         journal.result = json!({"projectId":id,"trashId":trash_id,"operationOutcome":"trashed"});
         self.phase(journal, "trash-move-intent")?;
@@ -987,7 +1001,7 @@ impl LifecycleManager {
         let trash_id = journal.trash_id.clone().unwrap();
         let mut record = self.read_trash(&trash_id)?;
         let source = self.trash_root(&trash_id)?.join("project");
-        if identity(&source)? != record.root_identity {
+        if !matches_identity(&record.root_identity, &source)? {
             return Err(ApiError::new(
                 "TRASH_IDENTITY_CHANGED",
                 "Trash project directory was replaced; original identity cannot be verified",
@@ -1084,7 +1098,7 @@ impl LifecycleManager {
         )?;
         let mut record = self.read_trash(&trash_id)?;
         let root = self.trash_root(&trash_id)?.join("project");
-        if root.exists() && identity(&root)? != record.root_identity {
+        if root.exists() && !matches_identity(&record.root_identity, &root)? {
             return Err(ApiError::new(
                 "TRASH_IDENTITY_CHANGED",
                 "Trash contents were replaced; refusing to purge an unrecognized directory",
@@ -1174,7 +1188,7 @@ impl LifecycleManager {
         self.store
             .check_identity_available(&trash.project_id, Some(trash_id), None)?;
         let root = self.trash_root(trash_id)?.join("project");
-        if identity(&root)? != trash.root_identity {
+        if !matches_identity(&trash.root_identity, &root)? {
             return Err(ApiError::new(
                 "TRASH_IDENTITY_CHANGED",
                 "Trash directory was replaced after preview",
@@ -1183,7 +1197,7 @@ impl LifecycleManager {
         let task = self.tasks.create_workspace_operation("trashPurge")?;
         let mut journal = Self::journal(&task, "trashPurge", &trash.project_id);
         journal.trash_id = Some(trash_id.into());
-        journal.directory_identity = Some(trash.root_identity);
+        journal.directory_identity = Some(trash.root_identity.clone());
         journal.control = Some(trash.control.clone());
         let result = (|| {
             self.save(&journal)?;
@@ -1319,7 +1333,12 @@ impl LifecycleManager {
             .workspace_root()
             .join("projects")
             .join(&journal.project_id);
-        let expected = journal.directory_identity;
+        let expected = journal.directory_identity.clone();
+        let matches = |path: &Path| {
+            expected
+                .as_ref()
+                .is_some_and(|expected| matches_identity(expected, path).unwrap_or(false))
+        };
         let mut outcome = "not_started";
         match journal.kind.as_str() {
             "export" => {
@@ -1337,7 +1356,7 @@ impl LifecycleManager {
                 }
             }
             "import" | "copy" => {
-                if expected.is_some() && identity(&root).ok() == expected {
+                if matches(&root) {
                     if self.store.registered_epoch(&journal.project_id)?.as_deref()
                         != Some(&journal.target_epoch)
                     {
@@ -1377,7 +1396,7 @@ impl LifecycleManager {
                     ApiError::new("RECOVERY_REQUIRED", "Delete journal lacks trashId")
                 })?;
                 let retained = self.trash_root(trash_id)?.join("project");
-                if expected.is_some() && identity(&retained).ok() == expected && !root.exists() {
+                if matches(&retained) && !root.exists() {
                     self.store.unregister_lifecycle(
                         &journal.project_id,
                         &journal.target_epoch,
@@ -1391,9 +1410,7 @@ impl LifecycleManager {
                         self.paths.workspace_root(),
                         &journal.project_id,
                     )?;
-                } else if !retained.exists()
-                    && (expected.is_none() || identity(&root).ok() == expected)
-                {
+                } else if !retained.exists() && (expected.is_none() || matches(&root)) {
                     if let Ok(mut record) = self.read_trash(trash_id) {
                         record.state = "cancelled".into();
                         self.save_trash(&record)?;
@@ -1408,7 +1425,7 @@ impl LifecycleManager {
                     ApiError::new("RECOVERY_REQUIRED", "Trash restore journal lacks trashId")
                 })?;
                 let retained = self.trash_root(trash_id)?.join("project");
-                if expected.is_some() && identity(&root).ok() == expected && !retained.exists() {
+                if matches(&root) && !retained.exists() {
                     if self.store.registered_epoch(&journal.project_id)?.as_deref()
                         != Some(&journal.target_epoch)
                     {
@@ -1435,7 +1452,7 @@ impl LifecycleManager {
                         self.paths.workspace_root(),
                         &journal.project_id,
                     )?;
-                } else if !root.exists() && identity(&retained).ok() == expected {
+                } else if !root.exists() && matches(&retained) {
                     self.store
                         .release_identity(&journal.project_id, &journal.task_id)?;
                     outcome = "not_restored";

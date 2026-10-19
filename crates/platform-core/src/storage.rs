@@ -2,6 +2,7 @@
 //! Scanning never opens SQLite, executes project code or reads attachment bodies.
 use crate::{
     builds::{self, BuildManager},
+    file_identity::PersistedIdentity,
     files,
     maintenance::MaintenanceManager,
     projects::{check_no_symlinks, valid_id, validate_manifest},
@@ -1556,7 +1557,41 @@ fn workspace_scan(
                     }
                 }
             }
-            match read_json::<Value>(&file) {Ok(j) if j["committed"]==true=>{if let Some(source)=j["sourcePath"].as_str(){let p=PathBuf::from(source);if p!=workspace.path && !roots.iter().any(|(_,old)|old==&p){match root_identity(&p){Ok(actual)=>{let expected=&j["sourceIdentity"];if expected["device"]==actual.device && expected["inode"]==actual.inode {roots.push(("retainedWorkspace".into(),actual.path));}else{missing.push(unknown_scope("retainedWorkspace",Some(&p),"retained_root_identity_changed"));}},Err(_)=>missing.push(unknown_scope("retainedWorkspace",Some(&p),"retained_root_unavailable"))}}}},Ok(_)=>{},Err(e)=>missing.push(json!({"scope":{"kind":"retainedWorkspace"},"root":null,"totalBytes":null,"complete":false,"stale":true,"issues":[problem(file,"unreadable_migration_record",e)]}))}
+            match read_json::<Value>(&file) {
+                Ok(journal) if journal["committed"] == true => {
+                    if let Some(source) = journal["sourcePath"].as_str() {
+                        let path = PathBuf::from(source);
+                        if path != workspace.path && !roots.iter().any(|(_, old)| old == &path) {
+                            match root_identity(&path) {
+                                Ok(actual) => {
+                                    let verified = serde_json::from_value::<PersistedIdentity>(
+                                        journal["sourceIdentity"].clone(),
+                                    )
+                                    .is_ok_and(|expected| {
+                                        expected.matches_path(&path).unwrap_or(false)
+                                    });
+                                    if verified {
+                                        roots.push(("retainedWorkspace".into(), actual.path));
+                                    } else {
+                                        missing.push(unknown_scope(
+                                            "retainedWorkspace",
+                                            Some(&path),
+                                            "retained_root_identity_changed",
+                                        ));
+                                    }
+                                }
+                                Err(_) => missing.push(unknown_scope(
+                                    "retainedWorkspace",
+                                    Some(&path),
+                                    "retained_root_unavailable",
+                                )),
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => missing.push(json!({"scope":{"kind":"retainedWorkspace"},"root":null,"totalBytes":null,"complete":false,"stale":true,"issues":[problem(file,"unreadable_migration_record",error)]})),
+            }
         }
     }
     if !roots.iter().any(|(_, p)| p == &data.path) {

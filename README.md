@@ -6,6 +6,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；当前仅完成[方案与 W1–W4 规划](docs/windows-support-plan.md)，尚未进行 Windows 移植、构建或实测。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
 
+macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。修复保留原记录和项目资料，实际交付与验证以对应记录为准。
+
 ## 开发
 
 使用 macOS 15+、Apple Silicon、Node 22.12+（支持 Node 22/24，推荐 24 LTS）、npm、Rust 和 Xcode 工具链。

@@ -192,6 +192,10 @@ struct TrashOptions {
 enum WorkspaceCommand {
     Info(OutputOptions),
     Storage(OutputOptions),
+    /// Preview an offline legacy identity repair; does not initialize or start the app.
+    IdentityRepairPlan(OutputOptions),
+    /// Confirm the exact offline preview. Preserves original migration records and project data.
+    IdentityRepair(InputOptions),
     /// Inspect registered historical cleanup candidates without deleting files.
     CleanupPlan(OutputOptions),
     /// Permanently clean explicitly selected IDs from an unexpired preview plan.
@@ -463,6 +467,22 @@ fn trash_command(command: TrashCommand) -> (bool, Result<Value>) {
 
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
+        WorkspaceCommand::IdentityRepairPlan(options) => (
+            options.json,
+            RuntimePaths::identity_repair_preview()
+                .map(success)
+                .map_err(|e| CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))),
+        ),
+        WorkspaceCommand::IdentityRepair(options) => (
+            options.output.json,
+            read_input(&options.input).and_then(|input| {
+                RuntimePaths::identity_repair(input)
+                    .map(success)
+                    .map_err(|e| {
+                        CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
+                    })
+            }),
+        ),
         WorkspaceCommand::CleanupPlan(options) => (
             options.json,
             business_request(
@@ -1429,6 +1449,15 @@ mod tests {
             vec!["cli", "trash", "restore", "--trash", "trash_a"],
             vec!["cli", "trash", "purge", "--trash", "trash_a"],
             vec!["cli", "workspace", "info", "--json"],
+            vec!["cli", "workspace", "identity-repair-plan", "--json"],
+            vec![
+                "cli",
+                "workspace",
+                "identity-repair",
+                "--input",
+                "-",
+                "--json",
+            ],
             vec!["cli", "workspace", "migrate", "--input", "-"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
@@ -1438,6 +1467,7 @@ mod tests {
             vec!["cli", "project", "import"],
             vec!["cli", "trash", "purge"],
             vec!["cli", "workspace", "migrate"],
+            vec!["cli", "workspace", "identity-repair"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
