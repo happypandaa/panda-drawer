@@ -8,7 +8,7 @@ Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、No
 
 MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立 C 静态库与 Rust 的 x64 编译、链接和运行。该命令在唯一的 `.test-artifacts/windows-w1-toolchain-smoke-*` 中保存源码、产物和报告，不清理旧证据、不构建或启动平台；它与只读环境盘点是不同检查。需要纯 JSON 时执行 `node scripts/windows-toolchain-smoke.mjs --json`。成功只证明本机开发工具链小样，不代表 Windows 产品兼容或 bundled SQLite 通过。
 
-平台使用者与平台开发者的要求不同：运行带有效网页产物的项目不需要 Node/npm、Rust、Visual Studio 或独立 SQLite 服务；修改业务源码后构建才需要系统 Node/npm，Rust/MSVC/Windows SDK 只用于开发平台本身。Node 内置分发没有在本轮确认，已有完整项目 ZIP 和拟议网页应用包的规则也没有因此改变。
+平台使用者与平台开发者的要求不同：运行现有静态网页产物不需要用户安装系统 Node/npm、Rust、Visual Studio 或独立 SQLite 服务；修改业务源码后构建才需要系统 Node/npm，Rust/MSVC/Windows SDK 只用于开发平台本身。Windows W1 原环境准备不包含 Node 内置分发；本次另确认的私有运行时方向及尚未实现的状态见第 7 节，已有完整项目 ZIP 和拟议网页应用包的规则不因此改变。
 
 `npm run test:platform-support` 直接使用所选 Rust 编译、运行 `platform_support.rs` 的无依赖生产策略测试，输出位于新的 `.test-artifacts/w1-platform-support-*`，不启动平台或读取用户工作区。Windows 使用真实 `x86_64-pc-windows-msvc` 目标；Mac 分支的策略断言不是 Mac 实机回归。这个独立检查不编译整个 core、CLI 或 Tauri，不能替代后续完整构建、入口拒绝和现场保护验收。
 
@@ -92,7 +92,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 最低打包系统设为 macOS 15，目标为 Apple Silicon。内部包采用 ad-hoc 签名；没有 Developer ID 公证、互联网下载首启或最低系统实机通过记录时，不称作已完成正式分发。正式名称、应用标识、签名资质与设备验收在相应发行阶段完成。
 
-当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式；Node、Rust 工具链也不放入最终桌面包。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
+当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式；当前内部包未携带 Node 或 Rust 工具链。新增私有 Node 随包方向尚待实施，不包含向使用者分发 Rust 开发工具链。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
 
 ## 5 当前项目和工具入口
 
@@ -154,7 +154,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 `scripts/package-template.mjs` 在临时副本执行 `npm ci` 和模板构建，核对构建未改写源码后，将 `starter/` 网页及 `starter.json` 来源写入包内模板资源。记录模板版本、源码／产物摘要及实际打包工具版本；用户新建时验证并复制这些资源，安装到项目 `dist/` 和不可变初始代，同时记录 `.platform/starter.json`。该来源表示平台提供的模板，不是用户在本机完成过构建；不会创建成功任务、任务日志或冒充本机构建的 Node/npm 环境。
 
-Node 先使用显式选择的绝对路径，否则探测 nvm、Volta、常见本机安装路径及可用 PATH。实际 Node/npm 版本经运行检查；npm 由所选 Node 执行，避免 shebang 选择另一个版本。本机选择保存到开发数据根 `toolchain.json`，不写入项目清单。平台不安装、升级或内置 Node；缺少工具只阻止构建，已发布网页和数据库仍可运行。首次依赖安装可能需要联网。
+项目构建 Node 先使用显式选择的绝对路径，否则探测 nvm、Volta、常见本机安装路径及可用 PATH。实际 Node/npm 版本经运行检查；npm 由所选 Node 执行，避免 shebang 选择另一个版本。本机选择保存到开发数据根 `toolchain.json`，不写入项目清单。当前实现不安装、升级或内置 Node；缺少工具只阻止构建，已发布网页和数据库仍可运行。首次依赖安装可能需要联网。2026-10-19 已确认的[私有运行时与首批连接器方向](bundled-node-and-connectors.md)尚未实现，不能把当前构建探测当作新的运行时管理，也不能让其自动替代构建工具链。
 
 构建按锁文件执行 `npm ci`，依赖指纹未变化且安装记录有效时可复用项目 `app/node_modules/`。共享 npm 缓存位于 `workspace/.platform/cache/npm/`。任务按项目互斥，并对输入取 SHA-256 基准，在依赖准备后和发布前复核；输入变化、依赖失败、脚本失败、无效产物均不发布新网页。构建只接受 `--outDir` 指定的平台暂存目录，不自动建表或重置数据库。
 
