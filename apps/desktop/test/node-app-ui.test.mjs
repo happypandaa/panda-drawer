@@ -78,6 +78,10 @@ async function change(element, value) {
   });
 }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
+async function openDetails(name) {
+  await click(document.querySelector(`[aria-label='项目「${name}」的更多操作']`));
+  await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
+}
 async function submit() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 function baseMock(value, action) { return async (command, args) => { if (command === 'node_app_list') return [value]; if (command === 'node_app_configuration') return value; return action(command, args); }; }
@@ -302,13 +306,13 @@ test('All project types share My Projects, counts and search without a separate 
   const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: 'Artificial webpage', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
   await setup(shellMock(state), {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 2);
-  assert.match(document.querySelector('.project-list-heading').textContent, /2 个项目/);
-  assert.equal([...document.querySelectorAll('.side-nav button')].some(value => value.textContent.includes('Node')), false);
+  assert.match(document.querySelector('.radio-footer').textContent, /2 APPS/);
+  assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(value => value.textContent), ['我的项目', '空间与工作区']);
   assert.match(document.querySelector('.project-grid').textContent, /网页项目/);
   assert.match(document.querySelector('.project-grid').textContent, /Node 服务项目/);
   await change(document.querySelector('input[type="search"]'), 'Disposable');
   assert.equal(document.querySelectorAll('.project-card').length, 1);
-  assert.match(document.querySelector('.project-list-heading').textContent, /1 \/ 2 个项目/);
+  assert.match(document.querySelector('.radio-footer').textContent, /1 \/ 2 APPS/);
   await change(document.querySelector('input[type="search"]'), 'no match artificial');
   assert.match(document.querySelector('.project-search-empty').textContent, /没有找到匹配/);
 });
@@ -340,8 +344,7 @@ test('Entering a Node project with a missing key opens its configuration, saving
 test('Node details reopen without a secret and expose only supported tabs and actions', async () => {
   const state = { nodes: [app()] };
   await setup(shellMock(state), {}, App);
-  const details = () => document.querySelector('[aria-label="查看项目「Disposable Node fixture」的详情"]');
-  await click(details());
+  await openDetails('Disposable Node fixture');
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
   assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
   assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /删除项目|备份维护/.test(value.textContent)), false);
@@ -349,7 +352,7 @@ test('Node details reopen without a secret and expose only supported tabs and ac
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   await click(byText('丢弃草稿并关闭'));
   assert.equal(document.querySelector('[role=dialog]'), null);
-  await click(details()); await click(byText('应用配置'));
+  await openDetails('Disposable Node fixture'); await click(byText('应用配置'));
   assert.equal(input('AI_KEY').value, '');
 });
 
@@ -361,12 +364,12 @@ test('Closing read-only details revokes a late configuration result before anoth
     if (command === 'node_app_configuration' && args.appId === first.id) return delayed.promise;
     return shellMock(state)(command, args);
   }, {}, App);
-  await click(document.querySelector('[aria-label="查看项目「Disposable Node fixture」的详情"]'));
+  await openDetails('Disposable Node fixture');
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   assert.equal(document.querySelector('[role=dialog]'), null);
   assert.equal(document.querySelector('[aria-label="进入项目「Second artificial fixture」"]').disabled, false);
-  assert.equal([...document.querySelectorAll('.side-nav button')].find(value => value.textContent === '关于平台').disabled, false);
-  await click(document.querySelector('[aria-label="查看项目「Second artificial fixture」的详情"]'));
+  assert.equal(document.querySelector('[aria-label="设置"]').disabled, false);
+  await openDetails('Second artificial fixture');
   await act(async () => delayed.resolve(app({ name: 'Outdated first project', configuration: { revision: 99, values: { MODEL: 'stale-model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } })));
   assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
   await click(byText('应用配置'));
@@ -396,11 +399,17 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   }, {}, App);
   await click(document.querySelector('[aria-label="进入项目「Disposable Node fixture」"]'));
   assert.equal(document.querySelector('[role=dialog]'), null);
-  const details = document.querySelector('[aria-label="查看项目「Static fixture」的详情"]');
-  assert.equal(details.disabled, true);
+  const staticActions = document.querySelector('[aria-label="项目「Static fixture」的更多操作"]');
+  assert.equal(staticActions.disabled, true);
   assert.equal(byText('新建项目').disabled, true);
+  const addMenu = document.querySelector('.radio-add-menu');
+  const addTrigger = addMenu.querySelector('summary');
+  assert.equal(addTrigger.getAttribute('aria-disabled'), 'true');
   assert.equal(byText('导入项目').disabled, true);
-  await click(details); await click(byText('新建项目')); await click(byText('导入项目'));
+  await click(addTrigger);
+  assert.equal(addMenu.open, false);
+  await click(staticActions); await click(byText('新建项目')); await click(byText('导入项目'));
+  assert.equal(document.querySelector('[role=menu]'), null);
   assert.equal(document.querySelector('[role=dialog]'), null);
   await act(async () => configuration.reject(new Error('Artificial configuration read failure')));
   assert.equal(document.querySelectorAll('[role=dialog]').length, 1);

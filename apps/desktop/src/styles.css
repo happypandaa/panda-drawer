@@ -797,3 +797,518 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .node-app-modal-detail > [role=tabpanel] > h3 { color: #46563a; font-size: 15px; margin: 0 0 14px; }
 .node-app-modal-detail > [role=tabpanel] > p { color: #808a73; font-size: 13px; line-height: 1.9; }
 .node-app-modal-detail .overview-tabs > button { display: inline-flex; align-items: center; gap: 7px; }
+
+/* Approved Radio Bob direction: local launcher, shared by both appearances. */
+@font-face {
+  font-family: Doto;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/doto-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/space-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/space-mono-700.woff2') format('woff2');
+}
+
+:root {
+  --radio-background: #fafafa;
+  --radio-header: #f2effa;
+  --radio-header-glow: #ae92ff33;
+  --radio-footer: #e8e2f4;
+  --radio-text: #101014;
+  --radio-muted: #85858c;
+  --radio-secondary: #62626c;
+  --radio-line: #dcdce1;
+  --radio-surface: #ffffff;
+  --radio-subtle: #f6f4fa;
+  --radio-selected: #e8e5ee;
+  --radio-active: #0d0c14;
+  --radio-active-text: #ffffff;
+  --radio-focus: #8170aa;
+  --radio-warning: #8b6312;
+  --radio-warning-surface: #fff9eb;
+  --radio-warning-line: #e7d9b5;
+  --radio-danger: #aa504b;
+  --radio-danger-surface: #fff3f1;
+  --radio-danger-line: #ecd0cc;
+  --radio-success: #4e7c61;
+  --radio-success-surface: #edf6ef;
+  --radio-success-line: #d1e4d5;
+  --radio-dots: url('/ui/dots-light.png');
+  --radio-shadow: 0 16px 48px #1711221f;
+  --radio-mono: 'Space Mono', 'SFMono-Regular', Consolas, monospace;
+  --surface: var(--radio-surface);
+  --border: var(--radio-line);
+  --muted: var(--radio-muted);
+  --accent: var(--radio-focus);
+  color: var(--radio-text);
+  background: var(--radio-background);
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  --radio-background: #111115;
+  --radio-header: #19181f;
+  --radio-header-glow: #7555c329;
+  --radio-footer: #292238;
+  --radio-text: #eeeef0;
+  --radio-muted: #92929b;
+  --radio-secondary: #b6b4c0;
+  --radio-line: #35343f;
+  --radio-surface: #1c1b23;
+  --radio-subtle: #24222d;
+  --radio-selected: #332e41;
+  --radio-active: #eeeaf6;
+  --radio-active-text: #17141e;
+  --radio-focus: #b4a2dc;
+  --radio-warning: #d8b76a;
+  --radio-warning-surface: #30291e;
+  --radio-warning-line: #554632;
+  --radio-danger: #e5a09a;
+  --radio-danger-surface: #342321;
+  --radio-danger-line: #60423f;
+  --radio-success: #8cbfa0;
+  --radio-success-surface: #1c3025;
+  --radio-success-line: #345542;
+  --radio-dots: url('/ui/dots-dark.png');
+  --radio-shadow: 0 16px 48px #00000050;
+  color-scheme: dark;
+}
+
+body { min-width: 640px; background: var(--radio-background); color: var(--radio-text); }
+button, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--radio-focus);
+  outline-offset: 3px;
+}
+::selection { color: var(--radio-text); background: var(--radio-selected); }
+
+.radio-shell {
+  display: flex;
+  flex-direction: column;
+  min-width: 640px;
+  height: 100dvh;
+  min-height: 480px;
+  overflow: hidden;
+  color: var(--radio-text);
+  background-color: var(--radio-background);
+  background-image: var(--radio-dots);
+  background-size: 18px 18px;
+}
+.radio-header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 96px;
+  flex-shrink: 0;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--radio-line);
+  background-color: var(--radio-header);
+  background-image: var(--radio-dots);
+  background-size: 18px 18px;
+  box-shadow: inset 0 0 52px var(--radio-header-glow);
+}
+.radio-brand { display: flex; flex-shrink: 0; align-items: center; gap: 12px; min-width: 0; }
+.radio-brand > img { display: block; width: 42px; height: 42px; flex-shrink: 0; object-fit: contain; }
+.radio-brand .brand-mark { width: 38px; height: 38px; border-radius: 0; overflow: visible; }
+.radio-brand > div { min-width: 0; }
+.radio-brand-wordmark {
+  display: block;
+  font-family: Doto, var(--radio-mono);
+  font-size: 29px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -.6px;
+  color: var(--radio-text);
+  white-space: nowrap;
+}
+.radio-brand-caption { display: block; margin-top: 6px; color: var(--radio-muted); font-size: 11px; line-height: 1.3; }
+.radio-primary-nav, .radio-theme-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid var(--radio-line);
+  border-radius: 999px;
+  background: transparent;
+}
+.radio-primary-nav { flex-shrink: 0; margin-inline: auto; }
+.radio-primary-nav button, .radio-theme-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--radio-text);
+  white-space: nowrap;
+  transition: background-color .15s, color .15s;
+}
+.radio-primary-nav button { min-height: 34px; padding: 7px 14px; font-size: 13px; font-weight: 500; }
+.radio-primary-nav button:hover:not(:disabled), .radio-theme-switch button:hover:not(:disabled) { background: var(--radio-selected); }
+.radio-primary-nav button:is([aria-selected='true'], [aria-pressed='true'], [data-active='true'], .active),
+.radio-theme-switch button:is([aria-selected='true'], [aria-pressed='true'], [data-active='true'], .active),
+.radio-primary-nav button[aria-pressed='true']:hover:not(:disabled),
+.radio-theme-switch button[aria-pressed='true']:hover:not(:disabled) {
+  color: var(--radio-active-text);
+  background: var(--radio-active);
+}
+.radio-header-actions { display: flex; flex-shrink: 0; align-items: center; justify-content: flex-end; gap: 9px; min-width: 0; }
+.radio-theme-switch button { min-height: 32px; padding: 7px 13px; font: 700 11px/1.3 var(--radio-mono); letter-spacing: .3px; }
+.radio-settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex-shrink: 0;
+  color: var(--radio-text);
+  border: 1px solid var(--radio-line);
+  border-radius: 50%;
+  background: transparent;
+}
+.radio-settings-button:hover:not(:disabled) { background: var(--radio-selected); }
+.radio-main { display: flex; flex: 1; flex-direction: column; width: 100%; max-width: none; padding: 0; margin: 0; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.radio-toolbar {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 68px;
+  flex-shrink: 0;
+  padding: 16px 32px;
+  margin: 0;
+  border-bottom: 0;
+}
+.radio-toolbar .project-search {
+  flex: 1;
+  max-width: 300px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border-color: var(--radio-line);
+  color: var(--radio-text);
+  background: var(--radio-subtle);
+}
+.radio-toolbar .project-search:focus-within { outline: 2px solid var(--radio-focus); outline-offset: 2px; border-color: var(--radio-line); }
+.radio-toolbar .project-search input { height: 32px; font-size: 12px; color: var(--radio-text); }
+.radio-toolbar .project-search input::placeholder { color: var(--radio-muted); }
+.radio-toolbar .project-search input:focus-visible { outline: none; }
+.radio-toolbar .project-filter { margin-left: auto; }
+.radio-toolbar-spacer { flex: 1; }
+.radio-toolbar .project-filter select { min-height: 34px; border-radius: 999px; color: var(--radio-secondary); background: var(--radio-subtle); font-size: 11px; }
+.radio-toolbar > .heading-actions, .radio-toolbar-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.radio-toolbar .primary-button, .radio-toolbar .refresh-button { min-height: 34px; padding: 7px 15px; border-radius: 999px; font-size: 13px; }
+.radio-add-menu { position: relative; margin-left: auto; }
+.radio-add-menu > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 14px; border: 1px solid var(--radio-line); border-radius: 999px; list-style: none; cursor: pointer; font-size: 13px; color: var(--radio-text); background: transparent; }
+.radio-add-menu > summary::-webkit-details-marker { display: none; }
+.radio-add-menu > summary:hover, .radio-add-menu[open] > summary { background: var(--radio-selected); }
+.radio-add-menu > div, .radio-add-menu [role='menu'] {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  min-width: 196px;
+  padding: 6px;
+  border: 1px solid var(--radio-line);
+  border-radius: 12px;
+  background: var(--radio-surface);
+  box-shadow: var(--radio-shadow);
+}
+.radio-add-menu > div > button, .radio-add-menu [role='menuitem'] { display: flex; align-items: center; gap: 9px; width: 100%; padding: 10px; text-align: left; border: 0; border-radius: 7px; background: transparent; color: var(--radio-text); font-size: 12px; }
+.radio-add-menu > div > button:hover:not(:disabled), .radio-add-menu [role='menuitem']:hover:not(:disabled) { background: var(--radio-selected); }
+.radio-notices { flex-shrink: 0; padding: 16px 32px 0; }
+.radio-notices:empty { display: none; }
+.radio-notices > :last-child { margin-bottom: 0; }
+.radio-project-grid, .radio-main > .project-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-content: start;
+  align-items: stretch;
+  gap: 18px 24px;
+  padding: 16px 32px 24px;
+  margin: 0;
+}
+.project-card.launcher-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 136px;
+  gap: 0;
+  padding: 12px 6px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  color: var(--radio-text);
+  background: transparent;
+  box-shadow: none;
+  transition: background-color .15s, border-color .15s;
+}
+.project-card.launcher-tile:hover { background: var(--radio-selected); border-color: transparent; box-shadow: none; }
+.project-card.launcher-tile:focus-within { background: var(--radio-selected); }
+.launcher-tile .launcher-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--radio-text);
+  background: transparent;
+  white-space: normal;
+  font-weight: 500;
+  text-align: center;
+}
+.launcher-tile .launcher-open:hover:not(:disabled), .launcher-tile .launcher-open:disabled { background: transparent; border-color: transparent; }
+.launcher-tile .launcher-open:disabled { opacity: .65; }
+.launcher-tile .launcher-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border: 0;
+  border-radius: 17px;
+  background: #343d39;
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px #ffffff0a;
+  overflow: visible;
+}
+.launcher-tile .launcher-icon > svg { width: 30px; height: 30px; stroke-width: 1.5; }
+.launcher-tile .launcher-icon > img:not(.launcher-node-badge) { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+.launcher-tile .launcher-color-0 { background: #343d39; color: #fff; }
+.launcher-tile .launcher-color-1 { background: #efe0b9; color: #735c39; }
+.launcher-tile .launcher-color-2 { background: #5a7a8b; color: #fff; }
+.launcher-tile .launcher-color-3 { background: #537b68; color: #fff; }
+.launcher-tile .launcher-color-4 { background: #ba7963; color: #fff; }
+.launcher-tile .launcher-color-5 { background: #afc69d; color: #48674f; }
+.launcher-tile .launcher-color-6 { background: #8b809f; color: #fff; }
+.launcher-tile .launcher-color-7 { background: #accddc; color: #3b667b; }
+.launcher-tile .launcher-icon > img.launcher-node-badge { position: absolute; z-index: 1; right: -4px; bottom: -5px; display: block; width: 18px; height: 18px; border: 0; border-radius: 0; object-fit: contain; }
+.launcher-tile .launcher-name, .project-card.launcher-tile h2.launcher-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; max-width: 100%; min-height: 20px; margin: 0; overflow: hidden; overflow-wrap: anywhere; color: var(--radio-text); font-size: 13px; line-height: 1.5; font-weight: 500; }
+.launcher-statuses { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 3px 5px; max-width: 100%; margin-top: 5px; }
+.launcher-tile .launcher-state { display: inline-flex; justify-content: center; max-width: 100%; min-height: 14px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--radio-muted); font-size: 10px; line-height: 1.4; }
+.launcher-state > span { display: none; }
+.launcher-tile .launcher-state:is(.state-missing, .state-error, .state-maintenance, .state-unbuilt) { color: var(--radio-warning); font-weight: 500; }
+.launcher-tile .launcher-state.state-recoveryRequired { color: var(--radio-danger); }
+.launcher-tile .launcher-state:is(.state-running, .state-ready) { color: var(--radio-success); }
+.launcher-tile .launcher-more {
+  position: absolute;
+  z-index: 2;
+  top: 3px;
+  right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--radio-secondary);
+  background: transparent;
+  opacity: .45;
+}
+.launcher-tile:hover .launcher-more, .launcher-tile:focus-within .launcher-more, .launcher-more[aria-expanded='true'] { opacity: 1; }
+.launcher-tile .launcher-more:hover:not(:disabled) { background: var(--radio-surface); }
+.launcher-menu { position: absolute; z-index: 20; top: 30px; right: 3px; width: 190px; padding: 6px; border: 1px solid var(--radio-line); border-radius: 11px; color: var(--radio-text); background: var(--radio-surface); box-shadow: var(--radio-shadow); }
+.launcher-menu-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 7px 9px; color: var(--radio-muted); font-size: 10px; }
+.launcher-menu-caption > span { flex-basis: 100%; }
+.launcher-menu-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px; padding: 8px 9px; border: 0; border-radius: 6px; text-align: left; color: var(--radio-text); background: transparent; font-size: 12px; }
+.launcher-menu-item:hover:not(:disabled) { background: var(--radio-selected); }
+.launcher-menu-item.danger { color: var(--radio-danger); }
+.launcher-menu-item.danger:hover:not(:disabled) { background: var(--radio-danger-surface); }
+.radio-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; min-height: 32px; padding: 7px 32px; margin-top: auto; border-top: 1px solid var(--radio-line); color: var(--radio-muted); background-color: var(--radio-footer); background-image: var(--radio-dots); background-size: 18px 18px; font: 400 10px/1.6 var(--radio-mono); letter-spacing: .6px; }
+.radio-footer > span { display: inline-flex; align-items: center; gap: 7px; }
+.radio-workspace-view { width: 100%; max-width: 1180px; padding: 28px 32px; margin-inline: auto; }
+.radio-workspace-view .page-heading { margin-bottom: 24px; }
+.radio-workspace-view h1 { font-size: 23px; }
+.radio-workspace-view .workspace-hub { margin: 0; }
+.radio-main > .project-search-empty, .radio-main > .workspace-card { margin: 24px 32px; }
+.radio-main > .guide-disclosure, .radio-main > .recent-tasks { margin: 0 32px 24px; }
+.radio-main > .workspace-location { padding-inline: 32px; }
+.radio-settings-modal .runtime-view > .page-heading, .radio-settings-modal .about-platform > .page-heading { display: none; }
+.radio-settings-modal .status-grid { margin-top: 0; }
+.radio-settings-summary { padding: 0 0 16px; }
+.radio-settings-summary > div { display: flex; align-items: center; gap: 10px; min-height: 45px; border-bottom: 1px solid var(--radio-line); font-size: 13px; }
+.radio-settings-summary > div > svg { color: var(--radio-secondary); }
+.radio-settings-summary dt { color: var(--radio-secondary); }
+.radio-settings-summary dd { margin: 0 0 0 auto; font-size: 12px; text-align: right; }
+.radio-settings-summary strong { color: var(--radio-text); font-weight: 500; }
+.radio-settings-about { margin: 24px 0 18px; padding-top: 24px; border-top: 1px solid var(--radio-line); }
+.radio-settings-about img { display: block; width: 54px; height: 54px; flex-shrink: 0; object-fit: contain; }
+.radio-settings-about h3 { margin: 0 0 5px; font-size: 16px; font-weight: 600; }
+.radio-settings-about p { margin: 4px 0 0; font-size: 12px; line-height: 1.7; color: var(--radio-muted); }
+.radio-settings-about code { font-family: var(--radio-mono); font-size: 10px; }
+.radio-about-brand { display: flex; align-items: center; gap: 12px; margin: 14px 0 10px; font-size: 14px; }
+.radio-about-brand > div > span { display: block; margin-top: 5px; color: var(--radio-muted); font: 400 10px/1.5 var(--radio-mono); }
+.radio-settings-about .radio-about-details { margin-top: 16px; }
+.radio-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--radio-line); }
+.radio-settings-footer > span { color: var(--radio-muted); font: 400 10px/1.5 var(--radio-mono); letter-spacing: .5px; }
+.radio-settings-footer .refresh-button { min-height: 32px; border-radius: 999px; padding: 7px 18px; font-size: 12px; }
+.radio-settings-modal .runtime-view > h3 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+.radio-runtime-details, .radio-about-details, .radio-settings-guide { border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-surface); }
+.radio-runtime-details + .radio-about-details, .radio-about-details + .radio-settings-guide { margin-top: 12px; }
+.radio-runtime-details > summary, .radio-about-details > summary, .radio-settings-guide > summary { display: flex; align-items: center; gap: 8px; padding: 12px 14px; list-style: none; color: var(--radio-secondary); cursor: pointer; font-size: 12px; }
+.radio-runtime-details > summary::-webkit-details-marker, .radio-about-details > summary::-webkit-details-marker, .radio-settings-guide > summary::-webkit-details-marker { display: none; }
+.radio-runtime-details > summary::after, .radio-about-details > summary::after, .radio-settings-guide > summary::after { content: '+'; margin-left: auto; color: var(--radio-muted); font: 400 17px/1 var(--radio-mono); }
+.radio-runtime-details[open] > summary::after, .radio-about-details[open] > summary::after, .radio-settings-guide[open] > summary::after { content: '−'; }
+.radio-runtime-details[open] > summary, .radio-about-details[open] > summary, .radio-settings-guide[open] > summary { border-bottom: 1px solid var(--radio-line); }
+.radio-runtime-details > :not(summary), .radio-about-details > :not(summary), .radio-settings-guide > :not(summary) { margin: 16px; }
+.radio-runtime-details > .status-grid { margin: 16px; }
+.radio-settings-guide .first-start-guide { border: 0; padding: 0; background: transparent; }
+.radio-about-details .about-platform { padding-bottom: 0; }
+
+/* Keep the existing management controls and their layouts; theme their surfaces. */
+:root[data-theme] :is(.primary-button) { border-color: var(--radio-active); color: var(--radio-active-text); background: var(--radio-active); }
+:root[data-theme] .primary-button:hover:not(:disabled) { border-color: var(--radio-active); color: var(--radio-active-text); background: var(--radio-active); filter: brightness(.9); }
+:root[data-theme] .primary-button:disabled { border-color: var(--radio-line); color: var(--radio-muted); background: var(--radio-subtle); }
+:root[data-theme] :is(.refresh-button, .project-filter select) { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-surface); }
+:root[data-theme] .refresh-button:hover:not(:disabled) { border-color: var(--radio-muted); background: var(--radio-selected); }
+:root[data-theme] :is(.text-button, .icon-button, .overview-project-id, .workspace-location, .workspace-location code) { color: var(--radio-secondary); }
+:root[data-theme] .text-button:hover:not(:disabled) { color: var(--radio-text); }
+:root[data-theme] .icon-button:hover:not(:disabled) { color: var(--radio-text); background: var(--radio-selected); }
+:root[data-theme] :is(.modal-layer) { background: #17131f66; backdrop-filter: blur(5px); }
+:root[data-theme] :is(.modal-dialog, .create-card, .workspace-card, .diagnostics-card, .status-card, .backup-panel, .lifecycle-card, .project-overview, .project-size-row, .trash-row, .lifecycle-tasks .build-task, .project-search-empty, .guide-disclosure, .recent-tasks, .workspace-cleanup-item, .node-app-list-item, .node-app-empty, .node-app-detail) {
+  color: var(--radio-text);
+  border-color: var(--radio-line);
+  background: var(--radio-surface);
+}
+:root[data-theme] .modal-dialog { box-shadow: var(--radio-shadow); }
+:root[data-theme] .modal-header { background: var(--radio-header); }
+:root[data-theme] :is(.modal-content .overview-tabs, .node-app-modal-detail > .overview-tabs) { background: var(--radio-surface); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(h2, h3, h4, dt, label, summary) { color: var(--radio-text); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(p, dd, small, code) { color: var(--radio-secondary); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(section, article, dl, details, form, li) { border-color: var(--radio-line); }
+:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .node-field-variable, .node-field-default, .node-secret-status, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
+:root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-app-heading h2, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
+:root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .trash-details, .history-storage-row, .attachment-row, .workspace-trash-summary) { border-color: var(--radio-line); }
+:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .workspace-trash-details, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
+:root[data-theme] :is(.backup-row:hover, .backup-row-selected, .trash-row.selected, .project-size-row:hover, .node-app-list-item.selected) { border-color: var(--radio-focus); color: var(--radio-text); background: var(--radio-selected); box-shadow: none; }
+:root[data-theme] :is(.workspace-hub-tabs) { border-color: var(--radio-line); background: var(--radio-subtle); }
+:root[data-theme] :is(.workspace-hub-tabs button, .overview-tabs button) { color: var(--radio-muted); }
+:root[data-theme] .workspace-hub-tabs button[aria-selected='true'] { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-surface); }
+:root[data-theme] .overview-tabs button[aria-selected='true'] { color: var(--radio-text); border-color: var(--radio-focus); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input:not([type='checkbox']):not([type='radio']), textarea, select) { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-background); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea)::placeholder { color: var(--radio-muted); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea, select):focus-visible { outline-color: var(--radio-focus); }
+:root[data-theme] :is(.modal-dialog, .radio-workspace-view) input:is([type='checkbox'], [type='radio']) { accent-color: var(--radio-focus); }
+:root[data-theme] :is(.notice-error, .danger-button, .project-delete-section, .project-delete-confirmation, .purge-confirmation, .node-process-failed) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
+:root[data-theme] :is(.danger-button:hover:not(:disabled), .project-delete:hover:not(:disabled)) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
+:root[data-theme] :is(.project-delete-section h3, .project-delete-section p, .task-error, .node-process-failed, .project-delete, .resource-missing) { color: var(--radio-danger); }
+:root[data-theme] :is(.operation-confirmation, .maintenance-active, .overview-unsaved-note, .node-config-warning, .node-endpoint-confirmation, .workspace-cleanup-item-result.needs-attention) { color: var(--radio-warning); border-color: var(--radio-warning-line); background: var(--radio-warning-surface); }
+:root[data-theme] :is(.operation-confirmation p, .operation-confirmation h3, .node-config-warning p, .node-endpoint-confirmation p, .workspace-cleanup-blocked, .source-modified, .environment-issue) { color: var(--radio-warning); }
+:root[data-theme] :is(.notice-success, .workspace-operation-status, .workspace-inline-notice, .workspace-cleanup-intro, .node-process-running) { color: var(--radio-success); border-color: var(--radio-success-line); background: var(--radio-success-surface); }
+:root[data-theme] :is(.notice-success p, .workspace-operation-status p, .workspace-inline-notice p, .workspace-cleanup-intro p, .source-matched, .resource-ok) { color: var(--radio-success); }
+:root[data-theme] .storage-ratio { background: var(--radio-line); }
+:root[data-theme] .storage-ratio > span { background: var(--radio-focus); }
+:root[data-theme] .radio-settings-summary dd { color: var(--radio-secondary); }
+
+/* Launcher buttons use their icon colours, including when a service is busy. */
+:root[data-theme] .launcher-tile .launcher-open,
+:root[data-theme] .launcher-tile .launcher-open:hover:not(:disabled),
+:root[data-theme] .launcher-tile .launcher-open:disabled {
+  color: var(--radio-text);
+  border: 0;
+  background: transparent;
+  filter: none;
+}
+
+@media (min-width: 1280px) {
+  .radio-project-grid, .radio-main > .project-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 18px 24px; }
+}
+@media (max-width: 860px) {
+  .radio-header { gap: 12px; padding-inline: 24px; }
+  .radio-brand { gap: 9px; }
+  .radio-brand-wordmark { font-size: 24px; }
+  .radio-brand .brand-mark { width: 34px; height: 34px; }
+  .radio-brand > img { width: 36px; height: 36px; }
+  .radio-primary-nav button { padding-inline: 11px; font-size: 12px; }
+  .radio-theme-switch button { padding-inline: 10px; }
+  .radio-project-grid, .radio-main > .project-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px 20px; padding-inline: 24px; }
+  .radio-toolbar, .radio-footer { padding-inline: 24px; }
+}
+@media (max-width: 720px) {
+  .radio-header { min-height: 76px; gap: 8px; padding: 12px 18px; }
+  .radio-brand { gap: 7px; }
+  .radio-brand .brand-mark { width: 30px; height: 30px; }
+  .radio-brand > img { width: 28px; height: 28px; }
+  .radio-brand-wordmark { display: none; }
+  .radio-brand-caption { color: var(--radio-text); font-size: 16px; font-weight: 500; margin-top: 0; white-space: nowrap; }
+  .radio-primary-nav { padding: 2px; }
+  .radio-primary-nav button { min-height: 30px; padding: 6px 10px; font-size: 11px; }
+  .radio-header-actions { gap: 6px; }
+  .radio-theme-switch { padding: 2px; }
+  .radio-theme-switch button { min-height: 28px; padding: 6px 8px; font-size: 10px; }
+  .radio-settings-button { width: 32px; height: 32px; }
+  .radio-toolbar { min-height: 56px; padding: 11px 20px; gap: 8px; }
+  .radio-toolbar .project-search { max-width: none; min-height: 32px; padding-inline: 11px; }
+  .radio-toolbar .project-search input { height: 30px; }
+  .radio-toolbar .project-filter select { max-width: 106px; padding-left: 10px; font-size: 10px; }
+  .radio-toolbar .primary-button, .radio-toolbar .refresh-button, .radio-add-menu > summary { min-height: 32px; padding: 7px 12px; font-size: 12px; }
+  .radio-toolbar > .heading-actions, .radio-toolbar-actions { gap: 8px; }
+  .radio-project-grid, .radio-main > .project-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 22px; padding: 12px 24px 20px; }
+  .project-card.launcher-tile { min-height: 136px; padding-top: 10px; }
+  .launcher-tile .launcher-icon { width: 64px; height: 64px; border-radius: 17px; }
+  .launcher-tile .launcher-open { gap: 9px; }
+  .launcher-tile .launcher-name { font-size: 13px; }
+  .radio-footer { min-height: 32px; padding: 7px 20px; font-size: 9px; }
+  .radio-workspace-view { padding: 22px 20px; }
+  .radio-notices { padding: 12px 20px 0; }
+  .radio-main > .guide-disclosure, .radio-main > .recent-tasks { margin-inline: 20px; }
+  .radio-main > .project-search-empty, .radio-main > .workspace-card { margin: 20px; }
+  .radio-main > .workspace-location { padding-inline: 20px; }
+  .radio-settings-modal .modal-content { padding: 20px; }
+  .radio-settings-modal .status-grid { grid-template-columns: 1fr; gap: 10px; }
+  .radio-settings-modal .status-card { padding: 14px 16px; }
+  .radio-settings-modal .status-card strong { margin-top: 8px; }
+  .radio-settings-modal .runtime-details { grid-template-columns: 1fr 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .radio-shell *, .modal-layer * { transition: none !important; animation: none !important; }
+}
+
+/* The initial settings summary fits a small window; expanded diagnostics scroll. */
+.radio-settings-modal { width: 520px; max-height: calc(100dvh - 32px); }
+.radio-settings-modal .modal-header { align-items: center; min-height: 54px; padding: 14px 24px; }
+.radio-settings-modal .modal-header h2 { font-size: 16px; line-height: 24px; }
+.radio-settings-modal .modal-close { width: 24px; height: 24px; margin: 0 -2px 0 0; }
+.radio-settings-modal .modal-content { padding: 16px 24px; }
+.radio-settings-modal .runtime-view > h3 { margin: 0 0 8px; font-size: 13px; line-height: 20px; }
+.radio-settings-summary { margin: 0 0 12px; padding: 0; }
+.radio-settings-summary > div { min-height: 34px; font-size: 12px; }
+.radio-settings-summary dd { font-size: 11px; }
+.radio-runtime-details > summary, .radio-about-details > summary, .radio-settings-guide > summary { min-height: 34px; padding: 8px 12px; font-size: 11px; line-height: 17px; }
+.radio-settings-about { margin: 16px 0 12px; padding-top: 16px; }
+.radio-settings-about h3 { margin: 0; font-size: 13px; line-height: 20px; }
+.radio-about-brand { gap: 10px; margin: 10px 0 8px; font-size: 13px; }
+.radio-about-brand img { width: 36px; height: 36px; }
+.radio-about-brand > div > span { margin-top: 3px; line-height: 14px; }
+.radio-settings-about p { margin: 0; font-size: 11px; line-height: 18px; }
+.radio-settings-about .radio-about-details { margin-top: 12px; }
+.radio-settings-footer {
+  position: sticky;
+  z-index: 4;
+  bottom: -16px;
+  margin: 16px -24px -16px;
+  padding: 12px 24px;
+  background: var(--radio-surface);
+}
+.radio-settings-modal :is(.path-row dd, .runtime-details > div) { min-width: 0; }
+.radio-settings-modal :is(code, .path-row dd, .runtime-details code) { white-space: normal; overflow-wrap: anywhere; }

@@ -15,10 +15,10 @@
         "label": "manager",
         "create": false,
         "title": "熊猫应用小抽屉 · 开发版",
-        "width": 1160,
-        "height": 800,
-        "minWidth": 880,
-        "minHeight": 640,
+        "width": 960,
+        "height": 640,
+        "minWidth": 640,
+        "minHeight": 480,
         "backgroundColor": "#F7F7F5"
       }
     ],

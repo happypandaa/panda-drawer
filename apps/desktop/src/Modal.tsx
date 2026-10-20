@@ -11,9 +11,10 @@ type ModalProps = {
   closeDisabled?: boolean;
   beforeClose?: () => boolean;
   wide?: boolean;
+  className?: string;
 };
 
-export function Modal({ title, description, children, onClose, closeDisabled = false, beforeClose, wide = false }: ModalProps) {
+export function Modal({ title, description, children, onClose, closeDisabled = false, beforeClose, wide = false, className = '' }: ModalProps) {
   const titleId = useId();
   const descriptionId = useId();
   const layer = useRef<HTMLDivElement>(null);
@@ -37,11 +38,13 @@ export function Modal({ title, description, children, onClose, closeDisabled = f
     heading.current?.focus();
 
     function focusable() {
-      const elements = dialog.current?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]');
+      const elements = dialog.current?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, summary, [tabindex]');
       return Array.from(elements ?? []).filter((element) => {
-        if (element.tabIndex < 0 || element.matches(':disabled') || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+        const nativeSummary = element.tagName === 'SUMMARY' && !element.hasAttribute('tabindex');
+        if ((element.tabIndex < 0 && !nativeSummary) || element.matches(':disabled') || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
         let parent: HTMLElement | null = element;
         while (parent && parent !== dialog.current?.parentElement) {
+          if (parent.tagName === 'DETAILS' && !(parent as HTMLDetailsElement).open && !parent.querySelector(':scope > summary')?.contains(element)) return false;
           const style = getComputedStyle(parent);
           if (style.display === 'none' || style.visibility === 'hidden') return false;
           parent = parent.parentElement;
@@ -84,7 +87,7 @@ export function Modal({ title, description, children, onClose, closeDisabled = f
 
   return createPortal(
     <div ref={layer} className="modal-layer" onClick={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
-      <div ref={dialog} className={`modal-dialog${wide ? ' modal-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined}>
+      <div ref={dialog} className={`modal-dialog${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined}>
         <header className="modal-header">
           <div><h2 ref={heading} id={titleId} title={title} tabIndex={-1}>{title}</h2>{description && <p id={descriptionId}>{description}</p>}</div>
           <button className="icon-button modal-close" type="button" onClick={requestClose} disabled={closeDisabled} aria-label={`关闭${title}`}><X size={20} /></button>

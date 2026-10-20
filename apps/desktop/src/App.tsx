@@ -1,8 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, Check, CircleAlert,
-  Database, Folder, FolderOpen, LayoutGrid, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info,
+  Database, Folder, FolderOpen, Monitor, Package, Plus,
+  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Search, Settings,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -18,18 +18,23 @@ import { NodeAppsPanel } from './NodeAppsPanel';
 import type { NodeAppRequest } from './NodeAppsPanel';
 import type { NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
+import { useAppearance } from './appearance';
+import { ProjectAddMenu } from './ProjectAddMenu';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
   sdk: 'SDK 0.1.0', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
 };
-type AppPage = 'projects' | 'runtime' | 'storage' | 'about';
+type AppPage = 'projects' | 'storage';
 
 
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [page, setPage] = useState<AppPage>('projects');
+  const { theme, setTheme } = useAppearance();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
   const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
@@ -372,57 +377,43 @@ function App() {
   const filteredCount = filteredProjects.length + filteredNodeApps.length;
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
-  const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen;
+  const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen || settingsOpen;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <>
     {error && <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>操作未完成</strong><p>{error}</p></div><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError(null)}><X size={16} /></button></div>}
     {notice && <div className="notice notice-success" role="status"><Check size={18} /><p>{notice}</p><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice(null)}><X size={16} /></button></div>}
   </>;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
-  const title = page === 'projects' ? '我的项目' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
+  const openSettings = () => { if (!nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar" aria-label="工作台导航">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true"><img src="/panda-app-drawer.png" alt="" /></span>
-          <div><strong>熊猫应用小抽屉</strong><span>一个属于你的工作空间</span></div>
+    <div className="radio-shell" data-theme={theme}>
+      <header className="radio-header">
+        <div className="radio-brand">
+          <img src="/panda-app-drawer.png" alt="" />
+          <div><strong className="radio-brand-wordmark">PANDA DRAWER</strong><span className="radio-brand-caption">熊猫应用小抽屉</span></div>
         </div>
-        <div className="sidebar-section-label">工作台</div>
-        <nav className="side-nav">
-          <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{totalProjects}</small></button>
-          <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('runtime')}><Activity size={17} /><span>运行环境</span></button>
-          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
-          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('about')}><Package size={17} /><span>关于平台</span></button>
+        <nav className="radio-primary-nav" aria-label="工作台导航">
+          <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending} onClick={() => navigatePage('projects')}>我的项目</button>
+          <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending} onClick={() => navigatePage('storage')}>空间与工作区</button>
         </nav>
-        <div className="sidebar-stage">
-          <span className="eyebrow">LOCAL FIRST</span>
-          <strong>项目各自独立，数据留在本机。</strong>
-          <p>应用窗口通过本地服务读取项目数据。</p>
-          <span className="subtle-tag">M5 · 开发验证</span>
-        </div>
-        <div className="sidebar-bottom"><span className="environment-dot" />内部开发版<span className="version">{info ? `v${info.version}` : 'M5'}</span></div>
-      </aside>
-
-      <div className="content-shell">
-        <header className="topbar">
-          <span>工作台 <span className="breadcrumb-slash">/</span> <strong>{title}</strong></span>
-          <span className="development-badge"><ShieldCheck size={13} />独立开发环境</span>
-        </header>
-        <main>
-          <div className="page-heading">
-            <div>
-              <h1>{title}</h1>
-              <p>{page === 'projects' ? '选择项目开始使用，或在详情中查看信息和应用配置。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}</p>
-            </div>
-            <div className="heading-actions">
-              <button className="refresh-button" onClick={() => void refresh()} disabled={loading || !inDesktop || nodeDraft.pending} aria-label="刷新项目和运行状态"><RefreshCw size={15} className={loading ? 'rotating' : undefined} />{loading ? '读取中' : '刷新'}</button>
-              {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy || nodeDraft.pending} onClick={() => setNodeAddRequest((value) => value + 1)}><FolderOpen size={15} />添加本地应用</button>}
-              {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy || nodeDraft.pending} onClick={() => setShowImport(true)}><Upload size={15} />导入项目</button>}
-              {page === 'projects' && <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}><Plus size={16} />新建项目</button>}
-            </div>
+        <div className="radio-header-actions">
+          <div className="radio-theme-switch" role="group" aria-label="外观主题">
+            <button aria-label="切换暗色主题" aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}>DARK</button>
+            <button aria-label="切换亮色主题" aria-pressed={theme === 'light'} onClick={() => setTheme('light')}>LIGHT</button>
           </div>
-
+          <button className="radio-settings-button" aria-label="设置" title="运行环境与关于" disabled={nodeDraft.pending} onClick={openSettings}><Settings size={17} /></button>
+        </div>
+      </header>
+      {page === 'projects' && <div className="radio-toolbar">
+        <label className="project-search"><Search size={16} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目…" /></label>
+        <div className="radio-toolbar-spacer" />
+        <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} refreshing={loading || !inDesktop} filter={projectFilter} onFilter={setProjectFilter} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} onRefresh={() => void refresh()} />
+        <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}>新建项目</button>
+      </div>}
+      <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
+        <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间与工作区'}</h1>
+        <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
           {page === 'projects' && nodeReadError && <p className="task-error" role="alert">{nodeReadError}</p>}
@@ -430,30 +421,32 @@ function App() {
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
           {activeLifecycleTasks.length > 0 && <div className="lifecycle-tasks" aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}
           {completedLifecycleTasks.length > 0 && <details className="recent-tasks"><summary>最近的管理任务 <span>{completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div></details>}
+        </div>
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
-            <div className="project-toolbar">
-              <label className="project-search"><Search size={17} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、简介或项目 ID" /></label>
-              <label className="project-filter"><span className="sr-only">筛选项目状态</span><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value as 'all' | 'ready' | 'attention')}><option value="all">全部项目</option><option value="ready">可进入</option><option value="attention">需要处理</option></select></label>
-            </div>
-            <div className="project-list-heading"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}</span><span>{loading ? '正在读取…' : checkedAt ? `更新于 ${checkedAt}` : '等待桌面连接'}</span></div>
-            {filteredCount > 0 ? <section className="project-grid" aria-label="项目列表">
+            <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
+            {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
               {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
               {filteredNodeApps.map((app) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} />)}
             </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
             </section>}
-            <details className="guide-disclosure"><summary><Info size={16} />使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending} onCreate={() => { if (!nodeDraft.pending && !nodeModalOpen) setShowCreate(true); }} onEnvironment={() => navigatePage('runtime')} onStorage={() => navigatePage('storage')} /></details>
-            <div className="workspace-location"><Folder size={14} /><span>工作区</span><code>{info?.workspaceRoot ?? '尚未读取'}</code></div>
-            <footer className="page-footer"><span>项目数据保存在本机，详情中查看各自管理范围</span><span>网页项目删除后可在回收站恢复</span></footer>
-          </> : page === 'storage' ? <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} /> : page === 'about' ? <AboutPlatform info={info} /> : <>
+          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} />}
+      </main>
+      <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects}` : totalProjects} APPS</span><span title={info?.workspaceRoot}>LOCAL FIRST</span></footer>
+      {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={environmentBusy} onClose={() => setSettingsOpen(false)}>
+        {feedback}
+        <section className="runtime-view" aria-labelledby="settings-runtime-title">
+          <h3 id="settings-runtime-title">运行环境</h3>
+          <dl className="radio-settings-summary"><div><dt>平台服务</dt><dd>{info ? '已就绪' : loading ? '读取中…' : '未连接'}</dd></div><div><dt>包内资源</dt><dd>{info ? resourcesReady ? '读取正常' : '需要检查' : '尚未读取'}</dd></div></dl>
+          <details className="radio-runtime-details"><summary>检测与配置 Node · 查看运行详情</summary>
             <section className="status-grid" aria-label="运行状态">
               <StatusCard icon={<Activity size={18} />} label="本地服务" value={info ? '已启动' : loading ? '读取中' : '未读取'} detail={info ? info.baseUrl : '由 Rust 提供本机服务'} good={Boolean(info)} />
               <StatusCard icon={<Database size={18} />} label="内置 SQLite" value={info ? `SQLite ${info.sqliteVersion}` : loading ? '读取中' : '未读取'} detail="每个项目使用独立数据库文件" good={Boolean(info)} />
               <StatusCard icon={<Package size={18} />} label="包内资源" value={info ? resourcesReady ? '读取正常' : '需要检查' : loading ? '读取中' : '未读取'} detail="CLI、SDK 发布包与 React 模板" good={Boolean(resourcesReady)} />
             </section>
-            <BuildEnvironment enabled={Boolean(info)} />
+            <BuildEnvironment enabled={Boolean(info)} onPendingChange={setEnvironmentBusy} />
             <section className="diagnostics-card" aria-labelledby="diagnostics-title">
               <div className="section-heading"><div><h2 id="diagnostics-title">运行环境</h2><p>实际目录与实例信息，供开发和打包验证使用。</p></div><span className="updated-at">{checkedAt ? `读取于 ${checkedAt}` : '等待桌面连接'}</span></div>
               <dl className="path-list"><PathRow icon={<Folder size={16} />} label="开发数据目录" value={info?.dataRoot} /><PathRow icon={<FolderOpen size={16} />} label="项目工作区" value={info?.workspaceRoot} /><PathRow icon={<Terminal size={16} />} label="CLI 路径" value={info ? info.cliPath ?? '未找到包内 CLI' : undefined} /></dl>
@@ -461,8 +454,18 @@ function App() {
               <div className="resource-strip"><span>资源探测</span>{(Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => <span className={`resource-item ${info ? info.resources[key] ? 'resource-ok' : 'resource-missing' : ''}`} key={key}>{info ? info.resources[key] ? <Check size={13} /> : <CircleAlert size={13} /> : <span className="unknown-dot" />}{label}</span>)}</div>
             </section>
             <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。关闭平台窗口会结束应用窗口并停止平台管理的服务，其他独立开发的服务不受影响。</p></div>
-          </>}
-        </main>
+
+          </details>
+        </section>
+        <section className="radio-settings-about" aria-labelledby="settings-about-title">
+          <h3 id="settings-about-title">关于</h3>
+          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫应用小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>
+          <p>项目数据保存在本机；联网功能由具体应用决定。</p>
+          <details className="radio-about-details"><summary>程序信息与更新状态</summary><AboutPlatform info={info} /></details>
+        </section>
+        <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !environmentBusy} onCreate={() => { if (environmentBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (environmentBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
+        <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={environmentBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
+      </Modal>}
         <NodeAppsPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
@@ -491,7 +494,6 @@ function App() {
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>}
           </details>
         </Modal>}
-      </div>
     </div>
   );
 }
@@ -514,7 +516,7 @@ function BuildState({ project }: { project: ProjectInfo }) {
 }
 
 
-function BuildEnvironment({ enabled }: { enabled: boolean }) {
+function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPendingChange?: (pending: boolean) => void }) {
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const [nodePath, setNodePath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -525,6 +527,7 @@ function BuildEnvironment({ enabled }: { enabled: boolean }) {
     if (!enabled || pending.current) return;
     const id = ++request.current;
     pending.current = true;
+    onPendingChange?.(true);
     setLoading(true);
     try {
       const value = await invoke<EnvironmentInfo>('environment_doctor');
@@ -533,12 +536,13 @@ function BuildEnvironment({ enabled }: { enabled: boolean }) {
       setNodePath(value.configuredNodePath ?? '');
       setError(null);
     } catch (cause) { if (id === request.current) setError(messageFrom(cause)); }
-    finally { pending.current = false; if (id === request.current) setLoading(false); }
-  }, [enabled]);
+    finally { pending.current = false; onPendingChange?.(false); if (id === request.current) setLoading(false); }
+  }, [enabled, onPendingChange]);
   useEffect(() => { void probe(); }, [probe]);
   async function configure(path: string | null) {
     if (pending.current) return;
     pending.current = true;
+    onPendingChange?.(true);
     setLoading(true);
     try {
       const value = await invoke<EnvironmentInfo>('environment_node_set', { nodePath: path });
@@ -546,7 +550,7 @@ function BuildEnvironment({ enabled }: { enabled: boolean }) {
       setNodePath(value.configuredNodePath ?? '');
       setError(null);
     } catch (cause) { setError(messageFrom(cause)); }
-    finally { pending.current = false; setLoading(false); }
+    finally { pending.current = false; onPendingChange?.(false); setLoading(false); }
   }
   return <section className="diagnostics-card build-environment" aria-labelledby="build-environment-title"><div className="section-heading"><div><h2 id="build-environment-title">项目构建环境</h2><p>使用系统 Node。已有项目的网页和数据操作不依赖 Node。</p></div><button className="refresh-button" onClick={() => void probe()} disabled={!enabled || loading}><RefreshCw size={14} />{loading ? '检测中…' : '重新检测'}</button></div><div className="environment-status"><span className={`project-state state-${environment?.ready ? 'ready' : 'unbuilt'}`}><span />{environment ? environment.ready ? '可以构建' : '构建环境需要配置' : loading ? '正在检测' : '尚未检测'}</span><span>最低 22.12 · 支持 22 / 24 · 推荐 24 LTS</span></div><dl className="path-list"><PathRow icon={<Terminal size={16} />} label={`Node ${environment?.node?.version ?? ''}`} value={environment ? environment.node?.path ?? '未找到可用 Node' : undefined} /><PathRow icon={<Terminal size={16} />} label={`npm ${environment?.npm?.version ?? ''}`} value={environment ? environment.npm?.path ?? '未找到配套 npm' : undefined} /></dl>{environment?.issues.map((issue) => <p key={issue.code} className="environment-issue">{issue.message} ({issue.code})</p>)}{environment && !environment.ready && <p className="environment-issue">安装指引：<code>{environment.downloadUrl}</code></p>}<form className="node-path-form" onSubmit={(event) => { event.preventDefault(); void configure(nodePath.trim()); }}><label htmlFor="node-path">指定 Node 可执行文件的绝对路径<span className="optional-label">可选</span></label><div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder="例如 /opt/homebrew/bin/node" disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !nodePath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>自动查找</button></div><p>当前选择：{environment?.selection === 'explicit' ? '手动指定' : environment ? '自动探测' : '尚未读取'}。路径只保存在此开发版的本机设置中。</p></form>{error && <p role="alert" className="environment-issue">{error}</p>}</section>;
 }

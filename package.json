@@ -42,7 +42,7 @@
     "test:m5:compatibility": "node scripts/m5-compatibility-test.mjs verify",
     "test:browser-tools": "node --test scripts/m5-browser-tools-test.mjs",
     "test:media-panel": "node --test scripts/m5-media-panel-test.mjs",
-    "test:ui": "node --test scripts/ui-interactions-test.mjs apps/desktop/test/node-app-ui.test.mjs",
+    "test:ui": "node --test scripts/ui-interactions-test.mjs apps/desktop/test/*.test.mjs",
     "test:desktop-package": "node --test scripts/desktop-package-output-test.mjs"
   },
   "devDependencies": {
