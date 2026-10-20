@@ -69,6 +69,8 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 `npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.4` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
 
+2026-10-20 起，标准 Mac 打包先检查运行状态；生成目录中的旧 `.app` 正在运行时明确拒绝打包，须先从菜单退出。旧生成应用与同产品 arm64 DMG 在核对固定身份、签名及镜像后暂存；新构建和验包全部成功才删除旧生成副本，`build:app` 成功后也删除失效的旧 DMG。构建或验包失败恢复上次可用生成包。范围仅 `target/<release|debug>/bundle/`，不扫描或清理安装目录、项目、数据、备份及 `.test-artifacts/`。自定义输出／身份参数不进入自动清理，`dev`、`--no-bundle` 和非 Mac 构建不清理包。中断后若留下 `target/.desktop-package-build.lock` 或 `.desktop-package-previous-*`，保留恢复现场，核查后处理，不自动删除。保护性回归：`node --test scripts/desktop-package-output-test.mjs`。
+
 ## 3 工具链与校验
 
 Node 支持 `^22.12.0 || ^24.0.0`，使用系统 npm。可使用系统 Rust，也可安装到工程 `.tools/`；脚本优先使用项目私有 Cargo/Rustup 并只向子进程设置对应环境，不修改 shell 配置。Cargo 与 npm 依赖锁文件随工程保存。

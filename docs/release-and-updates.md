@@ -39,6 +39,8 @@ macOS 14 与 Intel 不纳入首版。后续扩大支持范围必须另行确定�
 
 2026-10-20 首次内部 `.app` 已完成构建、签名检查与包内 Node 启停 radio 的隔离验证；Node 资源逻辑大小合计 122,661,637 字节，约 117 MiB，不代表 DMG 下载增量。Node 官方签名及二进制摘要保持，平台应用仍为内部 ad-hoc 签名；最低系统、Finder 首启、只读安装位置及正式分发未验收。
 
+2026-10-20 用户要求以后打包清理旧软件副本。标准内部 Mac 构建现将已核验归属的旧生成 `.app`／arm64 DMG 暂存，新包构建、固定身份、签名与镜像检查全部通过后才删除；仅生成 `.app` 时同步清理失效旧 DMG。失败恢复上次可用生成包，运行中 `.app` 禁止覆盖。只清理工程受管生成目录，不清理现有安装、项目、备份、恢复现场或验证证据；固定应用标识和数据根不变。当前内部生成应用的唯一路径为 `target/release/bundle/macos/Local Projects Dev.app`，并不自动安装到 `/Applications`；切换新包前须明确退出旧进程，不能把单实例聚焦旧窗口当作已打开新版。细节及回归入口见[开发说明](development.md)。
+
 安装及首次启动不要求 Rust、Cargo、Xcode、Homebrew 或命令行操作；这些是平台开发环境的依赖。构建项目时需要的系统 Node 仍遵守最低 22.12.0、推荐 24 LTS 的确定约定。
 
 正式发行采用 Developer ID Application 签名及 Apple 公证，并对分发产物附加公证票据、验证正常与离线首次启动；原生 CLI 以及新增私有 Node 等嵌套可执行文件也须纳入签名验证。普通安装流程不能要求关闭 Gatekeeper 或复制终端绕过命令。Tauri 提供 [DMG 分发](https://v2.tauri.app/distribute/dmg/)与[签名、公证流程](https://v2.tauri.app/distribute/sign/macos/)。这些步骤改善正常分发体验，不构成对所有设备策略或提示行为的绝对保证。
