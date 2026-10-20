@@ -61,6 +61,8 @@ pub struct TrialManifest {
     pub app: AppDecl,
     pub web: WebDecl,
     #[serde(default, deserialize_with = "present")]
+    pub window: Option<crate::app_windows::AppWindowConfig>,
+    #[serde(default, deserialize_with = "present")]
     pub backend: Option<BackendDecl>,
     #[serde(default, deserialize_with = "present")]
     pub configuration: Option<ConfigurationDecl>,
@@ -320,6 +322,9 @@ impl TrialManifest {
     }
 
     fn validate(&self) -> Result<()> {
+        if self.window.is_some_and(|window| !window.valid()) {
+            return Err(invalid("应用窗口尺寸声明无效。"));
+        }
         if self.package_format != "local-web-app"
             || !text(&self.app.id, 160)
             || !text(&self.app.name, 240)
@@ -640,6 +645,27 @@ mod tests {
     }
     fn parse(value: Value) -> Result<TrialManifest> {
         TrialManifest::parse(&serde_json::to_vec(&value).unwrap())
+    }
+
+    #[test]
+    fn optional_native_window_declaration_is_strict_without_changing_old_manifests() {
+        assert!(parse(manifest()).unwrap().window.is_none());
+        let mut value = manifest();
+        value["window"] = json!({"width":960,"height":640,"rememberSize":false});
+        let config = parse(value.clone()).unwrap().window.unwrap();
+        assert_eq!(
+            (config.width, config.height, config.remember_size),
+            (960, 640, false)
+        );
+        for invalid in [
+            json!(null),
+            json!({"width":0,"height":640}),
+            json!({"width":960,"height":640,"nativePermission":true}),
+            json!({"width":960,"height":640,"rememberSize":null}),
+        ] {
+            value["window"] = invalid;
+            assert!(parse(value.clone()).is_err());
+        }
     }
 
     fn inspect_fixture() -> (tempfile::TempDir, Value) {

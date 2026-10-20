@@ -72,3 +72,5 @@ Windows ACL 方案应兑现用户已选择的“本机私有明文文件”边�
 本轮修改的七个 Rust 集成文件格式检查通过，差异空白检查通过。额外的全工作区 `cargo fmt --all -- --check` 未通过：`builds.rs`、`service.rs` 和 `platform-preflight/src/trash_tests.rs` 有合入前已存在的排版差异，本轮不扩展为全库格式整理。
 
 Mac 宿主与主线完整入口仅作源码差异和模块作用域复核；本机无法完成 Mac 编译、原生 Node、文件权限、签名或 Radio 回归。Node 准备与 Mac 包事务的其余文件系统夹具未在 Windows 执行，不将选定检查写成完整套件通过。本轮未验真实窗口、Win10、无系统 Node 干净机器、物理断网、设备或安装器。
+
+2026-10-21 用户授权完成上述 Windows Node 适配并测试。实施前再次同步主线至 `770ec1d`，保留最新启动器、窗口尺寸契约和 Mac 管理窗口关闭语义；Windows 受限宿主仍保持原边界。此次同步的 UI 80 项、Windows UI 19 项、TypeScript/Vite 及 Windows host/desktop all-targets 编译检查通过，未据此开放 Node。后续按资源、文件与配置、受管进程、代理和窗口分别记录实际实现与检查。

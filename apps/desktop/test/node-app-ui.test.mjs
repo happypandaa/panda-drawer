@@ -79,7 +79,9 @@ async function change(element, value) {
 }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function openDetails(name) {
-  await click(document.querySelector(`[aria-label='项目「${name}」的更多操作']`));
+  const entry = document.querySelector(`[aria-label='进入项目「${name}」']`);
+  assert.ok(entry);
+  await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
   await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
 }
 async function submit() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
@@ -399,8 +401,8 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   }, {}, App);
   await click(document.querySelector('[aria-label="进入项目「Disposable Node fixture」"]'));
   assert.equal(document.querySelector('[role=dialog]'), null);
-  const staticActions = document.querySelector('[aria-label="项目「Static fixture」的更多操作"]');
-  assert.equal(staticActions.disabled, true);
+  const staticTile = document.querySelector('[aria-label="进入项目「Static fixture」"]').closest('article');
+  assert.equal(document.querySelector('.launcher-more'), null);
   assert.equal(byText('新建项目').disabled, true);
   const addMenu = document.querySelector('.radio-add-menu');
   const addTrigger = addMenu.querySelector('summary');
@@ -408,7 +410,8 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   assert.equal(byText('导入项目').disabled, true);
   await click(addTrigger);
   assert.equal(addMenu.open, false);
-  await click(staticActions); await click(byText('新建项目')); await click(byText('导入项目'));
+  await act(async () => staticTile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+  await click(byText('新建项目')); await click(byText('导入项目'));
   assert.equal(document.querySelector('[role=menu]'), null);
   assert.equal(document.querySelector('[role=dialog]'), null);
   await act(async () => configuration.reject(new Error('Artificial configuration read failure')));

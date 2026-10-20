@@ -49,7 +49,9 @@ async function render(Component = ProjectCard, props = {}) {
 }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function key(element, value, extra = {}) { await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...extra }))); }
-const more = () => document.querySelector('.launcher-more');
+const tile = () => document.querySelector('.launcher-tile');
+const description = () => document.getElementById(enter().getAttribute('aria-describedby')).textContent;
+const openMenu = () => key(enter().disabled ? tile() : enter(), 'ContextMenu');
 const enter = () => document.querySelector('.launcher-open');
 const menu = () => document.querySelector('[role="menu"]');
 
@@ -65,7 +67,8 @@ test('Launcher preserves real names and custom project icons with a native entry
   assert.equal(document.querySelector('.launcher-icon img').getAttribute('src'), iconDataUrl);
   assert.equal(document.querySelector('.launcher-node-badge'), null);
   assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /网页项目/);
-  assert.equal(document.querySelector('.launcher-statuses').textContent, '');
+  assert.equal(document.querySelector('.launcher-statuses'), null);
+  assert.equal(document.querySelector('.launcher-more'), null);
   await click(enter());
   assert.equal(enters, 1);
 });
@@ -82,11 +85,11 @@ test('Default icon and color stay tied to stable project identity across renames
 
 test('Menu has a keyboard entry, arrow navigation, Escape closing and focus return', async () => {
   await render();
-  const trigger = more();
-  assert.equal(trigger.getAttribute('aria-label'), '项目「My actual app」的更多操作');
-  assert.equal(trigger.getAttribute('aria-haspopup'), 'menu');
-  await key(trigger, 'ArrowDown');
-  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+  const trigger = enter();
+  await act(async () => trigger.focus());
+  assert.equal(tile().getAttribute('aria-haspopup'), 'menu');
+  await key(trigger, 'F10', { shiftKey: true });
+  assert.equal(tile().getAttribute('aria-expanded'), 'true');
   assert.equal(menu().getAttribute('aria-label'), '项目「My actual app」操作');
   assert.match(menu().textContent, /网页项目/);
   assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
@@ -101,7 +104,7 @@ test('Menu has a keyboard entry, arrow navigation, Escape closing and focus retu
   await key(document.activeElement, 'Escape');
   assert.equal(menu(), null);
   assert.equal(document.activeElement, trigger);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(tile().getAttribute('aria-expanded'), 'false');
 });
 
 test('Menu focuses its first action only after positioning makes it visible', async () => {
@@ -118,8 +121,8 @@ test('Menu focuses its first action only after positioning makes it visible', as
   };
   try {
     await render();
-    await act(async () => more().focus());
-    await click(more());
+    await act(async () => enter().focus());
+    await openMenu();
     assert.equal(menu().style.visibility, 'visible');
     assert.equal(hiddenAttempts.length, 0);
     assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
@@ -139,18 +142,24 @@ test('Context menu, outside pointer and outside focus all close without invoking
   assert.ok(menu());
   await act(async () => document.getElementById('outside').focus());
   assert.equal(menu(), null);
+  await openMenu();
+  await act(async () => enter().dispatchEvent(new window.Event('pointerdown', { bubbles: true })));
+  assert.equal(menu(), null, 'pressing the same app icon dismisses its context menu');
+  await openMenu();
+  await act(async () => enter().focus());
+  assert.equal(menu(), null, 'returning focus to the same app also dismisses its menu');
   assert.equal(actions, 0);
 });
 
 test('Menu delegates details and deletion only to existing parent callbacks', async () => {
   const calls = [];
   await render(ProjectCard, { onEnter: () => calls.push('enter'), onDetails: () => calls.push('details'), onDelete: () => calls.push('delete') });
-  await click(more());
+  await openMenu();
   await click(document.querySelector('[aria-label="查看项目「My actual app」的详情"]'));
   assert.equal(menu(), null);
-  assert.equal(document.activeElement, more());
+  assert.equal(document.activeElement, enter());
   assert.deepEqual(calls, ['details']);
-  await click(more());
+  await openMenu();
   await click(document.querySelector('[aria-label="删除项目「My actual app」"]'));
   assert.equal(menu(), null);
   assert.deepEqual(calls, ['details', 'delete']);
@@ -160,29 +169,38 @@ test('Maintenance and task statuses remain distinct, and each action retains its
   let enters = 0;
   await render(ProjectCard, { blocked: true, detailsDisabled: true, onEnter: () => enters++, status: { mode: 'maintenance', recoveryRequired: false }, task: { final: false } });
   assert.equal(enter().disabled, true);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /维护中/);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /任务进行中/);
+  assert.match(description(), /维护中/);
+  assert.match(description(), /任务进行中/);
+  assert.equal(document.querySelector('.launcher-statuses'), null);
+  assert.match(tile().title, /维护中.*任务进行中/);
   await click(enter());
   assert.equal(enters, 0);
-  assert.equal(more().disabled, false);
-  await click(more());
+  assert.equal(tile().tabIndex, 0);
+  await openMenu();
   assert.equal(document.querySelector('[aria-label="查看项目「My actual app」的详情"]').disabled, true);
   assert.equal(document.querySelector('[aria-label="删除项目「My actual app」"]').disabled, false);
   assert.equal(document.activeElement.getAttribute('aria-label'), '删除项目「My actual app」');
   await render(ProjectCard, { detailsDisabled: true, deletingDisabled: true });
-  assert.equal(more().disabled, true);
+  assert.equal(tile().tabIndex, -1);
   assert.equal(menu(), null);
   await key(enter(), 'ContextMenu');
   assert.equal(menu(), null);
 });
 
-test('Unbuilt and recovery projects keep their visible state and cannot enter', async () => {
+test('Unbuilt and recovery projects keep accessible status, keyboard details and cannot enter', async () => {
   await render(ProjectCard, { project: { ...fixture, state: 'unbuilt' } });
   assert.equal(enter().disabled, true);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /等待构建/);
+  assert.match(description(), /等待构建/);
+  assert.equal(tile().tabIndex, 0);
+  await act(async () => tile().focus());
+  await key(tile(), 'F10', { shiftKey: true });
+  assert.ok(menu());
+  assert.match(menu().textContent, /等待构建/);
+  await key(document.activeElement, 'Escape');
+  assert.equal(document.activeElement, tile());
   await render(ProjectCard, { project: { ...fixture, state: 'error' }, status: { mode: 'maintenance', recoveryRequired: true } });
   assert.equal(enter().disabled, true);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /恢复待处理/);
+  assert.match(description(), /恢复待处理/);
 });
 
 test('Node hexagon stays visible when stopped or failed; missing configuration can still enter', async () => {
@@ -191,26 +209,29 @@ test('Node hexagon stays visible when stopped or failed; missing configuration c
   assert.equal(document.querySelector('.launcher-node-badge').getAttribute('src'), '/ui/node-mark.png');
   assert.equal(document.querySelector('.launcher-node-badge').getAttribute('alt'), '');
   assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /Node 服务项目/);
-  assert.equal(document.querySelector('.launcher-statuses').textContent, '');
+  assert.equal(document.querySelector('.launcher-statuses'), null);
+  assert.equal(document.querySelector('.launcher-more'), null);
   await render(NodeProjectCard, { app: { ...nodeFixture, state: 'failed', lastError: 'Artificial service failure', configuration: { ...nodeFixture.configuration, canStart: false, missingRequired: ['KEY'] } }, onEnter: () => enters++ });
   assert.ok(document.querySelector('.launcher-node-badge'));
-  assert.match(document.querySelector('.launcher-statuses').textContent, /需要检查/);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /需要配置/);
+  assert.match(description(), /需要检查/);
+  assert.match(description(), /需要配置/);
+  assert.equal(document.querySelector('.launcher-statuses'), null);
+  assert.match(enter().title, /需要检查.*需要配置/);
   assert.equal(enter().disabled, false);
   await click(enter());
   assert.equal(enters, 1);
-  await click(more());
+  await openMenu();
   assert.match(menu().textContent, /Node 服务项目/);
   assert.equal(menu().querySelectorAll('[role="menuitem"]').length, 1);
   assert.doesNotMatch(menu().textContent, /删除项目/);
 });
 
-test('Pending Node entry disables opening and details without hiding configuration status', async () => {
+test('Pending Node entry disables opening and details while keeping accessible configuration status', async () => {
   await render(NodeProjectCard, { opening: true, app: { ...nodeFixture, configuration: { ...nodeFixture.configuration, canStart: false } } });
   assert.equal(enter().disabled, true);
-  assert.equal(more().disabled, true);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /需要配置/);
-  assert.match(document.querySelector('.launcher-statuses').textContent, /进入中/);
+  assert.equal(tile().tabIndex, -1);
+  assert.match(description(), /需要配置/);
+  assert.match(description(), /进入中/);
 });
 
 test('A bottom-row menu flips above its trigger and fits the compact viewport', () => {
@@ -238,7 +259,7 @@ test('Edge menus stay in view and long menus receive room to scroll', () => {
 
 test('Menus render outside the scrolling tile, retain inside interactions and close on viewport changes', async () => {
   await render();
-  await click(more());
+  await openMenu();
   assert.equal(menu().parentElement, document.body);
   assert.equal(menu().style.position, 'fixed');
   assert.equal(menu().style.right, 'auto');
@@ -250,9 +271,9 @@ test('Menus render outside the scrolling tile, retain inside interactions and cl
   assert.ok(menu(), 'scrolling a long menu must not dismiss it');
   await act(async () => document.getElementById('root').dispatchEvent(new window.Event('scroll')));
   assert.equal(menu(), null);
-  assert.equal(document.activeElement, more());
-  await click(more());
+  assert.equal(document.activeElement, enter());
+  await openMenu();
   await act(async () => window.dispatchEvent(new window.Event('resize')));
   assert.equal(menu(), null);
-  assert.equal(document.activeElement, more());
+  assert.equal(document.activeElement, enter());
 });

@@ -1,4 +1,4 @@
-import { ArrowUpRight, FolderOpen, Search, Settings, ShieldCheck } from 'lucide-react';
+import { ArrowUpRight, FolderOpen, RefreshCw, Search, Settings, ShieldCheck } from 'lucide-react';
 import type { FormEvent, ReactNode } from 'react';
 import { Modal } from './Modal';
 import { ProjectAddMenu } from './ProjectAddMenu';
@@ -51,7 +51,7 @@ export function ManagerShell({ page, onPageChange, onSettings, navigationDisable
   </div>;
 }
 
-export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, loading,
+export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, loading, checkedAt,
   menuDisabled, refreshDisabled, createDisabled, addUnavailableReason, importUnavailableReason,
   onRefresh, onCreate, onAdd, onImport,
 }: {
@@ -60,6 +60,7 @@ export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, l
   filter: ProjectFilter;
   onFilterChange: (filter: ProjectFilter) => void;
   loading: boolean;
+  checkedAt?: string | null;
   menuDisabled: boolean;
   refreshDisabled: boolean;
   createDisabled: boolean;
@@ -72,10 +73,12 @@ export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, l
 }) {
   return <div className="radio-toolbar">
     <label className="project-search"><Search size={16} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={event => onQueryChange(event.target.value)} placeholder="搜索项目…" /></label>
+    <label className="project-filter"><span className="sr-only">筛选项目状态</span><select value={filter} onChange={event => onFilterChange(event.target.value as ProjectFilter)}><option value="all">全部项目</option><option value="ready">可进入</option><option value="attention">需要处理</option></select></label>
     <div className="radio-toolbar-spacer" />
-    <ProjectAddMenu disabled={menuDisabled} refreshing={loading || refreshDisabled} filter={filter} onFilter={onFilterChange}
+    <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || refreshDisabled} onClick={() => void onRefresh()}><RefreshCw size={16} className={loading ? 'rotating' : undefined} /></button>
+    <ProjectAddMenu disabled={menuDisabled}
       addUnavailableReason={addUnavailableReason} importUnavailableReason={importUnavailableReason}
-      onAdd={onAdd} onImport={onImport} onRefresh={() => void onRefresh()} />
+      onAdd={onAdd} onImport={onImport} />
     <button className="primary-button" onClick={onCreate} disabled={createDisabled}>新建项目</button>
   </div>;
 }

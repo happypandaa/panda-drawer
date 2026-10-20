@@ -1,5 +1,6 @@
 //! Local development platform: project storage, SQLite workers and loopback runtime.
 
+pub mod app_windows;
 pub mod backups;
 pub mod builds;
 mod control;

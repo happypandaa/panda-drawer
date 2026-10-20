@@ -1,6 +1,7 @@
 //! Exactly one native container per Node application. Only the native manager
 //! can create it; closing the container revokes its page and stops its backend.
 use super::{ApiError, AppState};
+use platform_core::app_windows::{AppWindowConfig, WindowIdentity, MIN_HEIGHT, MIN_WIDTH};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -170,27 +171,33 @@ async fn build(
         .insert(id.into(), current.clone());
     let navigation = current.clone();
     let title = detail["name"].as_str().unwrap_or("应用");
-    tauri::WebviewWindowBuilder::new(app, label(id)?, tauri::WebviewUrl::External(launch))
-        .title(super::project_title(title))
-        .inner_size(1080.0, 780.0)
-        .min_inner_size(640.0, 480.0)
-        .disable_drag_drop_handler()
-        .on_navigation(move |url| {
-            let current = navigation.lock().unwrap_or_else(|p| p.into_inner());
-            navigation_allowed(
-                url,
-                current.origin.as_ref(),
-                matches!(
-                    current.phase,
-                    Phase::Restarting | Phase::Closing | Phase::Failed
-                ),
-            )
-        })
-        .on_new_window(|_, _| NewWindowResponse::Deny)
-        // This source contract does not yet declare camera/microphone grants.
-        .on_permission_request(|_, _| PermissionResponse::Deny)
-        .build()
-        .map_err(|_| error("无法打开应用窗口，请检查系统窗口状态后再试。"))?;
+    let config = AppWindowConfig::from_value(detail.get("window").filter(|value| !value.is_null()))
+        .unwrap_or_default();
+    let identity = WindowIdentity::node(id);
+    let size = state.window_sizes.initial(app, &identity, config);
+    let window =
+        tauri::WebviewWindowBuilder::new(app, label(id)?, tauri::WebviewUrl::External(launch))
+            .title(super::project_title(title))
+            .inner_size(size.width, size.height)
+            .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+            .disable_drag_drop_handler()
+            .on_navigation(move |url| {
+                let current = navigation.lock().unwrap_or_else(|p| p.into_inner());
+                navigation_allowed(
+                    url,
+                    current.origin.as_ref(),
+                    matches!(
+                        current.phase,
+                        Phase::Restarting | Phase::Closing | Phase::Failed
+                    ),
+                )
+            })
+            .on_new_window(|_, _| NewWindowResponse::Deny)
+            // This source contract does not yet declare camera/microphone grants.
+            .on_permission_request(|_, _| PermissionResponse::Deny)
+            .build()
+            .map_err(|_| error("无法打开应用窗口，请检查系统窗口状态后再试。"))?;
+    state.window_sizes.track(&window, identity, config);
     let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
     if current.phase == Phase::Opening {
         current.phase = Phase::Running;

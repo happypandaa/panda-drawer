@@ -122,7 +122,6 @@ async function setup(value = status()) {
 }
 
 async function refresh() {
-  await openActions();
   const button = document.querySelector('[aria-label="刷新项目和运行状态"]');
   assert.ok(button);
   await act(async () => { button.click(); });
@@ -147,8 +146,12 @@ async function openSettings() {
 }
 async function closeSettings() { await click('完成', dialog()); }
 async function beginCreate() { await clickElement(createButton()); }
+async function projectMenu(name = '合成样本') {
+  const target = enterButton(name).disabled ? card(name) : enterButton(name);
+  await act(async () => target.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })));
+}
 async function details(name = '合成样本') {
-  await clickElement(card(name)?.querySelector('.launcher-more'));
+  await projectMenu(name);
   await clickElement(document.querySelector('[role="menu"] button[aria-label^="查看项目"]'));
 }
 async function key(value) {
@@ -190,7 +193,10 @@ test('Windows loads the actual shared Radio shell, project cards and create moda
   assert.equal(document.querySelector('.radio-brand-caption').textContent, '熊猫应用小抽屉');
   assert.ok(card().querySelector('.launcher-icon'));
   assert.equal(card().querySelector('.launcher-name').textContent, '合成样本');
-  assert.ok(card().querySelector('.launcher-more'));
+  assert.equal(card().querySelector('.launcher-more'), null);
+  assert.equal(card().getAttribute('aria-keyshortcuts'), 'Shift+F10');
+  assert.equal(document.querySelector('.project-filter select').closest('.radio-add-menu'), null);
+  assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]').closest('.radio-add-menu'), null);
   assert.ok(card().querySelector('.launcher-open[aria-label="进入项目「合成样本」"]'));
   await beginCreate();
   assert.equal(dialog().getAttribute('aria-modal'), 'true');
@@ -254,7 +260,8 @@ test('ready project status never starts an independent root diagnostic', async (
   await setup(status('ready', [project()]));
   assert.deepEqual(commands, ['project_status']);
   assert.ok(card());
-  assert.match(card().querySelector('.project-state').textContent, /可只读打开/);
+  assert.match(document.getElementById(enterButton().getAttribute('aria-describedby')).textContent, /可只读打开/);
+  assert.match(enterButton().title, /可只读打开/);
   assert.equal(findButton('读取目录诊断'), undefined);
   assert.equal(enterButton().disabled, false);
   await openSettings();
@@ -433,7 +440,6 @@ test('a pending project opening blocks duplicate and competing actions until its
 
 test('opening a project blocks a same-tick refresh before React renders the disabled controls', async () => {
   await setup(status('ready', [project()]));
-  await openActions();
   const enter = enterButton();
   const refreshButton = document.querySelector('[aria-label="刷新项目和运行状态"]');
   assert.equal(enter.disabled, false);
@@ -503,7 +509,7 @@ test('deferred manager entries explain their disabled state and never mount busi
     await clickElement(element);
   }
   assert.equal(document.querySelector('.radio-main > h1').textContent, '我的项目');
-  await clickElement(card().querySelector('.launcher-more'));
+  await projectMenu();
   const deletion = document.querySelector('[role="menuitem"][aria-label^="删除项目"]');
   assert.equal(deletion.disabled, true);
   assert.ok(deletion.title.trim());

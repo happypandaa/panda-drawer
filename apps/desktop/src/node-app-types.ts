@@ -20,6 +20,7 @@ export interface NodeAppDetail {
   name: string;
   sourcePath: string;
   runtime: 'node-service';
+  window?: { width: number; height: number; rememberSize?: boolean } | null;
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
   restartRequired: boolean;
   runningRevision: number | null;

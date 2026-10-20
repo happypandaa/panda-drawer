@@ -32,6 +32,7 @@ function App() {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [page, setPage] = useState<AppPage>('projects');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showManagementTasks, setShowManagementTasks] = useState(false);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
@@ -375,6 +376,7 @@ function App() {
   const filteredCount = filteredProjects.length + filteredNodeApps.length;
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
+  const failedLifecycleTasks = completedLifecycleTasks.filter((task) => task.status === 'failed' || task.status === 'interrupted');
   const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen || settingsOpen;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <>
@@ -389,7 +391,7 @@ function App() {
       navigationDisabled={nodeDraft.pending} settingsDisabled={nodeDraft.pending}
       footerCount={query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects}` : totalProjects} workspaceRoot={info?.workspaceRoot}
       toolbar={<ManagerToolbar query={query} onQueryChange={setQuery} filter={projectFilter} onFilterChange={setProjectFilter}
-        menuDisabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} loading={loading} refreshDisabled={!inDesktop}
+        menuDisabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} loading={loading} checkedAt={checkedAt} refreshDisabled={!inDesktop || nodeDraft.pending}
         createDisabled={!info || creating || workspaceBusy || nodeDraft.pending} onRefresh={refresh}
         onCreate={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); setNotice(null); }}
         onAdd={() => setNodeAddRequest(value => value + 1)} onImport={() => setShowImport(true)} />}
@@ -400,8 +402,7 @@ function App() {
           {page === 'projects' && nodeReadError && <p className="task-error" role="alert">{nodeReadError}</p>}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
-          {activeLifecycleTasks.length > 0 && <div className="lifecycle-tasks" aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}
-          {completedLifecycleTasks.length > 0 && <details className="recent-tasks"><summary>最近的管理任务 <span>{completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div></details>}
+          {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" disabled={nodeDraft.pending || nodeModalOpen} onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowManagementTasks(true); setSettingsOpen(true); }}>查看任务</button></div>}
         </div>
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
@@ -430,7 +431,7 @@ function App() {
               <div className="runtime-details"><div><span>运行程序</span><code>{info?.displayName ?? '尚未读取'}</code></div><div><span>应用标识</span><code>{info?.identifier ?? '尚未读取'}</code></div><div><span>实例 ID</span><code>{info?.instanceId ?? '尚未读取'}</code></div><div><span>接口版本</span><code>{info ? `v${info.apiVersion}` : '尚未读取'}</code></div></div>
               <div className="resource-strip"><span>资源探测</span>{(Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => <span className={`resource-item ${info ? info.resources[key] ? 'resource-ok' : 'resource-missing' : ''}`} key={key}>{info ? info.resources[key] ? <Check size={13} /> : <CircleAlert size={13} /> : <span className="unknown-dot" />}{label}</span>)}</div>
             </section>
-            <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。关闭平台窗口会结束应用窗口并停止平台管理的服务，其他独立开发的服务不受影响。</p></div>
+            <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。</p></div>
 
           </details>
         </section>
@@ -440,6 +441,7 @@ function App() {
           <p>项目数据保存在本机；联网功能由具体应用决定。</p>
           <details className="radio-about-details"><summary>程序信息与更新状态</summary><AboutPlatform info={info} /></details>
         </section>
+        <details className="radio-settings-tasks recent-tasks" open={showManagementTasks} onToggle={(event) => setShowManagementTasks(event.currentTarget.open)}><summary>管理任务 <span>{activeLifecycleTasks.length + completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{activeLifecycleTasks.length > 0 && <div aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{completedLifecycleTasks.length > 0 && <div aria-label="最近的管理任务">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{activeLifecycleTasks.length + completedLifecycleTasks.length === 0 && <p className="radio-tasks-empty">暂无管理任务。</p>}</div></details>
         <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !environmentBusy} onCreate={() => { if (environmentBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (environmentBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
         <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={environmentBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
       </Modal>}

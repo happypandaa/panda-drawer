@@ -197,7 +197,7 @@ export function WindowsHost() {
     footerCount={hasFilter ? `${filteredProjects.length} / ${projects.length}` : projects.length}
     workspaceRoot={status?.rootStatus === 'ready' ? status.dataRoot + '\\workspace' : undefined}
     toolbar={<ManagerToolbar query={query} onQueryChange={setQuery} filter={filter} onFilterChange={setFilter}
-      loading={loading} menuDisabled={busy} refreshDisabled={!isTauri()} createDisabled={!capabilities.create || blocked || busy || showCreate}
+      loading={loading} checkedAt={checkedAt} menuDisabled={busy} refreshDisabled={!isTauri() || busy} createDisabled={!capabilities.create || blocked || busy || showCreate}
       addUnavailableReason={deferredReason} importUnavailableReason={deferredReason} onRefresh={requestRefresh} onCreate={requestCreate} />}
   >
     <div className="radio-notices">

@@ -199,7 +199,7 @@ impl NodeApps {
             "stopped"
         };
         Ok(json!({
-            "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service",
+            "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
