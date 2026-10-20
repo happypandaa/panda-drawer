@@ -700,7 +700,9 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
   };
 }
 async function openProjectMenu(name) {
-  await click(document.querySelector(`[aria-label='项目「${name}」的更多操作']`));
+  const entry = document.querySelector(`[aria-label='进入项目「${name}」']`);
+  assert.ok(entry);
+  await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
 }
 async function openDetails(name) {
   await openProjectMenu(name);

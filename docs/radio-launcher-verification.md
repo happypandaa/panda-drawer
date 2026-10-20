@@ -95,3 +95,23 @@
 | 清理 | 标准打包事务核验新包后清理 2 个旧生成包；没有清理项目回收站、尺寸保留文件、历史交付证据或系统安装目录 |
 
 最终证据为 `followup-package-final.log`、`followup-final-verified/verification.json`、`followup-final-node-and-resources.json`、`native-final-package-after-close.json` 与 `native-final-package.png`。最终镜像摘要覆盖此前两次同名生成镜像；各次验证日志仍保留在本机。
+
+## 2026-10-20–21 macOS 图标网格调整
+
+用户再次确认以 macOS Applications 截图的图标与间距为参考：应用项仅显示图标和单行名称，名称超宽用省略号，去掉三点按钮并改用右键。此次覆盖首次实施的双行名称、可见状态行与三点入口；此前窗口尺寸与关闭约定不变。
+
+- 图标保持 64×64 逻辑像素，名称高 20px、图文间距 8px；名称单行省略且悬停可读全名。保留应用自带图标、稳定回退图标以及 Node 六边形角标。
+- 网格改为自适应列数，不再在常见宽度强制 6／5／4 列；最小轨道 96px、列间距 12px，项目项高 104px、行间距 8px。960px 约 8 列，640px 约 5 列；图标大小随窗口缩放保持一致。
+- 去掉可见三点与状态行，类型／配置／运行／维护状态仍在读屏、悬停、右键菜单与详情中表达。缺配置入口、禁用操作与原来的打开门禁保留。
+- 右键菜单靠近点击位置，靠边翻转并限制在视口内；聚焦项目后 Shift+F10／ContextMenu 键仍可打开。不能进入但可以查看详情的项目，其根节点可键盘聚焦；Esc、滚动和缩放关闭菜单并恢复项目焦点，不要求依赖三点按钮。
+- 菜单打开后，按下同一图标／名称或将焦点移回该项目也会关闭菜单；菜单自身仍可正常交互，避免应用打开后菜单残留。
+
+`npm run check` 与最终 79/79 UI 测试通过；UI 回归覆盖右键／键盘、禁用进入时的详情入口、菜单焦点恢复、状态转移和原有配置门禁。此次没有修改 Rust 行为，没有重跑上一节的 338 项 Rust 测试。
+
+隔离浏览器夹具检查了 960×640 与 640×480 的亮暗色、长名称、末行滚动和 Node 菜单。实际计算样式为 64×64 图标、20px 单行名称、`nowrap`／`ellipsis`；长名称完整内容宽 169px、可见宽 96px，title 保留全名。标准宽度实测 8 列（101.5px 轨道），小窗实测 5 列（约 108.8px 轨道）；三点按钮 DOM 数为 0。小窗键盘打开菜单后首项获得焦点，Esc 返回对应项目进入按钮。截图与日志在 `.test-artifacts/radio-ui/macos-tiles-*`，示例项目仅为浏览器夹具，未接入实际业务服务。
+
+最终菜单关闭修正后，79/79 UI 回归再次通过，标准 `npm run build` 通过，旧生成 app／DMG 由原打包事务核验后清理。最终包实际启动后检查了单行省略、无三点、原有五个项目入口与 Node 角标；Node 右键菜单显示类型与配置状态，首个详情动作获得焦点，Esc 返回同一项目入口。此前候选包还实际核对了网页项目右键详情／删除菜单，但没有点击详情、打开业务窗口或执行删除。原有四个静态项目的配置、主数据库与 SDK 共 12 个文件摘要仍与此前基线一致；未改原项目、自带 skill、Node 凭据或恢复资料，该抽样不等于源文件和附件全量审计。
+
+最终 DMG 为 `50385032` 字节，SHA-256 `e019b8bb8b485ad00979d48e9922aab58acb91d8550e6a73c6b3b193acab52ec`。固定开发身份、arm64／最低 macOS 15.0、源 app 与镜像内严格签名检查通过；只读挂载 61 个条目一致并已卸载。8 处固定 SDK 和留存 M4 证据不变，Node v24.22.0 的二进制／LICENSE 与固定发布记录一致，绝对路径版本检查通过，随附窗口 reference 与维护源一致。仍是开发 ad-hoc 包，没有正式公证或新增平台验收；本轮未重做业务窗口尺寸、设备权限或浏览器兼容测试。
+
+最终证据：`macos-tiles-check.log`、`macos-tiles-ui-final-after-review.log`、`macos-tiles-package-final.log`、`macos-tiles-final-verified/verification.json`、`macos-tiles-node-and-resources.json`、`macos-tiles-original-data-sample.json`、`macos-tiles-native-delivered.png` 和 `macos-tiles-native-delivered-menu.png`。生成包、截图、日志及真实项目快照均不纳入 Git；浏览器临时预览与尺寸覆盖已关闭，交付包的管理窗口保留打开。

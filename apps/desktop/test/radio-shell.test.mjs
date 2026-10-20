@@ -154,6 +154,37 @@ test('Light and dark choices persist and apply to html so body-level settings po
   assert.equal(document.documentElement.dataset.theme, 'dark');
 });
 
+test('Launcher items expose only their icon and name, with contextual actions and normal opening preserved', async () => {
+  const project = { id: 'prj_disposable_compact_launcher', name: 'Disposable long launcher name', description: 'Artificial project description', projectRoot: '/disposable/radio-shell/project', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
+  const calls = await setup({ projects: [project], nodes: [nodeFixture], overrides: { project_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
+  const entry = document.querySelector(`[aria-label='进入项目「${project.name}」']`);
+  const tile = entry.closest('article');
+  assert.equal(document.querySelector('.launcher-more'), null);
+  assert.equal(document.querySelector('.launcher-statuses'), null);
+  assert.equal(entry.children.length, 2);
+  assert.ok(entry.children[0].classList.contains('launcher-icon'));
+  assert.ok(entry.children[1].classList.contains('launcher-name'));
+  assert.equal(tile.querySelectorAll('button').length, 1);
+  assert.equal(tile.querySelector('.launcher-name').title, project.name);
+  const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
+  assert.ok(nodeEntry.querySelector('.launcher-node-badge'));
+  assert.match(nodeEntry.title, /需要配置/);
+  assert.equal(nodeEntry.disabled, false);
+  await act(async () => entry.focus());
+  await key(entry, 'F10', { shiftKey: true });
+  const menu = document.querySelector('[role="menu"]');
+  assert.ok(menu);
+  assert.equal(document.activeElement.getAttribute('aria-label'), `查看项目「${project.name}」的详情`);
+  await key(document.activeElement, 'Escape');
+  assert.equal(document.querySelector('[role="menu"]'), null);
+  assert.equal(document.activeElement, entry);
+  await act(async () => tile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 140 })));
+  assert.ok(document.querySelector('[role="menu"]'));
+  await key(document.activeElement, 'Escape');
+  await click(entry);
+  assert.deepEqual(calls.filter(([command]) => command === 'project_open').map(([, args]) => args), [{ projectId: project.id, target: 'desktop', reload: false }]);
+});
+
 test('Unavailable browser storage falls back to light and still permits both theme switches', async () => {
   Object.defineProperty(storagePrototype, 'getItem', { configurable: true, value() { throw new Error('Artificial storage read failure'); } });
   Object.defineProperty(storagePrototype, 'setItem', { configurable: true, value() { throw new Error('Artificial storage write failure'); } });
