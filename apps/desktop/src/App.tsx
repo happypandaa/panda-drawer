@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
-  Activity, ArrowUpRight, Boxes, Check, CircleAlert,
+  Activity, ArrowUpRight, Check, CircleAlert,
   Database, Folder, FolderOpen, LayoutGrid, Monitor, Package, Plus,
   RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info,
 } from 'lucide-react';
@@ -385,8 +385,8 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar" aria-label="工作台导航">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true"><Boxes size={22} strokeWidth={1.6} /></span>
-          <div><strong>本地项目</strong><span>一个属于你的工作空间</span></div>
+          <span className="brand-mark" aria-hidden="true"><img src="/panda-app-drawer.png" alt="" /></span>
+          <div><strong>熊猫应用小抽屉</strong><span>一个属于你的工作空间</span></div>
         </div>
         <div className="sidebar-section-label">工作台</div>
         <nav className="side-nav">

@@ -26,8 +26,8 @@ for (let index = 0; index < args.length; index += 2) {
   options[key] = args[index + 1]
 }
 assert.equal(process.platform, 'darwin', 'Package verification requires macOS tools')
-const app = options['--app'] ?? path.join(root, 'target/release/bundle/macos/Local Projects Dev.app')
-const dmg = options['--dmg'] ?? path.join(root, 'target/release/bundle/dmg/Local Projects Dev_0.0.0_aarch64.dmg')
+const app = options['--app'] ?? path.join(root, 'target/release/bundle/macos/熊猫应用小抽屉.app')
+const dmg = options['--dmg'] ?? path.join(root, 'target/release/bundle/dmg/熊猫应用小抽屉_0.0.0_aarch64.dmg')
 const output = options['--output'] ?? path.join(root, '.test-artifacts', `m5-package-${new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')}`)
 await mkdir(path.dirname(output), { recursive: true })
 await mkdir(output) // Never replace another verification run or the retained M4 package.
@@ -74,7 +74,7 @@ async function signedBundle(bundle, prefix) {
   assert.equal(info.LSMinimumSystemVersion, '15.0')
   assert.equal(info.CFBundleShortVersionString, '0.0.0')
   assert.equal(info.CFBundleExecutable, 'local-projects-desktop-dev')
-  assert.ok(info.CFBundleName?.includes('Local Projects Dev'))
+  assert.equal(info.CFBundleName, '熊猫应用小抽屉')
   assert.ok(typeof info.NSCameraUsageDescription === 'string' && info.NSCameraUsageDescription.trim())
   assert.ok(typeof info.NSMicrophoneUsageDescription === 'string' && info.NSMicrophoneUsageDescription.trim())
   const entitlementResult = await command(`${prefix}-entitlements`, '/usr/bin/codesign', ['-d', '--entitlements', ':-', bundle])

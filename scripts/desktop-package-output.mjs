@@ -8,6 +8,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const execute = promisify(execFile);
+const productName = '熊猫应用小抽屉';
+// The only historical output owned by this build workflow keeps its own name.
+const generatedProductNames = [productName, 'Local Projects Dev'];
 const missing = error => error.code === 'ENOENT';
 async function statIfPresent(file) {
   try { return await lstat(file); } catch (error) { if (missing(error)) return undefined; throw error; }
@@ -34,8 +37,8 @@ export function desktopPackagePlan({ root, args, configuration, environment = pr
     throw new Error('自动清理只支持标准打包输出；请移除自定义 config、target、profile 或覆盖打包配置与输出的环境变量。');
   }
   if (arch !== 'arm64') throw new Error('标准 Mac 内部包当前只支持 arm64。');
-  const { productName, version, identifier } = configuration;
-  if (productName !== 'Local Projects Dev' || identifier !== 'dev.localprojects.platform.m0' || !/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) {
+  const { productName: configuredProductName, version, identifier } = configuration;
+  if (configuredProductName !== productName || identifier !== 'dev.localprojects.platform.m0' || !/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) {
     throw new Error('打包清理拒绝未知应用身份或版本文件名。');
   }
   let bundles = configuration.bundle?.targets;
@@ -115,6 +118,10 @@ export async function withDesktopPackageOutput(plan, build, {
   const bundleRoot = path.join(profileRoot, 'bundle');
   const app = path.join(bundleRoot, 'macos', `${plan.productName}.app`);
   const currentDmg = path.join(bundleRoot, 'dmg', `${plan.productName}_${plan.version}_${plan.arch === 'arm64' ? 'aarch64' : plan.arch}.dmg`);
+  const generatedApps = generatedProductNames.map(name => ({
+    app: path.join(bundleRoot, 'macos', `${name}.app`),
+    plan: { ...plan, productName: name },
+  }));
   try {
     await writeFile(path.join(lock, 'owner.json'), `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), profile: plan.profile })}\n`, { flag: 'wx' });
     await normalDirectory(profileRoot, { create: true });
@@ -122,14 +129,18 @@ export async function withDesktopPackageOutput(plan, build, {
     await normalDirectory(path.dirname(app), { create: true });
     await normalDirectory(path.dirname(currentDmg), { create: true });
     const active = await processes();
-    if (active.some(command => command.startsWith(`${app}/Contents/MacOS/`))) throw new Error(`请先从菜单退出正在运行的 ${plan.productName}，再打包；当前程序：${app}`);
+    for (const candidate of generatedApps) {
+      if (active.some(command => command.startsWith(`${candidate.app}/Contents/MacOS/`))) throw new Error(`请先从菜单退出正在运行的 ${candidate.plan.productName}，再打包；当前程序：${candidate.app}`);
+    }
     // Only fixed generated product names qualify. Unknown files are untouched.
-    if (await statIfPresent(app)) { await verifyApp(app, plan); outputs.push(app); }
-    const prefix = `${plan.productName}_`;
+    for (const candidate of generatedApps) {
+      if (await statIfPresent(candidate.app)) { await verifyApp(candidate.app, candidate.plan); outputs.push(candidate.app); }
+    }
     for (const name of await readdir(path.dirname(currentDmg))) {
-      if (!name.startsWith(prefix) || !/^[0-9A-Za-z][0-9A-Za-z.+-]*_aarch64\.dmg$/.test(name.slice(prefix.length))) continue;
+      const candidateName = generatedProductNames.find(product => name.startsWith(`${product}_`) && /^[0-9A-Za-z][0-9A-Za-z.+-]*_aarch64\.dmg$/.test(name.slice(product.length + 1)));
+      if (!candidateName) continue;
       const file = path.join(path.dirname(currentDmg), name);
-      await verifyDmg(file, plan);
+      await verifyDmg(file, { ...plan, productName: candidateName });
       outputs.push(file);
     }
     const candidate = path.join(profileRoot, `.desktop-package-previous-${randomUUID()}`);

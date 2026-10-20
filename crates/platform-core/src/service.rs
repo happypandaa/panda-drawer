@@ -2026,7 +2026,7 @@ async fn serve_project(
         Ok(project) => project,
         Err(error) => {
             if error.code == "INVALID_SESSION" && path.is_none() {
-                return(StatusCode::UNAUTHORIZED,[(header::CONTENT_TYPE,"text/html; charset=utf-8"),(header::CONTENT_SECURITY_POLICY,"default-src 'none'; frame-ancestors 'none'")],"<!doctype html><html lang=zh-CN><meta charset=utf-8><title>需要从平台打开</title><h1>请从平台打开这个项目</h1><p>在 Local Projects Dev 中打开项目，或让 AI 获取新的浏览器入口。平台重启后需要重新连接。</p></html>").into_response();
+                return(StatusCode::UNAUTHORIZED,[(header::CONTENT_TYPE,"text/html; charset=utf-8"),(header::CONTENT_SECURITY_POLICY,"default-src 'none'; frame-ancestors 'none'")],"<!doctype html><html lang=zh-CN><meta charset=utf-8><title>需要从平台打开</title><h1>请从平台打开这个项目</h1><p>在熊猫应用小抽屉中打开项目，或让 AI 获取新的浏览器入口。平台重启后需要重新连接。</p></html>").into_response();
             }
             return failure(error, Some(&id));
         }

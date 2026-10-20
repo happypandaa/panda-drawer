@@ -18,20 +18,20 @@
 
 ## 顶层文档分类
 
-本次整理后 `docs/` 顶层实际为 **46 份 Markdown**，其中 **17 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
+本次整理后 `docs/` 顶层实际为 **47 份 Markdown**，其中 **17 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
 
 | 类别 | 数量 | 文档 |
 | --- | ---: | --- |
 | 分类索引 | 1 | 本页 |
 | 总体入口与状态 | 4 | [主约定](platform-development-contract.md)、[里程碑](development-milestones.md)、[技术决定与待定项](remaining-technical-decisions.md)、[开发说明](development.md) |
-| 已确认的配套契约及分工 | 11 | [本地服务与 AI](local-service-and-ai-tools.md)、[备份维护](backup-and-maintenance.md)、[生命周期与工作区](project-lifecycle-and-workspace.md)、[能力与秘密](project-capabilities-and-secrets.md)、[元数据与概览](project-metadata-and-overview.md)、[存储与素材](project-storage-and-assets.md)、[发行更新](release-and-updates.md)、[工作区身份](workspace-identity.md)、[历史清理](history-cleanup.md)、[用户／AI 文档分工](application-documentation.md)、[应用开发环境与交付](app-development-environment.md) |
+| 已确认的配套契约及分工 | 12 | [本地服务与 AI](local-service-and-ai-tools.md)、[备份维护](backup-and-maintenance.md)、[生命周期与工作区](project-lifecycle-and-workspace.md)、[能力与秘密](project-capabilities-and-secrets.md)、[元数据与概览](project-metadata-and-overview.md)、[存储与素材](project-storage-and-assets.md)、[发行更新](release-and-updates.md)、[工作区身份](workspace-identity.md)、[历史清理](history-cleanup.md)、[用户／AI 文档分工](application-documentation.md)、[应用开发环境与交付](app-development-environment.md)、[名称与图标](branding.md) |
 | 格式、运行与配置规范 | 5 | [项目与应用包 v1](project-and-app-format-v1.md)、[Node 总体方案](node-app-runtime.md)、[Node 启动规范](node-app-startup-spec.md)、[Node 配置设计](node-app-configuration.md)、[原生应用窗口约束](app-window-runtime-contract.md)；其中 Node 公开格式与部分细则仍按各页草案状态处理 |
 | 实施计划与当前独立子集 | 4 | [AP 外部包计划](app-package-implementation-plan.md)、[Windows 计划](windows-support-plan.md)、[NR Node 计划](node-app-implementation-plan.md)、[本机 Node 配置与运行](node-native-configuration.md) |
 | 待确认讨论稿 | 3 | [资源限额](resource-limits-proposal.md)、[历史管理接口](history-management-interfaces-proposal.md)、[外部包安装分享设计](web-app-package-design.md) |
 | 已被取代的路线 | 1 | [早期内置 Node 与固定连接器](bundled-node-and-connectors.md) |
 | 实际验证记录 | 17 | 见下一节；只作为证据与限制，不作为新增产品要求 |
 
-另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **51 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共58个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
+另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **52 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共59个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
 
 ## 验证记录目录
 
