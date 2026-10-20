@@ -1,5 +1,7 @@
 # 开发环境与数据隔离
 
+2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
+
 状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。正式产品身份尚未命名。
 
 2026-10-19 新增方向：平台内置 Node，运行用户应用自己的 Node 后端，统一启动、停止及展示运行状态；总体方案见[受管 Node 运行时](node-app-runtime.md)，说明文件与协议见[启动规范草案](node-app-startup-spec.md)，小步安排见[实施计划](node-app-implementation-plan.md)。共享运行时资源，各应用独立受管进程；AI、TTS、音乐和业务 SDK 由应用实现，Claude Code 不是平台必需依赖。该方向取代固定 Claude Code／网易云连接器设想，本轮仅整理方案，未写运行代码；当前程序仍是静态网页与 Rust 核心，未内置 Node 或实现应用后端。现有静态 v1 格式、SDK/CLI/HTTP 和系统 Node 构建流程保持原语义，新类型及协议仍为草案。受管进程不是沙箱，平台密钥管理没有因此实现。
@@ -109,6 +111,8 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 ## 5 当前项目和工具入口
 
 项目实际目录：`workspace/projects/{id}/`，包括 `project.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.agents/skills/local-projects-app/`、`docs/database.md`、`docs/platform.md`、`meta/`、`app/`、`dist/`、`data/main.sqlite`、`data/attachments/`、`.platform/`。新项目同时复制可构建的标准源码和平台预编译的欢迎应用，校验两者与打包摘要一致，再完成项目登记；不创建业务表或示例数据。新项目立即可在桌面和浏览器打开，创建及打开不调用 Node/npm、不下载依赖。项目登记与文档代次保存在工作区 `.platform/project-state/{id}.json`；登记还验证项目目录和数据库文件身份。数据库缺失、符号链接、硬链接或未经协调替换时拒绝操作，不创建空库蒙混通过。
+
+给 AI 的窗口约束现由 skill 主入口链接到随目录携带的 `references/app-window-runtime.md`；它说明原生单窗口、打开自动启动 Node、关窗停止、禁止额外窗口／业务弹窗，并先区分 project-v1 与独立 Node 源码槽。主规则见[应用窗口契约](app-window-runtime-contract.md)，全部文档分类与阅读顺序见[文档地图](documentation-map.md)。准备资源／新建时沿用整个 skill 目录复制，不为补说明覆盖既有项目文件。
 
 仓库 `skills/local-projects-app/` 是 skill 的维护源，准备步骤复制到包内资源，新建时复制到项目 `.agents/skills/local-projects-app/`。README、AGENTS.md 和 CLAUDE.md 引用它；`project handoff` 和“复制 AI 接手说明”提供实际项目、README、skill 和 CLI 绝对路径。skill 说明业务项目的读取、修改、数据库操作、构建、验证、备份维护、生命周期与迁移后的交接，不要求 AI 修改平台工程。资源更新只用于新建项目和安装包后备说明；旧项目的 skill、SDK、源码和文档不随升级覆盖，调用新能力前核对当前 CLI 帮助。它不是全局安装项，不承诺所有 AI 客户端自动识别；无法自动发现时按交接文本显式读取。
 

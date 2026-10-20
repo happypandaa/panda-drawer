@@ -1,5 +1,7 @@
 # 网页应用包安装与分享设计
 
+2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
+
 状态：v0.4，设计讨论稿；网页项目／Node 服务项目两类、清单识别及类型图标方向已确认，Node 枚举和新格式仍为候选；格式入口与[AP0–AP6 规划](app-package-implementation-plan.md)已整理；PWA 可选，安装未实现，初始化、更新、预算等细则待定
 
 更新日期：2026-10-20

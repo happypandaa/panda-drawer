@@ -6,6 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const WINDOW_CONSTRAINTS_RESOURCE: &str =
+    "skills/local-projects-app/references/app-window-runtime.md";
+
 #[derive(Clone)]
 pub struct ProjectResources {
     root: PathBuf,
@@ -24,6 +27,7 @@ impl ProjectResources {
             "template/app/README.md",
             "template/app/vendor/local-projects-sdk-0.1.0.tgz",
             "skills/local-projects-app/SKILL.md",
+            WINDOW_CONSTRAINTS_RESOURCE,
         ] {
             let file = root.join(relative);
             check_no_symlinks(&file, false)?;
@@ -79,11 +83,13 @@ impl ProjectResources {
 
 ## Start here (for an external AI)
 
-First read the project-owned skill at `.agents/skills/local-projects-app/SKILL.md`, then this README, `project.json`, `docs/database.md`, and `docs/platform.md`. The skill can be read directly by any AI with file access; automatic discovery is not required. `AGENTS.md` and `CLAUDE.md` point to the same instructions. Implement ordinary usable webpage features: the user must be able to continue using the application when AI is offline.
+First read the project-owned skill at `.agents/skills/local-projects-app/SKILL.md` and its `references/app-window-runtime.md`, then this README, `project.json`, `docs/database.md`, and `docs/platform.md`. Also read the latest installed platform constraints at the actual path returned by a fresh platform AI handoff; project-owned skills are preserved when the platform updates. The files can be read directly by any AI with file access; automatic discovery is not required. `AGENTS.md` and `CLAUDE.md` point to the same instructions. Implement ordinary usable webpage features: the user must be able to continue using the application when AI is offline.
 
 This project starts with a ready-to-open welcome application, its matching React source and an empty independent database. Creating and opening it requires neither Node nor dependency downloads. The bundled template is recorded separately from user build tasks; after changing source, request a platform build to publish the new version. A failed first build preserves the initial application, but does not roll back any separately committed database changes.
 
-The native platform runs the local service and owns SQLite and attachments. Node is needed only for builds (minimum 22.12, recommended 24 LTS, supported branches 22/24). Do not start a separate backend or Vite development server. The platform displays published static builds in its project window and a normal browser.
+For this static project-v1 type, the native platform runs the local service and owns SQLite and attachments. Node is needed only for builds (minimum 22.12, recommended 24 LTS, supported branches 22/24). Do not start a separate backend or Vite development server. Open the published application from the platform in its single native application window. Opening it again only focuses the same window without reloading or losing drafts. Do not create popups, another WebView, an external browser window, or use window.open/target=_blank to extend the application. For a separately registered Node application, the platform starts its backend when opening its window and stops it when that application window closes; that rule does not turn this static project into a Node source slot.
+
+The current Node configuration choice stores secrets in each application's private local slot under configuration/credentials/ (directory mode 0700, file mode 0600). These are plaintext files protected by the current user's file permissions, not an OS encrypted vault or macOS Keychain. The slot is separate from author source, shared packages and Git. Do not read/copy these secrets or touch older Keychain entries; the platform configuration flow manages them and injects only the target backend's environment. This does not add secret storage to this static project-v1 type.
 
 Bundled CLI for this installation (rediscover after moving/reinstalling the app):
 
@@ -101,7 +107,7 @@ Bundled CLI for this installation (rediscover after moving/reinstalling the app)
 {cli} project url --project {id} --json
 ```
 
-Open the returned fresh `launchUrl` in a browser for debugging. It is short lived; never save it or any credentials in source or documentation. After a platform restart, obtain a new URL. `task wait` timing out does not cancel a build. A failed build keeps the previous webpage and saved data. Check task status and logs before claiming success.
+Verify the result in the platform's native application window. The returned fresh `launchUrl` is only for necessary HTTP/browser diagnostics, not the standard application entry or a substitute for native-window acceptance. It is short lived; never save it or any credentials in source or documentation. After a platform restart, obtain a new URL if diagnostics are needed. `task wait` timing out does not cancel a build. A failed build keeps the previous webpage and saved data. Check task status and logs before claiming success.
 
 SQL input examples (save the JSON to the `--input` file):
 
@@ -156,8 +162,8 @@ Maintenance exports, copies and deletion require the current maintenance ID. A c
 - Feature and acceptance criteria: pending.
 - Source/dependency/schema changes: pending.
 - Build task ID and outcome: pending.
-- Browser validation steps and result: pending.
-- Desktop validation steps and result: pending.
+- Native single-window, repeat-open, close/reopen and persistence validation: pending.
+- Supplemental HTTP/browser diagnostics, if needed, and their limits: pending.
 - Known limitations and next steps: pending.
 
 Resource limits exposed by this development runtime are internal test parameters, not finalized product defaults.
@@ -176,6 +182,26 @@ Resource limits exposed by this development runtime are internal test parameters
         } else {
             self.root.join("skills/local-projects-app/SKILL.md")
         };
+        // Project-owned skills remain pinned. Always supplement them with the
+        // current installation's real reference, without changing project files.
+        let constraints = self.root.join(WINDOW_CONSTRAINTS_RESOURCE);
+        let constraints = if check_no_symlinks(&constraints, false).is_ok() && constraints.is_file()
+        {
+            Some(constraints)
+        } else {
+            None
+        };
+        let constraints_note = constraints
+            .as_ref()
+            .map(|path| {
+                format!(
+                    "还必须阅读当前安装随附的最新应用窗口约束（项目自带 skill 保持原样）：{}\n若旧 skill 仍推荐默认另开浏览器，按这份当前平台约束补充执行；不要覆盖旧项目 skill、SDK 或文档。",
+                    path.display()
+                )
+            })
+            .unwrap_or_else(|| {
+                "当前安装缺少可核对的应用窗口约束资源；请修复平台安装资源，不要引用不存在的路径或改写旧项目文件。下述窗口约束仍须遵守。".into()
+            });
         let generated = root.join(".platform/handoff.md");
         let generated = if check_no_symlinks(&generated, false).is_ok() && generated.is_file() {
             Some(generated)
@@ -196,20 +222,25 @@ Resource limits exposed by this development runtime are internal test parameters
         let text = format!(
             r#"请接手以下业务应用，并根据我接下来提供的需求继续开发。
 
-Local Projects Dev 是 macOS 上的本地业务应用平台。它管理各个项目的源码、独立 SQLite 数据库、附件、运行入口、构建发布、备份与维护。你要开发的是下面的业务项目；平台会把发布后的网页显示在项目窗口或普通浏览器中，用户应当能在 AI 离线时继续使用。
+Local Projects Dev 是 macOS 上的本地业务应用平台。它管理各个项目的源码、独立 SQLite 数据库、附件、运行入口、构建发布、备份与维护。你要开发的是下面的业务项目；平台会把发布后的网页显示在唯一原生应用窗口中，用户应当能在 AI 离线时继续使用。
 
 业务项目 ID：{id}
 业务项目根目录：{project_root}
 当前平台 CLI：{cli_path}
 
 先读取当前接管 skill（{skill_source}）：{skill_path}
+{constraints_note}
 {generated_note}
 然后读取项目清单：{manifest_path}
 根据清单中的 docs 声明完整阅读 README、数据库和平台集成说明，了解业务目的、现有功能、数据结构和平台约束。以下是默认模板的文档路径；若清单声明不同，请读取实际声明的文件：
 - 默认 README：{readme_path}
 - 默认数据库说明：{database_docs}
 - 默认平台集成说明：{platform_docs}
-文档和 skill 中的相对路径均以业务项目根目录为准。当前目录和 CLI 以上述路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
+业务文档和 skill 的 PROJECT_ROOT 指上述业务项目根目录；skill 的 references/ 等资源链接相对该 skill 所在目录解析。当前目录、安装约束和 CLI 以上述实际路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
+
+平台应用窗口约束：每个应用实例最多一个原生窗口，重复打开只聚焦已有窗口，不重载或丢弃草稿；不得弹出新窗口、调用 window.open/target=_blank、另建 WebView 或转外部浏览器作为运行方式。业务确认与表单留在当前窗口内，不用脚本 alert/confirm/prompt。网页类型不启动自己的 Node；Node 类型由平台在打开应用时后台启动唯一后端，关闭应用窗口就停止，启动中的重复打开复用同一次任务。保存配置不启动或重启，明确重启或关窗后再打开才使用新配置。此交接仍针对已有 project-v1，不把独立 Node 源码槽的能力套入其安装、数据或迁移生命周期。
+
+当前 Node 秘密保存按用户最新选择：每个应用自己的本机受管槽 configuration/credentials/ 私有文件，目录0700、文件0600，是当前用户文件权限保护的明文，不是 macOS Keychain 或系统加密库。该槽与作者源码、分享包和 Git 分开；AI 不读取或复制秘密文件，不读删旧 Keychain 条目，不把秘密写进交接、日志或源码。配置入口负责保存并仅向目标 Node 创建环境注入；本条不为当前静态 project-v1 增加秘密接口。
 
 源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
 
@@ -230,7 +261,7 @@ Local Projects Dev 是 macOS 上的本地业务应用平台。它管理各个项
 
 SQL 输入格式和维护规则以 skill、项目文档及 CLI 帮助为准；不要直接写入或替换运行中的 SQLite 文件或 WAL/SHM。涉及不兼容数据变更时，先进入维护并等待基线备份成功和 readyForChanges，再携带维护 ID 操作；验证后明确结束维护。
 
-保留现有用户数据、附件、备份和未保存草稿；不要为了修复构建或刷新页面清空数据。检查异步任务的最终状态与日志，使用平台重新取得的短期 launchUrl 验证发布结果；平台重启或工作区迁移后重新获取项目路径与入口，不要保存端口、令牌、票据、Cookie 或其他密钥。未知写入结果不要自动重放，刷新或重载前先处理草稿。
+保留现有用户数据、附件、备份和未保存草稿；不要为了修复构建或刷新页面清空数据。检查异步任务的最终状态与日志，在平台原生应用窗口验证发布结果、重复打开聚焦、关闭重开与数据保留；短期 launchUrl 的 HTTP/浏览器诊断只作补充，不能代替原生窗口验收。平台重启或工作区迁移后重新获取项目路径与入口，不要保存端口、令牌、票据、Cookie 或其他密钥。未知写入结果不要自动重放，刷新或重载前先处理草稿。
 
 完成后报告实际修改、数据库/schema 变化、构建任务结果、实际验证和已知限制；没有执行的验证请明确说明，并把这些信息写回项目说明。
 "#,
@@ -247,7 +278,7 @@ SQL 输入格式和维护规则以 skill、项目文档及 CLI 帮助为准；�
             database_docs = root.join("docs/database.md").display(),
             platform_docs = root.join("docs/platform.md").display(),
         );
-        json!({"projectId":id,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"cliPath":self.cli_path,"text":text})
+        json!({"projectId":id,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"runtimeConstraintsPath":constraints,"cliPath":self.cli_path,"text":text})
     }
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
@@ -297,7 +328,7 @@ mod tests {
             "sdk/releases",
             "template/app/vendor",
             "template/app/src",
-            "skills/local-projects-app",
+            "skills/local-projects-app/references",
         ] {
             fs::create_dir_all(root.join(relative)).unwrap();
         }
@@ -316,6 +347,11 @@ mod tests {
         }
         fs::write(root.join("sdk/README.md"), "Use platform.db.execute").unwrap();
         fs::write(root.join("skills/local-projects-app/SKILL.md"), "---\nname: local-projects-app\ndescription: Take over a local project.\n---\nRead the project README first.\n").unwrap();
+        fs::write(
+            root.join(WINDOW_CONSTRAINTS_RESOURCE),
+            "Current installed single-window constraints. Never overwrite project-owned files.",
+        )
+        .unwrap();
         fs::write(root.join("template/app/src/App.tsx"), "template one").unwrap();
         fs::write(
             root.join("template/app/README.md"),
@@ -332,6 +368,7 @@ mod tests {
         let (_temporary, paths) = RuntimePaths::for_test();
         let root = paths.data_root().join("App's installation resources");
         let cli = installation(&root);
+        let constraints = root.join(WINDOW_CONSTRAINTS_RESOURCE);
         let resources = ProjectResources::new(root, cli.clone()).unwrap();
         let project_root = paths.workspace_root().join("业务 项目's directory");
         let skill = project_root.join(".agents/skills/local-projects-app/SKILL.md");
@@ -342,6 +379,15 @@ mod tests {
         fs::write(project_root.join("README.md"), readme).unwrap();
         fs::write(&skill, "Existing project skill").unwrap();
         fs::write(&generated, "Existing platform-managed handoff").unwrap();
+        let old_reference = skill
+            .parent()
+            .unwrap()
+            .join("references/app-window-runtime.md");
+        fs::create_dir_all(old_reference.parent().unwrap()).unwrap();
+        fs::write(&old_reference, "Older project-owned window instructions").unwrap();
+        let old_sdk = project_root.join("app/vendor/pinned-sdk.tgz");
+        fs::create_dir_all(old_sdk.parent().unwrap()).unwrap();
+        fs::write(&old_sdk, "Pinned project SDK must stay unchanged").unwrap();
 
         let handoff = resources.handoff(&project_root, "prj_current");
         assert_eq!(handoff["projectId"], "prj_current");
@@ -352,6 +398,11 @@ mod tests {
             generated.to_string_lossy().as_ref()
         );
         assert_eq!(handoff["cliPath"], cli.to_string_lossy().as_ref());
+        assert_eq!(
+            handoff["runtimeConstraintsPath"],
+            constraints.to_string_lossy().as_ref()
+        );
+        assert!(constraints.is_file());
         let text = handoff["text"].as_str().unwrap();
         for expected in [
             "Local Projects Dev 是 macOS 上的本地业务应用平台",
@@ -368,6 +419,15 @@ mod tests {
             "readyForChanges",
             "检查异步任务的最终状态与日志",
             "不要直接写入或替换运行中的 SQLite 文件",
+            "还必须阅读当前安装随附的最新应用窗口约束",
+            "每个应用实例最多一个原生窗口",
+            "重复打开只聚焦已有窗口",
+            "打开应用时后台启动唯一后端，关闭应用窗口就停止",
+            "不得弹出新窗口",
+            "不能代替原生窗口验收",
+            "configuration/credentials/ 私有文件，目录0700、文件0600",
+            "当前用户文件权限保护的明文",
+            "不是 macOS Keychain 或系统加密库",
         ] {
             assert!(
                 text.contains(expected),
@@ -382,6 +442,7 @@ mod tests {
             project_root.join("project.json"),
             project_root.join("docs/database.md"),
             project_root.join("docs/platform.md"),
+            constraints,
         ] {
             assert!(text.contains(path.to_string_lossy().as_ref()));
         }
@@ -395,6 +456,14 @@ mod tests {
         assert!(!text.contains("private-fixture-value"));
         assert_eq!(fs::read(project_root.join("README.md")).unwrap(), readme);
         assert_eq!(fs::read_to_string(skill).unwrap(), "Existing project skill");
+        assert_eq!(
+            fs::read_to_string(old_reference).unwrap(),
+            "Older project-owned window instructions"
+        );
+        assert_eq!(
+            fs::read_to_string(old_sdk).unwrap(),
+            "Pinned project SDK must stay unchanged"
+        );
         assert_eq!(
             fs::read_to_string(generated).unwrap(),
             "Existing platform-managed handoff"
@@ -415,6 +484,12 @@ mod tests {
         let fallback = root.join("skills/local-projects-app/SKILL.md");
         assert_eq!(handoff["skillSource"], "installation");
         assert_eq!(handoff["skillPath"], fallback.to_string_lossy().as_ref());
+        assert_eq!(
+            handoff["runtimeConstraintsPath"],
+            root.join(WINDOW_CONSTRAINTS_RESOURCE)
+                .to_string_lossy()
+                .as_ref()
+        );
         assert!(handoff["generatedHandoffPath"].is_null());
         let text = handoff["text"].as_str().unwrap();
         assert!(text.contains("本机安装随附，旧项目文件保持原样"));
@@ -422,6 +497,47 @@ mod tests {
         assert!(!text.contains("平台管理的接管记录"));
         assert_eq!(fs::read(project_root.join("README.md")).unwrap(), readme);
         assert_eq!(fs::read_dir(&project_root).unwrap().count(), 1);
+    }
+    #[test]
+    fn missing_window_constraint_resource_is_not_reported_as_an_existing_handoff_path() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let root = paths.data_root().join("test-install");
+        let cli = installation(&root);
+        let resources = ProjectResources::new(root.clone(), cli.clone()).unwrap();
+        let constraint = root.join(WINDOW_CONSTRAINTS_RESOURCE);
+        fs::remove_file(&constraint).unwrap();
+        assert!(ProjectResources::new(root, cli).is_err());
+        let handoff = resources.handoff(&paths.workspace_root().join("older project"), "prj_old");
+        assert!(handoff["runtimeConstraintsPath"].is_null());
+        let text = handoff["text"].as_str().unwrap();
+        assert!(text.contains("当前安装缺少可核对的应用窗口约束资源"));
+        assert!(!text.contains(constraint.to_string_lossy().as_ref()));
+        assert!(text.contains("每个应用实例最多一个原生窗口"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn handoff_does_not_follow_a_replaced_installation_window_constraint_link() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let root = paths.data_root().join("test-install");
+        let cli = installation(&root);
+        let resources = ProjectResources::new(root.clone(), cli.clone()).unwrap();
+        let constraint = root.join(WINDOW_CONSTRAINTS_RESOURCE);
+        let outside = paths.data_root().join("outside-window-instructions.txt");
+        fs::write(
+            &outside,
+            "Outside file must not become current platform instructions",
+        )
+        .unwrap();
+        fs::remove_file(&constraint).unwrap();
+        std::os::unix::fs::symlink(&outside, &constraint).unwrap();
+        assert!(ProjectResources::new(root, cli).is_err());
+        let handoff = resources.handoff(&paths.workspace_root().join("older project"), "prj_old");
+        assert!(handoff["runtimeConstraintsPath"].is_null());
+        assert!(fs::symlink_metadata(constraint).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(outside).unwrap(),
+            "Outside file must not become current platform instructions"
+        );
     }
     #[cfg(unix)]
     #[test]
@@ -494,6 +610,23 @@ mod tests {
             fs::read(root.join("skills/local-projects-app/SKILL.md")).unwrap()
         );
         assert!(readme.contains(".agents/skills/local-projects-app/SKILL.md"));
+        assert!(readme.contains("references/app-window-runtime.md"));
+        assert!(readme.contains("single native application window"));
+        assert!(readme.contains("only focuses the same window"));
+        assert!(readme.contains("stops it when that application window closes"));
+        assert!(readme.contains("not the standard application entry"));
+        assert!(readme.contains("configuration/credentials/"));
+        assert!(readme.contains("plaintext files protected by the current user's file permissions"));
+        assert!(!readme.contains("project window and a normal browser"));
+        assert_eq!(
+            fs::read(
+                project_root
+                    .join(".agents")
+                    .join(WINDOW_CONSTRAINTS_RESOURCE)
+            )
+            .unwrap(),
+            fs::read(root.join(WINDOW_CONSTRAINTS_RESOURCE)).unwrap()
+        );
         for entry in ["AGENTS.md", "CLAUDE.md"] {
             assert!(fs::read_to_string(project_root.join(entry))
                 .unwrap()

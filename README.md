@@ -2,17 +2,19 @@
 
 Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、回收站和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。临时名称为 **Local Projects Dev**；实际验收范围见各阶段记录，仍是隔离的内部开发版。
 
+文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
+
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
 PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs/app-package-implementation-plan.md)拆为 AP0–AP6 共 7 阶段、20 小步，先做检测和无源码类型的保护基础，再开放静态安装，之后扩展数据应用与手动更新；本轮仅规划，尚未开始安装实现，也不改变 M0–M6 或 Windows 的完成状态。
 
 [应用文档分工](docs/application-documentation.md)区分用户的使用/配置说明与 AI 的技术/架构/开发说明，复用 `documentation.readme` 和 `documentation.development`，并提供两份独立 Markdown 示例；展示仍待实现，正文预算和强制携带策略待定。
 
-用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。现已按用户授权开始[隔离运行试验](docs/node-runtime-trial-verification.md)，增加私有 Node 准备、实验清单和受管进程；平台安装入口、配置表单和类型图标尚未接入，新格式与数据契约仍待定稿；现有静态 v1 与系统 Node/npm 构建流程保持。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
+用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。现已按用户授权开始[隔离运行试验](docs/node-runtime-trial-verification.md)，增加私有 Node 准备、实验清单和受管进程；后续已接独立本机源码槽、配置表单、本机私有秘密文件和启动注入，原生窗口流程按最新约束验收；完整安装与新类型数据契约仍待定稿；现有静态 v1 与系统 Node/npm 构建流程保持。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
 
-2026-10-20 用户进一步确认[可视化配置应用环境变量](docs/node-app-configuration.md)：作者在清单中声明变量、中文用途和获取步骤，用户在平台界面填写 AI 地址、API Key 等配置，无需编辑 `.env`。声明与实际值分开，秘密凭据保存、目标后端注入、生效及备份复制规则按草案纳入原 20 步；完整配置界面和秘密凭据存储仍未实现；当前隔离试验只校验声明并注入普通默认值，不读取宿主密钥。
+2026-10-20 用户进一步确认[可视化配置应用环境变量](docs/node-app-configuration.md)：作者在清单中声明变量、中文用途和获取步骤，用户在平台界面填写 AI 地址、API Key 等配置，无需编辑 `.env`。声明与实际值分开，秘密凭据保存、目标后端注入、生效及备份复制规则按草案纳入原 20 步；首个隔离试验只校验声明并注入普通默认值；后续本机源码入口的表单、本机私有秘密文件和注入子集见当前接入说明，不读取宿主密钥，不代表公开 Node 安装完成。
 
-后续新增[配置声明实验规范、Schema 和只读检查器](docs/node-configuration-v1/README.md)，radio 配置已收敛为 AI 地址/密钥/模型、语音密钥/音色/模型六项，说明用途与获取步骤；可检查缺少哪些必填配置，不启动应用或读取真实密钥。这仍是源码适配范例，完整配置表单、保存与安装入口待实现。
+后续新增[配置声明实验规范、Schema 和只读检查器](docs/node-configuration-v1/README.md)，radio 配置已收敛为 AI 地址/密钥/模型、语音密钥/音色/模型六项，说明用途与获取步骤；可检查缺少哪些必填配置，不启动应用或读取真实密钥。后续配置表单与本机保存已接入独立 Node 源码入口；完整可分发安装仍未交付。
 
 同日确认按运行形态分为“网页项目”和“Node 服务项目”，清单明确声明，平台卡片、详情与安装预览以固定类型图标和中文文字区分；类型与运行状态、用户自定义项目图标分别展示。规则见[两类运行形态](docs/node-app-runtime.md#11-两种项目运行类型)及[项目概览](docs/project-metadata-and-overview.md)，本轮未写界面或修改图标资产。
 
