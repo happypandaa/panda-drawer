@@ -2,7 +2,7 @@
 
 更新日期：2026-10-20
 
-状态：内置 Node 方案及统一启停已确认；2026-10-20 用户新增确认可视化维护环境变量、声明用途和获取步骤。本文字段、版本号、消息和默认参数仍待 NR0 冻结，未实现。**下述片段不能交给当前安装器或写入现有 project v1 来获得后端执行能力。** 配套[总方案](node-app-runtime.md)、[应用配置草案](node-app-configuration.md)与[实施步骤](node-app-implementation-plan.md)。
+状态：内置 Node、统一启停、可视化配置及变量说明已确认；用户进一步确认带 Node 服务与不带的两类项目，由配置文件明确声明，平台识别并显示类型图标。本文采用 `static-web / node-service` 说明该方向，后者的枚举、字段、版本号、消息和参数仍待 NR0 冻结，全部未实现。**下述片段不能交给当前安装器或写入现有 project v1 来获得后端执行能力。** 配套[总方案](node-app-runtime.md)、[应用配置草案](node-app-configuration.md)与[实施步骤](node-app-implementation-plan.md)。
 
 ## 1 哪个文件负责什么
 
@@ -18,9 +18,39 @@
 
 现有外部包 v1 固定 `static-web`，project v1 的未知字段也没有后端执行语义。Node 类型必须采用旧平台会明确拒绝的新包版本及受管项目/归档版本，不用 `extensions`、`runtimeRequirements` 或旧清单的未知字段偷渡启动能力。具体版本号和迁移方式在 NR0.1 冻结；保留现有 v1 Schema 和示例。
 
-## 2 最小启动声明
+### 1.1 两种运行类型与识别
 
-下面仅展示候选启动字段，省略应用基本信息、文档、数据及 `configuration` 等完整包要求；配置声明另见[变量示例](node-app-configuration.md#2-声明与实际值分开)。`formatVersion: 2`、`node-service` 和 Node `24` 均为设计示例，未成为现行格式；`backend.protocolVersion` 是控制协议版本，与包及配置声明版本分别演进。
+这里区分的是应用日常运行是否带自己的 Node 服务：不带的显示为“网页项目”，带的显示为“Node 服务项目”。项目源码构建曾使用 Node/npm，不会使网页项目变成 Node 服务项目。两类都依赖平台现有 Rust 服务；类型也不表示是否附源码、能否离线、是否调用 AI，或此刻后端是否正在运行。
+
+| 运行声明 | `backend` | Node 环境配置 `configuration` | 平台类型显示 |
+| --- | --- | --- | --- |
+| `static-web` | 禁止出现，包括空对象或 `null` | 禁止出现；不借静态类型获得启动环境注入 | 网页项目 |
+| `node-service`（新格式候选枚举） | 必需且有效，入口与完整运行依赖须通过检查 | 有需用户填写的启动变量时按[配置草案](node-app-configuration.md)声明；不改变既有候选字段规则 | Node 服务项目 |
+
+新外部包或新受管格式必须有明确且被支持的运行类型；缺失、未知、格式版本不支持或声明矛盾均拒绝，不根据 `package.json`、依赖目录、构建工具或文件名猜测，也不静默当作网页项目。仅对已知合法的历史 project v1 按原静态语义识别，不补写清单或取得新执行权。新 Node 类型的包、项目和归档版本必须使旧平台明确拒绝。
+
+类型图标由平台按有效运行类型生成，规则见[项目类型显示](project-metadata-and-overview.md)；作者不另填 `needsNode` 布尔或指定类型图标。它与项目自己的 `icon`、是否有源码和运行状态分别显示；Node 服务已停止、缺少配置或启动失败时，仍显示 Node 服务项目。清单无效时展示识别问题，不猜成网页类型。
+
+## 2 两类最小声明片段
+
+下面分别展示网页项目与 Node 服务项目的运行声明，均省略应用基本信息、文档和数据等完整包要求，不是可直接安装的完整清单。网页片段沿用静态 v1；Node 片段的 `formatVersion: 2`、`node-service` 和 Node `24` 均为设计示例，未成为现行格式。Node 配置声明另见[变量示例](node-app-configuration.md#2-声明与实际值分开)，本片段省略它；`backend.protocolVersion` 与包及配置声明版本分别演进。
+
+网页项目：
+
+```json
+{
+  "packageFormat": "local-web-app",
+  "formatVersion": 1,
+  "runtime": "static-web",
+  "web": {
+    "root": "web",
+    "entry": "index.html",
+    "routing": "files"
+  }
+}
+```
+
+Node 服务项目：
 
 ```json
 {
@@ -43,7 +73,7 @@
 
 | 字段 | 候选约束 |
 | --- | --- |
-| `runtime` | 显式声明新 Node 类型；未知或不支持必须拒绝 |
+| `runtime` | 按第 1.1 节显式声明运行类型；两类方向已确认，新 Node 枚举和格式待冻结 |
 | `backend.root` | 相对包根的后端运行产物目录，包含完整运行依赖 |
 | `backend.entry` | 相对后端根的实际 JavaScript 文件；不接受命令串 |
 | `backend.nodeMajor` | 与平台私有运行时匹配的主版本；精确补丁由平台锁定 |
