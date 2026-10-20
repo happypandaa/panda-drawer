@@ -6,6 +6,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；内置 Node 不包含 npm 或用户端依赖安装／源码构建，现有 project-v1 源码构建仍使用系统 Node/npm。执行摘要随项目 skill 的同一份环境／窗口约束分发。
 
+第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护、Windows 与私有 npm 构建仍按各自实际进度推进，不把这次范围确认当作完整交付。
+
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
 PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs/app-package-implementation-plan.md)拆为 AP0–AP6 共 7 阶段、20 小步，先做检测和无源码类型的保护基础，再开放静态安装，之后扩展数据应用与手动更新；本轮仅规划，尚未开始安装实现，也不改变 M0–M6 或 Windows 的完成状态。
