@@ -15,6 +15,8 @@ mod maintenance;
 mod metadata;
 pub mod node_app_configuration;
 pub mod node_app_manifest;
+mod node_app_proxy;
+pub mod node_apps;
 pub mod node_runtime_trial;
 mod paths;
 mod platform_info;

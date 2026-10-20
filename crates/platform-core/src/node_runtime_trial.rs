@@ -298,6 +298,46 @@ fn checked_path(path: &Path, directory: bool) -> TrialResult<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn checked_storage(
+    data: PathBuf,
+    cache: PathBuf,
+    backend: &Path,
+    trial_root: &Path,
+) -> TrialResult<(PathBuf, PathBuf)> {
+    let data = checked_path(&data, true)?;
+    let cache = checked_path(&cache, true)?;
+    let overlaps = |left: &Path, right: &Path| left.starts_with(right) || right.starts_with(left);
+    if overlaps(&data, &cache)
+        || [&data, &cache]
+            .iter()
+            .any(|path| overlaps(path, backend) || overlaps(path, trial_root))
+    {
+        return Err(fail(
+            "TRIAL_STORAGE_INVALID",
+            "Persistent storage must be separate from source and run directories",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        for path in [&data, &cache] {
+            let metadata = fs::metadata(path).map_err(|_| {
+                fail(
+                    "TRIAL_STORAGE_INVALID",
+                    "Persistent storage cannot be inspected",
+                )
+            })?;
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(fail(
+                    "TRIAL_STORAGE_INVALID",
+                    "Persistent storage must belong to the current user",
+                ));
+            }
+        }
+    }
+    Ok((data, cache))
+}
+
 fn validate_business_environment(values: &BTreeMap<String, String>) -> TrialResult<()> {
     if values.len() > 32 {
         return Err(fail(
@@ -416,41 +456,111 @@ async fn limited_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
+struct PreparedLaunch {
+    node: PathBuf,
+    cwd: PathBuf,
+    entry: PathBuf,
+    trial_root: PathBuf,
+    persistent: Option<(PathBuf, PathBuf)>,
+}
+
+async fn prepare_launch(
+    config: &RuntimeLaunchConfig,
+    persistent: Option<(&Path, &Path)>,
+) -> TrialResult<PreparedLaunch> {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return Err(fail(
+            "TRIAL_PLATFORM_UNSUPPORTED",
+            "This disposable experiment only supports macOS arm64",
+        ));
+    }
+    validate_business_environment(&config.business_env)?;
+    let node = checked_path(&config.node_path, false)?;
+    let cwd = checked_path(&config.working_directory, true)?;
+    let entry = checked_path(&config.entry_path, false)?;
+    if !entry.starts_with(&cwd) || entry == cwd {
+        return Err(fail(
+            "TRIAL_ENTRY_INVALID",
+            "Entry must be inside the explicit backend directory",
+        ));
+    }
+    let trial_root = checked_path(&config.trial_root, true)?;
+    if !trial_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("node-runtime-trial-"))
+        || fs::read_dir(&trial_root)
+            .map_err(|_| fail("TRIAL_ROOT_INVALID", "Trial root cannot be read"))?
+            .next()
+            .is_some()
+    {
+        return Err(fail(
+            "TRIAL_ROOT_INVALID",
+            "Use an existing empty node-runtime-trial-* disposable directory",
+        ));
+    }
+    let persistent = persistent
+        .map(|(data, cache)| {
+            checked_storage(data.to_path_buf(), cache.to_path_buf(), &cwd, &trial_root)
+        })
+        .transpose()?;
+    verify_node_digest(&node, &config.expected_node_sha256)?;
+    verify_node_version(&node).await?;
+    Ok(PreparedLaunch {
+        node,
+        cwd,
+        entry,
+        trial_root,
+        persistent,
+    })
+}
+
 impl NodeRuntimeTrial {
     pub async fn launch(config: RuntimeLaunchConfig) -> TrialResult<Self> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(fail(
-                "TRIAL_PLATFORM_UNSUPPORTED",
-                "This disposable experiment only supports macOS arm64",
-            ));
-        }
-        validate_business_environment(&config.business_env)?;
-        let node = checked_path(&config.node_path, false)?;
-        let cwd = checked_path(&config.working_directory, true)?;
-        let entry = checked_path(&config.entry_path, false)?;
-        if !entry.starts_with(&cwd) || entry == cwd {
-            return Err(fail(
-                "TRIAL_ENTRY_INVALID",
-                "Entry must be inside the explicit backend directory",
-            ));
-        }
-        let trial_root = checked_path(&config.trial_root, true)?;
-        if !trial_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("node-runtime-trial-"))
-            || fs::read_dir(&trial_root)
-                .map_err(|_| fail("TRIAL_ROOT_INVALID", "Trial root cannot be read"))?
-                .next()
-                .is_some()
-        {
-            return Err(fail(
-                "TRIAL_ROOT_INVALID",
-                "Use an existing empty node-runtime-trial-* disposable directory",
-            ));
-        }
-        verify_node_digest(&node, &config.expected_node_sha256)?;
-        verify_node_version(&node).await?;
+        Self::launch_inner(config, None).await
+    }
+
+    /// Use caller-owned persistent data/cache while preserving a fresh run/tmp.
+    /// The registration layer must also reject overlap with the full application
+    /// source root, which is not represented by this backend-only launch config.
+    pub async fn launch_with_storage(
+        config: RuntimeLaunchConfig,
+        data: PathBuf,
+        cache: PathBuf,
+    ) -> TrialResult<Self> {
+        Self::launch_inner(config, Some((data, cache))).await
+    }
+
+    /// Read-only application preflight. Only the pinned private Node's version
+    /// probe executes; no application code or application directories are written.
+    /// Launch repeats these checks after the caller records its start intent.
+    pub async fn preflight(
+        config: &RuntimeLaunchConfig,
+        data: &Path,
+        cache: &Path,
+    ) -> TrialResult<()> {
+        prepare_launch(config, Some((data, cache)))
+            .await
+            .map(|_| ())
+    }
+
+    async fn launch_inner(
+        config: RuntimeLaunchConfig,
+        persistent: Option<(PathBuf, PathBuf)>,
+    ) -> TrialResult<Self> {
+        let PreparedLaunch {
+            node,
+            cwd,
+            entry,
+            trial_root,
+            persistent,
+        } = prepare_launch(
+            &config,
+            persistent
+                .as_ref()
+                .map(|(data, cache)| (data.as_path(), cache.as_path())),
+        )
+        .await?;
         let instance_id = Uuid::new_v4().to_string();
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let run_directory = trial_root.join(format!("run-{instance_id}"));
@@ -460,13 +570,25 @@ impl NodeRuntimeTrial {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&run_directory, fs::Permissions::from_mode(0o700))?;
         }
-        for name in ["data", "cache", "tmp"] {
-            fs::create_dir(run_directory.join(name))?;
+        let (data, cache) = if let Some(paths) = persistent {
+            paths
+        } else {
+            fs::create_dir(run_directory.join("data"))?;
+            fs::create_dir(run_directory.join("cache"))?;
+            (run_directory.join("data"), run_directory.join("cache"))
+        };
+        for directory in [&data, &cache] {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(run_directory.join(name), fs::Permissions::from_mode(0o700))?;
+                fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
             }
+        }
+        fs::create_dir(run_directory.join("tmp"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(run_directory.join("tmp"), fs::Permissions::from_mode(0o700))?;
         }
         let mut command = Command::new(node);
         command
@@ -478,8 +600,8 @@ impl NodeRuntimeTrial {
             .env("APP_INSTANCE_ID", &instance_id)
             .env("APP_HOST", "127.0.0.1")
             .env("APP_PORT", "0")
-            .env("APP_DATA_DIR", run_directory.join("data"))
-            .env("APP_CACHE_DIR", run_directory.join("cache"))
+            .env("APP_DATA_DIR", data)
+            .env("APP_CACHE_DIR", cache)
             .env("APP_TEMP_DIR", run_directory.join("tmp"))
             .env("TMPDIR", run_directory.join("tmp"))
             .envs(config.business_env)
@@ -602,6 +724,28 @@ impl NodeRuntimeTrial {
             return Err(error);
         }
         Ok(runtime)
+    }
+
+    /// Internal gateway access only. The capability is never serialized to a
+    /// frontend, and cannot be acquired after exit, protocol loss or shutdown.
+    pub(crate) fn proxy_target(&self) -> TrialResult<(u16, String)> {
+        if self.status.state != "running"
+            || self.child.is_none()
+            || self.control_failed.load(Ordering::Acquire)
+            || self.stopping.load(Ordering::Acquire)
+            || self.token.is_empty()
+            || self.ownership.observe()?.is_some()
+        {
+            return Err(fail(
+                "TRIAL_NOT_READY",
+                "Application backend is not running",
+            ));
+        }
+        let port = self
+            .status
+            .port
+            .ok_or_else(|| fail("TRIAL_NOT_READY", "Application backend has no private port"))?;
+        Ok((port, self.token.clone()))
     }
 
     async fn send(&mut self, message: Value) -> TrialResult<()> {
@@ -902,6 +1046,14 @@ behavior = os.environ.get('TRIAL_BEHAVIOR', '')
 assert os.environ['APP_INSTANCE_ID'] == instance
 assert 'NODE_OPTIONS' not in os.environ and 'HOME' not in os.environ and 'PATH' not in os.environ
 assert os.path.isdir(os.environ['APP_DATA_DIR']) and os.path.isdir(os.environ['APP_CACHE_DIR'])
+if behavior == 'persistent-storage':
+    visit = os.path.join(os.environ['APP_DATA_DIR'], 'artificial-visits.txt')
+    count = int(open(visit).read()) if os.path.exists(visit) else 0
+    with open(visit, 'w') as output: output.write(str(count + 1))
+    with open(os.path.join(os.environ['APP_DATA_DIR'], 'artificial-last-temp.txt'), 'w') as output:
+        output.write(os.environ['APP_TEMP_DIR'])
+    assert not os.path.exists(os.path.join(os.environ['APP_TEMP_DIR'], 'fresh-marker'))
+    with open(os.path.join(os.environ['APP_TEMP_DIR'], 'fresh-marker'), 'w') as output: output.write('temporary')
 if behavior == 'oversized':
     print('x' * 8193, flush=True)
     sys.exit(0)
@@ -964,6 +1116,9 @@ server.shutdown(); server.server_close()
         runtime.ping().await.unwrap();
         runtime.verify_health().await.unwrap();
         let running = runtime.status().unwrap();
+        let (port, token) = runtime.proxy_target().unwrap();
+        assert_eq!(Some(port), running.port);
+        assert_eq!(token.len(), 64);
         assert_eq!(running.state, "running");
         assert!(!serde_json::to_string(&running)
             .unwrap()
@@ -974,6 +1129,121 @@ server.shutdown(); server.server_close()
         assert!(!stopped.forced);
         assert!(!group_exists(stopped.pid));
         assert_eq!(runtime.stop().await.unwrap().state, "stopped");
+        assert!(runtime.proxy_target().is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn persistent_storage_survives_restart_but_run_and_temp_are_fresh() {
+        let (fixture, config) = protocol_fixture("persistent-storage");
+        let root = fs::canonicalize(fixture.path()).unwrap();
+        let data = root.join("persistent-data");
+        let cache = root.join("persistent-cache");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&cache).unwrap();
+        fs::write(cache.join("artificial-cache-marker"), b"retained").unwrap();
+        let second_root = root.join("node-runtime-trial-second");
+        fs::create_dir(&second_root).unwrap();
+        let second_config = RuntimeLaunchConfig {
+            node_path: config.node_path.clone(),
+            expected_node_sha256: config.expected_node_sha256.clone(),
+            entry_path: config.entry_path.clone(),
+            working_directory: config.working_directory.clone(),
+            business_env: config.business_env.clone(),
+            trial_root: second_root,
+        };
+        let mut first = NodeRuntimeTrial::launch_with_storage(config, data.clone(), cache.clone())
+            .await
+            .unwrap();
+        let first_run = first.status().unwrap().run_directory;
+        assert!(!first_run.join("data").exists());
+        assert!(!first_run.join("cache").exists());
+        let first_temp = fs::read_to_string(data.join("artificial-last-temp.txt")).unwrap();
+        first.stop().await.unwrap();
+        let mut second =
+            NodeRuntimeTrial::launch_with_storage(second_config, data.clone(), cache.clone())
+                .await
+                .unwrap();
+        let second_temp = fs::read_to_string(data.join("artificial-last-temp.txt")).unwrap();
+        assert_eq!(
+            fs::read_to_string(data.join("artificial-visits.txt")).unwrap(),
+            "2"
+        );
+        assert_eq!(
+            fs::read(cache.join("artificial-cache-marker")).unwrap(),
+            b"retained"
+        );
+        assert_ne!(first_temp, second_temp);
+        assert!(Path::new(&second_temp).starts_with(second.status().unwrap().run_directory));
+        assert!(!second.stop().await.unwrap().forced);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn persistent_storage_refuses_links_source_and_run_overlap() {
+        use std::os::unix::fs::symlink;
+        let (fixture, config) = protocol_fixture("");
+        let root = fs::canonicalize(fixture.path()).unwrap();
+        let data = root.join("persistent-data");
+        let cache = root.join("persistent-cache");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&cache).unwrap();
+        fs::create_dir(data.join("nested")).unwrap();
+        fs::create_dir(config.working_directory.join("data")).unwrap();
+        for (candidate_data, candidate_cache) in [
+            (data.clone(), data.clone()),
+            (data.clone(), data.join("nested")),
+            (config.working_directory.clone(), cache.clone()),
+            (config.working_directory.join("data"), cache.clone()),
+            (root.clone(), cache.clone()),
+            (config.trial_root.clone(), cache.clone()),
+        ] {
+            assert!(checked_storage(
+                candidate_data,
+                candidate_cache,
+                &config.working_directory,
+                &config.trial_root
+            )
+            .is_err());
+        }
+        let linked = root.join("linked-storage");
+        symlink(&data, &linked).unwrap();
+        assert!(checked_storage(
+            linked,
+            cache.clone(),
+            &config.working_directory,
+            &config.trial_root
+        )
+        .is_err());
+        assert!(
+            checked_storage(data, cache, &config.working_directory, &config.trial_root).is_ok()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn preflight_never_executes_application_or_writes_run_storage() {
+        let (fixture, mut config) = protocol_fixture("persistent-storage");
+        let root = fs::canonicalize(fixture.path()).unwrap();
+        let data = root.join("persistent-data");
+        let cache = root.join("persistent-cache");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&cache).unwrap();
+        NodeRuntimeTrial::preflight(&config, &data, &cache)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_dir(&data).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&config.trial_root).unwrap().count(), 0);
+        config.expected_node_sha256 = "0".repeat(64);
+        assert_eq!(
+            NodeRuntimeTrial::preflight(&config, &data, &cache)
+                .await
+                .unwrap_err()
+                .code,
+            "TRIAL_NODE_DIGEST_MISMATCH"
+        );
+        assert_eq!(fs::read_dir(&config.trial_root).unwrap().count(), 0);
     }
 
     #[cfg(target_os = "macos")]
@@ -1009,6 +1279,7 @@ server.shutdown(); server.server_close()
             runtime.ping().await.unwrap_err().code,
             "TRIAL_CONTROL_CLOSED"
         );
+        assert!(runtime.proxy_target().is_err());
         let stopped = runtime.stop().await.unwrap();
         assert_eq!(stopped.state, "failed");
         assert!(!group_exists(stopped.pid));

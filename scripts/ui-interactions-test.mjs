@@ -682,6 +682,24 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
 }
 const openDetails = (name) => click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
 
+test('Project details offer one native window action and send only the desktop open target', async () => {
+  await setup(); const opened = deferred(); const calls = [];
+  const state = { projects: [appProject('prj_native_window', 'Native window fixture')] };
+  mockApp(state, async (command, args) => {
+    assert.equal(command, 'project_open'); calls.push(args); return opened.promise;
+  });
+  await render(h(App)); await openDetails('Native window fixture');
+  const actions = dialog().querySelector('.project-dialog-actions');
+  assert.ok(actions);
+  assert.equal([...actions.querySelectorAll('button')].filter((button) => button.textContent === '进入项目').length, 1);
+  assert.equal([...actions.querySelectorAll('button')].some((button) => /浏览器/.test(button.textContent)), false);
+  const enter = actions.querySelector('button');
+  await click(enter); await click(enter);
+  assert.deepEqual(calls, [{ projectId: 'prj_native_window', target: 'desktop', reload: false }]);
+  await act(async () => opened.resolve({ projectId: 'prj_native_window', target: 'desktop', reused: false }));
+  assert.match(dialog().textContent, /已在独立窗口打开/);
+});
+
 test('App keeps the selected project and its draft after an external list removal, while disabling mutations', async () => {
   await setup();
   const state = { projects: [appProject('prj_A', 'Fixture A')] };

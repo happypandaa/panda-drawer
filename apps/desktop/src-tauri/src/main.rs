@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser_download;
+mod node_windows;
 
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
@@ -47,6 +48,9 @@ struct AppState {
     handle: RuntimeHandle,
     runtime: Mutex<Option<RuntimeService>>,
     project_windows: tokio::sync::Mutex<()>,
+    node_apps: std::sync::Arc<platform_core::node_apps::NodeApps>,
+    node_windows: node_windows::NodeWindows,
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 fn is_manager_url(url: &Url, development: bool) -> bool {
@@ -96,6 +100,7 @@ enum PathChoice {
     Export,
     Workspace,
     Icon,
+    Nodeapp,
 }
 
 #[tauri::command]
@@ -130,6 +135,11 @@ async fn choose_path(
             }),
         PathChoice::Workspace => dialog
             .set_title("选择独立、为空的 APFS 工作区目录")
+            .pick_folder(move |path| {
+                let _ = sender.send(path);
+            }),
+        PathChoice::Nodeapp => dialog
+            .set_title("选择包含 local-app.json 的 Node 应用源码目录")
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
@@ -777,6 +787,128 @@ async fn workspace_migrate(
     state.handle.workspace_migrate(input).await
 }
 
+// These commands deliberately belong only to the native manager. Node pages
+// receive neither this command surface nor the private backend credentials.
+#[tauri::command]
+async fn node_app_inspect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.inspect(&PathBuf::from(source_path))
+}
+#[tauri::command]
+async fn node_app_register(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.register(PathBuf::from(source_path)).await
+}
+#[tauri::command]
+async fn node_app_list(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Value>, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.list().await
+}
+#[tauri::command]
+async fn node_app_configuration(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.configuration(&app_id).await
+}
+#[tauri::command]
+async fn node_app_configuration_save(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    input: platform_core::node_app_configuration::SaveConfigurationRequest,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.save(&app_id, input).await
+}
+#[tauri::command]
+async fn node_app_start(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::open(&app, &state, &app_id).await
+}
+#[tauri::command]
+async fn node_app_stop(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::close(&app, &state, &app_id).await
+}
+#[tauri::command]
+async fn node_app_restart(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::restart(&app, &state, &app_id).await
+}
+#[tauri::command]
+async fn node_app_status(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.status(&app_id).await
+}
+fn open_node_url(url: String) -> Result<(), ApiError> {
+    Command::new("/usr/bin/open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| {
+            ApiError::new(
+                "BROWSER_OPEN_FAILED",
+                "无法打开浏览器，请检查系统默认浏览器设置。",
+            )
+        })
+}
+#[tauri::command]
+async fn node_app_open(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    node_windows::open(&app, &state, &app_id).await.map(|_| ())
+}
+#[tauri::command]
+async fn node_app_open_help(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    field_name: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    open_node_url(state.node_apps.help_url(&app_id, &field_name).await?)
+}
+
 #[tauri::command]
 async fn trash_info(
     window: tauri::WebviewWindow,
@@ -982,6 +1114,12 @@ fn shutdown_runtime(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
+    state
+        .shutting_down
+        .store(true, std::sync::atomic::Ordering::Release);
+    if let Err(error) = tauri::async_runtime::block_on(state.node_apps.stop_all()) {
+        eprintln!("Node application shutdown: {}", error.code);
+    }
     // Release the mutex before waiting. These callbacks run on the main thread,
     // so the runtime stays alive in this stack frame until shutdown finishes.
     let runtime = {
@@ -1014,6 +1152,8 @@ fn main() {
         }))
         .invoke_handler(tauri::generate_handler![
             bootstrap_info,
+            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
+            node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,
             project_import,
@@ -1064,6 +1204,19 @@ fn main() {
                 root: resource_root,
                 cli_executable,
             } = resource_info(app)?;
+            let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::new(
+                paths.data_root().to_path_buf(), resource_root.join("node-runtime/bin/node"),
+            )?);
+            let monitor = std::sync::Arc::downgrade(&node_apps);
+            let node_monitor_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let Some(manager) = monitor.upgrade() else { break; };
+                    manager.monitor_tick().await;
+                    node_windows::reconcile(&node_monitor_app).await;
+                }
+            });
             let runtime = tauri::async_runtime::block_on(RuntimeService::start_with_resources(
                 paths,
                 lock,
@@ -1083,6 +1236,9 @@ fn main() {
                 handle: runtime.handle(),
                 runtime: Mutex::new(Some(runtime)),
                 project_windows: tokio::sync::Mutex::new(()),
+                node_apps,
+                node_windows: node_windows::NodeWindows::default(),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
             })
             })();
             match startup {
@@ -1127,8 +1283,11 @@ fn main() {
                 if window.label() == "manager" {
                     api.prevent_close();
                     let _ = window.hide();
+                } else if node_windows::close_requested(window) {
+                    api.prevent_close();
                 }
             }
+            if matches!(event, tauri::WindowEvent::Destroyed) {node_windows::destroyed(window);}
         })
         .build(tauri::generate_context!())
         .expect("Unable to start isolated M5 desktop application");

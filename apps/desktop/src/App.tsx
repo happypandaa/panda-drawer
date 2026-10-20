@@ -1,8 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, Boxes, Check, CircleAlert,
-  Database, Folder, FolderOpen, Globe, LayoutGrid, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info,
+  Database, Folder, FolderOpen, LayoutGrid, Monitor, Package, Plus,
+  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info, Server,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -14,18 +14,22 @@ import { WorkspaceHub } from './WorkspaceHub';
 import { Modal } from './Modal';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { ProjectCard } from './ProjectCard';
+import { NodeAppsPanel } from './NodeAppsPanel';
 import { messageFrom } from './ui-utils';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
   sdk: 'SDK 0.1.0', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
 };
+type AppPage = 'projects' | 'nodes' | 'runtime' | 'storage' | 'about';
 
 
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [page, setPage] = useState<'projects' | 'runtime' | 'storage' | 'about'>('projects');
+  const [page, setPage] = useState<AppPage>('projects');
+  const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
+  const [requestedPage, setRequestedPage] = useState<AppPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,6 +65,12 @@ function App() {
   const selectedOverviewId = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
+  const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
+  function navigatePage(value: AppPage) {
+    if (value === page || (page === 'nodes' && nodeDraft.pending)) return;
+    if (page === 'nodes' && nodeDraft.dirty) { setRequestedPage(value); return; }
+    setPage(value);
+  }
   const clearHandoff = useCallback(() => {
     handoffRequest.current++;
     handoffInFlight.current = null;
@@ -318,14 +328,14 @@ function App() {
   });
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
-  const modalOpen = Boolean(overviewProject && overview) || showCreate;
+  const modalOpen = Boolean(overviewProject && overview) || showCreate || Boolean(requestedPage);
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <>
     {error && <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>操作未完成</strong><p>{error}</p></div><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError(null)}><X size={16} /></button></div>}
     {notice && <div className="notice notice-success" role="status"><Check size={18} /><p>{notice}</p><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice(null)}><X size={16} /></button></div>}
   </>;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
-  const title = page === 'projects' ? '我的项目' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
+  const title = page === 'projects' ? '我的项目' : page === 'nodes' ? 'Node 应用' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
 
   return (
     <div className="app-shell">
@@ -336,15 +346,16 @@ function App() {
         </div>
         <div className="sidebar-section-label">工作台</div>
         <nav className="side-nav">
-          <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} onClick={() => setPage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{projects.length}</small></button>
-          <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} onClick={() => setPage('runtime')}><Activity size={17} /><span>运行环境</span></button>
-          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} onClick={() => setPage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
-          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} onClick={() => setPage('about')}><Package size={17} /><span>关于平台</span></button>
+          <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{projects.length}</small></button>
+          <button className={page === 'nodes' ? 'nav-current' : 'nav-item'} aria-current={page === 'nodes' ? 'page' : undefined} onClick={() => navigatePage('nodes')}><Server size={17} /><span>Node 应用</span></button>
+          <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('runtime')}><Activity size={17} /><span>运行环境</span></button>
+          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
+          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('about')}><Package size={17} /><span>关于平台</span></button>
         </nav>
         <div className="sidebar-stage">
           <span className="eyebrow">LOCAL FIRST</span>
           <strong>项目各自独立，数据留在本机。</strong>
-          <p>桌面窗口和浏览器连接同一个本地服务，实时读取项目数据。</p>
+          <p>应用窗口通过本地服务读取项目数据。</p>
           <span className="subtle-tag">M5 · 开发验证</span>
         </div>
         <div className="sidebar-bottom"><span className="environment-dot" />内部开发版<span className="version">{info ? `v${info.version}` : 'M5'}</span></div>
@@ -359,16 +370,16 @@ function App() {
           <div className="page-heading">
             <div>
               <h1>{title}</h1>
-              <p>{page === 'projects' ? '选择项目开始使用，或在详情中查看信息和管理数据。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}</p>
+              <p>{page === 'projects' ? '选择项目开始使用，或在详情中查看信息和管理数据。' : page === 'nodes' ? '填写应用所需的服务和密钥，使用内置 Node 启动。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}</p>
             </div>
             <div className="heading-actions">
-              <button className="refresh-button" onClick={() => void refresh()} disabled={loading || !inDesktop} aria-label="刷新项目和运行状态"><RefreshCw size={15} className={loading ? 'rotating' : undefined} />{loading ? '读取中' : '刷新'}</button>
+              {page !== 'nodes' && <button className="refresh-button" onClick={() => void refresh()} disabled={loading || !inDesktop} aria-label="刷新项目和运行状态"><RefreshCw size={15} className={loading ? 'rotating' : undefined} />{loading ? '读取中' : '刷新'}</button>}
               {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy} onClick={() => setShowImport(true)}><Upload size={15} />导入项目</button>}
               {page === 'projects' && <button className="primary-button" onClick={() => { setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy}><Plus size={16} />新建项目</button>}
             </div>
           </div>
 
-          {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“浏览器打开”访问真实项目。</p></div></div>}
+          {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
@@ -390,7 +401,7 @@ function App() {
             <details className="guide-disclosure"><summary><Info size={16} />使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy} onCreate={() => setShowCreate(true)} onEnvironment={() => setPage('runtime')} onStorage={() => setPage('storage')} /></details>
             <div className="workspace-location"><Folder size={14} /><span>工作区</span><code>{info?.workspaceRoot ?? '尚未读取'}</code></div>
             <footer className="page-footer"><span>所有数据保存在当前工作区</span><span>删除后的项目可在回收站恢复</span></footer>
-          </> : page === 'storage' ? <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} /> : page === 'about' ? <AboutPlatform info={info} /> : <>
+          </> : page === 'nodes' ? <NodeAppsPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} onDraftStateChange={reportNodeDraft} /> : page === 'storage' ? <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} /> : page === 'about' ? <AboutPlatform info={info} /> : <>
             <section className="status-grid" aria-label="运行状态">
               <StatusCard icon={<Activity size={18} />} label="本地服务" value={info ? '已启动' : loading ? '读取中' : '未读取'} detail={info ? info.baseUrl : '由 Rust 提供本机服务'} good={Boolean(info)} />
               <StatusCard icon={<Database size={18} />} label="内置 SQLite" value={info ? `SQLite ${info.sqliteVersion}` : loading ? '读取中' : '未读取'} detail="每个项目使用独立数据库文件" good={Boolean(info)} />
@@ -406,6 +417,7 @@ function App() {
             <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。关闭管理窗口会保留本地服务；从应用菜单或托盘选择“退出开发版”后，服务才会停止。</p></div>
           </>}
         </main>
+        {requestedPage && <Modal title="离开应用配置" description="当前配置有未保存的修改。" onClose={() => setRequestedPage(null)}><p>离开会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedPage(null)}>继续编辑</button><button className="primary-button" onClick={() => { setPage(requestedPage); setRequestedPage(null); }}>丢弃草稿并离开</button></div></Modal>}
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>
@@ -421,7 +433,6 @@ function App() {
           {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作移入回收站或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
           <div className="project-dialog-actions">
             <button className="primary-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Monitor size={16} />进入项目</button>
-            <button className="refresh-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'browser')}><Globe size={16} />浏览器打开</button>
             <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={16} />{building.includes(overviewProject.id) ? '构建中…' : '构建项目'}</button>
           </div>
           <section className="handoff-card" aria-labelledby="handoff-title"><div className="section-heading"><div><h3 id="handoff-title">让其他 AI 继续开发</h3><p>一键复制软件介绍、当前项目目录和开发操作说明。粘贴给 AI 后，再告诉它你的需求。</p></div><button className="primary-button" disabled={overviewUnavailable || workspaceBusy || handoffCopying} onClick={() => void copyHandoff(overviewProject)}><Copy size={16} />{handoffCopying ? '正在准备说明…' : '复制 AI 接手说明'}</button></div><p className="project-help">接收说明的 AI 需要能访问这台电脑上的项目目录。仅聊天的 AI 也能了解背景，但不能直接修改本机文件。</p>{handoff && <div className="handoff-preview"><div className="section-heading"><label htmlFor="ai-handoff-text">完整说明 · 可核对或手动复制</label><button className="text-button" onClick={clearHandoff}>收起全文</button></div><textarea id="ai-handoff-text" readOnly value={handoff} rows={9} aria-label="给 AI 的完整说明" onFocus={(event) => event.currentTarget.select()} /></div>}</section>
@@ -442,7 +453,7 @@ function App() {
 function ProjectDetails({ project }: { project: ProjectInfo }) {
   const location = (relative: string | undefined) => relative ? `${project.projectRoot}/${relative}` : '清单不可用';
   return <div className="project-details">
-    {project.state === 'unbuilt' && <p className="project-help">源码模板和数据库已准备好。先构建项目，即可在桌面或浏览器打开；也可以先让 AI 修改源码。</p>}
+    {project.state === 'unbuilt' && <p className="project-help">源码模板和数据库已准备好。先构建项目，即可在原生应用窗口中打开；也可以先让 AI 修改源码。</p>}
     {project.state === 'ready' && <p className="project-help">{project.buildInfo?.origin === 'bundledTemplate' ? '这是随平台提供的初始应用，可以直接打开。让 AI 修改源码后，再构建发布新网页。' : '当前网页可以继续使用。构建会发布新网页，已打开的窗口不会自动刷新。'}</p>}
     {project.buildInfo?.reason && <p className="project-help">构建来源：{project.buildInfo.reason}</p>}
     {project.buildInfo?.provenance && <p className="project-help">{project.buildInfo.origin === 'bundledTemplate' ? '初始应用打包时间' : '最近成功构建'}：{new Date(project.buildInfo.provenance.completedAt).toLocaleString('zh-CN', { hour12: false })} · Node {project.buildInfo.provenance.node?.version ?? project.buildInfo.provenance.nodeVersion ?? '版本未记录'}</p>}
