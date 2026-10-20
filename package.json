@@ -19,6 +19,7 @@
     "env:windows": "node scripts/windows-environment.mjs",
     "check:windows:toolchain": "node scripts/windows-toolchain-smoke.mjs",
     "test:process": "node --test scripts/process-test.mjs",
+    "test:node-runtime": "node --test scripts/package-node-runtime-test.mjs",
     "test:platform-support": "node scripts/platform-support-test.mjs",
     "test:preflight": "node scripts/rust.mjs test --locked -p platform-preflight --lib",
     "cli": "node scripts/rust.mjs run -p platform-cli --",

@@ -2,7 +2,7 @@
 
 更新日期：2026-10-20
 
-状态：内置 Node、统一启停、可视化配置及变量说明已确认；用户进一步确认带 Node 服务与不带的两类项目，由配置文件明确声明，平台识别并显示类型图标。本文采用 `static-web / node-service` 说明该方向，后者的枚举、字段、版本号、消息和参数仍待 NR0 冻结，全部未实现。**下述片段不能交给当前安装器或写入现有 project v1 来获得后端执行能力。** 配套[总方案](node-app-runtime.md)、[应用配置草案](node-app-configuration.md)与[实施步骤](node-app-implementation-plan.md)。
+状态：内置 Node、统一启停、可视化配置及变量说明已确认；用户进一步确认带 Node 服务与不带的两类项目，由配置文件明确声明，平台识别并显示类型图标。本文采用 `static-web / node-service` 说明该方向，后者的枚举、字段、版本号、消息和参数仍待 NR0 冻结，已新增试验读取器、资源准备和一次性进程管理，仅消费明确的实验子集，见[实际记录](node-runtime-trial-verification.md)，公开安装及管理接口未实现。**下述片段不能交给当前安装器或写入现有 project v1 来获得后端执行能力。** 配套[总方案](node-app-runtime.md)、[应用配置草案](node-app-configuration.md)与[实施步骤](node-app-implementation-plan.md)。
 
 ## 1 哪个文件负责什么
 
