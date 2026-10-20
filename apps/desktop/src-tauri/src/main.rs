@@ -51,6 +51,7 @@ struct AppState {
     node_apps: std::sync::Arc<platform_core::node_apps::NodeApps>,
     node_windows: node_windows::NodeWindows,
     shutting_down: std::sync::atomic::AtomicBool,
+    exit_ready: std::sync::atomic::AtomicBool,
 }
 
 fn is_manager_url(url: &Url, development: bool) -> bool {
@@ -1120,6 +1121,11 @@ fn shutdown_runtime(app: &tauri::AppHandle) {
     if let Err(error) = tauri::async_runtime::block_on(state.node_apps.stop_all()) {
         eprintln!("Node application shutdown: {}", error.code);
     }
+    if !tauri::async_runtime::block_on(state.node_apps.owned_process_ids()).is_empty() {
+        // Exit has no prevent API. This fallback also covers OS termination
+        // paths that bypass ExitRequested; normal exits use the gate below.
+        eprintln!("Node cleanup remains unconfirmed during OS termination");
+    }
     // Release the mutex before waiting. These callbacks run on the main thread,
     // so the runtime stays alive in this stack frame until shutdown finishes.
     let runtime = {
@@ -1136,6 +1142,53 @@ fn shutdown_runtime(app: &tauri::AppHandle) {
             eprintln!("Runtime shutdown: {error}");
         }
     }
+}
+
+fn request_safe_shutdown(app: &tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    let Some(state) = app.try_state::<AppState>() else {
+        app.exit(0);
+        return;
+    };
+    if state.shutting_down.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        for attempt in 0..2 {
+            if let Err(error) = state.node_apps.stop_all().await {
+                eprintln!("Node application shutdown: {}", error.code);
+            }
+            if state.node_apps.owned_process_ids().await.is_empty() {
+                break;
+            }
+            if attempt == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        if !state.node_apps.owned_process_ids().await.is_empty() {
+            state.shutting_down.store(false, Ordering::Release);
+            show_manager(&app);
+            app.dialog().message("部分应用进程尚未确认全部关闭，本次退出已取消，并已暂停启动新的后台服务。请在‘我的项目 → 详情 → 运行状态’重试停止，或再次退出。")
+                .title("应用进程尚未关闭").show(|_|{});
+            return;
+        }
+        let runtime = {
+            state
+                .runtime
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+        };
+        if let Some(runtime) = runtime {
+            if let Err(error) = runtime.shutdown().await {
+                eprintln!("Runtime shutdown: {error}");
+            }
+        }
+        state.exit_ready.store(true, Ordering::Release);
+        app.exit(0);
+    });
 }
 
 fn main() {
@@ -1239,6 +1292,7 @@ fn main() {
                 node_apps,
                 node_windows: node_windows::NodeWindows::default(),
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
+                exit_ready: std::sync::atomic::AtomicBool::new(false),
             })
             })();
             match startup {
@@ -1282,7 +1336,7 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "manager" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    window.app_handle().exit(0);
                 } else if node_windows::close_requested(window) {
                     api.prevent_close();
                 }
@@ -1293,9 +1347,18 @@ fn main() {
         .expect("Unable to start isolated M5 desktop application");
 
     app.run(|app, event| match event {
-        // Cocoa's Dock/AppleEvent quit may deliver Exit without ExitRequested.
-        // Both paths synchronously finish the same idempotent shutdown.
-        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => shutdown_runtime(app),
+        tauri::RunEvent::ExitRequested { api, .. } => {
+            if app
+                .try_state::<AppState>()
+                .is_some_and(|state| !state.exit_ready.load(std::sync::atomic::Ordering::Acquire))
+            {
+                api.prevent_exit();
+                request_safe_shutdown(app);
+            }
+        }
+        // Cocoa/forced termination can bypass the preventable request. Keep a
+        // synchronous final cleanup fallback without claiming crash guarantees.
+        tauri::RunEvent::Exit => shutdown_runtime(app),
         tauri::RunEvent::Reopen { .. } => show_manager(app),
         _ => {}
     });

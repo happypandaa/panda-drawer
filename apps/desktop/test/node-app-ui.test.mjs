@@ -64,7 +64,8 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
   globalThis.__NODE_FORM_INVOKE__ = mock;
-  await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...props })));
+  await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...props })));
+  if (Component === NodeAppsPanel && props.request !== null && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
 function input(name) { const metadata = fields.find((field) => field.name === name); const label = [...document.querySelectorAll('label')].find((element) => element.textContent === `${metadata.label}${metadata.required ? '必填' : '选填'}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
@@ -156,7 +157,7 @@ test('Failed saves preserve the draft and reject duplicate pending submissions',
   await act(async () => accepted.reject({ code: 'CONFIGURATION_REVISION_CHANGED', message: '配置已被其他窗口修改，请重新核对' }));
   assert.equal(input('AI_KEY').value, 'fixture-draft');
   assert.match(document.querySelector('[role="alert"]').textContent, /其他窗口/);
-  assert.equal(byText('打开应用').disabled, true);
+  assert.equal(byText('进入项目').disabled, true);
 });
 
 test('Opening an app makes one native start request, then returning delegates only its app ID', async () => {
@@ -164,13 +165,13 @@ test('Opening an app makes one native start request, then returning delegates on
   await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); if (command === 'node_app_start') return accepted.promise; if (command === 'node_app_open') return; throw new Error(command); }));
   assert.equal(byText('打开应用页面'), undefined);
   assert.equal(byText('启动应用'), undefined);
-  await click(byText('打开应用')); await click(byText('打开应用'));
+  await click(byText('进入项目')); await click(byText('进入项目'));
   assert.deepEqual(calls, [['node_app_start', { appId: 'node_fixture' }]]);
   await act(async () => accepted.resolve(app({ state: 'running', runningRevision: 1 })));
-  await click(byText('返回应用窗口'));
+  await click(byText('进入项目'));
   assert.deepEqual(calls[1], ['node_app_open', { appId: 'node_fixture' }]);
   assert.equal(calls.length, 2);
-  assert.equal(byText('打开应用'), undefined);
+  assert.ok(byText('进入项目'));
 });
 
 test('Returning to an open application never starts a second instance and gates duplicate pending focus requests', async () => {
@@ -178,10 +179,10 @@ test('Returning to an open application never starts a second instance and gates 
   await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async (command, args) => {
     calls.push([command, args]); assert.equal(command, 'node_app_open'); return focus.promise;
   }));
-  await click(byText('返回应用窗口')); await click(byText('返回应用窗口'));
+  await click(byText('进入项目')); await click(byText('进入项目'));
   assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
   await act(async () => focus.resolve());
-  assert.equal(byText('返回应用窗口').disabled, false);
+  assert.equal(byText('进入项目').disabled, false);
 });
 
 test('Closing an app sends one stop request and returns the manager to its unopened state', async () => {
@@ -189,19 +190,20 @@ test('Closing an app sends one stop request and returns the manager to its unope
   await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async (command, args) => {
     calls.push([command, args]); assert.equal(command, 'node_app_stop'); return closed.promise;
   }));
+  await click(byText('运行状态'));
   await click(byText('关闭应用')); await click(byText('关闭应用'));
   assert.deepEqual(calls, [['node_app_stop', { appId: 'node_fixture' }]]);
   await act(async () => closed.resolve(app()));
   assert.equal(byText('关闭应用').disabled, true);
-  assert.equal(byText('打开应用').disabled, false);
+  assert.equal(byText('进入项目').disabled, false);
   assert.match(document.body.textContent, /应用已关闭，相关服务已停止/);
 });
 
 test('Incomplete required configuration blocks opening an application and identifies the field to finish', async () => {
   await setup(baseMock(app({ configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false } }), async (command) => { throw new Error(command); }));
-  assert.equal(byText('打开应用').disabled, true);
+  assert.equal(byText('进入项目').disabled, false);
   assert.match(document.querySelector('.node-config-warning').textContent, /请先配置：设置 AI_KEY/);
-  await click(byText('打开应用'));
+  await click(byText('进入项目'));
 });
 
 test('Saving configuration does not reopen a running window; applying it requires an explicit restart', async () => {
@@ -217,10 +219,11 @@ test('Saving configuration does not reopen a running window; applying it require
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'node_app_configuration_save');
   assert.match(document.body.textContent, /正在运行的应用仍使用旧配置/);
+  await click(byText('运行状态'));
   await click(byText('重启并应用配置'));
   assert.deepEqual(calls[1], ['node_app_restart', { appId: 'node_fixture' }]);
   assert.equal(calls.length, 2);
-  assert.ok(byText('返回应用窗口'));
+  assert.ok(byText('进入项目'));
 });
 
 test('Adding a source folder previews first and registration never starts it', async () => {
@@ -232,13 +235,14 @@ test('Adding a source folder previews first and registration never starts it', a
     if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { name: 'Artificial preview', version: '0.1.0' }, configuration: { fields, missingRequired: ['AI_KEY'] } };
     if (command === 'node_app_register') return app();
     throw new Error(command);
-  });
-  await click(byText('添加 Node 应用')); await click(byText('选择应用目录'));
-  assert.deepEqual(calls.slice(1), [['choose_path', { kind: 'nodeapp' }], ['node_app_inspect', { sourcePath: '/artificial/node-source' }]]);
+  }, { request: null, addRequest: 1 });
+  await click(byText('选择应用目录'));
+  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_inspect', { sourcePath: '/artificial/node-source' }]]);
   assert.ok(byText('登记此应用')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
   await click(byText('登记此应用'));
   assert.deepEqual(calls.at(-1), ['node_app_register', { sourcePath: '/artificial/node-source' }]);
-  assert.equal(document.querySelector('[role="dialog"]'), null);
+  assert.ok(document.querySelector('[role="dialog"]'));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
   assert.equal(calls.some(([command]) => command === 'node_app_start'), false);
 });
 
@@ -268,41 +272,138 @@ test('Status observations never replace a configuration draft or its original re
   } finally { window.setInterval = originalInterval; }
 });
 
-test('Switching applications preserves a draft on cancel and clears it only after explicit discard', async () => {
-  const first = app(); const second = app({ id: 'node_second', name: 'Second artificial fixture' });
-  await setup(async (command, args) => {
-    if (command === 'node_app_list') return [first, second];
-    if (command === 'node_app_configuration') return args.appId === second.id ? second : first;
-    throw new Error(command);
-  });
-  await change(input('AI_KEY'), 'artificial-unsubmitted-key');
-  await click(document.querySelectorAll('.node-app-list-item')[1]);
-  assert.ok(document.querySelector('[role="dialog"]'));
+test('Node detail tabs retain secret drafts and closing asks before discarding them', async () => {
+  await setup(baseMock(app(), async (command) => { throw new Error(command); }));
+  await change(input('AI_KEY'), 'artificial-unsaved-tab-key');
+  await click(byText('概览')); await click(byText('运行状态')); await click(byText('应用配置'));
+  assert.equal(input('AI_KEY').value, 'artificial-unsaved-tab-key');
+  await click(document.querySelector('[aria-label^="关闭Disposable"]'));
+  assert.ok(document.querySelector('[aria-label="关闭配置确认"]'));
   await click(byText('继续编辑'));
-  assert.equal(input('AI_KEY').value, 'artificial-unsubmitted-key');
-  await click(document.querySelectorAll('.node-app-list-item')[1]);
-  await click(byText('丢弃草稿并切换'));
-  assert.equal(input('AI_KEY').value, '');
-  assert.equal(document.querySelector('.node-app-heading h2').textContent, second.name);
+  assert.equal(input('AI_KEY').value, 'artificial-unsaved-tab-key');
+  await click(document.querySelector('[aria-label^="关闭Disposable"]'));
+  await click(byText('丢弃草稿并关闭'));
+  assert.equal(document.querySelector('[role="dialog"]'), null);
 });
 
-test('Leaving Node settings asks before discarding secrets and a return loads an empty password input', async () => {
-  await setup(async (command) => {
+function shellMock(state, action = async (command) => { throw new Error(command); }) {
+  return async (command, args) => {
     if (command === 'bootstrap_info') return { displayName: 'Local Projects Dev', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
-    if (command === 'project_list') return [];
+    if (command === 'project_list') return state.projects ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
-    if (command === 'node_app_list') return [app()];
-    if (command === 'node_app_configuration') return app();
+    if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false };
+    if (command === 'node_app_list') return state.nodes ?? [];
+    if (command === 'node_app_configuration') return state.nodes.find(value => value.id === args.appId);
+    return action(command, args);
+  };
+}
+
+test('All project types share My Projects, counts and search without a separate Node navigation', async () => {
+  const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: 'Artificial webpage', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
+  await setup(shellMock(state), {}, App);
+  assert.equal(document.querySelectorAll('.project-card').length, 2);
+  assert.match(document.querySelector('.project-list-heading').textContent, /2 个项目/);
+  assert.equal([...document.querySelectorAll('.side-nav button')].some(value => value.textContent.includes('Node')), false);
+  assert.match(document.querySelector('.project-grid').textContent, /网页项目/);
+  assert.match(document.querySelector('.project-grid').textContent, /Node 服务项目/);
+  await change(document.querySelector('input[type="search"]'), 'Disposable');
+  assert.equal(document.querySelectorAll('.project-card').length, 1);
+  assert.match(document.querySelector('.project-list-heading').textContent, /1 \/ 2 个项目/);
+  await change(document.querySelector('input[type="search"]'), 'no match artificial');
+  assert.match(document.querySelector('.project-search-empty').textContent, /没有找到匹配/);
+});
+
+test('Entering a Node project with a missing key opens its configuration, saving never opens it automatically', async () => {
+  const calls = [];
+  const state = { nodes: [app({ configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false } })] };
+  await setup(shellMock(state, async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_app_configuration_save') {
+      const value = app({ configuration: { revision: 2, values: {}, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } });
+      state.nodes = [value]; return value;
+    }
+    if (command === 'node_app_start') return app({ state: 'running', runningRevision: 2, configuration: state.nodes[0].configuration });
     throw new Error(command);
-  }, {}, App);
-  await click(byText('Node 应用'));
-  await change(input('AI_KEY'), 'artificial-navigation-draft');
-  await click(byText('关于平台'));
-  assert.equal(document.querySelector('[role="dialog"] h2').textContent, '离开应用配置');
-  await click(byText('继续编辑'));
-  assert.equal(input('AI_KEY').value, 'artificial-navigation-draft');
-  await click(byText('关于平台')); await click(byText('丢弃草稿并离开'));
-  assert.equal(document.querySelector('.node-apps-panel'), null);
-  await click(byText('Node 应用'));
+  }), {}, App);
+  const enter = document.querySelector('.project-card .primary-button');
+  assert.equal(enter.disabled, false);
+  await click(enter);
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal(calls.length, 0);
+  await change(input('AI_KEY'), 'artificial-explicit-entry-key'); await submit();
+  assert.equal(calls.length, 1); assert.equal(calls[0][0], 'node_app_configuration_save');
+  await click([...document.querySelectorAll('[role=dialog] button')].find(value => value.textContent === '进入项目'));
+  assert.deepEqual(calls[1], ['node_app_start', { appId: 'node_fixture' }]);
   assert.equal(input('AI_KEY').value, '');
+});
+
+test('Node details reopen without a secret and expose only supported tabs and actions', async () => {
+  const state = { nodes: [app()] };
+  await setup(shellMock(state), {}, App);
+  const details = () => document.querySelector('[aria-label="查看项目「Disposable Node fixture」的详情"]');
+  await click(details());
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
+  assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
+  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /删除项目|备份维护/.test(value.textContent)), false);
+  await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-close-draft');
+  await click(document.querySelector('[aria-label^="关闭Disposable"]'));
+  await click(byText('丢弃草稿并关闭'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+  await click(details()); await click(byText('应用配置'));
+  assert.equal(input('AI_KEY').value, '');
+});
+
+test('Closing read-only details revokes a late configuration result before another project is selected', async () => {
+  const first = app(); const second = app({ id: 'node_second', name: 'Second artificial fixture' });
+  const delayed = deferred();
+  const state = { nodes: [first, second] };
+  await setup(async (command, args) => {
+    if (command === 'node_app_configuration' && args.appId === first.id) return delayed.promise;
+    return shellMock(state)(command, args);
+  }, {}, App);
+  await click(document.querySelector('[aria-label="查看项目「Disposable Node fixture」的详情"]'));
+  await click(document.querySelector('[aria-label^="关闭Disposable"]'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+  assert.equal(document.querySelector('[aria-label="进入项目「Second artificial fixture」"]').disabled, false);
+  assert.equal([...document.querySelectorAll('.side-nav button')].find(value => value.textContent === '关于平台').disabled, false);
+  await click(document.querySelector('[aria-label="查看项目「Second artificial fixture」的详情"]'));
+  await act(async () => delayed.resolve(app({ name: 'Outdated first project', configuration: { revision: 99, values: { MODEL: 'stale-model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } })));
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
+  await click(byText('应用配置'));
+  assert.equal(input('MODEL').value, '');
+});
+
+test('Node tabs support keyboard navigation and discarded reloads use one existing modal', async () => {
+  await setup(baseMock(app(), async (command) => { throw new Error(command); }));
+  const configurationTab = document.querySelector('[role=tab][aria-selected=true]');
+  await act(async () => configurationTab.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  assert.equal(document.activeElement.textContent, '运行状态');
+  await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-reload-draft');
+  await click(byText('重新读取配置'));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  await click(byText('丢弃草稿并重新读取'));
+  assert.equal(input('AI_KEY').value, '');
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+});
+
+test('Pending Node entry blocks competing create, import and static detail dialogs until its failure settles', async () => {
+  const configuration = deferred();
+  const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: '', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
+  await setup(async (command, args) => {
+    if (command === 'node_app_configuration') return configuration.promise;
+    return shellMock(state)(command, args);
+  }, {}, App);
+  await click(document.querySelector('[aria-label="进入项目「Disposable Node fixture」"]'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+  const details = document.querySelector('[aria-label="查看项目「Static fixture」的详情"]');
+  assert.equal(details.disabled, true);
+  assert.equal(byText('新建项目').disabled, true);
+  assert.equal(byText('导入项目').disabled, true);
+  await click(details); await click(byText('新建项目')); await click(byText('导入项目'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+  await act(async () => configuration.reject(new Error('Artificial configuration read failure')));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, 'Disposable Node fixture');
+  assert.match(document.querySelector('[role=dialog]').textContent, /Artificial configuration read failure/);
 });

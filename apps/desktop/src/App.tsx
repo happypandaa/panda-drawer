@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, Boxes, Check, CircleAlert,
   Database, Folder, FolderOpen, LayoutGrid, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info, Server,
+  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Upload, Search, Info,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -13,15 +13,17 @@ import type { OverviewTab } from './ProjectOverview';
 import { WorkspaceHub } from './WorkspaceHub';
 import { Modal } from './Modal';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
-import { ProjectCard } from './ProjectCard';
+import { NodeProjectCard, ProjectCard } from './ProjectCard';
 import { NodeAppsPanel } from './NodeAppsPanel';
+import type { NodeAppRequest } from './NodeAppsPanel';
+import type { NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
   sdk: 'SDK 0.1.0', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
 };
-type AppPage = 'projects' | 'nodes' | 'runtime' | 'storage' | 'about';
+type AppPage = 'projects' | 'runtime' | 'storage' | 'about';
 
 
 function App() {
@@ -29,7 +31,15 @@ function App() {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [page, setPage] = useState<AppPage>('projects');
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
-  const [requestedPage, setRequestedPage] = useState<AppPage | null>(null);
+  const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
+  const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
+  const [nodeAddRequest, setNodeAddRequest] = useState(0);
+  const [nodeModalOpen, setNodeModalOpen] = useState(false);
+  const [nodeReadError, setNodeReadError] = useState('');
+  const nodeRequestToken = useRef(0);
+  const nodeListRevision = useRef(0);
+  const nodeInteraction = useRef({ pending: false, modal: false });
+  nodeInteraction.current = { pending: nodeDraft.pending, modal: nodeModalOpen };
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,9 +77,16 @@ function App() {
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
   function navigatePage(value: AppPage) {
-    if (value === page || (page === 'nodes' && nodeDraft.pending)) return;
-    if (page === 'nodes' && nodeDraft.dirty) { setRequestedPage(value); return; }
+    if (value === page || nodeDraft.pending || nodeModalOpen) return;
     setPage(value);
+  }
+  const acceptNodeApp = useCallback((app: NodeAppDetail) => {
+    nodeListRevision.current++;
+    setNodeApps((current) => current.some((value) => value.id === app.id) ? current.map((value) => value.id === app.id ? app : value) : [...current, app]);
+  }, []);
+  function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'details') {
+    if (nodeDraft.pending || nodeModalOpen) return;
+    setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
   const clearHandoff = useCallback(() => {
     handoffRequest.current++;
@@ -82,6 +99,7 @@ function App() {
     setOverview(null); setReloadProjectId(null);
   }, [clearHandoff]);
   function openOverview(project: ProjectInfo, tab: OverviewTab) {
+    if (nodeDraft.pending || nodeModalOpen) return;
     clearHandoff();
     selectedOverviewId.current = project.id;
     setReloadProjectId(null); setNotice(null);
@@ -108,8 +126,9 @@ function App() {
       // Read bootstrap first so an unavailable committed workspace reports its
       // concrete startup error, rather than a missing native command state.
       let runtime = await invoke<BootstrapInfo>('bootstrap_info');
-      const [list, currentWorkspace] = await Promise.all([
+      const [list, currentWorkspace, nodeResult] = await Promise.all([
         invoke<ProjectInfo[]>('project_list'), invoke<WorkspaceInfo>('workspace_info'),
+        invoke<NodeAppDetail[]>('node_app_list').then((value) => ({ value, error: '' })).catch(() => ({ value: null, error: '带本地服务的项目暂时无法读取，请刷新后核对。已有项目保留。' })),
       ]);
       if (currentWorkspace.workspaceRoot !== runtime.workspaceRoot) runtime = await invoke<BootstrapInfo>('bootstrap_info');
       if (current !== requestId.current) return;
@@ -126,6 +145,9 @@ function App() {
       if (current !== requestId.current) return;
       setInfo(runtime);
       setProjects(list);
+      if (nodeResult.value) setNodeApps(nodeResult.value);
+      nodeListRevision.current++;
+      setNodeReadError(nodeResult.error);
       const statuses = await Promise.allSettled(list.map(async (project) => {
         const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
         const activeId = (typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId) ?? status.lastTaskId;
@@ -157,6 +179,21 @@ function App() {
     void refresh();
     return () => { requestId.current += 1; handoffRequest.current++; selectedOverviewId.current = null; };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!info || page !== 'projects' || workspaceBusy || !nodeApps.length) return;
+    let cancelled = false; let polling = false;
+    const timer = window.setInterval(() => {
+      if (polling || nodeInteraction.current.pending || nodeInteraction.current.modal) return;
+      polling = true;
+      const revision = nodeListRevision.current;
+      const generation = requestId.current;
+      void invoke<NodeAppDetail[]>('node_app_list').then((values) => {
+        if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) { setNodeApps(values); setNodeReadError(''); }
+      }).catch(() => { if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) setNodeReadError('带本地服务的项目状态暂未更新，请刷新后核对。'); }).finally(() => { polling = false; });
+    }, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [Boolean(info), page, workspaceBusy, nodeApps.length]);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -326,16 +363,23 @@ function App() {
     const ready = project.state === 'ready' && !projectBlocked(project);
     return matchesQuery && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
   });
+  const filteredNodeApps = nodeApps.filter((app) => {
+    const matches = `${app.name} ${app.id} ${app.sourcePath} Node 服务项目`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+    const ready = app.configuration.canStart && !['failed', 'starting', 'stopping'].includes(app.state) && !workspaceBusy;
+    return matches && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
+  });
+  const totalProjects = projects.length + nodeApps.length;
+  const filteredCount = filteredProjects.length + filteredNodeApps.length;
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
-  const modalOpen = Boolean(overviewProject && overview) || showCreate || Boolean(requestedPage);
+  const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <>
     {error && <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>操作未完成</strong><p>{error}</p></div><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError(null)}><X size={16} /></button></div>}
     {notice && <div className="notice notice-success" role="status"><Check size={18} /><p>{notice}</p><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice(null)}><X size={16} /></button></div>}
   </>;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
-  const title = page === 'projects' ? '我的项目' : page === 'nodes' ? 'Node 应用' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
+  const title = page === 'projects' ? '我的项目' : page === 'storage' ? '空间与工作区' : page === 'about' ? '关于平台' : '运行环境';
 
   return (
     <div className="app-shell">
@@ -346,11 +390,10 @@ function App() {
         </div>
         <div className="sidebar-section-label">工作台</div>
         <nav className="side-nav">
-          <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{projects.length}</small></button>
-          <button className={page === 'nodes' ? 'nav-current' : 'nav-item'} aria-current={page === 'nodes' ? 'page' : undefined} onClick={() => navigatePage('nodes')}><Server size={17} /><span>Node 应用</span></button>
-          <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('runtime')}><Activity size={17} /><span>运行环境</span></button>
-          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
-          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} disabled={page === 'nodes' && nodeDraft.pending} onClick={() => navigatePage('about')}><Package size={17} /><span>关于平台</span></button>
+          <button className={page === 'projects' ? 'nav-current' : 'nav-item'} aria-current={page === 'projects' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('projects')}><LayoutGrid size={17} /><span>我的项目</span><small>{totalProjects}</small></button>
+          <button className={page === 'runtime' ? 'nav-current' : 'nav-item'} aria-current={page === 'runtime' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('runtime')}><Activity size={17} /><span>运行环境</span></button>
+          <button className={page === 'storage' ? 'nav-current' : 'nav-item'} aria-current={page === 'storage' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('storage')}><Trash2 size={17} /><span>空间与工作区</span></button>
+          <button className={page === 'about' ? 'nav-current' : 'nav-item'} aria-current={page === 'about' ? 'page' : undefined} disabled={nodeDraft.pending} onClick={() => navigatePage('about')}><Package size={17} /><span>关于平台</span></button>
         </nav>
         <div className="sidebar-stage">
           <span className="eyebrow">LOCAL FIRST</span>
@@ -370,17 +413,19 @@ function App() {
           <div className="page-heading">
             <div>
               <h1>{title}</h1>
-              <p>{page === 'projects' ? '选择项目开始使用，或在详情中查看信息和管理数据。' : page === 'nodes' ? '填写应用所需的服务和密钥，使用内置 Node 启动。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}</p>
+              <p>{page === 'projects' ? '选择项目开始使用，或在详情中查看信息和应用配置。' : page === 'storage' ? '查看空间占用、切换工作区位置，或恢复已删除的项目。' : '查看平台与本地服务的信息。'}</p>
             </div>
             <div className="heading-actions">
-              {page !== 'nodes' && <button className="refresh-button" onClick={() => void refresh()} disabled={loading || !inDesktop} aria-label="刷新项目和运行状态"><RefreshCw size={15} className={loading ? 'rotating' : undefined} />{loading ? '读取中' : '刷新'}</button>}
-              {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy} onClick={() => setShowImport(true)}><Upload size={15} />导入项目</button>}
-              {page === 'projects' && <button className="primary-button" onClick={() => { setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy}><Plus size={16} />新建项目</button>}
+              <button className="refresh-button" onClick={() => void refresh()} disabled={loading || !inDesktop || nodeDraft.pending} aria-label="刷新项目和运行状态"><RefreshCw size={15} className={loading ? 'rotating' : undefined} />{loading ? '读取中' : '刷新'}</button>
+              {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy || nodeDraft.pending} onClick={() => setNodeAddRequest((value) => value + 1)}><FolderOpen size={15} />添加本地应用</button>}
+              {page === 'projects' && <button className="refresh-button" disabled={!info || workspaceBusy || nodeDraft.pending} onClick={() => setShowImport(true)}><Upload size={15} />导入项目</button>}
+              {page === 'projects' && <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}><Plus size={16} />新建项目</button>}
             </div>
           </div>
 
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
+          {page === 'projects' && nodeReadError && <p className="task-error" role="alert">{nodeReadError}</p>}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
           {activeLifecycleTasks.length > 0 && <div className="lifecycle-tasks" aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}
@@ -391,17 +436,18 @@ function App() {
               <label className="project-search"><Search size={17} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、简介或项目 ID" /></label>
               <label className="project-filter"><span className="sr-only">筛选项目状态</span><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value as 'all' | 'ready' | 'attention')}><option value="all">全部项目</option><option value="ready">可进入</option><option value="attention">需要处理</option></select></label>
             </div>
-            <div className="project-list-heading"><span>{query.trim() || projectFilter !== 'all' ? `${filteredProjects.length} / ${projects.length} 个项目` : `${projects.length} 个项目`}</span><span>{loading ? '正在读取…' : checkedAt ? `更新于 ${checkedAt}` : '等待桌面连接'}</span></div>
-            {filteredProjects.length > 0 ? <section className="project-grid" aria-label="项目列表">
-              {filteredProjects.map((project) => <ProjectCard key={project.id} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
-            </section> : projects.length > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
+            <div className="project-list-heading"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}</span><span>{loading ? '正在读取…' : checkedAt ? `更新于 ${checkedAt}` : '等待桌面连接'}</span></div>
+            {filteredCount > 0 ? <section className="project-grid" aria-label="项目列表">
+              {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
+              {filteredNodeApps.map((app) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} />)}
+            </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
             </section>}
-            <details className="guide-disclosure"><summary><Info size={16} />使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy} onCreate={() => setShowCreate(true)} onEnvironment={() => setPage('runtime')} onStorage={() => setPage('storage')} /></details>
+            <details className="guide-disclosure"><summary><Info size={16} />使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending} onCreate={() => { if (!nodeDraft.pending && !nodeModalOpen) setShowCreate(true); }} onEnvironment={() => navigatePage('runtime')} onStorage={() => navigatePage('storage')} /></details>
             <div className="workspace-location"><Folder size={14} /><span>工作区</span><code>{info?.workspaceRoot ?? '尚未读取'}</code></div>
-            <footer className="page-footer"><span>所有数据保存在当前工作区</span><span>删除后的项目可在回收站恢复</span></footer>
-          </> : page === 'nodes' ? <NodeAppsPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} onDraftStateChange={reportNodeDraft} /> : page === 'storage' ? <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} /> : page === 'about' ? <AboutPlatform info={info} /> : <>
+            <footer className="page-footer"><span>项目数据保存在本机，详情中查看各自管理范围</span><span>网页项目删除后可在回收站恢复</span></footer>
+          </> : page === 'storage' ? <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} /> : page === 'about' ? <AboutPlatform info={info} /> : <>
             <section className="status-grid" aria-label="运行状态">
               <StatusCard icon={<Activity size={18} />} label="本地服务" value={info ? '已启动' : loading ? '读取中' : '未读取'} detail={info ? info.baseUrl : '由 Rust 提供本机服务'} good={Boolean(info)} />
               <StatusCard icon={<Database size={18} />} label="内置 SQLite" value={info ? `SQLite ${info.sqliteVersion}` : loading ? '读取中' : '未读取'} detail="每个项目使用独立数据库文件" good={Boolean(info)} />
@@ -414,10 +460,10 @@ function App() {
               <div className="runtime-details"><div><span>运行程序</span><code>{info?.displayName ?? '尚未读取'}</code></div><div><span>应用标识</span><code>{info?.identifier ?? '尚未读取'}</code></div><div><span>实例 ID</span><code>{info?.instanceId ?? '尚未读取'}</code></div><div><span>接口版本</span><code>{info ? `v${info.apiVersion}` : '尚未读取'}</code></div></div>
               <div className="resource-strip"><span>资源探测</span>{(Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => <span className={`resource-item ${info ? info.resources[key] ? 'resource-ok' : 'resource-missing' : ''}`} key={key}>{info ? info.resources[key] ? <Check size={13} /> : <CircleAlert size={13} /> : <span className="unknown-dot" />}{label}</span>)}</div>
             </section>
-            <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。关闭管理窗口会保留本地服务；从应用菜单或托盘选择“退出开发版”后，服务才会停止。</p></div>
+            <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。关闭平台窗口会结束应用窗口并停止平台管理的服务，其他独立开发的服务不受影响。</p></div>
           </>}
         </main>
-        {requestedPage && <Modal title="离开应用配置" description="当前配置有未保存的修改。" onClose={() => setRequestedPage(null)}><p>离开会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedPage(null)}>继续编辑</button><button className="primary-button" onClick={() => { setPage(requestedPage); setRequestedPage(null); }}>丢弃草稿并离开</button></div></Modal>}
+        <NodeAppsPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>

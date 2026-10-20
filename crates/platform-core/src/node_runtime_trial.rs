@@ -64,6 +64,9 @@ pub struct TrialStatus {
     pub stderr_bytes_discarded: u64,
     pub forced: bool,
     pub stopping_observed: bool,
+    /// True after no live owned-group members remain and the leader is reaped.
+    /// Dead adopted zombies awaiting the OS reaper are not running processes.
+    pub process_group_exited: bool,
     pub run_directory: PathBuf,
     pub hard_crash_recovery_implemented: bool,
 }
@@ -250,9 +253,35 @@ fn group_has_other_members(pid: u32) -> TrialResult<bool> {
                 "Could not completely inspect the owned trial group",
             ));
         }
-        Ok(members[..count as usize / std::mem::size_of::<i32>()]
-            .iter()
-            .any(|member| *member > 0 && *member != pid as i32))
+        for member in &members[..count as usize / std::mem::size_of::<i32>()] {
+            if *member <= 0 || *member == pid as i32 {
+                continue;
+            }
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of_val(&info);
+            let received = unsafe {
+                libc::proc_pidinfo(
+                    *member,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    (&mut info as *mut libc::proc_bsdinfo).cast(),
+                    size as i32,
+                )
+            };
+            if received == size as i32 {
+                // A PID can disappear or be reused after the group snapshot.
+                // Inspect its current group and ignore only proven dead zombies.
+                if info.pbi_pgid == pid && info.pbi_status != libc::SZOMB {
+                    return Ok(true);
+                }
+            } else if std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                return Err(fail(
+                    "TRIAL_GROUP_UNCONFIRMED",
+                    "Could not confirm the state of an owned group member",
+                ));
+            }
+        }
+        Ok(false)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -517,7 +546,7 @@ async fn prepare_launch(
 
 impl NodeRuntimeTrial {
     pub async fn launch(config: RuntimeLaunchConfig) -> TrialResult<Self> {
-        Self::launch_inner(config, None).await
+        Self::launch_inner(config, None, None).await
     }
 
     /// Use caller-owned persistent data/cache while preserving a fresh run/tmp.
@@ -528,7 +557,19 @@ impl NodeRuntimeTrial {
         data: PathBuf,
         cache: PathBuf,
     ) -> TrialResult<Self> {
-        Self::launch_inner(config, Some((data, cache))).await
+        Self::launch_inner(config, Some((data, cache)), None).await
+    }
+
+    /// The platform retains any failed-start handle whose group cleanup could
+    /// not be confirmed. Ordinary trial callers keep their existing API.
+    pub(crate) async fn launch_retaining_failed(
+        config: RuntimeLaunchConfig,
+        data: PathBuf,
+        cache: PathBuf,
+    ) -> (TrialResult<Self>, Option<Self>) {
+        let mut pending = None;
+        let result = Self::launch_inner(config, Some((data, cache)), Some(&mut pending)).await;
+        (result, pending)
     }
 
     /// Read-only application preflight. Only the pinned private Node's version
@@ -547,6 +588,7 @@ impl NodeRuntimeTrial {
     async fn launch_inner(
         config: RuntimeLaunchConfig,
         persistent: Option<(PathBuf, PathBuf)>,
+        pending: Option<&mut Option<Self>>,
     ) -> TrialResult<Self> {
         let PreparedLaunch {
             node,
@@ -704,6 +746,7 @@ impl NodeRuntimeTrial {
                 stderr_bytes_discarded: 0,
                 forced: false,
                 stopping_observed: false,
+                process_group_exited: false,
                 run_directory,
                 hard_crash_recovery_implemented: false,
             },
@@ -720,7 +763,11 @@ impl NodeRuntimeTrial {
             Ok(())
         }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Trial was not ready within 10 seconds")));
         if let Err(error) = started {
-            let _ = runtime.stop().await;
+            if runtime.stop().await.is_err() {
+                if let Some(pending) = pending {
+                    *pending = Some(runtime);
+                }
+            }
             return Err(error);
         }
         Ok(runtime)
@@ -921,6 +968,16 @@ impl NodeRuntimeTrial {
         } else {
             true
         };
+        if !descendants_exited {
+            // Keep the unreaped leader and ownership guard so a later explicit
+            // stop can safely retry this exact group. Never release the PGID
+            // and then attempt to signal it by an old numeric identifier.
+            self.status.state = "failed".into();
+            return Err(fail(
+                "TRIAL_DESCENDANTS_REMAIN",
+                "Could not confirm the trial process group exited; owned cleanup can be retried",
+            ));
+        }
         // Atomically forbid all future group signals before the only reaping wait.
         self.ownership.disarm_before_reap();
         let exit = self
@@ -942,18 +999,12 @@ impl NodeRuntimeTrial {
         }
         .into();
         self.child.take();
+        self.status.process_group_exited = true;
         for reader in self.readers.drain(..) {
             reader.abort();
             let _ = reader.await;
         }
         self.token.clear();
-        if !descendants_exited {
-            self.status.state = "failed".into();
-            return Err(fail(
-                "TRIAL_DESCENDANTS_REMAIN",
-                "Could not confirm the trial process group exited",
-            ));
-        }
         self.status()
     }
 }
@@ -1046,6 +1097,15 @@ behavior = os.environ.get('TRIAL_BEHAVIOR', '')
 assert os.environ['APP_INSTANCE_ID'] == instance
 assert 'NODE_OPTIONS' not in os.environ and 'HOME' not in os.environ and 'PATH' not in os.environ
 assert os.path.isdir(os.environ['APP_DATA_DIR']) and os.path.isdir(os.environ['APP_CACHE_DIR'])
+if behavior == 'leak-descendants':
+    import subprocess,time
+    grand = "import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);open(os.path.join(os.environ['APP_DATA_DIR'],'grandchild-pid'),'w').write(str(os.getpid()));time.sleep(60)"
+    child = "import os,signal,subprocess,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);open(os.path.join(os.environ['APP_DATA_DIR'],'child-pid'),'w').write(str(os.getpid()));subprocess.Popen(['/usr/bin/python3','-c'," + repr(grand) + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);time.sleep(60)"
+    subprocess.Popen(['/usr/bin/python3','-c',child],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    deadline=time.monotonic()+2
+    while not os.path.isfile(os.path.join(os.environ['APP_DATA_DIR'],'grandchild-pid')):
+        if time.monotonic()>deadline: raise RuntimeError('artificial descendants were not ready')
+        time.sleep(.01)
 if behavior == 'persistent-storage':
     visit = os.path.join(os.environ['APP_DATA_DIR'], 'artificial-visits.txt')
     count = int(open(visit).read()) if os.path.exists(visit) else 0
@@ -1127,6 +1187,7 @@ server.shutdown(); server.server_close()
         assert_eq!(stopped.state, "stopped");
         assert!(stopped.stopping_observed);
         assert!(!stopped.forced);
+        assert!(stopped.process_group_exited);
         assert!(!group_exists(stopped.pid));
         assert_eq!(runtime.stop().await.unwrap().state, "stopped");
         assert!(runtime.proxy_target().is_err());
@@ -1266,8 +1327,73 @@ server.shutdown(); server.server_close()
         let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
         let stopped = runtime.stop().await.unwrap();
         assert!(stopped.forced);
+        assert!(stopped.process_group_exited);
         assert_eq!(stopped.state, "failed");
         assert!(!group_exists(stopped.pid));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn clean_leader_handshake_still_removes_stubborn_child_and_grandchild() {
+        let (_fixture, config) = protocol_fixture("leak-descendants");
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        let data = runtime.status.run_directory.join("data");
+        let descendants: [i32; 2] = ["child-pid", "grandchild-pid"].map(|name| {
+            fs::read_to_string(data.join(name))
+                .unwrap()
+                .parse()
+                .unwrap()
+        });
+        let stopped = runtime.stop().await.unwrap();
+        assert!(stopped.stopping_observed);
+        assert_eq!(stopped.exit_code, Some(0));
+        assert!(stopped.forced);
+        assert!(stopped.process_group_exited);
+        for pid in descendants {
+            assert!(!process_is_live(pid));
+        }
+        assert!(runtime.stop().await.unwrap().process_group_exited);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_is_live(pid: i32) -> bool {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info);
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size as i32,
+            )
+        };
+        got == size as i32 && info.pbi_status != libc::SZOMB
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dead_zombie_descendant_does_not_count_as_a_running_process() {
+        let mut leader=Command::new("/usr/bin/python3")
+            .args(["-c","import subprocess,time;child=subprocess.Popen(['/usr/bin/true']);print(child.pid,flush=True);time.sleep(60)"])
+            .stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).kill_on_drop(true).spawn().unwrap();
+        let pid = leader.id().unwrap();
+        let mut output = BufReader::new(leader.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).await.unwrap();
+        let child_pid: i32 = line.trim().parse().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while process_is_live(child_pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!group_has_other_members(pid).unwrap());
+        let owner = ProcessOwnership::new(pid);
+        owner.signal(SIGNAL_KILL).unwrap();
+        owner.disarm_before_reap();
+        leader.wait().await.unwrap();
     }
 
     #[cfg(target_os = "macos")]
@@ -1457,6 +1583,80 @@ for await (const line of lines) {
         assert_eq!(stopped.state, "stopped");
         assert!(stopped.stopping_observed);
         assert!(!group_exists(stopped.pid));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "Requires an explicit verified private Node path in NODE_RUNTIME_TRIAL_TEST_NODE"]
+    async fn pinned_node_handshake_cleans_child_and_grandchild_without_killing_standalone_node() {
+        let node_path = PathBuf::from(
+            std::env::var_os("NODE_RUNTIME_TRIAL_TEST_NODE").expect("explicit private Node"),
+        );
+        let (_fixture, mut config) = protocol_fixture("");
+        let release: Value =
+            serde_json::from_str(include_str!("../../../scripts/node-runtime-release.json"))
+                .unwrap();
+        config.expected_node_sha256 = release["binary"]["sha256"].as_str().unwrap().into();
+        verify_node_digest(&node_path, &config.expected_node_sha256).unwrap();
+        config.node_path = node_path.clone();
+        fs::write(&config.entry_path,r#"import http from 'node:http';
+import readline from 'node:readline';
+import {spawn} from 'node:child_process';
+import {writeFileSync,existsSync} from 'node:fs';
+import {join} from 'node:path';
+import {setTimeout} from 'node:timers/promises';
+const lines=readline.createInterface({input:process.stdin});
+let server,token,instance;
+for await (const line of lines) {
+ const msg=JSON.parse(line);
+ if(msg.type==='initialize') {
+  ({token,instanceId:instance}=msg);
+  const grand=`import {writeFileSync} from 'node:fs';import {join} from 'node:path';process.on('SIGTERM',()=>{});writeFileSync(join(process.env.APP_DATA_DIR,'grandchild-pid'),String(process.pid));setInterval(()=>{},1000);`;
+  const child=`import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';import {join} from 'node:path';process.on('SIGTERM',()=>{});writeFileSync(join(process.env.APP_DATA_DIR,'child-pid'),String(process.pid));const grand=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(grand)}],{stdio:'ignore'});grand.unref();setInterval(()=>{},1000);`;
+  const descendant=spawn(process.execPath,['--input-type=module','-e',child],{stdio:'ignore'});descendant.unref();
+  const deadline=Date.now()+2000;
+  while(!existsSync(join(process.env.APP_DATA_DIR,'grandchild-pid'))) {if(Date.now()>deadline)throw new Error('artificial descendants not ready');await setTimeout(10);}
+  server=http.createServer((req,res)=>{
+   if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401,{'content-length':0});return res.end();}
+   const body=JSON.stringify({protocolVersion:1,instanceId:instance,status:'ok'});
+   res.writeHead(200,{'content-length':Buffer.byteLength(body)});res.end(body);
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  process.stdout.write(JSON.stringify({protocolVersion:1,type:'ready',instanceId:instance,host:'127.0.0.1',port:server.address().port})+'\n');
+ } else if(msg.type==='shutdown') {
+  process.stdout.write(JSON.stringify({protocolVersion:1,type:'stopping',instanceId:instance})+'\n');
+  await new Promise(resolve=>server.close(resolve));lines.close();break;
+ }
+}
+"#).unwrap();
+        let mut standalone = Command::new(node_path)
+            .args(["-e", "setInterval(()=>{},1000)"])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        let data = runtime.status.run_directory.join("data");
+        let descendants: [i32; 2] = ["child-pid", "grandchild-pid"].map(|name| {
+            fs::read_to_string(data.join(name))
+                .unwrap()
+                .parse()
+                .unwrap()
+        });
+        let stopped = runtime.stop().await.unwrap();
+        assert!(stopped.stopping_observed);
+        assert_eq!(stopped.exit_code, Some(0));
+        assert!(stopped.forced && stopped.process_group_exited);
+        for pid in descendants {
+            assert!(!process_is_live(pid));
+        }
+        assert!(standalone.try_wait().unwrap().is_none());
+        standalone.kill().await.unwrap();
+        standalone.wait().await.unwrap();
     }
 
     #[test]

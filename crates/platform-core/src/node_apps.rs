@@ -5,7 +5,7 @@ use crate::{
     node_app_configuration::{LocalFileVault, NodeConfigurationStore, SaveConfigurationRequest},
     node_app_manifest::{TrialManifest, TrialRuntime},
     node_app_proxy::NodeAppProxy,
-    node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig},
+    node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, TrialStatus},
     ApiError,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,10 @@ fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_APP_ERROR", message)
 }
 
+fn clean_shutdown(status: &TrialStatus) -> bool {
+    status.process_group_exited && status.state == "stopped"
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Registration {
@@ -37,8 +41,9 @@ struct Registration {
 
 struct Running {
     runtime: NodeRuntimeTrial,
-    proxy: NodeAppProxy,
+    proxy: Option<NodeAppProxy>,
     revision: u64,
+    cleanup_pending: bool,
 }
 #[derive(Default)]
 struct Inner {
@@ -172,7 +177,10 @@ impl NodeApps {
                 .inspect(&record.source_path)
                 .map_err(|e| fail(e.to_string()))?,
         )?;
-        let running = inner.running.get(&record.id);
+        let running = inner
+            .running
+            .get(&record.id)
+            .filter(|run| !run.cleanup_pending);
         let marker = self
             .root
             .join(&record.id)
@@ -285,6 +293,11 @@ impl NodeApps {
         if inner.shutting_down {
             return Err(fail("平台正在关闭，不能启动应用。"));
         }
+        if inner.running.get(id).is_some_and(|run| run.cleanup_pending) {
+            return Err(fail(
+                "此应用进程尚未确认全部关闭，请先重试停止，不能启动第二个实例。",
+            ));
+        }
         if inner.running.contains_key(id) {
             return Ok(());
         }
@@ -322,12 +335,26 @@ impl NodeApps {
             &marker,
             &json!({"version":1,"hostPid":std::process::id(),"runDirectory":trial_root}),
         )?;
-        let launched =
-            NodeRuntimeTrial::launch_with_storage(config, slot.join("data"), slot.join("cache"))
-                .await;
-        let mut runtime = match launched {
+        let (launched, pending) = NodeRuntimeTrial::launch_retaining_failed(
+            config,
+            slot.join("data"),
+            slot.join("cache"),
+        )
+        .await;
+        let runtime = match launched {
             Ok(value) => value,
             Err(error) => {
+                if let Some(runtime) = pending {
+                    inner.running.insert(
+                        id.into(),
+                        Running {
+                            runtime,
+                            proxy: None,
+                            revision: snapshot.revision,
+                            cleanup_pending: true,
+                        },
+                    );
+                }
                 // launch has awaited owned-child cleanup before returning an error.
                 // Preserve intent on uncertainty rather than starting a second writer.
                 inner.errors.insert(
@@ -339,7 +366,14 @@ impl NodeApps {
                 ));
             }
         };
-        let (port, token) = runtime.proxy_target()?;
+        let (port, token) = match runtime.proxy_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.finish_failed_start(id, runtime, snapshot.revision, inner)
+                    .await;
+                return Err(error);
+            }
+        };
         let proxy = match NodeAppProxy::start(
             record.source_path.join(&manifest.web.root),
             manifest.web.entry.clone(),
@@ -350,13 +384,8 @@ impl NodeApps {
         {
             Ok(proxy) => proxy,
             Err(error) => {
-                let stopped = runtime.stop().await;
-                if stopped
-                    .as_ref()
-                    .is_ok_and(|s| !s.forced && s.stopping_observed && s.exit_code == Some(0))
-                {
-                    fs::remove_file(&marker)?;
-                }
+                self.finish_failed_start(id, runtime, snapshot.revision, inner)
+                    .await;
                 return Err(error);
             }
         };
@@ -365,18 +394,65 @@ impl NodeApps {
             id.into(),
             Running {
                 runtime,
-                proxy,
+                proxy: Some(proxy),
                 revision: snapshot.revision,
+                cleanup_pending: false,
             },
         );
         Ok(())
     }
 
+    async fn finish_failed_start(
+        &self,
+        id: &str,
+        mut runtime: NodeRuntimeTrial,
+        revision: u64,
+        inner: &mut Inner,
+    ) {
+        match runtime.stop().await {
+            Ok(status) if status.process_group_exited => {
+                if clean_shutdown(&status) {
+                    let _ = fs::remove_file(self.root.join(id).join("active.json"));
+                }
+            }
+            _ => {
+                inner.running.insert(
+                    id.into(),
+                    Running {
+                        runtime,
+                        proxy: None,
+                        revision,
+                        cleanup_pending: true,
+                    },
+                );
+                inner.errors.insert(
+                    id.into(),
+                    "启动失败后的进程尚未确认全部关闭，请重试停止。".into(),
+                );
+            }
+        }
+    }
+
     async fn stop_locked(&self, id: &str, inner: &mut Inner) -> Result<()> {
-        if let Some(mut running) = inner.running.remove(id) {
-            running.proxy.stop().await;
-            let status = running.runtime.stop().await?;
-            if status.forced || !status.stopping_observed || status.exit_code != Some(0) {
+        if let Some(running) = inner.running.get_mut(id) {
+            running.cleanup_pending = true;
+            if let Some(proxy) = &mut running.proxy {
+                proxy.stop().await;
+            }
+            let status = match running.runtime.stop().await {
+                Ok(status) if status.process_group_exited => status,
+                result => {
+                    inner.errors.insert(id.into(), "应用进程尚未确认全部关闭，已保留受管句柄。请重试停止；平台暂不允许退出或启动第二个实例。".into());
+                    return Err(result
+                        .err()
+                        .unwrap_or_else(|| fail("无法确认应用进程组已关闭。")));
+                }
+            };
+            // Keep ownership until stop has positively confirmed group cleanup.
+            // A forced but fully cleaned process is removed here; its business
+            // failure and recovery marker are still preserved below.
+            inner.running.remove(id);
+            if !clean_shutdown(&status) {
                 inner.errors.insert(
                     id.into(),
                     "应用未完成正常关闭，已阻止再次启动并保留数据。".into(),
@@ -403,6 +479,19 @@ impl NodeApps {
     }
 
     pub async fn running_ids(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .await
+            .running
+            .iter()
+            .filter(|(_, run)| !run.cleanup_pending)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Includes failed/closing handles whose exact process group still needs
+    /// cleanup. Normal platform exit is blocked while this list is nonempty.
+    pub async fn owned_process_ids(&self) -> Vec<String> {
         self.inner.lock().await.running.keys().cloned().collect()
     }
 
@@ -420,12 +509,15 @@ impl NodeApps {
             let run = inner.running.get_mut(&id).unwrap();
             let healthy = run.runtime.status().is_ok_and(|s| s.state == "running")
                 && run.runtime.verify_health().await.is_ok();
-            if !healthy {
-                let _ = self.stop_locked(&id, inner).await;
-                inner
-                    .errors
-                    .insert(id, "应用运行状态异常，已关闭页面入口并停止此应用。".into());
+            if !healthy && self.stop_locked(&id, inner).await.is_ok() {
+                inner.errors.insert(
+                    id,
+                    "应用运行状态异常，已关闭页面入口并确认后台进程已停止。".into(),
+                );
             }
+            // A failed cleanup keeps its precise pending-ownership error.
+            // A forced but confirmed cleanup keeps its business/recovery
+            // failure. Neither may be replaced with a false clean message.
         }
     }
 
@@ -442,7 +534,9 @@ impl NodeApps {
         inner
             .running
             .get_mut(id)
-            .map(|r| r.proxy.open_url())
+            .filter(|r| !r.cleanup_pending)
+            .and_then(|r| r.proxy.as_mut())
+            .map(|proxy| proxy.open_url())
             .ok_or_else(|| fail("请先启动应用，再打开页面。"))
     }
 

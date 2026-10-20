@@ -673,6 +673,7 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     if (command === 'bootstrap_info') return { displayName: 'Local Projects Dev', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
     if (command === 'project_list') return state.projects;
+    if (command === 'node_app_list') return state.nodeApps ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (command === 'maintenance_status') return normalStatus;
     if (command === 'project_metadata') return { ...metadata, name: state.projects.find((item) => item.id === args.projectId)?.name ?? 'Removed fixture' };

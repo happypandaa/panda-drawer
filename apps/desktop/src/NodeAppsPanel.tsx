@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
-import { CircleAlert, ExternalLink, FolderOpen, KeyRound, Monitor, Plus, RefreshCw, Save, Server, Square } from 'lucide-react';
+import { Activity, CircleAlert, ExternalLink, FolderOpen, Info, KeyRound, Monitor, RefreshCw, Save, Server, Square } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { Modal } from './Modal';
 import { messageFrom } from './ui-utils';
 import type { NodeAppDetail, NodeAppInspection, NodeConfigurationField, NodeConfigurationInput, NodeSecretChange } from './node-app-types';
@@ -43,8 +43,15 @@ export function nodeConfigurationInput(app: NodeAppDetail, draft: Draft): NodeCo
   return { revision: app.configuration.revision, values, secrets };
 }
 
-export function NodeAppsPanel({ enabled, onDraftStateChange }: { enabled: boolean; onDraftStateChange: (state: { dirty: boolean; pending: boolean }) => void }) {
-  const [apps, setApps] = useState<NodeAppDetail[]>([]);
+export interface NodeAppRequest { app: NodeAppDetail; intent: 'enter' | 'details'; token: number }
+export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, onModalStateChange, onDraftStateChange }: {
+  enabled: boolean; request?: NodeAppRequest | null; addRequest?: number;
+  onAppChanged?: (app: NodeAppDetail) => void; onModalStateChange?: (open: boolean) => void;
+  onDraftStateChange: (state: { dirty: boolean; pending: boolean }) => void;
+}) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [tab, setTab] = useState<'overview' | 'configuration' | 'runtime'>('overview');
+  const [dismissConfirm, setDismissConfirm] = useState(false);
   const [detail, setDetail] = useState<NodeAppDetail | null>(null);
   const [draft, setDraft] = useState<Draft>({ ordinary: {}, secrets: {} });
   const [loading, setLoading] = useState(false);
@@ -56,52 +63,77 @@ export function NodeAppsPanel({ enabled, onDraftStateChange }: { enabled: boolea
   const [sourcePath, setSourcePath] = useState('');
   const [inspection, setInspection] = useState<NodeAppInspection | null>(null);
   const [requestedSelection, setRequestedSelection] = useState<NodeAppDetail | null>(null);
+  const seenRequest = useRef<number | null>(null);
+  const seenAdd = useRef(0);
+  const changedCallback = useRef(onAppChanged); changedCallback.current = onAppChanged;
+  const modalCallback = useRef(onModalStateChange); modalCallback.current = onModalStateChange;
   const alive = useRef(true);
   const operation = useRef(false);
   const sequence = useRef(0);
   const selected = useRef<string | null>(null);
+  const confirmation = useRef<HTMLDivElement>(null);
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
   const base = useId();
   const dirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
   const blocked = !enabled || Boolean(pending);
 
   const accept = useCallback((value: NodeAppDetail, resetDraft: boolean) => {
-    setApps((current) => current.some((app) => app.id === value.id) ? current.map((app) => app.id === value.id ? value : app) : [...current, value]);
+    changedCallback.current?.(value);
     if (selected.current === value.id) {
       setDetail((current) => resetDraft || !current ? value : { ...current, state: value.state, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError });
       if (resetDraft) setDraft(draftFrom(value));
     }
   }, []);
 
-  const select = useCallback(async (app: NodeAppDetail) => {
-    const request = ++sequence.current;
+  const enterApp = useCallback(async (value: NodeAppDetail) => {
+    if (operation.current || !enabled) return;
+    if (!value.configuration.canStart) { setModalOpen(true); setTab('configuration'); return; }
+    operation.current = true; setPending('enter'); setError(''); setNotice('');
+    const appId = value.id;
+    try {
+      if (value.state === 'running') await invoke('node_app_open', { appId });
+      else {
+        const opened = await invoke<NodeAppDetail>('node_app_start', { appId });
+        if (alive.current && selected.current === appId) accept(opened, false);
+      }
+    } catch (cause) {
+      if (alive.current && selected.current === appId) { setError(messageFrom(cause)); setModalOpen(true); setTab('runtime'); }
+    } finally { operation.current = false; if (alive.current) setPending(null); }
+  }, [accept, enabled]);
+
+  const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
+    const current = ++sequence.current;
     selected.current = app.id;
     setDetail(app); setDraft(draftFrom(app)); setError(''); setStatusError(''); setNotice(''); setLoading(true);
+    setTab(initialTab); setDismissConfirm(false); setModalOpen(!enter);
     try {
       const value = await invoke<NodeAppDetail>('node_app_configuration', { appId: app.id });
-      if (alive.current && sequence.current === request) accept(value, true);
-    } catch (cause) { if (alive.current && sequence.current === request) setError(messageFrom(cause)); }
-    finally { if (alive.current && sequence.current === request) setLoading(false); }
-  }, [accept]);
-
-  const refreshList = useCallback(async () => {
-    if (!enabled || operation.current) return;
-    const request = ++sequence.current;
-    setLoading(true); setError('');
-    try {
-      const values = await invoke<NodeAppDetail[]>('node_app_list');
-      if (!alive.current || sequence.current !== request) return;
-      setApps(values);
-      if (!selected.current && values.length) await select(values[0]);
-    } catch (cause) { if (alive.current && sequence.current === request) setError(messageFrom(cause)); }
-    finally { if (alive.current && sequence.current === request) setLoading(false); }
-  }, [enabled, select]);
+      if (!alive.current || sequence.current !== current) return;
+      accept(value, true);
+      if (enter) {
+        if (!value.configuration.canStart) { setModalOpen(true); setTab('configuration'); }
+        else await enterApp(value);
+      }
+    } catch (cause) { if (alive.current && sequence.current === current) { setError(messageFrom(cause)); setModalOpen(true); } }
+    finally { if (alive.current && sequence.current === current) setLoading(false); }
+  }, [accept, enterApp]);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; selected.current = null; draftCallback.current({ dirty: false, pending: false }); }; }, []);
-  useEffect(() => { void refreshList(); }, [refreshList]);
-  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) }); }, [dirty, pending]);
   useEffect(() => {
-    if (!enabled || !detail || pending) return;
+    if (!request || request.token === seenRequest.current || operation.current) return;
+    seenRequest.current = request.token;
+    if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
+    void select(request.app, request.intent === 'enter' ? 'configuration' : 'overview', request.intent === 'enter');
+  }, [request, select, pending]);
+  useEffect(() => {
+    if (!addRequest || addRequest === seenAdd.current || operation.current || !enabled) return;
+    seenAdd.current = addRequest; setAddOpen(true); setError(''); setSourcePath(''); setInspection(null);
+  }, [addRequest, enabled, pending]);
+  useEffect(() => { modalCallback.current?.(modalOpen || addOpen); }, [modalOpen, addOpen]);
+  useEffect(() => { if (dismissConfirm || requestedSelection) confirmation.current?.focus(); }, [dismissConfirm, requestedSelection]);
+  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading }); }, [dirty, pending, loading]);
+  useEffect(() => {
+    if (!enabled || !detail || pending || !modalOpen) return;
     let cancelled = false; let polling = false;
     const appId = detail.id;
     const timer = window.setInterval(() => {
@@ -112,13 +144,13 @@ export function NodeAppsPanel({ enabled, onDraftStateChange }: { enabled: boolea
           // Status refresh never replaces configuration declarations, the saved
           // revision used by a draft, or any password text the user is editing.
           setDetail((current) => current?.id === appId ? { ...current, state: value.state, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError } : current);
-          setApps((current) => current.map((app) => app.id === appId ? value : app));
+          changedCallback.current?.(value);
           setStatusError('');
         }
       }).catch(() => { if (!cancelled && alive.current && selected.current === appId) setStatusError('运行状态暂时无法更新。请点击“刷新运行状态”核对，应用不会因此自动重启。'); }).finally(() => { polling = false; });
     }, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [enabled, detail?.id, pending]);
+  }, [enabled, detail?.id, pending, modalOpen]);
 
   async function chooseSource() {
     if (blocked || operation.current) return;
@@ -140,8 +172,8 @@ export function NodeAppsPanel({ enabled, onDraftStateChange }: { enabled: boolea
       const value = await invoke<NodeAppDetail>('node_app_register', { sourcePath });
       if (!alive.current) return;
       selected.current = value.id; sequence.current++;
-      accept(value, true); setAddOpen(false); setSourcePath(''); setInspection(null);
-      setNotice('应用已登记。请先填写配置并保存，再点击“打开应用”。');
+      accept(value, true); setAddOpen(false); setModalOpen(true); setTab('configuration'); setSourcePath(''); setInspection(null);
+      setNotice('应用已登记。请先填写配置并保存，再点击“进入项目”。');
     } catch (cause) { if (alive.current) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
   }
@@ -201,33 +233,40 @@ export function NodeAppsPanel({ enabled, onDraftStateChange }: { enabled: boolea
     const before = detail.configuration.values[field.endpointField] ?? endpoint?.default;
     return effectiveDraft(field.endpointField) !== before || detail.configuration.secretStatus[field.name] === 'endpoint-changed';
   }
-  function selectRequested(app: NodeAppDetail) {
-    if (blocked || loading || app.id === selected.current) return;
-    if (dirty) setRequestedSelection(app); else void select(app);
+  function closeDetails() {
+    sequence.current++; selected.current = null; setModalOpen(false); setDetail(null);
+    setDraft({ ordinary: {}, secrets: {} }); setDismissConfirm(false); setRequestedSelection(null); setLoading(false);
+  }
+  function changeTab(value: typeof tab) {
+    if (blocked || loading) return;
+    setTab(value); setDismissConfirm(false);
+  }
+  function tabKeys(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const values = ['overview', 'configuration', 'runtime'] as const;
+    const next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : event.key === 'Home' ? 0 : event.key === 'End' ? 2 : null;
+    if (next === null || blocked || loading) return;
+    event.preventDefault(); changeTab(values[next]); document.getElementById(`${base}-${values[next]}-tab`)?.focus();
   }
 
-  return <section className="node-apps-panel" aria-label="Node 应用管理">
-    <div className="node-apps-intro"><div><Server size={18} /><p>先完成配置，再打开应用窗口。关闭应用窗口会停止本应用；每个应用只有一个窗口，再次打开会回到已有窗口。</p></div><span className="subtle-tag">源码接入 · 内部验证</span></div>
-    <div className="node-apps-toolbar"><button className="primary-button" disabled={blocked || dirty || loading} onClick={() => { setAddOpen(true); setError(''); }}><Plus size={16} />添加 Node 应用</button><button className="refresh-button" disabled={blocked || loading} onClick={() => void refreshList()}><RefreshCw size={15} className={loading ? 'rotating' : undefined} />刷新列表</button></div>
-    {error && !addOpen && <p className="task-error node-inline-message" role="alert">{error}</p>}
-    {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
-    <div className="node-apps-layout">
-      <div className="node-app-list" aria-label="已登记的 Node 应用">
-        {apps.map((app) => <button key={app.id} type="button" className={detail?.id === app.id ? 'node-app-list-item selected' : 'node-app-list-item'} aria-pressed={detail?.id === app.id} disabled={blocked || loading} onClick={() => selectRequested(app)}><Server size={20} /><span><strong>{app.name}</strong><small>Node 服务 · {stateLabels[app.state]}</small></span></button>)}
-        {!apps.length && <div className="node-app-empty"><Server size={28} /><h2>{loading ? '正在读取应用…' : '还没有 Node 应用'}</h2><p>选择带有应用说明文件的源码目录，核对后登记。不会自动打开应用。</p></div>}
-      </div>
-      {detail && <article className="node-app-detail" aria-labelledby={`${base}-title`} aria-busy={Boolean(pending) || loading}>
+  return <>
+    {modalOpen && detail && <Modal title={detail.name} description="项目详情与应用配置" wide closeDisabled={Boolean(pending)} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
+      <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
+        {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的应用配置</strong><p>关闭会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
+        {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="重新读取配置确认"><strong>当前配置有未保存的修改</strong><p>继续会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并重新读取</button></div></div>}
+        {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
+        {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
         <header className="node-app-heading"><div><h2 id={`${base}-title`}>{detail.name}</h2><span className="node-runtime-label"><Server size={14} />Node 服务</span></div><span className={`node-process-state node-process-${detail.state}`} role="status">{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : stateLabels[detail.state]}</span></header>
         <div className="node-runtime-actions">
-          <button className="primary-button" disabled={blocked || loading || (dirty && detail.state !== 'running') || !detail.configuration.canStart || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => { if (detail.state === 'running') void open('node_app_open'); else void run('node_app_start'); }}><Monitor size={15} />{detail.state === 'running' ? '返回应用窗口' : '打开应用'}</button>
-          <button className="refresh-button" disabled={blocked || loading || !['running', 'starting', 'failed'].includes(detail.state)} onClick={() => void run('node_app_stop')}><Square size={14} />关闭应用</button>
-          <button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart || detail.state !== 'running'} onClick={() => void run('node_app_restart')}><RefreshCw size={14} />重启并应用配置</button>
-          <button className="text-button" disabled={blocked || loading || dirty} onClick={() => void run('node_app_status')}>刷新运行状态</button>
+          <button className="primary-button" disabled={blocked || loading || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={15} />进入项目</button>
         </div>
         {detail.lastError && <p className="task-error node-inline-message" role="alert">{detail.lastError}</p>}
         {statusError && <p className="task-error node-inline-message" role="alert">{statusError}</p>}
         {detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : '先补齐必填项，再重启应用。'}</p>}
-        {detail.configuration.missingRequired.length > 0 && <p className="node-config-warning"><CircleAlert size={16} /><span>请先配置：{detail.configuration.missingRequired.map((name) => detail.fields.find((field) => field.name === name)?.label ?? name).join('、')}。补齐并保存后才能打开应用。</span></p>}
+        {detail.configuration.missingRequired.length > 0 && <p className="node-config-warning"><CircleAlert size={16} /><span>请先配置：{detail.configuration.missingRequired.map((name) => detail.fields.find((field) => field.name === name)?.label ?? name).join('、')}。补齐并保存后，再明确点击“进入项目”。</span></p>}
+        <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{([['overview', '概览', Info], ['configuration', '应用配置', KeyRound], ['runtime', '运行状态', Activity]] as const).map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
+        <div role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}><h3>项目信息</h3><p>此项目在独立应用窗口中使用。关闭应用窗口会停止相关服务；再次进入会返回已有窗口。</p><p>应用类型：Node 服务项目</p><p>配置状态：{detail.configuration.canStart ? '配置完整' : '需要配置'}</p><p>保存配置不会自动打开应用，也不会自动重启。</p><button className="refresh-button" disabled={blocked || loading} onClick={() => changeTab('configuration')}>查看应用配置</button><details className="node-source-details"><summary>来源与当前接入范围</summary><p>此入口登记本机源码目录，使用平台内置 Node。目录需保留；完整外部分发包、迁移、备份与回收流程尚未接入。</p><code>{detail.sourcePath}</code><code>{detail.id}</code></details></div>
+        <div role="tabpanel" id={`${base}-runtime-panel`} aria-labelledby={`${base}-runtime-tab`} hidden={tab !== 'runtime'}><h3>运行状态</h3><p>{stateLabels[detail.state]}。关闭应用窗口会停止本应用；关闭此详情弹窗不会关闭应用窗口。</p><div className="node-runtime-actions"><button className="refresh-button" disabled={blocked || loading || !['running', 'starting', 'failed'].includes(detail.state)} onClick={() => void run('node_app_stop')}><Square size={14} />关闭应用</button><button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart || detail.state !== 'running'} onClick={() => void run('node_app_restart')}><RefreshCw size={14} />重启并应用配置</button><button className="refresh-button" disabled={blocked || loading || dirty} onClick={() => void run('node_app_status')}>刷新运行状态</button></div></div>
+        <div role="tabpanel" id={`${base}-configuration-panel`} aria-labelledby={`${base}-configuration-tab`} hidden={tab !== 'configuration'}>
         <div className="node-configuration-heading"><h3>应用配置</h3><p>每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写，打开时交给本应用。这里不会读回或显示已保存的密钥；保存配置不会自动打开应用。</p></div>
         <form className="node-configuration-form" onSubmit={(event) => void save(event)} noValidate>
           {detail.fields.map((field, index) => {
@@ -254,12 +293,10 @@ export function NodeAppsPanel({ enabled, onDraftStateChange }: { enabled: boolea
           {!detail.fields.length && <p className="project-help">此应用没有声明需要用户填写的配置。</p>}
           <div className="node-config-save"><span role="status">{dirty ? '有未保存的修改。保存后不会自动重启或请求外部服务。' : `已保存配置 · 修订 ${detail.configuration.revision}`}</span><div><button className="refresh-button" type="button" disabled={blocked || loading} onClick={() => { if (dirty) setRequestedSelection(detail); else void select(detail); }}>重新读取配置</button><button className="primary-button" type="submit" disabled={blocked || loading || !dirty}><Save size={15} />{pending === 'save' ? '保存中…' : '保存配置'}</button></div></div>
         </form>
-        <details className="node-source-details"><summary>来源与当前接入范围</summary><p>此入口登记本机源码目录，使用平台内置 Node 启动。目录需保留；完整外部分发包、迁移、备份与回收流程尚未接入。</p><code>{detail.sourcePath}</code></details>
-      </article>}
-    </div>
-    {addOpen && <Modal title="添加 Node 应用" description="选择源码目录，只读核对应用声明后再登记。" closeDisabled={Boolean(pending)} onClose={() => { setAddOpen(false); setSourcePath(''); setInspection(null); setError(''); }}>
+        </div>
+      </section></Modal>}
+    {addOpen && <Modal title="添加本地应用" description="选择源码目录，只读核对应用声明后再登记。" closeDisabled={Boolean(pending)} onClose={() => { setAddOpen(false); setSourcePath(''); setInspection(null); setError(''); }}>
       <div className="node-add-dialog"><p>应用目录中需要有平台可识别的 <code>local-app.json</code>。登记后先配置，再打开应用。</p><button className="refresh-button" disabled={blocked} onClick={() => void chooseSource()}><FolderOpen size={16} />{pending === 'choose' ? '正在核对…' : '选择应用目录'}</button>{sourcePath && <code className="node-selected-source">{sourcePath}</code>}{error && <p role="alert" className="task-error">{error}</p>}{inspection && <div className="node-inspection-preview"><h3>{inspection.app.name}</h3><p>{inspection.app.description}</p><span className="node-runtime-label"><Server size={14} />{inspection.runtimeLabel} · {inspection.app.version}</span><p>应用声明了 {inspection.configuration.fields.length} 项配置，其中 {inspection.configuration.fields.filter((field) => field.required).length} 项必填。登记不读取旧的 .env，也不会自动运行应用。</p><ul>{inspection.configuration.fields.map((field) => <li key={field.name}>{field.label}{field.required ? '（必填）' : '（选填）'}{field.secret ? ' · 密钥' : ''}</li>)}</ul><button className="primary-button" disabled={blocked || inspection.runtime !== 'node-service'} onClick={() => void register()}>{pending === 'register' ? '登记中…' : '登记此应用'}</button></div>}</div>
     </Modal>}
-    {requestedSelection && <Modal title={requestedSelection.id === detail?.id ? '重新读取配置' : '切换应用'} description="当前配置有未保存的修改。" onClose={() => setRequestedSelection(null)}><p>继续操作会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value); }}>{requestedSelection.id === detail?.id ? '丢弃草稿并重新读取' : '丢弃草稿并切换'}</button></div></Modal>}
-  </section>;
+  </>;
 }

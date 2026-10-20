@@ -351,7 +351,7 @@ pub(super) fn close_requested(window: &tauri::Window) -> bool {
         if close_locked(&app, &state, &id).await.is_err() {
             super::show_manager(&app);
             use tauri_plugin_dialog::DialogExt;
-            app.dialog().message("应用关闭未完整完成，请在 Node 应用中核对服务状态；平台不会自动重新启动。若窗口无法关闭，请退出平台后再试。")
+            app.dialog().message("应用关闭未完整完成，请在‘我的项目 → 详情 → 运行状态’中核对并重试停止；平台不会自动重新启动。")
                 .title("应用关闭状态").show(|_|{});
         }
     });

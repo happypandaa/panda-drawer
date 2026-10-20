@@ -13,7 +13,9 @@ description: 接管、修改和验证 Local Projects 平台内的业务应用。
 
 先阅读随本技能携带的[应用窗口与后端约束](references/app-window-runtime.md)：应用在平台的一个原生窗口中运行，重复打开只聚焦；Node 类型在打开时后台启动，关闭应用窗口就停止。不要用新浏览器、`window.open`、`target="_blank"`、额外 WebView 或脚本业务弹窗扩展运行方式。原生文件选择和系统权限继续按平台实际能力及用户操作使用。
 
-本技能下文的 SQLite、构建、维护和迁移命令针对已有 `project.json`、经当前 CLI 确认的 **project-v1 业务项目**。只有 `local-app.json`、从平台“Node 应用”登记的本机源码槽属于另一条内部接入路径：先读其 `documentation.readme`、`documentation.development` 和声明中的配置；不要伪造 project ID、补写数据库、调用未开放的 Node CLI，或套用 project-v1 的备份／导出／迁移能力。作者修改前保全已有源码和真实数据，不从原 `.env` 或其他应用借 Key。
+平台入口统一为“我的项目”，网页／Node 用类型图标区分，详情与配置收在页面内带 tabs 的弹窗；缺必填时点击进入先开配置 tab，保存不自动启动。平台管理主窗口 X 走正常退出，收尾全部受管应用；业务窗口 X 只收尾本应用受管 Node 及普通子进程，不杀用户独立 Node。不能因窗口消失或主进程退出就假报清理成功，硬崩溃／脱组后代按真实能力记录限制。
+
+本技能下文的 SQLite、构建、维护和迁移命令针对已有 `project.json`、经当前 CLI 确认的 **project-v1 业务项目**。只有 `local-app.json`、在“我的项目”以 Node 类型展示的本机源码槽属于另一条内部接入路径：先读其 `documentation.readme`、`documentation.development` 和声明中的配置；列表统一不合并存储身份，不要伪造 project ID、补写数据库、调用未开放的 Node CLI，或套用 project-v1 的备份／导出／迁移能力。作者修改前保全已有源码和真实数据，不从原 `.env` 或其他应用借 Key。
 
 ## 接手项目
 

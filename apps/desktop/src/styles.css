@@ -790,3 +790,9 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .node-inspection-preview ul { padding-left: 22px; color: #7c8b6e; line-height: 2; font-size: 12px; margin: 0 0 20px; }
 @media (max-width: 1050px) { .node-apps-layout { grid-template-columns: 1fr; } .node-app-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .node-app-detail { padding: 20px; } }
 @media (max-width: 760px) { .node-app-list { grid-template-columns: 1fr; } .node-config-save { flex-direction: column; align-items: stretch; } .node-app-heading { flex-wrap: wrap; } .node-runtime-actions > button { flex: 1; } }
+.node-app-modal-detail { border: 0; padding: 0; border-radius: 0; }
+.node-app-modal-detail > .overview-tabs { position: sticky; top: -24px; z-index: 2; background: #fff; padding-top: 8px; gap: 8px; }
+.node-app-modal-detail > [role=tabpanel] { padding-top: 24px; }
+.node-app-modal-detail > [role=tabpanel] > h3 { color: #46563a; font-size: 15px; margin: 0 0 14px; }
+.node-app-modal-detail > [role=tabpanel] > p { color: #808a73; font-size: 13px; line-height: 1.9; }
+.node-app-modal-detail .overview-tabs > button { display: inline-flex; align-items: center; gap: 7px; }
