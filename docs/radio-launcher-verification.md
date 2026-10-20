@@ -1,6 +1,6 @@
 # Radio 风格启动台实施与验证
 
-日期：2026-10-20。用户确认以 Figma `lXWJIfHMpzoLiPV4kB9KMQ` 的 `25:17686` 为管理界面方向。源码实现、自动化和隔离浏览器视觉检查已完成；首次实施时保留旧开发应用。用户随后要求重新打包并删除旧包，当前新 app／DMG 已核验，旧生成包已清理，详见下方重新打包续记。新原生包尚未安装或启动验收。
+日期：2026-10-20。用户确认以 Figma `lXWJIfHMpzoLiPV4kB9KMQ` 的 `25:17686` 为管理界面方向。首次实施及重新打包记录保留如下，当时没有启动新原生包。后续四项调整、实际启动与窗口尺寸验收见末节；各阶段的产物摘要和验证边界分别记录。
 
 ## 实施范围
 
@@ -53,3 +53,45 @@
 | 历史证据 | 既有 M4 留存 DMG 摘要及应用清单仍与其历史记录一致 |
 
 证据为 `.test-artifacts/radio-ui/repackage.log`、`repackage-verification.log`、`repackage-final-20261020-2248/verification.json` 和 `node-packaged-verification.json`，均未纳入 Git。产物只读核验使用既有 `scripts/m5-package-verify.mjs`；内置 Node 另按 `scripts/node-runtime-release.json` 核对。此次没有启动管理应用或业务服务，没有安装替换，也不将产物核验写成真实 GUI、设备权限或正式公证发行验收。
+
+## 2026-10-20 窗口与工具栏补充验收
+
+用户确认四项后续调整：macOS 主窗口关闭后保留 Dock；管理任务移入设置并压缩首页空白；重新安排添加菜单；明确项目窗口尺寸归属并提供配置／上次尺寸记忆。现行窗口契约以[应用窗口与后端约束](app-window-runtime-contract.md)为准，覆盖上文首次外观实施时未改业务窗口与关闭语义的范围。
+
+- macOS 主窗口 X 仅隐藏原管理窗口，默认 Regular 应用策略保留，已有 Reopen／重复启动路径恢复该窗口。业务窗口及受管服务继续运行；菜单退出／Cmd+Q 仍走现有安全退出。非 macOS 的主窗口关闭行为保持退出。
+- 完整管理任务、历史结果及日志移入设置内的“管理任务”。首页只在进行中／失败时显示紧凑提示，点击直接打开并展开对应设置区域；没有历史任务占位。
+- 工具栏顺序为搜索、状态筛选、刷新、添加、新建项目。“添加”只保留添加本地应用和导入项目；刷新与筛选不再混入创建类菜单。
+- 平台创建和控制业务原生窗口。`project.json` 顶层可声明 `window`；Node 在首次登记前的 `local-app.json` 声明。默认初始 1080×780、最小 640×480、记住本机普通尺寸；`rememberSize:false` 忽略记忆。相同应用已开窗时仍只聚焦。具体单位、屏幕约束、缓存保护与既有 Node 清单摘要边界见契约的[尺寸节](app-window-runtime-contract.md#应用窗口尺寸)。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 类型、构建与 Rust 检查 | `npm run check` 通过；最终缓存竞态修复后桌面全目标检查、core／desktop Clippy（`-D warnings`）、格式检查通过 |
+| Rust 全套 | 最终 `npm test`：338 通过、2 忽略；新增尺寸及 Node 声明回归共 9 项，含首次发布／原子交换前的外部替换竞态 |
+| 前端交互 | 最终 `npm run test:ui`：78/78；新增独立筛选／刷新、设置任务日志、进行中任务入口三项。原生命令为夹具，不能替代下方原生动作 |
+| 浏览器视觉 | 隔离夹具核对 960×640 工具栏与 640×480 添加菜单、设置任务布局；未把示例项目写入真实列表 |
+| 真实管理界面 | 从生成 app 启动，WKWebView 中核对五个原有入口、独立筛选／刷新、两项添加菜单、设置内历史任务与日志按钮；主页不再展示完成任务 |
+| 关闭与明确退出 | 主窗口 X 后同一 PID 保留，公开 `service status` 成功；Cmd+Shift+H 恢复管理窗口。Cmd+Q 后原 PID 结束，重新启动可继续使用 |
+| 真实尺寸与重启 | 仅新建 `Disposable Window Size Check 2026-10-20`：配置 900×620 后实际缓存为 900×620；改初始声明 840×560 且保持记忆时仍按上次 900×620 打开；拖宽至 820 后，关窗缓存为 820×620，明确退出重启后仍恢复 820×620 |
+| 关闭记忆 | 同一新测试项目改为 840×560、`rememberSize:false`，实际截图为 1680×1120 Retina 像素；此前缓存仍为 820×620，没有被覆盖 |
+| 数据保护 | 通过公开创建／删除流程使用新测试项目，最终软删除任务成功并保留回收站；四个原有 project-v1 的 ID 集合一致，配置／主数据库／SDK 共 12 个文件摘要一致。未打开原有业务窗口、编辑 Node 源码槽或读取其凭据；这不是全量源文件及附件审计 |
+
+尺寸截图分别为 1800×1240、1640×1240、重启后 1640×1240、禁用记忆后 1680×1120；逻辑尺寸另用原生事件写出的缓存核对，未仅凭网页视口推断。测试用清单只在新建可丢弃项目内修改，原有项目清单和其自带说明不被升级覆盖。
+
+本轮未直接完成 Dock 图标点击实测：桌面自动化无法读取 Dock 控件，实际恢复使用既有显示管理窗口快捷键。Reopen 与 Regular 策略已按源码核对，不能将快捷键恢复写成 Dock 点击验收。未重做多显示器／不同缩放率原生切换、Node 业务窗口实机缩放、Windows、浏览器兼容、设备权限或正式公证。共享尺寸逻辑和声明边界由自动化覆盖；macOS 外的缓存持久发布未增加支持。
+
+本地证据仍在未纳入 Git 的 `.test-artifacts/radio-ui/`：`followup-rust-tests.log`、`followup-ui-final.log`、`followup-toolbar-960.jpg`、`followup-add-640.jpg`、`followup-tasks-640.jpg`、`native-toolbar-final.png`、`native-add-final.png`、`native-tasks-in-settings.png`、`native-window-*.png`、`native-preservation-and-sizes.json` 及公开任务结果。原始数据快照仅供本机验证，不纳入提交。
+
+### 最终重打包
+
+完整几何与重启验证在同一尺寸实现的候选包上完成。随后补齐随附 AI 窗口说明的平台限定与缓存保留边界，再执行标准 `npm run build` 生成最终包；没有再改原生尺寸或前端代码。最终包再次实际启动，主窗口 X 后同一 PID 与服务保留、快捷键恢复通过；完整几何流程未在这次资源更新后的包上重复。最终包保留打开的管理窗口，未安装替换系统应用目录。
+
+| 最终产物 | 结果 |
+| --- | --- |
+| app／DMG | `target/release/bundle/macos/熊猫应用小抽屉.app`；`target/release/bundle/dmg/熊猫应用小抽屉_0.0.0_aarch64.dmg` |
+| DMG 字节数／SHA-256 | `50384950`；`bc6ada15c9c195dcc70d6e4d3a367ecef399cfc98ea778995e4e833e7dfa6973` |
+| 身份／签名 | 固定 `dev.localprojects.platform.m0`，arm64、最低 macOS 15.0、版本 0.0.0；源 app 与 DMG 内 app 的严格深度签名检查通过，仍为开发用 ad-hoc／hardened runtime |
+| 一致性／保留 | 镜像只读挂载的 61 个条目与源 app 一致，已卸载；固定 SDK 8 处摘要及 M4 历史交付证据不变；随附窗口 reference 与源码字节一致 |
+| Node | 内置 v24.22.0，二进制及 LICENSE 按固定发布记录核对，独立签名和绝对路径 `--version` 检查通过 |
+| 清理 | 标准打包事务核验新包后清理 2 个旧生成包；没有清理项目回收站、尺寸保留文件、历史交付证据或系统安装目录 |
+
+最终证据为 `followup-package-final.log`、`followup-final-verified/verification.json`、`followup-final-node-and-resources.json`、`native-final-package-after-close.json` 与 `native-final-package.png`。最终镜像摘要覆盖此前两次同名生成镜像；各次验证日志仍保留在本机。

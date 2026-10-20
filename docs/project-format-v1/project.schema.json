@@ -39,10 +39,22 @@
       },
       "additionalProperties": true
     },
-    "runtimeRequirements": { "$ref": "#/$defs/runtimeRequirements" }
+    "runtimeRequirements": { "$ref": "#/$defs/runtimeRequirements" },
+    "window": { "$ref": "#/$defs/window" }
   },
   "additionalProperties": true,
   "$defs": {
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1, "maximum": 32768 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 32768 },
+        "rememberSize": { "type": "boolean", "default": true }
+      },
+      "description": "可选的首次原生窗口逻辑内区尺寸。未声明时1080×780，最小640×480并按当前屏幕工作区收敛；默认优先同一本机工作区、同一项目上次正常窗口尺寸。rememberSize=false每次新开采用声明值。此字段不授予网页原生窗口权限。"
+    },
     "relativePath": {
       "type": "string",
       "minLength": 1,

@@ -183,6 +183,47 @@ test('The add disclosure closes on Escape with focus return and on outside point
   assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
 });
 
+test('The toolbar separates filtering and refresh from the two add actions', async () => {
+  const calls = await setup();
+  const filter = document.querySelector('[aria-label="筛选项目状态"], .project-filter select');
+  const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  assert.ok(filter.closest('.radio-toolbar'));
+  assert.ok(refresh.closest('.radio-toolbar'));
+  assert.equal(filter.closest('.radio-add-menu'), null);
+  assert.equal(refresh.closest('.radio-add-menu'), null);
+  await click(addTrigger());
+  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['添加本地应用', '导入项目']);
+  const before = calls.filter(([command]) => command === 'project_list').length;
+  await click(refresh);
+  assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);
+});
+
+test('Completed management history lives in settings without occupying the home notice area', async () => {
+  const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
+  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_logs: () => ({ nextCursor: 1, text: 'Disposable completed task log', gaps: [], eof: true, truncated: false }) } });
+  assert.equal(document.querySelector('.radio-main .recent-tasks'), null);
+  assert.equal(document.querySelector('.radio-main .build-task'), null);
+  assert.equal(document.querySelector('.radio-notices').childElementCount, 0);
+  await click(document.querySelector('[aria-label="设置"]'));
+  const history = dialog().querySelector('.radio-settings-tasks');
+  assert.ok(history.querySelector('[aria-label="最近的管理任务"]'));
+  await click(history.querySelector('summary'));
+  assert.match(history.textContent, /清理历史 · 已完成/);
+  await click(byText('查看任务日志', history));
+  assert.equal(history.querySelector('.task-logs').textContent, 'Disposable completed task log');
+});
+
+test('Active management work keeps a compact home indicator that opens its full task in settings', async () => {
+  const task = { taskId: 'disposable_pending_task', projectId: null, type: 'workspaceCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
+  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_get: () => task } });
+  assert.match(document.querySelector('.radio-task-indicator').textContent, /1 项管理任务正在进行/);
+  assert.equal(document.querySelector('.radio-main .build-task'), null);
+  await click(byText('查看任务'));
+  const history = dialog().querySelector('.radio-settings-tasks');
+  assert.equal(history.open, true);
+  assert.match(history.querySelector('[aria-label="进行中的管理任务"]').textContent, /清理历史 · 正在执行/);
+});
+
 test('The add disclosure cannot open before bootstrap, and closes when Node entry becomes pending', async () => {
   const bootstrapRead = deferred();
   await setup({ overrides: { bootstrap_info: () => bootstrapRead.promise } });

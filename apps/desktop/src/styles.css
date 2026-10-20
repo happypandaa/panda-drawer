@@ -1005,12 +1005,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .radio-toolbar .project-search input { height: 32px; font-size: 12px; color: var(--radio-text); }
 .radio-toolbar .project-search input::placeholder { color: var(--radio-muted); }
 .radio-toolbar .project-search input:focus-visible { outline: none; }
-.radio-toolbar .project-filter { margin-left: auto; }
+.radio-toolbar .project-filter { margin: 0; flex-shrink: 0; }
 .radio-toolbar-spacer { flex: 1; }
-.radio-toolbar .project-filter select { min-height: 34px; border-radius: 999px; color: var(--radio-secondary); background: var(--radio-subtle); font-size: 11px; }
+.radio-toolbar .project-filter select { min-height: 34px; max-width: 112px; border-radius: 999px; color: var(--radio-text); background: var(--radio-subtle); font-size: 11px; }
+.radio-refresh-button { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; padding: 0; border: 1px solid var(--radio-line); border-radius: 50%; color: var(--radio-text); background: transparent; }
+.radio-refresh-button:hover:not(:disabled) { background: var(--radio-selected); }
 .radio-toolbar > .heading-actions, .radio-toolbar-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .radio-toolbar .primary-button, .radio-toolbar .refresh-button { min-height: 34px; padding: 7px 15px; border-radius: 999px; font-size: 13px; }
-.radio-add-menu { position: relative; margin-left: auto; }
+.radio-add-menu { position: relative; flex-shrink: 0; }
 .radio-add-menu > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 14px; border: 1px solid var(--radio-line); border-radius: 999px; list-style: none; cursor: pointer; font-size: 13px; color: var(--radio-text); background: transparent; }
 .radio-add-menu > summary::-webkit-details-marker { display: none; }
 .radio-add-menu > summary:hover, .radio-add-menu[open] > summary { background: var(--radio-selected); }
@@ -1030,6 +1032,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .radio-notices { flex-shrink: 0; padding: 16px 32px 0; }
 .radio-notices:empty { display: none; }
 .radio-notices > :last-child { margin-bottom: 0; }
+.radio-task-indicator { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--radio-line); border-radius: 9px; color: var(--radio-secondary); background: var(--radio-surface); font-size: 12px; }
+.radio-task-indicator .text-button { padding: 2px 0; font-size: 12px; color: var(--radio-text); }
+.radio-settings-modal .radio-settings-tasks { margin: 12px 0; }
+.radio-settings-modal .radio-settings-tasks > summary { min-height: 34px; padding: 8px 12px; font-size: 12px; color: var(--radio-text); }
+.radio-settings-modal .radio-settings-tasks > .lifecycle-tasks { margin: 0; padding: 0 12px 8px; }
+.radio-settings-modal .radio-settings-tasks .build-task { margin: 8px 0; padding: 12px; }
+.radio-tasks-empty { margin: 8px 0 0; font-size: 12px; }
 .radio-project-grid, .radio-main > .project-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -1259,6 +1268,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-settings-button { width: 32px; height: 32px; }
   .radio-toolbar { min-height: 56px; padding: 11px 20px; gap: 8px; }
   .radio-toolbar .project-search { max-width: none; min-height: 32px; padding-inline: 11px; }
+  .radio-toolbar-spacer { display: none; }
+  .radio-refresh-button { width: 32px; height: 32px; }
   .radio-toolbar .project-search input { height: 30px; }
   .radio-toolbar .project-filter select { max-width: 106px; padding-left: 10px; font-size: 10px; }
   .radio-toolbar .primary-button, .radio-toolbar .refresh-button, .radio-add-menu > summary { min-height: 32px; padding: 7px 12px; font-size: 12px; }

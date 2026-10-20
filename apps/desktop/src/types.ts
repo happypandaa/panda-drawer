@@ -36,6 +36,7 @@ export interface ProjectInfo {
     name?: string;
     description?: string;
     icon?: string;
+    window?: { width: number; height: number; rememberSize?: boolean };
     runtimeRequirements?: { network?: Record<string, { origin: string; purpose?: string; dataSent?: string }[]>; devices?: Record<string, { purpose?: string }> };
     database: string;
     attachmentsDir: string;

@@ -2,6 +2,7 @@
 
 mod browser_download;
 mod node_windows;
+mod window_sizes;
 
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
@@ -50,6 +51,7 @@ struct AppState {
     project_windows: tokio::sync::Mutex<()>,
     node_apps: std::sync::Arc<platform_core::node_apps::NodeApps>,
     node_windows: node_windows::NodeWindows,
+    window_sizes: window_sizes::WindowSizes,
     shutting_down: std::sync::atomic::AtomicBool,
     exit_ready: std::sync::atomic::AtomicBool,
 }
@@ -565,14 +567,34 @@ async fn project_open(
             let permission_id = project_id.clone();
             let navigation_app = app.clone();
             let new_window_app = app.clone();
-            tauri::WebviewWindowBuilder::new(
+            let window_config = platform_core::app_windows::AppWindowConfig::from_value(
+                project
+                    .manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.extra.get("window")),
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("Project window declaration ignored: {}", error.code);
+                Default::default()
+            });
+            let window_identity = platform_core::app_windows::WindowIdentity::project(
+                &state.handle.info().workspace_root,
+                &project_id,
+            );
+            let size = state
+                .window_sizes
+                .initial(&app, &window_identity, window_config);
+            let project_window = tauri::WebviewWindowBuilder::new(
                 &app,
                 project_label(&project_id),
                 tauri::WebviewUrl::External(launch_url),
             )
             .title(project_title(&project.name))
-            .inner_size(1080.0, 780.0)
-            .min_inner_size(640.0, 480.0)
+            .inner_size(size.width, size.height)
+            .min_inner_size(
+                platform_core::app_windows::MIN_WIDTH,
+                platform_core::app_windows::MIN_HEIGHT,
+            )
             .on_navigation(move |url| {
                 let local = Url::parse(&runtime_handle.info().base_url)
                     .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
@@ -616,6 +638,9 @@ async fn project_open(
             })
             .build()
             .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，请重新打开项目"))?;
+            state
+                .window_sizes
+                .track(&project_window, window_identity, window_config);
         }
         OpenTarget::Browser => {
             // Fixed executable, separate argument, no shell, no caller-supplied
@@ -1115,6 +1140,7 @@ fn shutdown_runtime(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
+    state.window_sizes.flush();
     state
         .shutting_down
         .store(true, std::sync::atomic::Ordering::Release);
@@ -1153,6 +1179,7 @@ fn request_safe_shutdown(app: &tauri::AppHandle) {
     if state.shutting_down.swap(true, Ordering::AcqRel) {
         return;
     }
+    state.window_sizes.flush();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
@@ -1250,6 +1277,7 @@ fn main() {
             }
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
+                let window_sizes = window_sizes::WindowSizes::new(paths.data_root());
             let lock = paths.acquire_lock()?;
             let InstalledResources {
                 info: resources,
@@ -1291,6 +1319,7 @@ fn main() {
                 project_windows: tokio::sync::Mutex::new(()),
                 node_apps,
                 node_windows: node_windows::NodeWindows::default(),
+                window_sizes,
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
                 exit_ready: std::sync::atomic::AtomicBool::new(false),
             })
@@ -1333,9 +1362,20 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let Some(state) = window.app_handle().try_state::<AppState>() {
+                state.window_sizes.on_event(window, event);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "manager" {
                     api.prevent_close();
+                    // On macOS, closing the manager keeps the application and
+                    // its managed services in the Dock. Reopen restores this
+                    // same window; only an explicit quit runs safe shutdown.
+                    #[cfg(target_os = "macos")]
+                    if let Err(error) = window.hide() {
+                        eprintln!("Unable to hide management window: {error}");
+                    }
+                    #[cfg(not(target_os = "macos"))]
                     window.app_handle().exit(0);
                 } else if node_windows::close_requested(window) {
                     api.prevent_close();
