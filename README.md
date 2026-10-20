@@ -4,6 +4,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
 
+应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；内置 Node 不包含 npm 或用户端依赖安装／源码构建，现有 project-v1 源码构建仍使用系统 Node/npm。执行摘要随项目 skill 的同一份环境／窗口约束分发。
+
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
 PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs/app-package-implementation-plan.md)拆为 AP0–AP6 共 7 阶段、20 小步，先做检测和无源码类型的保护基础，再开放静态安装，之后扩展数据应用与手动更新；本轮仅规划，尚未开始安装实现，也不改变 M0–M6 或 Windows 的完成状态。
@@ -16,7 +18,7 @@ PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs
 
 后续新增[配置声明实验规范、Schema 和只读检查器](docs/node-configuration-v1/README.md)，radio 配置已收敛为 AI 地址/密钥/模型、语音密钥/音色/模型六项，说明用途与获取步骤；可检查缺少哪些必填配置，不启动应用或读取真实密钥。后续配置表单与本机保存已接入独立 Node 源码入口；完整可分发安装仍未交付。
 
-同日确认按运行形态分为“网页项目”和“Node 服务项目”，清单明确声明，平台卡片、详情与安装预览以固定类型图标和中文文字区分；类型与运行状态、用户自定义项目图标分别展示。规则见[两类运行形态](docs/node-app-runtime.md#11-两种项目运行类型)及[项目概览](docs/project-metadata-and-overview.md)，本轮未写界面或修改图标资产。
+同日确认按运行形态分为“网页项目”和“Node 服务项目”，清单明确声明，以固定类型图标和中文文字区分；类型与运行状态、用户自定义项目图标分别展示。当前“我的项目”卡片与详情已接类型展示，安装预览尚未实现；规则见[两类运行形态](docs/node-app-runtime.md#11-两种项目运行类型)及[项目概览](docs/project-metadata-and-overview.md)。
 
 已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。当前 W1.1 本机工具准备和 W1.2 首片共享启动门禁进行中，初期范围为本机内置 NTFS 与固定默认工作区；Windows 运行时在安全文件及现场识别就绪前继续关闭。实际结果及剩余项见 [W1 记录](docs/windows-w1-verification.md)；平台 Windows 编译、启动和安装仍未验收。早期内部版仅面向可丢弃样本。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
 
