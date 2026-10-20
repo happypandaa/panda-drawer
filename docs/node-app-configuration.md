@@ -6,6 +6,8 @@
 
 配套：[运行方案](node-app-runtime.md)、[启动规范](node-app-startup-spec.md)、[20 小步实施计划](node-app-implementation-plan.md)、[用户与 AI 说明分工](application-documentation.md)。
 
+2026-10-20 后续已把 radio 整理为六项配置的源码范例，并新增独立的[配置声明 v1 实验规范、Schema 与只读检查器](node-configuration-v1/README.md)。本轮能预览声明、实际入口/文档和缺失必填项；用户值保存、密钥库与表单仍未实现。AI Key 必填、Fish 可选是 radio 自己的选择，平台不硬编码这些业务字段，也不改变静态 v1。
+
 本规范的变量声明和后端注入属于“Node 服务项目”；“网页项目”不因此获得 Node 启动或秘密环境注入能力。平台的类型图标来自已验证运行类型，与是否配置完整、当前进程是否启动分别展示；详见启动规范，不从是否填写 Key 判断项目类型。
 
 ## 1 用户看到“应用配置”

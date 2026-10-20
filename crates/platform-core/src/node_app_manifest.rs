@@ -1,7 +1,7 @@
 //! Experimental, read-only declarations for disposable Node runtime trials.
 //! This module does not register projects or extend the existing v1 installer.
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -36,7 +36,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrialRuntime {
     StaticWeb,
@@ -109,7 +109,7 @@ pub struct ConfigurationDecl {
     pub fields: Vec<ConfigurationField>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigurationType {
     String,
@@ -146,6 +146,76 @@ pub struct ConfigurationField {
 pub struct SelectOption {
     pub value: String,
     pub label: String,
+}
+
+/// A declaration preview, never a saved configuration or an installation plan.
+/// Only explicitly declared metadata and ordinary author defaults are exposed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialManifestInspection<'a> {
+    inspection_kind: &'static str,
+    runtime: TrialRuntime,
+    runtime_label: &'static str,
+    app: InspectedApp<'a>,
+    checked_files: Vec<InspectedFile>,
+    documentation_declared: bool,
+    configuration: InspectedConfiguration<'a>,
+    limitations: [&'static str; 3],
+}
+
+#[derive(Debug, Serialize)]
+struct InspectedApp<'a> {
+    id: &'a str,
+    name: &'a str,
+    version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectedFile {
+    role: &'static str,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectedConfiguration<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declaration_version: Option<u32>,
+    value_source: &'static str,
+    status: &'static str,
+    missing_required: Vec<&'a str>,
+    fields: Vec<InspectedConfigurationField<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InspectedConfigurationField<'a> {
+    name: &'a str,
+    label: &'a str,
+    r#type: ConfigurationType,
+    required: bool,
+    secret: bool,
+    description: &'a str,
+    how_to_get: &'a [String],
+    value_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placeholder: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    endpoint_field: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Vec<InspectedSelectOption<'a>>>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectedSelectOption<'a> {
+    value: &'a str,
+    label: &'a str,
 }
 
 fn text(value: &str, limit: usize) -> bool {
@@ -314,6 +384,112 @@ impl TrialManifest {
         Ok((entry, cwd))
     }
 
+    /// Checks only declared ordinary entry/document files and previews metadata.
+    /// This never loads application code, dependencies, user values or credentials.
+    pub fn inspect(&self, app_dir: &Path) -> Result<TrialManifestInspection<'_>> {
+        self.validate()?;
+        let web_root = checked_child(app_dir, &self.web.root, true)?;
+        checked_child(&web_root, &self.web.entry, false)?;
+        let mut checked_files = vec![InspectedFile {
+            role: "web-entry",
+            path: format!("{}/{}", self.web.root, self.web.entry),
+        }];
+        if let Some(backend) = &self.backend {
+            self.resolve_backend(app_dir)?;
+            checked_files.push(InspectedFile {
+                role: "backend-entry",
+                path: format!("{}/{}", backend.root, backend.entry),
+            });
+        }
+        if let Some(documentation) = &self.documentation {
+            for (role, path) in [
+                ("user-documentation", &documentation.readme),
+                ("development-documentation", &documentation.development),
+            ] {
+                checked_child(app_dir, path, false)?;
+                checked_files.push(InspectedFile {
+                    role,
+                    path: path.clone(),
+                });
+            }
+        }
+
+        let mut fields = Vec::new();
+        let mut missing_required = Vec::new();
+        if let Some(configuration) = &self.configuration {
+            for field in &configuration.fields {
+                // validate() already rejects secret defaults. Keep this explicit
+                // allow-list so a future declaration change cannot expose one.
+                let default = if field.secret {
+                    None
+                } else {
+                    field.default.as_ref()
+                };
+                let value_status = if default.is_some() {
+                    "author-default"
+                } else if field.required {
+                    missing_required.push(field.name.as_str());
+                    "missing-required"
+                } else {
+                    "not-set"
+                };
+                fields.push(InspectedConfigurationField {
+                    name: &field.name,
+                    label: &field.label,
+                    r#type: field.r#type,
+                    required: field.required,
+                    secret: field.secret,
+                    description: &field.description,
+                    how_to_get: &field.how_to_get,
+                    value_status,
+                    placeholder: field.placeholder.as_deref(),
+                    default,
+                    endpoint_field: field.endpoint_field.as_deref(),
+                    help_url: field.help_url.as_deref(),
+                    options: field.options.as_ref().map(|options| {
+                        options
+                            .iter()
+                            .map(|option| InspectedSelectOption {
+                                value: &option.value,
+                                label: &option.label,
+                            })
+                            .collect()
+                    }),
+                });
+            }
+        }
+        let status = if missing_required.is_empty() {
+            "no-missing-required-values-in-defaults"
+        } else {
+            "needs-configuration"
+        };
+        Ok(TrialManifestInspection {
+            inspection_kind: "read-only-trial",
+            runtime: self.runtime,
+            runtime_label: self.runtime.label(),
+            app: InspectedApp {
+                id: &self.app.id,
+                name: &self.app.name,
+                version: &self.app.version,
+                description: self.app.description.as_deref(),
+            },
+            checked_files,
+            documentation_declared: self.documentation.is_some(),
+            configuration: InspectedConfiguration {
+                declaration_version: self.configuration.as_ref().map(|config| config.version),
+                value_source: "author-defaults-only-no-user-values-read",
+                status,
+                missing_required,
+                fields,
+            },
+            limitations: [
+                "仅检查实验声明与已声明入口、说明文件的存在性，不读取文件内容或执行应用。",
+                "未检查完整依赖、可安装性、业务兼容或完整静态 v1 格式。",
+                "未读取或保存用户配置、密钥；本地默认值完整不代表服务可连接或凭据有效。",
+            ],
+        })
+    }
+
     /// The trial has no credential store or UI. Only non-secret author defaults
     /// are used; required missing values block execution instead of borrowing
     /// credentials from the developer's shell.
@@ -466,6 +642,26 @@ mod tests {
         TrialManifest::parse(&serde_json::to_vec(&value).unwrap())
     }
 
+    fn inspect_fixture() -> (tempfile::TempDir, Value) {
+        let app = tempfile::tempdir().unwrap();
+        for directory in ["public", "server", "docs"] {
+            fs::create_dir(app.path().join(directory)).unwrap();
+        }
+        for path in [
+            "public/index.html",
+            "server/managed.mjs",
+            "docs/usage.md",
+            "docs/development.md",
+        ] {
+            fs::write(app.path().join(path), "artificial file, never executed").unwrap();
+        }
+        let mut value = manifest();
+        value["documentation"] = json!({
+            "readme":"docs/usage.md", "development":"docs/development.md"
+        });
+        (app, value)
+    }
+
     #[test]
     fn runtime_types_cannot_silently_disagree_or_fall_back() {
         assert_eq!(parse(manifest()).unwrap().runtime.label(), "Node 服务项目");
@@ -588,5 +784,115 @@ mod tests {
             std::os::unix::fs::symlink("missing", app.path().join("server/managed.mjs")).unwrap();
             assert!(valid.resolve_backend(app.path()).is_err());
         }
+    }
+
+    #[test]
+    fn inspection_previews_missing_required_values_without_reading_user_values() {
+        let (app, mut value) = inspect_fixture();
+        let mut secret = field();
+        secret["required"] = json!(true);
+        let mut endpoint = field();
+        endpoint["name"] = json!("AI_BASE_URL");
+        endpoint["type"] = json!("url");
+        endpoint["secret"] = json!(false);
+        endpoint["required"] = json!(true);
+        endpoint["default"] = json!("https://api.example.invalid/v1");
+        secret["endpointField"] = json!("AI_BASE_URL");
+        value["configuration"] = json!({"version":1,"fields":[endpoint, secret]});
+        fs::write(
+            app.path().join(".env"),
+            "AI_API_KEY=artificial-env-value-must-not-appear",
+        )
+        .unwrap();
+        fs::create_dir(app.path().join(".data")).unwrap();
+        fs::write(
+            app.path().join(".data/configuration.json"),
+            r#"{"AI_API_KEY":"artificial-saved-value-must-not-appear"}"#,
+        )
+        .unwrap();
+        let manifest = parse(value).unwrap();
+        assert!(manifest.business_defaults().is_err());
+        let inspection = manifest.inspect(app.path()).unwrap();
+        let preview = serde_json::to_value(inspection).unwrap();
+        assert_eq!(preview["inspectionKind"], "read-only-trial");
+        assert_eq!(preview["runtime"], "node-service");
+        assert_eq!(preview["checkedFiles"].as_array().unwrap().len(), 4);
+        assert_eq!(preview["documentationDeclared"], true);
+        assert_eq!(
+            preview["configuration"]["missingRequired"],
+            json!(["AI_API_KEY"])
+        );
+        assert_eq!(preview["configuration"]["status"], "needs-configuration");
+        let fields = preview["configuration"]["fields"].as_array().unwrap();
+        assert_eq!(fields[0]["default"], "https://api.example.invalid/v1");
+        assert_eq!(fields[1]["secret"], true);
+        assert!(fields[1].get("default").is_none());
+        assert!(fields[1].get("value").is_none());
+        assert!(fields[1].get("savedValue").is_none());
+        let serialized = serde_json::to_string(&preview).unwrap();
+        assert!(!serialized.contains("artificial-env-value"));
+        assert!(!serialized.contains("artificial-saved-value"));
+    }
+
+    #[test]
+    fn inspection_checks_each_declared_entry_and_both_documents() {
+        for path in [
+            "public/index.html",
+            "server/managed.mjs",
+            "docs/usage.md",
+            "docs/development.md",
+        ] {
+            let (app, value) = inspect_fixture();
+            let manifest = parse(value).unwrap();
+            fs::remove_file(app.path().join(path)).unwrap();
+            assert!(manifest.inspect(app.path()).is_err());
+            fs::create_dir(app.path().join(path)).unwrap();
+            assert!(manifest.inspect(app.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn inspection_keeps_optional_documentation_and_default_values_distinct() {
+        let (app, mut value) = inspect_fixture();
+        value.as_object_mut().unwrap().remove("documentation");
+        let mut field = field();
+        field["name"] = json!("FEATURE_ENABLED");
+        field["type"] = json!("boolean");
+        field["secret"] = json!(false);
+        field["required"] = json!(true);
+        field["default"] = json!(false);
+        value["configuration"] = json!({"version":1,"fields":[field]});
+        let manifest = parse(value).unwrap();
+        let preview = serde_json::to_value(manifest.inspect(app.path()).unwrap()).unwrap();
+        assert_eq!(preview["documentationDeclared"], false);
+        assert_eq!(preview["checkedFiles"].as_array().unwrap().len(), 2);
+        assert_eq!(preview["configuration"]["missingRequired"], json!([]));
+        assert_eq!(preview["configuration"]["fields"][0]["default"], false);
+        assert_eq!(
+            preview["configuration"]["fields"][0]["valueStatus"],
+            "author-default"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn inspection_rejects_linked_entry_files_and_document_directories() {
+        for path in ["public/index.html", "server/managed.mjs", "docs/usage.md"] {
+            let (app, value) = inspect_fixture();
+            let manifest = parse(value).unwrap();
+            fs::remove_file(app.path().join(path)).unwrap();
+            std::os::unix::fs::symlink("missing-artificial-target", app.path().join(path)).unwrap();
+            assert!(manifest.inspect(app.path()).is_err());
+        }
+        let (app, value) = inspect_fixture();
+        let manifest = parse(value).unwrap();
+        fs::rename(app.path().join("docs"), app.path().join("hidden-docs")).unwrap();
+        std::os::unix::fs::symlink("hidden-docs", app.path().join("docs")).unwrap();
+        assert!(manifest.inspect(app.path()).is_err());
+        // Unrelated app-private paths are deliberately neither followed nor read.
+        fs::remove_file(app.path().join("docs")).unwrap();
+        fs::rename(app.path().join("hidden-docs"), app.path().join("docs")).unwrap();
+        std::os::unix::fs::symlink("missing-env", app.path().join(".env")).unwrap();
+        assert!(manifest.inspect(app.path()).is_ok());
     }
 }
