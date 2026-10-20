@@ -13,6 +13,7 @@ mod identity_upgrade;
 mod lifecycle;
 mod maintenance;
 mod metadata;
+pub mod node_app_configuration;
 pub mod node_app_manifest;
 pub mod node_runtime_trial;
 mod paths;
