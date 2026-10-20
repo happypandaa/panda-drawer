@@ -2818,7 +2818,6 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "core-foundation",
  "dirs 6.0.0",
  "fs2",
  "futures-util",

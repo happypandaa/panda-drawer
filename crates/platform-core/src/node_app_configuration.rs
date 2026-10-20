@@ -1,6 +1,7 @@
 //! Configuration for the separately registered, local Node application slots.
-//! Secrets are immutable Keychain entries; the only disk commit is a record of
-//! ordinary values and opaque entry identifiers. No credential is serialized.
+//! Explicitly requested local-file credentials use immutable private files.
+//! Configuration JSON contains only ordinary values and opaque entry IDs;
+//! credentials are never serialized back to the frontend or placed in logs.
 
 use crate::node_app_manifest::{
     valid_business_variable, ConfigurationField, ConfigurationType, TrialManifest,
@@ -18,8 +19,6 @@ use uuid::Uuid;
 
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const MAX_SECRET_BYTES: usize = 8192;
-#[cfg(target_os = "macos")]
-const KEYCHAIN_SERVICE: &str = "dev.localprojects.platform.m0.node-configuration.v1";
 
 #[derive(Debug)]
 pub struct ConfigurationError(&'static str);
@@ -36,11 +35,14 @@ fn invalid(message: &'static str) -> ConfigurationError {
 
 /// Implementations must add a new entry or fail, never replace an existing one.
 /// `discard` is called only with IDs successfully inserted by this save attempt.
-/// Keychain unavailability must return an error, with no plaintext fallback.
+/// The configured provider is authoritative: no implicit OS-store fallback.
 pub trait SecretVault: Send + Sync {
     fn insert(&self, instance: Uuid, entry: Uuid, value: &str) -> Result<()>;
     fn get(&self, instance: Uuid, entry: Uuid) -> Result<String>;
     fn discard(&self, instance: Uuid, entry: Uuid) -> Result<()>;
+    /// Checks only the specific entry's presence and metadata, without echoing
+    /// or reading the credential. Missing legacy provider entries stay missing.
+    fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool>;
 }
 
 #[derive(Deserialize)]
@@ -186,7 +188,7 @@ impl NodeConfigurationStore {
             }
         }
         let values = effective_values(&fields, &request.values)?;
-        // Validate the whole transaction before the first Keychain mutation.
+        // Validate the whole transaction before the first credential write.
         for field in &fields {
             if !field.secret {
                 continue;
@@ -230,7 +232,7 @@ impl NodeConfigurationStore {
             secrets: previous.secrets,
         };
         let mut inserted = Vec::new();
-        let attempt = (|| -> Result<()> {
+        let attempt = (|| -> Result<ConfigurationView> {
             for field in &fields {
                 if !field.secret {
                     continue;
@@ -270,10 +272,12 @@ impl NodeConfigurationStore {
                     }
                 }
             }
-            self.commit(&next)
+            let view = self.view_record(manifest, &next)?;
+            self.commit(&next)?;
+            Ok(view)
         })();
         if let Err(error) = attempt {
-            // A failed cleanup can leave only new, unreferenced Keychain entries.
+            // A failed cleanup can leave only new, unreferenced credential files.
             // Never remove an entry referenced by the previous committed record.
             for entry in inserted {
                 let _ = self.vault.discard(self.instance, entry);
@@ -282,13 +286,18 @@ impl NodeConfigurationStore {
         }
         // Old immutable entries intentionally remain unreferenced. Destructive
         // credential garbage collection is outside this initial slot workflow.
-        self.view_record(manifest, &next)
+        attempt
     }
 
     pub fn launch_snapshot(&self, manifest: &TrialManifest) -> Result<LaunchConfigurationSnapshot> {
         let _lock = self.lock()?;
         let record = self.read()?;
         let view = self.view_record(manifest, &record)?;
+        if view.secrets.iter().any(|(name, status)| {
+            *status == SecretStatus::Missing && record.secrets.contains_key(name)
+        }) {
+            return Err(invalid("本地密钥文件缺失，请重新填写并保存密钥后再启动。"));
+        }
         if !view.can_start {
             return Err(invalid("应用配置尚未完整，或密钥需要重新绑定服务地址。"));
         }
@@ -329,9 +338,16 @@ impl NodeConfigurationStore {
         let mut secrets = BTreeMap::new();
         let mut missing_required = Vec::new();
         let mut binding_changed = false;
+        let mut binding_missing = false;
         for field in fields {
             if field.secret {
                 let status = match record.secrets.get(&field.name) {
+                    Some(binding)
+                        if !self.vault.contains(self.instance, entry_uuid(binding)?)? =>
+                    {
+                        binding_missing = true;
+                        SecretStatus::Missing
+                    }
                     Some(binding) if binding.endpoint != endpoint(field, &values) => {
                         binding_changed = true;
                         SecretStatus::EndpointChanged
@@ -352,7 +368,7 @@ impl NodeConfigurationStore {
             values,
             saved_values: record.values.clone(),
             secrets,
-            can_start: missing_required.is_empty() && !binding_changed,
+            can_start: missing_required.is_empty() && !binding_changed && !binding_missing,
             missing_required,
         })
     }
@@ -676,134 +692,213 @@ fn checked_file(file: &File) -> Result<()> {
     Ok(())
 }
 
-/// Native Security.framework bridge. Errors deliberately omit values and item
-/// identifiers; no `security` executable, argv credential or plaintext fallback.
-#[derive(Default)]
-pub struct MacKeychainVault;
-impl MacKeychainVault {
-    pub fn new() -> Self {
-        Self
+/// Local plaintext credential storage, selected explicitly by the user. This
+/// implementation never calls an OS credential service and never falls back to
+/// a different provider. Each instance gets its own private directory.
+pub struct LocalFileVault {
+    directory: PathBuf,
+    instance: Uuid,
+    created: std::sync::Mutex<BTreeMap<Uuid, (u64, u64)>>,
+}
+
+impl LocalFileVault {
+    pub fn new(directory: PathBuf, instance: Uuid) -> Result<Self> {
+        if !cfg!(unix) {
+            return Err(invalid("当前平台尚未验证本地密钥文件权限。"));
+        }
+        if instance.is_nil() || !directory.is_absolute() {
+            return Err(invalid("本地密钥目录或应用实例无效。"));
+        }
+        let parent = directory
+            .parent()
+            .ok_or_else(|| invalid("本地密钥目录无效。"))?;
+        checked_directory(parent)?;
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(invalid("无法创建本地密钥目录。")),
+        }
+        checked_credential_directory(&directory)?;
+        Ok(Self {
+            directory,
+            instance,
+            created: std::sync::Mutex::new(BTreeMap::new()),
+        })
+    }
+
+    fn entry_path(&self, instance: Uuid, entry: Uuid) -> Result<PathBuf> {
+        if instance != self.instance || entry.is_nil() {
+            return Err(invalid("本地密钥条目不属于此应用实例。"));
+        }
+        checked_credential_directory(&self.directory)?;
+        Ok(self.directory.join(entry.to_string()))
+    }
+
+    fn open_entry(&self, instance: Uuid, entry: Uuid) -> Result<Option<File>> {
+        let path = self.entry_path(instance, entry)?;
+        let mut options = safe_options();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Inspecting a malicious special file must not block on a FIFO.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+        }
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(invalid("无法读取本地密钥文件，请重新填写密钥。")),
+        };
+        checked_credential_file(&file)?;
+        Ok(Some(file))
     }
 }
 
-#[cfg(target_os = "macos")]
-mod native_keychain {
-    use super::*;
-    use core_foundation::base::{CFType, CFTypeRef, TCFType};
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::data::CFData;
-    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-    use core_foundation::string::{CFString, CFStringRef};
-    use std::ptr;
-
-    #[link(name = "Security", kind = "framework")]
-    unsafe extern "C" {
-        static kSecClass: CFStringRef;
-        static kSecClassGenericPassword: CFStringRef;
-        static kSecAttrService: CFStringRef;
-        static kSecAttrAccount: CFStringRef;
-        static kSecValueData: CFStringRef;
-        static kSecReturnData: CFStringRef;
-        static kSecMatchLimit: CFStringRef;
-        static kSecMatchLimitOne: CFStringRef;
-        fn SecItemAdd(attributes: CFDictionaryRef, result: *mut CFTypeRef) -> i32;
-        fn SecItemCopyMatching(query: CFDictionaryRef, result: *mut CFTypeRef) -> i32;
-        fn SecItemDelete(query: CFDictionaryRef) -> i32;
+fn checked_credential_directory(path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        return Err(invalid("本地密钥目录必须为绝对路径。"));
     }
-
-    unsafe fn constant(value: CFStringRef) -> CFType {
-        CFString::wrap_under_get_rule(value).as_CFType()
-    }
-
-    fn pairs(instance: Uuid, entry: Uuid) -> Vec<(CFType, CFType)> {
-        let account = format!("{instance}/{entry}");
-        // Framework constants are retained by CFDictionary and never modified.
-        unsafe {
-            vec![
-                (constant(kSecClass), constant(kSecClassGenericPassword)),
-                (
-                    constant(kSecAttrService),
-                    CFString::new(KEYCHAIN_SERVICE).as_CFType(),
-                ),
-                (
-                    constant(kSecAttrAccount),
-                    CFString::new(&account).as_CFType(),
-                ),
-            ]
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        if !matches!(
+            component,
+            std::path::Component::RootDir | std::path::Component::Normal(_)
+        ) {
+            return Err(invalid("本地密钥目录必须为规范路径。"));
+        }
+        current.push(component);
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|_| invalid("无法检查本地密钥目录。"))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(invalid("本地密钥目录不能经过链接或特殊文件。"));
         }
     }
-
-    impl SecretVault for MacKeychainVault {
-        fn insert(&self, instance: Uuid, entry: Uuid, value: &str) -> Result<()> {
-            validate_secret(value)?;
-            let mut attributes = pairs(instance, entry);
-            unsafe {
-                attributes.push((
-                    constant(kSecValueData),
-                    CFData::from_buffer(value.as_bytes()).as_CFType(),
-                ));
-            }
-            let dictionary = CFDictionary::from_CFType_pairs(&attributes);
-            let status = unsafe { SecItemAdd(dictionary.as_concrete_TypeRef(), ptr::null_mut()) };
-            if status == 0 {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "无法安全保存密钥。请检查系统钥匙串是否解锁并允许本应用访问。",
-                ))
-            }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(path).map_err(|_| invalid("无法检查本地密钥目录。"))?;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7777 != 0o700 {
+            return Err(invalid("本地密钥目录必须属于当前用户且权限为 0700。"));
         }
-
-        fn get(&self, instance: Uuid, entry: Uuid) -> Result<String> {
-            let mut attributes = pairs(instance, entry);
-            unsafe {
-                attributes.push((
-                    constant(kSecReturnData),
-                    CFBoolean::true_value().as_CFType(),
-                ));
-                attributes.push((constant(kSecMatchLimit), constant(kSecMatchLimitOne)));
-            }
-            let dictionary = CFDictionary::from_CFType_pairs(&attributes);
-            let mut result: CFTypeRef = ptr::null();
-            let status =
-                unsafe { SecItemCopyMatching(dictionary.as_concrete_TypeRef(), &mut result) };
-            if status != 0 || result.is_null() {
-                return Err(invalid(
-                    "无法读取已绑定密钥。请检查系统钥匙串或重新填写密钥。",
-                ));
-            }
-            let object = unsafe { CFType::wrap_under_create_rule(result) };
-            let data = object
-                .downcast::<CFData>()
-                .ok_or_else(|| invalid("系统钥匙串返回了无效密钥条目。"))?;
-            let value = String::from_utf8(data.bytes().to_vec())
-                .map_err(|_| invalid("已绑定密钥格式无效，请重新填写。"))?;
-            validate_secret(&value)?;
-            Ok(value)
-        }
-
-        fn discard(&self, instance: Uuid, entry: Uuid) -> Result<()> {
-            let dictionary = CFDictionary::from_CFType_pairs(&pairs(instance, entry));
-            let status = unsafe { SecItemDelete(dictionary.as_concrete_TypeRef()) };
-            if status == 0 || status == -25300 {
-                Ok(())
-            } else {
-                Err(invalid("无法清理本次未提交的密钥条目。"))
-            }
-        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Err(invalid("当前平台尚未验证本地密钥目录权限。"))
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-impl SecretVault for MacKeychainVault {
-    fn insert(&self, _: Uuid, _: Uuid, _: &str) -> Result<()> {
-        Err(invalid("当前平台尚不支持 Node 应用密钥保存。"))
+fn checked_credential_file(file: &File) -> Result<(u64, u64)> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| invalid("无法检查本地密钥文件。"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_SECRET_BYTES as u64 {
+        return Err(invalid("本地密钥文件类型或大小无效，请重新填写密钥。"));
     }
-    fn get(&self, _: Uuid, _: Uuid) -> Result<String> {
-        Err(invalid("当前平台尚不支持 Node 应用密钥读取。"))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o7777 != 0o600
+        {
+            return Err(invalid(
+                "本地密钥文件必须属于当前用户、权限为 0600，且不能使用链接。",
+            ));
+        }
+        Ok((metadata.dev(), metadata.ino()))
     }
-    fn discard(&self, _: Uuid, _: Uuid) -> Result<()> {
-        Err(invalid("当前平台尚不支持 Node 应用密钥保存。"))
+    #[cfg(not(unix))]
+    {
+        Err(invalid("当前平台尚未验证本地密钥文件权限。"))
+    }
+}
+
+impl SecretVault for LocalFileVault {
+    fn insert(&self, instance: Uuid, entry: Uuid, value: &str) -> Result<()> {
+        validate_secret(value)?;
+        let path = self.entry_path(instance, entry)?;
+        let mut options = safe_options();
+        options.write(true).create_new(true);
+        let mut file = options
+            .open(&path)
+            .map_err(|_| invalid("无法新建本地密钥文件，原配置已保留。"))?;
+        let written = file
+            .write_all(value.as_bytes())
+            .and_then(|_| file.sync_all());
+        if written.is_err() {
+            drop(file);
+            // create_new succeeded: this path was created by this operation.
+            let _ = fs::remove_file(&path);
+            return Err(invalid("无法写入本地密钥文件，原配置已保留。"));
+        }
+        let identity = match checked_credential_file(&file) {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(file);
+                let _ = fs::remove_file(&path);
+                return Err(error);
+            }
+        };
+        if File::open(&self.directory)
+            .and_then(|directory| directory.sync_all())
+            .is_err()
+        {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(invalid("无法完成本地密钥文件保存，原配置已保留。"));
+        }
+        self.created
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(entry, identity);
+        Ok(())
+    }
+
+    fn get(&self, instance: Uuid, entry: Uuid) -> Result<String> {
+        let file = self
+            .open_entry(instance, entry)?
+            .ok_or_else(|| invalid("本地密钥文件缺失，请重新填写并保存密钥。"))?;
+        let mut bytes = Vec::new();
+        file.take((MAX_SECRET_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid("无法读取本地密钥文件，请重新填写密钥。"))?;
+        if bytes.len() > MAX_SECRET_BYTES {
+            return Err(invalid("本地密钥文件超过大小限制。"));
+        }
+        let value = String::from_utf8(bytes)
+            .map_err(|_| invalid("本地密钥文件格式无效，请重新填写密钥。"))?;
+        validate_secret(&value)?;
+        Ok(value)
+    }
+
+    fn discard(&self, instance: Uuid, entry: Uuid) -> Result<()> {
+        let mut created = self.created.lock().unwrap_or_else(|p| p.into_inner());
+        let expected = created
+            .get(&entry)
+            .ok_or_else(|| invalid("只能清理本次新建的密钥文件。"))?;
+        if let Some(file) = self.open_entry(instance, entry)? {
+            if checked_credential_file(&file)? != *expected {
+                return Err(invalid("密钥文件已变化，已保留现场。"));
+            }
+            fs::remove_file(self.entry_path(instance, entry)?)
+                .map_err(|_| invalid("无法清理本次未提交的密钥文件。"))?;
+        }
+        created.remove(&entry);
+        if let Ok(directory) = File::open(&self.directory) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    }
+
+    fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool> {
+        self.open_entry(instance, entry).map(|file| file.is_some())
     }
 }
 
@@ -825,12 +920,15 @@ mod tests {
     }
 
     impl SecretVault for FakeVault {
+        fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool> {
+            Ok(self.values.lock().unwrap().contains_key(&(instance, entry)))
+        }
         fn insert(&self, instance: Uuid, entry: Uuid, value: &str) -> Result<()> {
             let count = self.insertions.fetch_add(1, Ordering::SeqCst) + 1;
             if self.unavailable.load(Ordering::SeqCst)
                 || self.fail_insert_at.load(Ordering::SeqCst) == count
             {
-                return Err(invalid("模拟钥匙串不可用。"));
+                return Err(invalid("模拟本地密钥存储不可用。"));
             }
             let mut values = self.values.lock().unwrap();
             if values.contains_key(&(instance, entry)) {
@@ -846,14 +944,14 @@ mod tests {
         }
         fn get(&self, instance: Uuid, entry: Uuid) -> Result<String> {
             if self.unavailable.load(Ordering::SeqCst) {
-                return Err(invalid("模拟钥匙串不可用。"));
+                return Err(invalid("模拟本地密钥存储不可用。"));
             }
             self.values
                 .lock()
                 .unwrap()
                 .get(&(instance, entry))
                 .cloned()
-                .ok_or_else(|| invalid("模拟钥匙串条目缺失。"))
+                .ok_or_else(|| invalid("模拟本地密钥存储条目缺失。"))
         }
         fn discard(&self, instance: Uuid, entry: Uuid) -> Result<()> {
             self.values.lock().unwrap().remove(&(instance, entry));
@@ -912,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_status_and_missing_do_not_read_keychain() {
+    fn defaults_status_and_missing_do_not_read_credential() {
         let (_temporary, vault, store) = store();
         vault.unavailable.store(true, Ordering::SeqCst);
         let view = store.view(&manifest()).unwrap();
@@ -964,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn revision_conflict_preserves_original_and_does_not_touch_keychain() {
+    fn revision_conflict_preserves_original_and_does_not_touch_credential() {
         let (temporary, vault, store) = store();
         store
             .save(&manifest(), request(0, Some("first-dummy")))
@@ -1090,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn keychain_failure_rolls_back_whole_save_and_never_falls_back_to_disk() {
+    fn credential_failure_rolls_back_whole_save_without_bypassing_provider() {
         let (temporary, vault, store) = store();
         store
             .save(&manifest(), request(0, Some("original-dummy")))
@@ -1128,7 +1226,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn failed_atomic_record_commit_cleans_only_new_keychain_entries() {
+    fn failed_atomic_record_commit_cleans_only_new_credential_entries() {
         use std::os::unix::fs::PermissionsExt;
         let (temporary, vault, store) = store();
         store
@@ -1221,20 +1319,7 @@ mod tests {
         .is_err());
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "Opt-in real macOS Keychain test creates only a new disposable entry"]
-    fn mac_keychain_disposable_insert_read_and_remove_only_owned_item() {
-        let vault = MacKeychainVault::new();
-        let instance = Uuid::new_v4();
-        let entry = Uuid::new_v4();
-        let credential = format!("disposable-artificial-key-{}", Uuid::new_v4());
-        vault.insert(instance, entry, &credential).unwrap();
-        let result = vault.get(instance, entry);
-        // Clean only this test's successfully inserted random entry. Never query
-        // or enumerate existing user or previously committed platform items.
-        let cleanup = vault.discard(instance, entry);
-        assert_eq!(result.unwrap(), credential);
-        cleanup.unwrap();
+    mod file_tests {
+        include!("node_app_configuration_file_tests.rs");
     }
 }
