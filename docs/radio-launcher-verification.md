@@ -1,6 +1,6 @@
 # Radio 风格启动台实施与验证
 
-日期：2026-10-20。用户确认以 Figma `lXWJIfHMpzoLiPV4kB9KMQ` 的 `25:17686` 为管理界面方向。源码实现、自动化和隔离浏览器视觉检查已完成；正在运行的旧开发应用保持原样，本轮未生成或安装新原生包。
+日期：2026-10-20。用户确认以 Figma `lXWJIfHMpzoLiPV4kB9KMQ` 的 `25:17686` 为管理界面方向。源码实现、自动化和隔离浏览器视觉检查已完成；首次实施时保留旧开发应用。用户随后要求重新打包并删除旧包，当前新 app／DMG 已核验，旧生成包已清理，详见下方重新打包续记。新原生包尚未安装或启动验收。
 
 ## 实施范围
 
@@ -24,7 +24,7 @@
 | 最终前端构建 | 菜单及焦点修复后 TypeScript/Vite 再次通过 |
 | 差异与配置 | 空白检查通过；管理尺寸与固定标识核对；Node 图标及亮暗纹理与来源字节一致 |
 | 浏览器视觉 | 隔离 Vite 入口和一次性命令夹具，960×640 与 640×480，亮暗主题、设置、搜索、工作区及底部菜单已检查 |
-| 打包 | 实际执行 `npm run build:app`，在准备及覆盖前被旧版运行保护拒绝；没有停止旧程序、替换包或安装新应用 |
+| 首次打包 | 实际执行 `npm run build:app`，在准备及覆盖前被旧版运行保护拒绝；当时没有停止旧程序、替换包或安装新应用。随后重新打包结果见续记 |
 
 新增自动化覆盖主题持久化和存储故障降级、添加菜单门禁、Node／网页入口状态、菜单定位与键盘操作、设置 pending 防重复提交与失败保留、折叠项焦点循环。既有配置草稿、迟到响应、维护、删除、回收与迁移用例继续通过。
 
@@ -34,4 +34,22 @@
 
 ## 保留的验证边界
 
-当前运行包仍是旧版本。新管理窗口的真实 WKWebView 视觉、原生窗口最小尺寸、Finder／Dock 展示及原生文件对话框没有在本轮重启验收；配置与前端浏览器检查不替代原生验收。未重做 Windows、Safari／Chrome、设备权限、摄像头／麦克风或正式签名发行验证。既有后端能力以各自实际验证记录为准。
+新管理窗口的真实 WKWebView 视觉、原生窗口最小尺寸、Finder／Dock 展示及原生文件对话框没有在本轮重启验收；配置与前端浏览器检查不替代原生验收。未重做 Windows、Safari／Chrome、设备权限、摄像头／麦克风或正式签名发行验证。既有后端能力以各自实际验证记录为准。
+
+## 2026-10-20 重新打包续记
+
+用户明确要求“重新打包吧，删除旧的”。打包前确认旧管理程序已不在运行；在 UI 源码提交 `88f9bf3` 上执行标准 `npm run build`，完整构建 app 与 DMG 成功。标准打包事务先验证旧包身份和签名，暂存旧包，待新应用及 DMG 核验成功后清理了 1 个旧生成应用包。旧 `target/release/bundle/macos/Local Projects Dev.app` 已不存在；标准 DMG 目录没有旧英文名称镜像，打包锁及临时旧包事务目录均已清理。历史交付证据、安装目录和项目数据不属于此次清理范围。
+
+| 产物核验 | 结果 |
+| --- | --- |
+| app | `target/release/bundle/macos/熊猫应用小抽屉.app` |
+| DMG | `target/release/bundle/dmg/熊猫应用小抽屉_0.0.0_aarch64.dmg` |
+| DMG 字节数 | `50358412` |
+| DMG SHA-256 | `98981ba78d16df9e2be5f2029c06d5ceae69f7c1e79cbe24082fc72aca37b4a0` |
+| 程序身份与签名 | 中文包名、固定 `dev.localprojects.platform.m0`、版本 `0.0.0`、arm64／最低 macOS 15.0；源 app 与镜像内 app 均通过严格深度签名检查，保持 ad-hoc／hardened runtime |
+| 镜像一致性 | DMG 校验成功，只读挂载应用的 61 个条目与源 app 逐项一致，已卸载 |
+| 固定 SDK | 8 处副本摘要仍为 `334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9` |
+| 内置 Node | `24.22.0`、darwin／arm64；`runtime.json` 与固定发布记录一致，Node／LICENSE 字节摘要通过，独立签名通过，绝对路径执行 `--version` 返回 `v24.22.0` |
+| 历史证据 | 既有 M4 留存 DMG 摘要及应用清单仍与其历史记录一致 |
+
+证据为 `.test-artifacts/radio-ui/repackage.log`、`repackage-verification.log`、`repackage-final-20261020-2248/verification.json` 和 `node-packaged-verification.json`，均未纳入 Git。产物只读核验使用既有 `scripts/m5-package-verify.mjs`；内置 Node 另按 `scripts/node-runtime-release.json` 核对。此次没有启动管理应用或业务服务，没有安装替换，也不将产物核验写成真实 GUI、设备权限或正式公证发行验收。
