@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "fields": [
+    {
+      "name": "AI_BASE_URL",
+      "label": "示例 AI 服务地址",
+      "type": "url",
+      "required": true,
+      "secret": false,
+      "description": "虚构的格式示例，不能用于真实请求；正式应用必须说明其支持的服务、协议和路径拼接规则。",
+      "howToGet": ["本文件仅演示声明格式，example.invalid 不是可用服务。正式应用由作者提供实际服务地址及获取步骤。"],
+      "default": "https://api.example.invalid/v1"
+    },
+    {
+      "name": "AI_API_KEY",
+      "label": "示例 AI 访问密钥",
+      "type": "string",
+      "required": true,
+      "secret": true,
+      "endpointField": "AI_BASE_URL",
+      "description": "只声明此应用需要密钥，不在文件中填写实际值；未配置时应报告缺失。",
+      "howToGet": ["正式应用应写明与 AI 服务地址对应的官方控制台、创建和复制密钥的步骤。本示例不提供真实服务或凭据。"],
+      "placeholder": "在平台配置能力交付后填写密钥"
+    },
+    {
+      "name": "HISTORY_LIMIT",
+      "label": "示例历史数量",
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "description": "整数类型示例；0 是有效值，实际业务范围由应用负责校验。",
+      "howToGet": ["这是用户自行选择的数量，不需要申请账号；本示例默认 0。"],
+      "default": 0
+    },
+    {
+      "name": "VOICE_ENABLED",
+      "label": "示例语音开关",
+      "type": "boolean",
+      "required": false,
+      "secret": false,
+      "description": "开关类型示例；false 仍应作为显式值注入，不代表缺少配置。",
+      "howToGet": ["这是用户自行选择的开关；本示例默认关闭，不发起语音请求。"],
+      "default": false
+    },
+    {
+      "name": "OUTPUT_STYLE",
+      "label": "示例输出风格",
+      "type": "select",
+      "required": false,
+      "secret": false,
+      "description": "下拉选择示例，只允许选项中声明的值；省略时使用默认值。",
+      "howToGet": ["自行选择简短或详细，不需要从外部服务获取。"],
+      "default": "brief",
+      "options": [{"value": "brief", "label": "简短"}, {"value": "detailed", "label": "详细"}]
+    }
+  ]
+}

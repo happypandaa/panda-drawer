@@ -1,14 +1,56 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { cp, lstat, mkdir, open, readdir, realpath, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { root, run, rustEnvironment } from './process.mjs';
 import { packageTemplate } from './package-template.mjs';
+import { packageNodeRuntime } from './package-node-runtime.mjs';
+
+// tauri-build copies resources over target/<profile>/resources. Earlier trial
+// copies used 0444/0555 modes, so replacing them fails before bundling. Repair
+// only the known generated Node tree; never recursively chmod user projects.
+export async function repairGeneratedNodeRuntimePermissions(directory) {
+  let rootInfo;
+  try { rootInfo = await lstat(directory); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (!path.isAbsolute(directory) || !rootInfo.isDirectory() || rootInfo.isSymbolicLink() || await realpath(directory) !== directory) {
+    throw new Error('Generated Node runtime copy is not an ordinary canonical directory.');
+  }
+  const expected = new Map([
+    ['bin', { directory: true, mode: 0o755 }],
+    ['bin/node', { directory: false, mode: 0o755 }],
+    ['LICENSE', { directory: false, mode: 0o644 }],
+    ['runtime.json', { directory: false, mode: 0o644 }],
+  ]);
+  const entries = [{ file: directory, info: rootInfo, mode: 0o755 }];
+  for (const name of await readdir(directory)) {
+    if (!['bin', 'LICENSE', 'runtime.json'].includes(name)) throw new Error('Generated Node runtime copy contains unexpected entries.');
+  }
+  for (const [relative, spec] of expected) {
+    const file = path.join(directory, relative);
+    let info;
+    try { info = await lstat(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (info.isSymbolicLink() || (spec.directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) {
+      throw new Error('Generated Node runtime copy contains a link or special file.');
+    }
+    if (spec.directory && (await readdir(file)).some((name) => name !== 'node')) throw new Error('Generated Node bin copy contains unexpected entries.');
+    entries.push({ file, info, mode: spec.mode });
+  }
+  for (const entry of entries) {
+    const handle = await open(entry.file, constants.O_RDONLY | constants.O_NOFOLLOW | (entry.info.isDirectory() ? constants.O_DIRECTORY : 0));
+    try {
+      const current = await handle.stat();
+      if (current.dev !== entry.info.dev || current.ino !== entry.info.ino) throw new Error('Generated Node runtime copy changed identity.');
+      await handle.chmod(entry.mode);
+    } finally { await handle.close(); }
+  }
+}
 
 export async function prepareDesktop({ release = false } = {}) {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('M0 packaging currently supports macOS on Apple Silicon only.');
   }
+  await repairGeneratedNodeRuntimePermissions(path.join(root, 'target', release ? 'release' : 'debug', 'resources', 'node-runtime'));
   await run(process.execPath, ['scripts/package-sdk.mjs']);
   const target = execFileSync('rustc', ['--print', 'host-tuple'], { env: rustEnvironment(), encoding: 'utf8' }).trim();
   if (target !== 'aarch64-apple-darwin') throw new Error(`Unsupported target: ${target}`);
@@ -23,6 +65,12 @@ export async function prepareDesktop({ release = false } = {}) {
   // This generated directory contains distribution copies only, never user data.
   await rm(resources, { recursive: true, force: true });
   await mkdir(resources, { recursive: true });
+  // A pinned private execution engine, separate from the developer's build Node.
+  // The preparer verifies the official archive, executable and complete license.
+  await packageNodeRuntime({
+    output: path.join(resources, 'node-runtime'),
+    cache: path.join(root, '.tools/node-runtime-cache'),
+  });
   const resourceFilter = (source) => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests'].includes(part));
   await cp(path.join(root, 'packages/sdk'), path.join(resources, 'sdk'), { recursive: true, filter: resourceFilter });
   await cp(path.join(root, 'templates/react'), path.join(resources, 'template'), { recursive: true, filter: resourceFilter });

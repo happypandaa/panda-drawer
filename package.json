@@ -23,6 +23,7 @@
     "test:host": "node scripts/rust.mjs test --locked -p platform-host -p platform-desktop",
     "test:windows:ui": "node --test apps/desktop/tests/windows-host-ui.test.mjs",
     "check:host": "node scripts/rust.mjs check --locked -p platform-host -p platform-desktop --all-targets",
+    "test:node-runtime": "node --test scripts/package-node-runtime-test.mjs",
     "test:platform-support": "node scripts/platform-support-test.mjs",
     "test:preflight": "node scripts/rust.mjs test --locked -p platform-preflight --lib",
     "cli": "node scripts/rust.mjs run -p platform-cli --",
@@ -45,7 +46,8 @@
     "test:m5:compatibility": "node scripts/m5-compatibility-test.mjs verify",
     "test:browser-tools": "node --test scripts/m5-browser-tools-test.mjs",
     "test:media-panel": "node --test scripts/m5-media-panel-test.mjs",
-    "test:ui": "node --test scripts/ui-interactions-test.mjs"
+    "test:ui": "node --test scripts/ui-interactions-test.mjs apps/desktop/test/*.test.mjs",
+    "test:desktop-package": "node --test scripts/desktop-package-output-test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3",

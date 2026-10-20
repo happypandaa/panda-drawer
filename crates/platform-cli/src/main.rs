@@ -1086,7 +1086,7 @@ fn discover_paths() -> Result<RuntimePaths> {
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
         });
         if missing {
-            CliError::new("SERVICE_NOT_RUNNING", "The development platform is not initialized or running. Open Local Projects Dev first.")
+            CliError::new("SERVICE_NOT_RUNNING", "The development platform is not initialized or running. Open 熊猫应用小抽屉（开发版） first.")
         } else {
             CliError::new("ENVIRONMENT_INVALID", format!("The isolated development environment could not be verified: {error}"))
         }
@@ -1100,7 +1100,7 @@ fn discover_service(paths: &RuntimePaths) -> Result<Discovery> {
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
         });
         if missing {
-            CliError::new("SERVICE_NOT_RUNNING", "The development service has no active discovery record. Open Local Projects Dev first.")
+            CliError::new("SERVICE_NOT_RUNNING", "The development service has no active discovery record. Open 熊猫应用小抽屉（开发版） first.")
         } else {
             CliError::new("DISCOVERY_INVALID", format!("Development service discovery could not be verified: {error}"))
         }
@@ -1214,7 +1214,7 @@ fn query_runtime(paths: &RuntimePaths, discovery: &Discovery) -> Result<Value> {
 
     // Read the token only after the public response matches this exact instance.
     let token = paths.read_control_token().map_err(|_| {
-        CliError::new("CREDENTIAL_INVALID", "The development service credential is unavailable or invalid. Reopen Local Projects Dev.")
+        CliError::new("CREDENTIAL_INVALID", "The development service credential is unavailable or invalid. Reopen 熊猫应用小抽屉（开发版）.")
     })?;
     let runtime = fetch_json(
         client
@@ -1228,7 +1228,7 @@ fn query_runtime(paths: &RuntimePaths, discovery: &Discovery) -> Result<Value> {
 
 fn fetch_json(request: RequestBuilder) -> Result<Value> {
     let response = request.send().map_err(|_| {
-        CliError::new("SERVICE_NOT_RUNNING", "The development service could not be reached within the timeout. Open Local Projects Dev and retry.")
+        CliError::new("SERVICE_NOT_RUNNING", "The development service could not be reached within the timeout. Open 熊猫应用小抽屉（开发版） and retry.")
     })?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err(CliError::new("SERVICE_UNAUTHORIZED", "The development service rejected this instance's credential. Retry after confirming the application is running."));

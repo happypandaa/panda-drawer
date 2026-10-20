@@ -266,7 +266,7 @@ fn setup_manager(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
         "manager",
         tauri::WebviewUrl::App("windows.html".into()),
     )
-    .title("本地项目 · Windows 项目内部版")
+    .title("熊猫应用小抽屉 · Windows 项目内部版")
     .inner_size(1160.0, 800.0)
     .min_inner_size(880.0, 640.0)
     .data_directory(webview_cache.path().to_path_buf())

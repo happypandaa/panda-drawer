@@ -122,6 +122,7 @@ async function setup(value = status()) {
 }
 
 async function refresh() {
+  await openActions();
   const button = document.querySelector('[aria-label="刷新项目和运行状态"]');
   assert.ok(button);
   await act(async () => { button.click(); });
@@ -131,13 +132,25 @@ async function click(label, scope = document) { const button = findButton(label,
 async function clickElement(element) { assert.ok(element); await act(async () => { element.click(); }); }
 const dialog = () => document.querySelector('[role="dialog"]');
 const closeButton = () => dialog()?.querySelector('button[aria-label^="关闭"]');
-const createButton = () => findButton('新建项目', document.querySelector('.heading-actions'));
+const createButton = () => findButton('新建项目', document.querySelector('.radio-toolbar'));
 const cards = () => [...document.querySelectorAll('.project-card')];
 const card = (name = '合成样本') => cards().find(element => element.getAttribute('aria-label') === name);
-const enterButton = (name = '合成样本') => card(name)?.querySelector('.project-actions .primary-button');
-const navButton = (label) => [...document.querySelectorAll('.side-nav button')].find(element => element.querySelector('span')?.textContent === label);
+const enterButton = (name = '合成样本') => card(name)?.querySelector('.launcher-open');
+const navButton = label => findButton(label, document.querySelector('[aria-label="工作台导航"]'));
+async function openActions() {
+  const disclosure = document.querySelector('.radio-add-menu');
+  if (!disclosure.open) await clickElement(disclosure.querySelector('summary'));
+}
+async function openSettings() {
+  await clickElement(document.querySelector('[aria-label="设置"]'));
+  await clickElement(dialog().querySelector('.radio-runtime-details > summary'));
+}
+async function closeSettings() { await click('完成', dialog()); }
 async function beginCreate() { await clickElement(createButton()); }
-async function details(name = '合成样本') { await clickElement(card(name)?.querySelector('button[aria-label^="查看项目"]')); }
+async function details(name = '合成样本') {
+  await clickElement(card(name)?.querySelector('.launcher-more'));
+  await clickElement(document.querySelector('[role="menu"] button[aria-label^="查看项目"]'));
+}
 async function key(value) {
   await act(async () => { document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true })); });
 }
@@ -165,19 +178,20 @@ after(async () => {
   dom.window.close();
 });
 
-test('Windows loads the actual shared manager shell, project cards and create modal', async () => {
+test('Windows loads the actual shared Radio shell, project cards and create modal', async () => {
   await setup(status('ready', [project()]));
   const reachable = new Set();
   function visit(file) { if (reachable.has(file)) return; reachable.add(file); for (const dependency of dependencies.get(file) ?? []) visit(dependency); }
   visit(path.join(sourceRoot, 'WindowsHost.tsx'));
   for (const name of ['ManagerView.tsx', 'ProjectCard.tsx', 'Modal.tsx']) assert.ok(reachable.has(path.join(sourceRoot, name)), `WindowsHost must load actual ${name}`);
-  for (const selector of ['.app-shell > .sidebar', '.content-shell > .topbar', '.page-heading .heading-actions', '.project-toolbar .project-search', '.project-filter select', '.project-grid .project-card', '.workspace-location', '.page-footer']) assert.ok(document.querySelector(selector), selector);
-  assert.equal(document.querySelector('.page-heading h1').textContent, '我的项目');
-  assert.deepEqual([...document.querySelectorAll('.side-nav button > span')].map(element => element.textContent), ['我的项目', '运行环境', '空间与工作区', '关于平台']);
-  assert.ok(card().querySelector('.project-card-top'));
-  assert.ok(card().querySelector('.project-card-identity h2'));
-  assert.ok(card().querySelector('.project-card-meta .project-delete'));
-  assert.ok(card().querySelector('.project-actions [aria-label="进入项目「合成样本」"]'));
+  for (const selector of ['.radio-shell > .radio-header', '.radio-toolbar .project-search', '.project-filter select', '.radio-main .project-grid .project-card', '.radio-footer', '.radio-theme-switch']) assert.ok(document.querySelector(selector), selector);
+  assert.equal(document.querySelector('.radio-main > h1').textContent, '我的项目');
+  assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(element => element.textContent), ['我的项目', '空间与工作区']);
+  assert.equal(document.querySelector('.radio-brand-caption').textContent, '熊猫应用小抽屉');
+  assert.ok(card().querySelector('.launcher-icon'));
+  assert.equal(card().querySelector('.launcher-name').textContent, '合成样本');
+  assert.ok(card().querySelector('.launcher-more'));
+  assert.ok(card().querySelector('.launcher-open[aria-label="进入项目「合成样本」"]'));
   await beginCreate();
   assert.equal(dialog().getAttribute('aria-modal'), 'true');
   assert.equal(dialog().querySelector('h2').textContent, '新建项目');
@@ -228,7 +242,7 @@ test('mount reads actual project status and blocks creation for retained unresol
   assert.equal(createButton().disabled, true);
   assert.equal(cards().length, 0);
   assert.doesNotMatch(document.querySelector('.empty-projects').textContent, /从第一个项目开始/);
-  await clickElement(navButton('运行环境'));
+  await openSettings();
   assert.match(document.body.textContent, /现有目录受保护/);
   assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
   await click('读取目录诊断');
@@ -243,7 +257,7 @@ test('ready project status never starts an independent root diagnostic', async (
   assert.match(card().querySelector('.project-state').textContent, /可只读打开/);
   assert.equal(findButton('读取目录诊断'), undefined);
   assert.equal(enterButton().disabled, false);
-  await clickElement(navButton('运行环境'));
+  await openSettings();
   assert.equal(findButton('读取目录诊断'), undefined);
   assert.deepEqual(commands, ['project_status']);
 });
@@ -256,7 +270,7 @@ test('refresh replaces successful status without creating projects or opening wi
   await refresh();
   assert.deepEqual(commands, ['project_status', 'project_status']);
   assert.ok(card());
-  await clickElement(navButton('运行环境'));
+  await openSettings();
   assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, next.dataRoot);
   assert.match(document.body.textContent, /工作区已就绪/);
 });
@@ -269,9 +283,9 @@ test('a failed refresh preserves old status but blocks creation and opening unti
   assert.ok(card());
   assert.equal(createButton().disabled, true);
   assert.equal(enterButton().disabled, true);
-  await clickElement(navButton('运行环境'));
+  await openSettings();
   assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
-  await clickElement(navButton('我的项目'));
+  await closeSettings();
   responder = async () => status('ready', [project()]);
   await refresh();
   assert.equal(enterButton().disabled, false);
@@ -419,6 +433,7 @@ test('a pending project opening blocks duplicate and competing actions until its
 
 test('opening a project blocks a same-tick refresh before React renders the disabled controls', async () => {
   await setup(status('ready', [project()]));
+  await openActions();
   const enter = enterButton();
   const refreshButton = document.querySelector('[aria-label="刷新项目和运行状态"]');
   assert.equal(enter.disabled, false);
@@ -447,12 +462,12 @@ test('opening a project blocks a same-tick refresh before React renders the disa
 
 test('a blocked-root diagnostic rejects duplicate diagnostics and refreshes in the same tick', async () => {
   await setup(status('blocked'));
-  await clickElement(navButton('运行环境'));
+  await openSettings();
   const diagnosticButton = findButton('读取目录诊断');
-  const refreshButton = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  const refreshButton = document.querySelector('[aria-label="刷新设置中的项目状态"]');
   assert.equal(diagnosticButton.disabled, false);
   assert.equal(refreshButton.disabled, false);
-  assert.equal(dialog(), null);
+  assert.ok(dialog());
   assert.equal(diagnosticButton.closest('[inert]'), null);
   assert.equal(refreshButton.closest('[inert]'), null);
   let resolveDiagnostic;
@@ -479,19 +494,28 @@ test('a blocked-root diagnostic rejects duplicate diagnostics and refreshes in t
 
 test('deferred manager entries explain their disabled state and never mount business panels', async () => {
   await setup(status('ready', [project()]));
-  const disabled = [findButton('空间与工作区'), findButton('关于平台'), findButton('导入项目'), card().querySelector('.project-delete')];
+  await openActions();
+  const disabled = [navButton('空间与工作区'), findButton('添加本地应用'), findButton('导入项目')];
   for (const element of disabled) {
     assert.ok(element);
     assert.equal(element.disabled, true);
     assert.ok(element.title.trim(), 'A deferred visible entry needs its reason');
     await clickElement(element);
   }
-  assert.equal(document.querySelector('.page-heading h1').textContent, '我的项目');
-  await click('运行环境');
-  assert.equal(document.querySelector('.page-heading h1').textContent, '运行环境');
+  assert.equal(document.querySelector('.radio-main > h1').textContent, '我的项目');
+  await clickElement(card().querySelector('.launcher-more'));
+  const deletion = document.querySelector('[role="menuitem"][aria-label^="删除项目"]');
+  assert.equal(deletion.disabled, true);
+  assert.ok(deletion.title.trim());
+  await clickElement(deletion);
+  assert.deepEqual(commands, ['project_status']);
+  await key('Escape');
+  await openSettings();
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
   assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
   assert.equal(findButton('读取目录诊断'), undefined, 'A ready root must not be independently inspected');
-  await clickElement(navButton('我的项目'));
+  for (const selector of ['.build-environment', '.about-platform', '.node-app-detail', '.node-apps-panel']) assert.equal(document.querySelector(selector), null, selector);
+  await closeSettings();
   await details();
   assert.equal(dialog().querySelector('h2').textContent, project().name);
   assert.match(dialog().textContent, /只读/);
@@ -509,6 +533,23 @@ test('deferred manager entries explain their disabled state and never mount busi
   }
   await key('Escape');
   assert.equal(dialog(), null);
+  assert.deepEqual(commands, ['project_status']);
+});
+
+test('Windows shares persistent appearance and themes its body-level settings portal without native commands', async () => {
+  const key = 'panda-drawer:appearance:v1';
+  window.localStorage.setItem(key, 'dark');
+  await setup(status('ready', [project()]));
+  assert.equal(document.documentElement.dataset.theme, 'dark');
+  assert.equal(document.querySelector('.radio-shell').dataset.theme, 'dark');
+  await openSettings();
+  assert.equal(document.querySelector('.modal-layer').parentElement, document.body);
+  assert.equal(dialog().closest('.radio-shell'), null);
+  assert.equal(document.documentElement.dataset.theme, 'dark');
+  await closeSettings();
+  await clickElement(document.querySelector('[aria-label="切换亮色主题"]'));
+  assert.equal(window.localStorage.getItem(key), 'light');
+  assert.equal(document.documentElement.dataset.theme, 'light');
   assert.deepEqual(commands, ['project_status']);
 });
 

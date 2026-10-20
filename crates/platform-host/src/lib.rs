@@ -41,7 +41,7 @@ pub(crate) static WINDOWS_FILESYSTEM_TESTS: std::sync::Mutex<()> = std::sync::Mu
 pub mod platform_support;
 
 pub const APP_IDENTIFIER: &str = "dev.localprojects.platform.m0";
-pub const DISPLAY_NAME: &str = "Local Projects Dev";
+pub const DISPLAY_NAME: &str = "熊猫应用小抽屉 · 开发版";
 pub const ENVIRONMENT: &str = "development";
 pub const API_VERSION: u32 = 1;
 

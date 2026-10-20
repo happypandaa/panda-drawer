@@ -13,7 +13,7 @@ test('Windows prepares its embedded project resources before dev and build', () 
 });
 
 test('Windows cannot accidentally enter the unimplemented installer path', () => {
-  for (const args of [['build', '--bundles', 'app'], ['build', '--bundles=nsis']]) {
+  for (const args of [['build', '--bundles', 'app'], ['build', '--bundles=nsis'], ['build', '-b', 'nsis'], ['build', '-bnsis']]) {
     assert.throws(() => desktopPlan(args, 'win32', 'x64'), /installers are not enabled/);
   }
 });

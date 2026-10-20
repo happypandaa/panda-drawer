@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Local Projects Dev",
+  "productName": "熊猫应用小抽屉",
   "version": "0.0.0",
   "identifier": "dev.localprojects.platform.m0",
   "build": {
@@ -14,11 +14,11 @@
       {
         "label": "manager",
         "create": false,
-        "title": "本地项目 · 开发版",
-        "width": 1160,
-        "height": 800,
-        "minWidth": 880,
-        "minHeight": 640,
+        "title": "熊猫应用小抽屉 · 开发版",
+        "width": 960,
+        "height": 640,
+        "minWidth": 640,
+        "minHeight": 480,
         "backgroundColor": "#F7F7F5"
       }
     ],

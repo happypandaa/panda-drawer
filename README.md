@@ -1,6 +1,12 @@
-# 本地项目平台
+# 熊猫应用小抽屉
 
-Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、回收站和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。临时名称为 **Local Projects Dev**；实际验收范围见各阶段记录，仍是隔离的内部开发版。
+Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、回收站和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。产品名已确认为 **熊猫应用小抽屉**，简称 **熊猫抽屉**；[名称与图标](docs/branding.md)已接入内部代码，固定开发身份和数据根不变。实际验收范围见各阶段记录，仍是隔离的内部开发版。
+
+文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前 Mac arm64 独立 Node 源码接入、配置与本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
+
+应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；内置 Node 不包含 npm 或用户端依赖安装／源码构建，现有 project-v1 源码构建仍使用系统 Node/npm。执行摘要随项目 skill 的同一份环境／窗口约束分发。
+
+第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护、Windows 与私有 npm 构建仍按各自实际进度推进，不把这次范围确认当作完整交付。
 
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
@@ -8,13 +14,21 @@ PWA 已确认不强制、作为可选增强。[外部应用包实施规划](docs
 
 [应用文档分工](docs/application-documentation.md)区分用户的使用/配置说明与 AI 的技术/架构/开发说明，复用 `documentation.readme` 和 `documentation.development`，并提供两份独立 Markdown 示例；展示仍待实现，正文预算和强制携带策略待定。
 
-已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步。W1 只读宿主已有本机 Win11 开窗记录；当前代码进入 W2.1，已实现固定默认根下的新建可丢弃样本、初始应用的桌面/浏览器打开和真实空库结构只读查询。只接受本阶段已完成登记的样本，旧历史和未知现场保留并阻断接管；SQL、附件、构建、备份、恢复、导入及迁移仍关闭。本机 Win11 release 已实际创建并打开欢迎应用及自写的费用分摊计算器，正常退出重启后两者仍可用，原项目文件摘要一致。计算器由开发机预编译，只在内存中计算，不代表成品已开放源码导入或用户构建。Chrome 页面验收因工具 URL 识别限制停止。W1 与 W2.1 均不标为整体通过；Win10、Mac 回归及安装器仍待验收。实际结果见 [W1 记录](docs/windows-w1-verification.md)、[W2 记录](docs/windows-w2-verification.md)和[开发说明](docs/development.md)。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，以下全量业务流程仍以 Mac 为准。
+用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。现已按用户授权开始[隔离运行试验](docs/node-runtime-trial-verification.md)，增加私有 Node 准备、实验清单和受管进程；后续已接独立本机源码槽、配置表单、本机私有秘密文件和启动注入，原生窗口流程按最新约束验收；完整安装与新类型数据契约仍待定稿；现有静态 v1 与系统 Node/npm 构建流程保持。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
 
-Windows 开发机执行 `npm run build` 会先用 Node/npm 准备匹配的初始源码、固定 SDK 和预编译网页，再将资源内嵌到 `target/release/local-projects-desktop-dev.exe`。成品 exe 不调用 Node，不需要 Vite 或资源旁文件；无 Node 干净机器和物理断网尚未实测，安装包尚未确定。
+2026-10-20 用户进一步确认[可视化配置应用环境变量](docs/node-app-configuration.md)：作者在清单中声明变量、中文用途和获取步骤，用户在平台界面填写 AI 地址、API Key 等配置，无需编辑 `.env`。声明与实际值分开，秘密凭据保存、目标后端注入、生效及备份复制规则按草案纳入原 20 步；首个隔离试验只校验声明并注入普通默认值；后续本机源码入口的表单、本机私有秘密文件和注入子集见当前接入说明，不读取宿主密钥，不代表公开 Node 安装完成。
 
-Windows 与 macOS 管理页共用布局、卡片、搜索筛选、创建弹窗和 `styles.css`，平台控制器按实际能力保留门禁；未开放功能不会因共用界面而调用完整管理器。自动化、Windows 实机结果和重启窗口/Mac 原生待验范围见[共用管理界面记录](docs/shared-manager-ui-verification.md)。
+后续新增[配置声明实验规范、Schema 和只读检查器](docs/node-configuration-v1/README.md)，radio 配置已收敛为 AI 地址/密钥/模型、语音密钥/音色/模型六项，说明用途与获取步骤；可检查缺少哪些必填配置，不启动应用或读取真实密钥。后续配置表单与本机保存已接入独立 Node 源码入口；完整可分发安装仍未交付。
 
-Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示完整 Windows 兼容已通过。Node/npm 用于开发机准备平台资源及后续用户源码构建，Rust/MSVC/SDK 仅用于开发平台本身。
+同日确认按运行形态分为“网页项目”和“Node 服务项目”，清单明确声明，以固定类型图标和中文文字区分；类型与运行状态、用户自定义项目图标分别展示。当前“我的项目”卡片与详情已接类型展示，安装预览尚未实现；规则见[两类运行形态](docs/node-app-runtime.md#11-两种项目运行类型)及[项目概览](docs/project-metadata-and-overview.md)。
+
+已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步。W1 只读宿主已有本机 Win11 开窗记录；W2.1 已实现固定默认根下的新建可丢弃样本、初始应用的桌面/浏览器打开和真实空库结构只读查询。只接受本阶段已完成登记的样本，旧历史和未知现场保留并阻断接管；公开 SQL、附件、用户构建、备份、恢复、导入及迁移仍关闭。W2.2a、b1 文件原语和 b2 私有 WAL 连接已有本机检查，生产初始化、串行执行器及 API 尚未接入。Win11 release 实际创建、欢迎应用与内存计算器桌面打开及旧包正常退出重启已有结果，共用 UI 当前包重启后的窗口及浏览器正文待验。计算器是开发机预编译的内存应用，不代表持久 SQL 或用户构建已开放。W1 与 W2.1 均未整体通过；Win10、Mac 原生回归及安装器仍待验收。实际结果见 [W1 记录](docs/windows-w1-verification.md)、[W2 记录](docs/windows-w2-verification.md)与[共用管理界面记录](docs/shared-manager-ui-verification.md)。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，以下全量业务流程仍以 Mac 为准。
+
+Windows 开发机执行 `npm run build` 会先用系统 Node/npm 准备匹配的初始源码、固定 SDK 和预编译网页，再将资源内嵌到 `target/release/local-projects-desktop-dev.exe`。当前 Windows 成品 exe 运行静态项目不调用 Node，不需要 Vite 或资源旁文件。新增的应用后端私有 Node 当前只覆盖 Mac arm64，Windows 的固定 `win-x64` 资源、私有配置文件、进程树回收和原生窗口仍待适配；审查与建议顺序见[Windows Node 兼容说明](docs/windows-node-compatibility.md)。无系统 Node 干净机器、物理断网及安装包仍待验。
+
+Windows 与 macOS 管理页共用布局、卡片、搜索筛选、创建弹窗和 `styles.css`，平台控制器按实际能力保留门禁；未开放功能不会因共用界面而调用完整管理器。主线新增的 Node 卡片、配置与 Radio 记录不代表 Windows 已开放 Node 入口。
+
+Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示完整 Windows 兼容已通过。系统 Node/npm 用于开发机准备平台资源及后续用户源码构建，Rust/MSVC/SDK 仅用于开发平台本身；应用后端必须使用另行校验的包内私有 Node。
 
 macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。当前数据已完成公开修复，新包启动、样本保存/备份/删除恢复及应用重启结果见[实际验收记录](docs/workspace-identity-repair-verification.md)。
 
@@ -70,7 +84,7 @@ M5 的元数据修改带 `expectedRevision` 冲突检查，不改项目 ID、不
 
 SQL、上传、构建、媒体与日志预算仍为内部测试参数；旧代产物及任务暂不自动删除，正式保留规则未定。合法的旧项目可能仍为“等待构建”，已有项目的源码、SDK、锁文件和说明不会随平台升级重写。初始应用与 skill 的实际补充验收见[验证记录](docs/starter-skill-verification.md)。
 
-从管理窗口可创建项目、复制交接说明给外部 AI、构建、查看日志和 Node 环境；已有网页产物的项目可在独立桌面窗口或浏览器打开。`⌘⇧H` 返回项目管理，同项目重复打开只聚焦。
+Mac 当前从“我的项目”统一查看网页与 Node 项目，以类型图标区分，均通过“进入项目”打开独立原生窗口；详情与应用配置放在带标签页的弹窗中，缺必填配置时先引导填写，保存不自动启动。从管理窗口还可创建项目、复制交接说明给外部 AI、构建、查看日志和 Node 环境。`⌘⇧H` 返回项目管理，同项目重复打开只聚焦。关闭应用窗口收尾本应用的受管 Node 及普通后代；关闭平台主窗口会收尾全部受管应用后退出，不再只隐藏到托盘。
 
 管理首页采用简洁项目卡片，详情集中在弹窗中的概览、空间与文件、备份维护和更多操作。删除入口先展示项目及回收范围确认；空间与工作区设有空间总览、工作区位置、回收站和清理历史四个页签。草稿关闭确认、键盘焦点、迟到响应和任务状态经过 React DOM 模拟回归，`npm run test:ui` 不打开浏览器或接触真实项目数据；它不替代实际 WebKit 视觉和原生交互验收。
 

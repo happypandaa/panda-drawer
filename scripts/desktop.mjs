@@ -1,8 +1,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { root, run, rustEnvironment } from './process.mjs';
 import { prepareDesktop } from './prepare-desktop.mjs';
 import { prepareWindowsResources } from './prepare-windows-resources.mjs';
+import { desktopPackagePlan, withDesktopPackageOutput } from './desktop-package-output.mjs';
 
 export function desktopPlan(args, platform = process.platform, architecture = process.arch) {
   const preparing = ['dev', 'build'].includes(args[0]);
@@ -27,7 +29,7 @@ export function desktopPlan(args, platform = process.platform, architecture = pr
   if (preparing && !((platform === 'darwin' && architecture === 'arm64') || (windows && architecture === 'x64'))) {
     throw new Error('Desktop development supports macOS arm64 and Windows x64 only.');
   }
-  if (windows && args[0] === 'build' && args.some(arg => arg === '--bundles' || arg.startsWith('--bundles='))) {
+  if (windows && args[0] === 'build' && args.some(arg => arg === '-b' || arg.startsWith('-b') || arg === '--bundles' || arg.startsWith('--bundles='))) {
     throw new Error('Windows internal builds produce the desktop executable only. Use npm run build; installers are not enabled yet.');
   }
   if (windows && args[0] === 'build' && !args.includes('--no-bundle')) {
@@ -44,13 +46,21 @@ export function desktopPlan(args, platform = process.platform, architecture = pr
 
 async function main() {
   const plan = desktopPlan(process.argv.slice(2));
-  if (plan.prepareResources) await prepareDesktop({ release: plan.args[0] === 'build' && !plan.args.includes('--debug') });
-  if (plan.prepareWindowsResources) await prepareWindowsResources({ templateDirectory: plan.templateDirectory });
-  // Invoke the package's JS entry with Node: .bin/tauri is not a Windows executable.
-  await run(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), ...plan.args], {
-    cwd: path.join(root, 'apps/desktop'),
-    env: rustEnvironment(),
-  });
+  const configuration = JSON.parse(await readFile(path.join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  const packagePlan = desktopPackagePlan({ root, args: plan.args, configuration });
+  const execute = async () => {
+    if (plan.prepareResources) await prepareDesktop({ release: plan.args[0] === 'build' && !plan.args.includes('--debug') });
+    if (plan.prepareWindowsResources) await prepareWindowsResources({ templateDirectory: plan.templateDirectory });
+    // Invoke the package's JS entry with Node: .bin/tauri is not a Windows executable.
+    await run(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), ...plan.args], {
+      cwd: path.join(root, 'apps/desktop'),
+      env: rustEnvironment(),
+    });
+  };
+  if (packagePlan) {
+    const result = await withDesktopPackageOutput(packagePlan, execute);
+    console.log(`已核验最新应用包，清理 ${result.removedPrevious} 个旧生成包。`);
+  } else await execute();
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

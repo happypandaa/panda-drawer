@@ -138,6 +138,24 @@ test('Modal traps Tab/Shift+Tab and ignores disabled or hidden controls', async 
   assert.equal(document.activeElement, closeButton());
 });
 
+test('Modal focus loop includes disclosure summaries while excluding controls behind closed disclosures', async () => {
+  await setup();
+  await render(h(Modal, { title: 'Disclosures', onClose() {} },
+    h('details', { id: 'closed' }, h('summary', { id: 'summary' }, 'Runtime'), h('input', { id: 'closed-input' })),
+    h('details', { open: true }, h('summary', { id: 'about-summary' }, 'About'), h('button', { id: 'visible-action' }, 'Visible action')),
+    h('details', null, h('summary', { id: 'last-summary' }, 'Guide'), h('button', { id: 'hidden-last' }, 'Hidden last action'))));
+  document.getElementById('summary').focus();
+  assert.equal((await key('Tab')).defaultPrevented, false, 'A summary is part of the focus loop');
+  document.getElementById('last-summary').focus();
+  assert.equal((await key('Tab')).defaultPrevented, true);
+  assert.equal(document.activeElement, closeButton());
+  await key('Tab', true);
+  assert.equal(document.activeElement.id, 'last-summary', 'Shift+Tab skips controls in closed disclosures');
+  document.getElementById('closed').open = true;
+  document.getElementById('closed-input').focus();
+  assert.equal((await key('Tab')).defaultPrevented, false, 'An expanded disclosure joins the same loop');
+});
+
 test('Modal Escape, backdrop, and close button share the draft guard; clicks inside do not close', async () => {
   await setup();
   let approved = false; let closes = 0; let guards = 0;
@@ -686,8 +704,9 @@ test('A failed migration submission still settles after leaving and returning to
 const appProject = (id, name) => ({ ...project, id, name, description: '', projectRoot: `/disposable/workspace/projects/${id}`, manifest: metadata.manifest });
 function mockApp(state, custom = async (command) => { throw new Error(`Unexpected native request: ${command}`); }) {
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'bootstrap_info') return { displayName: 'Local Projects Dev', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
+    if (command === 'bootstrap_info') return { displayName: '熊猫应用小抽屉', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
     if (command === 'project_list') return state.projects;
+    if (command === 'node_app_list') return state.nodeApps ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (command === 'maintenance_status') return normalStatus;
     if (command === 'project_metadata') return { ...metadata, name: state.projects.find((item) => item.id === args.projectId)?.name ?? 'Removed fixture' };
@@ -695,7 +714,31 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
     return custom(command, args);
   };
 }
-const openDetails = (name) => click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
+async function openProjectMenu(name) {
+  await click(document.querySelector(`[aria-label='项目「${name}」的更多操作']`));
+}
+async function openDetails(name) {
+  await openProjectMenu(name);
+  await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
+}
+
+test('Project details offer one native window action and send only the desktop open target', async () => {
+  await setup(); const opened = deferred(); const calls = [];
+  const state = { projects: [appProject('prj_native_window', 'Native window fixture')] };
+  mockApp(state, async (command, args) => {
+    assert.equal(command, 'project_open'); calls.push(args); return opened.promise;
+  });
+  await render(h(App)); await openDetails('Native window fixture');
+  const actions = dialog().querySelector('.project-dialog-actions');
+  assert.ok(actions);
+  assert.equal([...actions.querySelectorAll('button')].filter((button) => button.textContent === '进入项目').length, 1);
+  assert.equal([...actions.querySelectorAll('button')].some((button) => /浏览器/.test(button.textContent)), false);
+  const enter = actions.querySelector('button');
+  await click(enter); await click(enter);
+  assert.deepEqual(calls, [{ projectId: 'prj_native_window', target: 'desktop', reload: false }]);
+  await act(async () => opened.resolve({ projectId: 'prj_native_window', target: 'desktop', reused: false }));
+  assert.match(dialog().textContent, /已在独立窗口打开/);
+});
 
 test('App loads the shared manager presentation and keeps project search/filter local to the view', async () => {
   await setup();
@@ -711,14 +754,18 @@ test('App loads the shared manager presentation and keeps project search/filter 
   const reachable = new Set();
   function visit(file) { if (reachable.has(file)) return; reachable.add(file); for (const dependency of dependencies.get(file) ?? []) visit(dependency); }
   visit(path.join(sourceRoot, 'App.tsx'));
-  for (const name of ['ManagerView.tsx', 'ProjectCard.tsx', 'Modal.tsx']) assert.ok(reachable.has(path.join(sourceRoot, name)), `App must load actual ${name}`);
-  for (const selector of ['.app-shell > .sidebar', '.content-shell > .topbar', '.page-heading .heading-actions', '.project-toolbar .project-search', '.project-filter select', '.project-grid .project-card', '.workspace-location', '.page-footer']) assert.ok(document.querySelector(selector), selector);
+  for (const name of ['ManagerView.tsx', 'ProjectAddMenu.tsx', 'ProjectCard.tsx', 'Modal.tsx', 'appearance.ts']) assert.ok(reachable.has(path.join(sourceRoot, name)), `App must load actual ${name}`);
+  for (const selector of ['.radio-shell > .radio-header', '.radio-toolbar .project-search', '.project-filter select', '.radio-main .project-grid .project-card', '.radio-footer', '.radio-theme-switch']) assert.ok(document.querySelector(selector), selector);
   assert.equal(document.querySelectorAll('.project-card').length, 2);
-  assert.deepEqual([...document.querySelectorAll('.side-nav button')].map(button => button.textContent.replace(/\d+$/, '').trim()), ['我的项目', '运行环境', '空间与工作区', '关于平台']);
-  assert.ok([...document.querySelectorAll('.side-nav button')].every(button => !button.disabled), 'Mac retains its supported manager pages');
+  assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(button => button.textContent.trim()), ['我的项目', '空间与工作区']);
+  assert.ok([...document.querySelectorAll('.radio-primary-nav button')].every(button => !button.disabled), 'Mac retains its supported manager pages');
+  assert.equal(document.querySelector('[aria-label="设置"]').disabled, false);
+  await click(document.querySelector('.radio-add-menu > summary'));
   assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]').disabled, false);
   assert.equal(buttonNamed('导入项目').disabled, false);
+  await openProjectMenu('Fixture Alpha');
   assert.equal(document.querySelector('[aria-label="删除项目「Fixture Alpha」"]').disabled, false);
+  await key('Escape');
   const initialRequests = [...requests];
   await inputValue(document.querySelector('.project-search input'), '  课堂  ');
   assert.equal(document.querySelectorAll('.project-card').length, 1);
@@ -788,7 +835,7 @@ test('Creating a project opens its details and offers AI handoff without copying
     assert.equal(command, 'project_handoff'); assert.equal(args.projectId, created.id); handoffs++; return prepared.promise;
   });
   await render(h(App));
-  await click([...document.querySelectorAll('.heading-actions button')].find((button) => button.textContent.trim() === '新建项目'));
+  await click([...document.querySelectorAll('.radio-toolbar button')].find((button) => button.textContent.trim() === '新建项目'));
   await inputValue(document.getElementById('project-name'), created.name);
   await submit(document.querySelector('.create-project-form'));
   assert.ok(dialog()); assert.match(dialog().textContent, /New disposable fixture/);
@@ -874,7 +921,7 @@ test('App retains a failed delete dialog and closes it only after its accepted t
     assert.equal(command, 'task_get');
     return { ...task, status: 'succeeded', final: true, phase: 'completed' };
   });
-  await render(h(App)); await click(document.querySelector('[aria-label="删除项目「Fixture A」"]'));
+  await render(h(App)); await openProjectMenu('Fixture A'); await click(document.querySelector('[aria-label="删除项目「Fixture A」"]'));
   await click(document.querySelector('.project-delete-confirmation input'));
   await click(buttonNamed('确认删除项目'));
   assert.ok(dialog()); assert.match(dialog().textContent, /Delete fixture failed/);
@@ -891,7 +938,7 @@ test('App blocks closing a pending create, shows its failure inside the modal, a
   await setup(); const creation = deferred(); let submissions = 0;
   mockApp({ projects: [] }, async (command) => { assert.equal(command, 'project_create'); submissions++; return creation.promise; });
   await render(h(App));
-  await click([...document.querySelectorAll('.heading-actions button')].find((button) => button.textContent.trim() === '新建项目'));
+  await click([...document.querySelectorAll('.radio-toolbar button')].find((button) => button.textContent.trim() === '新建项目'));
   await inputValue(document.getElementById('project-name'), 'Unsubmitted project draft');
   await submit(document.querySelector('.create-project-form'));
   await key('Escape'); await click(layer());
@@ -900,7 +947,7 @@ test('App blocks closing a pending create, shows its failure inside the modal, a
   assert.match(dialog().querySelector('[role="alert"]').textContent, /Create fixture failed/);
   await click(closeButton());
   assert.equal(dialog(), null);
-  await click([...document.querySelectorAll('.heading-actions button')].find((button) => button.textContent.trim() === '新建项目'));
+  await click([...document.querySelectorAll('.radio-toolbar button')].find((button) => button.textContent.trim() === '新建项目'));
   assert.equal(document.getElementById('project-name').value, 'Unsubmitted project draft');
   assert.equal(submissions, 1);
 });
