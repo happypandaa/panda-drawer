@@ -200,6 +200,7 @@ impl NodeApps {
         };
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
+            "objectLayout":crate::object_layout::node_layout(&record.source_path, &self.root.join(&record.id), Some(manifest)),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
@@ -250,6 +251,7 @@ impl NodeApps {
             .unwrap_or_else(|error|json!({
                 "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                 "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
+                "objectLayout":null,
                 "restartRequired":false,"runningRevision":null,"lastError":error.message,
                 "configuration":{"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]
             }))

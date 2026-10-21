@@ -1,3 +1,5 @@
+import type { ObjectLayout } from './object-layout-types';
+
 export type NodeConfigurationValue = string | number | boolean;
 
 export interface NodeConfigurationField {
@@ -19,6 +21,7 @@ export interface NodeAppDetail {
   id: string;
   name: string;
   sourcePath: string;
+  objectLayout?: ObjectLayout | null;
   runtime: 'node-service';
   window?: { width: number; height: number; rememberSize?: boolean } | null;
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';

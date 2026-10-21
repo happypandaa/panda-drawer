@@ -23,7 +23,9 @@ export function ProjectAddMenu({ disabled, onAdd, onImport }: Props) {
   }, []);
   const run = (action: () => void) => { trigger.current?.focus({ preventScroll: true }); close(); action(); };
   return <details ref={disclosure} className="radio-add-menu" onBlur={(event) => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close();
+    // WebKit can blur the summary without focusing the clicked button. Keep it
+    // visible until that click runs; outside pointers already close the menu.
+    if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) close();
   }} onKeyDown={(event) => {
     if (event.key === 'Escape' && disclosure.current?.open) {
       event.preventDefault(); event.stopPropagation(); close(); trigger.current?.focus();

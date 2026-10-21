@@ -4,9 +4,9 @@
 
 [产品最终目标](product-goal.md)已由用户确认，涵盖制作自用、获取他人项目、分享与定制四条路径。用户进一步明确先解决技术能力，再完善设计、交互和使用提示；后续先明确范围与验收，再按技术依赖推导整体计划和批次。Git 纳入优先技术方案细化；其具体实现、界面和分批内容仍按候选方案处理。
 
-[技术实施计划](technical-implementation-plan.md)按最新取舍收敛为 10 项修改，覆盖工具、获取、Git、构建、安装、定制、分享和旧备份退役，逐项列出前置与验收；替代原 32 步，不改写 AP/NR/W 的历史编号或完成状态。范围取舍已确认，具体推荐实现仍需细化。
+[技术实施计划](technical-implementation-plan.md)按最新取舍收敛为 10 项修改，覆盖工具、获取、Git、构建、安装、定制、分享和旧备份退役，逐项列出前置与验收；替代原 32 步，不改写 AP/NR/W 的历史编号或完成状态。范围取舍已确认，具体推荐实现仍需细化；本轮已授权正式实施，第1项规则与只读诊断见[对象、目录与 Git 边界](project-object-boundaries.md)。
 
-用户最新确认仅保留项目 Git 版本管理，退出独立本地备份体系；[原备份精简评估](git-backup-simplification-review.md)的私有 Git 恢复仓库建议已取消，本文档仅保留历史盘点。数据库提交方向保留，`dist` 是否提交仍待评估，具体边界以最新技术计划为准；旧资料保全，尚未删除运行代码。
+用户最新确认仅保留项目 Git 版本管理，退出独立本地备份体系；[原备份精简评估](git-backup-simplification-review.md)的私有 Git 恢复仓库建议已取消，本文档仅保留历史盘点。数据库提交方向保留，`dist` 是否提交仍待评估，具体边界以最新技术计划为准；旧资料保全，旧备份流程尚未退役；第1项只读对象诊断已开始实施。
 
 本轮用户确认的 Radio Bob 风格、亮暗主题、图标启动台及设置窗口，实施与验证见[启动台界面记录](radio-launcher-verification.md)。Node 角标简化覆盖此前卡片常驻中文类型方案，读屏、详情及运行门禁仍保留。
 
@@ -26,7 +26,7 @@
 
 ## 顶层文档分类
 
-本次整理后 `docs/` 顶层实际为 **51 份 Markdown**，其中 **18 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
+本次整理后 `docs/` 顶层实际为 **52 份 Markdown**，其中 **18 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
 
 | 类别 | 数量 | 文档 |
 | --- | ---: | --- |
@@ -34,12 +34,12 @@
 | 总体入口与状态 | 5 | [已确认产品目标](product-goal.md)、[主约定](platform-development-contract.md)、[里程碑](development-milestones.md)、[技术决定与待定项](remaining-technical-decisions.md)、[开发说明](development.md) |
 | 已确认的配套契约及分工 | 12 | [本地服务与 AI](local-service-and-ai-tools.md)、[备份维护](backup-and-maintenance.md)、[生命周期与工作区](project-lifecycle-and-workspace.md)、[能力与秘密](project-capabilities-and-secrets.md)、[元数据与概览](project-metadata-and-overview.md)、[存储与素材](project-storage-and-assets.md)、[发行更新](release-and-updates.md)、[工作区身份](workspace-identity.md)、[历史清理](history-cleanup.md)、[用户／AI 文档分工](application-documentation.md)、[应用开发环境与交付](app-development-environment.md)、[名称与图标](branding.md) |
 | 格式、运行与配置规范 | 5 | [项目与应用包 v1](project-and-app-format-v1.md)、[Node 总体方案](node-app-runtime.md)、[Node 启动规范](node-app-startup-spec.md)、[Node 配置设计](node-app-configuration.md)、[原生应用窗口约束](app-window-runtime-contract.md)；其中 Node 公开格式与部分细则仍按各页草案状态处理 |
-| 实施计划与当前独立子集 | 5 | [整体技术计划](technical-implementation-plan.md)、[AP 外部包计划](app-package-implementation-plan.md)、[Windows 计划](windows-support-plan.md)、[NR Node 计划](node-app-implementation-plan.md)、[本机 Node 配置与运行](node-native-configuration.md) |
+| 实施计划与当前独立子集 | 6 | [整体技术计划](technical-implementation-plan.md)、[AP 外部包计划](app-package-implementation-plan.md)、[Windows 计划](windows-support-plan.md)、[NR Node 计划](node-app-implementation-plan.md)、[本机 Node 配置与运行](node-native-configuration.md)、[对象与目录边界](project-object-boundaries.md) |
 | 待确认讨论稿 | 3 | [资源限额](resource-limits-proposal.md)、[历史管理接口](history-management-interfaces-proposal.md)、[外部包安装分享设计](web-app-package-design.md) |
 | 已被取代的路线 | 2 | [早期内置 Node 与固定连接器](bundled-node-and-connectors.md)、[Git 备份精简评估](git-backup-simplification-review.md) |
 | 实际验证记录 | 18 | 见下一节；只作为证据与限制，不作为新增产品要求 |
 
-另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **56 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共63个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
+另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **57 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共64个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
 
 ## 验证记录目录
 

@@ -185,6 +185,14 @@ impl RuntimeHandle {
             });
         }
         let state = self.current();
+        // Layout diagnostics use the registered, validated handle, never an
+        // untrusted manifest retained by the error summary. They cannot change
+        // runtime readiness or initialize a repository.
+        value["objectLayout"] = state
+            .store
+            .project(id)
+            .map(|project| crate::object_layout::project_layout(&project.root, &project.manifest))
+            .unwrap_or(Value::Null);
         match state.metadata.info(id).await {
             Ok(metadata) => {
                 for key in [
@@ -3167,3 +3175,7 @@ mod m5_tests;
 #[cfg(test)]
 #[path = "service_history_cleanup_tests.rs"]
 mod history_cleanup_tests;
+
+#[cfg(test)]
+#[path = "service_object_layout_tests.rs"]
+mod object_layout_tests;

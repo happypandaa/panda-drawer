@@ -116,6 +116,25 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
     let detail = manager.register(fixture.source.clone()).await.unwrap();
     assert_eq!(detail["runtime"], "node-service");
     assert_eq!(detail["state"], "stopped");
+    let layout = &detail["objectLayout"];
+    assert_eq!(layout["kind"], "local-node-source");
+    assert_eq!(layout["source"]["state"], "unverified");
+    assert_eq!(layout["build"]["state"], "unavailable");
+    assert_eq!(layout["runtime"]["external"], true);
+    assert_eq!(
+        layout["runtime"]["webRoot"],
+        json!(fixture.source.join("public"))
+    );
+    assert_eq!(
+        layout["data"]["root"],
+        json!(fixture
+            .data
+            .join("node-apps")
+            .join(id(&detail))
+            .join("data"))
+    );
+    assert!(layout["data"]["database"].is_null());
+    assert_eq!(layout["versioning"]["database"]["state"], "not-supported");
     assert_eq!(detail["configuration"]["canStart"], false);
     assert_eq!(
         detail["configuration"]["missingRequired"],
@@ -127,6 +146,26 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
         before
     );
     fixture.assert_not_executed();
+}
+
+#[tokio::test]
+async fn unavailable_node_source_does_not_invent_layout_or_mutate_the_slot() {
+    let fixture = Fixture::new("disposable-unavailable-layout");
+    let manager = fixture.manager();
+    let detail = manager.register(fixture.source.clone()).await.unwrap();
+    let slot = fixture.data.join("node-apps").join(id(&detail));
+    let registration = fs::read(slot.join("registration.json")).unwrap();
+    fs::rename(&fixture.source, fixture.source.with_extension("preserved")).unwrap();
+    let missing = manager.configuration(id(&detail)).await.unwrap();
+    assert_eq!(missing["state"], "failed");
+    assert!(missing["objectLayout"].is_null());
+    assert!(!missing["lastError"].as_str().unwrap().is_empty());
+    assert_eq!(
+        fs::read(slot.join("registration.json")).unwrap(),
+        registration
+    );
+    assert!(!slot.join(".git").exists());
+    assert!(!slot.join("active.json").exists());
 }
 
 #[tokio::test]

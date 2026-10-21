@@ -19,6 +19,7 @@ pub mod node_app_manifest;
 mod node_app_proxy;
 pub mod node_apps;
 pub mod node_runtime_trial;
+pub mod object_layout;
 mod paths;
 mod platform_info;
 pub mod platform_support;

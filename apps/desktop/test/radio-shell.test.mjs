@@ -229,6 +229,38 @@ test('The toolbar separates filtering and refresh from the two add actions', asy
   assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);
 });
 
+for (const label of ['添加本地应用', '导入项目']) {
+  test(`A null-target blur before the ${label} click keeps the action available`, async () => {
+    const calls = await setup();
+    await act(async () => addTrigger().focus());
+    await click(addTrigger());
+    const action = byText(label, addDisclosure());
+    await act(async () => {
+      action.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
+      addTrigger().dispatchEvent(new window.FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    });
+    assert.equal(addDisclosure().open, true);
+    assert.equal(dialog(), null);
+    await click(action);
+    assert.equal(addDisclosure().open, false);
+    if (label === '添加本地应用') assert.equal(dialog().querySelector('h2').textContent, label);
+    else assert.equal(document.querySelector('[aria-labelledby="import-title"] h2').textContent, '导入完整项目');
+    assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
+  });
+}
+
+test('The add disclosure still closes when keyboard focus moves to an outside control', async () => {
+  await setup();
+  await act(async () => addTrigger().focus());
+  await click(addTrigger());
+  await act(async () => byText('导入项目', addDisclosure()).focus());
+  assert.equal(addDisclosure().open, true);
+  const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  await act(async () => refresh.focus());
+  assert.equal(addDisclosure().open, false);
+  assert.equal(document.activeElement, refresh);
+});
+
 test('Completed management history lives in settings without occupying the home notice area', async () => {
   const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
   await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_logs: () => ({ nextCursor: 1, text: 'Disposable completed task log', gaps: [], eof: true, truncated: false }) } });
