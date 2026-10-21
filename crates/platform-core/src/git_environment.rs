@@ -121,7 +121,8 @@ impl GitEnvironmentManager {
             },
             authentication: GitAuthenticationInfo {
                 state: "not-checked".into(),
-                reason: "尚未验证 SSH 身份或远端访问；工具版本检查不会读取私钥或连接仓库。".into(),
+                reason: "工具诊断不验证 SSH 身份或远端访问；版本检查不会读取私钥或连接仓库。"
+                    .into(),
             },
             issues: vec![],
         };

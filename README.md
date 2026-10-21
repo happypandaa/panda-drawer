@@ -12,7 +12,7 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；应用运行使用固定私有 Node，不在登记或启动时安装依赖。本轮 Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建，保留明确选择兼容本机环境的入口；构建选择不影响应用运行 Node。执行摘要随项目 skill 的同一份环境／窗口约束分发。
 
-第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 仅接入现有 project-v1 构建；后续增加私有 Git 2.56.0 的选择与诊断，系统 SSH 只检查版本，认证与仓库获取／版本 API、候选依赖隔离尚未实现。不把这些子步视为技术计划第 2 项或第 6 项整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
+第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 仅接入现有 project-v1 构建；另有私有 Git 2.56.0 的选择与诊断，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查。系统 SSH 只检查版本，认证与仓库获取／版本 API、候选依赖隔离尚未实现。不把这些子步视为技术计划第 2 项或第 6 项整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
 
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
@@ -59,6 +59,8 @@ npm run build
 `env doctor` 在线时读取桌面服务实际选定的 Node/npm、路径、版本和可用性；离线时不会把终端 PATH 当作桌面环境。已有显式 Node 路径优先且失效不自动回退；没有显式选择时，提供受管资源的环境默认使用配套私有 Node/npm，资源缺失或损坏明确报错。没有受管资源位置的开发服务仍可自动探测本机环境。“恢复默认工具”／`env node clear` 清除显式选择，默认受管位置本身不代表检测通过。最后两个命令分别生成内部测试 `.app`、`.app` 与 DMG。包使用开发标识和 ad-hoc 签名，未进行 Developer ID 签名、公证或对外发布。
 
 Git 使用独立的 `git-toolchain.json`：默认平台受管、显式本机路径优先，失效不自动回退；`env git set --path /绝对路径/git` 与 `env git clear` 保存或明确清除该选择，不改变现有 Node 设置。`env git doctor` 对应服务诊断，只显示 Git 与系统 SSH 工具状态，认证保持 `not-checked`，不读取／复制私钥或访问仓库，也不修改全局配置。成品应用运行不依赖 Git／SSH。
+
+需要检查某个公开仓库时，明确执行 `env git check --url https://github.com/owner/repository.git --json`，也支持对应的 Gitee HTTPS 仓库地址。检查使用服务选定的 Git，在 20 秒预算内匿名读取远端 HEAD，不读取账号凭据、不下载或克隆仓库、不推送。结果只说明该地址当时的公开读取情况，不改变 `doctor` 的未验证认证状态；没有 HEAD 不表示仓库为空。地址、结果与版本支持范围见[服务接口说明](docs/local-service-and-ai-tools.md)。
 
 私有 Git 从官方完整源码在本机按固定 recipe 构建，随附完整源码、许可证与构建说明，包内逻辑内容约增加58.3 MiB。最低部署目标仍为 macOS 15；复现构建使用 SDK27 等固定开发工具，不要求用户安装这些工具或升级到 macOS27。被裁剪组件、复现条件和验收限制见[Git 开发工具说明](docs/development.md#71-git-开发工具与系统-ssh-诊断)；没有将工具检查当作新包、Windows 或干净电脑验收。
 

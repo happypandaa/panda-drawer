@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { RefreshCw, Terminal } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { GitRemoteCheckPanel } from './GitRemoteCheckPanel';
 import { messageFrom } from './ui-utils';
 
 type ToolIssue = { code: string; message: string };
@@ -20,14 +21,24 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
   const [environment, setEnvironment] = useState<GitEnvironmentInfo | null>(null);
   const [gitPath, setGitPath] = useState('');
   const [loading, setLoading] = useState(false);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [toolRevision, setToolRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const pending = useRef(false);
+  const remotePending = useRef(false);
   const mounted = useRef(true);
 
+  const remotePendingChange = useCallback((value: boolean) => {
+    remotePending.current = value;
+    if (mounted.current) setRemoteLoading(value);
+    onPendingChange?.(pending.current || value);
+  }, [onPendingChange]);
+
   const request = useCallback(async (path?: string | null) => {
-    if (!enabled || pending.current) return;
+    if (!enabled || pending.current || remotePending.current) return;
     pending.current = true;
     setLoading(true);
+    setToolRevision(revision => revision + 1);
     onPendingChange?.(true);
     try {
       const value = path === undefined
@@ -41,7 +52,7 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
       if (mounted.current) setError(messageFrom(cause));
     } finally {
       pending.current = false;
-      onPendingChange?.(false);
+      onPendingChange?.(remotePending.current);
       if (mounted.current) setLoading(false);
     }
   }, [enabled, onPendingChange]);
@@ -52,8 +63,10 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
     return () => { mounted.current = false; };
   }, [request]);
 
+  const busy = loading || remoteLoading;
+
   return <section className="diagnostics-card git-environment" aria-labelledby="git-environment-title">
-    <div className="section-heading"><div><h2 id="git-environment-title">Git 开发工具</h2><p>当前可检测和选择 Git 工具。仓库获取与版本操作尚未接入；应用日常运行不依赖 Git。</p></div><button className="refresh-button" onClick={() => void request()} disabled={!enabled || loading}><RefreshCw size={14} />{loading ? '检测中…' : '重新检测'}</button></div>
+    <div className="section-heading"><div><h2 id="git-environment-title">Git 开发工具</h2><p>当前可检测和选择 Git 工具，并明确检查公开仓库访问。仓库获取与版本操作尚未接入；应用日常运行不依赖 Git。</p></div><button className="refresh-button" onClick={() => void request()} disabled={!enabled || busy}><RefreshCw size={14} />{loading ? '检测中…' : '重新检测'}</button></div>
     <div className="environment-status"><span className={`project-state state-${environment?.ready ? 'ready' : 'unbuilt'}`}><span />{environment ? environment.selection === 'unresolved' ? 'Git 工具尚未核验' : environment.ready ? 'Git 工具可用' : 'Git 工具不可用' : loading ? '正在检测' : '尚未检测'}</span></div>
     <p>当前来源：{environment ? ({ managed: '平台受管 Git', explicit: '明确选择的本机 Git', unresolved: '尚未确定（选择设置无法读取）' })[environment.selection] : '尚未读取'}。</p>
     <dl className="path-list">
@@ -65,7 +78,7 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
     {environment && !environment.ready && <p className="environment-issue">{({ explicit: '已保留你明确选择的路径，失效时不会自动更换工具。请修正路径或恢复默认工具。', managed: '平台配套 Git 暂不可用。请修复平台安装，或明确选择兼容的本机 Git。', unresolved: '无法读取或解析 Git 工具选择设置，尚未选用默认工具。可填写并保存兼容的本机 Git 路径，或明确恢复默认工具。' })[environment.selection]}</p>}
     <form className="node-path-form" onSubmit={event => { event.preventDefault(); void request(gitPath.trim()); }}>
       <label htmlFor="git-path">指定本机 Git 可执行文件的绝对路径<span className="optional-label">可选</span></label>
-      <div className="node-path-controls"><input id="git-path" value={gitPath} onChange={event => setGitPath(event.target.value)} placeholder="例如 /usr/bin/git" disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !gitPath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void request(null)}>恢复默认工具</button></div>
+      <div className="node-path-controls"><input id="git-path" value={gitPath} onChange={event => setGitPath(event.target.value)} placeholder="例如 /usr/bin/git" disabled={busy} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || busy || !gitPath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || busy} onClick={() => void request(null)}>恢复默认工具</button></div>
       <p>恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前开发版，不修改全局 Git 配置。</p>
     </form>
     {environment && <div className="git-authentication">
@@ -76,6 +89,7 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
       <p>认证状态：未验证。{environment.authentication.reason}</p>
     </div>}
     {error && <p role="alert" className="environment-issue">{error}</p>}
+    <GitRemoteCheckPanel enabled={enabled && Boolean(environment?.ready) && !loading} toolRevision={toolRevision} onPendingChange={remotePendingChange} />
   </section>;
 }
 

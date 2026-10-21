@@ -109,6 +109,7 @@ struct HttpState {
     store: Arc<ProjectStore>,
     builds: Arc<BuildManager>,
     git_environment: crate::git_environment::GitEnvironmentManager,
+    git_remote: crate::git_remote::GitRemoteChecker,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
     resources: Option<Arc<ProjectResources>>,
     tickets: Mutex<HashMap<String, Ticket>>,
@@ -538,6 +539,29 @@ impl RuntimeHandle {
     pub async fn git_environment(&self) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().git_environment.doctor().await))
     }
+    pub async fn check_git_remote(
+        &self,
+        input: crate::git_remote::GitRemoteCheckInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        // Native commands also participate in shutdown drain. HTTP requests
+        // retain their outer guard while this operation holds its own guard.
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        state.store.check_workspace_available()?;
+        Ok(json!(
+            state
+                .git_remote
+                .check(&state.git_environment, input, state.stop.subscribe())
+                .await?
+        ))
+    }
     pub async fn set_git_path(
         &self,
         git_path: Option<String>,
@@ -890,6 +914,7 @@ fn make_state(
         store,
         builds,
         git_environment,
+        git_remote: crate::git_remote::GitRemoteChecker::new(),
         maintenance,
         lifecycle,
         metadata,
@@ -1531,6 +1556,9 @@ async fn management(
         match (method, segments.as_slice()) {
             (Method::GET, ["environment"]) => handle.environment().await,
             (Method::GET, ["environment", "git"]) => handle.git_environment().await,
+            (Method::POST, ["environment", "git", "remote-check"]) => {
+                handle.check_git_remote(input(request).await?).await
+            }
             (Method::PUT, ["environment", "git"]) => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3234,3 +3262,7 @@ mod object_layout_tests;
 #[cfg(test)]
 #[path = "service_git_environment_tests.rs"]
 mod git_environment_tests;
+
+#[cfg(test)]
+#[path = "service_git_remote_tests.rs"]
+mod git_remote_tests;

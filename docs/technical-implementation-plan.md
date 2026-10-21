@@ -154,3 +154,21 @@ Git 最低部署目标仍为 macOS 15.0、arm64；Apple clang 21.0.0、SDK 27.0�
 将本次包复制到明确命名的可丢弃“只读 中文 空格.app”，仅将该副本目录／程序改为0555、其他文件0444。原生启动后，CLI 返回副本内的受管 Git 和 Node/npm，网页样本正常连接并显示1张已有业务表；正常退出后签名及两套工具完整树仍通过。另以仅系统 PATH 的清空环境从终端启动正式生成路径，Git、Node/npm 仍选包内资源，原生管理窗口正常；样本 `boundary_probe` 的 `disposable-persisted-value` 重开保持。测试结束已正常退出终端进程，重新以原生方式打开最新生成包；没有修改真实工具设置、构建既有项目或启动 Node 样本。
 
 13,902个既有基线文件在本步前后均无内容改变、权限变化或缺失，凭据仅比较元数据、未读内容。证据保留在忽略目录 `.test-artifacts/managed-development-git-2026-10-21/` 及可丢弃只读包目录；没有清理既有项目、备份、维护或恢复现场。上述结果来自当前 Mac 开发机，仍未证明干净电脑、最低 macOS 15 实机、Windows、SSH／私有仓库认证或正式签名发行；第2项仅完成工具选择／诊断子步。
+
+### 第2项子步：公开 HTTPS 访问检查
+
+按本轮用户选择，先接公开 HTTPS。设置中新增明确点击的检查入口，CLI 为 `env git check --url URL --json`，管理接口为 `POST /api/v1/environment/git/remote-check`。只接受标准 GitHub／Gitee 的 HTTPS owner/repository 地址，拒绝凭据、端口、查询、片段、编码路径或仓库内部页面。结果含规范 URL、时间、实际 Git 路径／版本和精确 HEAD；没有 HEAD 仅报告 `readable-no-head`，不推断空仓库。输入地址或刷新／更换工具会废弃旧界面结果，检查期间防重复和误关设置。
+
+检查沿用已选择的工具，当前仅接受已核验的 Git 2.54.0／2.56.0（包括对应 Apple Git 标识），失效或不支持时不换来源。每次在独立临时 HOME／工作目录运行固定参数的 `ls-remote`，清理继承环境，隔离父仓库、系统／用户配置、凭据助手、认证提示、SSH、代理和 Cookie，保留 TLS 验证并禁止重定向。受管工具完整树核验继续执行；显式本机 Git 信任其自身安装与配套辅助程序，不声称与受管树同等级验真。不会 clone/fetch/push、写入项目或修改 `doctor` 的认证未验证状态。
+
+同一服务最多一个检查；20秒执行预算覆盖工具解析与检查，stdout／stderr分别限制64KiB，stderr仅计量、不保留或返回原文。服务停止、超时及执行 future 被丢弃时清理进程组和临时目录；原生调用参加服务退出等待，不产生持久任务／日志。没有单独的用户取消接口。Git 底层可能先接收其他远端引用再筛选 HEAD，这些限制不构成网络总流量或进程内存硬限。
+
+真实 Git 独立验证使用内置2.56.0和本机 Apple2.54.0：两者分别成功匿名读取 `github.com/git/git.git`、`gitee.com/mirrors/git.git` 的精确 HEAD，另外4次不存在仓库访问及时失败；临时 HOME／工作目录结束为空。额外12项本机可丢弃 TLS fixture 验证覆盖不可信证书拒绝、401 Basic／Negotiate无认证提交、302不跟随、Set-Cookie不复用、无引用返回及停滞终止，记录请求均没有 Authorization／Proxy-Authorization／Cookie。测试 CA 仅传给这些独立测试进程，未改系统信任或产品域名限制；该 fixture 的0.5秒超时不替代服务自身20秒预算回归。
+
+独立审查确认临时目录隔离使用父目录 ceiling；另用真实 Git 的可丢弃父仓库做无网络对照，生产参数不读取人工父配置。公网与 TLS 证据分别位于忽略目录 `.test-artifacts/disposable-https-git-options-20261021-iObvCe/`、`.test-artifacts/disposable-https-git-tls-20261021-FDPDys/`。这些检查没有读取真实账号凭据，也没有 SSH 或私有仓库认证验证，不能视为仓库获取或完整第2项已交付。
+
+2026-10-21 自动验收：完整 core331项通过、5项 opt-in 默认忽略，新增远端核心14项、管理接口／退出等待2项包含其中；真实父仓库隔离 opt-in 另行1项通过。CLI13项、desktop10项、resources定向7项、UI106项通过；core／CLI／desktop all-targets Clippy（`-D warnings`）、TS／Vite、格式和差异检查通过。并行全库回归曾暴露测试读取未完成进程标记的竞态，改为等待完整记录后全库重跑通过；打包准备重写生成资源时的一次 Clippy 资源缺失，在打包完成后独立重跑通过。
+
+新 Mac 开发包325.93 MiB，固定身份、数据根与工作区不变；ad-hoc深度严格签名、两套开发工具完整树、运行 Node 原摘要和三份分发说明源一致性通过，未公证、未生成 DMG。原生窗口实测 GitHub HEAD 成功、等待时禁止重复／工具切换／关闭设置、修改地址清除旧结果、失败保留输入并可重试，长提交号和中文路径换行正常。包内 CLI 成功读取 GitHub 和 Gitee 的 HEAD；其间一次 GitHub 请求返回固定失败，手动再试成功，未细分该次公网失败原因，失败证据保留。不存在仓库返回固定错误，未更改认证状态或工具设置；可丢弃网页样本的数据库值仍为 `disposable-persisted-value`。
+
+本轮再次核对13,902个既有基线文件，内容／权限／记录的元数据均无变化或缺失，凭据只比较元数据而未读内容。既有项目源码、SDK、数据库、附件、维护、备份、回收及恢复证据均保留；没有构建既有项目或启动 Node 样本。应用保持原生打开于项目列表，证据保留在忽略目录 `.test-artifacts/public-https-check-2026-10-21/`。最低 macOS 15、干净电脑、Windows、SSH／私有仓库认证和正式发行仍未验收。

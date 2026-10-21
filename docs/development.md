@@ -1,6 +1,6 @@
 # 开发环境与数据隔离
 
-2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。后续另接私有 Git 2.56.0 的工具选择与诊断，以及系统 SSH 的版本检查；认证与仓库操作尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
+2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；认证、仓库获取与版本操作尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
@@ -152,6 +152,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `env git doctor` | 读取服务实际 Git 选择、版本与可用性，分别返回系统 SSH 工具状态和未验证的认证状态；不访问仓库 |
 | `env git set --path /绝对路径/git` | 保存本开发版的显式 Git 可执行文件路径；与 Node 设置分开 |
 | `env git clear` | 明确清除显式 Git 路径，恢复平台受管默认；不改全局 Git 配置 |
+| `env git check --url https://github.com/owner/repository.git` | 明确匿名检查公开 GitHub/Gitee HTTPS 仓库的 HEAD，20 秒预算；不克隆仓库或验证账号认证 |
 | `db schema --project ID` | 实际表、列、索引、外键、视图 |
 | `db execute --project ID --input request.json` | 一条 SQL 与位置参数 |
 | `db transaction --project ID --input request.json` | 有序语句整体提交或回滚 |
@@ -219,13 +220,17 @@ Mac arm64 内部包新增 `development-git`，固定 Git 2.56.0。源码来自�
 
 Git 目标仍为 macOS 15.0、arm64。复现构建记录要求 Apple clang 21.0.0、macOS SDK 27.0、Apple linker 27037.1、GNU make 3.81；**编译器和 SDK 只是平台开发／重建工具要求，不是成品用户的运行要求，也不把最低系统提高到 macOS 27**。源码构建目录须避免空格，上游构建完成后的工具资源可迁移到中文／空格路径。原生程序只依赖 macOS 系统库；最低 macOS 15 实机运行仍须单独验收。
 
-当前构建关闭 Perl、Python、Tcl/Tk、gettext、Gitweb 与 Rust 支持，不附这些解释器、外部合并工具、凭据助手或 SSH 私钥。上游保留的不可用命令桩和适配脚本不表示相关功能已支持。HTTPS 辅助程序依赖系统 libcurl 与系统信任；具有辅助程序不代表平台已有下载、认证或仓库操作流程。
+当前构建关闭 Perl、Python、Tcl/Tk、gettext、Gitweb 与 Rust 支持，不附这些解释器、外部合并工具、凭据助手或 SSH 私钥。上游保留的不可用命令桩和适配脚本不表示相关功能已支持。HTTPS 辅助程序依赖系统 libcurl 与系统信任；目前仅接下述匿名 HEAD 检查，不代表平台已有仓库下载、认证或版本操作流程。
 
 Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改变 Node 的 `toolchain.json`、应用运行 Node、项目清单或全局 Git 配置。没有显式路径时选择平台受管 Git；已有显式绝对路径优先，失效时报告错误，不回退受管或 PATH 中其他 Git。受管资源失效同样不回退。设置无法读取或解析时返回 `selection: unresolved`，表示尚未确定工具来源，不冒称已经使用默认值；用户可修正并保存本机路径，或明确恢复默认工具。
 
 `env git doctor`、`env git set --path /绝对路径/git`、`env git clear` 均支持 `--json`，在线通过现有管理认证访问 `GET /api/v1/environment/git` 或 `PUT /api/v1/environment/git`。PUT 输入分别为 `{"gitPath":"/绝对路径/git"}` 与 `{"gitPath":null}`。响应包括 `ready`、`git` 的实际路径／版本、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，并分别提供 `ssh` 与 `authentication`。默认位置仅供定位，不代替 `ready`／问题结果；CLI 离线不自行选用终端 Git。
 
 系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。平台尚无仓库获取、提交、分支或取回版本 API；不要按工具可用推断这些能力已开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
+
+`env git check --url https://github.com/owner/repository.git --json` 明确发起 `POST /api/v1/environment/git/remote-check`；也支持标准 `https://gitee.com/owner/repository.git`。这一步只检查公开 HTTPS，拒绝凭据、端口、查询参数、片段和仓库内页面；不使用系统 SSH，也不读取用户账号凭据或配置。服务沿用已选择的 Git，失效不回退；此检查当前仅支持 Git 2.54.0 与 2.56.0（包括对应版本的 Apple Git 标识），其他工具即使 `doctor` 可用也会明确拒绝检查，保留选择。
+
+检查在隔离临时目录执行匿名 `ls-remote`，20 秒执行预算内只返回精确的 `HEAD`、其可选符号引用与提交 ID；同名尾部引用不当作 HEAD。返回 `readable-no-head` 仅说明未取得 HEAD，不表示仓库为空。结果另含规范仓库 URL、实际 Git 路径／版本与检查时间，不改变 `doctor` 的 `authentication.state: not-checked`。没有 clone、fetch、push 或项目写入，也不验证账号或写入权限。界面只在点击检查后联网，修改地址或刷新／改变 Git 工具后旧结果作废，等待期间保护设置关闭；没有用户取消接口，服务退出会终止检查。接口字段与失败语义见[本地服务说明](local-service-and-ai-tools.md)。
 
 ## 8 M3 备份、维护与恢复
 

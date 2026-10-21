@@ -1053,6 +1053,16 @@ async fn environment_git_set(
 }
 
 #[tauri::command]
+async fn environment_git_remote_check(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::git_remote::GitRemoteCheckInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.check_git_remote(input).await
+}
+
+#[tauri::command]
 async fn project_handoff(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1293,6 +1303,7 @@ fn main() {
             environment_node_set,
             environment_git_doctor,
             environment_git_set,
+            environment_git_remote_check,
             project_handoff
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {

@@ -10,6 +10,7 @@ mod error;
 mod file_identity;
 mod files;
 pub mod git_environment;
+pub mod git_remote;
 mod history_cleanup;
 mod identity_upgrade;
 mod lifecycle;

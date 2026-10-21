@@ -96,7 +96,7 @@ enum EnvironmentCommand {
         #[command(subcommand)]
         command: NodeCommand,
     },
-    /// Diagnose or select Git for this platform, without accessing repositories or authentication.
+    /// Diagnose/select Git, or explicitly check public HTTPS repository access.
     Git {
         #[command(subcommand)]
         command: GitCommand,
@@ -116,6 +116,13 @@ enum GitCommand {
     },
     /// Clear the explicit path and select the bundled Git toolchain.
     Clear(OutputOptions),
+    /// Read a public GitHub/Gitee repository HEAD over HTTPS, without credentials, clone or push.
+    Check {
+        #[arg(long)]
+        url: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
 }
 
 #[derive(Subcommand)]
@@ -748,6 +755,15 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
 
 fn git_command(command: GitCommand) -> (bool, Result<Value>) {
     match command {
+        GitCommand::Check { url, output } => (
+            output.json,
+            business_request(
+                "POST",
+                "/api/v1/environment/git/remote-check",
+                None,
+                Some(json!({"url": url})),
+            ),
+        ),
         GitCommand::Doctor(output) => (
             output.json,
             business_request("GET", "/api/v1/environment/git", None, None),
@@ -1805,6 +1821,15 @@ mod tests {
                 "platform",
                 "env",
                 "git",
+                "check",
+                "--url",
+                "https://github.com/git/git.git",
+                "--json",
+            ],
+            vec![
+                "platform",
+                "env",
+                "git",
                 "set",
                 "--path",
                 "/disposable/git",
@@ -1814,6 +1839,17 @@ mod tests {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
         assert!(Cli::try_parse_from(["platform", "env", "git", "set"]).is_err());
+        assert!(Cli::try_parse_from(["platform", "env", "git", "check"]).is_err());
+        assert!(Cli::try_parse_from([
+            "platform",
+            "env",
+            "git",
+            "check",
+            "--url",
+            "https://gitee.com/mirrors/git.git",
+            "--clone",
+        ])
+        .is_err());
         let (_, result) = git_command(GitCommand::Set {
             path: "git".into(),
             output: OutputOptions { json: true },

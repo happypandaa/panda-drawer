@@ -100,6 +100,8 @@ For this static project-v1 type, the native platform runs the local service and 
 
 Git is an optional development tool. The Mac internal bundle supplies a separate private Git; `env git doctor --json` reports the selected path/version and system SSH tool status. Tool readiness does not mean repository authentication is verified. `env git set --path /absolute/path/git` selects a local executable for this platform only; `env git clear` explicitly restores the bundled default. Broken selections do not silently fall back. These commands do not acquire repositories or provide commit/branch/restore operations, and published application execution does not require Git or SSH.
 
+For an explicit public repository check, use `env git check --url https://github.com/owner/repository.git --json`; standard Gitee HTTPS repository addresses are also supported. This command anonymously reads only the remote HEAD within a 20-second execution budget, without reading account credentials, cloning/downloading a repository, pushing, or changing a project. The result is specific to that URL and check time; no returned HEAD does not prove an empty repository. It does not change the doctor's unverified authentication state and does not add SSH or private-repository authentication. Do not run a remote check as part of routine offline tool diagnosis.
+
 The current Node configuration choice stores secrets in each application's private local slot under configuration/credentials/ (directory mode 0700, file mode 0600). These are plaintext files protected by the current user's file permissions, not an OS encrypted vault or macOS Keychain. The slot is separate from author source, shared packages and Git. Do not read/copy these secrets or touch older Keychain entries; the platform configuration flow manages them and injects only the target backend's environment. This does not add secret storage to this static project-v1 type.
 
 Bundled CLI for this installation (rediscover after moving/reinstalling the app):
@@ -254,6 +256,8 @@ Resource limits exposed by this development runtime are internal test parameters
 当前 Node 秘密保存按用户最新选择：每个应用自己的本机受管槽 configuration/credentials/ 私有文件，目录0700、文件0600，是当前用户文件权限保护的明文，不是 macOS Keychain 或系统加密库。该槽与作者源码、分享包和 Git 分开；AI 不读取或复制秘密文件，不读删旧 Keychain 条目，不把秘密写进交接、日志或源码。配置入口负责保存并仅向目标 Node 创建环境注入；本条不为当前静态 project-v1 增加秘密接口。
 
 Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包默认配套私有 Git；已有显式选择优先，失效不偷偷换来源。env git set --path /绝对路径/git 与 env git clear 仅修改本平台选择，后者明确恢复默认。系统 SSH 只检查工具版本，认证仍未验证；当前未提供仓库获取或提交／分支／取回版本接口，应用日常运行不依赖 Git／SSH。不要为工具诊断读取私钥、修改全局 Git 或初始化项目仓库。
+
+需要检查指定公开仓库时，明确使用 env git check --url https://github.com/owner/repository.git --json，也支持标准 Gitee HTTPS 仓库地址。它在20秒执行预算内匿名读取远端HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果只适用于该地址和本次检查时间；未返回HEAD不表示空仓库，也不改变doctor的认证未验证状态。不要把该检查加入普通离线工具诊断，不把它当作SSH／私有仓库认证或完整获取流程。
 
 源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
 

@@ -191,6 +191,7 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `PUT /api/v1/environment/node` | 保存显式本机 Node 路径或恢复服务默认选择 | 管理凭据 |
 | `GET /api/v1/environment/git` | 读取 Git 工具选择与可用性、系统 SSH 版本状态及未验证的认证状态 | 管理凭据 |
 | `PUT /api/v1/environment/git` | 保存显式 Git 路径或明确恢复受管默认，不访问仓库 | 管理凭据 |
+| `POST /api/v1/environment/git/remote-check` | 明确匿名检查公开 GitHub/Gitee HTTPS 仓库的 HEAD，不克隆仓库 | 管理凭据 |
 | `GET /api/v1/projects` | 列出项目基本信息、状态与带时效的空间摘要 | 管理凭据 |
 | `POST /api/v1/projects` | 创建项目目录、模板和空数据库 | 管理凭据 |
 | `GET /api/v1/projects/{id}` | 读取项目基本信息与 revision、状态、路径和文档入口 | 管理凭据 |
@@ -236,7 +237,29 @@ M2 已实现上表中的环境、项目列表/创建/详情、SQL、构建、交
 
 2026-10-21 另接 Git 工具接口，对应 `env git doctor`、`env git set --path /绝对路径/git` 和 `env git clear`。`PUT /api/v1/environment/git` 接收 `{"gitPath":"/绝对路径/git"}` 或 `{"gitPath":null}`，独立保存到固定开发数据根的 `git-toolchain.json`，不改变 Node 设置或全局 Git 配置。默认受管 Git 2.56.0；显式路径优先，显式或受管工具失效不回退其他来源。设置无法读取／解析时 `selection: unresolved`，尚未选用默认工具。
 
-Git 响应包含 `ready`、`git`（实际 `path`／`version` 或 `null`）、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，以及独立的 `ssh` 与 `authentication`。系统 SSH 仅用 `-V` 检查工具版本，SSH 不可用不覆盖 Git 本身的可用性；认证为 `authentication.state: not-checked`。接口不读／复制私钥，不改 SSH 配置，不访问仓库，也不提供仓库获取、提交、分支或版本取回操作。工具不可用不影响成品应用运行；私有 Git 的源码、许可、裁剪与构建条件见[开发说明](development.md#71-git-开发工具与系统-ssh-诊断)，这一步不代表完整认证流程、Windows 或干净电脑验收。
+Git 工具 GET／PUT 响应包含 `ready`、`git`（实际 `path`／`version` 或 `null`）、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，以及独立的 `ssh` 与 `authentication`。系统 SSH 仅用 `-V` 检查工具版本，SSH 不可用不覆盖 Git 本身的可用性；认证为 `authentication.state: not-checked`。这两个接口不读／复制私钥，不改 SSH 配置，不访问仓库，也不提供仓库获取、提交、分支或版本取回操作。工具不可用不影响成品应用运行；私有 Git 的源码、许可、裁剪与构建条件见[开发说明](development.md#71-git-开发工具与系统-ssh-诊断)，这一步不代表完整认证流程、Windows 或干净电脑验收。
+
+公开 HTTPS 检查单独使用 `POST /api/v1/environment/git/remote-check`，输入为 `{"url":"https://github.com/owner/repository.git"}`，CLI 为 `env git check --url https://github.com/owner/repository.git --json`。仅支持精确小写的 `https://github.com/` 与 `https://gitee.com/`，路径恰好包含 owner/repository 两段；每段 1–255 个 ASCII 字符，以字母或数字开头，其余可含字母、数字、`.`、`_`、`-`。允许 `.git` 后缀和一个末尾 `/`，返回 URL 统一带 `.git`；拒绝 userinfo、端口、查询、fragment、百分号编码、空白及额外路径。当前只支持 Git 2.54.0 与 2.56.0（可带对应版本的 Apple Git 标识）；不支持时返回 `GIT_REMOTE_VERSION_UNSUPPORTED`，不改变显式／受管选择。
+
+检查使用服务实际选定的 Git 和隔离临时目录，禁用用户 Git 配置、凭据助手、认证提示及 SSH，只匿名读取 HEAD；不读取账号凭据、不 clone/fetch/push、不修改项目。执行预算为 20 秒，同一服务最多进行一个检查。成功结果为：
+
+```json
+{
+  "url": "https://github.com/owner/repository.git",
+  "provider": "github",
+  "transport": "public-https",
+  "state": "readable",
+  "head": {"oid": "1234567890abcdef1234567890abcdef12345678", "symbolicRef": "refs/heads/main"},
+  "git": {"path": "/actual/selected/git", "version": "2.56.0"},
+  "checkedAt": "2026-10-21T08:30:00Z"
+}
+```
+
+以上为字段示例，不是真实检查证据。`provider` 为 `github` 或 `gitee`；只采纳精确名为 `HEAD` 的引用，忽略 `refs/heads/HEAD` 等其他引用。`oid` 为实际 40 或 64 位十六进制提交 ID，`symbolicRef` 可为 `null`。未取得 HEAD 时，`state` 为 `readable-no-head`、`head` 为 `null`；这不表示仓库为空。`checkedAt` 是服务返回的 UTC 时间。结果只描述该 URL 本次的公开读取情况，不验证账号或写入权限，不持久改变 Git `doctor` 的 `authentication.state: not-checked`。
+
+stdout 与 stderr 分别限制为 64 KiB；stderr 只计量，不保存或返回。底层 `ls-remote` 可能先接收更多引用，再筛选精确 HEAD，因此 20 秒预算与输出上限不构成网络总流量或进程内存的硬限制。
+
+调用直接返回检查结果或固定错误，不创建持久任务，也不返回原始 Git stderr。无效 URL、环境不可用、版本不支持、并发占用、超时和无法读取分别报告；公开读取失败不据此判断仓库私有、已删除或账号认证失败。当前没有用户取消接口；服务退出会终止检查。调用方停止等待或断线不等于检查已经取消，重试须由调用方明确发起；界面等待期间阻止重复检查、工具切换及设置关闭。该子步不等于仓库获取、SSH／私有 HTTPS 认证或完整技术计划第 2 项已交付。
 
 `handoff` 结果为 `projectId`、`readmePath`、`cliPath` 和 `text`；交接不嵌入令牌、Cookie 或短期 ticket。AI 编辑完成并等待构建成功后，再取得新的浏览器入口。环境与任务日志属于管理接口，带浏览器 Origin 的请求即使持有管理 token 也拒绝；项目会话不能调用。
 
