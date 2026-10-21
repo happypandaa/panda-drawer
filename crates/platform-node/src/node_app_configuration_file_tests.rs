@@ -1,12 +1,68 @@
 // Real, disposable filesystem verification. No OS credential services or user keys.
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn committed_revision_retains_its_new_credential_when_post_publication_verification_fails() {
+    let (_temporary, vault, store) = local_store();
+    store.save(&manifest(), request(0, Some("artificial-original"))).unwrap();
+    let original = store.read().unwrap();
+    let original_entry = entry_uuid(&original.secrets["API_KEY"]).unwrap();
+    store.windows.fail_next_publication_verification_for_test();
+    let error = store.save(&manifest(), request(1, Some("artificial-after-commit"))).unwrap_err();
+    assert!(error.to_string().contains("需要核对"));
+    let api = error.into_api_error();
+    assert_eq!(api.code, "NODE_CONFIGURATION_COMMIT_UNKNOWN");
+    assert_eq!(api.details["operationOutcome"], "unknown");
+    let committed = store.read().unwrap();
+    assert_eq!(committed.revision, 2);
+    let bound = entry_uuid(&committed.secrets["API_KEY"]).unwrap();
+    assert_ne!(original_entry, bound);
+    assert_eq!(vault.get(store.instance, bound).unwrap(), "artificial-after-commit");
+    assert_eq!(vault.get(store.instance, original_entry).unwrap(), "artificial-original");
+    assert_eq!(store.launch_snapshot(&manifest()).unwrap().environment["API_KEY"], "artificial-after-commit");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_private_vault_and_immutable_revisions_reopen_without_secret_echo() {
+    let (temporary, vault, store) = local_store();
+    let credential="artificial-windows-file-key";
+    let view=store.save(&manifest(),request(0,Some(credential))).unwrap();
+    assert!(!serde_json::to_string(&view).unwrap().contains(credential));
+    assert!(!fs::read_to_string(configuration_path(temporary.path())).unwrap().contains(credential));
+    let reopened_vault=Arc::new(LocalFileVault::open_existing(vault.directory.clone(),store.instance).unwrap());
+    let reopened=NodeConfigurationStore::new(store.directory.clone(),store.instance,reopened_vault).unwrap();
+    let snapshot=reopened.launch_snapshot(&manifest()).unwrap();
+    assert_eq!(snapshot.revision,1);
+    assert_eq!(snapshot.environment["API_KEY"],credential);
+    assert_eq!(snapshot.environment["COUNT"],"0");
+    assert_eq!(snapshot.environment["ENABLED"],"false");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_vault_rejects_new_hardlinks_and_preserves_both_files() {
+    let (temporary,vault,store)=local_store();
+    store.save(&manifest(),request(0,Some("artificial-retained-key"))).unwrap();
+    let record=store.read().unwrap();
+    let entry=entry_uuid(&record.secrets["API_KEY"]).unwrap();
+    let secret=vault.directory.join(entry.to_string());
+    let retained=temporary.path().join("retained-hardlink-evidence");
+    fs::hard_link(&secret,&retained).unwrap();
+    assert!(vault.contains(store.instance,entry).is_err());
+    assert!(vault.get(store.instance,entry).is_err());
+    assert!(vault.discard(store.instance,entry).is_err());
+    assert_eq!(fs::read(&secret).unwrap(),b"artificial-retained-key");
+    assert_eq!(fs::read(&retained).unwrap(),b"artificial-retained-key");
+}
+
 fn local_store() -> (
-    tempfile::TempDir,
+    TestDirectory,
     Arc<LocalFileVault>,
     NodeConfigurationStore,
 ) {
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = test_directory();
     let directory = temporary.path().canonicalize().unwrap();
     let instance = Uuid::new_v4();
     let vault = Arc::new(LocalFileVault::new(directory.join("credentials"), instance).unwrap());
@@ -37,7 +93,7 @@ fn local_save_reload_launch_and_private_permissions_without_secret_echo() {
         fs::metadata(&vault.directory).unwrap().permissions().mode() & 0o7777,
         0o700
     );
-    let disk = fs::read_to_string(temporary.path().join("configuration.json")).unwrap();
+    let disk = fs::read_to_string(configuration_path(temporary.path())).unwrap();
     assert!(!disk.contains(credential));
     let reopened_vault =
         Arc::new(LocalFileVault::new(vault.directory.clone(), store.instance).unwrap());
@@ -197,7 +253,7 @@ fn failed_configuration_commit_rolls_back_only_new_local_credential() {
     store
         .save(&manifest(), request(0, Some("artificial-original")))
         .unwrap();
-    let before = fs::read(temporary.path().join("configuration.json")).unwrap();
+    let before = fs::read(configuration_path(temporary.path())).unwrap();
     provider.fail.store(true, Ordering::SeqCst);
     let attempted = store.save(
         &manifest(),
@@ -207,7 +263,7 @@ fn failed_configuration_commit_rolls_back_only_new_local_credential() {
     assert!(attempted.is_err());
     assert_eq!(
         before,
-        fs::read(temporary.path().join("configuration.json")).unwrap()
+        fs::read(configuration_path(temporary.path())).unwrap()
     );
     assert_eq!(fs::read_dir(&local.directory).unwrap().count(), 1);
     assert_eq!(

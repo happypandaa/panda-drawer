@@ -44,10 +44,15 @@ export function nodeConfigurationInput(app: NodeAppDetail, draft: Draft): NodeCo
 }
 
 export interface NodeAppRequest { app: NodeAppDetail; intent: 'enter' | 'details'; token: number }
-export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, onModalStateChange, onDraftStateChange }: {
+export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, onModalStateChange, onDraftStateChange,
+  chooseSourceCommand = 'choose_path', unavailableReason, onMutationError,
+}: {
   enabled: boolean; request?: NodeAppRequest | null; addRequest?: number;
   onAppChanged?: (app: NodeAppDetail) => void; onModalStateChange?: (open: boolean) => void;
   onDraftStateChange: (state: { dirty: boolean; pending: boolean }) => void;
+  chooseSourceCommand?: 'choose_path' | 'node_app_choose_source';
+  unavailableReason?: string;
+  onMutationError?: (cause: unknown) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [tab, setTab] = useState<'overview' | 'configuration' | 'runtime'>('overview');
@@ -68,6 +73,8 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
   const changedCallback = useRef(onAppChanged); changedCallback.current = onAppChanged;
   const modalCallback = useRef(onModalStateChange); modalCallback.current = onModalStateChange;
   const alive = useRef(true);
+  const enabledRef = useRef(enabled); enabledRef.current = enabled;
+  const mutationError = useRef(onMutationError); mutationError.current = onMutationError;
   const operation = useRef(false);
   const sequence = useRef(0);
   const selected = useRef<string | null>(null);
@@ -86,7 +93,7 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
   }, []);
 
   const enterApp = useCallback(async (value: NodeAppDetail) => {
-    if (operation.current || !enabled) return;
+    if (operation.current || !enabledRef.current) return;
     if (!value.configuration.canStart) { setModalOpen(true); setTab('configuration'); return; }
     operation.current = true; setPending('enter'); setError(''); setNotice('');
     const appId = value.id;
@@ -97,18 +104,20 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
         if (alive.current && selected.current === appId) accept(opened, false);
       }
     } catch (cause) {
+      mutationError.current?.(cause);
       if (alive.current && selected.current === appId) { setError(messageFrom(cause)); setModalOpen(true); setTab('runtime'); }
     } finally { operation.current = false; if (alive.current) setPending(null); }
   }, [accept, enabled]);
 
   const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
+    if (!enabledRef.current) return;
     const current = ++sequence.current;
     selected.current = app.id;
     setDetail(app); setDraft(draftFrom(app)); setError(''); setStatusError(''); setNotice(''); setLoading(true);
     setTab(initialTab); setDismissConfirm(false); setModalOpen(!enter);
     try {
       const value = await invoke<NodeAppDetail>('node_app_configuration', { appId: app.id });
-      if (!alive.current || sequence.current !== current) return;
+      if (!alive.current || sequence.current !== current || !enabledRef.current) return;
       accept(value, true);
       if (enter) {
         if (!value.configuration.canStart) { setModalOpen(true); setTab('configuration'); }
@@ -120,14 +129,17 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; selected.current = null; draftCallback.current({ dirty: false, pending: false }); }; }, []);
   useEffect(() => {
-    if (!request || request.token === seenRequest.current || operation.current) return;
+    if (!request || request.token === seenRequest.current) return;
     seenRequest.current = request.token;
+    if (operation.current || !enabled) return;
     if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
     void select(request.app, request.intent === 'enter' ? 'configuration' : 'overview', request.intent === 'enter');
-  }, [request, select, pending]);
+  }, [request, select, pending, enabled]);
   useEffect(() => {
-    if (!addRequest || addRequest === seenAdd.current || operation.current || !enabled) return;
-    seenAdd.current = addRequest; setAddOpen(true); setError(''); setSourcePath(''); setInspection(null);
+    if (!addRequest || addRequest === seenAdd.current) return;
+    seenAdd.current = addRequest;
+    if (operation.current || !enabled) return;
+    setAddOpen(true); setError(''); setSourcePath(''); setInspection(null);
   }, [addRequest, enabled, pending]);
   useEffect(() => { modalCallback.current?.(modalOpen || addOpen); }, [modalOpen, addOpen]);
   useEffect(() => { if (dismissConfirm || requestedSelection) confirmation.current?.focus(); }, [dismissConfirm, requestedSelection]);
@@ -156,8 +168,8 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
     if (blocked || operation.current) return;
     operation.current = true; setPending('choose'); setError(''); setInspection(null);
     try {
-      const value = await invoke<string | null>('choose_path', { kind: 'nodeapp' });
-      if (!alive.current || !value) return;
+      const value = await invoke<string | null>(chooseSourceCommand, chooseSourceCommand === 'choose_path' ? { kind: 'nodeapp' } : undefined);
+      if (!alive.current || !value || !enabledRef.current) return;
       setSourcePath(value);
       const preview = await invoke<NodeAppInspection>('node_app_inspect', { sourcePath: value });
       if (alive.current) setInspection(preview);
@@ -174,7 +186,7 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
       selected.current = value.id; sequence.current++;
       accept(value, true); setAddOpen(false); setModalOpen(true); setTab('configuration'); setSourcePath(''); setInspection(null);
       setNotice('应用已登记。请先填写配置并保存，再点击“进入项目”。');
-    } catch (cause) { if (alive.current) setError(messageFrom(cause)); }
+    } catch (cause) { mutationError.current?.(cause); if (alive.current) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
   }
 
@@ -191,7 +203,7 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
       if (!alive.current || selected.current !== appId) return;
       accept(value, true);
       setNotice(value.configuration.canStart ? value.restartRequired ? '配置已保存。正在运行的应用仍使用旧配置；点击“重启并应用配置”后才生效。' : '配置已保存。下次启动使用这些设置。' : '配置已保存，但仍有必填项未完成。补齐后才能启动；已运行的进程不会因此重启。');
-    } catch (cause) { if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
+    } catch (cause) { mutationError.current?.(cause); if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
   }
 
@@ -206,7 +218,7 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
       setStatusError('');
       if (command === 'node_app_stop') setNotice(value.state === 'stopped' ? '应用已关闭，相关服务已停止。已保存的配置保留。' : '关闭结果已更新，请查看应用状态。');
       if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? '应用窗口已打开。关闭窗口会停止本应用。' : '打开结果已更新，请查看应用状态。');
-    } catch (cause) { if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
+    } catch (cause) { if (command !== 'node_app_status') mutationError.current?.(cause); if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
   }
 
@@ -251,6 +263,7 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
   return <>
     {modalOpen && detail && <Modal title={detail.name} description="项目详情与应用配置" wide closeDisabled={Boolean(pending)} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
       <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
+        {!enabled && unavailableReason && <p className="notice notice-error" role="alert">{unavailableReason}</p>}
         {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的应用配置</strong><p>关闭会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
         {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="重新读取配置确认"><strong>当前配置有未保存的修改</strong><p>继续会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并重新读取</button></div></div>}
         {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
@@ -296,6 +309,7 @@ export function NodeAppsPanel({ enabled, request, addRequest = 0, onAppChanged, 
         </div>
       </section></Modal>}
     {addOpen && <Modal title="添加本地应用" description="选择源码目录，只读核对应用声明后再登记。" closeDisabled={Boolean(pending)} onClose={() => { setAddOpen(false); setSourcePath(''); setInspection(null); setError(''); }}>
+      {!enabled && unavailableReason && <p className="notice notice-error" role="alert">{unavailableReason}</p>}
       <div className="node-add-dialog"><p>应用目录中需要有平台可识别的 <code>local-app.json</code>。登记后先配置，再打开应用。</p><button className="refresh-button" disabled={blocked} onClick={() => void chooseSource()}><FolderOpen size={16} />{pending === 'choose' ? '正在核对…' : '选择应用目录'}</button>{sourcePath && <code className="node-selected-source">{sourcePath}</code>}{error && <p role="alert" className="task-error">{error}</p>}{inspection && <div className="node-inspection-preview"><h3>{inspection.app.name}</h3><p>{inspection.app.description}</p><span className="node-runtime-label"><Server size={14} />{inspection.runtimeLabel} · {inspection.app.version}</span><p>应用声明了 {inspection.configuration.fields.length} 项配置，其中 {inspection.configuration.fields.filter((field) => field.required).length} 项必填。登记不读取旧的 .env，也不会自动运行应用。</p><ul>{inspection.configuration.fields.map((field) => <li key={field.name}>{field.label}{field.required ? '（必填）' : '（选填）'}{field.secret ? ' · 密钥' : ''}</li>)}</ul><button className="primary-button" disabled={blocked || inspection.runtime !== 'node-service'} onClick={() => void register()}>{pending === 'register' ? '登记中…' : '登记此应用'}</button></div>}</div>
     </Modal>}
   </>;

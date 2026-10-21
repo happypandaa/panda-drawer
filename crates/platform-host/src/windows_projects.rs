@@ -585,17 +585,24 @@ impl WindowsProjectStore {
 
     fn validate_root(&self, workspace: &WindowsWorkspace) -> Result<(), ApiError> {
         let root = workspace.root();
-        exact_entries(
-            &root,
-            &[
-                (".environment.json", false),
-                ("settings.json", false),
-                ("instance.lock", false),
-                ("runtime", true),
-                ("migrations", true),
-                ("workspace", true),
-            ],
-        )?;
+        let has_node_root = root
+            .list()
+            .map_err(fs_error)?
+            .iter()
+            .any(|entry| entry.name == "node-apps");
+        let mut expected = vec![
+            (".environment.json", false),
+            ("settings.json", false),
+            ("instance.lock", false),
+            ("runtime", true),
+            ("migrations", true),
+            ("workspace", true),
+        ];
+        if has_node_root {
+            expected.push(("node-apps", true));
+        }
+        exact_entries(&root, &expected)?;
+        crate::windows_node_root::node_apps_directory(&root, false).map_err(fs_error)?;
         let marker: Marker = read_json(&root, ".environment.json")?;
         let settings_value: Value = read_json(&root, "settings.json")?;
         let settings_fields = [
@@ -686,6 +693,12 @@ impl WindowsProjectStore {
             ));
         }
         workspace.verify_binding().map_err(fs_error)
+    }
+
+    /// No root initialization: Node registration uses only the already held,
+    /// completely admitted Windows sample root and its instance lock.
+    pub fn node_app_root(&self) -> Result<WorkspaceDirectory, ApiError> {
+        self.with_root(false, |workspace| Ok(workspace.root()))
     }
 
     pub fn create(&self, input: CreateProjectInput) -> Result<ProjectInfo, ApiError> {

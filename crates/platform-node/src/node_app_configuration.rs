@@ -6,31 +6,47 @@
 use crate::node_app_manifest::{
     valid_business_variable, ConfigurationField, ConfigurationType, TrialManifest,
 };
+#[cfg(not(windows))]
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+#[cfg(any(test, not(windows)))]
+use std::fs;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(not(windows))]
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+};
 use uuid::Uuid;
 
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const MAX_SECRET_BYTES: usize = 8192;
 
 #[derive(Debug)]
-pub struct ConfigurationError(&'static str);
+pub struct ConfigurationError(&'static str, bool);
 impl fmt::Display for ConfigurationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)
     }
 }
 impl std::error::Error for ConfigurationError {}
+impl ConfigurationError {
+    pub(crate) fn into_api_error(self) -> crate::ApiError {
+        if self.1 {
+            crate::ApiError::new("NODE_CONFIGURATION_COMMIT_UNKNOWN", self.0).outcome("unknown")
+        } else {
+            crate::ApiError::new("NODE_APP_ERROR", self.0)
+        }
+    }
+}
 type Result<T> = std::result::Result<T, ConfigurationError>;
 fn invalid(message: &'static str) -> ConfigurationError {
-    ConfigurationError(message)
+    ConfigurationError(message, false)
 }
 
 /// Implementations must add a new entry or fail, never replace an existing one.
@@ -140,9 +156,12 @@ struct StoredConfiguration {
 }
 
 pub struct NodeConfigurationStore {
+    #[cfg_attr(windows, allow(dead_code))]
     directory: PathBuf,
     instance: Uuid,
     vault: Arc<dyn SecretVault>,
+    #[cfg(windows)]
+    windows: platform_host::WindowsSourceDirectory,
 }
 
 impl NodeConfigurationStore {
@@ -154,6 +173,9 @@ impl NodeConfigurationStore {
         }
         checked_directory(&directory)?;
         Ok(Self {
+            #[cfg(windows)]
+            windows: platform_host::WindowsSourceDirectory::open_private(&directory)
+                .map_err(|_| invalid("应用配置目录权限无效。"))?,
             directory,
             instance,
             vault,
@@ -277,6 +299,13 @@ impl NodeConfigurationStore {
             Ok(view)
         })();
         if let Err(error) = attempt {
+            // An immutable revision can already have reached the native rename
+            // commit point when its post-verification fails. Preserve every new
+            // credential on an uncertain Windows commit; it may now be bound.
+            #[cfg(windows)]
+            if error.1 {
+                return Err(error);
+            }
             // A failed cleanup can leave only new, unreferenced credential files.
             // Never remove an entry referenced by the previous committed record.
             for entry in inserted {
@@ -374,18 +403,28 @@ impl NodeConfigurationStore {
     }
 
     fn lock(&self) -> Result<File> {
-        checked_directory(&self.directory)?;
-        let mut options = safe_options();
-        options.read(true).write(true).create(true);
-        let file = options
-            .open(self.directory.join("configuration.lock"))
-            .map_err(|_| invalid("无法锁定应用配置。"))?;
-        checked_file(&file)?;
-        file.lock_exclusive()
-            .map_err(|_| invalid("无法锁定应用配置。"))?;
-        Ok(file)
+        #[cfg(windows)]
+        {
+            self.windows
+                .lock_private("configuration.lock")
+                .map_err(|_| invalid("无法锁定应用私有配置。"))
+        }
+        #[cfg(not(windows))]
+        {
+            checked_directory(&self.directory)?;
+            let mut options = safe_options();
+            options.read(true).write(true).create(true);
+            let file = options
+                .open(self.directory.join("configuration.lock"))
+                .map_err(|_| invalid("无法锁定应用配置。"))?;
+            checked_file(&file)?;
+            file.lock_exclusive()
+                .map_err(|_| invalid("无法锁定应用配置。"))?;
+            Ok(file)
+        }
     }
 
+    #[cfg(not(windows))]
     fn read(&self) -> Result<StoredConfiguration> {
         let mut options = safe_options();
         options.read(true);
@@ -426,6 +465,7 @@ impl NodeConfigurationStore {
         Ok(record)
     }
 
+    #[cfg(not(windows))]
     fn commit(&self, record: &StoredConfiguration) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(record).map_err(|_| invalid("无法编码应用配置。"))?;
         if bytes.len() > MAX_RECORD_BYTES as usize {
@@ -456,6 +496,121 @@ impl NodeConfigurationStore {
             let _ = fs::remove_file(&temporary);
         }
         result
+    }
+
+    #[cfg(windows)]
+    fn read(&self) -> Result<StoredConfiguration> {
+        let entries = self
+            .windows
+            .list()
+            .map_err(|_| invalid("无法检查应用配置现场。"))?;
+        for entry in &entries {
+            if !matches!(
+                (entry.name.as_str(), entry.is_directory),
+                ("configuration.lock", false) | ("credentials", true) | ("revisions", true)
+            ) {
+                return Err(invalid("配置目录包含未知或未完成的现场，已保留。"));
+            }
+        }
+        let empty = || StoredConfiguration {
+            version: 1,
+            instance_id: self.instance.to_string(),
+            revision: 0,
+            values: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+        };
+        if !entries.iter().any(|entry| entry.name == "revisions") {
+            return Ok(empty());
+        }
+        let revisions = self
+            .windows
+            .open_directory("revisions")
+            .map_err(|_| invalid("配置修订目录不可读取。"))?;
+        let mut records = BTreeMap::new();
+        for entry in revisions
+            .list()
+            .map_err(|_| invalid("配置修订目录不可读取。"))?
+        {
+            // A bounded, unreferenced preparation is retained evidence, never a
+            // committed revision or permission to discard the previous value.
+            if !entry.is_directory
+                && entry
+                    .name
+                    .strip_prefix(".configuration-")
+                    .and_then(|v| v.strip_suffix(".tmp"))
+                    .is_some_and(|id| Uuid::parse_str(id).is_ok())
+            {
+                continue;
+            }
+            let number = entry
+                .name
+                .strip_prefix("revision-")
+                .and_then(|value| value.strip_suffix(".json"))
+                .filter(|value| value.len() == 20 && value.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| invalid("发现未知配置修订，已保留。"))?;
+            if entry.is_directory {
+                return Err(invalid("配置修订不能是目录。"));
+            }
+            let bytes = revisions
+                .read_bounded(&entry.name, MAX_RECORD_BYTES as usize)
+                .map_err(|_| invalid("配置修订读取失败，已保留。"))?
+                .bytes;
+            let record: StoredConfiguration =
+                serde_json::from_slice(&bytes).map_err(|_| invalid("配置修订格式无效。"))?;
+            if record.version != 1
+                || record.instance_id != self.instance.to_string()
+                || record.revision != number
+            {
+                return Err(invalid("配置修订与当前应用实例不符。"));
+            }
+            records.insert(number, record);
+        }
+        for (index, revision) in records.keys().enumerate() {
+            if *revision != index as u64 + 1 {
+                return Err(invalid("应用配置修订不连续，已保留现场。"));
+            }
+        }
+        Ok(records
+            .pop_last()
+            .map(|(_, record)| record)
+            .unwrap_or_else(empty))
+    }
+
+    #[cfg(windows)]
+    fn commit(&self, record: &StoredConfiguration) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(record).map_err(|_| invalid("无法编码应用配置。"))?;
+        if bytes.len() > MAX_RECORD_BYTES as usize {
+            return Err(invalid("应用配置超过大小限制。"));
+        }
+        let revisions = match self.windows.open_directory("revisions") {
+            Ok(directory) => directory,
+            Err(error) if error.code == "WORKSPACE_NAME_MISSING" => self
+                .windows
+                .create_private_directory("revisions")
+                .map_err(|_| invalid("无法创建私有配置修订目录。"))?,
+            Err(_) => return Err(invalid("配置修订目录无效，已保留。")),
+        };
+        let temporary = format!(".configuration-{}.tmp", Uuid::new_v4());
+        let identity = revisions
+            .write_new(&temporary, &bytes)
+            .map_err(|_| invalid("无法准备配置修订，原配置已保留。"))?;
+        if let Err(error) = revisions.publish_noreplace_checked(
+            &temporary,
+            &format!("revision-{:020}.json", record.revision),
+            &identity,
+        ) {
+            if error.code == "NODE_PUBLICATION_COMMITTED_UNVERIFIED" {
+                return Err(ConfigurationError(
+                    "配置提交结果需要核对；已保留全部配置修订与新密钥，请重新读取后处理。",
+                    true,
+                ));
+            }
+            let _ = revisions.remove_file_checked(&temporary, &identity);
+            return Err(invalid("无法提交配置修订，原配置已保留。"));
+        }
+        Ok(())
     }
 }
 
@@ -631,6 +786,13 @@ fn environment_value(value: &Value) -> Result<String> {
     }
 }
 
+#[cfg(windows)]
+fn checked_directory(path: &Path) -> Result<()> {
+    platform_host::WindowsSourceDirectory::open_private(path)
+        .map(|_| ())
+        .map_err(|_| invalid("应用配置目录必须为当前用户私有普通目录。"))
+}
+#[cfg(not(windows))]
 fn checked_directory(path: &Path) -> Result<()> {
     if !path.is_absolute()
         || path
@@ -661,6 +823,7 @@ fn checked_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn safe_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     #[cfg(unix)]
@@ -673,6 +836,7 @@ fn safe_options() -> OpenOptions {
     options
 }
 
+#[cfg(not(windows))]
 fn checked_file(file: &File) -> Result<()> {
     let metadata = file
         .metadata()
@@ -696,12 +860,20 @@ fn checked_file(file: &File) -> Result<()> {
 /// implementation never calls an OS credential service and never falls back to
 /// a different provider. Each instance gets its own private directory.
 pub struct LocalFileVault {
+    #[cfg_attr(windows, allow(dead_code))]
     directory: PathBuf,
     instance: Uuid,
-    created: std::sync::Mutex<BTreeMap<Uuid, (u64, u64)>>,
+    created: std::sync::Mutex<BTreeMap<Uuid, CredentialIdentity>>,
+    #[cfg(windows)]
+    windows: platform_host::WindowsSourceDirectory,
 }
+#[cfg(windows)]
+type CredentialIdentity = platform_host::WindowsObjectIdentity;
+#[cfg(not(windows))]
+type CredentialIdentity = (u64, u64);
 
 impl LocalFileVault {
+    #[cfg(not(windows))]
     pub fn new(directory: PathBuf, instance: Uuid) -> Result<Self> {
         if !cfg!(unix) {
             return Err(invalid("当前平台尚未验证本地密钥文件权限。"));
@@ -732,6 +904,36 @@ impl LocalFileVault {
         })
     }
 
+    #[cfg(windows)]
+    pub fn new(directory: PathBuf, instance: Uuid) -> Result<Self> {
+        if instance.is_nil() {
+            return Err(invalid("本地密钥应用实例无效。"));
+        }
+        let windows = crate::windows_fs::create_private_runtime_dir(&directory)
+            .map_err(|_| invalid("本地密钥目录必须为当前用户私有普通目录。"))?;
+        Ok(Self {
+            directory,
+            instance,
+            created: std::sync::Mutex::new(BTreeMap::new()),
+            windows,
+        })
+    }
+    #[cfg(windows)]
+    pub fn open_existing(directory: PathBuf, instance: Uuid) -> Result<Self> {
+        if instance.is_nil() {
+            return Err(invalid("本地密钥应用实例无效。"));
+        }
+        let windows = platform_host::WindowsSourceDirectory::open_private(&directory)
+            .map_err(|_| invalid("本地密钥目录缺失或不再是当前用户私有目录，已保留现场。"))?;
+        Ok(Self {
+            directory,
+            instance,
+            created: std::sync::Mutex::new(BTreeMap::new()),
+            windows,
+        })
+    }
+
+    #[cfg(not(windows))]
     fn entry_path(&self, instance: Uuid, entry: Uuid) -> Result<PathBuf> {
         if instance != self.instance || entry.is_nil() {
             return Err(invalid("本地密钥条目不属于此应用实例。"));
@@ -740,6 +942,7 @@ impl LocalFileVault {
         Ok(self.directory.join(entry.to_string()))
     }
 
+    #[cfg(not(windows))]
     fn open_entry(&self, instance: Uuid, entry: Uuid) -> Result<Option<File>> {
         let path = self.entry_path(instance, entry)?;
         let mut options = safe_options();
@@ -760,6 +963,7 @@ impl LocalFileVault {
     }
 }
 
+#[cfg(not(windows))]
 fn checked_credential_directory(path: &Path) -> Result<()> {
     if !path.is_absolute() {
         return Err(invalid("本地密钥目录必须为绝对路径。"));
@@ -794,6 +998,7 @@ fn checked_credential_directory(path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(not(windows))]
 fn checked_credential_file(file: &File) -> Result<(u64, u64)> {
     let metadata = file
         .metadata()
@@ -820,6 +1025,7 @@ fn checked_credential_file(file: &File) -> Result<(u64, u64)> {
     }
 }
 
+#[cfg(not(windows))]
 impl SecretVault for LocalFileVault {
     fn insert(&self, instance: Uuid, entry: Uuid, value: &str) -> Result<()> {
         validate_secret(value)?;
@@ -899,6 +1105,74 @@ impl SecretVault for LocalFileVault {
 
     fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool> {
         self.open_entry(instance, entry).map(|file| file.is_some())
+    }
+}
+
+#[cfg(windows)]
+impl LocalFileVault {
+    fn windows_entry(
+        &self,
+        instance: Uuid,
+        entry: Uuid,
+    ) -> Result<Option<platform_host::WorkspaceFile>> {
+        if instance != self.instance || entry.is_nil() {
+            return Err(invalid("密钥条目不属于此应用实例。"));
+        }
+        match self
+            .windows
+            .read_bounded(&entry.to_string(), MAX_SECRET_BYTES)
+        {
+            Ok(file) if !file.bytes.is_empty() => Ok(Some(file)),
+            Ok(_) => Err(invalid("本地密钥文件无效。")),
+            Err(error) if error.code == "WORKSPACE_NAME_MISSING" => Ok(None),
+            Err(_) => Err(invalid("本地密钥文件权限、身份或内容无效。")),
+        }
+    }
+}
+#[cfg(windows)]
+impl SecretVault for LocalFileVault {
+    fn insert(&self, instance: Uuid, entry: Uuid, value: &str) -> Result<()> {
+        if instance != self.instance || entry.is_nil() {
+            return Err(invalid("密钥条目不属于此应用实例。"));
+        }
+        validate_secret(value)?;
+        let identity = self
+            .windows
+            .write_new(&entry.to_string(), value.as_bytes())
+            .map_err(|_| invalid("无法新建本地私有密钥文件。"))?;
+        self.created
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(entry, identity);
+        Ok(())
+    }
+    fn get(&self, instance: Uuid, entry: Uuid) -> Result<String> {
+        let file = self
+            .windows_entry(instance, entry)?
+            .ok_or_else(|| invalid("本地密钥文件缺失，请重新填写。"))?;
+        let value = String::from_utf8(file.bytes).map_err(|_| invalid("本地密钥文件格式无效。"))?;
+        validate_secret(&value)?;
+        Ok(value)
+    }
+    fn discard(&self, instance: Uuid, entry: Uuid) -> Result<()> {
+        if instance != self.instance || entry.is_nil() {
+            return Err(invalid("密钥条目不属于此应用实例。"));
+        }
+        let mut created = self.created.lock().unwrap_or_else(|p| p.into_inner());
+        let expected = created
+            .get(&entry)
+            .ok_or_else(|| invalid("只能清理本次新建的密钥文件。"))?;
+        if self.windows_entry(instance, entry)?.is_some() {
+            self.windows
+                .remove_file_checked(&entry.to_string(), expected)
+                .map_err(|_| invalid("密钥文件已变化或被占用，已保留。"))?;
+        }
+        created.remove(&entry);
+        Ok(())
+    }
+    fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool> {
+        self.windows_entry(instance, entry)
+            .map(|file| file.is_some())
     }
 }
 
@@ -983,8 +1257,58 @@ mod tests {
         })).unwrap()).unwrap()
     }
 
-    fn store() -> (tempfile::TempDir, Arc<FakeVault>, NodeConfigurationStore) {
-        let temporary = tempfile::tempdir().unwrap();
+    #[cfg(not(windows))]
+    type TestDirectory = tempfile::TempDir;
+    #[cfg(windows)]
+    struct TestDirectory(PathBuf);
+    #[cfg(windows)]
+    impl TestDirectory {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    fn test_directory() -> TestDirectory {
+        #[cfg(windows)]
+        {
+            let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(".test-artifacts");
+            fs::create_dir_all(&parent).unwrap();
+            let path = parent.join(format!("windows-node-disposable-config-{}", Uuid::new_v4()));
+            platform_host::disposable_node_directory(&path).unwrap();
+            TestDirectory(path)
+        }
+        #[cfg(not(windows))]
+        {
+            tempfile::tempdir().unwrap()
+        }
+    }
+    fn configuration_path(directory: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let mut entries = fs::read_dir(directory.join("revisions"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("revision-")
+                })
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries.pop().unwrap()
+        }
+        #[cfg(not(windows))]
+        {
+            directory.join("configuration.json")
+        }
+    }
+    fn store() -> (TestDirectory, Arc<FakeVault>, NodeConfigurationStore) {
+        let temporary = test_directory();
         let directory = temporary.path().canonicalize().unwrap();
         let vault = Arc::new(FakeVault::default());
         let store = NodeConfigurationStore::new(directory, Uuid::new_v4(), vault.clone()).unwrap();
@@ -1051,7 +1375,7 @@ mod tests {
         assert!(view.can_start);
         let rendered = serde_json::to_string(&view).unwrap();
         assert!(!rendered.contains(credential));
-        let disk = fs::read_to_string(temporary.path().join("configuration.json")).unwrap();
+        let disk = fs::read_to_string(configuration_path(temporary.path())).unwrap();
         assert!(!disk.contains(credential));
         let snapshot = store.launch_snapshot(&manifest()).unwrap();
         assert_eq!(snapshot.revision, 1);
@@ -1067,13 +1391,13 @@ mod tests {
         store
             .save(&manifest(), request(0, Some("first-dummy")))
             .unwrap();
-        let before = fs::read(temporary.path().join("configuration.json")).unwrap();
+        let before = fs::read(configuration_path(temporary.path())).unwrap();
         assert!(store
             .save(&manifest(), request(0, Some("second-dummy")))
             .is_err());
         assert_eq!(
             before,
-            fs::read(temporary.path().join("configuration.json")).unwrap()
+            fs::read(configuration_path(temporary.path())).unwrap()
         );
         assert_eq!(vault.insertions.load(Ordering::SeqCst), 1);
     }
@@ -1193,7 +1517,7 @@ mod tests {
         store
             .save(&manifest(), request(0, Some("original-dummy")))
             .unwrap();
-        let original = fs::read(temporary.path().join("configuration.json")).unwrap();
+        let original = fs::read(configuration_path(temporary.path())).unwrap();
         vault.fail_insert_at.store(3, Ordering::SeqCst);
         let mut update = request(1, Some("replacement-not-committed"));
         update.secrets.insert(
@@ -1205,7 +1529,7 @@ mod tests {
         assert!(store.save(&manifest(), update).is_err());
         assert_eq!(
             original,
-            fs::read(temporary.path().join("configuration.json")).unwrap()
+            fs::read(configuration_path(temporary.path())).unwrap()
         );
         assert_eq!(vault.values.lock().unwrap().len(), 1);
         assert_eq!(
@@ -1214,7 +1538,7 @@ mod tests {
         );
         vault.unavailable.store(true, Ordering::SeqCst);
         assert!(store.launch_snapshot(&manifest()).is_err());
-        let disk = fs::read_to_string(temporary.path().join("configuration.json")).unwrap();
+        let disk = fs::read_to_string(configuration_path(temporary.path())).unwrap();
         for secret in [
             "original-dummy",
             "replacement-not-committed",
@@ -1232,7 +1556,7 @@ mod tests {
         store
             .save(&manifest(), request(0, Some("original-dummy")))
             .unwrap();
-        let before = fs::read(temporary.path().join("configuration.json")).unwrap();
+        let before = fs::read(configuration_path(temporary.path())).unwrap();
         *vault.make_directory_read_only.lock().unwrap() = Some(temporary.path().to_owned());
         let attempted = store.save(&manifest(), request(1, Some("replacement-not-committed")));
         fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -1241,7 +1565,7 @@ mod tests {
         assert_eq!(vault.values.lock().unwrap().len(), 1);
         assert_eq!(
             before,
-            fs::read(temporary.path().join("configuration.json")).unwrap()
+            fs::read(configuration_path(temporary.path())).unwrap()
         );
         assert_eq!(
             store.launch_snapshot(&manifest()).unwrap().environment["API_KEY"],
@@ -1280,14 +1604,14 @@ mod tests {
         fs::write(other.path().join("foreign"), b"{}").unwrap();
         symlink(
             other.path().join("foreign"),
-            temporary.path().join("configuration.json"),
+            configuration_path(temporary.path()),
         )
         .unwrap();
         assert!(store.view(&manifest()).is_err());
-        fs::remove_file(temporary.path().join("configuration.json")).unwrap();
+        fs::remove_file(configuration_path(temporary.path())).unwrap();
         fs::hard_link(
             other.path().join("foreign"),
-            temporary.path().join("configuration.json"),
+            configuration_path(temporary.path()),
         )
         .unwrap();
         assert!(store.view(&manifest()).is_err());

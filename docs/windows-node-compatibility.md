@@ -1,6 +1,6 @@
 # Windows Node 兼容审查
 
-更新：2026-10-20。范围是将 `origin/main` 的品牌、统一项目入口与应用 Node 后端代码同步到 `codex/windows-compatibility` 时的源码审查与集成检查。本轮不表示 Windows Node 已实现或 NR/W 阶段已通过。实际 Windows 基线仍见 [W2 记录](windows-w2-verification.md)、[共用管理界面记录](shared-manager-ui-verification.md)与[接续清单](windows-execution-checklist.md)。
+历史审查：2026-10-20。下文保留当时同步 `origin/main` 的源码审查与集成结果，表格中的“当前”指该次审查。2026-10-21 已按用户授权实施 Windows 私有 Node、配置文件保护、Job 进程树、代理及原生窗口接入，最新结果与尚未通过的原生桌面验收见 [Windows Node 实现与验收](windows-node-verification.md)。NR/W 阶段没有据此整体通过；既有 Windows 基线仍见 [W2 记录](windows-w2-verification.md)、[共用管理界面记录](shared-manager-ui-verification.md)与[接续清单](windows-execution-checklist.md)。
 
 用户已确认平台携带私有 Node、统一管理应用后端、可视化配置和一个应用一个原生窗口，首版兼容以 Radio 类为基线。Mac arm64 独立源码槽与 Radio 的实际记录见[本机配置与运行](node-native-configuration.md)。这些子集没有完成公开安装或 Node 槽备份、导出、复制、回收、更新与迁移，也不自动成为 Windows 验收。下列适配顺序和具体 Windows 实现选择均为建议，未确认参数不在本文冻结。
 

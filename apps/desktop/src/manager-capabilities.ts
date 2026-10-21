@@ -12,6 +12,8 @@ export interface ManagerCapabilities {
   readonly openBrowser: boolean;
   /** Display fields already returned by the platform's project status/list. */
   readonly readOnlyDetails: boolean;
+  /** Source registration, per-app configuration and the isolated Node runtime. */
+  readonly nodeApps: boolean;
 
   readonly metadata: boolean;
   readonly build: boolean;
@@ -37,6 +39,7 @@ export const MAC_MANAGER_CAPABILITIES = Object.freeze({
   openDesktop: true,
   openBrowser: true,
   readOnlyDetails: true,
+  nodeApps: true,
   metadata: true,
   build: true,
   handoff: true,
@@ -60,6 +63,7 @@ export const WINDOWS_MANAGER_CAPABILITIES = Object.freeze({
   openDesktop: true,
   openBrowser: true,
   readOnlyDetails: true,
+  nodeApps: true,
   metadata: false,
   build: false,
   handoff: false,

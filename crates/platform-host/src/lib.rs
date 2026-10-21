@@ -11,6 +11,8 @@ pub use windows::WebviewCache;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub mod windows_node_root;
+#[cfg(windows)]
 mod windows_parent_security;
 #[cfg(windows)]
 pub mod windows_projects;
@@ -26,12 +28,21 @@ mod windows_sqlite_wal;
 mod windows_workspace;
 #[cfg(windows)]
 pub use windows_runtime::open_project_browser;
+#[cfg(all(windows, feature = "test-fixtures"))]
+pub use windows_workspace::disposable_node_directory;
 #[cfg(windows)]
 pub use windows_workspace::{
     fixed_workspace_data_root, SqliteFileIdentities, SqliteFileKind, SqliteFileLease,
-    SqliteFileSet, WindowsObjectIdentity, WindowsWorkspace, WorkspaceDirectory, WorkspaceEntry,
-    WorkspaceError, WorkspaceFile, WorkspaceLock,
+    SqliteFileSet, WindowsObjectIdentity, WindowsSourceDirectory, WindowsWorkspace,
+    WorkspaceDirectory, WorkspaceEntry, WorkspaceError, WorkspaceFile, WorkspaceLock,
 };
+#[cfg(all(windows, feature = "test-fixtures"))]
+pub fn disposable_node_workspace(
+    parent: &std::path::Path,
+) -> Result<WindowsWorkspace, WorkspaceError> {
+    let _parent = disposable_node_directory(parent)?;
+    windows_workspace::node_fixture_workspace(parent.to_owned())
+}
 
 // Native probes briefly hold strict ancestor handles. Their fixtures share
 // ancestry with the workspace tests, so serialize only actual filesystem tests.

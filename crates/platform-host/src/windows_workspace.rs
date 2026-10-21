@@ -227,6 +227,9 @@ fn object(handle: Handle, directory: bool) -> Result<Arc<Object>> {
     Ok(Arc::new(value))
 }
 fn verify_leaf_name(raw: HANDLE, expected: &str) -> Result<()> {
+    verify_leaf_name_mode(raw, expected, false)
+}
+fn verify_leaf_name_mode(raw: HANDLE, expected: &str, allow_case_alias: bool) -> Result<()> {
     let mut buffer = vec![0u16; 32768];
     let length = unsafe {
         GetFinalPathNameByHandleW(
@@ -245,7 +248,23 @@ fn verify_leaf_name(raw: HANDLE, expected: &str) -> Result<()> {
             "实际文件名不是有效 Unicode。",
         )
     })?;
-    if actual.rsplit('\\').next() != Some(expected) {
+    let leaf = actual.rsplit('\\').next().unwrap_or_default();
+    let case_equal = if allow_case_alias {
+        let actual: Vec<u16> = leaf.encode_utf16().collect();
+        let expected: Vec<u16> = expected.encode_utf16().collect();
+        (unsafe {
+            windows_sys::Win32::Globalization::CompareStringOrdinal(
+                actual.as_ptr(),
+                actual.len() as i32,
+                expected.as_ptr(),
+                expected.len() as i32,
+                1,
+            )
+        }) == 2
+    } else {
+        false
+    };
+    if leaf != expected && !case_equal {
         return Err(error(
             "WORKSPACE_NAME_ALIAS_REJECTED",
             "文件名大小写或短名称别名与明确路径片段不一致。",
@@ -504,6 +523,21 @@ fn relative(
     sharing: u32,
     security: Option<&Allocation>,
 ) -> Result<Arc<Object>> {
+    relative_mode(
+        parent, name, directory, create, access, sharing, security, false,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn relative_mode(
+    parent: HANDLE,
+    name: &str,
+    directory: bool,
+    create: bool,
+    access: u32,
+    sharing: u32,
+    security: Option<&Allocation>,
+    allow_case_alias: bool,
+) -> Result<Arc<Object>> {
     let mut units = component(name)?;
     let unicode = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
@@ -566,7 +600,7 @@ fn relative(
         return Err(error("WORKSPACE_HANDLE_INVALID", "系统没有返回有效句柄。"));
     }
     let result = object(unsafe { Handle::own(raw) }, directory)?;
-    verify_leaf_name(result.raw(), name)?;
+    verify_leaf_name_mode(result.raw(), name, allow_case_alias)?;
     Ok(result)
 }
 
@@ -783,6 +817,9 @@ struct Chain {
     mapping: String,
 }
 fn open_parent(path: &Path) -> Result<Chain> {
+    open_parent_mode(path, false)
+}
+fn open_parent_mode(path: &Path, allow_case_alias: bool) -> Result<Chain> {
     let mut parts = path.components();
     let Some(Component::Prefix(prefix)) = parts.next() else {
         return Err(error(
@@ -828,7 +865,7 @@ fn open_parent(path: &Path) -> Result<Chain> {
         let name = name
             .to_str()
             .ok_or_else(|| error("WORKSPACE_PATH_REJECTED", "目录名不是有效 Unicode。"))?;
-        let next = relative(
+        let next = relative_mode(
             objects.last().unwrap().raw(),
             name,
             true,
@@ -836,6 +873,7 @@ fn open_parent(path: &Path) -> Result<Chain> {
             DIRECTORY_ACCESS,
             DIRECTORY_SHARING,
             None,
+            allow_case_alias,
         )
         .map_err(|mut failure| {
             failure.message = format!("打开固定祖先片段“{name}”失败：{}", failure.message);
@@ -1753,3 +1791,21 @@ pub(crate) fn create_private_fixture_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 #[path = "windows_workspace_tests.rs"]
 mod tests;
+
+#[path = "windows_node_files.rs"]
+mod node_files;
+pub use node_files::WindowsSourceDirectory;
+
+#[cfg(feature = "test-fixtures")]
+pub use node_files::disposable_node_directory;
+
+#[cfg(feature = "test-fixtures")]
+pub(crate) fn node_fixture_workspace(parent: PathBuf) -> Result<WindowsWorkspace> {
+    let label = parent
+        .file_name()
+        .and_then(OsStr::to_str)
+        .filter(|name| name.starts_with("windows-node-disposable-"))
+        .ok_or_else(|| error("NODE_TEST_PATH_INVALID", "只允许明确命名的Node夹具。"))?
+        .to_owned();
+    WindowsWorkspace::at(parent, true, &label)
+}

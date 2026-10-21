@@ -5,9 +5,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Read;
+#[cfg(any(test, not(windows)))]
+use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
+use std::{fs::OpenOptions, io::Read};
 
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
@@ -300,25 +302,37 @@ impl TrialManifest {
     }
 
     pub fn load(app_dir: &Path) -> Result<Self> {
-        if !app_dir.is_absolute() {
-            return Err(invalid("应用目录必须为绝对路径。"));
-        }
-        let path = checked_child(app_dir, "local-app.json", false)?;
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
+        #[cfg(windows)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
+            let root = platform_host::WindowsSourceDirectory::open(app_dir)
+                .map_err(|_| invalid("应用目录或其祖先不是受支持的普通本机目录。"))?;
+            let file = root
+                .read_bounded("local-app.json", MAX_MANIFEST_BYTES)
+                .map_err(|_| invalid("无法安全读取应用声明。"))?;
+            Self::parse(&file.bytes)
         }
-        let file = options
-            .open(path)
-            .map_err(|_| invalid("无法读取应用声明。"))?;
-        let mut bytes = Vec::new();
-        file.take((MAX_MANIFEST_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| invalid("无法读取应用声明。"))?;
-        Self::parse(&bytes)
+        #[cfg(not(windows))]
+        {
+            if !app_dir.is_absolute() {
+                return Err(invalid("应用目录必须为绝对路径。"));
+            }
+            let path = checked_child(app_dir, "local-app.json", false)?;
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            let file = options
+                .open(path)
+                .map_err(|_| invalid("无法读取应用声明。"))?;
+            let mut bytes = Vec::new();
+            file.take((MAX_MANIFEST_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|_| invalid("无法读取应用声明。"))?;
+            Self::parse(&bytes)
+        }
     }
 
     fn validate(&self) -> Result<()> {
@@ -523,6 +537,29 @@ impl TrialManifest {
     }
 }
 
+#[cfg(windows)]
+fn checked_child(root: &Path, relative_path: &str, directory: bool) -> Result<PathBuf> {
+    if !relative(relative_path) {
+        return Err(invalid("应用路径超出允许范围。"));
+    }
+    let mut parent = platform_host::WindowsSourceDirectory::open(root)
+        .map_err(|_| invalid("应用目录不是受支持的普通本机目录。"))?;
+    let parts: Vec<_> = relative_path.split('/').collect();
+    for (index, part) in parts.iter().enumerate() {
+        if index + 1 != parts.len() || directory {
+            parent = parent
+                .open_directory(part)
+                .map_err(|_| invalid("应用路径包含链接、别名或不可读取目录。"))?;
+        } else {
+            let _file = parent
+                .pin_file(part)
+                .map_err(|_| invalid("应用入口不是普通单链接文件。"))?;
+            return Ok(parent.path().join(part));
+        }
+    }
+    Ok(parent.path().to_owned())
+}
+#[cfg(not(windows))]
 fn checked_child(root: &Path, relative_path: &str, directory: bool) -> Result<PathBuf> {
     if !relative(relative_path) || !root.is_absolute() {
         return Err(invalid("应用路径超出允许范围。"));

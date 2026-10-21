@@ -1,4 +1,4 @@
-//! Disposable macOS-only experiment. This is not a project runtime or a sandbox.
+//! Explicitly managed native Node runtime. This is not an operating-system sandbox.
 //!
 //! It never discovers a workspace, starts the platform, installs dependencies, or
 //! falls back to a Node from PATH. Callers must explicitly stop the instance.
@@ -8,26 +8,39 @@ use crate::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(not(windows))]
+use std::path::Component;
+#[cfg(not(windows))]
+use std::sync::Mutex;
 use std::{
     collections::BTreeMap,
     fs,
     io::Read,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::Duration,
 };
+#[cfg(not(windows))]
+use tokio::process::{Child, ChildStdin};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    process::{Child, ChildStdin, Command},
+    process::Command,
     sync::mpsc,
     task::JoinHandle,
 };
 use uuid::Uuid;
+#[cfg(windows)]
+#[path = "windows_process.rs"]
+mod windows_process;
+#[cfg(windows)]
+use windows_process::{Child, ProcessOwnership};
+#[cfg(windows)]
+type ChildStdin = tokio::fs::File;
 
 pub const EXPECTED_NODE_VERSION: &str = "24.22.0";
 const MESSAGE_LIMIT: usize = 8192;
@@ -105,6 +118,8 @@ pub struct NodeRuntimeTrial {
     stopping: Arc<AtomicBool>,
     control_failed: Arc<AtomicBool>,
     ownership: Arc<ProcessOwnership>,
+    #[cfg(windows)]
+    _path_guards: Vec<platform_host::WindowsSourceDirectory>,
 }
 
 #[derive(Clone, Copy)]
@@ -112,17 +127,20 @@ struct ExitObservation {
     code: Option<i32>,
 }
 
+#[cfg(not(windows))]
 struct ProcessOwnership {
     state: Mutex<OwnershipState>,
     #[cfg(test)]
     signals_sent: AtomicU64,
 }
 
+#[cfg(not(windows))]
 struct OwnershipState {
     pid: u32,
     armed: bool,
 }
 
+#[cfg(not(windows))]
 impl ProcessOwnership {
     fn new(pid: u32) -> Self {
         Self {
@@ -187,6 +205,7 @@ impl ProcessOwnership {
 
 /// WNOWAIT keeps the exited leader reserved. Tokio's macOS SignalReaper does
 /// not reap a retained Child until wait/try_wait is polled or the handle drops.
+#[cfg(not(windows))]
 fn observe_without_reaping(pid: u32) -> TrialResult<Option<ExitObservation>> {
     #[cfg(target_os = "macos")]
     loop {
@@ -229,6 +248,7 @@ fn observe_without_reaping(pid: u32) -> TrialResult<Option<ExitObservation>> {
     }
 }
 
+#[cfg(not(windows))]
 fn group_has_other_members(pid: u32) -> TrialResult<bool> {
     #[cfg(target_os = "macos")]
     {
@@ -298,33 +318,40 @@ fn fail(code: &str, message: &str) -> ApiError {
 }
 
 fn checked_path(path: &Path, directory: bool) -> TrialResult<PathBuf> {
-    if !path.is_absolute() {
-        return Err(fail("TRIAL_PATH_INVALID", "Trial paths must be absolute"));
+    #[cfg(windows)]
+    {
+        crate::windows_fs::checked_runtime_path(path, directory)
     }
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        if !matches!(component, Component::RootDir | Component::Normal(_)) {
-            return Err(fail("TRIAL_PATH_INVALID", "Trial paths must be normalized"));
+    #[cfg(not(windows))]
+    {
+        if !path.is_absolute() {
+            return Err(fail("TRIAL_PATH_INVALID", "Trial paths must be absolute"));
         }
-        current.push(component.as_os_str());
-        let meta = fs::symlink_metadata(&current)
-            .map_err(|_| fail("TRIAL_PATH_INVALID", "A trial path does not exist"))?;
-        if meta.file_type().is_symlink() {
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            if !matches!(component, Component::RootDir | Component::Normal(_)) {
+                return Err(fail("TRIAL_PATH_INVALID", "Trial paths must be normalized"));
+            }
+            current.push(component.as_os_str());
+            let meta = fs::symlink_metadata(&current)
+                .map_err(|_| fail("TRIAL_PATH_INVALID", "A trial path does not exist"))?;
+            if meta.file_type().is_symlink() {
+                return Err(fail(
+                    "TRIAL_PATH_INVALID",
+                    "Linked trial paths are not accepted",
+                ));
+            }
+        }
+        let meta = fs::metadata(path)
+            .map_err(|_| fail("TRIAL_PATH_INVALID", "A trial path cannot be inspected"))?;
+        if (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
             return Err(fail(
                 "TRIAL_PATH_INVALID",
-                "Linked trial paths are not accepted",
+                "A trial path has the wrong file type",
             ));
         }
+        Ok(path.to_path_buf())
     }
-    let meta = fs::metadata(path)
-        .map_err(|_| fail("TRIAL_PATH_INVALID", "A trial path cannot be inspected"))?;
-    if (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
-        return Err(fail(
-            "TRIAL_PATH_INVALID",
-            "A trial path has the wrong file type",
-        ));
-    }
-    Ok(path.to_path_buf())
 }
 
 fn checked_storage(
@@ -424,6 +451,8 @@ fn verify_node_digest(path: &Path, expected: &str) -> TrialResult<()> {
 
 async fn verify_node_version(path: &Path) -> TrialResult<()> {
     let mut command = Command::new(path);
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     command
         .arg("--version")
         .env_clear()
@@ -491,16 +520,21 @@ struct PreparedLaunch {
     entry: PathBuf,
     trial_root: PathBuf,
     persistent: Option<(PathBuf, PathBuf)>,
+    #[cfg(windows)]
+    path_guards: Vec<platform_host::WindowsSourceDirectory>,
 }
 
 async fn prepare_launch(
     config: &RuntimeLaunchConfig,
     persistent: Option<(&Path, &Path)>,
 ) -> TrialResult<PreparedLaunch> {
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    if !cfg!(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64")
+    )) {
         return Err(fail(
             "TRIAL_PLATFORM_UNSUPPORTED",
-            "This disposable experiment only supports macOS arm64",
+            "The private Node runtime supports macOS arm64 and Windows x64",
         ));
     }
     validate_business_environment(&config.business_env)?;
@@ -533,6 +567,26 @@ async fn prepare_launch(
             checked_storage(data.to_path_buf(), cache.to_path_buf(), &cwd, &trial_root)
         })
         .transpose()?;
+    #[cfg(windows)]
+    let path_guards = {
+        let mut guards = Vec::new();
+        for (path, directory, private) in [
+            (node.as_path(), false, false),
+            (cwd.as_path(), true, false),
+            (entry.as_path(), false, false),
+            (trial_root.as_path(), true, true),
+        ] {
+            guards.push(crate::windows_fs::runtime_path_guard(
+                path, directory, private,
+            )?);
+        }
+        if let Some((data, cache)) = &persistent {
+            for path in [data, cache] {
+                guards.push(crate::windows_fs::runtime_path_guard(path, true, true)?);
+            }
+        }
+        guards
+    };
     verify_node_digest(&node, &config.expected_node_sha256)?;
     verify_node_version(&node).await?;
     Ok(PreparedLaunch {
@@ -541,6 +595,8 @@ async fn prepare_launch(
         entry,
         trial_root,
         persistent,
+        #[cfg(windows)]
+        path_guards,
     })
 }
 
@@ -596,6 +652,8 @@ impl NodeRuntimeTrial {
             entry,
             trial_root,
             persistent,
+            #[cfg(windows)]
+            mut path_guards,
         } = prepare_launch(
             &config,
             persistent
@@ -606,6 +664,11 @@ impl NodeRuntimeTrial {
         let instance_id = Uuid::new_v4().to_string();
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let run_directory = trial_root.join(format!("run-{instance_id}"));
+        #[cfg(windows)]
+        path_guards.push(crate::windows_fs::create_private_runtime_dir(
+            &run_directory,
+        )?);
+        #[cfg(not(windows))]
         fs::create_dir(&run_directory)?;
         #[cfg(unix)]
         {
@@ -615,50 +678,95 @@ impl NodeRuntimeTrial {
         let (data, cache) = if let Some(paths) = persistent {
             paths
         } else {
-            fs::create_dir(run_directory.join("data"))?;
-            fs::create_dir(run_directory.join("cache"))?;
+            #[cfg(windows)]
+            for name in ["data", "cache"] {
+                path_guards.push(crate::windows_fs::create_private_runtime_dir(
+                    &run_directory.join(name),
+                )?);
+            }
+            #[cfg(not(windows))]
+            {
+                fs::create_dir(run_directory.join("data"))?;
+                fs::create_dir(run_directory.join("cache"))?;
+            }
             (run_directory.join("data"), run_directory.join("cache"))
         };
+        #[cfg(unix)]
         for directory in [&data, &cache] {
-            #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
             }
         }
+        #[cfg(windows)]
+        path_guards.push(crate::windows_fs::create_private_runtime_dir(
+            &run_directory.join("tmp"),
+        )?);
+        #[cfg(not(windows))]
         fs::create_dir(run_directory.join("tmp"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(run_directory.join("tmp"), fs::Permissions::from_mode(0o700))?;
         }
-        let mut command = Command::new(node);
-        command
-            .arg(entry)
-            .current_dir(cwd)
-            .env_clear()
-            .env("LANG", "en_US.UTF-8")
-            .env("LC_ALL", "en_US.UTF-8")
-            .env("APP_INSTANCE_ID", &instance_id)
-            .env("APP_HOST", "127.0.0.1")
-            .env("APP_PORT", "0")
-            .env("APP_DATA_DIR", data)
-            .env("APP_CACHE_DIR", cache)
-            .env("APP_TEMP_DIR", run_directory.join("tmp"))
-            .env("TMPDIR", run_directory.join("tmp"))
-            .envs(config.business_env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(false);
-        #[cfg(unix)]
-        command.process_group(0);
-        let mut child = command.spawn().map_err(|_| {
-            fail(
-                "TRIAL_PROCESS_FAILED",
-                "Private Node could not start the trial entry",
-            )
-        })?;
+        #[cfg(not(windows))]
+        let mut child = {
+            let mut command = Command::new(node);
+            command
+                .arg(entry)
+                .current_dir(cwd)
+                .env_clear()
+                .env("LANG", "en_US.UTF-8")
+                .env("LC_ALL", "en_US.UTF-8")
+                .env("APP_INSTANCE_ID", &instance_id)
+                .env("APP_HOST", "127.0.0.1")
+                .env("APP_PORT", "0")
+                .env("APP_DATA_DIR", data)
+                .env("APP_CACHE_DIR", cache)
+                .env("APP_TEMP_DIR", run_directory.join("tmp"))
+                .env("TMPDIR", run_directory.join("tmp"))
+                .envs(config.business_env)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(false);
+            #[cfg(unix)]
+            command.process_group(0);
+            command.spawn().map_err(|_| {
+                fail(
+                    "TRIAL_PROCESS_FAILED",
+                    "Private Node could not start the trial entry",
+                )
+            })?
+        };
+        #[cfg(windows)]
+        let mut child = {
+            use std::ffi::OsString;
+            let mut environment = BTreeMap::<OsString, OsString>::from([
+                ("LANG".into(), "en_US.UTF-8".into()),
+                ("LC_ALL".into(), "en_US.UTF-8".into()),
+                ("APP_INSTANCE_ID".into(), instance_id.clone().into()),
+                ("APP_HOST".into(), "127.0.0.1".into()),
+                ("APP_PORT".into(), "0".into()),
+                ("APP_DATA_DIR".into(), data.as_os_str().into()),
+                ("APP_CACHE_DIR".into(), cache.as_os_str().into()),
+                (
+                    "APP_TEMP_DIR".into(),
+                    run_directory.join("tmp").into_os_string(),
+                ),
+                ("TEMP".into(), run_directory.join("tmp").into_os_string()),
+                ("TMP".into(), run_directory.join("tmp").into_os_string()),
+                ("SYSTEMROOT".into(), windows_process::windows_directory()?),
+                ("WINDIR".into(), windows_process::windows_directory()?),
+            ]);
+            environment.extend(
+                config
+                    .business_env
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value.into())),
+            );
+            Child::spawn(&node, &[entry.into_os_string()], &cwd, &environment)?
+        };
         let pid = child
             .id()
             .ok_or_else(|| fail("TRIAL_PROCESS_FAILED", "Trial process has no identity"))?;
@@ -672,7 +780,10 @@ impl NodeRuntimeTrial {
             .take()
             .ok_or_else(|| fail("TRIAL_PROCESS_FAILED", "Missing diagnostic stream"))?;
         let (sender, messages) = mpsc::channel(16);
+        #[cfg(not(windows))]
         let ownership = Arc::new(ProcessOwnership::new(pid));
+        #[cfg(windows)]
+        let ownership = child.ownership();
         let diagnostic_sender = sender.clone();
         let stopping = Arc::new(AtomicBool::new(false));
         let control_failed = Arc::new(AtomicBool::new(false));
@@ -737,6 +848,8 @@ impl NodeRuntimeTrial {
             stopping,
             control_failed,
             ownership,
+            #[cfg(windows)]
+            _path_guards: path_guards,
             status: TrialStatus {
                 instance_id,
                 pid,
@@ -811,6 +924,10 @@ impl NodeRuntimeTrial {
             .ok_or_else(|| fail("TRIAL_CONTROL_CLOSED", "Trial control input is closed"))?;
         input
             .write_all(&bytes)
+            .await
+            .map_err(|_| fail("TRIAL_CONTROL_CLOSED", "Trial control input closed"))?;
+        input
+            .flush()
             .await
             .map_err(|_| fail("TRIAL_CONTROL_CLOSED", "Trial control input closed"))
     }
@@ -1009,7 +1126,7 @@ impl NodeRuntimeTrial {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn group_exists(pid: u32) -> bool {
     #[cfg(unix)]
     unsafe {
@@ -1059,14 +1176,29 @@ impl Drop for NodeRuntimeTrial {
             let _ = self.ownership.signal(SIGNAL_KILL);
             self.ownership.disarm_before_reap();
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                #[cfg(windows)]
+                let path_guards = std::mem::take(&mut self._path_guards);
                 handle.spawn(async move {
+                    #[cfg(windows)]
+                    let _path_guards = path_guards;
                     let _ = child.wait().await;
+                    #[cfg(windows)]
+                    child.wait_for_tree_exit().await;
                 });
+            } else {
+                // Without an executor, keep this runtime's Windows path
+                // guards in scope until the exact owned job is empty.
+                #[cfg(windows)]
+                child.wait_for_tree_exit_blocking();
             }
         }
         self.token.clear();
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "windows_runtime_tests.rs"]
+mod windows_tests;
 
 #[cfg(test)]
 mod tests {

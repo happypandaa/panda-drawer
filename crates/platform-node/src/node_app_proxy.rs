@@ -27,6 +27,11 @@ const BODY_LIMIT: usize = 64 * 1024;
 const BOOTSTRAP_LIFETIME: Duration = Duration::from_secs(60);
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https:; media-src 'self' https:; font-src 'self'; manifest-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'";
 
+#[cfg(windows)]
+type StaticRoot = platform_host::WindowsSourceDirectory;
+#[cfg(not(windows))]
+type StaticRoot = File;
+
 struct Bootstrap {
     token: String,
     issued: Instant,
@@ -36,7 +41,7 @@ struct Authorization {
     session: String,
 }
 struct ProxyState {
-    root: Arc<File>,
+    root: Arc<StaticRoot>,
     entry: Vec<String>,
     authority: String,
     cookie_name: String,
@@ -580,19 +585,37 @@ fn open_file(root: &File, parts: &[String]) -> io::Result<File> {
     }
     open_at(&directory, last, false)
 }
-#[cfg(not(unix))]
-fn open_root(_path: &Path) -> io::Result<File> {
+#[cfg(windows)]
+fn open_root(path: &Path) -> io::Result<StaticRoot> {
+    platform_host::WindowsSourceDirectory::open(path)
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+#[cfg(windows)]
+fn open_file(root: &StaticRoot, parts: &[String]) -> io::Result<File> {
+    let (name, parents) = parts.split_last().ok_or(io::ErrorKind::InvalidInput)?;
+    let mut directory = root.clone();
+    for parent in parents {
+        directory = directory
+            .open_directory(parent)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    }
+    directory
+        .open_file(name)
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+#[cfg(not(any(unix, windows)))]
+fn open_root(_path: &Path) -> io::Result<StaticRoot> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Node browser adapter is not yet verified on this platform",
     ))
 }
-#[cfg(not(unix))]
-fn open_file(_root: &File, _parts: &[String]) -> io::Result<File> {
+#[cfg(not(any(unix, windows)))]
+fn open_file(_root: &StaticRoot, _parts: &[String]) -> io::Result<File> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
     use axum::{routing::any, Json};
@@ -948,6 +971,7 @@ mod tests {
 
     #[tokio::test]
     async fn static_pages_have_local_script_policy_and_do_not_serve_links() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
         let mut f = fixture().await;
         let response = f.request(Method::GET, "/").send().await.unwrap();
@@ -963,9 +987,23 @@ mod tests {
         );
         let outside = f.root.parent().unwrap().join("outside.txt");
         std::fs::write(&outside, "private-fixture").unwrap();
+        #[cfg(unix)]
         symlink(&outside, f.root.join("linked.txt")).unwrap();
         std::fs::hard_link(&outside, f.root.join("hardlinked.txt")).unwrap();
+        #[cfg(unix)]
         symlink(f.root.parent().unwrap(), f.root.join("linked-directory")).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let status = std::process::Command::new("cmd.exe")
+                .creation_flags(0x08000000)
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(f.root.join("linked-directory"))
+                .arg(f.root.parent().unwrap())
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "cannot create disposable junction");
+        }
         for path in [
             "/linked.txt",
             "/hardlinked.txt",
@@ -1043,14 +1081,23 @@ mod tests {
 
     #[tokio::test]
     async fn anchored_web_root_does_not_follow_replacement_parent_directory() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
         let mut f = fixture().await;
         let saved = f.root.with_file_name("original-web");
-        std::fs::rename(&f.root, &saved).unwrap();
-        let foreign = f.root.with_file_name("foreign-web");
-        std::fs::create_dir(&foreign).unwrap();
-        std::fs::write(foreign.join("index.html"), "foreign-private").unwrap();
-        symlink(&foreign, &f.root).unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::rename(&f.root, &saved).unwrap();
+            let foreign = f.root.with_file_name("foreign-web");
+            std::fs::create_dir(&foreign).unwrap();
+            std::fs::write(foreign.join("index.html"), "foreign-private").unwrap();
+            symlink(&foreign, &f.root).unwrap();
+        }
+        #[cfg(windows)]
+        assert!(
+            std::fs::rename(&f.root, &saved).is_err(),
+            "the retained Windows directory chain must prevent a replacement root"
+        );
         let response = f.request(Method::GET, "/").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!response.text().await.unwrap().contains("foreign-private"));

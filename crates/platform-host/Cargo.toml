@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+test-fixtures = []
+
 [dependencies]
 platform-project-format = { path = "../platform-project-format" }
 serde = { version = "1", features = ["derive"] }
@@ -21,6 +24,7 @@ rusqlite = { version = "0.39", features = ["bundled", "serialize", "hooks"] }
 url = "2"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Storage_FileSystem",
     "Win32_Security",
     "Win32_Security_Authorization",

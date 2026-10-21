@@ -1,6 +1,6 @@
 //! Local development platform: project storage, SQLite workers and loopback runtime.
 
-pub mod app_windows;
+pub use platform_node::app_windows;
 pub mod backups;
 pub mod builds;
 mod control;
@@ -14,11 +14,10 @@ mod identity_upgrade;
 mod lifecycle;
 mod maintenance;
 mod metadata;
-pub mod node_app_configuration;
-pub mod node_app_manifest;
-mod node_app_proxy;
-pub mod node_apps;
-pub mod node_runtime_trial;
+pub use platform_node::node_app_configuration;
+pub use platform_node::node_app_manifest;
+pub use platform_node::node_apps;
+pub use platform_node::node_runtime_trial;
 mod paths;
 mod platform_info;
 pub use platform_host::platform_support;

@@ -71,6 +71,9 @@ let root;
 let commands;
 let responder;
 let calls;
+let nodeResponder;
+const hostCommands = () => commands.filter(command => !command.startsWith('node_app_'));
+const hostCalls = () => calls.filter(call => !call.command.startsWith('node_app_'));
 
 function status(rootStatus = 'blocked', projects = []) {
   return {
@@ -105,16 +108,19 @@ function report() {
   };
 }
 
-async function setup(value = status()) {
+async function setup(value = status(), nodeMock) {
   commands = [];
   calls = [];
   responder = async command => command === 'host_status' ? report() : value;
+  nodeResponder = nodeMock ?? (async command => { if (command === 'node_app_list') return []; throw new Error('Unexpected Node command: ' + command); });
   globalThis.__HOST_IS_TAURI__ = true;
   globalThis.__HOST_INVOKE__ = async (command, args) => {
     commands.push(command);
     calls.push({ command, args });
-    assert.ok(['project_status', 'project_create', 'project_open', 'project_open_browser', 'host_status'].includes(command), 'Windows UI invoked a deferred business command: ' + command);
-    return responder(command, args);
+    assert.ok(['project_status', 'project_create', 'project_open', 'project_open_browser', 'host_status',
+      'node_app_choose_source', 'node_app_inspect', 'node_app_register', 'node_app_list', 'node_app_configuration', 'node_app_configuration_save',
+      'node_app_start', 'node_app_stop', 'node_app_restart', 'node_app_status', 'node_app_open', 'node_app_open_help'].includes(command), 'Windows UI invoked a deferred business command: ' + command);
+    return command.startsWith('node_app_') ? nodeResponder(command, args) : responder(command, args);
   };
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
@@ -208,7 +214,7 @@ test('Windows loads the actual shared Radio shell, project cards and create moda
   await key('Escape');
   assert.equal(dialog(), null);
   assert.equal(document.getElementById('root').hasAttribute('inert'), false);
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
 });
 
 test('Windows search and status filters use real events without invoking project or environment commands', async () => {
@@ -238,12 +244,12 @@ test('Windows search and status filters use real events without invoking project
   assert.equal(document.querySelector('.project-search input').value, '');
   assert.equal(filter.value, 'all');
   assert.equal(cards().length, 2);
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
 });
 
 test('mount reads actual project status and blocks creation for retained unresolved roots', async () => {
   await setup();
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
   assert.match(document.body.textContent, /未解决的旧记录/);
   assert.equal(createButton().disabled, true);
   assert.equal(cards().length, 0);
@@ -252,13 +258,13 @@ test('mount reads actual project status and blocks creation for retained unresol
   assert.match(document.body.textContent, /现有目录受保护/);
   assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, status().dataRoot);
   await click('读取目录诊断');
-  assert.deepEqual(commands, ['project_status', 'host_status']);
+  assert.deepEqual(hostCommands(), ['project_status', 'host_status']);
   assert.match(document.body.textContent, /迁移目录内条目：3/);
 });
 
 test('ready project status never starts an independent root diagnostic', async () => {
   await setup(status('ready', [project()]));
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
   assert.ok(card());
   assert.match(document.getElementById(enterButton().getAttribute('aria-describedby')).textContent, /可只读打开/);
   assert.match(enterButton().title, /可只读打开/);
@@ -266,7 +272,7 @@ test('ready project status never starts an independent root diagnostic', async (
   assert.equal(enterButton().disabled, false);
   await openSettings();
   assert.equal(findButton('读取目录诊断'), undefined);
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
 });
 
 test('refresh replaces successful status without creating projects or opening windows', async () => {
@@ -275,7 +281,7 @@ test('refresh replaces successful status without creating projects or opening wi
   next.dataRoot = 'C:\\synthetic-new-root';
   responder = async () => next;
   await refresh();
-  assert.deepEqual(commands, ['project_status', 'project_status']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_status']);
   assert.ok(card());
   await openSettings();
   assert.equal(document.querySelector('code[aria-label="固定开发数据目录"]').textContent, next.dataRoot);
@@ -312,8 +318,8 @@ test('creation is explicit, keeps metadata limits, and waits for a real acknowle
     : Promise.resolve(status('ready', [project()]));
   await submit();
   await submit();
-  assert.deepEqual(commands, ['project_status', 'project_create']);
-  assert.deepEqual(calls[1].args, { input: { name: '合成样本', description: '可丢弃验证' } });
+  assert.deepEqual(hostCommands(), ['project_status', 'project_create']);
+  assert.deepEqual(hostCalls()[1].args, { input: { name: '合成样本', description: '可丢弃验证' } });
   assert.equal(findButton('正在创建…', dialog()).disabled, true);
   assert.equal(closeButton().disabled, true);
   await key('Escape');
@@ -322,7 +328,7 @@ test('creation is explicit, keeps metadata limits, and waits for a real acknowle
   assert.ok(dialog(), 'Pending create blocks Escape, backdrop and close button');
   assert.doesNotMatch(document.body.textContent, /已创建「/);
   await act(async () => { resolveCreation(project()); });
-  assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_create', 'project_status']);
   assert.match(document.body.textContent, /已创建「合成样本」/);
   assert.equal(document.querySelector('.create-project-form'), null);
 });
@@ -338,7 +344,7 @@ test('cancelling a creation submits nothing and preserves the existing project v
   assert.ok(cancel);
   await act(async () => { cancel.click(); });
   assert.equal(document.querySelector('.create-project-form'), null);
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
   assert.equal(cards().length, 1);
   assert.ok(card());
   assert.doesNotMatch(document.body.textContent, /已创建「/);
@@ -346,7 +352,7 @@ test('cancelling a creation submits nothing and preserves the existing project v
   await beginCreate();
   assert.equal(document.querySelector('#project-name').value, '尚未提交的新样本');
   assert.equal(document.querySelector('#project-description').value, '取消不会调用项目写入或删除');
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
 });
 
 test('a successful creation refreshes both projects and opens the newly returned ID without replacing the old one', async () => {
@@ -362,7 +368,7 @@ test('a successful creation refreshes both projects and opens the newly returned
     throw new Error('Unexpected command: ' + command);
   };
   await submit();
-  assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_create', 'project_status']);
   assert.equal(cards().length, 2);
   const createdCard = card(created.name);
   assert.ok(createdCard);
@@ -381,17 +387,17 @@ test('an ambiguous creation failure preserves the draft and never retries or cla
   await fill('#project-name', '待确认样本');
   responder = async () => { throw { code: 'DISCONNECTED', message: '合成创建响应中断', details: { operationOutcome: 'unknown' } }; };
   await submit();
-  assert.deepEqual(commands, ['project_status', 'project_create']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_create']);
   assert.match(dialog().querySelector('[role="alert"]').textContent, /合成创建响应中断/);
   assert.equal(document.querySelector('#project-name').value, '待确认样本');
   assert.equal(findButton('创建项目', dialog()).disabled, true);
   assert.doesNotMatch(document.body.textContent, /已创建「/);
   await click('创建项目', dialog());
-  assert.deepEqual(commands, ['project_status', 'project_create']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_create']);
   const committed = { ...project(), id: 'prj_ambiguous_committed', name: '待确认样本' };
   responder = async () => status('ready', [committed]);
   await click('刷新状态', dialog());
-  assert.deepEqual(commands, ['project_status', 'project_create', 'project_status']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_create', 'project_status']);
   assert.ok(card(committed.name));
   assert.equal(document.querySelector('#project-name').value, '待确认样本');
   assert.equal(findButton('创建项目', dialog()).disabled, false);
@@ -403,12 +409,12 @@ test('desktop and browser actions send only the project ID to their separate nat
   await setup(status('ready', [project()]));
   responder = async () => ({ projectId: 'prj_fixture', reused: false });
   await clickElement(enterButton());
-  assert.deepEqual(calls[1], { command: 'project_open', args: { projectId: 'prj_fixture' } });
+  assert.deepEqual(hostCalls()[1], { command: 'project_open', args: { projectId: 'prj_fixture' } });
   assert.match(document.body.textContent, /已打开「合成样本」项目窗口/);
   await details();
-  assert.deepEqual(commands, ['project_status', 'project_open'], 'Opening read-only details makes no native request');
+  assert.deepEqual(hostCommands(), ['project_status', 'project_open'], 'Opening read-only details makes no native request');
   await click('浏览器打开', dialog());
-  assert.deepEqual(calls[2], { command: 'project_open_browser', args: { projectId: 'prj_fixture' } });
+  assert.deepEqual(hostCalls()[2], { command: 'project_open_browser', args: { projectId: 'prj_fixture' } });
   assert.match(document.body.textContent, /已请求默认浏览器/);
 });
 
@@ -421,7 +427,7 @@ test('a pending project opening blocks duplicate and competing actions until its
     return new Promise(resolve => { resolveOpen = resolve; });
   };
   await click('进入项目', dialog());
-  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_open']);
   const desktopAction = dialog().querySelector('.project-dialog-actions button');
   assert.equal(desktopAction.disabled, true);
   assert.equal(findButton('浏览器打开', dialog()).disabled, true);
@@ -430,12 +436,12 @@ test('a pending project opening blocks duplicate and competing actions until its
   assert.doesNotMatch(document.body.textContent, /已打开「/);
   await clickElement(desktopAction);
   await click('浏览器打开', dialog());
-  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_open']);
   await act(async () => { resolveOpen({ projectId: 'prj_fixture', reused: false }); });
   assert.match(document.body.textContent, /已打开「合成样本」/);
   assert.equal(findButton('进入项目', dialog()).disabled, false);
   assert.equal(findButton('浏览器打开', dialog()).disabled, false);
-  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_open']);
 });
 
 test('opening a project blocks a same-tick refresh before React renders the disabled controls', async () => {
@@ -456,13 +462,13 @@ test('opening a project blocks a same-tick refresh before React renders the disa
       assert.equal(refreshButton.disabled, false, 'The second event must run against the pre-render enabled refresh button');
       refreshButton.click();
     });
-    assert.deepEqual(commands, ['project_status', 'project_open'], 'The user refresh handler must see the pending open synchronously');
+    assert.deepEqual(hostCommands(), ['project_status', 'project_open'], 'The user refresh handler must see the pending open synchronously');
     assert.equal(refreshButton.disabled, true);
     assert.doesNotMatch(document.body.textContent, /已打开「/);
   } finally {
     await act(async () => { resolveOpen({ projectId: project().id, reused: false }); });
   }
-  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_open']);
   assert.match(document.body.textContent, /已打开「合成样本」/);
 });
 
@@ -487,13 +493,13 @@ test('a blocked-root diagnostic rejects duplicate diagnostics and refreshes in t
       diagnosticButton.click();
       refreshButton.click();
     });
-    assert.deepEqual(commands, ['project_status', 'host_status'], 'One pending diagnostic must exclude a second diagnostic and a project-status refresh');
+    assert.deepEqual(hostCommands(), ['project_status', 'host_status'], 'One pending diagnostic must exclude a second diagnostic and a project-status refresh');
     assert.equal(diagnosticButton.disabled, true);
     assert.equal(refreshButton.disabled, true);
   } finally {
     await act(async () => { resolveDiagnostic(report()); });
   }
-  assert.deepEqual(commands, ['project_status', 'host_status']);
+  assert.deepEqual(hostCommands(), ['project_status', 'host_status']);
   assert.match(document.body.textContent, /合成测试目录检查结果/);
   assert.equal(findButton('读取目录诊断').disabled, false);
 });
@@ -501,7 +507,8 @@ test('a blocked-root diagnostic rejects duplicate diagnostics and refreshes in t
 test('deferred manager entries explain their disabled state and never mount business panels', async () => {
   await setup(status('ready', [project()]));
   await openActions();
-  const disabled = [navButton('空间与工作区'), findButton('添加本地应用'), findButton('导入项目')];
+  const disabled = [navButton('空间与工作区'), findButton('导入项目')];
+  assert.equal(findButton('添加本地应用').disabled, false, 'Ready roots may register internal Node samples');
   for (const element of disabled) {
     assert.ok(element);
     assert.equal(element.disabled, true);
@@ -514,7 +521,7 @@ test('deferred manager entries explain their disabled state and never mount busi
   assert.equal(deletion.disabled, true);
   assert.ok(deletion.title.trim());
   await clickElement(deletion);
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
   await key('Escape');
   await openSettings();
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
@@ -539,7 +546,7 @@ test('deferred manager entries explain their disabled state and never mount busi
   }
   await key('Escape');
   assert.equal(dialog(), null);
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
 });
 
 test('Windows shares persistent appearance and themes its body-level settings portal without native commands', async () => {
@@ -556,14 +563,14 @@ test('Windows shares persistent appearance and themes its body-level settings po
   await clickElement(document.querySelector('[aria-label="切换亮色主题"]'));
   assert.equal(window.localStorage.getItem(key), 'light');
   assert.equal(document.documentElement.dataset.theme, 'light');
-  assert.deepEqual(commands, ['project_status']);
+  assert.deepEqual(hostCommands(), ['project_status']);
 });
 
 test('a failed project opening preserves the last status and requires a successful refresh before retrying', async () => {
   await setup(status('ready', [project()]));
   responder = async () => { throw { code: 'PROJECT_CHANGED', message: '合成项目身份已变化' }; };
   await clickElement(enterButton());
-  assert.deepEqual(commands, ['project_status', 'project_open']);
+  assert.deepEqual(hostCommands(), ['project_status', 'project_open']);
   assert.match(document.querySelector('[role="alert"]').textContent, /合成项目身份已变化.*请刷新确认后再操作/);
   assert.ok(card());
   assert.doesNotMatch(document.body.textContent, /已打开「/);
@@ -604,4 +611,257 @@ test('a browser preview cannot invent a local probe or invoke native commands', 
   assert.match(document.querySelector('[role="alert"]').textContent, /从 Windows 桌面应用打开/);
   assert.equal(cards().length, 0);
   assert.doesNotMatch(document.body.textContent, /synthetic-host-fixture|合成目录状态/);
+});
+
+// Node integration below uses synthetic IPC replies and artificial credentials.
+// It does not start Node, native windows, external services or real data roots.
+function nodeSample(extra = {}) {
+  return {
+    id: 'node_windows_fixture', name: '可丢弃 Node 样本', sourcePath: 'C:\\synthetic-node-source', runtime: 'node-service',
+    state: 'stopped', restartRequired: false, runningRevision: null, lastError: null,
+    fields: [
+      { name: 'API_URL', label: '服务地址', type: 'url', required: true, secret: false, default: 'https://example.invalid/api', description: '合成地址', howToGet: [] },
+      { name: 'KEY', label: '样本密钥', type: 'string', required: true, secret: true, endpointField: 'API_URL', helpUrl: 'https://example.invalid/help', description: '人工凭据', howToGet: [] },
+      { name: 'LIMIT', label: '数量', type: 'integer', required: false, secret: false, default: 7, description: '合成数量', howToGet: [] },
+    ],
+    configuration: { revision: 1, values: {}, secretStatus: { KEY: 'set' }, missingRequired: [], canStart: true },
+    ...extra,
+  };
+}
+const nodeCalls = () => calls.filter(call => call.command.startsWith('node_app_'));
+async function fillNode(label, value) {
+  const field = [...dialog().querySelectorAll('label')].find(element => element.textContent.startsWith(label));
+  assert.ok(field, label);
+  await fill(`[id="${field.htmlFor}"]`, value);
+}
+async function submitNode() {
+  await act(async () => dialog().querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+}
+async function beginNodeAdd() { await openActions(); await click('添加本地应用'); }
+
+test('Missing and protected roots never read Node state and explain the initialization requirement', async () => {
+  await setup(status('missing'));
+  assert.deepEqual(commands, ['project_status']);
+  assert.match(document.body.textContent, /先创建一个可丢弃网页项目/);
+  await openActions();
+  assert.equal(findButton('添加本地应用').disabled, true);
+  assert.match(findButton('添加本地应用').title, /初始化固定工作区/);
+  responder = async () => status('blocked');
+  await refresh();
+  assert.deepEqual(nodeCalls(), []);
+  await openActions();
+  assert.equal(findButton('添加本地应用').disabled, true);
+});
+
+test('Ready Windows roots share Node and web counts, search and filters without starting applications', async () => {
+  const node = nodeSample();
+  await setup(status('ready', [project()]), async command => { assert.equal(command, 'node_app_list'); return [node]; });
+  assert.deepEqual(commands, ['project_status', 'node_app_list']);
+  assert.equal(cards().length, 2);
+  assert.match(document.querySelector('.radio-footer').textContent, /2 APPS/);
+  await fill('.project-search input', 'C:\\synthetic-node-source');
+  assert.deepEqual(cards().map(element => element.getAttribute('aria-label')), [node.name]);
+  assert.match(document.querySelector('.radio-footer').textContent, /1 \/ 2 APPS/);
+  await fill('.project-search input', '');
+  const filter = document.querySelector('.project-filter select');
+  await act(async () => { filter.value = 'ready'; filter.dispatchEvent(new window.Event('change', { bubbles: true })); });
+  assert.equal(cards().length, 2);
+  assert.equal(enterButton(node.name).disabled, false);
+  assert.deepEqual(nodeCalls().map(call => call.command), ['node_app_list']);
+});
+
+test('Failed Node reads retain samples and disable Node actions until an explicit successful refresh', async () => {
+  const node = nodeSample();
+  await setup(status('ready', [project()]), async () => [node]);
+  nodeResponder = async () => { throw { message: '合成列表读取失败' }; };
+  await refresh();
+  assert.ok(card(node.name));
+  assert.equal(enterButton(node.name).disabled, true);
+  assert.equal(enterButton().disabled, false, 'A Node list error does not invent a web-project failure');
+  await openActions();
+  assert.equal(findButton('添加本地应用').disabled, true);
+  const before = nodeCalls().length;
+  await clickElement(enterButton(node.name));
+  await projectMenu(node.name);
+  assert.equal(document.querySelector('[role="menu"]'), null);
+  assert.equal(nodeCalls().length, before);
+  nodeResponder = async () => [node];
+  await refresh();
+  assert.equal(enterButton(node.name).disabled, false);
+  responder = async () => { throw { message: '合成工作区状态中断' }; };
+  await refresh();
+  assert.equal(enterButton(node.name).disabled, true);
+  assert.equal(nodeCalls().length, before + 1, 'A failed project status cannot trigger a Node read');
+});
+
+test('Missing required Node settings open configuration; saving keeps revision and never starts the application', async () => {
+  const missing = nodeSample({ configuration: { revision: 4, values: {}, secretStatus: { KEY: 'missing' }, missingRequired: ['KEY'], canStart: false } });
+  const saved = nodeSample({ configuration: { revision: 5, values: { LIMIT: 0 }, secretStatus: { KEY: 'set' }, missingRequired: [], canStart: true } });
+  await setup(status('ready', [project()]), async (command) => {
+    if (command === 'node_app_list') return [missing];
+    if (command === 'node_app_configuration') return missing;
+    if (command === 'node_app_configuration_save') return saved;
+    throw new Error(command);
+  });
+  await clickElement(enterButton(missing.name));
+  assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
+  assert.match(dialog().textContent, /请先配置：样本密钥/);
+  await fillNode('样本密钥', 'artificial-windows-secret');
+  await fillNode('数量', '0');
+  await submitNode();
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_configuration_save', args: { appId: missing.id, input: { revision: 4, values: { LIMIT: 0 }, secrets: { KEY: { action: 'replace', value: 'artificial-windows-secret' } } } } });
+  assert.equal(dialog().querySelector('input[type="password"]').value, '');
+  assert.equal(nodeCalls().some(call => /node_app_start|node_app_restart/.test(call.command)), false);
+});
+
+test('Pending Node entry excludes duplicate starts and same-tick web, refresh and settings actions', async () => {
+  const node = nodeSample();
+  let settleStart;
+  let observed = node;
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return [observed];
+    if (command === 'node_app_configuration') return observed;
+    if (command === 'node_app_start') return new Promise(resolve => { settleStart = resolve; });
+    if (command === 'node_app_open') return null;
+    throw new Error(command);
+  });
+  const nodeEntry = enterButton(node.name);
+  const webEntry = enterButton();
+  const refreshButton = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  const settingsButton = document.querySelector('[aria-label="设置"]');
+  await act(async () => { nodeEntry.click(); nodeEntry.click(); webEntry.click(); refreshButton.click(); settingsButton.click(); });
+  assert.equal(dialog(), null);
+  assert.deepEqual(commands, ['project_status', 'node_app_list', 'node_app_configuration', 'node_app_start']);
+  assert.equal(nodeEntry.disabled, true);
+  observed = { ...node, state: 'running', runningRevision: 1 };
+  await act(async () => settleStart(observed));
+  await clickElement(enterButton(node.name));
+  assert.deepEqual(nodeCalls().slice(-2).map(call => call.command), ['node_app_configuration', 'node_app_open']);
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_start').length, 1);
+});
+
+test('Windows source selection previews first, registers once and opens configuration without starting', async () => {
+  const node = nodeSample();
+  const preview = { runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return [];
+    if (command === 'node_app_choose_source') return node.sourcePath;
+    if (command === 'node_app_inspect') return preview;
+    if (command === 'node_app_register') return node;
+    throw new Error(command);
+  });
+  await beginNodeAdd();
+  await click('选择应用目录', dialog());
+  assert.deepEqual(nodeCalls().slice(-2), [
+    { command: 'node_app_choose_source', args: undefined },
+    { command: 'node_app_inspect', args: { sourcePath: node.sourcePath } },
+  ]);
+  assert.match(dialog().textContent, /登记不读取旧的 .env，也不会自动运行应用/);
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_register'), false);
+  await click('登记此应用', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath } });
+  assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
+  assert.equal(cards().length, 2);
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_start'), false);
+});
+
+test('An unknown Node start is never replayed; explicit refresh observes a running app before focusing it', async () => {
+  let observed = nodeSample();
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return [observed];
+    if (command === 'node_app_configuration') return observed;
+    if (command === 'node_app_start') throw { message: '合成启动响应中断', details: { operationOutcome: 'unknown' } };
+    if (command === 'node_app_open') return null;
+    throw new Error(command);
+  });
+  await clickElement(enterButton(observed.name));
+  assert.ok(dialog());
+  assert.match(dialog().textContent, /状态尚未确认|合成启动响应中断/);
+  assert.equal(findButton('进入项目', dialog()).disabled, true);
+  await click('进入项目', dialog());
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_start').length, 1);
+  await clickElement(closeButton());
+  observed = { ...observed, state: 'running', runningRevision: 1 };
+  await refresh();
+  await clickElement(enterButton(observed.name));
+  assert.equal(nodeCalls().at(-1).command, 'node_app_open');
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_start').length, 1);
+});
+
+test('Unknown registration preserves its source and does not register again when the actual list is refreshed', async () => {
+  const node = nodeSample();
+  let registered = false;
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return registered ? [node] : [];
+    if (command === 'node_app_choose_source') return node.sourcePath;
+    if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'fixture', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+    if (command === 'node_app_register') { registered = true; throw { message: '合成登记响应中断', details: { operationOutcome: 'unknown' } }; }
+    throw new Error(command);
+  });
+  await beginNodeAdd();
+  await click('选择应用目录', dialog());
+  await click('登记此应用', dialog());
+  assert.match(dialog().textContent, /synthetic-node-source/);
+  assert.equal(findButton('登记此应用', dialog()).disabled, true);
+  await click('登记此应用', dialog());
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_register').length, 1);
+  await clickElement(closeButton());
+  await refresh();
+  assert.ok(card(node.name));
+  assert.equal(dialog(), null, 'Restoring readiness cannot replay the consumed add request');
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_register').length, 1);
+});
+
+test('Unknown configuration saves retain the secret draft and require list reconciliation without replay', async () => {
+  const node = nodeSample();
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return [node];
+    if (command === 'node_app_configuration') return node;
+    if (command === 'node_app_configuration_save') throw { message: '合成保存响应中断', details: { operationOutcome: 'unknown' } };
+    throw new Error(command);
+  });
+  await details(node.name);
+  await click('应用配置', dialog());
+  await fillNode('样本密钥', 'artificial-secret-draft');
+  await submitNode();
+  assert.equal(dialog().querySelector('input[type="password"]').value, 'artificial-secret-draft');
+  assert.equal(findButton('保存配置', dialog()).disabled, true);
+  await submitNode();
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_configuration_save').length, 1);
+  await clickElement(closeButton());
+  assert.ok(dialog().querySelector('[aria-label="关闭配置确认"]'));
+  await click('丢弃草稿并关闭', dialog());
+  await refresh();
+  assert.equal(dialog(), null);
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_configuration_save').length, 1);
+});
+
+test('Node runtime actions share Mac command names, keep app IDs and apply saved running configuration only on explicit restart', async () => {
+  let observed = nodeSample({ state: 'running', runningRevision: 1 });
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return [observed];
+    if (command === 'node_app_configuration') return observed;
+    if (command === 'node_app_configuration_save') { observed = { ...observed, restartRequired: true, configuration: { ...observed.configuration, revision: 2, values: { LIMIT: 3 } } }; return observed; }
+    if (command === 'node_app_restart') { observed = { ...observed, runningRevision: 2, restartRequired: false }; return observed; }
+    if (command === 'node_app_stop') { observed = { ...observed, state: 'stopped', runningRevision: null }; return observed; }
+    if (command === 'node_app_status') return observed;
+    if (command === 'node_app_open_help') return null;
+    throw new Error(command);
+  });
+  await details(observed.name);
+  await click('应用配置', dialog());
+  await fillNode('数量', '3');
+  await submitNode();
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_restart'), false);
+  await clickElement(dialog().querySelector('.node-field-guide > summary'));
+  await click('打开官方说明', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_open_help', args: { appId: observed.id, fieldName: 'KEY' } });
+  await click('运行状态', dialog());
+  await click('重启并应用配置', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_restart', args: { appId: observed.id } });
+  await click('刷新运行状态', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_status', args: { appId: observed.id } });
+  await click('关闭应用', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_stop', args: { appId: observed.id } });
+  assert.match(dialog().textContent, /应用已关闭/);
 });

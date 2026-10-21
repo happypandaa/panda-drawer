@@ -226,6 +226,9 @@ impl WindowsProjectRuntime {
         }
         self.with_store(move |store| store.create(input)).await
     }
+    pub async fn node_app_root(&self) -> Result<crate::WorkspaceDirectory, ApiError> {
+        self.with_store(WindowsProjectStore::node_app_root).await
+    }
     pub async fn launch(&self, id: &str) -> Result<LaunchInfo, ApiError> {
         if *self.stop.borrow() {
             return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));

@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+platform-node = { path = "../platform-node" }
 platform-host = { path = "../platform-host" }
 platform-preflight = { path = "../platform-preflight" }
 platform-project-format = { path = "../platform-project-format" }

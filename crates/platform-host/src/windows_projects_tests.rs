@@ -598,3 +598,94 @@ fn strict_registration_map_decoding_rejects_duplicate_inventory_and_preserves_or
     assert_eq!(store.list().unwrap_err().code, "W2_RECORD_INVALID");
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
+
+#[test]
+fn node_access_never_initializes_a_missing_fixed_root() {
+    let _serial = serial();
+    let parent = fixture_parent();
+    let store = WindowsProjectStore::for_test(test_bundle(), parent.clone()).unwrap();
+    assert_eq!(
+        store.node_app_root().err().unwrap().code,
+        "FIXED_ROOT_MISSING"
+    );
+    assert!(!parent.join(APP_IDENTIFIER).exists());
+}
+
+fn complete_node_slot(root: &WorkspaceDirectory) -> String {
+    let id = Uuid::new_v4().to_string();
+    let slot = root.create_directory(&id).unwrap();
+    for name in ["configuration", "data", "cache", "runs"] {
+        let directory = slot.create_directory(name).unwrap();
+        if name == "configuration" {
+            directory.create_directory("credentials").unwrap();
+        }
+    }
+    slot.write_new("registration.json",&serde_json::to_vec(&json!({"version":1,"id":id,"sourcePath":r"D:\disposable-source-not-executed","manifestDigest":"a".repeat(64)})).unwrap()).unwrap();
+    crate::windows_node_root::seal_slot(root, &id).unwrap();
+    id
+}
+
+#[test]
+fn node_slots_and_static_projects_coexist_with_full_root_admission_and_original_bytes() {
+    let _serial = serial();
+    let parent = fixture_parent();
+    let store = WindowsProjectStore::for_test(test_bundle(), parent.clone()).unwrap();
+    let sample = create(&store, "static before node");
+    let before = sample_snapshot(&store, &sample);
+    let data = store.node_app_root().unwrap();
+    assert!(crate::windows_node_root::node_apps_directory(&data, false)
+        .unwrap()
+        .is_none());
+    assert!(!data.path().join("node-apps").exists());
+    let node = crate::windows_node_root::node_apps_directory(&data, true)
+        .unwrap()
+        .unwrap();
+    let id = complete_node_slot(&node);
+    assert_eq!(store.list().unwrap().len(), 1);
+    assert_eq!(sample_snapshot(&store, &sample), before);
+    drop(node);
+    drop(data);
+    store.close().unwrap();
+    let reopened = WindowsProjectStore::for_test(test_bundle(), parent).unwrap();
+    assert_eq!(reopened.list().unwrap().len(), 1);
+    assert_eq!(sample_snapshot(&reopened, &sample), before);
+    let node =
+        crate::windows_node_root::node_apps_directory(&reopened.node_app_root().unwrap(), false)
+            .unwrap()
+            .unwrap();
+    assert!(node.path().join(id).join("registration.json").is_file());
+}
+
+#[test]
+fn unknown_or_incomplete_node_root_and_slots_block_without_creating_proofs() {
+    let _serial = serial();
+    for incomplete in [false, true] {
+        let store = WindowsProjectStore::for_test(test_bundle(), fixture_parent()).unwrap();
+        let sample = create(&store, "retained static");
+        let before = sample_snapshot(&store, &sample);
+        let data = store.node_app_root().unwrap();
+        let node = if incomplete {
+            crate::windows_node_root::node_apps_directory(&data, true)
+                .unwrap()
+                .unwrap()
+        } else {
+            data.create_directory("node-apps").unwrap()
+        };
+        let unknown = if incomplete {
+            Uuid::new_v4().to_string()
+        } else {
+            "unknown-original".into()
+        };
+        node.create_directory(&unknown).unwrap();
+        assert!(store.list().is_err());
+        assert!(node.path().join(&unknown).is_dir());
+        assert!(!node
+            .path()
+            .join(&unknown)
+            .join(".windows-node-slot.json")
+            .exists());
+        // Snapshot through the already held, trusted sample directory rather
+        // than treating the rejected root as permission for new operations.
+        assert_eq!(sample_snapshot(&store, &sample), before);
+    }
+}

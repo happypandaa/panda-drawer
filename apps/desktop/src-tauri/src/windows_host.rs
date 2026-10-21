@@ -1,4 +1,7 @@
-//! Windows W2.1 host: new disposable projects and read-only welcome applications.
+//! Bounded Windows static host and manager-only, independently owned Node apps.
+
+#[path = "windows_node.rs"]
+mod windows_node;
 
 use platform_host::{
     windows_projects::BundledProject,
@@ -288,6 +291,7 @@ pub fn run() {
         std::process::exit(1);
     }
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_manager(app)
         }))
@@ -296,7 +300,19 @@ pub fn run() {
             project_status,
             project_create,
             project_open,
-            project_open_browser
+            project_open_browser,
+            windows_node::node_app_choose_source,
+            windows_node::node_app_inspect,
+            windows_node::node_app_register,
+            windows_node::node_app_list,
+            windows_node::node_app_configuration,
+            windows_node::node_app_configuration_save,
+            windows_node::node_app_start,
+            windows_node::node_app_stop,
+            windows_node::node_app_restart,
+            windows_node::node_app_status,
+            windows_node::node_app_open,
+            windows_node::node_app_open_help
         ])
         .setup(|app| match setup_manager(app) {
             Ok(()) => Ok(()),
@@ -308,6 +324,7 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            windows_node::window_event(window, event);
             if window.label() == "manager" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     // Retain the window while the unified exit path drains a
@@ -328,6 +345,21 @@ pub fn run() {
                             let runtime = state.runtime.clone();
                             let app = app.clone();
                             tauri::async_runtime::spawn(async move {
+                                let state = app.state::<WindowsDesktopState>();
+                                let _operation = state.operation_gate.lock().await;
+                                if let Err(error) = windows_node::shutdown(&app).await {
+                                    state.closing.store(false, Ordering::Release);
+                                    show_manager(&app);
+                                    use tauri_plugin_dialog::DialogExt;
+                                    app.dialog()
+                                        .message(format!(
+                                            "退出尚未完成：{}。请核对运行状态后重试退出。",
+                                            error.message
+                                        ))
+                                        .title("应用退出状态")
+                                        .show(|_| {});
+                                    return;
+                                }
                                 runtime.shutdown().await;
                                 if let Some(state) = app.try_state::<WindowsDesktopState>() {
                                     state.exit_ready.store(true, Ordering::Release);

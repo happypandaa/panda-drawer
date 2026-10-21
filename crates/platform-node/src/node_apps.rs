@@ -13,10 +13,14 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+#[cfg(not(windows))]
+use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
-    path::{Component, Path, PathBuf},
-    sync::Arc,
+    path::Component,
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -58,24 +62,61 @@ pub struct NodeApps {
     node_path: PathBuf,
     digest: String,
     inner: Mutex<Inner>,
+    #[cfg(windows)]
+    windows_root: platform_host::WorkspaceDirectory,
+    #[cfg(windows)]
+    markers: std::sync::Mutex<BTreeMap<PathBuf, platform_host::WindowsObjectIdentity>>,
 }
 
 impl NodeApps {
     pub fn new(data_root: PathBuf, node_path: PathBuf) -> Result<Self> {
-        ordinary_path(&data_root, true)?;
-        let root = data_root.join("node-apps");
-        let release: Value =
-            serde_json::from_str(include_str!("../../../scripts/node-runtime-release.json"))?;
+        #[cfg(windows)]
+        {
+            let _ = (data_root, node_path);
+            Err(fail("Windows Node 必须接收宿主已准入并持锁的固定数据根。"))
+        }
+        #[cfg(not(windows))]
+        {
+            ordinary_path(&data_root, true)?;
+            let root = data_root.join("node-apps");
+            let release: Value =
+                serde_json::from_str(include_str!("../../../scripts/node-runtime-release.json"))?;
+            let digest = release["binary"]["sha256"]
+                .as_str()
+                .ok_or_else(|| fail("内置 Node 校验信息无效。"))?
+                .to_owned();
+            Ok(Self {
+                root,
+                data_root,
+                node_path,
+                digest,
+                inner: Mutex::new(Inner::default()),
+            })
+        }
+    }
+    #[cfg(windows)]
+    pub fn new_windows(
+        root: platform_host::WorkspaceDirectory,
+        node_path: PathBuf,
+    ) -> Result<Self> {
+        root.verify_binding().map_err(crate::windows_fs::error)?;
+        platform_host::windows_node_root::node_apps_directory(&root, false)
+            .map_err(crate::windows_fs::error)?;
+        let release: Value = serde_json::from_str(include_str!(
+            "../../../scripts/node-runtime-release-windows.json"
+        ))?;
         let digest = release["binary"]["sha256"]
             .as_str()
-            .ok_or_else(|| fail("内置 Node 校验信息无效。"))?
+            .ok_or_else(|| fail("Windows私有Node校验记录无效。"))?
             .to_owned();
         Ok(Self {
-            root,
-            data_root,
+            data_root: root.path().to_owned(),
+            root: root.path().join("node-apps"),
             node_path,
             digest,
             inner: Mutex::new(Inner::default()),
+            windows_root: root,
+            markers: std::sync::Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -88,6 +129,16 @@ impl NodeApps {
 
     fn load_source(&self, source: &Path) -> Result<TrialManifest> {
         ordinary_path(source, true)?;
+        #[cfg(windows)]
+        {
+            let source = platform_host::WindowsSourceDirectory::open(source)
+                .map_err(crate::windows_fs::error)?;
+            let data = platform_host::WindowsSourceDirectory::from_workspace(&self.windows_root)
+                .map_err(crate::windows_fs::error)?;
+            if source.overlaps(&data) {
+                return Err(fail("应用源码必须与平台数据目录及祖先目录相互独立。"));
+            }
+        }
         if source.starts_with(&self.data_root) || self.data_root.starts_with(source) {
             return Err(fail(
                 "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
@@ -103,6 +154,7 @@ impl NodeApps {
         Ok(manifest)
     }
 
+    #[cfg(not(windows))]
     fn registrations(&self) -> Result<Vec<Registration>> {
         if !self.root.try_exists()? {
             return Ok(Vec::new());
@@ -126,6 +178,36 @@ impl NodeApps {
             let record: Registration = serde_json::from_slice(&read_small(&path)?)?;
             if record.version != 1 || record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
+            }
+            result.push(record);
+        }
+        result.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(result)
+    }
+    #[cfg(windows)]
+    fn registrations(&self) -> Result<Vec<Registration>> {
+        let Some(root) =
+            platform_host::windows_node_root::node_apps_directory(&self.windows_root, false)
+                .map_err(crate::windows_fs::error)?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        for entry in root.list().map_err(crate::windows_fs::error)? {
+            if entry.name == ".node-apps-root.json" {
+                continue;
+            }
+            let slot = root
+                .open_directory(&entry.name)
+                .map_err(crate::windows_fs::error)?;
+            let record: Registration = serde_json::from_slice(
+                &slot
+                    .read_bounded("registration.json", 65536)
+                    .map_err(crate::windows_fs::error)?
+                    .bytes,
+            )?;
+            if record.version != 1 || record.id != entry.name {
+                return Err(fail("Node登记记录无效，已保留现场。"));
             }
             result.push(record);
         }
@@ -156,6 +238,10 @@ impl NodeApps {
     fn store(&self, id: &str) -> Result<NodeConfigurationStore> {
         let directory = self.root.join(id).join("configuration");
         let instance = Uuid::parse_str(id).map_err(|_| fail("应用标识无效。"))?;
+        #[cfg(windows)]
+        let vault = LocalFileVault::open_existing(directory.join("credentials"), instance)
+            .map_err(|e| fail(e.to_string()))?;
+        #[cfg(not(windows))]
         let vault = LocalFileVault::new(directory.join("credentials"), instance)
             .map_err(|e| fail(e.to_string()))?;
         NodeConfigurationStore::new(directory, instance, Arc::new(vault))
@@ -181,11 +267,7 @@ impl NodeApps {
             .running
             .get(&record.id)
             .filter(|run| !run.cleanup_pending);
-        let marker = self
-            .root
-            .join(&record.id)
-            .join("active.json")
-            .try_exists()?;
+        let marker = self.marker_exists(&self.root.join(&record.id).join("active.json"))?;
         let error = inner.errors.get(&record.id).cloned().or_else(|| {
             (marker && running.is_none()).then(|| {
                 "上次运行未完成正常关闭，已阻止再次启动。请保留应用数据和运行记录以便恢复。".into()
@@ -210,10 +292,25 @@ impl NodeApps {
 
     pub async fn register(&self, source: PathBuf) -> Result<Value> {
         let inner = self.inner.lock().await;
+        #[cfg(windows)]
+        let source_guard = platform_host::WindowsSourceDirectory::open(&source)
+            .map_err(crate::windows_fs::error)?;
+        #[cfg(windows)]
+        let source = source_guard.path().to_owned();
         let manifest = self.load_source(&source)?;
+        #[cfg(windows)]
+        platform_host::windows_node_root::node_apps_directory(&self.windows_root, true)
+            .map_err(crate::windows_fs::error)?;
+        #[cfg(not(windows))]
         private_dir(&self.root)?;
         for record in self.registrations()? {
-            if record.source_path == source {
+            #[cfg(windows)]
+            let same_source = platform_host::WindowsSourceDirectory::open(&record.source_path)
+                .map(|guard| guard.identity() == source_guard.identity())
+                .unwrap_or(false);
+            #[cfg(not(windows))]
+            let same_source = record.source_path == source;
+            if same_source {
                 return self.detail(&record, &self.manifest(&record)?, &inner);
             }
         }
@@ -223,6 +320,8 @@ impl NodeApps {
         for name in ["configuration", "data", "cache", "runs"] {
             private_dir(&slot.join(name))?;
         }
+        #[cfg(windows)]
+        private_dir(&slot.join("configuration/credentials"))?;
         let manifest_digest = digest_manifest(&source)?;
         let record = Registration {
             version: 1,
@@ -231,7 +330,16 @@ impl NodeApps {
             manifest_digest,
         };
         // The digest is computed from the explicit source, not a cached declaration.
-        write_new_json(&slot.join("registration.json"), &record)?;
+        self.write_record(&slot.join("registration.json"), &record)?;
+        #[cfg(windows)]
+        {
+            let root = self
+                .windows_root
+                .open_directory("node-apps")
+                .map_err(crate::windows_fs::error)?;
+            platform_host::windows_node_root::seal_slot(&root, &record.id)
+                .map_err(crate::windows_fs::error)?;
+        }
         self.detail(&record, &manifest, &inner)
     }
 
@@ -267,7 +375,7 @@ impl NodeApps {
         let manifest = self.manifest(&record)?;
         self.store(id)?
             .save(&manifest, input)
-            .map_err(|e| fail(e.to_string()))?;
+            .map_err(crate::node_app_configuration::ConfigurationError::into_api_error)?;
         self.detail(&record, &manifest, &inner)
     }
 
@@ -305,7 +413,7 @@ impl NodeApps {
         let manifest = self.manifest(&record)?;
         let slot = self.root.join(id);
         let marker = slot.join("active.json");
-        if marker.try_exists()? {
+        if self.marker_exists(&marker)? {
             return Err(fail(
                 "上次运行没有正常关闭，已阻止再次启动。请保留运行记录以便恢复。",
             ));
@@ -331,7 +439,7 @@ impl NodeApps {
         };
         NodeRuntimeTrial::preflight(&config, &slot.join("data"), &slot.join("cache")).await?;
         // Write intent before spawning. A host hard crash fails closed; no PID guessing.
-        write_new_json(
+        self.write_record(
             &marker,
             &json!({"version":1,"hostPid":std::process::id(),"runDirectory":trial_root}),
         )?;
@@ -412,7 +520,7 @@ impl NodeApps {
         match runtime.stop().await {
             Ok(status) if status.process_group_exited => {
                 if clean_shutdown(&status) {
-                    let _ = fs::remove_file(self.root.join(id).join("active.json"));
+                    let _ = self.remove_marker(&self.root.join(id).join("active.json"));
                 }
             }
             _ => {
@@ -459,7 +567,7 @@ impl NodeApps {
                 );
                 return Err(fail("应用未正常关闭，请保留运行记录以便恢复。"));
             }
-            fs::remove_file(self.root.join(id).join("active.json"))?;
+            self.remove_marker(&self.root.join(id).join("active.json"))?;
             inner.errors.remove(id);
         }
         Ok(())
@@ -569,6 +677,71 @@ impl NodeApps {
         let mut inner = self.inner.lock().await;
         self.monitor(&mut inner).await;
     }
+    fn write_record(&self, path: &Path, value: &impl Serialize) -> Result<()> {
+        #[cfg(windows)]
+        {
+            let parent = path.parent().ok_or_else(|| fail("记录没有父目录。"))?;
+            let name = path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .ok_or_else(|| fail("记录名无效。"))?;
+            let directory = crate::windows_fs::managed_directory(&self.windows_root, parent)?;
+            let identity = directory
+                .write_new(name, &serde_json::to_vec_pretty(value)?)
+                .map_err(crate::windows_fs::error)?;
+            if name == "active.json" {
+                self.markers
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(path.to_owned(), identity);
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            write_new_json(path, value)
+        }
+    }
+    fn marker_exists(&self, path: &Path) -> Result<bool> {
+        #[cfg(windows)]
+        {
+            let directory = crate::windows_fs::managed_directory(
+                &self.windows_root,
+                path.parent().ok_or_else(|| fail("运行标记路径无效。"))?,
+            )?;
+            match directory.read_bounded("active.json", 65536) {
+                Ok(_) => Ok(true),
+                Err(error) if error.code == "WORKSPACE_NAME_MISSING" => Ok(false),
+                Err(error) => Err(crate::windows_fs::error(error)),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(path.try_exists()?)
+        }
+    }
+    fn remove_marker(&self, path: &Path) -> Result<()> {
+        #[cfg(windows)]
+        {
+            let mut markers = self.markers.lock().unwrap_or_else(|p| p.into_inner());
+            let identity = markers
+                .get(path)
+                .ok_or_else(|| fail("当前宿主不拥有此运行标记，已保留。"))?;
+            let directory = crate::windows_fs::managed_directory(
+                &self.windows_root,
+                path.parent().ok_or_else(|| fail("运行标记路径无效。"))?,
+            )?;
+            directory
+                .remove_file_checked("active.json", identity)
+                .map_err(crate::windows_fs::error)?;
+            markers.remove(path);
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(fs::remove_file(path)?)
+        }
+    }
 }
 
 fn digest_manifest(source: &Path) -> Result<String> {
@@ -578,6 +751,11 @@ fn digest_manifest(source: &Path) -> Result<String> {
     ))
 }
 
+#[cfg(windows)]
+fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
+    crate::windows_fs::runtime_path_guard(path, directory, false).map(|_| ())
+}
+#[cfg(not(windows))]
 fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
     if !path.is_absolute()
         || path
@@ -607,6 +785,11 @@ fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn private_dir(path: &Path) -> Result<()> {
+    crate::windows_fs::create_private_runtime_dir(path).map(|_| ())
+}
+#[cfg(not(windows))]
 fn private_dir(path: &Path) -> Result<()> {
     ordinary_path(path.parent().ok_or_else(|| fail("应用目录无效。"))?, true)?;
     if !path.try_exists()? {
@@ -621,6 +804,23 @@ fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn read_small(path: &Path) -> Result<Vec<u8>> {
+    let directory = platform_host::WindowsSourceDirectory::open(
+        path.parent().ok_or_else(|| fail("记录路径无效。"))?,
+    )
+    .map_err(crate::windows_fs::error)?;
+    directory
+        .read_bounded(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| fail("记录名无效。"))?,
+            65536,
+        )
+        .map(|file| file.bytes)
+        .map_err(crate::windows_fs::error)
+}
+#[cfg(not(windows))]
 fn read_small(path: &Path) -> Result<Vec<u8>> {
     ordinary_path(path, false)?;
     let mut options = OpenOptions::new();
@@ -638,6 +838,7 @@ fn read_small(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(not(windows))]
 fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
     ordinary_path(path.parent().ok_or_else(|| fail("记录目录无效。"))?, true)?;
     let mut options = OpenOptions::new();
@@ -657,3 +858,7 @@ fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 #[path = "node_apps_lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(all(test, windows))]
+#[path = "windows_node_apps_tests.rs"]
+mod windows_tests;

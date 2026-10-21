@@ -20,7 +20,7 @@
 | `boolean` | 开关 | `false` 是有效值，不当作缺失 |
 | `select` | 固定型号或模式 | 选项值唯一、默认值属于选项；不能动态执行代码取得选项 |
 
-每个字段的必填属性为 `name / label / type / required / secret / description / howToGet`；可选属性为 `placeholder / default / helpUrl / endpointField / options`。版本固定为 `configuration.version: 1`，最多 32 个字段；准确字节预算及保留变量表以 [Rust 读取器](../../crates/platform-core/src/node_app_manifest.rs) 为准。
+每个字段的必填属性为 `name / label / type / required / secret / description / howToGet`；可选属性为 `placeholder / default / helpUrl / endpointField / options`。版本固定为 `configuration.version: 1`，最多 32 个字段；准确字节预算及保留变量表以 [Rust 读取器](../../crates/platform-node/src/node_app_manifest.rs) 为准。
 
 `required` 表示**整个受管应用启动前必须有有效值**；有合法普通默认值即可满足。当前没有条件必填、功能分组、折叠高级设置、用户校验脚本或任意正则字段，不能在清单自行加属性假装平台已支持。
 

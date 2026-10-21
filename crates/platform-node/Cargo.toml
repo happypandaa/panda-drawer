@@ -1,0 +1,36 @@
+[package]
+name = "platform-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+platform-project-format = { path = "../platform-project-format" }
+axum = "0.8"
+futures-util = "0.3"
+fs2 = "0.4"
+mime_guess = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+platform-host = { path = "../platform-host" }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects",
+    "Win32_System_Pipes", "Win32_System_IO", "Win32_System_Environment",
+    "Win32_System_SystemInformation",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+platform-host = { path = "../platform-host", features = ["test-fixtures"] }

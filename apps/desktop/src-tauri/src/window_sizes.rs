@@ -1,5 +1,5 @@
 //! Native-only size handling for application windows, never the manager.
-use platform_core::app_windows::{
+use platform_node::app_windows::{
     fit_window_size, AppWindowConfig, LogicalWindowSize, WindowIdentity, WindowSizeStore,
 };
 use std::{collections::BTreeMap, path::Path, sync::Mutex};

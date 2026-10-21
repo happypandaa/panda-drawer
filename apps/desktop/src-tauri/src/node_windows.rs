@@ -1,7 +1,7 @@
 //! Exactly one native container per Node application. Only the native manager
 //! can create it; closing the container revokes its page and stops its backend.
 use super::{ApiError, AppState};
-use platform_core::app_windows::{AppWindowConfig, WindowIdentity, MIN_HEIGHT, MIN_WIDTH};
+use platform_node::app_windows::{AppWindowConfig, WindowIdentity, MIN_HEIGHT, MIN_WIDTH};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -175,28 +175,38 @@ async fn build(
         .unwrap_or_default();
     let identity = WindowIdentity::node(id);
     let size = state.window_sizes.initial(app, &identity, config);
-    let window =
-        tauri::WebviewWindowBuilder::new(app, label(id)?, tauri::WebviewUrl::External(launch))
-            .title(super::project_title(title))
-            .inner_size(size.width, size.height)
-            .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
-            .disable_drag_drop_handler()
-            .on_navigation(move |url| {
-                let current = navigation.lock().unwrap_or_else(|p| p.into_inner());
-                navigation_allowed(
-                    url,
-                    current.origin.as_ref(),
-                    matches!(
-                        current.phase,
-                        Phase::Restarting | Phase::Closing | Phase::Failed
-                    ),
-                )
-            })
-            .on_new_window(|_, _| NewWindowResponse::Deny)
-            // This source contract does not yet declare camera/microphone grants.
-            .on_permission_request(|_, _| PermissionResponse::Deny)
-            .build()
-            .map_err(|_| error("无法打开应用窗口，请检查系统窗口状态后再试。"))?;
+    let builder =
+        tauri::WebviewWindowBuilder::new(app, label(id)?, tauri::WebviewUrl::External(launch));
+    #[cfg(windows)]
+    let builder = {
+        platform_host::check_webview_overrides().map_err(|message| error(&message))?;
+        let cache = platform_host::create_webview_cache().map_err(|message| error(&message))?;
+        builder
+            .data_directory(cache.path().to_path_buf())
+            .incognito(true)
+    };
+    let window = builder
+        .title(super::project_title(title))
+        .inner_size(size.width, size.height)
+        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .disable_drag_drop_handler()
+        .on_navigation(move |url| {
+            let current = navigation.lock().unwrap_or_else(|p| p.into_inner());
+            navigation_allowed(
+                url,
+                current.origin.as_ref(),
+                matches!(
+                    current.phase,
+                    Phase::Restarting | Phase::Closing | Phase::Failed
+                ),
+            )
+        })
+        .on_new_window(|_, _| NewWindowResponse::Deny)
+        .on_download(|_, _| false)
+        // This source contract does not yet declare camera/microphone grants.
+        .on_permission_request(|_, _| PermissionResponse::Deny)
+        .build()
+        .map_err(|_| error("无法打开应用窗口，请检查系统窗口状态后再试。"))?;
     state.window_sizes.track(&window, identity, config);
     let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
     if current.phase == Phase::Opening {
@@ -324,7 +334,7 @@ pub(super) async fn restart(
     result
 }
 
-/// Called synchronously on CloseRequested, before returning to Cocoa.
+/// Called synchronously on CloseRequested, before returning to the native event loop.
 pub(super) fn close_requested(window: &tauri::Window) -> bool {
     let Some(id) = window.label().strip_prefix("node-app-") else {
         return false;
@@ -445,6 +455,39 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
             }
         }
     }
+}
+
+#[cfg(windows)]
+pub(super) async fn shutdown(app: &tauri::AppHandle, state: &AppState) -> Result<(), ApiError> {
+    state.shutting_down.store(true, Ordering::Release);
+    let _operation = state.node_windows.operations.lock().await;
+    let sessions: Vec<_> = state
+        .node_windows
+        .sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .map(|(id, current)| (id.clone(), current.clone()))
+        .collect();
+    let mut window_error = None;
+    for (id, current) in sessions {
+        phase(&current, Phase::Closing, None);
+        if let Some(window) = app.get_webview_window(&label(&id)?) {
+            let _ = blank(&window).await;
+            if window.destroy().is_err() {
+                window_error = Some(error("应用窗口尚未完全关闭，请重试退出。"));
+            }
+        }
+    }
+    state.node_apps.stop_all().await?;
+    if !state.node_apps.owned_process_ids().await.is_empty() {
+        return Err(error("应用进程尚未完全退出，请保留平台并重试退出。"));
+    }
+    if let Some(error) = window_error {
+        return Err(error);
+    }
+    state.window_sizes.flush();
+    Ok(())
 }
 
 #[cfg(test)]

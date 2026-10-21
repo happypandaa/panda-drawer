@@ -1,5 +1,5 @@
 //! Host-owned application window preferences. These confer no browser permissions.
-use crate::{projects::check_no_symlinks, ApiError};
+use crate::{paths::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -147,44 +147,69 @@ impl WindowSizeStore {
     /// A malformed cache is optional UI state: preserve it and continue without
     /// writing over it. This never initializes or redirects a workspace.
     pub fn new(data_root: &Path) -> Self {
-        let path = data_root.join("app-window-sizes.json");
-        let mut inner = Inner {
-            sizes: BTreeMap::new(),
-            previous: None,
-            writable: true,
-            dirty: false,
-            warning: None,
-        };
-        match read_cache(&path) {
-            Ok(Some(bytes)) => {
-                match serde_json::from_slice::<Cache>(&bytes) {
-                    Ok(cache)
-                        if cache.schema_version == 1
-                            && cache.sizes.len() <= MAX_ENTRIES
-                            && cache
-                                .sizes
-                                .iter()
-                                .all(|(key, size)| key.len() <= 8192 && size.valid()) =>
-                    {
-                        inner.sizes = cache.sizes
+        #[cfg(windows)]
+        {
+            let _ = data_root;
+            // Windows keeps preferences in this host session until a separate
+            // persistent cache contract is admitted by its workspace validator.
+            // No path is read or created through the macOS cache implementation.
+            Self::session_only()
+        }
+        #[cfg(not(windows))]
+        {
+            let path = data_root.join("app-window-sizes.json");
+            let mut inner = Inner {
+                sizes: BTreeMap::new(),
+                previous: None,
+                writable: true,
+                dirty: false,
+                warning: None,
+            };
+            match read_cache(&path) {
+                Ok(Some(bytes)) => {
+                    match serde_json::from_slice::<Cache>(&bytes) {
+                        Ok(cache)
+                            if cache.schema_version == 1
+                                && cache.sizes.len() <= MAX_ENTRIES
+                                && cache
+                                    .sizes
+                                    .iter()
+                                    .all(|(key, size)| key.len() <= 8192 && size.valid()) =>
+                        {
+                            inner.sizes = cache.sizes
+                        }
+                        _ => {
+                            inner.writable = false;
+                            inner.warning =
+                                Some("窗口尺寸缓存无效，已保留原文件并使用应用默认尺寸。".into());
+                        }
                     }
-                    _ => {
-                        inner.writable = false;
-                        inner.warning =
-                            Some("窗口尺寸缓存无效，已保留原文件并使用应用默认尺寸。".into());
-                    }
+                    inner.previous = Some(bytes);
                 }
-                inner.previous = Some(bytes);
+                Ok(None) => {}
+                Err(error) => {
+                    inner.writable = false;
+                    inner.warning =
+                        Some(format!("窗口尺寸缓存无法读取，已保留现场：{}", error.code));
+                }
             }
-            Ok(None) => {}
-            Err(error) => {
-                inner.writable = false;
-                inner.warning = Some(format!("窗口尺寸缓存无法读取，已保留现场：{}", error.code));
+            Self {
+                path,
+                inner: Mutex::new(inner),
             }
         }
+    }
+
+    pub fn session_only() -> Self {
         Self {
-            path,
-            inner: Mutex::new(inner),
+            path: PathBuf::new(),
+            inner: Mutex::new(Inner {
+                sizes: BTreeMap::new(),
+                previous: None,
+                writable: false,
+                dirty: false,
+                warning: None,
+            }),
         }
     }
 
@@ -571,6 +596,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn bad_or_external_cache_changes_are_preserved_without_blocking_initial_size() {
         let root = tempfile::tempdir().unwrap();
@@ -611,6 +637,30 @@ mod tests {
         fs::write(&file, b"external-change").unwrap();
         assert!(store.flush().is_err());
         assert_eq!(fs::read(&file).unwrap(), b"external-change");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sizes_remember_only_in_session_and_never_touch_cache_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("app-window-sizes.json");
+        fs::write(&cache, b"existing evidence").unwrap();
+        let store = WindowSizeStore::new(root.path());
+        let id = WindowIdentity::node("disposable");
+        let config = AppWindowConfig::default();
+        let size = LogicalWindowSize {
+            width: 900.0,
+            height: 600.0,
+        };
+        store.remember(&id, config, size);
+        store.flush().unwrap();
+        assert_eq!(store.initial_size(&id, config, screen()), size);
+        assert_eq!(fs::read(&cache).unwrap(), b"existing evidence");
+        assert_ne!(
+            WindowSizeStore::new(root.path()).initial_size(&id, config, screen()),
+            size
+        );
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[cfg(target_os = "macos")]
