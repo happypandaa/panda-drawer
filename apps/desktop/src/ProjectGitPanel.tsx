@@ -45,6 +45,7 @@ const repositoryLabels: Record<string, string> = {
   ambiguous: '检测到多个仓库位置', unsupported: '当前仓库形式尚不支持', unsafe: '仓库路径需要检查',
 };
 const changeLabels: Record<string, string> = { add: '新增', modify: '修改', delete: '删除' };
+const recheckingNotice = '任务已结束，正在重新核对当前源码与版本。';
 
 // Project drafts stay separate. A platform-instance change retains the draft
 // while replacing the request lifetime, so stale responses cannot publish it.
@@ -97,7 +98,10 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     } catch (cause) {
       if (current(generation) && request === readSequence.current) setReadError(messageFrom(cause));
     } finally {
-      if (current(generation) && request === readSequence.current) setReading(false);
+      if (current(generation) && request === readSequence.current) {
+        setReading(false);
+        setNotice(value => value === recheckingNotice ? '' : value);
+      }
     }
   }, [projectId, current]);
 
@@ -122,7 +126,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
       if (!current(generation) || currentTask.current?.taskId !== selected.taskId) return;
       if (value.taskId !== selected.taskId || value.projectId !== projectId) throw new Error('任务身份不符，请重新核对状态。');
       setPollError('');
-      if (acceptTask(value)) { setNotice('任务已结束，正在重新核对当前源码与版本。'); await read(); }
+      if (acceptTask(value)) { setNotice(recheckingNotice); await read(); }
     } catch (cause) {
       if (current(generation)) setPollError(`任务状态暂时无法读取：${messageFrom(cause)}。请刷新状态，勿重复提交。`);
     } finally { polling.current = false; }
@@ -155,6 +159,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
 
   const active = Boolean(task && !task.final);
   const writable = !disabled && !busy && !active && !reading && fresh;
+  const hasChanges = Boolean(status?.changes.length);
   const validAuthor = authorName.trim().length > 0 && authorName.trim().length <= 200
     && !/[\x00-\x1f\x7f<>]/.test(authorName)
     && authorEmail.trim().length <= 254 && /^[^\s<>@]+@[^\s<>@]+$/.test(authorEmail.trim());
@@ -162,7 +167,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
 
   async function submit(operation: 'initialize' | 'save') {
     if (pending.current || currentTask.current && !currentTask.current.final || !writable || !status) return;
-    if (operation === 'initialize' ? !status.canInitialize : !status.canSave || !validAuthor || !validMessage) return;
+    if (operation === 'initialize' ? !status.canInitialize : !status.canSave || !hasChanges || !validAuthor || !validMessage) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
     const generation = lifetime.current;
     readSequence.current += 1; setFresh(false);
@@ -235,7 +240,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
         <label htmlFor={`${id}-name`}>作者姓名</label><input id={`${id}-name`} value={authorName} onChange={event => changeDraft({ ...draftValues, authorName: event.target.value })} maxLength={200} readOnly={busy} autoComplete="off" />
         <label htmlFor={`${id}-email`}>作者邮箱</label><input id={`${id}-email`} type="email" value={authorEmail} onChange={event => changeDraft({ ...draftValues, authorEmail: event.target.value })} maxLength={254} readOnly={busy} autoComplete="off" />
         <p>作者仅用于本次提交，由你填写，不读取或修改全局 Git 作者配置。</p>
-        <button type="submit" className="primary-button" disabled={!writable || !status.canSave || !validAuthor || !validMessage}>保存源码版本</button>
+        <button type="submit" className="primary-button" disabled={!writable || !status.canSave || !hasChanges || !validAuthor || !validMessage}>保存源码版本</button>
       </form>
     </>}
     {task && <><ProjectTask key={task.taskId} task={task} />{!task.final && <><p role="status">关闭此面板不会停止任务。</p><button type="button" className="refresh-button" disabled={busy} onClick={() => void cancel()}>取消当前操作</button></>}</>}

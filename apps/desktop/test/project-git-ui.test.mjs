@@ -153,6 +153,62 @@ test('Saving requires explicit author and message, sends an explicit null unborn
   assert.match(document.body.textContent, /源码版本已保存/);
 });
 
+test('A clean source scope disables saving even when the repository supports saves, including direct form submission', async () => {
+  let changed = false;
+  const { calls } = await setup({ overrides: { project_git_status: () => status({ changes: changed ? status().changes : [], canSave: true }) } });
+  await fill();
+  assert.equal(save().disabled, true);
+  assert.match(document.body.textContent, /没有未保存的源码变更/);
+  await submit();
+  assert.equal(commandCalls(calls, 'project_git_save').length, 0);
+  changed = true; await click(refresh());
+  assert.equal(save().disabled, false);
+  assert.equal(field('版本说明').value, '保存本机源码修改');
+});
+
+for (const readFails of [false, true]) {
+  test(`The post-save recheck notice ends when the status read ${readFails ? 'fails' : 'completes with a clean scope'}`, async () => {
+    const recheck = deferred(); let reads = 0;
+    const { calls } = await setup({ overrides: {
+      project_git_status: () => ++reads === 1 ? status() : recheck.promise,
+      project_git_save: () => task(),
+      task_get: () => task({ final: true, status: 'succeeded', result: { operationOutcome: 'committed', commit: nextOid } }),
+    } });
+    await fill(); await submit(); await tick();
+    assert.match(document.body.textContent, /任务已结束，正在重新核对/);
+    assert.equal(save().disabled, true);
+    await act(async () => {
+      if (readFails) recheck.reject(new Error('人工核对失败，请保留已提交版本'));
+      else recheck.resolve(status({ changes: [], repository: { ...status().repository, head: { oid: nextOid, branch: 'refs/heads/main' } } }));
+    });
+    assert.doesNotMatch(document.body.textContent, /任务已结束，正在重新核对/);
+    assert.match(document.body.textContent, /源码版本已保存/);
+    assert.ok(document.body.textContent.includes(nextOid));
+    if (readFails) assert.match(document.body.textContent, /人工核对失败/);
+    else assert.match(document.body.textContent, /没有未保存的源码变更/);
+    assert.equal(save().disabled, true);
+    await submit(); assert.equal(commandCalls(calls, 'project_git_save').length, 1);
+  });
+}
+
+test('Finishing a status recheck preserves a newer cancellation result notice', async () => {
+  const cancellation = deferred(); const recheck = deferred(); let reads = 0;
+  const finalTask = task({ final: true, status: 'failed', error: { code: 'CANCELLED', message: '人工取消结果', details: { operationOutcome: 'not_committed' } } });
+  await setup({ overrides: {
+    project_git_status: () => ++reads === 1 ? status() : recheck.promise,
+    project_git_save: () => task(),
+    project_git_cancel: () => cancellation.promise,
+    task_get: () => finalTask,
+  } });
+  await fill(); await submit(); await click(byText('取消当前操作')); await tick();
+  assert.match(document.body.textContent, /任务已结束，正在重新核对/);
+  await act(async () => cancellation.resolve(finalTask));
+  assert.match(document.body.textContent, /任务已经结束，请核对最终结果/);
+  await act(async () => recheck.resolve(status()));
+  assert.match(document.body.textContent, /任务已经结束，请核对最终结果/);
+  assert.match(document.body.textContent, /人工取消结果/);
+});
+
 test('A rejected save retains draft/error and requires a refreshed snapshot before explicit retry', async () => {
   let reads = 0; let writes = 0;
   const { calls, drafts } = await setup({ overrides: {
@@ -230,6 +286,7 @@ test('A final unknown outcome preserves the draft and never resubmits automatica
   } });
   await fill(); await submit(); await tick();
   assert.match(document.body.textContent, /尚未确认|尚不能确认|无法确认|结果不明|结果尚/);
+  assert.doesNotMatch(document.body.textContent, /任务已结束，正在重新核对/);
   assert.equal(commandCalls(calls, 'project_git_save').length, 1);
   assert.deepEqual(drafts.at(-1), { dirty: true, pending: false });
   assert.equal(field('版本说明').value, '保存本机源码修改');
