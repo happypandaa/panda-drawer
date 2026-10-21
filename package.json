@@ -21,6 +21,7 @@
     "test:process": "node --test scripts/process-test.mjs",
     "test:node-runtime": "node --test scripts/package-node-runtime-test.mjs",
     "test:development-node": "node --test scripts/package-development-node-test.mjs",
+    "test:development-git": "node --test scripts/package-development-git-test.mjs",
     "test:platform-support": "node scripts/platform-support-test.mjs",
     "test:preflight": "node scripts/rust.mjs test --locked -p platform-preflight --lib",
     "cli": "node scripts/rust.mjs run -p platform-cli --",

@@ -7,6 +7,7 @@ import { root, run, rustEnvironment } from './process.mjs';
 import { packageTemplate } from './package-template.mjs';
 import { packageNodeRuntime } from './package-node-runtime.mjs';
 import { prepareDevelopmentNode } from './package-development-node.mjs';
+import { prepareDevelopmentGit } from './package-development-git.mjs';
 
 // tauri-build copies resources over target/<profile>/resources. Earlier trial
 // copies used 0444/0555 modes, so replacing them fails before bundling. Repair
@@ -77,6 +78,10 @@ export async function prepareDesktop({ release = false } = {}) {
   await prepareDevelopmentNode({
     outputDir: path.join(resources, 'development-node'),
     cacheDir: path.join(root, '.tools/node-runtime-cache'),
+  });
+  await prepareDevelopmentGit({
+    outputDir: path.join(resources, 'development-git'),
+    cacheDir: path.join(root, '.tools/development-git-cache'),
   });
   const resourceFilter = (source) => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests'].includes(part));
   await cp(path.join(root, 'packages/sdk'), path.join(resources, 'sdk'), { recursive: true, filter: resourceFilter });

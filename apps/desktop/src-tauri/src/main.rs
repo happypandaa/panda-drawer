@@ -1024,6 +1024,35 @@ async fn environment_node_set(
 }
 
 #[tauri::command]
+async fn environment_git_doctor(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.git_environment().await
+}
+
+#[tauri::command]
+async fn environment_git_set(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    git_path: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let path = match git_path {
+        Value::Null => None,
+        Value::String(path) => Some(path),
+        _ => {
+            return Err(ApiError::new(
+                "INVALID_GIT_PATH",
+                "gitPath must be an absolute path string or null",
+            ))
+        }
+    };
+    state.handle.set_git_path(path).await
+}
+
+#[tauri::command]
 async fn project_handoff(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1262,6 +1291,8 @@ fn main() {
             task_logs,
             environment_doctor,
             environment_node_set,
+            environment_git_doctor,
+            environment_git_set,
             project_handoff
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {

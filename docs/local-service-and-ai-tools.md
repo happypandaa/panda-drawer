@@ -189,6 +189,8 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `GET /api/v1/runtime` | 读取运行状态、当前安装版平台信息、当前工作区和环境信息 | 管理凭据 |
 | `GET /api/v1/environment` | 服务实际选定的开发 Node/npm、来源、路径和可用性 | 管理凭据 |
 | `PUT /api/v1/environment/node` | 保存显式本机 Node 路径或恢复服务默认选择 | 管理凭据 |
+| `GET /api/v1/environment/git` | 读取 Git 工具选择与可用性、系统 SSH 版本状态及未验证的认证状态 | 管理凭据 |
+| `PUT /api/v1/environment/git` | 保存显式 Git 路径或明确恢复受管默认，不访问仓库 | 管理凭据 |
 | `GET /api/v1/projects` | 列出项目基本信息、状态与带时效的空间摘要 | 管理凭据 |
 | `POST /api/v1/projects` | 创建项目目录、模板和空数据库 | 管理凭据 |
 | `GET /api/v1/projects/{id}` | 读取项目基本信息与 revision、状态、路径和文档入口 | 管理凭据 |
@@ -231,6 +233,10 @@ M2 已实现上表中的环境、项目列表/创建/详情、SQL、构建、交
 `PUT /api/v1/environment/node` 的输入为 `{"nodePath":"/绝对路径/node"}`，显式路径先通过 Node/npm 探测，再保存为固定数据根下的 v1 `toolchain.json`。`{"nodePath":null}` 清除显式选择并恢复服务默认值：带安装资源时使用受管开发工具，无资源开发／测试服务才恢复检测。选择操作不安装或升级本机 Node，不修改全局环境或项目清单。
 
 环境结果包含 `ready`、`node`／`npm`（各含实际 `path` 与 `version`）、`selection`（`explicit`／`managed`／`detected`）、`configuredNodePath`、`managedNodePath`、`supportedNodeRange`、`recommendedNode`、`downloadUrl` 和 `issues`。`managedNodePath` 是资源声明的默认 Node 位置，校验失败时也可返回，用于诊断；它本身不表示工具可用。`npm.path` 为与选定 Node 配套的 JavaScript 入口，由该 Node 执行。无效显式选择或受管资源缺失／校验失败返回 `ready: false` 与问题，不回退其他来源。当前受管版本固定为 Node 24.22.0／npm 11.19.1，仅覆盖 Mac arm64。
+
+2026-10-21 另接 Git 工具接口，对应 `env git doctor`、`env git set --path /绝对路径/git` 和 `env git clear`。`PUT /api/v1/environment/git` 接收 `{"gitPath":"/绝对路径/git"}` 或 `{"gitPath":null}`，独立保存到固定开发数据根的 `git-toolchain.json`，不改变 Node 设置或全局 Git 配置。默认受管 Git 2.56.0；显式路径优先，显式或受管工具失效不回退其他来源。设置无法读取／解析时 `selection: unresolved`，尚未选用默认工具。
+
+Git 响应包含 `ready`、`git`（实际 `path`／`version` 或 `null`）、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，以及独立的 `ssh` 与 `authentication`。系统 SSH 仅用 `-V` 检查工具版本，SSH 不可用不覆盖 Git 本身的可用性；认证为 `authentication.state: not-checked`。接口不读／复制私钥，不改 SSH 配置，不访问仓库，也不提供仓库获取、提交、分支或版本取回操作。工具不可用不影响成品应用运行；私有 Git 的源码、许可、裁剪与构建条件见[开发说明](development.md#71-git-开发工具与系统-ssh-诊断)，这一步不代表完整认证流程、Windows 或干净电脑验收。
 
 `handoff` 结果为 `projectId`、`readmePath`、`cliPath` 和 `text`；交接不嵌入令牌、Cookie 或短期 ticket。AI 编辑完成并等待构建成功后，再取得新的浏览器入口。环境与任务日志属于管理接口，带浏览器 Origin 的请求即使持有管理 token 也拒绝；项目会话不能调用。
 

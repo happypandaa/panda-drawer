@@ -20,6 +20,7 @@ import type { NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { ProjectAddMenu } from './ProjectAddMenu';
+import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
@@ -36,6 +37,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showManagementTasks, setShowManagementTasks] = useState(false);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
+  const [gitEnvironmentBusy, setGitEnvironmentBusy] = useState(false);
+  const settingsBusy = environmentBusy || gitEnvironmentBusy;
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
   const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
@@ -438,7 +441,7 @@ function App() {
           </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} />}
       </main>
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects}` : totalProjects} APPS</span><span title={info?.workspaceRoot}>LOCAL FIRST</span></footer>
-      {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={environmentBusy} onClose={() => setSettingsOpen(false)}>
+      {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={settingsBusy} onClose={() => setSettingsOpen(false)}>
         {feedback}
         <section className="runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">运行环境</h3>
@@ -459,6 +462,7 @@ function App() {
             <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。</p></div>
 
           </details>
+          <details className="radio-runtime-details radio-git-details"><summary>检测与配置 Git · 查看 SSH 状态</summary><GitEnvironmentPanel enabled={Boolean(info)} onPendingChange={setGitEnvironmentBusy} /></details>
         </section>
         <section className="radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">关于</h3>
@@ -467,8 +471,8 @@ function App() {
           <details className="radio-about-details"><summary>程序信息与更新状态</summary><AboutPlatform info={info} /></details>
         </section>
         <details className="radio-settings-tasks recent-tasks" open={showManagementTasks} onToggle={(event) => setShowManagementTasks(event.currentTarget.open)}><summary>管理任务 <span>{activeLifecycleTasks.length + completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{activeLifecycleTasks.length > 0 && <div aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{completedLifecycleTasks.length > 0 && <div aria-label="最近的管理任务">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{activeLifecycleTasks.length + completedLifecycleTasks.length === 0 && <p className="radio-tasks-empty">暂无管理任务。</p>}</div></details>
-        <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !environmentBusy} onCreate={() => { if (environmentBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (environmentBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
-        <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={environmentBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
+        <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} onCreate={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (settingsBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
+        <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
       </Modal>}
         <NodeAppsPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>

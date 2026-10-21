@@ -74,7 +74,7 @@ enum Command {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
-    /// Diagnose the service and its actual Node/npm build environment.
+    /// Diagnose the service and its Node/npm and optional Git development tools.
     Env {
         #[command(subcommand)]
         command: EnvironmentCommand,
@@ -96,6 +96,26 @@ enum EnvironmentCommand {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Diagnose or select Git for this platform, without accessing repositories or authentication.
+    Git {
+        #[command(subcommand)]
+        command: GitCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GitCommand {
+    /// Report Git and system SSH tools. Does not check repository authentication.
+    Doctor(OutputOptions),
+    /// Persist an explicit absolute Git executable path for this platform only.
+    Set {
+        #[arg(long)]
+        path: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    /// Clear the explicit path and select the bundled Git toolchain.
+    Clear(OutputOptions),
 }
 
 #[derive(Subcommand)]
@@ -334,6 +354,9 @@ fn main() -> ExitCode {
         Command::Env {
             command: EnvironmentCommand::Node { command },
         } => node_command(command),
+        Command::Env {
+            command: EnvironmentCommand::Git { command },
+        } => git_command(command),
         Command::Task { command } => task_command(command),
         Command::Project { command } => project_command(command),
         Command::Db { command } => database_command(command),
@@ -721,6 +744,40 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
         ));
     }
     project_request(&options.project, "POST", route, Some(input))
+}
+
+fn git_command(command: GitCommand) -> (bool, Result<Value>) {
+    match command {
+        GitCommand::Doctor(output) => (
+            output.json,
+            business_request("GET", "/api/v1/environment/git", None, None),
+        ),
+        GitCommand::Set { path, output } => (
+            output.json,
+            if Path::new(&path).is_absolute() {
+                business_request(
+                    "PUT",
+                    "/api/v1/environment/git",
+                    None,
+                    Some(json!({"gitPath": path})),
+                )
+            } else {
+                Err(CliError::new(
+                    "INPUT_INVALID",
+                    "--path must be an absolute Git executable path.",
+                ))
+            },
+        ),
+        GitCommand::Clear(output) => (
+            output.json,
+            business_request(
+                "PUT",
+                "/api/v1/environment/git",
+                None,
+                Some(json!({"gitPath": null})),
+            ),
+        ),
+    }
 }
 
 fn node_command(command: NodeCommand) -> (bool, Result<Value>) {
@@ -1734,6 +1791,31 @@ mod tests {
         .is_ok());
         let (_, result) = node_command(NodeCommand::Set {
             path: "node".into(),
+            output: OutputOptions { json: true },
+        });
+        assert_eq!(result.unwrap_err().code, "INPUT_INVALID");
+    }
+
+    #[test]
+    fn git_commands_keep_diagnosis_selection_and_clear_separate() {
+        for arguments in [
+            vec!["platform", "env", "git", "doctor", "--json"],
+            vec!["platform", "env", "git", "clear", "--json"],
+            vec![
+                "platform",
+                "env",
+                "git",
+                "set",
+                "--path",
+                "/disposable/git",
+                "--json",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_ok());
+        }
+        assert!(Cli::try_parse_from(["platform", "env", "git", "set"]).is_err());
+        let (_, result) = git_command(GitCommand::Set {
+            path: "git".into(),
             output: OutputOptions { json: true },
         });
         assert_eq!(result.unwrap_err().code, "INPUT_INVALID");

@@ -1,6 +1,6 @@
 # 开发环境与数据隔离
 
-2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。应用运行 Node 的选择不受影响，Git 尚未实现，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
+2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。后续另接私有 Git 2.56.0 的工具选择与诊断，以及系统 SSH 的版本检查；认证与仓库操作尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
@@ -149,6 +149,9 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `task logs --task ID --cursor N` | 读取日志片段；用返回的 `nextCursor` 继续 |
 | `env node set --path /绝对路径/node` | 检查并保存开发版的显式 Node 路径 |
 | `env node clear` | 清除显式选择；带资源时恢复受管默认，无资源开发服务恢复检测 |
+| `env git doctor` | 读取服务实际 Git 选择、版本与可用性，分别返回系统 SSH 工具状态和未验证的认证状态；不访问仓库 |
+| `env git set --path /绝对路径/git` | 保存本开发版的显式 Git 可执行文件路径；与 Node 设置分开 |
+| `env git clear` | 明确清除显式 Git 路径，恢复平台受管默认；不改全局 Git 配置 |
 | `db schema --project ID` | 实际表、列、索引、外键、视图 |
 | `db execute --project ID --input request.json` | 一条 SQL 与位置参数 |
 | `db transaction --project ID --input request.json` | 有序语句整体提交或回滚 |
@@ -180,7 +183,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 受管资源根据源码内固定的发行声明校验元数据、全部文件内容、数量、大小及权限；拒绝符号链接、硬链接、特殊文件及额外空目录。完整校验在阻塞工作线程进行，再探测实际版本；npm 的 JavaScript 入口由选定 Node 执行，受管 PATH 仅含私有工具目录和系统工具目录。本机选择仍只保存在固定开发数据根，不写入项目清单，不修改用户的全局 PATH、shell 或 npm 配置。`env doctor` 的 `selection` 为 `explicit`、`managed` 或 `detected`，`managedNodePath` 提供默认资源位置；位置存在于结果不等于 `ready: true`。
 
-应用运行使用的 `node-runtime` 与开发工具分开，构建选择不影响 Node 应用后端。开发工具不可用只阻止构建，已有静态产物和数据库仍可使用。配备 Node/npm 不代表所有旧项目都能重建，锁文件、依赖、源码及项目要求仍须验证；首次依赖安装可能需要联网。本步不提供 Git、独立 Node 源码槽构建、完整安装或跨系统承诺。
+应用运行使用的 `node-runtime` 与开发工具分开，构建选择不影响 Node 应用后端。开发工具不可用只阻止构建，已有静态产物和数据库仍可使用。配备 Node/npm 不代表所有旧项目都能重建，锁文件、依赖、源码及项目要求仍须验证；首次依赖安装可能需要联网。Node/npm 子步不包含独立 Node 源码槽构建、完整安装或跨系统承诺；后续 Git 工具子步见下节。
 
 构建按锁文件执行 `npm ci`，依赖指纹未变化且安装记录有效时可复用项目 `app/node_modules/`。共享 npm 缓存位于 `workspace/.platform/cache/npm/`。任务按项目互斥，并对输入取 SHA-256 基准，在依赖准备后和发布前复核；输入变化、依赖失败、脚本失败、无效产物均不发布新网页。构建只接受 `--outDir` 指定的平台暂存目录，不自动建表或重置数据库。
 
@@ -207,6 +210,22 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 管理窗口可创建项目、复制给 AI 的交接说明、发起构建、查看任务与日志、检测或指定 Node，并在桌面或浏览器打开产物。CLI 命令可在任意工作目录执行，但每次显式给出项目 ID；不提供任意源码编辑或 shell 代理接口。完整外部 AI、桌面与浏览器流程的实际结果记入 [M2 验证记录](m2-verification.md)，不能仅以工程构建通过替代。
 
 本轮初始应用与 skill 的补充验收单独记入[验证记录](starter-skill-verification.md)：应覆盖无可用 Node 时创建及打开、初始来源核对、首次失败保留、成功发布及旧初始页资源、独立 AI 读取交接说明，以及旧项目文件保持不变。历史 M2 结果不作为这些新增场景已通过的证据。
+
+### 7.1 Git 开发工具与系统 SSH 诊断
+
+Mac arm64 内部包新增 `development-git`，固定 Git 2.56.0。源码来自官方发行归档，固定大小、摘要与发布者签名信息见 [`scripts/development-git-release.json`](../scripts/development-git-release.json)。平台开发阶段从完整、未修改的上游源码构建；发布记录中的同一编译器／SDK、两个独立源码目录重建，9 个原生可执行文件逐字节一致。这个结果不承诺任意编译环境或其他系统可重现相同产物。
+
+资源树为 90 个文件、61,133,800 字节，约增加 58.3 MiB 的包内逻辑文件内容；这不是 DMG 下载增量或实际磁盘分配量。资源随附完整上游源码归档、分离签名、公钥、`sources/build-git.sh` 与说明、GPLv2 `COPYING` 及 SHA1DC／reftable 许可证；其他内嵌许可保留在完整源码内。固定元数据与实际树一起核验，不能只因存在 Git 路径就报告可用。
+
+Git 目标仍为 macOS 15.0、arm64。复现构建记录要求 Apple clang 21.0.0、macOS SDK 27.0、Apple linker 27037.1、GNU make 3.81；**编译器和 SDK 只是平台开发／重建工具要求，不是成品用户的运行要求，也不把最低系统提高到 macOS 27**。源码构建目录须避免空格，上游构建完成后的工具资源可迁移到中文／空格路径。原生程序只依赖 macOS 系统库；最低 macOS 15 实机运行仍须单独验收。
+
+当前构建关闭 Perl、Python、Tcl/Tk、gettext、Gitweb 与 Rust 支持，不附这些解释器、外部合并工具、凭据助手或 SSH 私钥。上游保留的不可用命令桩和适配脚本不表示相关功能已支持。HTTPS 辅助程序依赖系统 libcurl 与系统信任；具有辅助程序不代表平台已有下载、认证或仓库操作流程。
+
+Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改变 Node 的 `toolchain.json`、应用运行 Node、项目清单或全局 Git 配置。没有显式路径时选择平台受管 Git；已有显式绝对路径优先，失效时报告错误，不回退受管或 PATH 中其他 Git。受管资源失效同样不回退。设置无法读取或解析时返回 `selection: unresolved`，表示尚未确定工具来源，不冒称已经使用默认值；用户可修正并保存本机路径，或明确恢复默认工具。
+
+`env git doctor`、`env git set --path /绝对路径/git`、`env git clear` 均支持 `--json`，在线通过现有管理认证访问 `GET /api/v1/environment/git` 或 `PUT /api/v1/environment/git`。PUT 输入分别为 `{"gitPath":"/绝对路径/git"}` 与 `{"gitPath":null}`。响应包括 `ready`、`git` 的实际路径／版本、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，并分别提供 `ssh` 与 `authentication`。默认位置仅供定位，不代替 `ready`／问题结果；CLI 离线不自行选用终端 Git。
+
+系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。平台尚无仓库获取、提交、分支或取回版本 API；不要按工具可用推断这些能力已开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
 
 ## 8 M3 备份、维护与恢复
 

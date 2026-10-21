@@ -198,7 +198,7 @@ test('upgrade accepts signed older outputs without development tools and require
   const checks = [];
   const verification = kind => async (file, plan, options) => {
     await f.verifiers[kind](file, plan);
-    assert.deepEqual(options, { requireDevelopmentNode: built });
+    assert.deepEqual(options, { requireDevelopmentTools: built });
     checks.push([kind, built]);
   };
   const report = await withDesktopPackageOutput(f.plan, async () => {
@@ -226,8 +226,8 @@ test('missing development tools in either new artifact restores the verified old
       ...f.verifiers,
       [rejectedKind]: async (file, plan, options) => {
         await f.verifiers[rejectedKind](file, plan);
-        assert.deepEqual(options, { requireDevelopmentNode: built });
-        if (options.requireDevelopmentNode) throw new Error('development toolchain missing or invalid');
+        assert.deepEqual(options, { requireDevelopmentTools: built });
+        if (options.requireDevelopmentTools) throw new Error('development toolchain missing or invalid');
       },
     }), /development toolchain missing or invalid/);
     assert.equal(built, true);

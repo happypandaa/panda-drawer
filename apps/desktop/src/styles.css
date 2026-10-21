@@ -224,6 +224,10 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid #77776e; outlin
 .handoff-card { background:white; border:1px solid #e5e3df; border-radius:10px; padding:24px; margin-bottom:24px; }
 .handoff-card textarea { width:100%; box-sizing:border-box; border:1px solid #ddd; border-radius:7px; padding:12px; resize:vertical; font:11px/1.7 ui-monospace, monospace; color:#444; background:#faf9f7; }
 .build-environment { margin-bottom:22px; }
+.git-environment { margin-bottom:22px; }
+.radio-git-details { margin-top:12px; }
+.git-environment > p, .git-environment .environment-status, .git-environment .node-path-form, .git-authentication { margin-inline:24px; }
+.git-environment .node-path-form, .git-authentication { margin-bottom:24px; }
 .environment-status { display:flex; flex-wrap:wrap; align-items:center; gap:16px; font-size:11px; color:#777; margin:18px 0; }
 .environment-issue { font-size:12px; line-height:1.7; color:#8a5836; overflow-wrap:anywhere; }
 .node-path-form { margin-top:20px; padding-top:20px; border-top:1px solid #eceae7; }

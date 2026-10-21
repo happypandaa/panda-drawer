@@ -11,7 +11,7 @@ description: 接管、修改和验证 Local Projects 平台内的业务应用。
 
 ## 先识别环境、接入类型与窗口约束
 
-默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node，登记和启动不安装依赖。Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建入口；用平台 `env doctor` 核对实际工具，保留已有显式本机选择，失效不自动回退。构建选择不影响应用运行 Node；Git／认证、候选依赖隔离及 Node 应用依赖准备流程尚未接入。
+默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node，登记和启动不安装依赖。Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建入口；用平台 `env doctor` 核对实际工具，保留已有显式本机选择，失效不自动回退。构建选择不影响应用运行 Node。另有私有 Git 工具选择与诊断，但认证、仓库获取／版本 API、候选依赖隔离及 Node 应用依赖准备流程尚未接入。
 
 Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Python、Docker、数据库服务器或额外 CLI。确有外部环境要求时，在选型前说明，分别写明本机软件与在线账号／Key 的准备、用途和缺失影响；声明不代表平台已经支持。具体环境、交付与当前构建边界同样在下述随附约束中，先读后选方案。
 
@@ -145,7 +145,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 1. 根据用户需求修改业务源码，设计可用的空状态、加载状态、表单校验、保存反馈和错误恢复。无需 AI 在线才能完成日常操作。
 2. 需要新依赖时有意修改 `app/package.json`，用 npm 更新并保留对应锁文件。不要删除锁文件绕过安装错误，也不要用不同内容覆盖同版本 SDK 包。SDK 升级应明确更新版本、vendor、锁文件和说明。
-3. 用 `env doctor --json` 检查**桌面服务实际选用**的 Node/npm。当前支持 Node `^22.12.0 || ^24.0.0`，推荐 24 LTS，系统自行安装；不是任意更高主版本都已支持。缺少 Node 影响构建，不影响已发布网页和数据操作。
+3. 用 `env doctor --json` 检查**桌面服务实际选用**的 Node/npm。当前支持 Node `^22.12.0 || ^24.0.0`，推荐 24 LTS；有受管资源的环境默认使用配套工具，已有显式本机路径优先且失效不回退。不是任意更高主版本都已支持。缺少构建工具影响构建，不影响已发布网页和数据操作。
 4. 提交平台构建，再检查任务结果和日志。构建脚本必须接受 `--outDir ABSOLUTE_DIRECTORY`；平台会在需要时执行 `npm ci`，构建到暂存目录并验证后发布。不要自行向 `dist/` 拷贝产物，也不要在构建中操作业务数据或启动常驻进程。
 
 ```sh
@@ -171,7 +171,9 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 ## 当前能力与交接
 
-当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+
+`env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。没有平台仓库获取、提交、分支或版本取回命令，不将工具可用当作这些能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
 
 当前开发版资源限额标记为 `internalTest`，查询运行时限制并处理超限错误，不在业务说明中承诺这些数值是正式产品默认值。联网仅按项目 `runtimeRequirements` 声明的公开接口使用；不把私有 API 密钥、管理令牌放进前端、清单或数据库。录音、拍照等能力还需要浏览器权限和实际环境支持，声明本身不等于授权成功。
 

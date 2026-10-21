@@ -108,6 +108,7 @@ struct HttpState {
     expected_host: String,
     store: Arc<ProjectStore>,
     builds: Arc<BuildManager>,
+    git_environment: crate::git_environment::GitEnvironmentManager,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
     resources: Option<Arc<ProjectResources>>,
     tickets: Mutex<HashMap<String, Ticket>>,
@@ -534,6 +535,22 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn git_environment(&self) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().git_environment.doctor().await))
+    }
+    pub async fn set_git_path(
+        &self,
+        git_path: Option<String>,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        Ok(json!(
+            state
+                .git_environment
+                .configure_git(git_path.map(PathBuf::from))
+                .await?
+        ))
+    }
     pub async fn handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         let project = state.store.project(id)?;
@@ -855,6 +872,12 @@ fn make_state(
     )?;
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
+    let git_environment = crate::git_environment::GitEnvironmentManager::new(
+        paths.data_root().into(),
+        resources
+            .as_ref()
+            .map(|resources| resources.development_git_root()),
+    );
     let state = Arc::new(HttpState {
         paths,
         shared,
@@ -866,6 +889,7 @@ fn make_state(
         ),
         store,
         builds,
+        git_environment,
         maintenance,
         lifecycle,
         metadata,
@@ -1506,6 +1530,26 @@ async fn management(
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
             (Method::GET, ["environment"]) => handle.environment().await,
+            (Method::GET, ["environment", "git"]) => handle.git_environment().await,
+            (Method::PUT, ["environment", "git"]) => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct GitConfig {
+                    git_path: Value,
+                }
+                let value = input::<GitConfig>(request).await?.git_path;
+                let path = match value {
+                    Value::Null => None,
+                    Value::String(path) => Some(path),
+                    _ => {
+                        return Err(ApiError::new(
+                            "INVALID_GIT_PATH",
+                            "gitPath must be an absolute path string or null",
+                        ))
+                    }
+                };
+                handle.set_git_path(path).await
+            }
             (Method::PUT, ["environment", "node"]) => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3186,3 +3230,7 @@ mod history_cleanup_tests;
 #[cfg(test)]
 #[path = "service_object_layout_tests.rs"]
 mod object_layout_tests;
+
+#[cfg(test)]
+#[path = "service_git_environment_tests.rs"]
+mod git_environment_tests;
