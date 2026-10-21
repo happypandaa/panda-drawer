@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProjectTask } from './ProjectTask';
+import { ProjectGitVersions } from './ProjectGitVersions';
+import type { ProjectGitVersionsResult } from './ProjectGitVersions';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
@@ -26,6 +28,9 @@ export interface ProjectGitStatus {
   snapshotDigest: string;
   canInitialize: boolean;
   canSave: boolean;
+  canListVersions: boolean;
+  canCreateBranch: boolean;
+  branchCreationIssue: unknown | null;
   database: { state: string; reason: string };
   issues: unknown[];
 }
@@ -53,14 +58,19 @@ export function ProjectGitPanel(props: ProjectGitPanelProps) {
   return <ProjectGitProject key={props.projectId} {...props} />;
 }
 
-type Draft = { message: string; authorName: string; authorEmail: string };
+type Draft = { message: string; authorName: string; authorEmail: string; branchName: string };
 function ProjectGitProject(props: ProjectGitPanelProps) {
-  const [draft, setDraft] = useState<Draft>({ message: '', authorName: '', authorEmail: '' });
+  const [draft, setDraft] = useState<Draft>({ message: '', authorName: '', authorEmail: '', branchName: '' });
   return <ProjectGitPanelInstance key={props.instanceId ?? ''} {...props} draftValues={draft} changeDraft={setDraft} />;
 }
 
 function relevantTask(value: TaskRecord | null | undefined, projectId: string): value is TaskRecord {
-  return Boolean(value && value.projectId === projectId && (value.type === 'gitInitialize' || value.type === 'gitSave'));
+  return Boolean(value && value.projectId === projectId && ['gitInitialize', 'gitSave', 'gitBranchCreate'].includes(value.type));
+}
+
+function validBranchName(name: string) {
+  return name.length >= 1 && name.length <= 128 && name !== 'HEAD' && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)
+    && !name.includes('..') && !name.endsWith('.') && name.split('/').every(part => part && !part.startsWith('.') && !part.endsWith('.lock'));
 }
 
 function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTask, onTask, onDraftStateChange, draftValues, changeDraft }: ProjectGitPanelProps & { draftValues: Draft; changeDraft: (value: Draft) => void }) {
@@ -69,8 +79,13 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const [fresh, setFresh] = useState(false);
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const { message, authorName, authorEmail } = draftValues;
+  const { message, authorName, authorEmail, branchName } = draftValues;
   const [acceptedDraft, setAcceptedDraft] = useState('');
+  const [acceptedBranchName, setAcceptedBranchName] = useState('');
+  const [versions, setVersions] = useState<ProjectGitVersionsResult | null>(null);
+  const [versionsFresh, setVersionsFresh] = useState(false);
+  const [listing, setListing] = useState(false);
+  const [versionsError, setVersionsError] = useState('');
   const [error, setError] = useState('');
   const [readError, setReadError] = useState('');
   const [pollError, setPollError] = useState('');
@@ -79,6 +94,10 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const lifetime = useRef(0);
   const mounted = useRef(false);
   const readSequence = useRef(0);
+  const statusPending = useRef(false);
+  const versionsSequence = useRef(0);
+  const versionsPending = useRef(false);
+  const versionsRequested = useRef(false);
   const pending = useRef(false);
   const polling = useRef(false);
   const currentTask = useRef<TaskRecord | null>(task);
@@ -87,23 +106,43 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
   const current = useCallback((generation: number) => mounted.current && lifetime.current === generation, []);
 
+  const readVersions = useCallback(async (preview: ProjectGitStatus, fromStatus = false) => {
+    if (!preview.canListVersions || pending.current && !fromStatus || currentTask.current && !currentTask.current.final || versionsPending.current || statusPending.current && !fromStatus) return;
+    const generation = lifetime.current; const statusRequest = readSequence.current;
+    const request = ++versionsSequence.current;
+    versionsPending.current = true; setListing(true); setVersionsFresh(false); setVersionsError('');
+    const valid = () => current(generation) && statusRequest === readSequence.current && request === versionsSequence.current;
+    try {
+      const value = await invoke<ProjectGitVersionsResult>('project_git_versions', { id: projectId, limit: 50 });
+      if (!valid()) return;
+      setVersions(value); setVersionsFresh(true);
+      if (value.head.oid !== preview.repository.head?.oid || value.head.branch !== preview.repository.head?.branch) {
+        setFresh(false); setVersionsError('读取版本时当前分支或版本已变化，请刷新状态后再操作。');
+      }
+    } catch (cause) { if (valid()) setVersionsError(messageFrom(cause)); }
+    finally { if (current(generation) && request === versionsSequence.current) { versionsPending.current = false; setListing(false); } }
+  }, [projectId, current]);
+
   const read = useCallback(async () => {
+    if (versionsPending.current) return;
     const generation = lifetime.current;
     const request = ++readSequence.current;
-    setReading(true); setFresh(false);
+    statusPending.current = true; setReading(true); setFresh(false); setVersionsFresh(false);
     try {
       const value = await invoke<ProjectGitStatus>('project_git_status', { id: projectId });
       if (!current(generation) || request !== readSequence.current) return;
       setStatus(value); setFresh(true); setReadError('');
+      if (versionsRequested.current && value.canListVersions) await readVersions(value, true);
     } catch (cause) {
       if (current(generation) && request === readSequence.current) setReadError(messageFrom(cause));
     } finally {
       if (current(generation) && request === readSequence.current) {
         setReading(false);
+        statusPending.current = false;
         setNotice(value => value === recheckingNotice ? '' : value);
       }
     }
-  }, [projectId, current]);
+  }, [projectId, current, readVersions]);
 
   const acceptTask = useCallback((value: TaskRecord, notify = true) => {
     // A cancellation acknowledgement may arrive after the final poll.
@@ -113,6 +152,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     seenTasks.current.add(value.taskId);
     currentTask.current = value; setTask(value); if (notify) callback.current?.(value);
     if (value.type === 'gitSave' && value.final && value.status !== 'succeeded') setAcceptedDraft('');
+    if (value.type === 'gitBranchCreate' && value.final && value.status !== 'succeeded') setAcceptedBranchName('');
     return becameFinal;
   }, []);
 
@@ -143,7 +183,9 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     if (previous?.taskId !== externalTask.taskId && previous && !previous.final) return;
     if (previous?.taskId === externalTask.taskId && previous.final) return;
     if (previous?.taskId !== externalTask.taskId && seenTasks.current.has(externalTask.taskId)) return;
-    readSequence.current += 1; setFresh(false); setReading(false);
+    readSequence.current += 1; versionsSequence.current += 1;
+    statusPending.current = false; versionsPending.current = false;
+    setFresh(false); setReading(false); setVersionsFresh(false); setListing(false);
     if (acceptTask(externalTask, false)) void read();
   }, [externalTask, projectId, acceptTask, read, task?.taskId, task?.final]);
   useEffect(() => {
@@ -153,33 +195,36 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   }, [task?.taskId, task?.final, poll]);
 
   const draft = JSON.stringify([message, authorName, authorEmail]);
-  const dirty = Boolean(message || authorName || authorEmail) && draft !== acceptedDraft;
+  const dirty = Boolean(message || authorName || authorEmail) && draft !== acceptedDraft || Boolean(branchName) && branchName !== acceptedBranchName;
   useEffect(() => { draftCallback.current?.({ dirty, pending: busy }); }, [dirty, busy]);
   useEffect(() => () => { draftCallback.current?.({ dirty: false, pending: false }); }, []);
 
   const active = Boolean(task && !task.final);
-  const writable = !disabled && !busy && !active && !reading && fresh;
+  const writable = !disabled && !busy && !active && !reading && !listing && fresh;
   const hasChanges = Boolean(status?.changes.length);
+  const branchReady = Boolean(status?.canCreateBranch && !hasChanges && status.repository.indexState === 'matched' && status.repository.head?.oid && status.repository.head.branch);
   const validAuthor = authorName.trim().length > 0 && authorName.trim().length <= 200
     && !/[\x00-\x1f\x7f<>]/.test(authorName)
     && authorEmail.trim().length <= 254 && /^[^\s<>@]+@[^\s<>@]+$/.test(authorEmail.trim());
   const validMessage = Boolean(message.trim()) && message.length <= 4000 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(message);
 
-  async function submit(operation: 'initialize' | 'save') {
-    if (pending.current || currentTask.current && !currentTask.current.final || !writable || !status) return;
-    if (operation === 'initialize' ? !status.canInitialize : !status.canSave || !hasChanges || !validAuthor || !validMessage) return;
+  async function submit(operation: 'initialize' | 'save' | 'create-branch') {
+    if (pending.current || statusPending.current || versionsPending.current || currentTask.current && !currentTask.current.final || !writable || !status) return;
+    if (operation === 'initialize' ? !status.canInitialize : operation === 'save' ? !status.canSave || !hasChanges || !validAuthor || !validMessage : !branchReady || !validBranchName(branchName)) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
     const generation = lifetime.current;
-    readSequence.current += 1; setFresh(false);
+    readSequence.current += 1; versionsSequence.current += 1; setFresh(false); setVersionsFresh(false);
     try {
       const input = operation === 'initialize'
         ? { expectedSnapshot: status.snapshotDigest, initialBranch: 'main' }
-        : { expectedHead: status.repository.head?.oid ?? null, expectedSnapshot: status.snapshotDigest, message: message.trim(), author: { name: authorName.trim(), email: authorEmail.trim() } };
-      const value = await invoke<TaskRecord>(operation === 'initialize' ? 'project_git_initialize' : 'project_git_save', { id: projectId, input });
+        : operation === 'save' ? { expectedHead: status.repository.head?.oid ?? null, expectedSnapshot: status.snapshotDigest, message: message.trim(), author: { name: authorName.trim(), email: authorEmail.trim() } }
+          : { name: branchName, expectedHead: status.repository.head!.oid!, expectedBranch: status.repository.head!.branch!, expectedSnapshot: status.snapshotDigest };
+      const value = await invoke<TaskRecord>(operation === 'initialize' ? 'project_git_initialize' : operation === 'save' ? 'project_git_save' : 'project_git_branch_create', { id: projectId, input });
       if (!current(generation)) return;
       if (value.projectId !== projectId) throw new Error('任务所属项目不符，请刷新状态后检查。');
       setPollError('');
       if (operation === 'save' && (!value.final || value.status === 'succeeded')) setAcceptedDraft(draft);
+      if (operation === 'create-branch' && (!value.final || value.status === 'succeeded')) setAcceptedBranchName(branchName);
       const finished = acceptTask(value);
       setNotice(value.final ? '任务已结束，请核对结果。' : '任务已接受，最终结果确认前请勿重复提交。');
       if (finished) await read();
@@ -206,8 +251,8 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
 
   const head = status?.repository.head;
   return <section className="project-git-panel" aria-labelledby={`${id}-title`}>
-    <div className="storage-heading"><h3 id={`${id}-title`}>源码版本</h3><button type="button" className="refresh-button" disabled={reading || busy || disabled} onClick={() => { if (currentTask.current && !currentTask.current.final) void poll(); else void read(); }}>{reading ? '核对中…' : '刷新状态'}</button></div>
-    <p>在本项目的标准 Git 仓库中保存下面列出的源码和开发文档。本次不保存数据库、附件或数据快照，也不提供分支切换和版本取回。</p>
+    <div className="storage-heading"><h3 id={`${id}-title`}>源码版本</h3><button type="button" className="refresh-button" disabled={reading || listing || busy || disabled} onClick={() => { if (currentTask.current && !currentTask.current.final) void poll(); else void read(); }}>{reading ? '核对中…' : '刷新状态'}</button></div>
+    <p>在本项目的标准 Git 仓库中保存下面列出的源码和开发文档。本次不保存数据库、附件或数据快照；可从当前版本创建新分支，不提供历史版本取回或切换到已有分支。</p>
     <p>仅操作本机；不会推送远端。保存前请核对文件范围，路径排除不能代替对源码中敏感内容的检查。</p>
     {error && <p className="task-error" role="alert">{error}</p>}
     {readError && <p className="task-error" role="alert">{readError}</p>}
@@ -241,6 +286,18 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
         <label htmlFor={`${id}-email`}>作者邮箱</label><input id={`${id}-email`} type="email" value={authorEmail} onChange={event => changeDraft({ ...draftValues, authorEmail: event.target.value })} maxLength={254} readOnly={busy} autoComplete="off" />
         <p>作者仅用于本次提交，由你填写，不读取或修改全局 Git 作者配置。</p>
         <button type="submit" className="primary-button" disabled={!writable || !status.canSave || !hasChanges || !validAuthor || !validMessage}>保存源码版本</button>
+      </form>
+      <ProjectGitVersions value={versions} fresh={versionsFresh} reading={listing} error={versionsError} canRead={writable && status.canListVersions} onRead={() => { if (!writable || !status.canListVersions) return; versionsRequested.current = true; void readVersions(status); }} />
+      <form className="create-project-form" aria-label="创建定制分支" onSubmit={event => { event.preventDefault(); void submit('create-branch'); }}>
+        <h4>从当前版本创建定制分支</h4>
+        <p>仅在源码与暂存区干净时，从当前版本创建并切换到新分支。当前提交、源码、暂存区、业务数据和运行产物保持不变；不会自动构建或更新应用。</p>
+        {status.repository.head?.oid && <p>分支起点：<code>{status.repository.head.oid}</code></p>}
+        <label htmlFor={`${id}-branch`}>新分支名称</label><input id={`${id}-branch`} value={branchName} onChange={event => changeDraft({ ...draftValues, branchName: event.target.value })} maxLength={128} readOnly={busy} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="custom/my-changes" />
+        <p>以英文字母或数字开头，可使用英文字母、数字、短横线、下划线、点和斜线；最长 128 个字符。名称不得与已有分支重复。</p>
+        {branchName && !validBranchName(branchName) && <p role="alert">分支名称无效：请勿使用 HEAD、连续点、空路径段、隐藏路径段、.lock 后缀或末尾点。</p>}
+        {Boolean(status.branchCreationIssue) && <p className="task-error" role="alert">{messageFrom(status.branchCreationIssue)}</p>}
+        {!branchReady && !status.branchCreationIssue && <p>需先保存首个版本，并确认当前源码无变更、暂存区和项目范围可用，再创建分支。</p>}
+        <button type="submit" className="primary-button" disabled={!writable || !branchReady || !validBranchName(branchName)}>创建并切换到新分支</button>
       </form>
     </>}
     {task && <><ProjectTask key={task.taskId} task={task} />{!task.final && <><p role="status">关闭此面板不会停止任务。</p><button type="button" className="refresh-button" disabled={busy} onClick={() => void cancel()}>取消当前操作</button></>}</>}

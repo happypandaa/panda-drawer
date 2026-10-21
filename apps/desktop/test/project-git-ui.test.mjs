@@ -56,7 +56,7 @@ function status(overrides = {}) {
   return {
     repository: { state: 'project-root', root: '/disposable/project', markers: [{ path: '/disposable/project/.git', kind: 'directory', scope: 'project' }], head: { oid, branch: 'refs/heads/main' }, indexState: 'matched', git: { path: '/disposable/git', version: '2.56.0' } },
     scope: { policy: 'project-source-v1', includedRoots: ['project.json', 'app', 'docs'], includedPaths: ['project.json', 'app/index.ts'], excluded: [{ path: 'data', reason: '活跃数据库和附件未纳入版本' }, { path: 'app/.env', reason: '本机凭据' }], unclassifiedPaths: [], protectedTrackedPaths: [], complete: true },
-    changes: [{ path: 'app/index.ts', kind: 'modify', staged: false }], snapshotDigest: digest, canInitialize: false, canSave: true,
+    changes: [{ path: 'app/index.ts', kind: 'modify', staged: false }], snapshotDigest: digest, canInitialize: false, canSave: true, canListVersions: true, canCreateBranch: false, branchCreationIssue: null,
     database: { state: 'not-supported', reason: '本步未纳入数据快照。' }, issues: [], ...overrides,
   };
 }
@@ -102,7 +102,7 @@ test('Opening the panel only previews local status and shows scope, exclusions a
   assert.match(document.body.textContent, /分支：main/);
   assert.doesNotMatch(document.body.textContent, /refs\/heads\/main/);
   assert.match(document.body.textContent, /本次不保存数据库、附件或数据快照/);
-  assert.match(document.body.textContent, /不提供分支切换和版本取回/);
+  assert.match(document.body.textContent, /不提供历史版本取回或切换到已有分支/);
   assert.match(document.body.textContent, /app\/\.env/);
   assert.equal(field('作者姓名').value, '');
   assert.equal(field('作者邮箱').value, '');
@@ -401,4 +401,173 @@ test('StrictMode remounting rejects a stale initial read and disabled props bloc
   assert.equal(field('作者姓名').value, 'Disposable Author');
   await unmount();
   assert.deepEqual(drafts.at(-1), { dirty: false, pending: false });
+});
+
+function versions(overrides = {}) {
+  return { repositoryRoot: '/disposable/project', head: status().repository.head, versions: [{ oid, parents: [nextOid], subject: 'Disposable saved version', author: { name: 'Fixture Author', email: 'fixture@example.invalid' }, authoredAt: '2026-10-22T08:00:00+00:00' }], limit: 50, hasMore: false, ...overrides };
+}
+function branchStatus(overrides = {}) { return status({ changes: [], canCreateBranch: true, ...overrides }); }
+function branchTask(overrides = {}) { return task({ type: 'gitBranchCreate', ...overrides }); }
+const branchButton = () => byText('创建并切换到新分支');
+async function submitBranch() { await act(async () => document.querySelector('form[aria-label="创建定制分支"]').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
+
+test('Local versions read only after an explicit click, use the fixed limit and display bounded history without actions', async () => {
+  const { calls } = await setup({ overrides: { project_git_versions: () => versions({ hasMore: true }) } });
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 0);
+  await click(byText('查看本机版本'));
+  assert.deepEqual(commandCalls(calls, 'project_git_versions'), [['project_git_versions', { id: 'prj_a', limit: 50 }]]);
+  const history = document.querySelector('[aria-label="本机源码版本列表"]');
+  assert.match(history.textContent, /Disposable saved version/);
+  assert.match(history.textContent, /Fixture Author.*fixture@example.invalid/);
+  assert.match(history.textContent, /最近 50 个.*更早版本/);
+  assert.match(history.textContent, /不会创建分支、取回源码或访问远端/);
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+  assert.equal(history.querySelectorAll('button').length, 1);
+});
+
+test('A pending version read blocks competing status and writes; an instance change rejects its late list but keeps drafts', async () => {
+  const delayed = deferred();
+  const { calls, render, drafts } = await setup({ overrides: { project_git_status: () => branchStatus(), project_git_versions: () => delayed.promise } });
+  await fill(); await change(field('新分支名称'), 'custom/preserved');
+  await click(byText('查看本机版本')); await click(byText('读取版本中…')); await click(refresh()); await submitBranch();
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 1);
+  assert.equal(commandCalls(calls, 'project_git_status').length, 1);
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+  assert.equal(drafts.at(-1).pending, false, 'Read-only history does not prevent closing');
+  await render({ instanceId: 'instance_b' });
+  await act(async () => delayed.resolve(versions({ versions: [{ ...versions().versions[0], subject: 'old-instance-history' }] })));
+  assert.doesNotMatch(document.body.textContent, /old-instance-history/);
+  assert.equal(field('版本说明').value, '保存本机源码修改');
+  assert.equal(field('新分支名称').value, 'custom/preserved');
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 1, 'The new instance requires a new explicit history read');
+});
+
+test('History read failures stay visible and an observed HEAD change disables writes until status is refreshed', async () => {
+  let reads = 0;
+  const { calls } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_versions: () => { if (++reads === 1) throw new Error('Artificial history failure'); return versions({ head: { oid: nextOid, branch: 'refs/heads/other' } }); },
+  } });
+  await change(field('新分支名称'), 'custom/new'); await click(byText('查看本机版本'));
+  assert.match(document.body.textContent, /Artificial history failure/);
+  await click(byText('查看本机版本'));
+  assert.match(document.body.textContent, /当前分支或版本已变化/);
+  assert.equal(branchButton().disabled, true);
+  await submitBranch(); assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+});
+
+test('Creating a branch requires an explicit valid name and a clean supported HEAD, independent of author inputs', async () => {
+  const { calls, render } = await setup({ overrides: { project_git_status: () => branchStatus() } });
+  for (const invalid of ['', 'HEAD', '-topic', 'topic//part', 'topic/..', 'topic/.hidden', 'topic/a.lock', 'topic..name', 'topic.', 'topic/', 'two words', '中文']) {
+    await change(field('新分支名称'), invalid); await submitBranch(); assert.equal(branchButton().disabled, true, invalid);
+  }
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+  await change(field('新分支名称'), 'custom/my_changes-v2');
+  assert.equal(field('作者姓名').value, ''); assert.equal(branchButton().disabled, false);
+  await render({ disabled: true }); await submitBranch();
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+});
+
+test('Dirty sources, staged content, missing HEAD and unavailable branch capability cannot submit even with a valid name', async () => {
+  for (const value of [branchStatus({ changes: status().changes }), branchStatus({ repository: { ...status().repository, indexState: 'staged-changes' } }), branchStatus({ repository: { ...status().repository, head: { oid: null, branch: 'refs/heads/main' } } }), branchStatus({ canCreateBranch: false })]) {
+    const { calls } = await setup({ overrides: { project_git_status: () => value } });
+    await change(field('新分支名称'), 'custom/new'); await submitBranch();
+    assert.equal(branchButton().disabled, true); assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+    await unmount();
+  }
+});
+
+test('Branch creation sends the checked HEAD, full branch and snapshot once, then refreshes status and an opened history', async () => {
+  const accepted = deferred(); let changed = false;
+  const result = { operation: 'create-branch', operationOutcome: 'committed', head: oid, previousBranch: 'refs/heads/main', branch: 'refs/heads/custom/my_changes', name: 'custom/my_changes' };
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_status: () => branchStatus({ repository: { ...status().repository, head: { oid, branch: changed ? result.branch : 'refs/heads/main' } } }),
+    project_git_versions: () => versions({ head: { oid, branch: changed ? result.branch : 'refs/heads/main' } }),
+    project_git_branch_create: () => accepted.promise,
+  } });
+  await fill(); await change(field('新分支名称'), result.name); await click(byText('查看本机版本'));
+  await submitBranch(); await submitBranch();
+  assert.deepEqual(commandCalls(calls, 'project_git_branch_create'), [['project_git_branch_create', { id: 'prj_a', input: { name: result.name, expectedHead: oid, expectedBranch: 'refs/heads/main', expectedSnapshot: digest } }]]);
+  assert.equal(drafts.at(-1).pending, true);
+  changed = true; await act(async () => accepted.resolve(branchTask({ final: true, status: 'succeeded', result })));
+  assert.equal(drafts.at(-1).pending, false);
+  assert.equal(drafts.at(-1).dirty, true, 'Unsubmitted author and message remain a draft');
+  assert.equal(field('版本说明').value, '保存本机源码修改');
+  assert.equal(field('作者姓名').value, 'Disposable Author');
+  assert.match(document.body.textContent, /分支：custom\/my_changes/);
+  assert.match(document.body.textContent, /业务数据和运行产物保持不变/);
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 2);
+  const commands = calls.map(([command]) => command);
+  assert.deepEqual(commands, ['project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_status', 'project_git_versions']);
+});
+
+test('A rejected branch keeps its name and author draft, requires rechecking and never retries itself', async () => {
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_branch_create: () => { throw { code: 'PROJECT_GIT_BRANCH_EXISTS', message: '分支名称已存在' }; },
+  } });
+  await fill(); await change(field('新分支名称'), 'custom/existing'); await submitBranch(); await submitBranch();
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 1);
+  assert.match(document.body.textContent, /分支名称已存在/);
+  assert.equal(field('新分支名称').value, 'custom/existing'); assert.equal(field('作者邮箱').value, 'disposable@example.invalid');
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: false });
+  assert.equal(branchButton().disabled, true);
+  await click(refresh()); assert.equal(branchButton().disabled, false);
+});
+
+test('Restored branch tasks support polling and cancellation without automatic history access or duplicate branching', async () => {
+  const ended = deferred();
+  const { calls, tasks } = await setup({ props: { task: branchTask() }, overrides: {
+    task_get: () => ended.promise,
+    project_git_cancel: () => branchTask(),
+    project_git_status: () => branchStatus(),
+  } });
+  assert.deepEqual(calls.map(([command]) => command), ['task_get']);
+  await click(byText('取消当前操作'));
+  await act(async () => ended.resolve(branchTask({ final: true, status: 'failed', error: { code: 'PROJECT_GIT_RECOVERY_REQUIRED', message: '人工分支结果不明', details: { operationOutcome: 'unknown' } } })));
+  assert.equal(tasks.at(-1).final, true); assert.match(document.body.textContent, /人工分支结果不明/);
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 0);
+});
+
+test('A pending branch request blocks closing and its late response cannot publish across a service change', async () => {
+  const accepted = deferred();
+  const { calls, render, drafts, tasks } = await setup({ overrides: { project_git_status: () => branchStatus(), project_git_branch_create: () => accepted.promise } });
+  await change(field('新分支名称'), 'custom/pending'); await submitBranch();
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: true });
+  await render({ instanceId: 'new-instance' });
+  await act(async () => accepted.resolve(branchTask()));
+  assert.equal(tasks.length, 0); assert.equal(byText('取消当前操作'), undefined);
+  assert.equal(field('新分支名称').value, 'custom/pending');
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: false });
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 1);
+});
+
+test('An accepted branch can continue in the background while an unknown final outcome restores its draft guard', async () => {
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_branch_create: () => branchTask(),
+    task_get: () => branchTask({ final: true, status: 'failed', error: { code: 'PROJECT_GIT_RECOVERY_REQUIRED', message: '人工分支引用结果未知', details: { operationOutcome: 'unknown' } } }),
+  } });
+  await change(field('新分支名称'), 'custom/uncertain'); await submitBranch();
+  assert.deepEqual(drafts.at(-1), { dirty: false, pending: false });
+  await tick();
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: false });
+  assert.equal(field('新分支名称').value, 'custom/uncertain');
+  assert.match(document.body.textContent, /人工分支引用结果未知/);
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 1);
+});
+
+test('An explicit Git version without branch support retains saving and history capabilities with a branch-specific explanation', async () => {
+  const { calls } = await setup({ overrides: {
+    project_git_status: () => status({ branchCreationIssue: { code: 'PROJECT_GIT_BRANCH_VERSION_UNSUPPORTED', message: '当前 Git 版本尚未验证新分支操作；源码保存和版本读取仍可使用。' } }),
+    project_git_versions: () => versions(),
+  } });
+  await fill(); await change(field('新分支名称'), 'custom/new');
+  assert.equal(save().disabled, false); assert.equal(branchButton().disabled, true);
+  assert.match(document.body.textContent, /PROJECT_GIT_BRANCH_VERSION_UNSUPPORTED/);
+  await submitBranch(); await click(byText('查看本机版本'));
+  assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 1);
+  assert.equal(save().disabled, false);
 });

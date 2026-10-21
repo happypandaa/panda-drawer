@@ -841,6 +841,26 @@ async fn project_git_status(
     state.handle.project_git_status(&id).await
 }
 #[tauri::command]
+async fn project_git_versions(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    limit: u32,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_versions(&id, limit).await
+}
+#[tauri::command]
+async fn project_git_branch_create(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitCreateBranchInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_create_branch(&id, input).await
+}
+#[tauri::command]
 async fn project_git_initialize(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1457,7 +1477,7 @@ fn main() {
             bootstrap_info,
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
-            project_git_status,project_git_initialize,project_git_save,project_git_cancel,
+            project_git_status,project_git_versions,project_git_branch_create,project_git_initialize,project_git_save,project_git_cancel,
             node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,

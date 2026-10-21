@@ -248,6 +248,15 @@ enum ProjectCommand {
 #[derive(Subcommand)]
 enum ProjectGitCommand {
     Status(ProjectOptions),
+    /// Read bounded local history reachable from the current HEAD, without fetching.
+    Versions {
+        #[command(flatten)]
+        project: ProjectOptions,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    /// Create and switch to a new branch at the current clean HEAD, without changing source files.
+    BranchCreate(ProjectGitInputOptions),
     /// Initialize main using the exact expectedSnapshot from a fresh status.
     Init(ProjectGitInputOptions),
     /// Save scoped source with explicit author, message, expectedHead and expectedSnapshot.
@@ -548,6 +557,18 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
         ProjectGitCommand::Status(options) => (
             options.output.json,
             project_request(&options.project, "GET", "/git", None),
+        ),
+        ProjectGitCommand::Versions { project, limit } => (
+            project.output.json,
+            project_request(&project.project, "GET", &format!("/git/versions?limit={limit}"), None),
+        ),
+        ProjectGitCommand::BranchCreate(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitCreateBranchInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide name, expectedHead, expectedBranch and expectedSnapshot from a fresh status."))?;
+                project_request(&options.project, "POST", "/git/branches", Some(body))
+            }),
         ),
         ProjectGitCommand::Init(options) => (
             options.input.output.json,
@@ -1575,6 +1596,54 @@ mod tests {
 
     #[test]
     fn project_git_cli_requires_explicit_input_and_never_accepts_maintenance_alias() {
+        for limit in ["1", "50", "100"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                "versions",
+                "--project",
+                "prj_disposable",
+                "--limit",
+                limit,
+                "--json"
+            ])
+            .is_ok());
+        }
+        for limit in ["0", "101", "-1", "bad"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                "versions",
+                "--project",
+                "prj_disposable",
+                "--limit",
+                limit
+            ])
+            .is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "branch-create",
+            "--project",
+            "prj_disposable"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "branch-create",
+            "--project",
+            "prj_disposable",
+            "--input",
+            "disposable-input.json",
+            "--json"
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from([
             "local-projects-dev",
             "project",

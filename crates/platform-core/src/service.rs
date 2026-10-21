@@ -632,6 +632,52 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn project_git_versions(
+        &self,
+        id: &str,
+        limit: u32,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .versions(id, limit, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_create_branch(
+        &self,
+        id: &str,
+        input: crate::project_git::GitCreateBranchInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .create_branch(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
     pub async fn project_git_initialize(
         &self,
         id: &str,
@@ -1862,7 +1908,7 @@ async fn management(
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | ["sources", "acquisitions"]
                 | ["sources", "captures"]
-                | ["projects", _, "git", "initialize" | "saves"]
+                | ["projects", _, "git", "initialize" | "saves" | "branches"]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -1899,6 +1945,35 @@ async fn management(
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
             (Method::GET, ["projects", id, "git"]) => handle.project_git_status(id).await,
+            (Method::GET, ["projects", id, "git", "versions"]) => {
+                let parameters = query(&request)?;
+                if parameters.keys().any(|key| key != "limit") {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Only limit is accepted for local Git history.",
+                    ));
+                }
+                let limit = parameters
+                    .get("limit")
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|_| {
+                        ApiError::new("INVALID_INPUT", "limit must be an integer from 1 to 100")
+                    })?
+                    .unwrap_or(50);
+                if !(1..=100).contains(&limit) {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "limit must be an integer from 1 to 100",
+                    ));
+                }
+                handle.project_git_versions(id, limit).await
+            }
+            (Method::POST, ["projects", id, "git", "branches"]) => {
+                handle
+                    .project_git_create_branch(id, input(request).await?)
+                    .await
+            }
             (Method::POST, ["projects", id, "git", "initialize"]) => {
                 handle
                     .project_git_initialize(id, input(request).await?)

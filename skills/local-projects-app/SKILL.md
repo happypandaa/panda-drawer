@@ -11,7 +11,7 @@ description: 接管、修改和验证 Local Projects 平台内的业务应用。
 
 ## 先识别环境、接入类型与窗口约束
 
-默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node，登记和启动不安装依赖。Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建入口；用平台 `env doctor` 核对实际工具，保留已有显式本机选择，失效不自动回退。构建选择不影响应用运行 Node。另有私有 Git 工具选择与诊断，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；现有 project-v1 已在独立候选中准备依赖和构建，公开仓库获取已提供独立命令；已接本机源码保存；认证、分支取回及 Node 应用依赖准备流程尚未接入。
+默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node，登记和启动不安装依赖。Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建入口；用平台 `env doctor` 核对实际工具，保留已有显式本机选择，失效不自动回退。构建选择不影响应用运行 Node。另有私有 Git 工具选择与诊断，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；现有 project-v1 已在独立候选中准备依赖和构建，公开仓库获取已提供独立命令；已接本机源码保存、历史列表及新建定制分支；Node 安装候选可准备生产依赖，仍需原生明确确认安装；认证和旧源码取回尚未接入。
 
 Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Python、Docker、数据库服务器或额外 CLI。确有外部环境要求时，在选型前说明，分别写明本机软件与在线账号／Key 的准备、用途和缺失影响；声明不代表平台已经支持。具体环境、交付与当前构建边界同样在下述随附约束中，先读后选方案。
 
@@ -173,7 +173,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
 
-`env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机源码保存有独立命令，分支或版本取回仍未提供，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
+`env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机源码保存、历史列表及新建定制分支有独立命令，旧源码取回仍未提供，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
 
 需要检查指定公开仓库时，明确执行 `env git check --url https://github.com/owner/repository.git --json`；也支持标准 Gitee HTTPS 仓库地址。检查在 20 秒执行预算内匿名读取 HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果绑定该地址与本次时间，不改变 `doctor` 的认证未验证状态；`readable-no-head` 不表示仓库为空。不要把远端检查加入普通离线工具诊断，不将其扩为 SSH／私有仓库认证、仓库获取或完整路线已交付。
 
@@ -183,7 +183,9 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 保存用 `project git save --project PROJECT_ID --input FILE --json`，完整输入含最新 `expectedSnapshot`、明确的 `expectedHead`（尚无提交则 JSON null）、`message`、`author:{name,email}`。作者必须来自用户明确提供或会话已确认的信息，不猜身份、不读写全局身份；缺作者先保留待保存内容。`canSave:false` 时处理报告的问题后重新检查，不强制重置、不覆盖暂存内容。不将整个项目目录直接加入提交。
 
-返回任务后通过 `task get/wait/logs` 核对最终结果，取消用 `project git cancel --project PROJECT_ID --task TASK_ID --json`，请求取消不表示提交未发生。`operationOutcome:committed` 表示已提交但可能收尾需检查，`unknown` 需保留现场核对，不能自动重试。此步骤保存源码开发材料，不包含活库、附件、配置、依赖或运行产物；数据库快照与分支取回仍未提供，不自动推送。任意文件内的秘密不能通用识别，提交前仍须核对明确范围。
+返回任务后通过 `task get/wait/logs` 核对最终结果，取消用 `project git cancel --project PROJECT_ID --task TASK_ID --json`，请求取消不表示提交未发生。`operationOutcome:committed` 表示已提交但可能收尾需检查，`unknown` 需保留现场核对，不能自动重试。此步骤保存源码开发材料，不包含活库、附件、配置、依赖或运行产物；数据库快照与旧源码取回仍未提供，不自动推送。任意文件内的秘密不能通用识别，提交前仍须核对明确范围。
+
+`project git versions --project PROJECT_ID --limit 50 --json` 只读当前 HEAD 可达的本机历史；范围1–100、默认50，`hasMore` 表示更早记录未显示，不取回文件或联网。明确创建定制分支时，先重新读取状态，要求 `canCreateBranch:true`；调用 `project git branch-create --project PROJECT_ID --input FILE --json`，输入完整包含新分支短名 `name`、最新 `expectedHead`、`expectedBranch` 和 `expectedSnapshot`，等待任务最终结果。此操作只在当前干净版本创建并指向新分支，保留源码／索引／业务数据／当前产物，不覆盖已有分支。仅分支创建要求Git2.56.0；工具不支持时按 `branchCreationIssue` 说明处理，不擅自换工具。分支创建后再开始业务修改；已有分支切换、合并和旧源码取回不在当前入口范围。
 
 当前开发版资源限额标记为 `internalTest`，查询运行时限制并处理超限错误，不在业务说明中承诺这些数值是正式产品默认值。联网仅按项目 `runtimeRequirements` 声明的公开接口使用；不把私有 API 密钥、管理令牌放进前端、清单或数据库。录音、拍照等能力还需要浏览器权限和实际环境支持，声明本身不等于授权成功。
 

@@ -63,6 +63,34 @@ pub struct GitSaveInput {
     pub message: String,
     pub author: GitAuthor,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitCreateBranchInput {
+    pub name: String,
+    pub expected_head: String,
+    pub expected_branch: String,
+    pub expected_snapshot: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitVersion {
+    pub oid: String,
+    pub parents: Vec<String>,
+    pub subject: String,
+    pub author: GitAuthor,
+    pub authored_at: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectGitVersions {
+    pub repository_root: PathBuf,
+    pub head: GitHead,
+    pub versions: Vec<GitVersion>,
+    pub has_more: bool,
+    pub limit: u32,
+    pub git: ExecutableInfo,
+    pub database: Value,
+}
 fn required_head<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Option::<String>::deserialize(d)
 }
@@ -122,6 +150,9 @@ pub struct ProjectGitStatus {
     pub snapshot_digest: String,
     pub can_initialize: bool,
     pub can_save: bool,
+    pub can_list_versions: bool,
+    pub can_create_branch: bool,
+    pub branch_creation_issue: Option<ApiError>,
     pub database: Value,
     pub issues: Vec<ApiError>,
 }
@@ -136,6 +167,8 @@ struct Journal {
     old_head: Option<String>,
     new_head: Option<String>,
     branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_branch: Option<String>,
     snapshot_digest: String,
     paths: Vec<String>,
 }
@@ -216,6 +249,95 @@ impl ProjectGitManager {
         }
         self.submit(project_id, Operation::Initialize(input), stop)
     }
+    /// A bounded prefix of the current HEAD's local history. No revision supplied
+    /// by the caller is interpreted, and the transient lease also blocks migration.
+    pub async fn versions(
+        &self,
+        project_id: &str,
+        limit: u32,
+        stop: watch::Receiver<bool>,
+    ) -> Result<ProjectGitVersions, ApiError> {
+        if !(1..=100).contains(&limit) {
+            return Err(input_error());
+        }
+        self.available()?;
+        let _operation = self
+            .store
+            .reserve_transient_operation(project_id, "git-versions")?;
+        let project = self.store.project(project_id)?;
+        let (_sender, cancel) = watch::channel(false);
+        let mut context = Context::new(stop, cancel)?;
+        context.checkpoint()?;
+        let _gate = tokio::select! {
+            biased;
+            _ = watch_stop(&mut context.stop) => return Err(interrupted()),
+            _ = tokio::time::sleep_until(context.deadline) => return Err(error("PROJECT_GIT_TIMEOUT", "等待项目读取窗口超过内部时间限制。")),
+            gate = project.operation_gate.read() => gate,
+        };
+        let tools = context.resolve(&self.git).await?;
+        let mut snapshot = inspect(&project, Some(&tools), &mut context, None).await?;
+        self.add_recovery_issue(project_id, &mut snapshot.view)?;
+        finalize_capabilities(&mut snapshot.view);
+        if !snapshot.view.can_list_versions {
+            return Err(blocked(&snapshot.view));
+        }
+        let head = snapshot
+            .view
+            .repository
+            .head
+            .clone()
+            .ok_or_else(output_invalid)?;
+        let mut command = git_command(&tools, context.root(), Some(&project));
+        command
+            .args([
+                "log",
+                "--no-show-signature",
+                "--no-decorate",
+                "--no-notes",
+                "--no-use-mailmap",
+                "--encoding=UTF-8",
+                "-z",
+                "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+            ])
+            .arg(format!("--max-count={}", limit + 1))
+            .arg(head.oid.as_ref().ok_or_else(output_invalid)?)
+            .arg("--");
+        let bytes = context.run(command, Vec::new()).await?.success()?;
+        let mut versions = parse_versions(&bytes, limit as usize + 1)?;
+        if versions.first().map(|version| &version.oid) != head.oid.as_ref() {
+            return Err(output_invalid());
+        }
+        let verify = inspect(&project, Some(&tools), &mut context, None).await?;
+        if verify.view.snapshot_digest != snapshot.view.snapshot_digest {
+            return Err(stale());
+        }
+        let has_more = versions.len() > limit as usize;
+        versions.truncate(limit as usize);
+        Ok(ProjectGitVersions {
+            repository_root: project.root.clone(),
+            head,
+            versions,
+            has_more,
+            limit,
+            git: tools.git,
+            database: database_boundary(),
+        })
+    }
+    pub async fn create_branch(
+        self: &Arc<Self>,
+        project_id: &str,
+        input: GitCreateBranchInput,
+        stop: watch::Receiver<bool>,
+    ) -> Result<TaskRecord, ApiError> {
+        validate_digest(&input.expected_snapshot)?;
+        if !valid_oid(&input.expected_head)
+            || validate_branch_name(&input.name).is_err()
+            || one_ref(format!("{}\n", input.expected_branch).as_bytes()).is_err()
+        {
+            return Err(input_error());
+        }
+        self.submit(project_id, Operation::CreateBranch(input), stop)
+    }
     pub async fn save(
         self: &Arc<Self>,
         project_id: &str,
@@ -271,10 +393,10 @@ impl ProjectGitManager {
         }
         self.store.control(project_id)?.check(false, None, false)?;
         self.store.project(project_id)?.check()?;
-        let kind = if matches!(operation, Operation::Initialize(_)) {
-            "gitInitialize"
-        } else {
-            "gitSave"
+        let kind = match operation {
+            Operation::Initialize(_) => "gitInitialize",
+            Operation::Save(_) => "gitSave",
+            Operation::CreateBranch(_) => "gitBranchCreate",
         };
         let (task, lease) = self.tasks.create_operation(project_id, kind)?;
         let (sender, cancel) = watch::channel(false);
@@ -287,13 +409,36 @@ impl ProjectGitManager {
         let project_id = project_id.to_owned();
         let runner = tokio::spawn(async move {
             let _lease = lease;
+            let branch_operation = matches!(operation, Operation::CreateBranch(_));
             let result = manager
                 .run(&project_id, &task_id, operation, stop, cancel)
-                .await;
+                .await
+                .map_err(|error| {
+                    if branch_operation && error.details.get("operationOutcome").is_none() {
+                        error.outcome("not_committed")
+                    } else {
+                        error
+                    }
+                });
             if let Err(error) = &result {
                 let _ = manager.tasks.append(
                     &task_id,
-                    format!("{}: {}\n", error.code, error.message).as_bytes(),
+                    format!(
+                        "{}: {}{}\n",
+                        error.code,
+                        error.message,
+                        if branch_operation {
+                            format!(
+                                " [branch outcome: {}]",
+                                error.details["operationOutcome"]
+                                    .as_str()
+                                    .unwrap_or("unknown")
+                            )
+                        } else {
+                            String::new()
+                        }
+                    )
+                    .as_bytes(),
                 );
             }
             let _ = manager.tasks.finish(&task_id, result);
@@ -306,7 +451,10 @@ impl ProjectGitManager {
     }
     pub fn cancel(&self, task_id: &str) -> Result<TaskRecord, ApiError> {
         let task = self.tasks.task(task_id)?;
-        if !matches!(task.task_type.as_str(), "gitInitialize" | "gitSave") {
+        if !matches!(
+            task.task_type.as_str(),
+            "gitInitialize" | "gitSave" | "gitBranchCreate"
+        ) {
             return Err(input_error());
         }
         if let Some(sender) = self.active.lock().unwrap().get(task_id) {
@@ -381,11 +529,18 @@ impl ProjectGitManager {
         cancel: watch::Receiver<bool>,
     ) -> Result<Value, ApiError> {
         let project = self.store.project(project_id)?;
-        let _gate = project.operation_gate.read().await;
+        let mut context = Context::new(stop, cancel)?;
+        context.checkpoint()?;
+        let _gate = tokio::select! {
+            biased;
+            _ = watch_stop(&mut context.stop) => return Err(interrupted()),
+            _ = watch_stop(&mut context.cancel) => return Err(interrupted()),
+            _ = tokio::time::sleep_until(context.deadline) => return Err(error("PROJECT_GIT_TIMEOUT", "等待项目读取窗口超过内部时间限制。")),
+            gate = project.operation_gate.read() => gate,
+        };
         project.check()?;
         self.store.control(project_id)?.check(false, None, false)?;
         self.tasks.phase(task_id, "git-preview")?;
-        let mut context = Context::new(stop, cancel)?;
         let tools = context.resolve(&self.git).await?;
         let mut snapshot = inspect(&project, Some(&tools), &mut context, None).await?;
         self.add_recovery_issue(project_id, &mut snapshot.view)?;
@@ -397,6 +552,10 @@ impl ProjectGitManager {
             }
             Operation::Save(input) => {
                 self.save_inner(&project, task_id, input, snapshot, &tools, &mut context)
+                    .await
+            }
+            Operation::CreateBranch(input) => {
+                self.create_branch_inner(&project, task_id, input, snapshot, &tools, &mut context)
                     .await
             }
         }
@@ -470,6 +629,7 @@ impl ProjectGitManager {
             old_head: None,
             new_head: None,
             branch: Some("refs/heads/main".into()),
+            previous_branch: None,
             snapshot_digest: input.expected_snapshot,
             paths: snapshot.view.scope.included_paths.clone(),
         };
@@ -625,6 +785,7 @@ impl ProjectGitManager {
             old_head: input.expected_head.clone(),
             new_head: Some(new_head.clone()),
             branch: Some(branch.clone()),
+            previous_branch: None,
             snapshot_digest: input.expected_snapshot.clone(),
             paths: snapshot.files.keys().cloned().collect(),
         };
@@ -689,10 +850,176 @@ impl ProjectGitManager {
         let _ = fs::remove_dir_all(operation_root);
         Ok(result)
     }
+    async fn create_branch_inner(
+        &self,
+        project: &ProjectHandle,
+        task_id: &str,
+        input: GitCreateBranchInput,
+        snapshot: Snapshot,
+        tools: &GitToolchain,
+        context: &mut Context,
+    ) -> Result<Value, ApiError> {
+        if !branch_version_supported(&tools.git.version) {
+            return Err(branch_version_issue());
+        }
+        if snapshot.view.snapshot_digest != input.expected_snapshot
+            || head_oid(&snapshot.view) != Some(input.expected_head.as_str())
+            || snapshot
+                .view
+                .repository
+                .head
+                .as_ref()
+                .and_then(|head| head.branch.as_deref())
+                != Some(input.expected_branch.as_str())
+        {
+            return Err(stale());
+        }
+        if !snapshot.view.can_create_branch {
+            return Err(blocked(&snapshot.view));
+        }
+        let git_dir = project.root.join(".git");
+        let index_lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        let verify = inspect(project, Some(tools), context, Some(&index_lock)).await?;
+        if verify.view.snapshot_digest != input.expected_snapshot {
+            return Err(stale());
+        }
+        let new_branch = format!("refs/heads/{}", input.name);
+        let mut command = git_command(tools, context.root(), Some(project));
+        command.args(["show-ref", "--verify", "--quiet", &new_branch]);
+        match context.run(command, Vec::new()).await?.code {
+            1 => (),
+            0 => {
+                return Err(error(
+                    "PROJECT_GIT_BRANCH_EXISTS",
+                    "此分支已存在；不会覆盖或切换已有分支。",
+                ))
+            }
+            _ => return Err(git_failed()),
+        }
+        // symref-update HEAD locks HEAD and the new branch. A simultaneous verify
+        // of the old branch is rejected by Git as a duplicate HEAD reflog update.
+        // Hold the old branch's standard lock ourselves, and recheck its OID.
+        // The existing index is only locked; it is never refreshed or published.
+        let old_lock = RefLock::acquire(&git_dir.join(format!("{}.lock", input.expected_branch)))?;
+        let mut command = git_command(tools, context.root(), Some(project));
+        command.args(["rev-parse", "--verify", &input.expected_branch]);
+        if one_oid(&context.run(command, Vec::new()).await?.success()?)? != input.expected_head {
+            return Err(stale());
+        }
+        let journal_path = self.journal_path(&project.manifest.id, task_id);
+        let mut journal = Journal {
+            schema_version: 1,
+            project_id: project.manifest.id.clone(),
+            task_id: task_id.into(),
+            operation: "create-branch".into(),
+            phase: "prepared".into(),
+            old_head: Some(input.expected_head.clone()),
+            new_head: Some(input.expected_head.clone()),
+            branch: Some(new_branch.clone()),
+            previous_branch: Some(input.expected_branch.clone()),
+            snapshot_digest: input.expected_snapshot.clone(),
+            paths: vec![],
+        };
+        atomic_json(&journal_path, &journal)?;
+        self.tasks.phase(task_id, "git-branch-commit")?;
+        let mut command = git_command(tools, context.root(), Some(project));
+        command.args([
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            "Local Projects: create customization branch",
+            "--stdin",
+            "-z",
+        ]);
+        // This identity labels only the local reflog; no authored commit is made.
+        author_environment(
+            &mut command,
+            &GitAuthor {
+                name: "Local Projects".into(),
+                email: "local-projects@localhost".into(),
+            },
+        );
+        let commands = format!(
+            "start\0create {new_branch}\0{}\0option no-deref\0symref-update HEAD\0{new_branch}\0oid\0{}\0prepare\0",
+            input.expected_head, input.expected_head,
+        ).into_bytes();
+        let failure = context
+            .commit_transaction(command, commands, || {
+                if !old_lock.matches()
+                    || !index_lock.matches(&index_lock.path)
+                    || index_fingerprint(&git_dir.join("index"))? != index_lock.original_index
+                    || read_file(&git_dir.join("HEAD"), 4096)?
+                        != format!("ref: {}\n", input.expected_branch).as_bytes()
+                    || repository_digest(&git_dir)? != snapshot.repository_digest
+                    || source_fingerprint(&scan_source(
+                        &project.root,
+                        &project.manifest,
+                        &snapshot.view.scope.included_roots,
+                    )?)? != snapshot.source_digest
+                {
+                    return Err(stale());
+                }
+                project.check()
+            })
+            .await;
+        if let Err(error) = failure {
+            if error.details["safeAbort"] == true {
+                journal.phase = "not-committed".into();
+                atomic_json(&journal_path, &journal)?;
+                self.tasks.append(
+                    task_id,
+                    b"New branch was not committed; source, index and data were not replaced.\n",
+                )?;
+                return Err(error.outcome("not_committed"));
+            }
+            let _ = self.tasks.append(task_id, b"Branch transaction outcome is unknown; inspect the retained journal before another write.\n");
+            return Err(error
+                .outcome("unknown")
+                .detail("taskId", task_id.to_owned())
+                .detail("branch", new_branch));
+        }
+        // The acknowledged Git ref transaction is the commit point. Cancellation
+        // after it cannot relabel the branch change as an uncommitted operation.
+        let result = json!({"operation":"create-branch","operationOutcome":"committed","repositoryRoot":project.root,"head":input.expected_head,"previousBranch":input.expected_branch,"branch":new_branch,"name":input.name,"snapshotDigest":input.expected_snapshot,"database":database_boundary(),"git":tools.git,"completedAt":now()});
+        journal.phase = "ref-committed".into();
+        atomic_json(&journal_path, &journal).map_err(|_| {
+            recovery()
+                .outcome("committed")
+                .detail("result", result.clone())
+        })?;
+        let verify_committed = || -> Result<(), ApiError> {
+            if read_file(&git_dir.join("HEAD"), 4096)? != format!("ref: {new_branch}\n").as_bytes()
+                || one_oid(&read_file(&git_dir.join(&new_branch), 4096)?)? != input.expected_head
+                || index_fingerprint(&git_dir.join("index"))? != index_lock.original_index
+                || source_fingerprint(&scan_source(
+                    &project.root,
+                    &project.manifest,
+                    &snapshot.view.scope.included_roots,
+                )?)? != snapshot.source_digest
+            {
+                return Err(recovery());
+            }
+            Ok(())
+        };
+        verify_committed().map_err(|_| {
+            recovery()
+                .outcome("committed")
+                .detail("result", result.clone())
+        })?;
+        journal.phase = "completed".into();
+        atomic_json(&journal_path, &journal).map_err(|_| {
+            recovery()
+                .outcome("committed")
+                .detail("result", result.clone())
+        })?;
+        let _ = self.tasks.append(task_id, b"Created and switched to the new branch at the existing HEAD; source, index, data and output were not replaced.\n");
+        Ok(result)
+    }
 }
 enum Operation {
     Initialize(GitInitInput),
     Save(GitSaveInput),
+    CreateBranch(GitCreateBranchInput),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -727,6 +1054,27 @@ fn finalize_capabilities(view: &mut ProjectGitStatus) {
             .head
             .as_ref()
             .is_some_and(|head| head.branch.is_some());
+    view.can_list_versions = view.repository.git.is_some()
+        && view.repository.state == "project-root"
+        && head_oid(view).is_some()
+        && view.issues.iter().all(|issue| {
+            matches!(
+                issue.code.as_str(),
+                "PROJECT_GIT_INDEX_NOT_CLEAN"
+                    | "PROJECT_GIT_DETACHED"
+                    | "PROJECT_GIT_SCOPE_INCOMPLETE"
+            )
+        });
+    view.branch_creation_issue = view
+        .repository
+        .git
+        .as_ref()
+        .filter(|git| !branch_version_supported(&git.version))
+        .map(|_| branch_version_issue());
+    view.can_create_branch = view.can_save
+        && head_oid(view).is_some()
+        && view.changes.is_empty()
+        && view.branch_creation_issue.is_none();
 }
 async fn inspect(
     project: &ProjectHandle,
@@ -804,6 +1152,9 @@ async fn inspect(
         snapshot_digest: String::new(),
         can_initialize: false,
         can_save: false,
+        can_list_versions: false,
+        can_create_branch: false,
+        branch_creation_issue: None,
         database: database_boundary(),
         issues: std::mem::take(&mut scan.issues),
     };
@@ -1655,6 +2006,57 @@ impl Drop for IndexLock {
     }
 }
 
+struct RefLock {
+    path: PathBuf,
+    _file: File,
+    device: u64,
+    inode: u64,
+}
+impl RefLock {
+    fn acquire(path: &Path) -> Result<Self, ApiError> {
+        check_no_symlinks(path, true)?;
+        // Packed refs need not have loose parent directories yet. Create only
+        // absent directories without altering permissions of existing Git paths.
+        fs::create_dir_all(path.parent().ok_or_else(unsafe_path)?)?;
+        check_no_symlinks(path, true)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| {
+                error(
+                    "PROJECT_GIT_LOCKED",
+                    "旧分支正被其他程序操作或无法安全锁定；未切换分支。",
+                )
+            })?;
+        let metadata = file.metadata()?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            _file: file,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    fn matches(&self) -> bool {
+        check_no_symlinks(&self.path, false).is_ok()
+            && fs::symlink_metadata(&self.path).is_ok_and(|meta| {
+                meta.is_file()
+                    && meta.nlink() == 1
+                    && meta.dev() == self.device
+                    && meta.ino() == self.inode
+            })
+    }
+}
+impl Drop for RefLock {
+    fn drop(&mut self) {
+        if self.matches() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn index_fingerprint(path: &Path) -> Result<Option<String>, ApiError> {
     check_no_symlinks(path, true)?;
     match fs::symlink_metadata(path) {
@@ -1819,6 +2221,83 @@ fn one_ref(bytes: &[u8]) -> Result<String, ApiError> {
     }
     Ok(value.into())
 }
+fn validate_branch_name(value: &str) -> Result<(), ApiError> {
+    if value.is_empty()
+        || value.len() > 128
+        || value == "HEAD"
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-/".contains(&byte))
+        || one_ref(format!("refs/heads/{value}\n").as_bytes()).is_err()
+    {
+        Err(input_error())
+    } else {
+        Ok(())
+    }
+}
+fn parse_versions(bytes: &[u8], maximum: usize) -> Result<Vec<GitVersion>, ApiError> {
+    if bytes.len() > MAX_OUTPUT {
+        return Err(limit());
+    }
+    if bytes.is_empty() {
+        return Ok(vec![]);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| output_invalid())?;
+    let fields: Vec<&str> = text
+        .strip_suffix('\0')
+        .ok_or_else(output_invalid)?
+        .split('\0')
+        .collect();
+    if !fields.len().is_multiple_of(6) || fields.len() / 6 > maximum {
+        return Err(output_invalid());
+    }
+    let mut versions = Vec::new();
+    let mut seen = BTreeSet::new();
+    for row in fields.as_chunks::<6>().0 {
+        let parents: Vec<String> = if row[1].is_empty() {
+            vec![]
+        } else {
+            row[1].split(' ').map(str::to_owned).collect()
+        };
+        let valid_text = |value: &str, maximum: usize| {
+            value.len() <= maximum && !value.chars().any(char::is_control)
+        };
+        if !valid_oid(row[0])
+            || !seen.insert(row[0])
+            || parents.len() > 100
+            || parents.iter().any(|oid| !valid_oid(oid))
+            || !valid_text(row[2], 200)
+            || !valid_text(row[3], 254)
+            || !valid_text(row[5], 4000)
+            || !valid_author_date(row[4])
+        {
+            return Err(output_invalid());
+        }
+        versions.push(GitVersion {
+            oid: row[0].into(),
+            parents,
+            subject: row[5].into(),
+            author: GitAuthor {
+                name: row[2].into(),
+                email: row[3].into(),
+            },
+            authored_at: row[4].into(),
+        });
+    }
+    Ok(versions)
+}
+fn valid_author_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 25
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 | 22 => *byte == b':',
+            19 => matches!(*byte, b'+' | b'-'),
+            _ => byte.is_ascii_digit(),
+        })
+}
 fn validate_digest(value: &str) -> Result<(), ApiError> {
     if value.len() != 64
         || !value
@@ -1967,9 +2446,22 @@ impl Context {
     }
     async fn commit_ref(
         &mut self,
-        mut command: Command,
+        command: Command,
         new_head: &str,
         old_head: Option<&str>,
+        validate: impl FnOnce() -> Result<(), ApiError> + Send,
+    ) -> Result<(), ApiError> {
+        let commands = format!(
+            "start\0update HEAD\0{new_head}\0{}\0prepare\0",
+            old_head.unwrap_or("0000000000000000000000000000000000000000")
+        )
+        .into_bytes();
+        self.commit_transaction(command, commands, validate).await
+    }
+    async fn commit_transaction(
+        &mut self,
+        mut command: Command,
+        commands: Vec<u8>,
         validate: impl FnOnce() -> Result<(), ApiError> + Send,
     ) -> Result<(), ApiError> {
         self.checkpoint()
@@ -1995,8 +2487,7 @@ impl Context {
                 let (_, result) = tokio::try_join!(
                     read_output(stderr, false, 64 * 1024),
                     async {
-                        let commands = format!("start\0update HEAD\0{new_head}\0{}\0prepare\0", old_head.unwrap_or("0000000000000000000000000000000000000000"));
-                        stdin.write_all(commands.as_bytes()).await.map_err(|_| git_failed())?;
+                        stdin.write_all(&commands).await.map_err(|_| git_failed())?;
                         stdin.flush().await.map_err(|_| git_failed())?;
                         expect_line(&mut stdout, b"start: ok\n").await?;
                         expect_line(&mut stdout, b"prepare: ok\n").await?;
@@ -2025,6 +2516,10 @@ impl Context {
             } => result,
         };
         process.finish().await;
+        // Until commit is sent, closing stdin/killing this private process aborts
+        // Git's prepared transaction. After sending it, missing acknowledgement
+        // is deliberately unknown and leaves the journal for human inspection.
+        safe_abort |= !commit_sent;
         result.map_err(|error| {
             error
                 .detail("safeAbort", safe_abort)
@@ -2149,6 +2644,12 @@ fn supported_version(value: &str) -> bool {
                     !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
                 })
     })
+}
+fn branch_version_supported(value: &str) -> bool {
+    value == "2.56.0"
+}
+fn branch_version_issue() -> ApiError {
+    error("PROJECT_GIT_BRANCH_VERSION_UNSUPPORTED", "新建并切换分支的引用事务目前仅验证 Git 2.56.0；仍可使用当前 Git 查看版本和保存源码，不会自动换工具。")
 }
 struct Output {
     code: i32,

@@ -2,6 +2,78 @@ use super::*;
 use std::os::unix::fs::symlink;
 
 #[test]
+fn branch_names_are_bounded_and_inputs_require_exact_preview_fields() {
+    for name in ["custom", "custom/feature-1", "a_b.c", "1"] {
+        assert!(validate_branch_name(name).is_ok(), "{name}");
+    }
+    for name in [
+        "", "HEAD", "-option", ".hidden", "a//b", "a/", "a.", "a..b", "a/.b", "a/b.lock", "a@{b",
+        "中文", "a\nb",
+    ] {
+        assert!(validate_branch_name(name).is_err(), "{name}");
+    }
+    assert!(validate_branch_name(&"a".repeat(129)).is_err());
+    let value = json!({"name":"custom","expectedHead":"a".repeat(40),"expectedBranch":"refs/heads/main","expectedSnapshot":"b".repeat(64)});
+    assert!(serde_json::from_value::<GitCreateBranchInput>(value.clone()).is_ok());
+    for field in ["name", "expectedHead", "expectedBranch", "expectedSnapshot"] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<GitCreateBranchInput>(missing).is_err());
+    }
+    let mut extra = value;
+    extra["checkout"] = json!(true);
+    assert!(serde_json::from_value::<GitCreateBranchInput>(extra).is_err());
+    assert!(branch_version_supported("2.56.0"));
+    for version in ["2.54.0", "2.54.0 (Apple Git-154)", "2.56.1", "2.57.0"] {
+        assert!(!branch_version_supported(version));
+    }
+    assert!(supported_version("2.54.0 (Apple Git-154)"));
+}
+
+#[test]
+fn version_parser_never_truncates_or_accepts_malformed_commit_metadata() {
+    let row = format!(
+        "{}\0\0作者\0author@localhost\u{0}2026-10-22T01:00:00+08:00\0A local source version\0",
+        "a".repeat(40)
+    );
+    let parsed = parse_versions(row.as_bytes(), 2).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert!(parsed[0].parents.is_empty());
+    assert_eq!(parsed[0].author.name, "作者");
+    assert!(parse_versions(row.trim_end_matches('\0').as_bytes(), 2).is_err());
+    assert!(parse_versions(row.as_bytes(), 0).is_err());
+    assert!(parse_versions(format!("{row}{row}").as_bytes(), 2).is_err());
+    for malformed in [
+        row.replace("A local source version", "unexpected\ncontrol"),
+        row.replace("A local source version", &"x".repeat(4001)),
+        row.replace("author@localhost", &"a".repeat(255)),
+        row.replace("2026-10-22T01:00:00+08:00", "not-a-date"),
+        row.replacen(&"a".repeat(40), "HEAD", 1),
+        row.replace("\0\0作者", "\0bad-parent\0作者"),
+    ] {
+        assert_eq!(
+            parse_versions(malformed.as_bytes(), 2).unwrap_err().code,
+            "PROJECT_GIT_OUTPUT_INVALID"
+        );
+    }
+    assert!(parse_versions(&[0xff, 0], 1).is_err());
+}
+
+#[test]
+fn old_branch_lock_never_overwrites_or_removes_another_writers_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let path = root.join("refs/heads/nested/main.lock");
+    let lock = RefLock::acquire(&path).unwrap();
+    assert!(RefLock::acquire(&path).is_err());
+    let original = path.with_extension("moved");
+    fs::rename(&path, original).unwrap();
+    fs::write(&path, b"another writer").unwrap();
+    drop(lock);
+    assert_eq!(fs::read(&path).unwrap(), b"another writer");
+}
+
+#[test]
 fn save_requires_explicit_nullable_head_and_valid_snapshot() {
     let base = json!({"expectedSnapshot":"a".repeat(64),"message":"save","author":{"name":"Local Projects","email":"local-projects@localhost"}});
     assert!(serde_json::from_value::<GitSaveInput>(base.clone()).is_err());
@@ -200,6 +272,13 @@ async fn existing_source_only_repository_is_reported_and_never_wrapped_or_change
 
 #[tokio::test]
 async fn status_reserves_transient_operation_until_stopped_even_while_waiting_for_project_gate() {
+    preview_lease_test(false).await;
+}
+#[tokio::test]
+async fn versions_reserves_transient_operation_and_stops_while_waiting_for_project_gate() {
+    preview_lease_test(true).await;
+}
+async fn preview_lease_test(versions: bool) {
     let (_temp, paths) = RuntimePaths::for_test();
     let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
     let created = store
@@ -218,7 +297,13 @@ async fn status_reserves_transient_operation_until_stopped_even_while_waiting_fo
     let (stop, receiver) = watch::channel(false);
     let reader = manager.clone();
     let id = created.id.clone();
-    let pending = tokio::spawn(async move { reader.status(&id, receiver).await });
+    let pending = tokio::spawn(async move {
+        if versions {
+            reader.versions(&id, 50, receiver).await.map(|_| ())
+        } else {
+            reader.status(&id, receiver).await.map(|_| ())
+        }
+    });
     tokio::time::timeout(Duration::from_secs(3), async {
         while !store.has_active_tasks() {
             tokio::task::yield_now().await;
@@ -646,6 +731,392 @@ async fn official_git_initialization_source_save_and_protection_are_standard_and
         format!("{commit}\n").as_bytes()
     );
     drop(stop);
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "set LOCAL_PROJECTS_TEST_GIT_ROOT to a verified .test-artifacts development-git payload"]
+async fn official_git_versions_and_new_branch_keep_source_index_output_and_data_unchanged() {
+    let tool_root = PathBuf::from(std::env::var("LOCAL_PROJECTS_TEST_GIT_ROOT").unwrap())
+        .canonicalize()
+        .unwrap();
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.test-artifacts")
+        .canonicalize()
+        .unwrap();
+    assert!(tool_root.starts_with(evidence));
+    let (_temp, paths) = RuntimePaths::for_test();
+    let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
+    let created = store
+        .create(crate::projects::CreateProjectInput {
+            name: "Disposable local Git branch acceptance".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let project = store.project(&created.id).unwrap();
+    let tasks =
+        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into()).unwrap();
+    let git = GitEnvironmentManager::new(paths.data_root().to_path_buf(), Some(tool_root));
+    let tools = git.resolve().await.unwrap();
+    let manager = ProjectGitManager::new(paths.clone(), store.clone(), tasks.clone(), git).unwrap();
+    let (_stop, receiver) = watch::channel(false);
+    for limit in [0, 101] {
+        assert_eq!(
+            manager
+                .versions(&created.id, limit, receiver.clone())
+                .await
+                .unwrap_err()
+                .code,
+            "PROJECT_GIT_INPUT_INVALID"
+        );
+    }
+    let preview = manager.status(&created.id, receiver.clone()).await.unwrap();
+    let initialized = manager
+        .initialize(
+            &created.id,
+            GitInitInput {
+                expected_snapshot: preview.snapshot_digest,
+                initial_branch: "main".into(),
+            },
+            receiver.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        wait(&tasks, &initialized.task_id).await.status,
+        crate::tasks::TaskStatus::Succeeded
+    );
+    let unborn = manager.status(&created.id, receiver.clone()).await.unwrap();
+    assert!(!unborn.can_create_branch && !unborn.can_list_versions);
+    let author = GitAuthor {
+        name: "Explicit Branch Fixture Author".into(),
+        email: "fixture@localhost".into(),
+    };
+    let source_path = project.root.join("app/src/branch-fixture.txt");
+    for message in ["First local version", "Second local version"] {
+        fs::write(&source_path, message).unwrap();
+        let preview = manager.status(&created.id, receiver.clone()).await.unwrap();
+        let saved = manager
+            .save(
+                &created.id,
+                GitSaveInput {
+                    expected_head: head_oid(&preview).map(str::to_owned),
+                    expected_snapshot: preview.snapshot_digest,
+                    message: message.into(),
+                    author: author.clone(),
+                },
+                receiver.clone(),
+            )
+            .await
+            .unwrap();
+        let done = wait(&tasks, &saved.task_id).await;
+        assert_eq!(done.status, crate::tasks::TaskStatus::Succeeded, "{done:?}");
+    }
+    let invoked = paths.data_root().join("forbidden-user-program");
+    let hooks = paths.data_root().join("synthetic-hooks");
+    private_dir(&hooks).unwrap();
+    let hook = hooks.join("reference-transaction");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nprintf forbidden > '{}'\nexit 1\n",
+            invoked.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    for (name, value) in [
+        ("core.hooksPath", hooks.to_str().unwrap()),
+        ("core.fsmonitor", hook.to_str().unwrap()),
+        ("gpg.program", hook.to_str().unwrap()),
+        ("log.showSignature", "true"),
+        ("user.name", "Unselected identity"),
+        ("user.email", "unselected@localhost"),
+    ] {
+        ordinary(
+            &manager,
+            &project,
+            &tools,
+            &["config", "--local", name, value],
+        )
+        .await;
+    }
+    let index = project.root.join(".git/index");
+    let before_index = index_fingerprint(&index).unwrap();
+    let before_source = fs::read(&source_path).unwrap();
+    private_dir(&project.root.join("dist")).unwrap();
+    fs::write(
+        project.root.join("dist/index.html"),
+        "disposable previous running output",
+    )
+    .unwrap();
+    let before_data = crate::builds::tree_digest(&project.root.join("data"), false).unwrap();
+    let before_output = crate::builds::tree_digest(&project.root.join("dist"), false).unwrap();
+    let listed = manager
+        .versions(&created.id, 1, receiver.clone())
+        .await
+        .unwrap();
+    assert_eq!(listed.versions.len(), 1);
+    assert!(listed.has_more);
+    assert_eq!(listed.versions[0].subject, "Second local version");
+    assert_eq!(listed.versions[0].author.name, author.name);
+    let head = listed.head.oid.unwrap();
+    let full = manager
+        .versions(&created.id, 100, receiver.clone())
+        .await
+        .unwrap();
+    assert_eq!(full.versions.len(), 2);
+    assert!(!full.has_more);
+    assert_eq!(full.versions[0].parents, vec![full.versions[1].oid.clone()]);
+    assert_eq!(
+        index_fingerprint(&index).unwrap(),
+        before_index,
+        "listing refreshed the index"
+    );
+    let input_for = |view: &ProjectGitStatus, name: &str| GitCreateBranchInput {
+        name: name.into(),
+        expected_head: head_oid(view).unwrap().into(),
+        expected_branch: view
+            .repository
+            .head
+            .as_ref()
+            .unwrap()
+            .branch
+            .clone()
+            .unwrap(),
+        expected_snapshot: view.snapshot_digest.clone(),
+    };
+    let clean = manager.status(&created.id, receiver.clone()).await.unwrap();
+    assert!(
+        clean.can_create_branch && clean.can_list_versions,
+        "{clean:?}"
+    );
+    let mut older = clean.clone();
+    older.repository.git.as_mut().unwrap().version = "2.54.0 (Apple Git-154)".into();
+    finalize_capabilities(&mut older);
+    assert!(older.can_save && older.can_list_versions);
+    assert!(!older.can_create_branch);
+    assert_eq!(
+        older.branch_creation_issue.unwrap().code,
+        "PROJECT_GIT_BRANCH_VERSION_UNSUPPORTED"
+    );
+    let mut wrong_branch = input_for(&clean, "wrong-preview");
+    wrong_branch.expected_branch = "refs/heads/other".into();
+    let task = manager
+        .create_branch(&created.id, wrong_branch, receiver.clone())
+        .await
+        .unwrap();
+    let error = wait(&tasks, &task.task_id).await.error.unwrap();
+    assert_eq!(error.code, "PROJECT_GIT_STALE_PREVIEW");
+    assert_eq!(error.details["operationOutcome"], "not_committed");
+    for scenario in ["dirty", "staged", "unknown"] {
+        match scenario {
+            "dirty" | "staged" => fs::write(&source_path, "uncommitted content").unwrap(),
+            _ => fs::write(project.root.join("unclassified-script.js"), "unclassified").unwrap(),
+        }
+        if scenario == "staged" {
+            ordinary(
+                &manager,
+                &project,
+                &tools,
+                &["add", "--", "app/src/branch-fixture.txt"],
+            )
+            .await;
+        }
+        let view = manager.status(&created.id, receiver.clone()).await.unwrap();
+        assert!(!view.can_create_branch, "{scenario}: {view:?}");
+        assert!(
+            view.can_list_versions,
+            "{scenario}: read-only history must stay available"
+        );
+        let input = input_for(&view, &format!("blocked-{scenario}"));
+        let task = manager
+            .create_branch(&created.id, input, receiver.clone())
+            .await
+            .unwrap();
+        let done = wait(&tasks, &task.task_id).await;
+        assert_eq!(
+            done.error.as_ref().unwrap().details["operationOutcome"],
+            "not_committed"
+        );
+        assert!(!project
+            .root
+            .join(format!(".git/refs/heads/blocked-{scenario}"))
+            .exists());
+        if scenario == "unknown" {
+            fs::remove_file(project.root.join("unclassified-script.js")).unwrap();
+        } else {
+            fs::write(&source_path, &before_source).unwrap();
+        }
+        if scenario == "staged" {
+            ordinary(&manager, &project, &tools, &["read-tree", "HEAD"]).await;
+        }
+    }
+    ordinary(
+        &manager,
+        &project,
+        &tools,
+        &["update-ref", "refs/heads/taken", &head],
+    )
+    .await;
+    let view = manager.status(&created.id, receiver.clone()).await.unwrap();
+    let task = manager
+        .create_branch(&created.id, input_for(&view, "taken"), receiver.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        wait(&tasks, &task.task_id).await.error.unwrap().code,
+        "PROJECT_GIT_BRANCH_EXISTS"
+    );
+    // Exercise a packed old branch and a nested new branch. No checkout/reset,
+    // read-tree, or index publication is used by the operation under test.
+    ordinary(&manager, &project, &tools, &["pack-refs", "--all"]).await;
+    let view = manager.status(&created.id, receiver.clone()).await.unwrap();
+    let index_before_branch = index_fingerprint(&index).unwrap();
+    let task = manager
+        .create_branch(
+            &created.id,
+            input_for(&view, "custom/feature-1"),
+            receiver.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.task_type, "gitBranchCreate");
+    let done = wait(&tasks, &task.task_id).await;
+    assert_eq!(done.status, crate::tasks::TaskStatus::Succeeded, "{done:?}");
+    let result = done.result.unwrap();
+    assert_eq!(result["operationOutcome"], "committed");
+    assert_eq!(result["head"], head);
+    assert_eq!(result["previousBranch"], "refs/heads/main");
+    assert_eq!(result["branch"], "refs/heads/custom/feature-1");
+    assert_eq!(result["database"]["state"], "not-supported");
+    assert_eq!(
+        ordinary(&manager, &project, &tools, &["symbolic-ref", "HEAD"]).await,
+        b"refs/heads/custom/feature-1\n"
+    );
+    assert_eq!(
+        ordinary(
+            &manager,
+            &project,
+            &tools,
+            &["rev-parse", "refs/heads/main"]
+        )
+        .await,
+        format!("{head}\n").as_bytes()
+    );
+    assert_eq!(index_fingerprint(&index).unwrap(), index_before_branch);
+    assert_eq!(fs::read(&source_path).unwrap(), before_source);
+    assert_eq!(
+        crate::builds::tree_digest(&project.root.join("data"), false).unwrap(),
+        before_data
+    );
+    assert_eq!(
+        crate::builds::tree_digest(&project.root.join("dist"), false).unwrap(),
+        before_output
+    );
+    assert!(!invoked.exists(), "a configured user program was executed");
+    for name in [
+        "HEAD.lock",
+        "index.lock",
+        "refs/heads/main.lock",
+        "refs/heads/custom/feature-1.lock",
+    ] {
+        assert!(
+            !project.root.join(".git").join(name).exists(),
+            "left own lock {name}"
+        );
+    }
+    let after = manager.status(&created.id, receiver.clone()).await.unwrap();
+    assert!(
+        after.can_create_branch && after.changes.is_empty(),
+        "{after:?}"
+    );
+    let journal: Journal = serde_json::from_slice(
+        &fs::read(manager.journal_path(&created.id, &task.task_id)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(journal.phase, "completed");
+    assert_eq!(journal.previous_branch.as_deref(), Some("refs/heads/main"));
+    // A validation failure after prepare aborts both new ref and symbolic HEAD.
+    let (_probe_stop, probe_stop) = watch::channel(false);
+    let (_probe_cancel, probe_cancel) = watch::channel(false);
+    let mut context = Context::new(probe_stop, probe_cancel).unwrap();
+    let mut command = git_command(&tools, context.root(), Some(&project));
+    command.args(["update-ref", "--stdin", "-z"]);
+    author_environment(&mut command, &author);
+    let commands = format!("start\0create refs/heads/must-abort\0{head}\0option no-deref\0symref-update HEAD\0refs/heads/must-abort\0oid\0{head}\0prepare\0").into_bytes();
+    let error = context
+        .commit_transaction(command, commands, || Err(stale()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.details["safeAbort"], true);
+    assert_eq!(error.details["commitSent"], false);
+    assert!(!project.root.join(".git/refs/heads/must-abort").exists());
+    assert_eq!(
+        fs::read(project.root.join(".git/HEAD")).unwrap(),
+        b"ref: refs/heads/custom/feature-1\n"
+    );
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[tokio::test]
+async fn new_branch_cancellation_releases_task_lease_without_waiting_for_the_project_gate() {
+    let (_temp, paths) = RuntimePaths::for_test();
+    let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
+    let project = store
+        .create(crate::projects::CreateProjectInput {
+            name: "Disposable branch cancel gate".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let tasks =
+        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into()).unwrap();
+    let git = GitEnvironmentManager::new(paths.data_root().to_path_buf(), None);
+    let manager = ProjectGitManager::new(paths, store.clone(), tasks.clone(), git).unwrap();
+    let gate = store.gate(&project.id);
+    let held = gate.write().await;
+    let (_stop, receiver) = watch::channel(false);
+    let task = manager
+        .create_branch(
+            &project.id,
+            GitCreateBranchInput {
+                name: "never-created".into(),
+                expected_head: "a".repeat(40),
+                expected_branch: "refs/heads/main".into(),
+                expected_snapshot: "b".repeat(64),
+            },
+            receiver,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.active_task(&project.id).as_deref(),
+        Some(task.task_id.as_str())
+    );
+    store.begin_workspace_migration().unwrap();
+    manager.cancel(&task.task_id).unwrap();
+    let completed = tokio::time::timeout(Duration::from_secs(3), wait(&tasks, &task.task_id))
+        .await
+        .unwrap();
+    assert_eq!(completed.status, crate::tasks::TaskStatus::Interrupted);
+    let error = completed.error.unwrap();
+    assert_eq!(error.code, "PROJECT_GIT_INTERRUPTED");
+    assert_eq!(error.details["operationOutcome"], "not_committed");
+    assert!(!store.has_active_tasks());
+    store.resume_workspace();
+    assert!(!store
+        .project(&project.id)
+        .unwrap()
+        .root
+        .join(".git")
+        .exists());
+    drop(held);
     manager.shutdown().await;
     tasks.shutdown().await;
     store.shutdown().await;

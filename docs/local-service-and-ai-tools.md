@@ -192,6 +192,12 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `GET /api/v1/environment/git` | 读取 Git 工具选择与可用性、系统 SSH 版本状态及未验证的认证状态 | 管理凭据 |
 | `PUT /api/v1/environment/git` | 保存显式 Git 路径或明确恢复受管默认，不访问仓库 | 管理凭据 |
 | `POST /api/v1/environment/git/remote-check` | 明确匿名检查公开 GitHub/Gitee HTTPS 仓库的 HEAD，不克隆仓库 | 管理凭据 |
+| `GET /api/v1/projects/:id/git` | 读取项目源码范围、Git 状态和操作能力 | 管理凭据 |
+| `GET /api/v1/projects/:id/git/versions?limit=50` | 只读当前 HEAD 可达的本机提交，limit 为1–100 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/initialize` | 按明确范围初始化本机源码仓库，返回任务 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/saves` | 按新鲜预览及明确作者保存源码版本，返回任务 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/branches` | 在当前干净版本创建并指向新定制分支，返回任务 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/tasks/:taskId/cancel` | 请求停止本项目 Git 任务，继续核对最终结果 | 管理凭据 |
 | `GET /api/v1/projects` | 列出项目基本信息、状态与带时效的空间摘要 | 管理凭据 |
 | `POST /api/v1/projects` | 创建项目目录、模板和空数据库 | 管理凭据 |
 | `GET /api/v1/projects/{id}` | 读取项目基本信息与 revision、状态、路径和文档入口 | 管理凭据 |
