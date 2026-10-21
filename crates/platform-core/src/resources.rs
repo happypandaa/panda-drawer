@@ -46,6 +46,11 @@ impl ProjectResources {
         }
         Ok(Self { root, cli_path })
     }
+    /// Development tools are optional for running published apps. A missing or
+    /// damaged bundle is reported by the build environment, not startup.
+    pub fn development_node_root(&self) -> PathBuf {
+        self.root.join("development-node")
+    }
     pub fn install(&self, staging: &Path, manifest: &ProjectManifest) -> Result<(), ApiError> {
         copy_tree(&self.root.join("template/app"), &staging.join("app"))?;
         crate::builds::install_starter(staging, manifest, &self.root.join("template"))?;
@@ -87,7 +92,7 @@ First read the project-owned skill at `.agents/skills/local-projects-app/SKILL.m
 
 This project starts with a ready-to-open welcome application, its matching React source and an empty independent database. Creating and opening it requires neither Node nor dependency downloads. The bundled template is recorded separately from user build tasks; after changing source, request a platform build to publish the new version. A failed first build preserves the initial application, but does not roll back any separately committed database changes.
 
-For this static project-v1 type, the native platform runs the local service and owns SQLite and attachments. Node is needed only for builds (minimum 22.12, recommended 24 LTS, supported branches 22/24). Do not start a separate backend or Vite development server. Open the published application from the platform in its single native application window. Opening it again only focuses the same window without reloading or losing drafts. Do not create popups, another WebView, an external browser window, or use window.open/target=_blank to extend the application. For a separately registered Node application, the platform starts its backend when opening its window and stops it when that application window closes; that rule does not turn this static project into a Node source slot.
+For this static project-v1 type, the native platform runs the local service and owns SQLite and attachments. Node is needed only for builds (minimum 22.12, recommended 24 LTS, supported branches 22/24). The Mac internal bundle defaults to its separate managed Node/npm installation and preserves an existing explicit local choice; use the platform env doctor command to inspect the service-selected tools. An unavailable selected toolchain fails without silently switching sources. This selection does not change the fixed Node used to run registered applications. Do not start a separate backend or Vite development server. Open the published application from the platform in its single native application window. Opening it again only focuses the same window without reloading or losing drafts. Do not create popups, another WebView, an external browser window, or use window.open/target=_blank to extend the application. For a separately registered Node application, the platform starts its backend when opening its window and stops it when that application window closes; that rule does not turn this static project into a Node source slot.
 
 The current Node configuration choice stores secrets in each application's private local slot under configuration/credentials/ (directory mode 0700, file mode 0600). These are plaintext files protected by the current user's file permissions, not an OS encrypted vault or macOS Keychain. The slot is separate from author source, shared packages and Git. Do not read/copy these secrets or touch older Keychain entries; the platform configuration flow manages them and injects only the target backend's environment. This does not add secret storage to this static project-v1 type.
 

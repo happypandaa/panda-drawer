@@ -65,7 +65,7 @@ Windows 的命名与文件替换规则以[微软命名说明](https://learn.micr
 
 ### 2.2 运行环境与浏览器
 
-成品运行、新建预编译初始项目及已有产物读写无需 Node、Rust 或 Visual Studio 开发工具。系统 Node/npm 仅参与构建；沿用最低 Node 22.12.0、支持 22/24、推荐 24 LTS 的现有约定，W1 核对实际依赖组合及两版 Windows 的最低系统要求，不借移植擅自提高支持线。
+成品运行、新建预编译初始项目及已有产物读写无需用户另装 Node、Rust 或 Visual Studio 开发工具。开发构建目标默认使用配套受管 Node/npm，并保留兼容的显式本机选择；当前只有 Mac arm64 实现，Windows 工具资源与运行门禁尚未验收。沿用本机选择最低 Node 22.12.0、支持 22/24、推荐 24 LTS 的约定，W1 核对实际依赖组合及两版 Windows 的最低系统要求，不借移植擅自提高支持线。
 
 WebView2 是桌面网页运行环境，不能用安装了 Edge 浏览器来代替运行环境检测。建议使用 Evergreen，并在缺失、版本不足、安装失败或被策略限制时提供可理解诊断；在线安装、离线运行环境安装、首次 npm 依赖下载是三个不同场景。依据为[微软分发说明](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)。
 

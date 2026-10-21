@@ -146,6 +146,14 @@ impl BuildManager {
         store: Arc<ProjectStore>,
         base_url: String,
     ) -> Result<Arc<Self>, ApiError> {
+        Self::with_managed_node(paths, store, base_url, None)
+    }
+    pub fn with_managed_node(
+        paths: RuntimePaths,
+        store: Arc<ProjectStore>,
+        base_url: String,
+        managed_node: Option<PathBuf>,
+    ) -> Result<Arc<Self>, ApiError> {
         let tasks = paths.workspace_root().join(".platform/tasks");
         ensure_dir(&tasks)?;
         ensure_dir(
@@ -188,7 +196,12 @@ impl BuildManager {
         let (sender, mut receiver) = mpsc::channel::<String>(BUILD_QUEUE);
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
-            environment: EnvironmentManager::new(paths.data_root().to_path_buf()),
+            environment: match managed_node {
+                Some(root) => {
+                    EnvironmentManager::with_managed_node(paths.data_root().to_path_buf(), root)
+                }
+                None => EnvironmentManager::new(paths.data_root().to_path_buf()),
+            },
             paths,
             store,
             base_url,

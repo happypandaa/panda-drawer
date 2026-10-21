@@ -20,7 +20,7 @@ const MAX_BUSINESS_RESPONSE_BYTES: u64 = 8_200_000;
     name = "local-projects-dev",
     version,
     about = "Manage projects in the isolated development platform",
-    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using system Node/npm, manage complete backups and maintenance, export/import/copy projects, restore or purge trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, restore or purge trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -107,7 +107,7 @@ enum NodeCommand {
         #[command(flatten)]
         output: OutputOptions,
     },
-    /// Clear the explicit path and use automatic discovery again.
+    /// Clear the explicit path and restore the service's default toolchain.
     Clear(OutputOptions),
 }
 

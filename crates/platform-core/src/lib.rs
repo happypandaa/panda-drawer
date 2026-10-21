@@ -13,6 +13,7 @@ mod history_cleanup;
 mod identity_upgrade;
 mod lifecycle;
 mod maintenance;
+mod managed_toolchain;
 mod metadata;
 pub mod node_app_configuration;
 pub mod node_app_manifest;

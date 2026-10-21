@@ -2,10 +2,11 @@
 // It never scans installed applications, projects, backups or test evidence.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { lstat, mkdir, mkdtemp, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { verifyDevelopmentNode } from './package-development-node.mjs';
 
 const execute = promisify(execFile);
 const productName = '熊猫应用小抽屉';
@@ -69,23 +70,26 @@ async function plistIdentity(app, plan) {
   if (info.CFBundleIdentifier !== plan.identifier || info.CFBundleName !== plan.productName || info.CFBundleExecutable !== 'local-projects-desktop-dev') throw new Error(`拒绝处理未知应用：${app}`);
 }
 
-export async function verifyDesktopApp(app, plan) {
+export async function verifyDesktopApp(app, plan, { requireDevelopmentNode = true } = {}) {
   const info = await lstat(app);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`应用输出必须是真实目录：${app}`);
   await plistIdentity(app, plan);
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { timeout: 60_000 });
+  if (requireDevelopmentNode) await verifyDevelopmentNode(path.join(app, 'Contents/Resources/resources/development-node'));
 }
 
-export async function verifyDesktopDmg(dmg, plan) {
+export async function verifyDesktopDmg(dmg, plan, { requireDevelopmentNode = true } = {}) {
   const info = await lstat(dmg);
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error(`镜像输出必须是独立普通文件：${dmg}`);
   await execute('/usr/bin/hdiutil', ['verify', dmg], { maxBuffer: 4 * 1024 * 1024, timeout: 60_000 });
-  const mount = await mkdtemp(path.join(os.tmpdir(), 'local-projects-package-inspection-'));
+  // macOS commonly exposes its temporary directory through /var -> /private/var.
+  // Resolve only the system temporary parent; payload validation still rejects links.
+  const mount = await mkdtemp(path.join(await realpath(os.tmpdir()), 'local-projects-package-inspection-'));
   let attached = false;
   try {
     await execute('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, dmg], { maxBuffer: 4 * 1024 * 1024, timeout: 60_000 });
     attached = true;
-    await verifyDesktopApp(path.join(mount, `${plan.productName}.app`), plan);
+    await verifyDesktopApp(path.join(mount, `${plan.productName}.app`), plan, { requireDevelopmentNode });
   } finally {
     if (attached) await execute('/usr/bin/hdiutil', ['detach', mount], { timeout: 60_000 });
     await rmdir(mount);
@@ -132,15 +136,17 @@ export async function withDesktopPackageOutput(plan, build, {
     for (const candidate of generatedApps) {
       if (active.some(command => command.startsWith(`${candidate.app}/Contents/MacOS/`))) throw new Error(`请先从菜单退出正在运行的 ${candidate.plan.productName}，再打包；当前程序：${candidate.app}`);
     }
+    // Previous releases need a valid identity/signature, but may predate the
+    // development toolchain. New outputs below must carry the complete payload.
     // Only fixed generated product names qualify. Unknown files are untouched.
     for (const candidate of generatedApps) {
-      if (await statIfPresent(candidate.app)) { await verifyApp(candidate.app, candidate.plan); outputs.push(candidate.app); }
+      if (await statIfPresent(candidate.app)) { await verifyApp(candidate.app, candidate.plan, { requireDevelopmentNode: false }); outputs.push(candidate.app); }
     }
     for (const name of await readdir(path.dirname(currentDmg))) {
       const candidateName = generatedProductNames.find(product => name.startsWith(`${product}_`) && /^[0-9A-Za-z][0-9A-Za-z.+-]*_aarch64\.dmg$/.test(name.slice(product.length + 1)));
       if (!candidateName) continue;
       const file = path.join(path.dirname(currentDmg), name);
-      await verifyDmg(file, { ...plan, productName: candidateName });
+      await verifyDmg(file, { ...plan, productName: candidateName }, { requireDevelopmentNode: false });
       outputs.push(file);
     }
     const candidate = path.join(profileRoot, `.desktop-package-previous-${randomUUID()}`);
@@ -158,8 +164,8 @@ export async function withDesktopPackageOutput(plan, build, {
     await normalDirectory(bundleRoot);
     await normalDirectory(path.dirname(app));
     await normalDirectory(path.dirname(currentDmg));
-    await verifyApp(app, plan);
-    if (plan.expectedDmg) await verifyDmg(currentDmg, plan);
+    await verifyApp(app, plan, { requireDevelopmentNode: true });
+    if (plan.expectedDmg) await verifyDmg(currentDmg, plan, { requireDevelopmentNode: true });
     completed = true;
     const beforeCleanup = await processes();
     if (moved.some(({ saved }) => beforeCleanup.some(command => command.startsWith(`${saved}/Contents/MacOS/`)))) throw new Error(`旧生成包正在运行，保留它及打包恢复记录：${backup}`);

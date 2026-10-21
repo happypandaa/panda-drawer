@@ -90,8 +90,9 @@ export interface EnvironmentInfo {
   ready: boolean;
   node: { path: string; version: string } | null;
   npm: { path: string; version: string } | null;
-  selection: 'explicit' | 'detected';
+  selection: 'explicit' | 'managed' | 'detected';
   configuredNodePath: string | null;
+  managedNodePath?: string | null;
   supportedNodeRange: string;
   recommendedNode: string;
   downloadUrl: string;

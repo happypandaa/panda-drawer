@@ -556,7 +556,28 @@ function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPe
     } catch (cause) { setError(messageFrom(cause)); }
     finally { pending.current = false; onPendingChange?.(false); setLoading(false); }
   }
-  return <section className="diagnostics-card build-environment" aria-labelledby="build-environment-title"><div className="section-heading"><div><h2 id="build-environment-title">项目构建环境</h2><p>使用系统 Node。已有项目的网页和数据操作不依赖 Node。</p></div><button className="refresh-button" onClick={() => void probe()} disabled={!enabled || loading}><RefreshCw size={14} />{loading ? '检测中…' : '重新检测'}</button></div><div className="environment-status"><span className={`project-state state-${environment?.ready ? 'ready' : 'unbuilt'}`}><span />{environment ? environment.ready ? '可以构建' : '构建环境需要配置' : loading ? '正在检测' : '尚未检测'}</span><span>最低 22.12 · 支持 22 / 24 · 推荐 24 LTS</span></div><dl className="path-list"><PathRow icon={<Terminal size={16} />} label={`Node ${environment?.node?.version ?? ''}`} value={environment ? environment.node?.path ?? '未找到可用 Node' : undefined} /><PathRow icon={<Terminal size={16} />} label={`npm ${environment?.npm?.version ?? ''}`} value={environment ? environment.npm?.path ?? '未找到配套 npm' : undefined} /></dl>{environment?.issues.map((issue) => <p key={issue.code} className="environment-issue">{issue.message} ({issue.code})</p>)}{environment && !environment.ready && <p className="environment-issue">安装指引：<code>{environment.downloadUrl}</code></p>}<form className="node-path-form" onSubmit={(event) => { event.preventDefault(); void configure(nodePath.trim()); }}><label htmlFor="node-path">指定 Node 可执行文件的绝对路径<span className="optional-label">可选</span></label><div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder="例如 /opt/homebrew/bin/node" disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !nodePath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>自动查找</button></div><p>当前选择：{environment?.selection === 'explicit' ? '手动指定' : environment ? '自动探测' : '尚未读取'}。路径只保存在此开发版的本机设置中。</p></form>{error && <p role="alert" className="environment-issue">{error}</p>}</section>;
+  return <section className="diagnostics-card build-environment" aria-labelledby="build-environment-title">
+    <div className="section-heading"><div><h2 id="build-environment-title">项目构建环境</h2><p>构建使用配套 Node/npm，可明确选择兼容的本机环境。应用运行 Node 不受这里的构建选择影响。</p></div><button className="refresh-button" onClick={() => void probe()} disabled={!enabled || loading}><RefreshCw size={14} />{loading ? '检测中…' : '重新检测'}</button></div>
+    <div className="environment-status"><span className={`project-state state-${environment?.ready ? 'ready' : 'unbuilt'}`}><span />{environment ? environment.ready ? '可以构建' : '构建环境需要配置' : loading ? '正在检测' : '尚未检测'}</span><span>最低 22.12 · 支持 22 / 24 · 推荐 24 LTS</span></div>
+    <p>当前来源：{environment ? ({ managed: '平台受管 Node/npm', explicit: '明确选择的本机 Node/npm', detected: '本机自动探测' })[environment.selection] : '尚未读取'}。</p>
+    <dl className="path-list">
+      <PathRow icon={<Terminal size={16} />} label={`Node ${environment?.node?.version ?? ''}`} value={environment ? environment.node?.path ?? '未找到可用 Node' : undefined} />
+      <PathRow icon={<Terminal size={16} />} label={`npm ${environment?.npm?.version ?? ''}`} value={environment ? environment.npm?.path ?? '未找到配套 npm' : undefined} />
+      {environment?.managedNodePath && <PathRow icon={<Terminal size={16} />} label="默认受管 Node 位置" value={environment.managedNodePath} />}
+    </dl>
+    {environment?.managedNodePath && <p>默认受管位置只说明工具所在位置；是否可用以本次检测结果为准。</p>}
+    {environment?.issues.map((issue) => <p key={issue.code} className="environment-issue">{issue.message} ({issue.code})</p>)}
+    {environment && !environment.ready && (environment.selection === 'managed'
+      ? <p className="environment-issue">平台配套 Node/npm 暂不可用。请修复或重新安装平台，或明确选择兼容的本机 Node/npm。</p>
+      : <p className="environment-issue">如需安装兼容的本机 Node/npm，可参考：<code>{environment.downloadUrl}</code></p>)}
+    {environment?.selection === 'explicit' && !environment.ready && <p className="environment-issue">已保留你明确选择的路径，失效时不会自动改用其他工具。请修正路径，或点击“恢复默认工具”。</p>}
+    <form className="node-path-form" onSubmit={(event) => { event.preventDefault(); void configure(nodePath.trim()); }}>
+      <label htmlFor="node-path">指定本机 Node 可执行文件的绝对路径<span className="optional-label">可选</span></label>
+      <div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder="例如 /opt/homebrew/bin/node" disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !nodePath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>恢复默认工具</button></div>
+      <p>{environment ? environment.managedNodePath ? '恢复默认工具会清除显式路径，使用平台配套 Node/npm。' : '此环境没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境。' : '读取环境后可查看默认工具来源。'} 路径只保存在此开发版的本机设置中。</p>
+    </form>
+    {error && <p role="alert" className="environment-issue">{error}</p>}
+  </section>;
 }
 
 function StatusCard({ icon, label, value, detail, good }: { icon: ReactNode; label: string; value: string; detail: string; good: boolean }) {

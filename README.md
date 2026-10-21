@@ -10,9 +10,9 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
 
-应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；内置 Node 不包含 npm 或用户端依赖安装／源码构建，现有 project-v1 源码构建仍使用系统 Node/npm。执行摘要随项目 skill 的同一份环境／窗口约束分发。
+应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；应用运行使用固定私有 Node，不在登记或启动时安装依赖。本轮 Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建，保留明确选择兼容本机环境的入口；构建选择不影响应用运行 Node。执行摘要随项目 skill 的同一份环境／窗口约束分发。
 
-第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护、Windows 与私有 npm 构建仍按各自实际进度推进，不把这次范围确认当作完整交付。
+第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 仅接入现有 project-v1 构建，Git／认证与候选依赖隔离尚未实现；不把这一步视为技术计划第 2 项或第 6 项整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
 
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
@@ -20,7 +20,7 @@ PWA 已确认不强制、作为可选增强。[外部应用包原实施规划](d
 
 [应用文档分工](docs/application-documentation.md)区分用户的使用/配置说明与 AI 的技术/架构/开发说明，复用 `documentation.readme` 和 `documentation.development`，并提供两份独立 Markdown 示例；展示仍待实现，正文预算和强制携带策略待定。
 
-用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。现已按用户授权开始[隔离运行试验](docs/node-runtime-trial-verification.md)，增加私有 Node 准备、实验清单和受管进程；后续已接独立本机源码槽、配置表单、本机私有秘密文件和启动注入，原生窗口流程按最新约束验收；完整安装与新类型数据契约仍待定稿；现有静态 v1 与系统 Node/npm 构建流程保持。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
+用户已确认[内置 Node 与应用后端统一管理](docs/node-app-runtime.md)：平台携带私有运行时，运行应用自己的 Node 后端并管理启动、停止和状态，业务 SDK 由应用负责。[启动规范草案](docs/node-app-startup-spec.md)区分机器清单与用户/AI说明；[NR0–NR7 规划](docs/node-app-implementation-plan.md)拆为 8 阶段、20 小步，稳定优先。现已按用户授权开始[隔离运行试验](docs/node-runtime-trial-verification.md)，增加私有 Node 准备、实验清单和受管进程；后续已接独立本机源码槽、配置表单、本机私有秘密文件和启动注入，原生窗口流程按最新约束验收；完整安装与新类型数据契约仍待定稿；现有静态 v1 构建流程保留，工具来源按本轮受管／明确本机选择规则扩展。此前固定连接器讨论保留为历史，Claude Code 不再是必选依赖。
 
 2026-10-20 用户进一步确认[可视化配置应用环境变量](docs/node-app-configuration.md)：作者在清单中声明变量、中文用途和获取步骤，用户在平台界面填写 AI 地址、API Key 等配置，无需编辑 `.env`。声明与实际值分开，秘密凭据保存、目标后端注入和生效仍属于路线，原备份复制扩展按最新取舍取消。首个隔离试验只校验声明并注入普通默认值；后续本机源码入口的表单、本机私有秘密文件和注入子集见当前接入说明，不读取宿主密钥，不代表公开 Node 安装完成。
 
@@ -30,7 +30,7 @@ PWA 已确认不强制、作为可选增强。[外部应用包原实施规划](d
 
 已确认 Windows 10 22H2 x64 与 Windows 11 x64 支持目标；[W1–W4 规划](docs/windows-support-plan.md)按稳定优先拆为 20 小步，先验证启动、新项目、数据保存和构建，备份恢复、导入导出、迁移和清理等复杂功能后置并设置后端门禁。当前 W1.1 本机工具准备和 W1.2 首片共享启动门禁进行中，初期范围为本机内置 NTFS 与固定默认工作区；Windows 运行时在安全文件及现场识别就绪前继续关闭。实际结果及剩余项见 [W1 记录](docs/windows-w1-verification.md)；平台 Windows 编译、启动和安装仍未验收。早期内部版仅面向可丢弃样本。[M0–M6 主里程碑](docs/development-milestones.md)保持编号，按平台分别验收；以下开发与打包命令仍为现有 Mac 流程。
 
-Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行当前静态项目无需系统 Node；系统 Node/npm 在修改源码后构建时需要，Rust/MSVC/SDK 用于开发平台本身。未来 Node 后端使用另行验证的私有运行时。
+Windows 开发环境可用 `npm run env:windows` 只读检查系统、WebView2、Node、Rust、MSVC/SDK 和卷信息；直接执行 `node scripts/windows-environment.mjs --json` 可取得 JSON。这个脚本不启动平台、不初始化数据根，也不表示平台已经兼容 Windows。成品用户运行当前静态项目无需系统 Node。Mac 内部版的 project-v1 构建已接配套受管 Node/npm；Windows 的工具分发与构建仍须单独验收，不沿用 Mac 结果。Rust/MSVC/SDK 用于开发平台本身；Node 应用运行使用固定私有运行时，与构建环境选择分开。
 
 macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预检/绑定规则见[工作区持久身份](docs/workspace-identity.md)。当前数据已完成公开修复，新包启动、样本保存/备份/删除恢复及应用重启结果见[实际验收记录](docs/workspace-identity-repair-verification.md)。
 
@@ -55,7 +55,7 @@ npm run build:app
 npm run build
 ```
 
-`env doctor` 在线时读取桌面服务实际选定的 Node/npm、路径、版本和可用性；离线时不会把终端 PATH 当作桌面环境。最后两个命令分别生成内部测试 `.app`、`.app` 与 DMG。包使用开发标识和 ad-hoc 签名，未进行 Developer ID 签名、公证或对外发布。
+`env doctor` 在线时读取桌面服务实际选定的 Node/npm、路径、版本和可用性；离线时不会把终端 PATH 当作桌面环境。已有显式 Node 路径优先且失效不自动回退；没有显式选择时，提供受管资源的环境默认使用配套私有 Node/npm，资源缺失或损坏明确报错。没有受管资源位置的开发服务仍可自动探测本机环境。“恢复默认工具”／`env node clear` 清除显式选择，默认受管位置本身不代表检测通过。最后两个命令分别生成内部测试 `.app`、`.app` 与 DMG。包使用开发标识和 ad-hoc 签名，未进行 Developer ID 签名、公证或对外发布。
 
 详情见[开发环境与隔离](docs/development.md)、[M0 验证记录](docs/m0-verification.md)、[M1 验证记录](docs/m1-verification.md)、[M2 验证记录](docs/m2-verification.md)、[M3 验证记录](docs/m3-verification.md)、[M4 验证记录](docs/m4-verification.md)、[M5 验证记录](docs/m5-verification.md)、[管理界面改造验证](docs/ui-refresh-verification.md)、[空间占用与 AI 接手说明验证](docs/storage-ai-handoff-verification.md)、[历史清理验证](docs/history-cleanup-verification.md)、[里程碑计划](docs/development-milestones.md)、[架构约定](docs/platform-development-contract.md)。开发、检查和打包命令按顺序执行；切换源码版与打包版前先退出当前开发实例。
 
@@ -72,7 +72,7 @@ npm run build
 | `skills/local-projects-app` | 外部 AI 接管业务项目的 skill，随新项目保存 |
 | `docs` | 已确认架构、计划及实际验证记录，包括 [M5 权限拒绝、设备释放与断网恢复实测](docs/m5-resilience-real-verification.md) |
 
-新项目有可直接打开的欢迎应用、与其匹配的标准源码、独立空数据库、固定 SDK 和真实 README。欢迎应用随平台预先构建，创建和打开不需要 Node、npm 或联网；修改源码后才需要系统 Node 和平台构建。初始来源标为 `bundledTemplate`，不生成虚假的用户构建任务。首次用户构建失败仍保留欢迎应用。
+新项目有可直接打开的欢迎应用、与其匹配的标准源码、独立空数据库、固定 SDK 和真实 README。欢迎应用随平台预先构建，创建和打开不需要 Node、npm 或联网；修改源码后才需要检测通过的构建 Node/npm 和平台构建入口。初始来源标为 `bundledTemplate`，不生成虚假的用户构建任务。首次用户构建失败仍保留欢迎应用。
 
 每个新项目在 `.agents/skills/local-projects-app/SKILL.md` 保存 AI 接管说明，README、AGENTS.md 和 CLAUDE.md 提供入口；“复制给 AI”包含可实际读取的绝对路径。不同 AI 工具可显式读取该文件，不依赖它们自动发现 skill。旧项目不自动注入或覆盖任何文件；旧项目交接可以引用安装包内的后备 skill。
 

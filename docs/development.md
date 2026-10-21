@@ -1,5 +1,7 @@
 # 开发环境与数据隔离
 
+2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。应用运行 Node 的选择不受影响，Git 尚未实现，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
+
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
 状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。产品名已确认为「熊猫应用小抽屉」，简称「熊猫抽屉」；[名称与图标](branding.md)已接入内部代码，固定开发身份和数据根保持。
@@ -20,7 +22,7 @@ Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、No
 
 MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立 C 静态库与 Rust 的 x64 编译、链接和运行。该命令在唯一的 `.test-artifacts/windows-w1-toolchain-smoke-*` 中保存源码、产物和报告，不清理旧证据、不构建或启动平台；它与只读环境盘点是不同检查。需要纯 JSON 时执行 `node scripts/windows-toolchain-smoke.mjs --json`。成功只证明本机开发工具链小样，不代表 Windows 产品兼容或 bundled SQLite 通过。
 
-平台使用者与平台开发者的要求不同：运行现有静态网页产物不需要用户安装系统 Node/npm、Rust、Visual Studio 或独立 SQLite 服务；修改业务源码后构建才需要系统 Node/npm，Rust/MSVC/Windows SDK 只用于开发平台本身。Windows W1 原环境准备不包含 Node 内置分发；本次另确认的私有运行时方向及尚未实现的状态见第 7 节，已有完整项目 ZIP 和拟议网页应用包的规则不因此改变。
+平台使用者与平台开发者的要求不同：运行现有静态网页产物不需要用户安装系统 Node/npm、Rust、Visual Studio 或独立 SQLite 服务。修改 project-v1 业务源码后，由服务使用受管或显式本机 Node/npm 构建；Rust/MSVC/Windows SDK 只用于开发平台本身。当前受管开发资源仅覆盖 Mac arm64，Windows W1 的工具准备不代表同等产品能力已实现；完整应用包的要求不因此改变。
 
 `npm run test:platform-support` 直接使用所选 Rust 编译、运行 `platform_support.rs` 的无依赖生产策略测试，输出位于新的 `.test-artifacts/w1-platform-support-*`，不启动平台或读取用户工作区。Windows 使用真实 `x86_64-pc-windows-msvc` 目标；Mac 分支的策略断言不是 Mac 实机回归。这个独立检查不编译整个 core、CLI 或 Tauri，不能替代后续完整构建、入口拒绝和现场保护验收。
 
@@ -67,7 +69,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 在根目录执行 `npm ci` 后使用 `npm run dev`。准备步骤构建 CLI，在临时目录按锁文件构建标准模板，再生成包内 SDK、模板源码、预编译初始网页、skill 和说明资源副本；Tauri 启动管理界面和 Rust 服务。模板构建发生在平台开发／打包时，不发生在用户创建项目时。Vite 开发地址固定为 `127.0.0.1:1420`，端口被占用时不静默选择另一个端口。
 
-Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及系统 Node 构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；现有静态网页不启动 Node 服务，新增应用后端尚未实现。
+Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及服务选定 Node/npm 的构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；现有静态网页不启动 Node 服务，独立本机 Node 槽的应用后端范围见[当前接入](node-native-configuration.md)。
 
 按用户同日最新要求，macOS 平台管理窗口 X 只隐藏管理窗口并保留 Dock，已开的业务窗口、受管 Node 和平台服务继续运行；点击 Dock、Reopen 或重复启动恢复同一个管理窗口及其页面状态，不创建第二套服务。菜单“退出开发版”／Cmd+Q 才走整个平台的正常退出流程；非 macOS 管理窗口 X 维持正常退出。关闭业务窗口只收尾本应用及其受管 Node／普通子进程。全部应用统一“我的项目”，详情／配置采用页内 tabs 弹窗，缺必填时进入先开配置，不禁用整个入口，保存不自动启动。此前“管理窗口 X 退出”的实测保留为旧版本结果，不证明新要求已验收。明确退出先停止接收新工作、取消未发布的上传、结束构建子进程及其普通进程组、记录未完成任务状态，等待已接受的数据库工作与项目创建完成，再关闭服务并仅移除本实例发现与凭据。慢速下载在退出收尾时可能断开，已保存文件不受影响；锁文件本身不递归删除。异常中断留下的发现信息不能作为在线依据；CLI 会进行身份与实例握手。
 
@@ -79,7 +81,7 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 ## 3 工具链与校验
 
-Node 支持 `^22.12.0 || ^24.0.0`，使用系统 npm。可使用系统 Rust，也可安装到工程 `.tools/`；脚本优先使用项目私有 Cargo/Rustup 并只向子进程设置对应环境，不修改 shell 配置。Cargo 与 npm 依赖锁文件随工程保存。
+开发平台仓库本身仍使用开发者的 Node/npm，Node 支持 `^22.12.0 || ^24.0.0`；这与用户项目由服务选择开发工具不同。用户项目的受管开发资源固定为 Node 24.22.0／npm 11.19.1，显式本机选择保持同一 Node 支持范围。可使用系统 Rust，也可安装到工程 `.tools/`；脚本优先使用项目私有 Cargo/Rustup 并只向子进程设置对应环境，不修改 shell 配置。Cargo 与 npm 依赖锁文件随工程保存。
 
 本次验证使用 Rust 1.99.0。没有系统 Rust 时，可在仓库根目录执行以下步骤安装同版本的工程私有工具链；安装脚本来自 Rust 官方，`.tools/` 不进入发行包：
 
@@ -102,7 +104,7 @@ npm run cli -- service status --json
 npm run cli -- env doctor --json
 ```
 
-CLI 的状态命令离线时报告结构化错误，不启动应用、不初始化数据、不仅凭端口可连接就认为服务正确。`env doctor` 在线时返回桌面服务实际选定的 Node/npm 路径、版本与可用性；离线时只报告平台连通性和构建环境尚未读取，不把 CLI 自己的 PATH 当作服务环境。项目 schema 使用 `db schema`。
+CLI 的状态命令离线时报告结构化错误，不启动应用、不初始化数据、不仅凭端口可连接就认为服务正确。`env doctor` 在线时返回桌面服务实际选定的开发 Node/npm 来源、路径、版本与可用性；离线时只报告平台连通性和构建环境尚未读取，不把 CLI 自己的 PATH 当作服务环境。项目 schema 使用 `db schema`。
 
 单元和服务测试重点覆盖目录身份、符号链接、互斥锁、文件权限、退出清理、HTTP 授权与 CLI 目标校验。开发测试和打包测试都要核对 UI 实际显示的资源状态；在只有浏览器页面时显示“需要桌面宿主”，不生成虚假的运行信息。
 
@@ -110,7 +112,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 最低打包系统设为 macOS 15，目标为 Apple Silicon。内部包采用 ad-hoc 签名；没有 Developer ID 公证、互联网下载首启或最低系统实机通过记录时，不称作已完成正式分发。正式名称、应用标识、签名资质与设备验收在相应发行阶段完成。
 
-当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式；新内部构建已接入私有 Node 资源准备，实际应用包验证见首次试验记录；不携带 Rust 开发工具链。Node 后端只在隔离实验路径使用，不自动接管现有系统 Node 构建或已安装的旧应用。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
+当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式，不携带 Rust 开发工具链。Mac arm64 内部构建分别准备 `node-runtime` 应用运行资源和 `development-node` 开发资源；本机 Node 槽已接配置与原生窗口运行子集，范围见[当前接入](node-native-configuration.md)。开发工具默认值不替换已有显式选择，也不改变应用运行 Node；首次运行时试验的历史证据不能替代新增开发工具验收。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
 
 ## 5 当前项目和工具入口
 
@@ -146,7 +148,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `task wait --task ID --timeout 30` | 有界等待；超时返回当前任务，不取消任务 |
 | `task logs --task ID --cursor N` | 读取日志片段；用返回的 `nextCursor` 继续 |
 | `env node set --path /绝对路径/node` | 检查并保存开发版的显式 Node 路径 |
-| `env node clear` | 恢复自动探测 |
+| `env node clear` | 清除显式选择；带资源时恢复受管默认，无资源开发服务恢复检测 |
 | `db schema --project ID` | 实际表、列、索引、外键、视图 |
 | `db execute --project ID --input request.json` | 一条 SQL 与位置参数 |
 | `db transaction --project ID --input request.json` | 有序语句整体提交或回滚 |
@@ -174,7 +176,11 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 `scripts/package-template.mjs` 在临时副本执行 `npm ci` 和模板构建，核对构建未改写源码后，将 `starter/` 网页及 `starter.json` 来源写入包内模板资源。记录模板版本、源码／产物摘要及实际打包工具版本；用户新建时验证并复制这些资源，安装到项目 `dist/` 和不可变初始代，同时记录 `.platform/starter.json`。该来源表示平台提供的模板，不是用户在本机完成过构建；不会创建成功任务、任务日志或冒充本机构建的 Node/npm 环境。
 
-项目构建 Node 先使用显式选择的绝对路径，否则探测 nvm、Volta、常见本机安装路径及可用 PATH。实际 Node/npm 版本经运行检查；npm 由所选 Node 执行，避免 shebang 选择另一个版本。本机选择保存到开发数据根 `toolchain.json`，不写入项目清单。系统构建工具探测不安装或升级 Node；新增私有运行时准备与其独立。缺少系统工具只阻止构建，已发布静态网页和数据库仍可运行。首次依赖安装可能需要联网。已新增的[隔离 Node 实验](node-runtime-trial-verification.md)不由当前构建探测接管，也不使私有运行时自动替代构建工具链。
+2026-10-21 起，project-v1 构建先使用 v1 `toolchain.json` 中已有的显式本机 Node 绝对路径；路径失联、版本不支持或配套 npm 不可用时直接报告错误，不回退受管工具或另一处本机安装。没有显式选择且服务带安装资源时，默认使用单独的 `development-node`（固定 Node 24.22.0／npm 11.19.1）；资源缺失或校验失败同样不回退。只有通过无资源入口创建的开发／测试服务保留 nvm、Volta、常见本机安装位置及 PATH 检测。清除显式选择表示恢复这一服务默认值，不固定表示系统探测。
+
+受管资源根据源码内固定的发行声明校验元数据、全部文件内容、数量、大小及权限；拒绝符号链接、硬链接、特殊文件及额外空目录。完整校验在阻塞工作线程进行，再探测实际版本；npm 的 JavaScript 入口由选定 Node 执行，受管 PATH 仅含私有工具目录和系统工具目录。本机选择仍只保存在固定开发数据根，不写入项目清单，不修改用户的全局 PATH、shell 或 npm 配置。`env doctor` 的 `selection` 为 `explicit`、`managed` 或 `detected`，`managedNodePath` 提供默认资源位置；位置存在于结果不等于 `ready: true`。
+
+应用运行使用的 `node-runtime` 与开发工具分开，构建选择不影响 Node 应用后端。开发工具不可用只阻止构建，已有静态产物和数据库仍可使用。配备 Node/npm 不代表所有旧项目都能重建，锁文件、依赖、源码及项目要求仍须验证；首次依赖安装可能需要联网。本步不提供 Git、独立 Node 源码槽构建、完整安装或跨系统承诺。
 
 构建按锁文件执行 `npm ci`，依赖指纹未变化且安装记录有效时可复用项目 `app/node_modules/`。共享 npm 缓存位于 `workspace/.platform/cache/npm/`。任务按项目互斥，并对输入取 SHA-256 基准，在依赖准备后和发布前复核；输入变化、依赖失败、脚本失败、无效产物均不发布新网页。构建只接受 `--outDir` 指定的平台暂存目录，不自动建表或重置数据库。
 

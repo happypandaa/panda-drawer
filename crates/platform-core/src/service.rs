@@ -823,7 +823,14 @@ fn make_state(
         data_root: paths.data_root().into(),
         sqlite_version: rusqlite::version().into(),
     };
-    let builds = BuildManager::new(paths.clone(), store.clone(), info.base_url.clone())?;
+    let builds = BuildManager::with_managed_node(
+        paths.clone(),
+        store.clone(),
+        info.base_url.clone(),
+        resources
+            .as_ref()
+            .map(|resources| resources.development_node_root()),
+    )?;
     let maintenance =
         crate::maintenance::MaintenanceManager::new(paths.clone(), store.clone(), builds.clone())?;
     let lifecycle = crate::lifecycle::LifecycleManager::new(

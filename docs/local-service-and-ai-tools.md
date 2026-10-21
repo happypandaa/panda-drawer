@@ -2,11 +2,13 @@
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
-状态：v0.18，本地服务及配套接口已确认；内置 Node 后端及可视化配置需求已确认，启动、配置与新接口仍为草案，尚未实现；M1 至 M5 已有内部实现与 CLI/API 验证，M5 重启及兼容通过，GUI/设备/浏览器完整验收与发行仍待完成
+状态：v0.19，本地服务及配套接口已确认；Mac 内部版本已接独立 Node 本机槽、配置与原生窗口运行子集，并为 project-v1 接入受管开发 Node/npm；完整 Node 安装与生命周期、Git、跨系统验收及正式发行未完成。M1 至 M5 的历史实现和验证保留原范围。
 
-更新日期：2026-10-20
+更新日期：2026-10-21
 
-本文细化[平台开发约定](platform-development-contract.md)中的运行服务、数据库访问、浏览器连接和外部 AI 工具。已确认的基础为 Tauri 2 + Rust + SQLite；项目构建使用系统 Node，最低 22.12.0，推荐 24 LTS。2026-10-19 用户另确认平台内置 Node，运行用户应用自己的 Node 后端，由平台统一启动、停止及展示运行状态；共享运行时资源，各应用独立受管进程。AI、TTS、音乐和业务 SDK 由应用实现，Claude Code 不是平台必需依赖。新方向取代固定连接器设想，见[受管 Node 运行时](node-app-runtime.md)、[启动规范草案](node-app-startup-spec.md)和[实施计划](node-app-implementation-plan.md)。当前程序仍只提供静态网页与统一 Rust 服务，未内置 Node 或运行应用后端；新类型、协议和接口仍待落实，下文 SDK/CLI/HTTP 列表不因此新增可调用方法。本轮仅整理方案，不写运行代码。
+本文细化[平台开发约定](platform-development-contract.md)中的运行服务、数据库访问、浏览器连接和外部 AI 工具。基础为 Tauri 2 + Rust + SQLite。当前 Mac arm64 内部版的 project-v1 构建默认使用独立受管 Node 24.22.0／npm 11.19.1；已有显式本机选择优先，受支持的本机 Node 范围仍为 `^22.12.0 || ^24.0.0`。显式选择或受管包失效均不回退其他来源；只有无安装资源的开发／测试服务保留自动探测。
+
+应用后端使用的私有 `node-runtime` 与开发工具 `development-node` 分开，构建选择不改变应用运行 Node。独立本机槽的配置、窗口及启停子集见[当前接入](node-native-configuration.md)；公开安装和完整生命周期仍按[运行方案](node-app-runtime.md)、[启动规范](node-app-startup-spec.md)及[实施计划](node-app-implementation-plan.md)逐步落实。AI、TTS、音乐和业务 SDK 由应用实现，Claude Code 不是平台必需依赖；本步不新增 Git 或独立 Node 源码槽构建接口。
 
 2026-10-20 用户确认新增面向普通使用者的 Node 应用配置表单，作者声明变量用途及获取方式；目标后端的运行凭据管理已纳入路线。具体环境注入、系统凭据库、生命周期和重启方案仍见[配置草案](node-app-configuration.md)，并未实现或逐项确认；现有接口列表不自动出现配置读写、密钥读取或带密钥云调用方法。
 
@@ -29,7 +31,7 @@
 
 Axum 直接与 Tokio 配合，并可复用 tower 生态；它提供现成的 SSE 响应支持，参见 [Axum](https://docs.rs/axum/latest/axum/) 和 [SSE 文档](https://docs.rs/axum/latest/axum/response/sse/)。当前静态项目共享这一套本地 HTTP 服务，无需各自启动 Web 后端。新增 Node 应用后端由平台另行管理，不替换现有 Rust 核心和静态项目访问机制。
 
-rusqlite 的 bundled 功能将 SQLite 编译并链接到平台中，因此用户无需额外安装数据库程序，参见 [rusqlite 官方说明](https://github.com/rusqlite/rusqlite)。这是软件自带的数据库引擎，与使用系统 Node 的决定分别管理。
+rusqlite 的 bundled 功能将 SQLite 编译并链接到平台中，因此用户无需额外安装数据库程序，参见 [rusqlite 官方说明](https://github.com/rusqlite/rusqlite)。这是软件自带的数据库引擎，与开发工具及应用运行 Node 的选择分别管理。
 
 ```mermaid
 flowchart LR
@@ -43,7 +45,7 @@ flowchart LR
     Core --> DB[各项目 SQLite 工作队列]
     Core --> Files[附件与项目目录]
     Core --> Build[构建任务]
-    Build --> Node[系统 Node 和 npm]
+    Build --> Node[服务选定的受管或本机 Node/npm]
 ```
 
 平台首页可以通过 Tauri 原生命令访问同一组 Rust 业务模块。AI 生成的项目网页只使用浏览器 SDK 和 HTTP，不获得平台首页的原生管理接口。HTTP、原生命令和 CLI 不分别实现三套数据规则。
@@ -185,8 +187,8 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | --- | --- | --- |
 | `GET /healthz` | 返回产品标识、接口版本和实例 ID，不返回工作区内容 | 无管理凭据 |
 | `GET /api/v1/runtime` | 读取运行状态、当前安装版平台信息、当前工作区和环境信息 | 管理凭据 |
-| `GET /api/v1/environment` | 服务实际选定的 Node/npm、路径和可用性（M2 已实现） | 管理凭据 |
-| `PUT /api/v1/environment/node` | 保存显式 Node 路径或恢复自动探测（M2 已实现） | 管理凭据 |
+| `GET /api/v1/environment` | 服务实际选定的开发 Node/npm、来源、路径和可用性 | 管理凭据 |
+| `PUT /api/v1/environment/node` | 保存显式本机 Node 路径或恢复服务默认选择 | 管理凭据 |
 | `GET /api/v1/projects` | 列出项目基本信息、状态与带时效的空间摘要 | 管理凭据 |
 | `POST /api/v1/projects` | 创建项目目录、模板和空数据库 | 管理凭据 |
 | `GET /api/v1/projects/{id}` | 读取项目基本信息与 revision、状态、路径和文档入口 | 管理凭据 |
@@ -226,7 +228,9 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 
 M2 已实现上表中的环境、项目列表/创建/详情、SQL、构建、交接、launch、refresh、任务及日志；M3 增加备份和维护；M4 增加 exports、imports、copies、trash 和 workspace 迁移。M5 增加 metadata GET/PATCH、storage 与 workspace/storage。M1 的 `/healthz` 和 `/api/v1/runtime` 保持兼容。详情提供真实清单、目录、状态、文档代次、`buildInfo`、维护、metadata revision 和图标诊断，空间接口提供扫描结果及其完整性。实际验证见 [M3 记录](m3-verification.md)、[M4 记录](m4-verification.md)及 [M5 记录](m5-verification.md)。
 
-`PUT /api/v1/environment/node` 的输入为 `{"nodePath":"/绝对路径/node"}`，或以 `null` 恢复自动探测；检查有效后保存本机设置。环境结果含 `ready`、`node`／`npm`（各含实际 `path` 与 `version`）、`selection`（`explicit`／`detected`）、`configuredNodePath`、`supportedNodeRange`、`recommendedNode`、`downloadUrl` 和 `issues`。不将本机路径写进可移植清单，不安装 Node。
+`PUT /api/v1/environment/node` 的输入为 `{"nodePath":"/绝对路径/node"}`，显式路径先通过 Node/npm 探测，再保存为固定数据根下的 v1 `toolchain.json`。`{"nodePath":null}` 清除显式选择并恢复服务默认值：带安装资源时使用受管开发工具，无资源开发／测试服务才恢复检测。选择操作不安装或升级本机 Node，不修改全局环境或项目清单。
+
+环境结果包含 `ready`、`node`／`npm`（各含实际 `path` 与 `version`）、`selection`（`explicit`／`managed`／`detected`）、`configuredNodePath`、`managedNodePath`、`supportedNodeRange`、`recommendedNode`、`downloadUrl` 和 `issues`。`managedNodePath` 是资源声明的默认 Node 位置，校验失败时也可返回，用于诊断；它本身不表示工具可用。`npm.path` 为与选定 Node 配套的 JavaScript 入口，由该 Node 执行。无效显式选择或受管资源缺失／校验失败返回 `ready: false` 与问题，不回退其他来源。当前受管版本固定为 Node 24.22.0／npm 11.19.1，仅覆盖 Mac arm64。
 
 `handoff` 结果为 `projectId`、`readmePath`、`cliPath` 和 `text`；交接不嵌入令牌、Cookie 或短期 ticket。AI 编辑完成并等待构建成功后，再取得新的浏览器入口。环境与任务日志属于管理接口，带浏览器 Origin 的请求即使持有管理 token 也拒绝；项目会话不能调用。
 
@@ -305,7 +309,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 
 启动策略保持显式：`service status` 只检查状态；规划中的 `service start` 启动已安装的桌面程序并等待服务就绪，已运行时直接返回当前实例。当前尚未实现 `service start`，需先打开开发版桌面应用。其他依赖服务的命令在软件未运行时返回 `SERVICE_NOT_RUNNING`，包含启动提示。未来可由 AI 调用启动命令；当前用户通过桌面应用启动，不需要操作终端。
 
-`env doctor` 在服务运行时返回服务实际选定的 Node/npm 路径、版本和可用性。M2 在服务未启动时报告构建环境未读取，不做候选 Node 探测；未来若增加离线探测，结果必须明确标为候选，不能把 CLI 自己的 PATH 当作桌面服务的真实环境。诊断不会启动服务，CLI 退出也不停止桌面服务。
+`env doctor` 在服务运行时返回服务实际选定的开发 Node/npm 来源、路径、版本和可用性；清除显式选择后，带资源服务恢复受管默认，无资源开发服务恢复检测。M2 在服务未启动时报告构建环境未读取，不做候选 Node 探测；未来若增加离线探测，结果必须明确标为候选，不能把 CLI 自己的 PATH 当作桌面服务的真实环境。诊断不会启动服务，CLI 退出也不停止桌面服务。
 
 ### 8.2 第一版命令
 
@@ -480,7 +484,7 @@ MCP 适配器复用项目、SQL、构建和任务接口，不直接打开另一�
 
 ## 12 实现验收重点
 
-- 无系统 Node 时，仍能启动本地服务并运行已有静态项目；系统 Node 缺失只阻止源码构建。未来私有 Node 缺失或损坏时，相应应用后端明确失败，平台核心与静态项目仍须可用，按 NR 验证。
+- 无系统 Node 时，仍能启动本地服务并运行已有静态项目；带资源且无显式选择时，可用受管开发工具进行 project-v1 构建。已有显式选择失联或受管开发包损坏只阻止构建，不回退来源。应用运行用的私有 Node 缺失或损坏时，相应后端明确失败，平台核心与静态项目仍须可用，按 NR 验证。
 - 重复启动软件或 CLI 不产生第二个管理同一工作区的服务。
 - 服务端口发生变化后，CLI 通过发现文件找到新实例，旧凭据不继续有效。
 - 同一事务的语句不被其他请求插入，失败后连接可以继续处理正常请求。

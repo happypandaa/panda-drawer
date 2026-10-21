@@ -309,6 +309,68 @@ test('The add disclosure cannot open before bootstrap, and closes when Node entr
   assert.ok(dialog());
 });
 
+test('Managed build tools show their verified paths separately from the default location', async () => {
+  const managed = { ...environment, selection: 'managed', managedNodePath: '/disposable/platform/node/bin/node', node: { path: '/disposable/platform/node/bin/node', version: 'v24.0.0' }, npm: { path: '/disposable/platform/node/lib/node_modules/npm/bin/npm-cli.js', version: '11.0.0' } };
+  await setup({ overrides: { environment_doctor: () => managed } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
+  assert.match(panel.textContent, /应用运行 Node 不受这里的构建选择影响/);
+  assert.match(panel.textContent, /默认受管位置只说明工具所在位置；是否可用以本次检测结果为准/);
+  assert.match(panel.textContent, /可以构建/);
+  assert.ok([...panel.querySelectorAll('code')].some(value => value.textContent === managed.npm.path));
+  assert.equal(document.getElementById('node-path').value, '');
+  assert.equal(panel.textContent.includes(environment.downloadUrl), false);
+  assert.equal(byText('自动查找', panel), undefined);
+});
+
+test('An invalid managed location stays unavailable and recommends repairing the platform or selecting local tools', async () => {
+  await setup({ overrides: { environment_doctor: () => ({ ...environment, ready: false, node: null, npm: null, selection: 'managed', managedNodePath: '/disposable/missing-managed-node', issues: [{ code: 'NODE_NOT_FOUND', message: '人工受管工具缺失' }] }) } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
+  assert.match(panel.textContent, /构建环境需要配置/);
+  assert.match(panel.textContent, /人工受管工具缺失/);
+  assert.match(panel.textContent, /修复或重新安装平台，或明确选择兼容的本机 Node\/npm/);
+  assert.equal(panel.textContent.includes(environment.downloadUrl), false);
+  assert.doesNotMatch(panel.textContent, /可以构建/);
+  assert.ok([...panel.querySelectorAll('code')].some(value => value.textContent === '/disposable/missing-managed-node'));
+});
+
+test('A failed explicit build tool choice persists until restoring the managed default sends null', async () => {
+  const managedNodePath = '/disposable/platform/node/bin/node';
+  const explicit = { ...environment, ready: false, node: null, npm: null, selection: 'explicit', configuredNodePath: '/disposable/old-explicit-node', managedNodePath, issues: [{ code: 'NODE_NOT_FOUND', message: '人工显式路径失效' }] };
+  const calls = await setup({ overrides: { environment_doctor: () => explicit, environment_node_set: () => ({ ...environment, selection: 'managed', managedNodePath }) } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：明确选择的本机 Node\/npm/);
+  assert.match(panel.textContent, /失效时不会自动改用其他工具/);
+  assert.equal(document.getElementById('node-path').value, explicit.configuredNodePath);
+  await click(byText('重新检测', panel));
+  assert.equal(document.getElementById('node-path').value, explicit.configuredNodePath);
+  assert.equal(calls.some(([command]) => command === 'environment_node_set'), false);
+  assert.match(panel.textContent, /恢复默认工具会清除显式路径，使用平台配套 Node\/npm/);
+  await click(byText('恢复默认工具', panel));
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_node_set'), [['environment_node_set', { nodePath: null }]]);
+  assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
+  assert.equal(document.getElementById('node-path').value, '');
+});
+
+test('A development service without managed tools describes automatic detection and clears the explicit choice', async () => {
+  const calls = await setup({ overrides: { environment_node_set: () => environment } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：本机自动探测/);
+  assert.match(panel.textContent, /没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境/);
+  assert.doesNotMatch(panel.textContent, /默认受管 Node 位置/);
+  await click(byText('恢复默认工具', panel));
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_node_set'), [['environment_node_set', { nodePath: null }]]);
+});
+
 test('Pending environment configuration blocks every settings dismissal, rejects duplicate saves and keeps a failed draft', async () => {
   const configuration = deferred();
   const calls = await setup({ overrides: { environment_node_set: () => configuration.promise } });
