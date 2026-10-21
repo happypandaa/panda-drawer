@@ -251,6 +251,8 @@ Resource limits exposed by this development runtime are internal test parameters
 - 默认平台集成说明：{platform_docs}
 业务文档和 skill 的 PROJECT_ROOT 指上述业务项目根目录；skill 的 references/ 等资源链接相对该 skill 所在目录解析。当前目录、安装约束和 CLI 以上述实际路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
 
+Codex 接手时，请确认当前工作目录正是上述业务项目根目录。平台“在 Codex 打开”只准备项目目录，不自动发送需求。若 CLI 报本机连接受限或服务不可达，先核对平台是否运行及本会话对本机服务的访问权限；不要据此删除连接记录、重建项目、直接打开 SQLite 或绕过工具权限。不能访问时保留已完成的源码修改，给出待执行的公开 CLI 请求与未验事项，由用户在允许访问的平台会话中继续。
+
 平台应用窗口约束：每个应用实例最多一个原生窗口，重复打开只聚焦已有窗口，不重载或丢弃草稿；不得弹出新窗口、调用 window.open/target=_blank、另建 WebView 或转外部浏览器作为运行方式。业务确认与表单留在当前窗口内，不用脚本 alert/confirm/prompt。网页类型不启动自己的 Node；Node 类型由平台在打开应用时后台启动唯一后端，关闭应用窗口就停止，启动中的重复打开复用同一次任务。保存配置不启动或重启，明确重启或关窗后再打开才使用新配置。此交接仍针对已有 project-v1，不把独立 Node 源码槽的能力套入其安装、数据或迁移生命周期。
 
 当前 Node 秘密保存按用户最新选择：每个应用自己的本机受管槽 configuration/credentials/ 私有文件，目录0700、文件0600，是当前用户文件权限保护的明文，不是 macOS Keychain 或系统加密库。该槽与作者源码、分享包和 Git 分开；AI 不读取或复制秘密文件，不读删旧 Keychain 条目，不把秘密写进交接、日志或源码。配置入口负责保存并仅向目标 Node 创建环境注入；本条不为当前静态 project-v1 增加秘密接口。
@@ -295,7 +297,7 @@ SQL 输入格式和维护规则以 skill、项目文档及 CLI 帮助为准；�
             database_docs = root.join("docs/database.md").display(),
             platform_docs = root.join("docs/platform.md").display(),
         );
-        json!({"projectId":id,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"runtimeConstraintsPath":constraints,"cliPath":self.cli_path,"text":text})
+        json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"runtimeConstraintsPath":constraints,"cliPath":self.cli_path,"text":text})
     }
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {

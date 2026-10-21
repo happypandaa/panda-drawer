@@ -1204,12 +1204,7 @@ fn environment_doctor() -> Result<Value> {
     });
     let paths = match discover_paths() {
         Ok(paths) => paths,
-        Err(error) if error.code == "SERVICE_NOT_RUNNING" => {
-            result["service"]["diagnostic"] =
-                serde_json::to_value(error).expect("Error serializes");
-            return Ok(result);
-        }
-        Err(error) => return Err(error),
+        Err(error) => return environment_service_failure(result, error),
     };
     result["candidatePaths"] = json!({
         "dataRoot": paths.data_root(),
@@ -1230,13 +1225,29 @@ fn environment_doctor() -> Result<Value> {
             }
             Ok(result)
         }
-        Err(error) if error.code == "SERVICE_NOT_RUNNING" => {
-            result["service"]["diagnostic"] =
-                serde_json::to_value(error).expect("Error serializes");
-            Ok(result)
-        }
-        Err(error) => Err(error),
+        Err(error) => environment_service_failure(result, error),
     }
+}
+
+fn environment_service_failure(mut result: Value, error: CliError) -> Result<Value> {
+    let (status, message) = match error.code {
+        "SERVICE_NOT_RUNNING" => (
+            "offline",
+            "No active development service record is available. Open the desktop application to inspect its build environment.",
+        ),
+        "SERVICE_UNREACHABLE" => (
+            "unreachable",
+            "The recorded service could not be reached. Its running state and build environment have not been verified.",
+        ),
+        "LOCAL_ACCESS_DENIED" => (
+            "blocked",
+            "Local access was denied. The service's running state and build environment have not been verified.",
+        ),
+        _ => return Err(error),
+    };
+    result["service"] = json!({"status": status, "diagnostic": error});
+    result["buildEnvironment"] = json!({"status": "unavailable", "message": message});
+    Ok(result)
 }
 
 fn local_client() -> Result<Client> {
@@ -1299,10 +1310,31 @@ fn query_runtime(paths: &RuntimePaths, discovery: &Discovery) -> Result<Value> {
     Ok(runtime)
 }
 
+fn local_connection_error(error: &(dyn std::error::Error + 'static)) -> CliError {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            return CliError::new(
+                "LOCAL_ACCESS_DENIED",
+                "Local access to the recorded development service was denied. Allow this tool to connect to the local platform through its permission controls, or manually run the managed CLI command in a permitted terminal. The service's running state is unverified; no retry was made.",
+            );
+        }
+        cause = error.source();
+    }
+    // Never include the request URL, headers, token or raw transport error.
+    CliError::new(
+        "SERVICE_UNREACHABLE",
+        "A development service record exists, but this process could not reach that service. It may be unavailable or local access may be restricted; its running state is unverified. Check the application and local connection permissions. No retry was made.",
+    )
+}
+
 fn fetch_json(request: RequestBuilder) -> Result<Value> {
-    let response = request.send().map_err(|_| {
-        CliError::new("SERVICE_NOT_RUNNING", "The development service could not be reached within the timeout. Open 熊猫应用小抽屉（开发版） and retry.")
-    })?;
+    let response = request
+        .send()
+        .map_err(|error| local_connection_error(&error))?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err(CliError::new("SERVICE_UNAUTHORIZED", "The development service rejected this instance's credential. Retry after confirming the application is running."));
     }
@@ -1686,6 +1718,116 @@ mod tests {
         value = runtime(&discovery);
         value.as_object_mut().unwrap().remove("instanceId");
         assert!(validate_identity(&value, &discovery, "health").is_err());
+    }
+
+    #[test]
+    fn connection_failures_classify_permission_sources_without_exposing_details() {
+        #[derive(Debug)]
+        struct TransportError(Box<dyn std::error::Error + Send + Sync>);
+        impl std::fmt::Display for TransportError {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "http://127.0.0.1:12345/?token=private-sentinel")
+            }
+        }
+        impl std::error::Error for TransportError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        for (kind, expected) in [
+            (std::io::ErrorKind::PermissionDenied, "LOCAL_ACCESS_DENIED"),
+            (std::io::ErrorKind::ConnectionRefused, "SERVICE_UNREACHABLE"),
+            (std::io::ErrorKind::TimedOut, "SERVICE_UNREACHABLE"),
+            (std::io::ErrorKind::NotFound, "SERVICE_UNREACHABLE"),
+        ] {
+            let error = TransportError(Box::new(TransportError(Box::new(std::io::Error::new(
+                kind,
+                "Authorization: Bearer private-sentinel",
+            )))));
+            let diagnostic = local_connection_error(&error);
+            assert_eq!(diagnostic.code, expected);
+            assert!(!diagnostic.retryable);
+            let serialized = serde_json::to_string(&diagnostic).unwrap();
+            assert!(!serialized.contains("private-sentinel"));
+            assert!(!serialized.contains("127.0.0.1"));
+            assert_eq!(diagnostic.details, json!({}));
+        }
+    }
+
+    #[test]
+    fn doctor_distinguishes_missing_record_unreachable_and_blocked_service() {
+        for (code, status) in [
+            ("SERVICE_NOT_RUNNING", "offline"),
+            ("SERVICE_UNREACHABLE", "unreachable"),
+            ("LOCAL_ACCESS_DENIED", "blocked"),
+        ] {
+            let result = environment_service_failure(
+                json!({"runtime":null, "candidatePaths":{"dataRoot":"/disposable"}}),
+                CliError::new(code, "fixed diagnostic"),
+            )
+            .unwrap();
+            assert_eq!(result["service"]["status"], status);
+            assert_eq!(result["service"]["diagnostic"]["code"], code);
+            assert_eq!(result["service"]["diagnostic"]["retryable"], false);
+            assert_eq!(result["buildEnvironment"]["status"], "unavailable");
+            assert!(result["runtime"].is_null());
+            assert_eq!(result["candidatePaths"]["dataRoot"], "/disposable");
+        }
+        assert_eq!(
+            environment_service_failure(json!({}), identity_error("discovery"))
+                .unwrap_err()
+                .code,
+            "SERVICE_IDENTITY_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn refused_local_connection_is_unreachable_not_missing_discovery() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let error = fetch_json(
+            local_client()
+                .unwrap()
+                .get(format!("{origin}/healthz"))
+                .bearer_auth("private-refused-sentinel"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "SERVICE_UNREACHABLE");
+        assert!(!error.retryable);
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(!serialized.contains("private-refused-sentinel"));
+        assert!(!serialized.contains(&origin));
+        let doctor = environment_service_failure(json!({}), error).unwrap();
+        assert_eq!(doctor["service"]["status"], "unreachable");
+    }
+
+    #[test]
+    fn failed_local_handshake_is_not_retried() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            drop(stream);
+            listener.set_nonblocking(true).unwrap();
+            let until = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < until {
+                match listener.accept() {
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+                    result => panic!("unexpected second connection: {result:?}"),
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let error =
+            fetch_json(local_client().unwrap().get(format!("{origin}/healthz"))).unwrap_err();
+        assert_eq!(error.code, "SERVICE_UNREACHABLE");
+        server.join().unwrap();
     }
 
     #[test]

@@ -148,6 +148,40 @@ pub struct RuntimeHandle {
     shared: Arc<RuntimeSwitch>,
     pinned: Option<Arc<HttpState>>,
 }
+/// Keeps the resolved project in this workspace while a native editor is opened.
+/// This lease ends after dispatch; it does not track subsequent editing in the AI.
+pub struct EditorHandoffLease {
+    pub project_root: PathBuf,
+    project_id: String,
+    _task: crate::projects::ProjectTaskLease,
+    active: Active,
+}
+impl EditorHandoffLease {
+    pub fn validate(&self) -> std::result::Result<(), ApiError> {
+        let state = &self.active.0;
+        if state.stopping.load(Ordering::SeqCst)
+            || state
+                .shared
+                .upgrade()
+                .is_none_or(|shared| shared.closing.load(Ordering::Acquire))
+        {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        state.store.check_workspace_available()?;
+        let project = state.store.project(&self.project_id)?;
+        project.validate_epoch(None)?;
+        if project.root != self.project_root {
+            return Err(ApiError::new(
+                "HANDOFF_CHANGED",
+                "项目位置已变化，请重新准备接手说明",
+            ));
+        }
+        Ok(())
+    }
+}
 impl RuntimeHandle {
     fn current(&self) -> Arc<HttpState> {
         self.pinned
@@ -584,7 +618,43 @@ impl RuntimeHandle {
                 "This service has no installed project template or CLI resources",
             )
         })?;
-        Ok(resources.handoff(&project.root, id))
+        let mut handoff = resources.handoff(&project.root, id);
+        handoff["instanceId"] = json!(state.info.instance_id);
+        Ok(handoff)
+    }
+    pub fn editor_handoff_lease(
+        &self,
+        id: &str,
+        expected_project_root: &std::path::Path,
+        expected_instance_id: &str,
+    ) -> std::result::Result<EditorHandoffLease, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let active = Active(state.clone());
+        if state.info.instance_id != expected_instance_id {
+            return Err(ApiError::new(
+                "HANDOFF_CHANGED",
+                "平台已重启或工作区已变化，请重新准备接手说明",
+            ));
+        }
+        let task = state
+            .store
+            .reserve_transient_operation(id, "editor-handoff")?;
+        let project = state.store.project(id)?;
+        if project.root != expected_project_root {
+            return Err(ApiError::new(
+                "HANDOFF_CHANGED",
+                "项目位置已变化，请重新准备接手说明",
+            ));
+        }
+        let lease = EditorHandoffLease {
+            project_root: project.root,
+            project_id: id.into(),
+            _task: task,
+            active,
+        };
+        lease.validate()?;
+        Ok(lease)
     }
     pub async fn project_export(
         &self,
@@ -3266,3 +3336,7 @@ mod git_environment_tests;
 #[cfg(test)]
 #[path = "service_git_remote_tests.rs"]
 mod git_remote_tests;
+
+#[cfg(test)]
+#[path = "service_editor_handoff_tests.rs"]
+mod editor_handoff_tests;

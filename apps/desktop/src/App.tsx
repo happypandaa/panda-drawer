@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, Check, CircleAlert,
   Database, Folder, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, X, Hammer, Copy, Trash2, Search, Settings,
+  RefreshCw, ShieldCheck, Terminal, X, Hammer, Trash2, Search, Settings,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -21,6 +21,8 @@ import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { ProjectAddMenu } from './ProjectAddMenu';
 import { GitEnvironmentPanel } from './GitEnvironmentPanel';
+import { CodexHandoffPanel } from './CodexHandoffPanel';
+import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
@@ -62,6 +64,9 @@ function App() {
   const [query, setQuery] = useState('');
   const [projectFilter, setProjectFilter] = useState<'all' | 'ready' | 'attention'>('all');
   const [tasks, setTasks] = useState<Record<string, TaskRecord>>({});
+  // Space scans run automatically after builds. Keep the user's build result
+  // visible while still polling the scan for its actual busy state.
+  const [buildResults, setBuildResults] = useState<Record<string, TaskRecord>>({});
   const [maintenance, setMaintenance] = useState<Record<string, MaintenanceStatus>>({});
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
@@ -70,8 +75,8 @@ function App() {
   const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; taskId: string } | null>(null);
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
   const [building, setBuilding] = useState<string[]>([]);
-  const [handoff, setHandoff] = useState<string | null>(null);
-  const [handoffCopying, setHandoffCopying] = useState(false);
+  const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
+  const [handoffAction, setHandoffAction] = useState<HandoffAction | null>(null);
   const buildPending = useRef(new Set<string>());
   const requestId = useRef(0);
   const createPending = useRef(false);
@@ -82,6 +87,7 @@ function App() {
   const handoffInFlight = useRef<number | null>(null);
   const clipboardQueue = useRef<Promise<void>>(Promise.resolve());
   const selectedOverviewId = useRef<string | null>(null);
+  const selectedOverviewRoot = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
@@ -100,17 +106,19 @@ function App() {
   const clearHandoff = useCallback(() => {
     handoffRequest.current++;
     handoffInFlight.current = null;
-    setHandoff(null); setHandoffCopying(false);
+    setHandoff(null); setHandoffAction(null);
   }, []);
   const dismissOverview = useCallback(() => {
     clearHandoff();
     selectedOverviewId.current = null;
+    selectedOverviewRoot.current = null;
     setOverview(null); setReloadProjectId(null);
   }, [clearHandoff]);
   function openOverview(project: ProjectInfo, tab: OverviewTab) {
     if (nodeDraft.pending || nodeModalOpen) return;
     clearHandoff();
     selectedOverviewId.current = project.id;
+    selectedOverviewRoot.current = project.projectRoot;
     setReloadProjectId(null); setNotice(null);
     setOverview({ project, tab });
   }
@@ -143,9 +151,12 @@ function App() {
       if (current !== requestId.current) return;
       if (instanceId.current && instanceId.current !== runtime.instanceId) {
         clearHandoff();
+        setBuildResults({});
         setNotice('工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
-      if (selectedOverviewId.current && !list.some((project) => project.id === selectedOverviewId.current)) clearHandoff();
+      const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
+      if (selectedOverviewId.current && (!selectedProject || selectedProject.projectRoot !== selectedOverviewRoot.current)) clearHandoff();
+      selectedOverviewRoot.current = selectedProject?.projectRoot ?? null;
       instanceId.current = runtime.instanceId;
       setWorkspace(currentWorkspace);
       if (currentWorkspace.cleanupTask) acceptLifecycleTask(currentWorkspace.cleanupTask);
@@ -174,6 +185,7 @@ function App() {
         } else { setError(`维护状态读取失败：${messageFrom(result.reason)}。请刷新状态后再操作。`); }
       }
       setMaintenance(next);
+      setBuildResults((previous) => ({ ...previous, ...Object.fromEntries(Object.entries(activeTasks).filter(([, task]) => task.type === 'build')) }));
       setTasks((previous) => ({ ...previous, ...activeTasks }));
       setRefreshVersion((version) => version + 1);
       setCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
@@ -262,6 +274,7 @@ function App() {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
           if (cancelled) return;
           if (task.projectId) setTasks((current) => ({ ...current, [task.projectId!]: task }));
+          if (task.projectId && task.type === 'build') setBuildResults((current) => ({ ...current, [task.projectId!]: task }));
           if (task.final) {
             setBuilding((current) => current.filter((id) => id !== task.projectId));
             if (task.projectId) buildPending.current.delete(task.projectId);
@@ -304,6 +317,7 @@ function App() {
       const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
       const task = await invoke<TaskRecord>('project_build', { projectId: project.id, input: status.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {} });
       setTasks((current) => ({ ...current, [project.id]: task }));
+      setBuildResults((current) => ({ ...current, [project.id]: task }));
       if (task.final) { buildPending.current.delete(project.id); setBuilding((current) => current.filter((id) => id !== project.id)); }
     } catch (cause) {
       buildPending.current.delete(project.id);
@@ -312,17 +326,23 @@ function App() {
     }
   }
 
-  async function copyHandoff(project: ProjectInfo) {
+  async function copyHandoff(project: ProjectInfo, action: HandoffAction) {
     if (selectedOverviewId.current !== project.id || workspaceBusy || !projects.some((value) => value.id === project.id) || handoffInFlight.current !== null) return;
     const sequence = ++handoffRequest.current;
     handoffInFlight.current = sequence;
     const initialInstance = instanceId.current;
-    const current = () => sequence === handoffRequest.current && selectedOverviewId.current === project.id && initialInstance === instanceId.current;
-    setError(null); setNotice(null); setHandoffCopying(true);
+    const initialRoot = project.projectRoot;
+    const current = () => sequence === handoffRequest.current && selectedOverviewId.current === project.id && initialInstance === instanceId.current && initialRoot === selectedOverviewRoot.current;
+    setError(null); setNotice(null); setHandoff(null); setHandoffAction(action);
     try {
-      const data = await invoke<{ text: string }>('project_handoff', { projectId: project.id });
+      const data = await invoke<ProjectHandoff>('project_handoff', { projectId: project.id });
       if (!current()) return;
-      setHandoff(data.text);
+      setHandoff(data);
+      if (action === 'codex' && (!data.projectRoot || !data.instanceId || data.projectRoot !== initialRoot || data.instanceId !== initialInstance)) {
+        setError('项目目录或服务信息已变化，请刷新项目列表后重新准备 Codex 说明。');
+        return;
+      }
+      let copied = false;
       try {
         // A system clipboard write cannot be cancelled after closing a detail.
         // Keep writes ordered across projects so an older write cannot finish last.
@@ -331,14 +351,28 @@ function App() {
         });
         clipboardQueue.current = write.catch(() => {});
         await write;
-        if (current()) setNotice(`已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。`);
-      } catch {
-        if (current()) setNotice('说明已准备好，可以选中下面的文字并复制给 AI。');
+        copied = true;
+      } catch { /* The complete handoff remains available for manual copying. */ }
+      if (!current()) return;
+      if (action === 'copy') {
+        setNotice(copied ? `已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。` : '说明已准备好，可以选中下面的文字并复制给 AI。');
+        return;
+      }
+      try {
+        const result = await invoke<{ projectRoot: string; requested: boolean }>('project_open_codex', { projectId: project.id, expectedProjectRoot: data.projectRoot, expectedInstanceId: data.instanceId });
+        if (!current()) return;
+        if (!result.requested || result.projectRoot !== data.projectRoot) throw new Error('未能确认 Codex 的项目打开请求。');
+        setNotice(copied ? '说明已复制，已请求 Codex 打开此项目的新任务草稿。请粘贴说明、补充需求后自行发送。' : '已请求 Codex 打开此项目的新任务草稿，但剪贴板未能写入。请手动复制下方完整说明，在 Codex 中粘贴、补充需求后自行发送。');
+      } catch (cause) {
+        if (current()) {
+          setError(messageFrom(cause));
+          setNotice(copied ? '说明已复制。请手动打开 Codex，选择下方项目目录，再粘贴说明并补充需求。' : '说明已准备好，但剪贴板未能写入。请手动复制下方全文，在 Codex 中选择项目目录并粘贴。');
+        }
       }
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
     finally {
       if (handoffInFlight.current === sequence) handoffInFlight.current = null;
-      if (current()) setHandoffCopying(false);
+      if (current()) setHandoffAction(null);
     }
   }
 
@@ -492,10 +526,8 @@ function App() {
             <button className="primary-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Monitor size={16} />进入项目</button>
             <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={16} />{building.includes(overviewProject.id) ? '构建中…' : '构建项目'}</button>
           </div>
-          <section className="handoff-card" aria-labelledby="handoff-title"><div className="section-heading"><div><h3 id="handoff-title">让其他 AI 继续开发</h3><p>一键复制软件介绍、当前项目目录和开发操作说明。粘贴给 AI 后，再告诉它你的需求。</p></div><button className="primary-button" disabled={overviewUnavailable || workspaceBusy || handoffCopying} onClick={() => void copyHandoff(overviewProject)}><Copy size={16} />{handoffCopying ? '正在准备说明…' : '复制 AI 接手说明'}</button></div><p className="project-help">接收说明的 AI 需要能访问这台电脑上的项目目录。仅聊天的 AI 也能了解背景，但不能直接修改本机文件。</p>{handoff && <div className="handoff-preview"><div className="section-heading"><label htmlFor="ai-handoff-text">完整说明 · 可核对或手动复制</label><button className="text-button" onClick={clearHandoff}>收起全文</button></div><textarea id="ai-handoff-text" readOnly value={handoff} rows={9} aria-label="给 AI 的完整说明" onFocus={(event) => event.currentTarget.select()} /></div>}</section>
-          {tasks[overviewProject.id] && (tasks[overviewProject.id].final && tasks[overviewProject.id].status === 'succeeded'
-            ? <details className="project-last-task"><summary>最近任务已完成 · 查看结果与日志</summary><ProjectTask task={tasks[overviewProject.id]} /></details>
-            : <ProjectTask task={tasks[overviewProject.id]} />)}
+          <CodexHandoffPanel handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy} onPrepare={action => void copyHandoff(overviewProject, action)} onClear={clearHandoff} />
+          <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' && buildResults[overviewProject.id] ? buildResults[overviewProject.id] : tasks[overviewProject.id]} />
           <ProjectOverview key={overviewProject.id} project={overviewProject} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={tasks[overviewProject.id]} onTask={(task) => { acceptTask(task); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
           <details className="project-technical-details"><summary>运行信息与项目路径</summary><BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />
             {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />重新加载项目窗口</button>}
@@ -504,6 +536,13 @@ function App() {
         </Modal>}
     </div>
   );
+}
+
+function ProjectTaskResult({ task }: { task?: TaskRecord }) {
+  if (!task) return null;
+  return task.final && task.status === 'succeeded'
+    ? <details className="project-last-task"><summary>最近任务已完成 · 查看结果与日志</summary><ProjectTask task={task} /></details>
+    : <ProjectTask task={task} />;
 }
 
 function ProjectDetails({ project }: { project: ProjectInfo }) {

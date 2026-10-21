@@ -192,7 +192,7 @@ pub struct ProjectStore {
     workspace_cleaning: AtomicBool,
     workspace_paused: Arc<AtomicBool>,
     controls: Mutex<HashMap<String, Arc<crate::control::ProjectControl>>>,
-    active_tasks: Arc<Mutex<HashMap<String, String>>>,
+    active_tasks: Arc<Mutex<HashMap<String, ProjectOperation>>>,
     resources: Option<Arc<crate::resources::ProjectResources>>,
 }
 impl ProjectStore {
@@ -680,20 +680,40 @@ impl ProjectStore {
             .clone()
     }
     pub(crate) fn active_task(&self, id: &str) -> Option<String> {
-        self.active_tasks.lock().unwrap().get(id).cloned()
+        match self.active_tasks.lock().unwrap().get(id) {
+            Some(ProjectOperation::Task(task)) => Some(task.clone()),
+            _ => None,
+        }
     }
     pub(crate) fn reserve_task(&self, id: &str, task: &str) -> Result<ProjectTaskLease, ApiError> {
+        self.reserve_operation(id, ProjectOperation::Task(task.into()))
+    }
+    pub(crate) fn reserve_transient_operation(
+        &self,
+        id: &str,
+        label: &str,
+    ) -> Result<ProjectTaskLease, ApiError> {
+        self.reserve_operation(id, ProjectOperation::Transient(label.into()))
+    }
+    fn reserve_operation(
+        &self,
+        id: &str,
+        operation: ProjectOperation,
+    ) -> Result<ProjectTaskLease, ApiError> {
         self.accepting()?;
         let mut active = self.active_tasks.lock().unwrap();
         self.check_workspace_available()?;
-        if let Some(task) = active.get(id) {
-            return Err(ApiError::new(
+        if let Some(operation) = active.get(id) {
+            let error = ApiError::new(
                 "PROJECT_BUSY",
                 "This project already has an active operation",
-            )
-            .detail("taskId", task.clone()));
+            );
+            return Err(match operation {
+                ProjectOperation::Task(task) => error.detail("taskId", task.clone()),
+                ProjectOperation::Transient(label) => error.detail("operation", label.clone()),
+            });
         }
-        active.insert(id.into(), task.into());
+        active.insert(id.into(), operation);
         Ok(ProjectTaskLease {
             active: self.active_tasks.clone(),
             id: id.into(),
@@ -1246,8 +1266,12 @@ impl ProjectStore {
     }
 }
 
+enum ProjectOperation {
+    Task(String),
+    Transient(String),
+}
 pub(crate) struct ProjectTaskLease {
-    active: Arc<Mutex<HashMap<String, String>>>,
+    active: Arc<Mutex<HashMap<String, ProjectOperation>>>,
     id: String,
 }
 impl Drop for ProjectTaskLease {

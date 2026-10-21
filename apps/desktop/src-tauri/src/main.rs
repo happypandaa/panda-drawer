@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser_download;
+mod codex_handoff;
 mod node_windows;
 mod window_sizes;
 
@@ -1072,6 +1073,27 @@ async fn project_handoff(
     state.handle.handoff(&project_id).await
 }
 
+#[tauri::command]
+async fn project_open_codex(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    expected_project_root: String,
+    expected_instance_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.editor_handoff_lease(
+        &project_id,
+        std::path::Path::new(&expected_project_root),
+        &expected_instance_id,
+    )?;
+    let app = codex_handoff::installed_app().await?;
+    // Recheck after signature validation: closing/migration may have started.
+    lease.validate()?;
+    codex_handoff::open(&app, &lease.project_root).await?;
+    Ok(serde_json::json!({"projectRoot":lease.project_root,"requested":true}))
+}
+
 struct InstalledResources {
     info: ResourceInfo,
     cli_path: Option<String>,
@@ -1304,7 +1326,8 @@ fn main() {
             environment_git_doctor,
             environment_git_set,
             environment_git_remote_check,
-            project_handoff
+            project_handoff,
+            project_open_codex
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),
