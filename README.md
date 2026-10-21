@@ -6,6 +6,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 据此整理的[技术能力完整实施计划](docs/technical-implementation-plan.md)涵盖当前基线、Git 与链接获取、私有开发构建、类型保护、安装、更新、分享、Windows 和发行，逐步列出依赖、解决的问题及验收。它是供确认的计划，不表示新增功能已经实现或具体方案已获批准；成品安装与源码开发分别推进，各类型数据保护先于公开安装。
 
+后续按用户“新备份依赖 Git、数据库纳入提交、`dist` 是否提交待评估”的方向，补充[备份逻辑精简评估](docs/git-backup-simplification-review.md)：优先用 Git 替代新备份的 ZIP 历史存储，复用 SQLite 一致性快照和必要恢复协调。具体方案仍待定稿，本轮未删除任何运行代码或旧资料。
+
 文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
 
 应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；内置 Node 不包含 npm 或用户端依赖安装／源码构建，现有 project-v1 源码构建仍使用系统 Node/npm。执行摘要随项目 skill 的同一份环境／窗口约束分发。
