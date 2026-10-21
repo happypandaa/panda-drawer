@@ -206,6 +206,11 @@ struct OutputOptions {
 
 #[derive(Subcommand)]
 enum ProjectCommand {
+    /// Inspect and explicitly save this project's local source versions.
+    Git {
+        #[command(subcommand)]
+        command: ProjectGitCommand,
+    },
     List(OutputOptions),
     Metadata {
         #[command(subcommand)]
@@ -229,6 +234,30 @@ enum ProjectCommand {
     Copy(ProjectMutationOptions),
     /// Move the complete project to trash. This is reversible.
     Delete(ProjectMutationOptions),
+}
+
+#[derive(Subcommand)]
+enum ProjectGitCommand {
+    Status(ProjectOptions),
+    /// Initialize main using the exact expectedSnapshot from a fresh status.
+    Init(ProjectGitInputOptions),
+    /// Save scoped source with explicit author, message, expectedHead and expectedSnapshot.
+    Save(ProjectGitInputOptions),
+    /// Request cancellation, then inspect the persistent final result.
+    Cancel {
+        #[command(flatten)]
+        project: ProjectOptions,
+        #[arg(long)]
+        task: String,
+    },
+}
+
+#[derive(Args)]
+struct ProjectGitInputOptions {
+    #[arg(long)]
+    project: String,
+    #[command(flatten)]
+    input: InputOptions,
 }
 
 #[derive(Subcommand)]
@@ -437,6 +466,7 @@ fn main() -> ExitCode {
 
 fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
     match command {
+        ProjectCommand::Git { command } => project_git_command(command),
         ProjectCommand::Metadata { command } => match command {
             MetadataCommand::Get(options) => (
                 options.output.json,
@@ -501,6 +531,37 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
         ProjectCommand::Refresh(options) => {
             (options.output.json, mutation_request(options, "/refresh"))
         }
+    }
+}
+
+fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
+    match command {
+        ProjectGitCommand::Status(options) => (
+            options.output.json,
+            project_request(&options.project, "GET", "/git", None),
+        ),
+        ProjectGitCommand::Init(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitInitInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide expectedSnapshot and initialBranch main."))?;
+                project_request(&options.project, "POST", "/git/initialize", Some(body))
+            }),
+        ),
+        ProjectGitCommand::Save(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSaveInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide explicit expectedHead (null for no commit), expectedSnapshot, message and author name/email."))?;
+                project_request(&options.project, "POST", "/git/saves", Some(body))
+            }),
+        ),
+        ProjectGitCommand::Cancel { project, task } => (
+            project.output.json,
+            validate_reference_id(&task, "task").and_then(|()| project_request(
+                &project.project, "POST", &format!("/git/tasks/{task}/cancel"), Some(json!({})),
+            )),
+        ),
     }
 }
 
@@ -1496,6 +1557,52 @@ mod tests {
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn project_git_cli_requires_explicit_input_and_never_accepts_maintenance_alias() {
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "status",
+            "--project",
+            "prj_disposable",
+            "--json"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "save",
+            "--project",
+            "prj_disposable"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "save",
+            "--project",
+            "prj_disposable",
+            "--input",
+            "-",
+            "--maintenance",
+            "maintenance_sample"
+        ])
+        .is_err());
+        let input = json!({"expectedSnapshot":"a".repeat(64),"message":"Disposable commit","author":{"name":"Sample","email":"sample@example.invalid"}});
+        assert!(
+            serde_json::from_value::<platform_core::project_git::GitSaveInput>(input.clone())
+                .is_err()
+        );
+        let mut explicit = input;
+        explicit["expectedHead"] = Value::Null;
+        assert!(
+            serde_json::from_value::<platform_core::project_git::GitSaveInput>(explicit).is_ok()
+        );
+    }
 
     fn discovery() -> Discovery {
         Discovery {

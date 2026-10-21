@@ -230,7 +230,8 @@ function backupProps(extra = {}) {
 async function inputValue(input, value) {
   assert.ok(input);
   await act(async () => {
-    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+    const prototype = input instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value);
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
   });
 }
@@ -335,6 +336,29 @@ function overviewProps(extra = {}) {
 }
 const buttonNamed = (name) => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === name);
 
+test('Project overview keeps Git drafts across tabs and asks before discarding them', async () => {
+  await setup(); let guard; let closes = 0;
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'project_metadata') return metadata;
+    if (command === 'project_git_status') return {
+      repository: { state: 'none', root: null, markers: [], head: null, indexState: 'not-inspected', git: null },
+      scope: { policy: 'project-source-v1', includedRoots: ['app'], includedPaths: [], excluded: [], unclassifiedPaths: [], protectedTrackedPaths: [], complete: true },
+      changes: [], snapshotDigest: 'a'.repeat(64), canInitialize: true, canSave: false, database: { state: 'not-supported' }, issues: [],
+    };
+    throw new Error(`Unexpected request: ${command}`);
+  };
+  const close = () => { if (!guard || guard()) closes++; };
+  await render(h(ProjectOverview, overviewProps({ initialTab: 'git', onDismissGuardChange: value => { guard = value; }, onClose: close })));
+  await inputValue(document.querySelector('.project-git-panel textarea'), 'Keep this version description');
+  await click([...document.querySelectorAll('[role="tab"]')].find(tab => tab.textContent === '概览'));
+  await act(async () => { close(); });
+  assert.equal(closes, 0);
+  assert.match(document.querySelector('[aria-label="关闭详情确认"]').textContent, /版本说明/);
+  await click(buttonNamed('继续编辑'));
+  await click([...document.querySelectorAll('[role="tab"]')].find(tab => tab.textContent === '源码版本'));
+  assert.equal(document.querySelector('.project-git-panel textarea').value, 'Keep this version description');
+});
+
 test('Project overview and Modal preserve metadata/backup drafts across tabs and require explicit discard to close', async () => {
   await setup(); let guard; let closes = 0;
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
@@ -400,9 +424,9 @@ test('Overview tabs support keyboard navigation and revoke delete acknowledgemen
   assert.equal(document.activeElement, tabs.at(-1)); assert.equal(tabs.at(-1).getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('[aria-label="删除项目确认"]'), null);
   await key('ArrowLeft');
-  assert.equal(document.activeElement, tabs[2]); assert.equal(tabs[2].getAttribute('aria-selected'), 'true');
+  assert.equal(document.activeElement, tabs.at(-2)); assert.equal(tabs.at(-2).getAttribute('aria-selected'), 'true');
   await key('ArrowRight');
-  assert.equal(document.activeElement, tabs[3]);
+  assert.equal(document.activeElement, tabs.at(-1));
   await click(document.querySelector('.project-delete-heading button'));
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
 });

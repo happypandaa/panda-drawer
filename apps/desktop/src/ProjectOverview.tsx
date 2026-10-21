@@ -5,12 +5,13 @@ import { BackupMaintenancePanel } from './BackupMaintenancePanel';
 import { ProjectLifecyclePanel } from './LifecyclePanels';
 import { ProjectStoragePanel } from './StoragePanels';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
+import { ProjectGitPanel } from './ProjectGitPanel';
 import type { MaintenanceStatus, ProjectInfo, ProjectMetadata, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { bytesText, timeText } from './storage-utils';
-export type OverviewTab = 'overview' | 'storage' | 'backup' | 'manage';
-export function ProjectOverview({ project, initialTab, status, task, disabled, onTask, onChanged, onClose, onDismissGuardChange }: {
-  project: ProjectInfo; initialTab: OverviewTab; status?: MaintenanceStatus; task?: TaskRecord; disabled: boolean;
+export type OverviewTab = 'overview' | 'git' | 'storage' | 'backup' | 'manage';
+export function ProjectOverview({ project, instanceId, initialTab, status, task, disabled, onTask, onChanged, onClose, onDismissGuardChange }: {
+  project: ProjectInfo; instanceId?: string; initialTab: OverviewTab; status?: MaintenanceStatus; task?: TaskRecord; disabled: boolean;
   onTask: (task: TaskRecord) => void; onChanged: () => Promise<void>; onClose: () => void;
   onDismissGuardChange?: (guard: (() => boolean) | null) => void;
 }) {
@@ -23,6 +24,7 @@ export function ProjectOverview({ project, initialTab, status, task, disabled, o
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [gitDraft, setGitDraft] = useState({ dirty: false, pending: false });
   const [backupDraft, setBackupDraft] = useState({ dirty: false, pending: false });
   const [lifecycleDraft, setLifecycleDraft] = useState({ dirty: false, pending: false });
   const [dismissConfirm, setDismissConfirm] = useState(false);
@@ -36,9 +38,9 @@ export function ProjectOverview({ project, initialTab, status, task, disabled, o
   const editingBlocked = disabled || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
   const maintenanceInput = status?.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {};
   const dirty = Boolean(metadata && (draft.name !== metadata.name || draft.description !== metadata.description));
-  const operationPending = busy || backupDraft.pending || lifecycleDraft.pending;
+  const operationPending = busy || gitDraft.pending || backupDraft.pending || lifecycleDraft.pending;
   const guardState = useRef({ dirty: false, pending: false });
-  guardState.current = { dirty: dirty || backupDraft.dirty || lifecycleDraft.dirty, pending: operationPending };
+  guardState.current = { dirty: dirty || gitDraft.dirty || backupDraft.dirty || lifecycleDraft.dirty, pending: operationPending };
   useEffect(() => {
     setTab(initialTab); setVisited((previous) => previous.includes(initialTab) ? previous : [...previous, initialTab]);
   }, [initialTab]);
@@ -102,10 +104,10 @@ export function ProjectOverview({ project, initialTab, status, task, disabled, o
   const requirements = manifest?.runtimeRequirements;
   const networks = Object.entries(requirements?.network ?? {}).filter(([, values]) => Array.isArray(values)).map(([kind, values]) => [kind, values.filter((item) => item && typeof item.origin === 'string')] as const);
   const devices = Object.entries(requirements?.devices ?? {}).filter(([, value]) => value && typeof value === 'object');
-  const tabs = [['overview', '概览'], ['storage', '空间与文件'], ['backup', '备份维护'], ['manage', '更多操作']] as const;
+  const tabs = [['overview', '概览'], ['git', '源码版本'], ['storage', '空间与文件'], ['backup', '备份维护'], ['manage', '更多操作']] as const;
   return <section className="project-overview project-overview-embedded" aria-label={`${project.name}项目详情`}>
     {(dismissConfirm || dismissMessage) && <div ref={dismissNotice} tabIndex={-1} className="operation-confirmation overview-dismiss-confirmation" role="group" aria-label="关闭详情确认">
-      {dismissConfirm ? <><strong>有尚未保存或提交的内容</strong><p>关闭将放弃基本信息、备份备注或更多操作中的未提交表单。已保存的项目数据不受影响。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="danger-button" disabled={operationPending} onClick={() => { discardApproved.current = true; onClose(); }}>放弃未提交内容并关闭</button></div></> : <><p role="status">{dismissMessage}</p><button className="text-button" onClick={() => setDismissMessage('')}>知道了</button></>}
+      {dismissConfirm ? <><strong>有尚未保存或提交的内容</strong><p>关闭将放弃基本信息、版本说明、备份备注或更多操作中的未提交表单。已保存的项目数据不受影响。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="danger-button" disabled={operationPending} onClick={() => { discardApproved.current = true; onClose(); }}>放弃未提交内容并关闭</button></div></> : <><p role="status">{dismissMessage}</p><button className="text-button" onClick={() => setDismissMessage('')}>知道了</button></>}
     </div>}
     <div className="overview-toolbar"><code className="overview-project-id">{project.id}</code><button className="danger-button overview-delete-button" disabled={operationPending || disabled || Boolean(status?.activeTask) || Boolean(status?.recoveryRequired)} onClick={showDelete}><Trash2 size={14} />删除项目</button></div>
     <div className="overview-tabs" role="tablist" aria-label="项目详情">{tabs.map(([key, label], index) => <button key={key} id={`${tabPrefix}-${key}`} role="tab" tabIndex={tab === key ? 0 : -1} aria-selected={tab === key} aria-controls={`${tabPrefix}-${key}-panel`} disabled={operationPending} onKeyDown={(event) => {
@@ -133,6 +135,7 @@ export function ProjectOverview({ project, initialTab, status, task, disabled, o
       <section className="overview-section"><h3>声明的外部连接与设备用途</h3><p>这些是项目清单中的用途声明。使用摄像头或麦克风时，仍需浏览器或系统授权。</p>{networks.map(([kind, origins]) => <div key={kind}><h4>{({ connect: '网络连接', images: '外部图片', media: '外部音视频' } as Record<string, string>)[kind] ?? kind}</h4>{origins.map((item, index) => <p key={`${item.origin}:${index}`}><code>{item.origin}</code> · {typeof item.purpose === 'string' ? item.purpose : '未说明用途'}{item.dataSent ? ` · 发送数据：${item.dataSent}` : ''}</p>)}</div>)}{devices.map(([device, value]) => <p key={device}>{device === 'camera' ? '摄像头' : device === 'microphone' ? '麦克风' : device} · {typeof value.purpose === 'string' ? value.purpose : '未说明用途'}</p>)}{!devices.length && !networks.some(([, items]) => items.length) && <p>未声明外部连接或设备用途。</p>}</section>
       <section className="overview-section"><h3>空间摘要</h3><p>{bytesText(project.storage?.currentProject?.totalBytes)} · {project.storage?.currentProject?.complete ? '扫描完整' : '尚未统计或部分统计'}{project.storage?.currentProject?.stale ? ' · 需要重新扫描' : ''}</p><p>扫描时间：{timeText(project.storage?.currentProject?.completedAt)}</p></section><div className="metadata-actions"><button className="refresh-button" onClick={() => selectTab('storage')}><FolderOpen size={14} />查看空间与文件</button><button className="refresh-button" onClick={() => selectTab('backup')}><Archive size={14} />备份维护</button><button className="refresh-button" onClick={() => selectTab('manage')}><Settings2 size={14} />导出、复制与回收站</button></div>
     </div>
+    {visited.includes('git') && <div role="tabpanel" id={`${tabPrefix}-git-panel`} aria-labelledby={`${tabPrefix}-git`} hidden={tab !== 'git'}><ProjectGitPanel projectId={project.id} instanceId={instanceId} task={task} disabled={disabled || Boolean(status?.recoveryRequired) || status?.mode === 'maintenance' || Boolean(task && !task.final && !['gitInitialize', 'gitSave'].includes(task.type))} onTask={onTask} onDraftStateChange={setGitDraft} /></div>}
     {tab === 'storage' && <div role="tabpanel" id={`${tabPrefix}-storage-panel`} aria-labelledby={`${tabPrefix}-storage`}><ProjectStoragePanel project={project} status={status} task={task} disabled={disabled} onTask={onTask} onChanged={onChanged} showTask={false} /></div>}
     {visited.includes('backup') && <div role="tabpanel" id={`${tabPrefix}-backup-panel`} aria-labelledby={`${tabPrefix}-backup`} hidden={tab !== 'backup'}><BackupMaintenancePanel project={project} status={status} task={task} disabled={disabled} onTask={onTask} onChanged={onChanged} onClose={onClose} embedded active={tab === 'backup'} onDraftStateChange={setBackupDraft} /></div>}
     {visited.includes('manage') && <div role="tabpanel" id={`${tabPrefix}-manage-panel`} aria-labelledby={`${tabPrefix}-manage`} hidden={tab !== 'manage'}>{dirty && <p className="overview-unsaved-note">概览中有未保存的基本信息。删除项目不会保存这些编辑。</p>}<ProjectLifecyclePanel project={project} status={status} disabled={disabled} onTask={onTask} active={tab === 'manage'} deleteRequested={deleteRequested} onDraftStateChange={setLifecycleDraft} /></div>}

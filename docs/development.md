@@ -1,6 +1,6 @@
 # 开发环境与数据隔离
 
-2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；认证、仓库获取与版本操作尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
+2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；已接公开源码获取和本机源码保存；私有认证与分支取回尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
@@ -232,7 +232,15 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 
 `env git doctor`、`env git set --path /绝对路径/git`、`env git clear` 均支持 `--json`，在线通过现有管理认证访问 `GET /api/v1/environment/git` 或 `PUT /api/v1/environment/git`。PUT 输入分别为 `{"gitPath":"/绝对路径/git"}` 与 `{"gitPath":null}`。响应包括 `ready`、`git` 的实际路径／版本、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，并分别提供 `ssh` 与 `authentication`。默认位置仅供定位，不代替 `ready`／问题结果；CLI 离线不自行选用终端 Git。
 
-系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。平台尚无仓库获取、提交、分支或取回版本 API；不要按工具可用推断这些能力已开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
+系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。公开源码获取和 project-v1 本机源码提交有独立入口；分支或取回版本 API 尚未开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
+
+### 本机源码版本保存
+
+项目详情“源码版本”先读取范围和改动，再明确初始化或保存。CLI 为 `project git status --project ID --json`、`project git init --project ID --input FILE --json`、`project git save --project ID --input FILE --json`、`project git cancel --project ID --task TASK_ID --json`。初始化输入为 `expectedSnapshot` 与 `initialBranch:"main"`；保存须明确提供 `expectedHead`（无提交时为 JSON null）、`expectedSnapshot`、`message`、`author:{name,email}`。快照和 HEAD 来自最新状态，不默认采用全局作者，不自动重试写请求。
+
+管理 HTTP 为 `GET /api/v1/projects/:id/git`、`POST .../git/initialize`、`POST .../git/saves`、`POST .../git/tasks/:taskId/cancel`。初始化／保存返回持久任务，取消仅请求停止；提交点之后可能最终成功，`committed`／`unknown`／`not_committed` 结果分别保留，不凭连接失败重新提交。
+
+首步只写项目根的普通标准 Git 仓库。已有源码子仓库、父仓库、多个标记、worktree／submodule、分离 HEAD 或不支持的配置保持原状并拒绝写入。预览列出清单、源码、固定 SDK、文档等开发材料；未知文件、已有暂存／冲突或被跟踪的保护路径阻止保存。已知凭据、活库、附件、依赖、本机控制与运行产物按路径排除，不能通用识别任意文件内的秘密。采用原始对象和私有索引，不运行用户 hooks、内容过滤器、签名或 fsmonitor，不推送。此次保存不含数据库快照，分支定制／取回仍待后续步骤；旧备份及恢复证据保留。
 
 `env git check --url https://github.com/owner/repository.git --json` 明确发起 `POST /api/v1/environment/git/remote-check`；也支持标准 `https://gitee.com/owner/repository.git`。这一步只检查公开 HTTPS，拒绝凭据、端口、查询参数、片段和仓库内页面；不使用系统 SSH，也不读取用户账号凭据或配置。服务沿用已选择的 Git，失效不回退；此检查当前仅支持 Git 2.54.0 与 2.56.0（包括对应版本的 Apple Git 标识），其他工具即使 `doctor` 可用也会明确拒绝检查，保留选择。
 

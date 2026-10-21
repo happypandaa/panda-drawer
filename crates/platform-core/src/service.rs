@@ -110,6 +110,7 @@ struct HttpState {
     builds: Arc<BuildManager>,
     git_environment: crate::git_environment::GitEnvironmentManager,
     git_remote: crate::git_remote::GitRemoteChecker,
+    project_git: std::result::Result<Arc<crate::project_git::ProjectGitManager>, ApiError>,
     source_acquisition:
         std::result::Result<Arc<crate::source_acquisition::SourceAcquisitionManager>, ApiError>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
@@ -611,6 +612,89 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn project_git_status(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .status(id, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_initialize(
+        &self,
+        id: &str,
+        input: crate::project_git::GitInitInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .initialize(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_save(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSaveInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .save(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_cancel(
+        &self,
+        id: &str,
+        task_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        if state.builds.task(task_id)?.project_id.as_deref() != Some(id) {
+            return Err(ApiError::new(
+                "PROJECT_GIT_INPUT_INVALID",
+                "任务不属于当前项目。",
+            ));
+        }
+        Ok(json!(state
+            .project_git
+            .as_ref()
+            .map_err(Clone::clone)?
+            .cancel(task_id)?))
+    }
     pub async fn source_list(&self) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.store.check_workspace_available()?;
@@ -905,6 +989,9 @@ impl RuntimeService {
         if let Ok(sources) = &state.source_acquisition {
             sources.shutdown().await;
         }
+        if let Ok(git) = &state.project_git {
+            git.shutdown().await;
+        }
         state.builds.shutdown().await;
         state.store.shutdown().await;
         if let Some(mut task) = self.task.take() {
@@ -1041,6 +1128,12 @@ fn make_state(
         builds.clone(),
         git_environment.clone(),
     );
+    let project_git = crate::project_git::ProjectGitManager::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        git_environment.clone(),
+    );
     let state = Arc::new(HttpState {
         paths,
         shared,
@@ -1054,6 +1147,7 @@ fn make_state(
         builds,
         git_environment,
         git_remote: crate::git_remote::GitRemoteChecker::new(),
+        project_git,
         source_acquisition,
         maintenance,
         lifecycle,
@@ -1240,6 +1334,9 @@ async fn submit_migration(
             state.maintenance.shutdown().await;
             if let Ok(sources) = &state.source_acquisition {
                 sources.shutdown().await;
+            }
+            if let Ok(git) = &state.project_git {
+                git.shutdown().await;
             }
             state.builds.shutdown().await;
             crate::workspace::mark_old_retired(&selected, &journal)?;
@@ -1663,6 +1760,7 @@ async fn management(
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | ["sources", "acquisitions"]
+                | ["projects", _, "git", "initialize" | "saves"]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -1698,6 +1796,18 @@ async fn management(
     };
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
+            (Method::GET, ["projects", id, "git"]) => handle.project_git_status(id).await,
+            (Method::POST, ["projects", id, "git", "initialize"]) => {
+                handle
+                    .project_git_initialize(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "saves"]) => {
+                handle.project_git_save(id, input(request).await?).await
+            }
+            (Method::POST, ["projects", id, "git", "tasks", task_id, "cancel"]) => {
+                handle.project_git_cancel(id, task_id).await
+            }
             (Method::GET, ["sources"]) => handle.source_list().await,
             (Method::GET, ["sources", id]) => handle.source_info(id).await,
             (Method::POST, ["sources", "acquisitions"]) => {
@@ -3434,3 +3544,7 @@ mod editor_handoff_tests;
 #[cfg(test)]
 #[path = "service_source_tests.rs"]
 mod source_tests;
+
+#[cfg(test)]
+#[path = "service_project_git_tests.rs"]
+mod project_git_tests;
