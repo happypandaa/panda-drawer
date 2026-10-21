@@ -88,6 +88,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SourceCommand {
+    /// Copy bounded local source into a new managed candidate, without executing it.
+    Capture {
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
     List(OutputOptions),
     Get {
         #[arg(long)]
@@ -849,6 +858,12 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
 
 fn source_command(command: SourceCommand) -> (bool, Result<Value>) {
     match command {
+        SourceCommand::Capture { path, name, output } => (output.json, {
+            let body = json!({"sourcePath":path,"name":name});
+            validate_path_field(&body, "sourcePath").and_then(|()| {
+                business_request("POST", "/api/v1/sources/captures", None, Some(body))
+            })
+        }),
         SourceCommand::List(output) => (
             output.json,
             business_request("GET", "/api/v1/sources", None, None),

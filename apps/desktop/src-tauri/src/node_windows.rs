@@ -97,6 +97,26 @@ fn focus(window: &tauri::WebviewWindow) -> Result<(), ApiError> {
         .map_err(|_| error("无法显示应用窗口，请关闭后重新打开。"))
 }
 
+pub(super) async fn apply_install(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    candidate_id: &str,
+) -> Result<Value, ApiError> {
+    let _operation = state.node_windows.operations.lock().await;
+    alive(state)?;
+    let id = state.handle.node_install_target(candidate_id)?;
+    if session(state, &id).is_some() || app.get_webview_window(&label(&id)?).is_some() {
+        return Err(ApiError::new(
+            "NODE_INSTALL_WINDOW_OPEN",
+            "请先处理草稿并关闭此应用窗口，等待服务停止后再应用更新。",
+        ));
+    }
+    state
+        .handle
+        .node_install_apply(state.node_apps.clone(), candidate_id)
+        .await
+}
+
 pub(super) async fn open(
     app: &tauri::AppHandle,
     state: &AppState,

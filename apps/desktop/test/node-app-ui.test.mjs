@@ -88,6 +88,126 @@ async function submit() { await act(async () => document.querySelector('.node-co
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 function baseMock(value, action) { return async (command, args) => { if (command === 'node_app_list') return [value]; if (command === 'node_app_configuration') return value; return action(command, args); }; }
 
+test('Managed app update preserves configuration drafts and only reads candidates on explicit request', async () => {
+  const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: 'gen_' + 'a'.repeat(32), sourceId: 'src_' + 'b'.repeat(32), sourceDigest: 'c'.repeat(64) } });
+  const calls = [];
+  await setup(baseMock(value, async command => {
+    calls.push(command);
+    if (command === 'source_list') return [];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    throw new Error(command);
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await change(input('MODEL'), 'unfinished configuration');
+  await click(byText('概览'));
+  assert.equal(byText('选择更新来源或查看候选').disabled, true);
+  assert.deepEqual(calls, []);
+  assert.match(document.querySelector('[role=dialog]').textContent, /运行不依赖原作者目录/);
+  await click(byText('应用配置')); await change(input('MODEL'), ''); await click(byText('概览'));
+  await click(byText('选择更新来源或查看候选'));
+  assert.deepEqual(calls, ['source_list', 'node_install_list']);
+  assert.ok(document.querySelector('.node-install-panel'));
+});
+
+function managedInstallFixture() {
+  const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: `gen_${'a'.repeat(32)}`, sourceId: `src_${'b'.repeat(32)}`, sourceDigest: 'c'.repeat(64) } });
+  const source = { sourceId: `src_${'d'.repeat(32)}`, name: 'current-source', status: 'ready', contentDigest: 'e'.repeat(64), inspection: { kind: 'node-service-source', issues: [] } };
+  const prepared = { candidateId: `install_${'f'.repeat(32)}`, appId: value.id, generation: `gen_${'1'.repeat(32)}`, manifest: { runtime: 'node-service', app: { id: 'org.example.fixture', name: 'Managed fixture', version: '2.0.0' } }, programDigest: '2'.repeat(64), provenance: { sourceId: source.sourceId, sourceDigest: source.contentDigest, sourceCommit: null, node: { path: '/fixture/node', version: '24.22.0' }, npm: { path: '/fixture/npm', version: '11.19.1' }, preparedAt: 1 } };
+  const installed = { candidateId: prepared.candidateId, appId: value.id, generation: prepared.generation, operationOutcome: 'committed' };
+  const history = { candidateId: prepared.candidateId, appId: value.id, targetAppId: value.id, state: 'committed', prepareTaskId: 'task_prepare', applyTaskId: 'task_apply', prepared, error: null, issues: [] };
+  return { value, source, prepared, installed, history };
+}
+
+test('Managed update rejects an old instance source list and releases its pending gate for a fresh read', async () => {
+  const { value, source } = managedInstallFixture(); const older = deferred(); let reads = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'source_list') return ++reads === 1 ? older.promise : [source];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    throw new Error(command);
+  }), props);
+  await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+  assert.equal(byText('选择更新来源或查看候选').disabled, true);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(byText('选择更新来源或查看候选').disabled, false);
+  await click(byText('选择更新来源或查看候选'));
+  await act(async () => older.resolve([{ ...source, name: 'old-instance-source' }]));
+  assert.equal(reads, 2);
+  assert.match(document.querySelector('.node-install-panel').textContent, /current-source/);
+  assert.doesNotMatch(document.body.textContent, /old-instance-source/);
+});
+
+test('Managed update drops old installation state on instance changes while retaining configuration drafts', async () => {
+  const { value, source } = managedInstallFixture(); const tasks = [];
+  const task = { taskId: 'old-install-task', type: 'nodeInstallPrepare', projectId: null, status: 'running', final: false, phase: 'dependencies' };
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onTask: value => tasks.push(value), request: { app: value, intent: 'details', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'source_list') return [source];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    if (command === 'node_install_prepare' || command === 'task_get') return task;
+    throw new Error(command);
+  }), props);
+  await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+  await change(document.querySelector('.node-install-panel select'), source.sourceId);
+  await click(byText('准备安装材料'));
+  assert.ok(byText('取消准备'));
+  await click(byText('应用配置')); await change(input('MODEL'), 'unsaved model'); await change(input('AI_KEY'), 'artificial unsaved key');
+  const taskCount = tasks.length;
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(input('MODEL').value, 'unsaved model'); assert.equal(input('AI_KEY').value, 'artificial unsaved key');
+  assert.equal(document.querySelector('.node-install-panel'), null); assert.equal(tasks.length, taskCount);
+  await change(input('MODEL'), ''); await change(input('AI_KEY'), ''); await click(byText('概览'));
+  await click(byText('选择更新来源或查看候选'));
+  assert.equal(byText('取消准备'), undefined); assert.equal(tasks.length, taskCount);
+});
+
+test('An old status poll cannot replace application metadata after an installation refresh', async () => {
+  const { value, source, installed, history } = managedInstallFixture(); const older = deferred(); const changes = [];
+  const updated = { ...value, sourcePath: '/new-managed-generation', installation: { ...value.installation, generation: installed.generation } };
+  let configurations = 0; let polls = 0;
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 0;
+  window.setInterval = callback => { const id = ++timerId; timers.set(id, callback); return id; };
+  window.clearInterval = id => timers.delete(id);
+  try {
+    await setup(async command => {
+      if (command === 'node_app_configuration') return ++configurations === 1 ? value : updated;
+      if (command === 'source_list') return [source];
+      if (command === 'node_install_list') return { candidates: [history], issues: [] };
+      if (command === 'node_install_candidate') return { state: 'committed', result: installed };
+      assert.equal(command, 'node_app_status'); polls++; return older.promise;
+    }, { instanceId: 'same', onAppChanged: value => changes.push(value), request: { app: value, intent: 'details', token: 1 } });
+    await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+    await act(async () => { for (const callback of timers.values()) callback(); });
+    assert.equal(polls, 1);
+    await click(byText('核验已安装结果'));
+    assert.equal(changes.at(-1).installation.generation, installed.generation);
+    await act(async () => older.resolve({ ...value, state: 'running' }));
+    assert.equal(changes.at(-1).installation.generation, installed.generation);
+    assert.match(document.body.textContent, /new-managed-generation/);
+    assert.match(document.querySelector('.node-process-state').textContent, /已停止/);
+  } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
+});
+
+test('An installation refresh from a previous service instance cannot overwrite current detail or draft', async () => {
+  const { value, source, installed, history } = managedInstallFixture(); const older = deferred(); const changes = []; let reads = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppChanged: value => changes.push(value), request: { app: value, intent: 'details', token: 1 } };
+  await setup(async command => {
+    if (command === 'node_app_configuration') return ++reads === 1 ? value : older.promise;
+    if (command === 'source_list') return [source];
+    if (command === 'node_install_list') return { candidates: [history], issues: [] };
+    if (command === 'node_install_candidate') return { state: 'committed', result: installed };
+    throw new Error(command);
+  }, props);
+  await click(byText('概览')); await click(byText('选择更新来源或查看候选')); await click(byText('核验已安装结果'));
+  assert.equal(reads, 2);
+  await click(byText('应用配置')); await change(input('MODEL'), 'draft across restart');
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  const changeCount = changes.length;
+  await act(async () => older.resolve({ ...value, sourcePath: '/old-instance-late-result', installation: { ...value.installation, generation: installed.generation } }));
+  assert.equal(changes.length, changeCount);
+  assert.equal(input('MODEL').value, 'draft across restart');
+  assert.doesNotMatch(document.body.textContent, /old-instance-late-result/);
+});
+
 test('Configuration reads show only secret presence, declarations and defaults without starting an app', async () => {
   const calls = [];
   await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); }));

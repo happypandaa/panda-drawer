@@ -111,6 +111,7 @@ struct HttpState {
     git_environment: crate::git_environment::GitEnvironmentManager,
     git_remote: crate::git_remote::GitRemoteChecker,
     project_git: std::result::Result<Arc<crate::project_git::ProjectGitManager>, ApiError>,
+    node_install: Arc<crate::node_install_tasks::NodeInstallTasks>,
     source_acquisition:
         std::result::Result<Arc<crate::source_acquisition::SourceAcquisitionManager>, ApiError>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
@@ -704,6 +705,90 @@ impl RuntimeHandle {
             .map_err(Clone::clone)?
             .list()?))
     }
+    pub async fn source_capture(
+        &self,
+        input: crate::source_acquisition::CaptureLocalSourceInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .source_acquisition
+                .as_ref()
+                .map_err(Clone::clone)?
+                .capture(input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    // Installation is native-manager-only: the native window owner must retain
+    // its operation lock around apply and check that the target has no window.
+    pub fn node_install_target(&self, candidate_id: &str) -> std::result::Result<String, ApiError> {
+        self.current().node_install.target_app_id(candidate_id)
+    }
+    pub fn node_install_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        self.current().node_install.candidate(candidate_id)
+    }
+    pub fn node_install_issues(&self) -> Value {
+        json!(self.current().node_install.issues())
+    }
+    pub fn node_install_list(&self) -> std::result::Result<Value, ApiError> {
+        self.current().node_install.list()
+    }
+    pub async fn node_install_prepare(
+        &self,
+        apps: Arc<crate::node_apps::NodeApps>,
+        input: crate::node_install_tasks::PrepareNodeInstallInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .node_install
+                .prepare(apps, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn node_install_apply(
+        &self,
+        apps: Arc<crate::node_apps::NodeApps>,
+        candidate_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .node_install
+                .apply(apps, candidate_id, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub fn node_install_cancel(&self, task_id: &str) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().node_install.cancel(task_id)?))
+    }
     pub async fn source_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.store.check_workspace_available()?;
@@ -965,10 +1050,17 @@ impl RuntimeService {
     }
     pub async fn shutdown(mut self) -> Result<()> {
         self.shared.closing.store(true, Ordering::Release);
+        // Migration waits for source/project leases held by long-running work.
+        // Signal that work before awaiting migration, then let migration finish
+        // its durable commit/recovery path instead of aborting its runner.
+        let before_migration = self.shared.snapshot();
+        before_migration.stopping.store(true, Ordering::SeqCst);
+        let _ = before_migration.stop.send(true);
         let migration = self.shared.migration_runner.lock().unwrap().take();
         if let Some(task) = migration {
             task.await.context("Workspace migration runner panicked")?;
         }
+        // A committed migration may have installed a new state while we waited.
         let state = self.shared.snapshot();
         state.stopping.store(true, Ordering::SeqCst);
         let _ = state.stop.send(true);
@@ -986,6 +1078,7 @@ impl RuntimeService {
         state.history_cleanup.shutdown().await;
         state.lifecycle.shutdown().await;
         state.maintenance.shutdown().await;
+        state.node_install.shutdown().await;
         if let Ok(sources) = &state.source_acquisition {
             sources.shutdown().await;
         }
@@ -1134,6 +1227,12 @@ fn make_state(
         builds.clone(),
         git_environment.clone(),
     );
+    let node_install = crate::node_install_tasks::NodeInstallTasks::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        source_acquisition.clone(),
+    );
     let state = Arc::new(HttpState {
         paths,
         shared,
@@ -1148,6 +1247,7 @@ fn make_state(
         git_environment,
         git_remote: crate::git_remote::GitRemoteChecker::new(),
         project_git,
+        node_install,
         source_acquisition,
         maintenance,
         lifecycle,
@@ -1332,6 +1432,7 @@ async fn submit_migration(
             state.history_cleanup.shutdown().await;
             state.lifecycle.shutdown().await;
             state.maintenance.shutdown().await;
+            state.node_install.shutdown().await;
             if let Ok(sources) = &state.source_acquisition {
                 sources.shutdown().await;
             }
@@ -1760,6 +1861,7 @@ async fn management(
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | ["sources", "acquisitions"]
+                | ["sources", "captures"]
                 | ["projects", _, "git", "initialize" | "saves"]
         );
     let rid = Uuid::new_v4().to_string();
@@ -1812,6 +1914,9 @@ async fn management(
             (Method::GET, ["sources", id]) => handle.source_info(id).await,
             (Method::POST, ["sources", "acquisitions"]) => {
                 handle.source_acquire(input(request).await?).await
+            }
+            (Method::POST, ["sources", "captures"]) => {
+                handle.source_capture(input(request).await?).await
             }
             (Method::POST, ["sources", "inspect"]) => {
                 #[derive(Deserialize)]
@@ -3548,3 +3653,7 @@ mod source_tests;
 #[cfg(test)]
 #[path = "service_project_git_tests.rs"]
 mod project_git_tests;
+
+#[cfg(test)]
+#[path = "service_node_install_tests.rs"]
+mod node_install_tests;

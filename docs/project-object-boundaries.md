@@ -20,6 +20,8 @@
 
 `build.state: platform-build` 只表示安全的源码目录及 `package.json`、`package-lock.json` 材料存在，可交给现有构建入口；不证明脚本、锁文件、依赖、工具环境或最终构建成功。缺材料时报告 `unavailable`，已有运行文件仍按原运行校验使用。Node 暂无平台构建入口，报告 `unavailable`。
 
+2026-10-22 新增[受管 Node 安装](node-managed-installation.md)：v2 登记指向固定数据根内 `generations/<代次>` 的独立程序，`runtime.external` 为 false；原 v1 外部目录登记保持不变。受管程序不是开发源码，`source` 仍标未核实且路径为空，构建能力不伪造为可用。新安装和更新保留来源摘要，不把安装副本当成 Git 仓库。
+
 ## Git 根和数据保存规则
 
 当前报告只浅查项目根、声明源码目录及父目录的 `.git` 标记，不执行 Git、不读取配置、私钥或标记文件内容。目录／普通文件／不安全标记分别呈现；普通文件可能是 worktree 或 submodule 指向，存在标记不证明有效仓库、干净状态或任何数据已受跟踪。多标记全部保留，不自动选根；路径不安全和读取错误单列，不能当作“没有 Git”。诊断失败不改变原有运行状态。

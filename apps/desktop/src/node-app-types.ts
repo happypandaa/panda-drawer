@@ -22,6 +22,7 @@ export interface NodeAppDetail {
   name: string;
   sourcePath: string;
   objectLayout?: ObjectLayout | null;
+  installation?: { kind: 'managed'; generation: string; sourceId: string; sourceDigest: string } | null;
   runtime: 'node-service';
   window?: { width: number; height: number; rememberSize?: boolean } | null;
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';

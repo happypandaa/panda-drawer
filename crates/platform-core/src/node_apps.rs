@@ -3,6 +3,7 @@
 
 use crate::{
     node_app_configuration::{LocalFileVault, NodeConfigurationStore, SaveConfigurationRequest},
+    node_app_install::{self, InstallTargetSnapshot, ManagedNodeRegistration},
     node_app_manifest::{TrialManifest, TrialRuntime},
     node_app_proxy::NodeAppProxy,
     node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, TrialStatus},
@@ -32,11 +33,28 @@ fn clean_shutdown(status: &TrialStatus) -> bool {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Registration {
+struct ExternalRegistration {
     version: u32,
     id: String,
     source_path: PathBuf,
     manifest_digest: String,
+}
+
+struct Registration {
+    id: String,
+    source_path: PathBuf,
+    manifest_digest: String,
+    managed: Option<ManagedNodeRegistration>,
+}
+impl From<ExternalRegistration> for Registration {
+    fn from(record: ExternalRegistration) -> Self {
+        Self {
+            id: record.id,
+            source_path: record.source_path,
+            manifest_digest: record.manifest_digest,
+            managed: None,
+        }
+    }
 }
 
 struct Running {
@@ -123,8 +141,26 @@ impl NodeApps {
             if !path.try_exists()? {
                 continue;
             }
-            let record: Registration = serde_json::from_slice(&read_small(&path)?)?;
-            if record.version != 1 || record.id != name {
+            let bytes = read_small(&path)?;
+            let version = serde_json::from_slice::<Value>(&bytes)?["version"].as_u64();
+            let record = match version {
+                Some(1) => {
+                    let record: ExternalRegistration = serde_json::from_slice(&bytes)?;
+                    Registration::from(record)
+                }
+                Some(2) => {
+                    let record: ManagedNodeRegistration = serde_json::from_slice(&bytes)?;
+                    let source_path = node_app_install::managed_program_path(&self.root, &record)?;
+                    Registration {
+                        id: record.id.clone(),
+                        source_path,
+                        manifest_digest: record.manifest_digest.clone(),
+                        managed: Some(record),
+                    }
+                }
+                _ => return Err(fail("Node 应用登记版本无效，请保留现场。")),
+            };
+            if record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
             }
             result.push(record);
@@ -144,7 +180,20 @@ impl NodeApps {
     }
 
     fn manifest(&self, record: &Registration) -> Result<TrialManifest> {
-        let manifest = self.load_source(&record.source_path)?;
+        let manifest = if let Some(managed) = &record.managed {
+            let program = node_app_install::verify_managed_program(&self.root, managed)?;
+            let manifest =
+                TrialManifest::load(&program).map_err(|error| fail(error.to_string()))?;
+            if manifest.runtime != TrialRuntime::NodeService {
+                return Err(fail("受管安装必须为 Node 服务应用。"));
+            }
+            manifest
+                .inspect(&program)
+                .map_err(|error| fail(error.to_string()))?;
+            manifest
+        } else {
+            self.load_source(&record.source_path)?
+        };
         if digest_manifest(&record.source_path)? != record.manifest_digest {
             return Err(fail(
                 "应用说明文件已更改，当前已暂停启动。请保留原配置和源码以便核对；此版本尚未提供声明更新入口。",
@@ -198,9 +247,20 @@ impl NodeApps {
         } else {
             "stopped"
         };
+        let mut object_layout = crate::object_layout::node_layout(
+            &record.source_path,
+            &self.root.join(&record.id),
+            Some(manifest),
+        );
+        if record.managed.is_some() {
+            object_layout["source"] = json!({"state":"unverified","path":null,"reason":"当前程序是平台独立安装的运行副本；来源候选记录另行保留，不将该副本视为已确认的开发源码。"});
+            object_layout["runtime"]["external"] = json!(false);
+            object_layout["build"] = json!({"state":"unavailable","reason":"此程序由独立安装候选准备；打开应用不会安装依赖，普通更新须重新准备并核验候选。"});
+        }
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
-            "objectLayout":crate::object_layout::node_layout(&record.source_path, &self.root.join(&record.id), Some(manifest)),
+            "objectLayout":object_layout,
+            "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
@@ -225,7 +285,7 @@ impl NodeApps {
             private_dir(&slot.join(name))?;
         }
         let manifest_digest = digest_manifest(&source)?;
-        let record = Registration {
+        let record = ExternalRegistration {
             version: 1,
             id,
             source_path: source,
@@ -233,7 +293,122 @@ impl NodeApps {
         };
         // The digest is computed from the explicit source, not a cached declaration.
         write_new_json(&slot.join("registration.json"), &record)?;
-        self.detail(&record, &manifest, &inner)
+        self.detail(&record.into(), &manifest, &inner)
+    }
+
+    /// Preparation reads only this public snapshot. It never obtains credential
+    /// values or starts a runtime, and cannot adopt an external registration.
+    pub(crate) async fn install_target_snapshot(
+        &self,
+        id: Option<&str>,
+    ) -> Result<InstallTargetSnapshot> {
+        let inner = self.inner.lock().await;
+        if inner.shutting_down {
+            return Err(fail("平台正在关闭，不能准备安装。"));
+        }
+        id.map_or_else(
+            || Ok(InstallTargetSnapshot::fresh()),
+            |id| self.install_target_locked(id, &inner),
+        )
+    }
+
+    fn require_install_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
+        if inner.shutting_down || inner.running.contains_key(id) {
+            return Err(ApiError::new(
+                "NODE_INSTALL_BUSY",
+                "请先正常关闭应用，待运行进程完成收尾后再更新。",
+            ));
+        }
+        let marker = self.root.join(id).join("active.json");
+        crate::projects::check_no_symlinks(&marker, true)?;
+        if marker.try_exists()? {
+            return Err(ApiError::new(
+                "NODE_INSTALL_BUSY",
+                "运行记录尚未完成收尾，不能更新；请保留现场。",
+            ));
+        }
+        Ok(())
+    }
+
+    fn install_target_locked(&self, id: &str, inner: &Inner) -> Result<InstallTargetSnapshot> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("应用实例标识无效。"));
+        }
+        self.require_install_stopped(id, inner)?;
+        let record = self.registration(id)?;
+        let managed = record.managed.as_ref().ok_or_else(|| {
+            fail("外部登记应用不能原地转为受管安装，请保留现有应用并新建安装实例。")
+        })?;
+        let manifest = self.manifest(&record)?;
+        let revision = self
+            .store(id)?
+            .view(&manifest)
+            .map_err(|error| fail(error.to_string()))?
+            .revision;
+        Ok(InstallTargetSnapshot {
+            app_id: id.into(),
+            registration_digest: node_app_install::registration_digest(&self.root.join(id))?,
+            generation: Some(managed.generation.clone()),
+            manifest: Some(serde_json::from_slice(&read_small(
+                &record.source_path.join("local-app.json"),
+            )?)?),
+            configuration_revision: revision,
+        })
+    }
+
+    /// Native callers hold the window-operation lock outside this method. All
+    /// NodeApps start/restart/save/register calls share `inner`, so the fresh
+    /// snapshot/configuration check and pointer publication cannot interleave.
+    /// The closure must be synchronous, publish only the prepared candidate,
+    /// and report its actual commit outcome even if final bookkeeping fails.
+    pub(crate) async fn with_install_commit<T>(
+        &self,
+        expected: &InstallTargetSnapshot,
+        candidate_manifest: &Value,
+        commit: impl FnOnce(&InstallTargetSnapshot) -> Result<T>,
+    ) -> Result<T> {
+        expected.validate()?;
+        let mut inner = self.inner.lock().await;
+        self.require_install_stopped(&expected.app_id, &inner)?;
+        let fresh = if expected.registration_digest.is_some() {
+            self.install_target_locked(&expected.app_id, &inner)?
+        } else {
+            let slot = self.root.join(&expected.app_id);
+            crate::projects::check_no_symlinks(&slot, true)?;
+            if slot.try_exists()? {
+                return Err(fail("新安装目标目录已存在，请保留现场并重新准备。"));
+            }
+            expected.clone()
+        };
+        if fresh != *expected {
+            return Err(ApiError::new(
+                "NODE_INSTALL_CHANGED",
+                "应用或配置已变化，请重新准备安装候选。",
+            ));
+        }
+        node_app_install::compatible(expected, candidate_manifest)?;
+        let manifest = TrialManifest::parse(&serde_json::to_vec(candidate_manifest)?)
+            .map_err(|error| fail(error.to_string()))?;
+        if manifest.runtime != TrialRuntime::NodeService {
+            return Err(fail("受管安装只支持 Node 服务应用。"));
+        }
+        if expected.registration_digest.is_some() {
+            // view checks bindings by metadata only. Missing required values do
+            // not prevent a code update; only explicit start may read secrets.
+            let view = self
+                .store(&expected.app_id)?
+                .view(&manifest)
+                .map_err(|error| fail(error.to_string()))?;
+            if view.revision != expected.configuration_revision {
+                return Err(ApiError::new(
+                    "NODE_INSTALL_CHANGED",
+                    "配置已变化，请重新准备。",
+                ));
+            }
+        }
+        let result = commit(&fresh)?;
+        inner.errors.remove(&expected.app_id);
+        Ok(result)
     }
 
     pub async fn list(&self) -> Result<Vec<Value>> {
@@ -251,6 +426,7 @@ impl NodeApps {
             .unwrap_or_else(|error|json!({
                 "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                 "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
+                "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
                 "objectLayout":null,
                 "restartRequired":false,"runningRevision":null,"lastError":error.message,
                 "configuration":{"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]
@@ -659,3 +835,7 @@ fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 #[path = "node_apps_lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "node_apps_install_tests.rs"]
+mod install_tests;

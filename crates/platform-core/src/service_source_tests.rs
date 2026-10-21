@@ -1,6 +1,98 @@
 use super::*;
 
 #[tokio::test]
+async fn local_capture_is_explicit_authenticated_and_preserves_author_files() {
+    let (temp, _paths, service, client) = tests::start().await;
+    let state = service.handle().current();
+    let root = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-capture-http");
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    std::fs::write(root.join("README.md"), "disposable source\n").unwrap();
+    std::fs::write(root.join(".env"), "ARTIFICIAL_SECRET=do-not-copy\n").unwrap();
+    std::fs::write(
+        root.join("data/business.sqlite"),
+        "disposable data marker\n",
+    )
+    .unwrap();
+    let endpoint = format!("{}/api/v1/sources/captures", service.info().base_url);
+    let body = json!({"sourcePath":root,"name":"Disposable capture HTTP"});
+    assert_eq!(
+        client
+            .post(&endpoint)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = client
+        .post(&endpoint)
+        .bearer_auth(&state.token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let response: Value = response.json().await.unwrap();
+    let task_id = response["data"]["taskId"].as_str().unwrap();
+    let final_task = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let task = state.builds.task(task_id).unwrap();
+            if task.status.is_final() {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        final_task.status,
+        crate::TaskStatus::Succeeded,
+        "{final_task:?}"
+    );
+    let list = service.handle().source_list().await.unwrap();
+    assert_eq!(list[0]["provider"], "local");
+    assert!(list[0]["commit"].is_null());
+    let copy = PathBuf::from(list[0]["sourcePath"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read(copy.join("README.md")).unwrap(),
+        b"disposable source\n"
+    );
+    assert!(!copy.join(".env").exists());
+    assert!(!copy.join("data").exists());
+    assert_eq!(
+        std::fs::read(root.join(".env")).unwrap(),
+        b"ARTIFICIAL_SECRET=do-not-copy\n"
+    );
+    assert_eq!(
+        std::fs::read(root.join("data/business.sqlite")).unwrap(),
+        b"disposable data marker\n"
+    );
+    assert!(service.store().list().await.unwrap().is_empty());
+    // Node installation has no HTTP endpoint that could bypass native window ownership.
+    assert_eq!(
+        client
+            .post(format!(
+                "{}/api/v1/node-install/apply",
+                service.info().base_url
+            ))
+            .bearer_auth(&state.token)
+            .json(&json!({"candidateId":"invalid"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn source_routes_require_manager_auth_and_reject_unsupported_urls_without_tasks() {
     let (_temp, paths, service, client) = tests::start().await;
     let state = service.handle().current();

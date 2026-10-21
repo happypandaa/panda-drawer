@@ -466,7 +466,7 @@ function App() {
         </div>
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
-            {showSources && <SourceAcquisitionPanel onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
+            {showSources && <SourceAcquisitionPanel instanceId={info?.instanceId} onInstalled={() => void refresh()} onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
             {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
               {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
@@ -511,7 +511,7 @@ function App() {
         <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} onCreate={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (settingsBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
         <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
       </Modal>}
-        <NodeAppsPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
+        <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>

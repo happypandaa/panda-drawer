@@ -910,6 +910,72 @@ async fn source_cancel(
     state.handle.source_cancel(&task_id).await
 }
 
+#[tauri::command]
+async fn source_capture(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::source_acquisition::CaptureLocalSourceInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_capture(input).await
+}
+#[tauri::command]
+async fn node_install_prepare(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::node_install_tasks::PrepareNodeInstallInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .node_install_prepare(state.node_apps.clone(), input)
+        .await
+}
+#[tauri::command]
+async fn node_install_candidate(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    candidate_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.node_install_candidate(&candidate_id)
+}
+#[tauri::command]
+async fn node_install_issues(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    Ok(state.handle.node_install_issues())
+}
+#[tauri::command]
+async fn node_install_list(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.node_install_list()
+}
+#[tauri::command]
+async fn node_install_cancel(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.node_install_cancel(&task_id)
+}
+#[tauri::command]
+async fn node_install_apply(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    candidate_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::apply_install(&app, &state, &candidate_id).await
+}
+
 // These commands deliberately belong only to the native manager. Node pages
 // receive neither this command surface nor the private backend credentials.
 #[tauri::command]
@@ -1390,6 +1456,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap_info,
             source_list,source_info,source_inspect,source_acquire,source_cancel,
+            source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_initialize,project_git_save,project_git_cancel,
             node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,

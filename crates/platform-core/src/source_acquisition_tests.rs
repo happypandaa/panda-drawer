@@ -378,6 +378,9 @@ async fn restart_marks_unfinished_source_and_retains_evidence_without_project_re
         phase: "downloading".into(),
         url: "https://github.com/example/disposable.git".into(),
         provider: "github".into(),
+        local_source_path: None,
+        capture_policy: None,
+        excluded_paths: Vec::new(),
         created_at: 1,
         completed_at: None,
         repository: "repository".into(),
@@ -661,4 +664,383 @@ fn tree_limits_include_file_count_total_bytes_and_hfs_git_aliases() {
         "SOURCE_LIMIT_EXCEEDED"
     );
     assert!(parse_tree(&row("100644", ".g\u{200c}it/config", 1)).is_err());
+}
+
+fn capture_control(root: &Path) -> (watch::Sender<bool>, watch::Sender<bool>, RunControl) {
+    let (stop, stop_rx) = watch::channel(false);
+    let (cancel, cancel_rx) = watch::channel(false);
+    (
+        stop,
+        cancel,
+        RunControl {
+            stop: stop_rx,
+            cancel: cancel_rx,
+            deadline: Instant::now() + TIMEOUT,
+            monitor: root.to_path_buf(),
+        },
+    )
+}
+fn disposable_node_source(root: &Path, web: &str) {
+    fs::create_dir_all(root.join(web)).unwrap();
+    fs::create_dir(root.join("server")).unwrap();
+    fs::write(
+        root.join(web).join("index.html"),
+        "<!doctype html><title>Disposable capture</title>",
+    )
+    .unwrap();
+    fs::write(
+        root.join("server/main.mjs"),
+        "throw new Error('source must not execute');",
+    )
+    .unwrap();
+    fs::write(root.join("package.json"), br#"{"name":"disposable-local-source","version":"1.0.0","scripts":{"postinstall":"touch must-not-execute"}}"#).unwrap();
+    fs::write(root.join("package-lock.json"), br#"{"lockfileVersion":3,"packages":{"":{"name":"disposable-local-source","version":"1.0.0"}}}"#).unwrap();
+    fs::write(root.join("local-app.json"),serde_json::to_vec(&json!({"packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service","app":{"id":"org.example.disposable","name":"Disposable local source","version":"1.0.0"},"web":{"root":web,"entry":"index.html","routing":"files"},"backend":{"root":"server","entry":"main.mjs","protocolVersion":1,"nodeMajor":24}})).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn local_capture_preserves_public_source_reports_exclusions_and_never_executes_or_registers()
+{
+    let (_temp, paths, store, tasks, manager) = fixture();
+    let original = sample();
+    let root = original.path().canonicalize().unwrap();
+    disposable_node_source(&root, "public");
+    let forbidden = paths.data_root().join("capture-must-not-run-git");
+    fake_git(&paths, &format!("touch '{}'\nexit 1", forbidden.display()));
+    for name in [
+        ".git",
+        ".platform",
+        "node_modules",
+        "data",
+        "credentials",
+        "secrets",
+        "tokens",
+        ".env",
+        "private.key",
+        "business.sqlite",
+        "business.sqlite-wal",
+        "business.db-shm",
+    ] {
+        symlink("/nonexistent-must-not-be-opened", root.join(name)).unwrap();
+    }
+    let (stop, _) = watch::channel(false);
+    let task = manager
+        .capture(
+            CaptureLocalSourceInput {
+                source_path: root.clone(),
+                name: Some("Disposable copied Node source".into()),
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.task_type, "sourceCapture");
+    let result = final_task(&tasks, &task.task_id).await;
+    assert_eq!(result.status, crate::TaskStatus::Succeeded, "{result:?}");
+    let candidate = manager.list().unwrap().pop().unwrap();
+    assert_eq!(candidate.provider, "local");
+    assert_eq!(candidate.url, "");
+    assert!(!candidate.shallow);
+    assert!(candidate.git.is_none() && candidate.commit.is_none());
+    assert_eq!(candidate.local_source_path, Some(root.clone()));
+    assert_eq!(candidate.capture_policy.as_deref(), Some(CAPTURE_POLICY));
+    assert!(candidate
+        .capture_notice
+        .unwrap()
+        .contains("未知文件中的秘密无法通用识别"));
+    assert_eq!(candidate.inspection.unwrap().kind, "node-service-source");
+    assert_eq!(candidate.execution_state, "not-executed");
+    assert!(!candidate.registration_available);
+    let copied = candidate.source_path.unwrap();
+    assert!(copied.join("public/index.html").is_file());
+    assert_eq!(
+        fs::read(copied.join("server/main.mjs")).unwrap(),
+        fs::read(root.join("server/main.mjs")).unwrap()
+    );
+    for name in [".git", "data", ".env", "private.key", "business.sqlite"] {
+        assert!(candidate.excluded_paths.contains(&name.to_owned()));
+        assert!(!copied.join(name).exists());
+        assert!(fs::symlink_metadata(root.join(name))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+    assert!(!forbidden.exists());
+    assert!(!root.join("must-not-execute").exists());
+    assert!(!copied.join("must-not-execute").exists());
+    assert_eq!(
+        directory_digest(&copied).unwrap(),
+        candidate.content_digest.unwrap()
+    );
+    assert!(store.list().await.unwrap().is_empty());
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[tokio::test]
+async fn local_ready_verification_requires_exact_source_task_lease_and_rechecks_bytes_and_modes() {
+    let (_temp, _paths, store, tasks, manager) = fixture();
+    let source = sample();
+    let source = source.path().canonicalize().unwrap();
+    fs::write(
+        source.join("README.md"),
+        "ordinary source requiring adaptation",
+    )
+    .unwrap();
+    let (stop, _) = watch::channel(false);
+    let task = manager
+        .capture(
+            CaptureLocalSourceInput {
+                source_path: source,
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        final_task(&tasks, &task.task_id).await.status,
+        crate::TaskStatus::Succeeded
+    );
+    let candidate = manager.list().unwrap().pop().unwrap();
+    let digest = candidate.content_digest.clone().unwrap();
+    assert_eq!(
+        manager
+            .verify_ready_leased(&candidate.source_id, &digest, "missing")
+            .unwrap_err()
+            .code,
+        "SOURCE_LEASE_REQUIRED"
+    );
+    let owner = tasks
+        .create_workspace_operation("nodeInstallPrepare")
+        .unwrap();
+    let lease = store
+        .reserve_task(&format!("source:{}", candidate.source_id), &owner.task_id)
+        .unwrap();
+    assert_eq!(
+        manager
+            .verify_ready_leased(&candidate.source_id, &digest, "different")
+            .unwrap_err()
+            .code,
+        "SOURCE_LEASE_REQUIRED"
+    );
+    store.begin_workspace_migration().unwrap();
+    assert!(
+        manager
+            .verify_ready_leased(&candidate.source_id, &digest, &owner.task_id)
+            .is_ok(),
+        "an already-leased operation can finish before migration"
+    );
+    assert_eq!(
+        manager
+            .verify_ready(&candidate.source_id, &digest)
+            .unwrap_err()
+            .code,
+        "WORKSPACE_MIGRATING"
+    );
+    store.resume_workspace();
+    let file = candidate.source_path.unwrap().join("README.md");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        manager
+            .verify_ready_leased(&candidate.source_id, &digest, &owner.task_id)
+            .unwrap_err()
+            .code,
+        "SOURCE_CHANGED"
+    );
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&file, "changed source").unwrap();
+    assert_eq!(
+        manager
+            .verify_ready_leased(&candidate.source_id, &digest, &owner.task_id)
+            .unwrap_err()
+            .code,
+        "SOURCE_CHANGED"
+    );
+    drop(lease);
+    tasks.finish(&owner.task_id, Ok(json!({}))).unwrap();
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[test]
+fn local_capture_rejects_data_roots_links_hardlinks_and_cross_root_dependencies() {
+    let (_temp, paths) = RuntimePaths::for_test();
+    for root in [paths.data_root(), paths.data_root().parent().unwrap()] {
+        assert!(validate_local_root(root, &paths).is_err());
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        assert!(validate_local_root(Path::new(&home), &paths).is_err());
+    }
+    assert!(validate_local_root(Path::new("relative"), &paths).is_err());
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    let (_stop, _cancel, control) = capture_control(&root);
+    symlink("/no-follow", root.join("source.js")).unwrap();
+    assert!(local_plan(&root, &control).is_err());
+    fs::remove_file(root.join("source.js")).unwrap();
+    fs::write(root.join("source.js"), "ordinary").unwrap();
+    fs::hard_link(root.join("source.js"), root.join("alias.js")).unwrap();
+    assert!(local_plan(&root, &control).is_err());
+    fs::remove_file(root.join("alias.js")).unwrap();
+    for value in [
+        json!({"dependencies":{"unsafe":"file:../outside"}}),
+        json!({"overrides":{"nested":{"unsafe":"file:../../outside"}}}),
+        json!({"packages":{"node_modules/p":{"link":true,"resolved":"../outside"}}}),
+        json!({"dependencies":{"unsafe":{"version":"file:%2e%2e/outside"}}}),
+        json!({"workspaces":["../outside/*"]}),
+    ] {
+        fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let plan = local_plan(&root, &control).unwrap();
+        assert!(
+            validate_local_dependencies(&root, &plan, &control).is_err(),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn local_capture_internal_files_and_workspaces_are_bounded_to_copied_material() {
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("packages/inner")).unwrap();
+    fs::create_dir(root.join("vendor")).unwrap();
+    fs::write(root.join("vendor/sdk.tgz"), "disposable archive bytes").unwrap();
+    fs::write(
+        root.join("package.json"),
+        br#"{"workspaces":["packages/*"]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("packages/inner/package.json"),
+        br#"{"dependencies":{"sdk":"file:../../vendor/sdk.tgz"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("package-lock.json"),
+        br#"{"packages":{"node_modules/inner":{"link":true,"resolved":"packages/inner"}}}"#,
+    )
+    .unwrap();
+    let (_stop, _cancel, control) = capture_control(&root);
+    let plan = local_plan(&root, &control).unwrap();
+    assert!(validate_local_dependencies(&root, &plan, &control)
+        .unwrap()
+        .is_empty());
+    fs::write(
+        root.join("packages/inner/package.json"),
+        br#"{"dependencies":{"unsafe":"file:../../data/excluded.tgz"}}"#,
+    )
+    .unwrap();
+    let plan = local_plan(&root, &control).unwrap();
+    assert!(validate_local_dependencies(&root, &plan, &control).is_err());
+}
+
+#[tokio::test]
+async fn local_capture_reports_config_adaptation_and_keeps_declared_node_web_dist() {
+    let (_temp, _paths, store, tasks, manager) = fixture();
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    disposable_node_source(&root, "dist");
+    fs::create_dir(root.join("config")).unwrap();
+    fs::write(
+        root.join("config/settings.js"),
+        "this is code but must be reviewed after exclusion",
+    )
+    .unwrap();
+    let (stop, _) = watch::channel(false);
+    let task = manager
+        .capture(
+            CaptureLocalSourceInput {
+                source_path: root,
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        final_task(&tasks, &task.task_id).await.status,
+        crate::TaskStatus::Succeeded
+    );
+    let candidate = manager.list().unwrap().pop().unwrap();
+    assert!(candidate
+        .source_path
+        .unwrap()
+        .join("dist/index.html")
+        .is_file());
+    assert!(candidate.excluded_paths.contains(&"config".to_owned()));
+    assert_eq!(candidate.inspection.unwrap().kind, "needs-adaptation");
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[test]
+fn local_copy_detects_source_edits_and_stops_before_publication() {
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    let candidate = sample();
+    let candidate = candidate.path().canonicalize().unwrap();
+    fs::write(root.join("source.js"), "before").unwrap();
+    let (_stop, cancel, control) = capture_control(&candidate);
+    let plan = local_plan(&root, &control).unwrap();
+    fs::write(root.join("source.js"), "after").unwrap();
+    assert_eq!(
+        capture_plan(&root, &candidate, plan, &control)
+            .err()
+            .unwrap()
+            .code,
+        "SOURCE_CHANGED"
+    );
+    assert_eq!(fs::read(root.join("source.js")).unwrap(), b"after");
+    let plan = local_plan(&root, &control).unwrap();
+    cancel.send(true).unwrap();
+    assert_eq!(
+        capture_plan(&root, &candidate, plan, &control)
+            .err()
+            .unwrap()
+            .code,
+        "SOURCE_ACQUISITION_CANCELLED"
+    );
+}
+
+#[test]
+fn local_capture_excludes_declared_project_output_and_bounds_metadata_issues() {
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    fs::write(
+        root.join("project.json"),
+        br#"{"outputDir":"generated-web"}"#,
+    )
+    .unwrap();
+    for excluded in ["generated-web", "attachments", "session-wal", "session-shm"] {
+        // These nonexistent targets prove exclusion uses only the entry name.
+        symlink(
+            "/disposable-target-that-must-not-be-read",
+            root.join(excluded),
+        )
+        .unwrap();
+    }
+    fs::create_dir(root.join("public")).unwrap();
+    fs::write(root.join("public/index.html"), "runtime material").unwrap();
+    for directory in ["one", "two"] {
+        fs::create_dir(root.join(directory)).unwrap();
+        fs::write(root.join(directory).join("package.json"), "invalid json").unwrap();
+    }
+    let (_stop, _cancel, control) = capture_control(&root);
+    let plan = local_plan(&root, &control).unwrap();
+    assert_eq!(plan.excluded.len(), 4);
+    assert!(plan.files.contains_key("public/index.html"));
+    assert_eq!(
+        validate_local_dependencies(&root, &plan, &control)
+            .unwrap()
+            .len(),
+        1
+    );
 }

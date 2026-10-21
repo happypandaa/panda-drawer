@@ -387,8 +387,17 @@ impl BuildManager {
             .records
             .get_mut(id)
             .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task not found"))?;
-        record.status = TaskStatus::Failed;
-        record.phase = "failed".into();
+        record.status = if error.code == "NODE_INSTALL_INTERRUPTED" {
+            TaskStatus::Interrupted
+        } else {
+            TaskStatus::Failed
+        };
+        record.phase = if record.status == TaskStatus::Interrupted {
+            "interrupted"
+        } else {
+            "failed"
+        }
+        .into();
         record.result = Some(result);
         record.error = Some(error);
         atomic_json(&self.task_dir(id).join("task.json"), record)
@@ -519,7 +528,10 @@ impl BuildManager {
             Err(error) => {
                 record.status = if matches!(
                     error.code.as_str(),
-                    "BUILD_INTERRUPTED" | "SOURCE_ACQUISITION_INTERRUPTED" | "PROJECT_GIT_INTERRUPTED"
+                    "BUILD_INTERRUPTED"
+                        | "SOURCE_ACQUISITION_INTERRUPTED"
+                        | "PROJECT_GIT_INTERRUPTED"
+                        | "NODE_INSTALL_INTERRUPTED"
                 ) {
                     TaskStatus::Interrupted
                 } else {

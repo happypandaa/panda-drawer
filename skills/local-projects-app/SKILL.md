@@ -177,7 +177,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 需要检查指定公开仓库时，明确执行 `env git check --url https://github.com/owner/repository.git --json`；也支持标准 Gitee HTTPS 仓库地址。检查在 20 秒执行预算内匿名读取 HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果绑定该地址与本次时间，不改变 `doctor` 的认证未验证状态；`readable-no-head` 不表示仓库为空。不要把远端检查加入普通离线工具诊断，不将其扩为 SSH／私有仓库认证、仓库获取或完整路线已交付。
 
-实际源码获取使用 `source acquire --url https://github.com/owner/repository.git --json`（也支持 Gitee），返回异步任务；`task wait --task TASK_ID --json` 等待最终结果。`source list --json`、`source get --source SOURCE_ID --json` 查看下载来源、精确提交和候选目录；`source inspect --path /绝对路径 --json` 仅检查本机声明。`source cancel --task TASK_ID --json` 只是请求取消，继续核对最终状态。下载不安装／运行代码，不创建业务项目；失败和中断现场保留，重试是新目录。源码需适配或安装后才能使用，完整安装与私有认证仍未开放，不以候选ID调用数据库。
+实际源码获取使用 `source acquire --url https://github.com/owner/repository.git --json`（也支持 Gitee），返回异步任务；`task wait --task TASK_ID --json` 等待最终结果。`source list --json`、`source get --source SOURCE_ID --json` 查看下载来源、精确提交和候选目录；`source inspect --path /绝对路径 --json` 仅检查本机声明。明确接入本机源码副本用 `source capture --path /绝对路径 [--name 名称] --json`：按路径排除已知数据、凭据、依赖、Git 控制与本机状态，不能通用识别任意文件中的秘密。`source cancel --task TASK_ID --json` 只是请求取消，继续核对最终状态。下载／复制不安装或运行代码，不创建业务项目；失败和中断现场保留，重试是新目录。Node 受管安装和更新另在原生管理窗口准备并确认，没有 Node 安装 HTTP／CLI 提交入口；通用应用包和私有认证仍未开放，不以候选ID调用数据库。
 
 明确保存 project-v1 源码时，先用 `project git status --project PROJECT_ID --json` 检查范围、排除项、改动和问题；只支持项目根普通标准仓库，已有 app 子仓库／父仓库不自动搬迁。若 `canInitialize:true`，明确执行 `project git init --project PROJECT_ID --input FILE --json`，输入含最新 `expectedSnapshot` 和 `initialBranch:"main"`，等待最终成功后重新读取状态。
 

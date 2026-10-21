@@ -8,15 +8,17 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 最新取舍为**仅保留项目 Git 版本管理，退役独立本地备份体系**，也取消另建私有 Git 恢复仓库的建议。[原备份精简评估](docs/git-backup-simplification-review.md)保留为历史盘点；数据库提交方向保留，`dist` 是否提交待评估。完整备份、恢复、复制与回收不再统一作为新类型安装前置，正常持久化、必要停写和失败保留当前实例仍须完成。现有旧功能尚未改造，本轮未删除运行代码或旧资料。
 
+本轮新增[Node 源码副本、安装与更新](docs/node-managed-installation.md)：获取或接入源码后，先准备独立运行材料，再确认安装；同实例更新保留数据和配置。旧外部目录登记保持不变，实际原生通过范围持续登记在[三场景记录](docs/three-scenario-verification.md)。
+
 文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
 
 应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；应用运行使用固定私有 Node，不在登记或启动时安装依赖。本轮 Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建，保留明确选择兼容本机环境的入口；构建选择不影响应用运行 Node。执行摘要随项目 skill 的同一份环境／窗口约束分发。
 
-第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 仅接入现有 project-v1 构建；另有私有 Git 2.56.0 的选择与诊断，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查。系统 SSH 只检查版本，认证与仓库获取／版本 API、候选依赖隔离尚未实现。不把这些子步视为技术计划第 2 项或第 6 项整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
+第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 已接 project-v1 候选构建和 Node 安装依赖准备；私有 Git 2.56.0 提供选择与诊断、公开 GitHub/Gitee HTTPS HEAD 检查与源码获取，以及本机源码保存。系统 SSH 只检查版本，私有认证、分支取回与数据库版本尚未实现。不把这些子步视为技术计划整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
 
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 
-PWA 已确认不强制、作为可选增强。[外部应用包原实施规划](docs/app-package-implementation-plan.md)的 AP0–AP6 编号保留；其中完整备份、恢复及强制安装前置已被最新技术计划取代。获取检测、独立数据、程序提交和实际运行仍需完成，尚未开始安装实现，也不改变 M0–M6 或 Windows 的完成状态。
+PWA 已确认不强制、作为可选增强。[外部应用包原实施规划](docs/app-package-implementation-plan.md)的 AP0–AP6 编号保留；其中完整备份、恢复及强制安装前置已被最新技术计划取代。获取检测和 Node 源码安装按本轮独立子步推进，不等于通用外部包交付，也不改变 M0–M6 或 Windows 的完成状态。
 
 [应用文档分工](docs/application-documentation.md)区分用户的使用/配置说明与 AI 的技术/架构/开发说明，复用 `documentation.readme` 和 `documentation.development`，并提供两份独立 Markdown 示例；展示仍待实现，正文预算和强制携带策略待定。
 

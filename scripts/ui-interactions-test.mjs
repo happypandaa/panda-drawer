@@ -141,6 +141,175 @@ test('Local source inspection only requests declarations and never registers or 
   assert.deepEqual(calls.map(([command]) => command), ['source_list', 'choose_path', 'source_inspect']);
 });
 
+test('Local source capture is a separate explicit action and its pending request blocks closing', async () => {
+  await setup(); const accepted = deferred(); const captures = []; let closed = 0;
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    if (command === 'source_list') return [];
+    if (command === 'choose_path') return '/disposable/local-source';
+    if (command === 'source_inspect') return { sourcePath: args.sourcePath, inspection: { kind: 'needs-adaptation', issues: [], executionState: 'not-executed' } };
+    assert.equal(command, 'source_capture'); captures.push(args); return accepted.promise;
+  };
+  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() { closed++; } }));
+  await click(buttonNamed('检查本机源码目录')); assert.equal(captures.length, 0);
+  await click(buttonNamed('接入此目录的源码副本')); await click(buttonNamed('接入此目录的源码副本')); await key('Escape');
+  assert.equal(closed, 0); assert.deepEqual(captures, [{ input: { sourcePath: '/disposable/local-source' } }]);
+  await act(async () => accepted.reject(new Error('Capture failed; source unchanged')));
+  assert.match(dialog().textContent, /Capture failed; source unchanged/);
+  assert.match(dialog().textContent, /disposable\/local-source/);
+  assert.equal(buttonNamed('接入此目录的源码副本').disabled, false);
+});
+
+test('Source instance changes preserve input drafts, reread records and discard an older list', async () => {
+  await setup(); const older = deferred(); let reads = 0;
+  const candidate = name => ({ sourceId: name, taskId: `task_${name}`, name, status: 'ready', url: '', evidencePath: `/${name}/source` });
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    assert.equal(command, 'source_list'); return ++reads === 1 ? older.promise : [candidate('new-instance')];
+  };
+  const props = { disabled: false, onTask() {}, onClose() {} };
+  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
+  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
+  await inputValue(document.getElementById('source-name'), '未提交的备注');
+  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
+  assert.equal(reads, 2);
+  await act(async () => older.resolve([candidate('old-instance')]));
+  assert.match(dialog().textContent, /new-instance/);
+  assert.doesNotMatch(dialog().textContent, /old-instance/);
+  assert.equal(document.getElementById('source-url').value, 'https://github.com/disposable/draft.git');
+  assert.equal(document.getElementById('source-name').value, '未提交的备注');
+});
+
+test('Source instance changes discard inspected paths, source tasks and installation tasks', async () => {
+  await setup(); const forwarded = []; let reads = 0;
+  const sourceId = `src_${'1'.repeat(32)}`;
+  const candidate = { sourceId, taskId: 'task_source', name: 'old-candidate', status: 'ready', url: '', evidencePath: '/old-evidence', contentDigest: 'a'.repeat(64), inspection: { kind: 'node-service-source', issues: [], executionState: 'not-executed' } };
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    if (command === 'source_list') return ++reads < 3 ? [candidate] : [];
+    if (command === 'choose_path') return '/old-inspected-path';
+    if (command === 'source_inspect') return { sourcePath: args.sourcePath, inspection: candidate.inspection };
+    if (command === 'source_acquire') return { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'failed', final: true, error: { code: 'OLD_SOURCE_ERROR', message: 'old-source-error' } };
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    assert.equal(command, 'node_install_prepare');
+    return { taskId: 'task_install', type: 'nodeInstallPrepare', projectId: null, status: 'running', final: false, phase: 'dependencies' };
+  };
+  const props = { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} };
+  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
+  await click(buttonNamed('检查本机源码目录'));
+  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
+  await click(buttonNamed('获取源码'));
+  await click(buttonNamed('查看安装候选与准备安装'));
+  await act(async () => {
+    const select = document.querySelector('.node-install-panel select');
+    Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(select, sourceId);
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+  await click(buttonNamed('准备安装材料'));
+  assert.equal(forwarded.at(-1).type, 'nodeInstallPrepare');
+  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
+  assert.doesNotMatch(dialog().textContent, /old-candidate|old-inspected-path|old-source-error/);
+  assert.equal(document.querySelector('.node-install-panel'), null);
+  await click(buttonNamed('查看安装候选与准备安装'));
+  assert.equal(buttonNamed('取消准备'), undefined);
+  assert.equal(forwarded.length, 2);
+});
+
+for (const delayedCommand of ['choose_path', 'source_inspect', 'source_acquire', 'source_capture', 'source_cancel']) {
+  test(`Source instance changes ignore a late ${delayedCommand} response`, async () => {
+    await setup(); const delayed = deferred(); const calls = []; const forwarded = [];
+    const task = { taskId: 'task_old_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
+    const inspection = { sourcePath: '/old-inspection', inspection: { kind: 'needs-adaptation', issues: [], executionState: 'not-executed' } };
+    globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+      calls.push([command, args]);
+      if (command === delayedCommand) return delayed.promise;
+      if (command === 'source_list') return [];
+      if (command === 'choose_path') return inspection.sourcePath;
+      if (command === 'source_inspect') return inspection;
+      if (command === 'source_acquire') return task;
+      throw new Error(`Unexpected source fixture request: ${command}`);
+    };
+    const props = { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} };
+    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
+    if (['choose_path', 'source_inspect', 'source_capture'].includes(delayedCommand)) {
+      await click(buttonNamed('检查本机源码目录'));
+      if (delayedCommand === 'source_capture') await click(buttonNamed('接入此目录的源码副本'));
+    } else {
+      await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
+      await click(buttonNamed('获取源码'));
+      if (delayedCommand === 'source_cancel') await click(buttonNamed('取消获取'));
+    }
+    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
+    const requestCount = calls.length; const forwardedCount = forwarded.length;
+    await act(async () => delayed.resolve(delayedCommand === 'choose_path' ? inspection.sourcePath : delayedCommand === 'source_inspect' ? inspection : task));
+    assert.equal(calls.length, requestCount, 'A stale action must not issue follow-up reads or inspection');
+    assert.equal(forwarded.length, forwardedCount, 'A stale task must not reach the new parent instance');
+    assert.doesNotMatch(dialog().textContent, /old-inspection|获取任务已接受|已接受接入任务|已请求取消/);
+    assert.equal(buttonNamed('取消获取'), undefined);
+    assert.equal(buttonNamed('检查本机源码目录').disabled, false);
+  });
+}
+
+test('Source instance changes ignore a late recovered task and a late task poll', async () => {
+  for (const recover of [true, false]) {
+    await setup(); const delayed = deferred(); const forwarded = []; let reads = 0; let polls = 0;
+    const task = { taskId: 'task_old_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
+    globalThis.__UI_TEST_INVOKE__ = async command => {
+      if (command === 'source_list') return ++reads === 1 && recover ? [{ sourceId: 'old-source', taskId: task.taskId, name: 'old-candidate', status: 'acquiring', url: '', evidencePath: '/old-evidence' }] : [];
+      if (command === 'source_acquire') return task;
+      assert.equal(command, 'task_get'); polls++; return delayed.promise;
+    };
+    const props = { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} };
+    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
+    if (!recover) {
+      await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
+      await click(buttonNamed('获取源码'));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
+    }
+    assert.equal(polls, 1);
+    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
+    const forwardedCount = forwarded.length; const readCount = reads;
+    await act(async () => delayed.resolve({ ...task, final: true, status: 'failed', error: { message: 'old-task-failure' } }));
+    assert.equal(forwarded.length, forwardedCount); assert.equal(reads, readCount);
+    assert.doesNotMatch(dialog().textContent, /old-task-failure|old-candidate|old-evidence/);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Source submission refresh is not dropped behind an older list request', async () => {
+  await setup(); const older = deferred(); let reads = 0;
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'source_list') return ++reads === 1 ? older.promise : [{ sourceId: 'new-source', taskId: 'task_source', name: 'fresh-candidate', status: 'ready', url: '', evidencePath: '/fresh-evidence' }];
+    assert.equal(command, 'source_acquire');
+    return { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'succeeded', final: true };
+  };
+  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() {} }));
+  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
+  await click(buttonNamed('获取源码'));
+  assert.equal(reads, 2); assert.match(dialog().textContent, /fresh-candidate/);
+  await act(async () => older.resolve([]));
+  assert.match(dialog().textContent, /fresh-candidate/);
+  assert.equal(buttonNamed('刷新结果').disabled, false);
+});
+
+test('Source cancellation cannot replace a final polled task with an older running acknowledgement', async () => {
+  await setup(); const cancellation = deferred(); const forwarded = [];
+  const task = { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'source_list') return [];
+    if (command === 'source_acquire') return task;
+    if (command === 'source_cancel') return cancellation.promise;
+    assert.equal(command, 'task_get');
+    return { ...task, final: true, status: 'failed', error: { message: 'final-cancellation-result' } };
+  };
+  await render(h(SourceAcquisitionPanel, { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} }));
+  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
+  await click(buttonNamed('获取源码')); await click(buttonNamed('取消获取'));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
+  await act(async () => cancellation.resolve(task));
+  assert.equal(forwarded.at(-1).final, true);
+  assert.match(dialog().textContent, /final-cancellation-result/);
+  assert.equal(buttonNamed('取消获取'), undefined);
+  assert.equal(buttonNamed('获取源码').disabled, false);
+});
+
 test('Modal names itself, focuses its heading, locks the background, and restores focus/scroll/inert state', async () => {
   await setup();
   await render(h(Modal, { title: '项目设置', description: 'Read actual project information', onClose() {} }, h('input', { 'aria-label': 'Name' })));
