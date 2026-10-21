@@ -35,6 +35,9 @@ const LOG_TAIL: usize = 8_000_000;
 const LOG_PAGE: usize = 64_000;
 const DIGEST_RULE: u32 = 1;
 
+#[path = "build_candidate.rs"]
+mod candidate;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildEvent {
@@ -109,12 +112,6 @@ pub struct LogGap {
 #[serde(rename_all = "camelCase")]
 struct LogMeta {
     total: u64,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DependencyRecord {
-    fingerprint: String,
-    installed_lock_digest: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,7 +599,12 @@ impl BuildManager {
         project.check()?;
         let tools = self.environment.resolve().await?;
         self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
-        let source = checked_relative(&project.root, &project.manifest.source_dir, false)?;
+        self.phase(id, "input-digest")?;
+        let baseline = snapshot_input_digest(&project)?;
+        let task_root = checked_relative(&project.root, &format!(".platform/builds/{id}"), true)?;
+        ensure_dir(&task_root)?;
+        let candidate = candidate::BuildCandidate::prepare(&project, &task_root, &baseline)?;
+        let source = candidate.source();
         let package: Value = serde_json::from_slice(&fs::read(source.join("package.json"))?)?;
         let lock: Value = serde_json::from_slice(&fs::read(source.join("package-lock.json"))?)?;
         validate_lock(&package, &lock)?;
@@ -618,10 +620,6 @@ impl BuildManager {
                 "build.script must name an existing package.json script",
             ));
         }
-        self.phase(id, "input-digest")?;
-        let baseline = snapshot_input_digest(&project)?;
-        let task_root = checked_relative(&project.root, &format!(".platform/builds/{id}"), true)?;
-        ensure_dir(&task_root)?;
         let output = checked_relative(&project.root, &project.manifest.output_dir, true)?;
         let old_digest = if output.exists() {
             Some(tree_digest(&output, false)?)
@@ -637,7 +635,7 @@ impl BuildManager {
                 id,
                 &project,
                 &tools,
-                &source,
+                &candidate,
                 &task_root,
                 &baseline,
                 old_digest.clone(),
@@ -679,45 +677,27 @@ impl BuildManager {
         id: &str,
         project: &ProjectHandle,
         tools: &Toolchain,
-        source: &Path,
+        candidate: &candidate::BuildCandidate,
         task_root: &Path,
         baseline: &str,
         old_digest: Option<String>,
         start: Instant,
     ) -> Result<Value, ApiError> {
-        let dependency_path = project.root.join(".platform/dependencies.json");
-        let fingerprint = dependency_fingerprint(source, tools)?;
-        let installed_lock = source.join("node_modules/.package-lock.json");
-        let reusable = read_optional::<DependencyRecord>(&dependency_path)?.is_some_and(|record| {
-            record.fingerprint == fingerprint
-                && installed_lock.is_file()
-                && file_digest(&installed_lock).ok().as_ref() == Some(&record.installed_lock_digest)
-        });
-        if !reusable {
-            self.phase(id, "dependencies")?;
-            self.append(id, b"Installing exact locked dependencies with npm ci.\n")?;
-            self.command(id, tools, source, &["ci", "--no-audit", "--no-fund"], start)
-                .await?;
-            ensure_unchanged(project, baseline)?;
-            if !installed_lock.is_file() {
-                return Err(ApiError::new(
-                    "DEPENDENCIES_INVALID",
-                    "npm ci did not produce an installed dependency lockfile",
-                ));
-            }
-            atomic_json(
-                &dependency_path,
-                &DependencyRecord {
-                    fingerprint,
-                    installed_lock_digest: file_digest(&installed_lock)?,
-                },
-            )?;
-        } else {
-            self.append(
-                id,
-                b"Reusing dependencies: lockfile, SDK, Node/npm and installed lock match.\n",
-            )?;
+        let source = candidate.source();
+        self.phase(id, "dependencies")?;
+        self.append(id, b"Installing exact locked dependencies in a private source candidate with npm ci. Existing project dependencies are not reused.\n")?;
+        self.command(id, tools, source, &["ci", "--no-audit", "--no-fund"], start)
+            .await?;
+        ensure_unchanged(project, baseline)?;
+        candidate.ensure_unchanged(&project.manifest, baseline)?;
+        let installed_lock = checked_relative(source, "node_modules/.package-lock.json", true)?;
+        if !installed_lock.is_file() {
+            return Err(ApiError::new(
+                "DEPENDENCIES_INVALID",
+                "npm ci did not produce an installed dependency lockfile",
+            ));
         }
+        candidate.validate_installed_links()?;
         self.checkpoint(start)?;
         ensure_unchanged(project, baseline)?;
         self.phase(id, "build")?;
@@ -763,6 +743,7 @@ impl BuildManager {
             return Err(ApiError::new("BUILD_OUTPUT_CONTRACT_VIOLATED","Build script modified the current output directory instead of only writing to --outDir"));
         }
         ensure_unchanged(project, baseline)?;
+        candidate.ensure_unchanged(&project.manifest, baseline)?;
         let artifact_digest = tree_digest(&staging, false)?;
         self.checkpoint(start)?;
         project.check()?;
@@ -808,6 +789,11 @@ impl BuildManager {
         let mut command = Command::new(&tools.node.path);
         command
             .arg(&tools.npm.path)
+            // CLI options override inherited npm prefix/global settings, so ci
+            // cannot select the original project as its installation target.
+            .arg("--prefix")
+            .arg(cwd)
+            .arg("--global=false")
             .args(args)
             .current_dir(cwd)
             .env("PATH", &tools.path)
@@ -819,10 +805,12 @@ impl BuildManager {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .process_group(0);
+        candidate::isolate_git_environment(&mut command, cwd)?;
         let mut child = command
             .spawn()
             .map_err(|error| ApiError::new("BUILD_PROCESS_FAILED", error.to_string()))?;
         let pid = child.id().unwrap() as i32;
+        let mut group = candidate::BuildProcessGroup(Some(pid));
         let log = self.task_dir(id);
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -855,6 +843,7 @@ impl BuildManager {
                 libc::kill(-pid, libc::SIGKILL);
             }
         }
+        group.0 = None;
         let mut reader_error = None;
         for mut reader in [out, err] {
             match tokio::time::timeout(Duration::from_secs(2), &mut reader).await {
@@ -1078,20 +1067,6 @@ pub(crate) fn tree_digest(root: &Path, source: bool) -> Result<String, ApiError>
     hash_tree(root, source, &mut hasher)?;
     Ok(format!("{:x}", hasher.finalize()))
 }
-fn file_digest(path: &Path) -> Result<String, ApiError> {
-    check_no_symlinks(path, false)?;
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut bytes = [0u8; 65536];
-    loop {
-        let n = file.read(&mut bytes)?;
-        if n == 0 {
-            break;
-        }
-        digest.update(&bytes[..n]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
-}
 pub fn input_digest(project: &ProjectHandle) -> Result<String, ApiError> {
     let manifest = read_manifest(project)?;
     digest_manifest(project, &manifest)
@@ -1166,19 +1141,6 @@ fn validate_lock(package: &Value, lock: &Value) -> Result<(), ApiError> {
         }
     }
     Ok(())
-}
-fn dependency_fingerprint(source: &Path, tools: &Toolchain) -> Result<String, ApiError> {
-    let mut digest = Sha256::new();
-    for name in ["package.json", "package-lock.json"] {
-        digest.update(fs::read(checked_relative(source, name, false)?)?);
-    }
-    if source.join("vendor").exists() {
-        hash_tree(&source.join("vendor"), false, &mut digest)?;
-    }
-    digest.update(serde_json::to_vec(
-        &json!({"node":tools.node,"npm":tools.npm}),
-    )?);
-    Ok(format!("{:x}", digest.finalize()))
 }
 fn sdk_version(source: &Path) -> Result<Option<String>, ApiError> {
     let package: Value = serde_json::from_slice(&fs::read(source.join("package.json"))?)?;
@@ -1817,6 +1779,10 @@ mod tests {
         fs::write(app.join("build.cjs"), script).unwrap();
     }
     const BUILD: &str = r#"const fs=require('fs');const p=require('path');const out=process.argv[process.argv.indexOf('--outDir')+1];fs.mkdirSync(out,{recursive:true});fs.writeFileSync(p.join(out,'index.html'),'<html><body>generation-one</body></html>');"#;
+    mod candidate_pipeline {
+        include!("build_pipeline_candidate_tests.rs");
+    }
+
     async fn wait(manager: &BuildManager, id: &str) -> TaskRecord {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
@@ -1905,16 +1871,17 @@ mod tests {
             manager.info(&project.manifest.id).await.unwrap()["sourceState"],
             "matched"
         );
+        let output_violation = format!(
+            "const fs=require('fs');fs.writeFileSync({},'bad');",
+            serde_json::to_string(&project.root.join("dist/index.html")).unwrap()
+        );
         let cases = [
             ("process.exit(2);", "BUILD_FAILED"),
             (
                 "const fs=require('fs');fs.appendFileSync('build.cjs','\\n// changed');",
                 "BUILD_INPUT_CHANGED",
             ),
-            (
-                "const fs=require('fs');fs.writeFileSync('../dist/index.html','bad');",
-                "BUILD_OUTPUT_CONTRACT_VIOLATED",
-            ),
+            (output_violation.as_str(), "BUILD_OUTPUT_CONTRACT_VIOLATED"),
         ];
         for (extra, code) in cases {
             fs::write(
@@ -2099,10 +2066,16 @@ mod tests {
         let (_temp, paths) = RuntimePaths::for_test();
         let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
         let project = project(&store, "Cancel").await;
-        fixture(
-            &project,
-            r#"const fs=require('fs');const cp=require('child_process');const child=cp.spawn(process.execPath,['-e',"const fs=require('fs');setInterval(()=>fs.appendFileSync('../.platform/child-ticks','x'),20)"],{stdio:'ignore'});fs.writeFileSync('../.platform/child.pid',String(child.pid));setInterval(()=>{},1000);"#,
+        let ticks_path = project.root.join(".platform/child-ticks");
+        let child_code = format!(
+            "const fs=require('fs');setInterval(()=>fs.appendFileSync({},'x'),20)",
+            serde_json::to_string(&ticks_path).unwrap()
         );
+        let script = format!(
+            "const cp=require('child_process');cp.spawn(process.execPath,['-e',{}],{{stdio:'ignore'}});setInterval(()=>{{}},1000);",
+            serde_json::to_string(&child_code).unwrap()
+        );
+        fixture(&project, &script);
         let manager =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into())
                 .unwrap();
