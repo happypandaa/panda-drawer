@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { root } from './process.mjs';
 import { packageTemplate } from './package-template.mjs';
+import { packageWindowsNodeRuntime } from './package-windows-node-runtime.mjs';
 
 const generatedParent = path.join(root, 'apps/desktop/src-tauri/resources');
 const destination = path.join(generatedParent, 'windows');
@@ -47,7 +48,7 @@ export async function embeddedResourceFiles(directory) {
     entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
     for (const entry of entries) {
       const label = relative ? relative + '/' + entry.name : entry.name;
-      if (label === 'embedded-project-resources.json') continue;
+      if (label === 'embedded-project-resources.json' || label === 'node-runtime') continue;
       if (entry.isDirectory()) await visit(label);
       else if (entry.isFile()) files.push([label, [...await readFile(path.join(directory, label))]]);
       else throw new Error('Embedded resources accept ordinary files and directories only: ' + label);
@@ -57,7 +58,7 @@ export async function embeddedResourceFiles(directory) {
   return files;
 }
 
-export async function prepareWindowsResources({ templateDirectory = path.join(root, 'templates/react') } = {}) {
+export async function prepareWindowsResources({ templateDirectory = path.join(root, 'templates/react'), nodeRuntimeArchive } = {}) {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Windows resource assembly currently requires Windows x64.');
   }
@@ -74,6 +75,11 @@ export async function prepareWindowsResources({ templateDirectory = path.join(ro
   await snapshotWindowsTemplate(templateDirectory, path.join(stage, 'template'));
   await cp(path.join(root, 'skills/local-projects-app'), path.join(stage, 'skills/local-projects-app'), { recursive: true, filter });
   const starter = await packageTemplate(path.join(stage, 'template'));
+  const privateNode = await packageWindowsNodeRuntime({
+    output: path.join(stage, 'node-runtime'),
+    cache: path.join(root, '.tools/windows-node-runtime-cache'),
+    ...(nodeRuntimeArchive ? { archive: nodeRuntimeArchive } : {}),
+  });
   await cp(path.join(root, 'docs/development.md'), path.join(stage, 'README.md'));
   await writeFile(path.join(stage, 'windows-resources.json'), JSON.stringify({
     schemaVersion: 1,
@@ -82,10 +88,12 @@ export async function prepareWindowsResources({ templateDirectory = path.join(ro
     sdkVersion: '0.1.0',
     templateVersion: starter.templateVersion,
     cliIncluded: false,
+    privateNodeVersion: privateNode.runtime.version,
     preparedAt: Date.now(),
   }, null, 2) + '\n');
   // All SDK, source, starter, skill and documentation bytes are compiled into
-  // the executable. Runtime creation needs neither Node nor resource sidecars.
+  // the executable. The separate private Node payload is mapped by Tauri and
+  // deliberately excluded from this JSON; webpage creation remains embedded.
   await writeFile(path.join(stage, 'embedded-project-resources.json'), JSON.stringify({
     schemaVersion: 1,
     files: await embeddedResourceFiles(stage),

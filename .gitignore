@@ -5,6 +5,7 @@ target/
 dist/
 *.tsbuildinfo
 apps/desktop/src-tauri/binaries/
+# Generated SDK/template snapshots and private macOS/Windows Node payloads.
 apps/desktop/src-tauri/resources/
 apps/desktop/src-tauri/gen/
 artifacts/
