@@ -105,6 +105,7 @@ enum PathChoice {
     Workspace,
     Icon,
     Nodeapp,
+    Source,
 }
 
 #[tauri::command]
@@ -147,6 +148,13 @@ async fn choose_path(
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
+        PathChoice::Source => {
+            dialog
+                .set_title("选择要检查的项目源码目录")
+                .pick_folder(move |path| {
+                    let _ = sender.send(path);
+                })
+        }
     }
     receiver
         .await
@@ -814,6 +822,54 @@ async fn workspace_migrate(
     state.handle.workspace_migrate(input).await
 }
 
+#[tauri::command]
+async fn source_list(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_list().await
+}
+#[tauri::command]
+async fn source_info(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_info(&source_id).await
+}
+#[tauri::command]
+async fn source_inspect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .source_inspect(PathBuf::from(source_path))
+        .await
+}
+#[tauri::command]
+async fn source_acquire(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::source_acquisition::AcquireSourceInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_acquire(input).await
+}
+#[tauri::command]
+async fn source_cancel(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_cancel(&task_id).await
+}
+
 // These commands deliberately belong only to the native manager. Node pages
 // receive neither this command surface nor the private backend credentials.
 #[tauri::command]
@@ -1293,6 +1349,7 @@ fn main() {
         }))
         .invoke_handler(tauri::generate_handler![
             bootstrap_info,
+            source_list,source_info,source_inspect,source_acquire,source_cancel,
             node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,

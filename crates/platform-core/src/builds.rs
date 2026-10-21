@@ -517,7 +517,10 @@ impl BuildManager {
                 record.error = None;
             }
             Err(error) => {
-                record.status = if error.code == "BUILD_INTERRUPTED" {
+                record.status = if matches!(
+                    error.code.as_str(),
+                    "BUILD_INTERRUPTED" | "SOURCE_ACQUISITION_INTERRUPTED"
+                ) {
                     TaskStatus::Interrupted
                 } else {
                     TaskStatus::Failed

@@ -20,6 +20,7 @@ import type { NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { ProjectAddMenu } from './ProjectAddMenu';
+import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
 import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
@@ -71,6 +72,7 @@ function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
   const [showImport, setShowImport] = useState(false);
+  const [showSources, setShowSources] = useState(false);
   const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
   const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; taskId: string } | null>(null);
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
@@ -449,7 +451,7 @@ function App() {
         <label className="project-filter"><span className="sr-only">筛选项目状态</span><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value as 'all' | 'ready' | 'attention')}><option value="all">全部项目</option><option value="ready">可进入</option><option value="attention">需要处理</option></select></label>
         <div className="radio-toolbar-spacer" />
         <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={16} className={loading ? 'rotating' : undefined} /></button>
-        <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} />
+        <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} onAcquire={() => setShowSources(true)} />
         <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}>新建项目</button>
       </div>}
       <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
@@ -464,6 +466,7 @@ function App() {
         </div>
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
+            {showSources && <SourceAcquisitionPanel onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
             {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
               {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}

@@ -110,6 +110,8 @@ struct HttpState {
     builds: Arc<BuildManager>,
     git_environment: crate::git_environment::GitEnvironmentManager,
     git_remote: crate::git_remote::GitRemoteChecker,
+    source_acquisition:
+        std::result::Result<Arc<crate::source_acquisition::SourceAcquisitionManager>, ApiError>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
     resources: Option<Arc<ProjectResources>>,
     tickets: Mutex<HashMap<String, Ticket>>,
@@ -609,6 +611,62 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn source_list(&self) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .list()?))
+    }
+    pub async fn source_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .info(id)?))
+    }
+    pub async fn source_inspect(&self, path: PathBuf) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .inspect_local(path)?))
+    }
+    pub async fn source_acquire(
+        &self,
+        input: crate::source_acquisition::AcquireSourceInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .source_acquisition
+                .as_ref()
+                .map_err(Clone::clone)?
+                .submit(input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn source_cancel(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .cancel(id)?))
+    }
     pub async fn handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         let project = state.store.project(id)?;
@@ -844,6 +902,9 @@ impl RuntimeService {
         state.history_cleanup.shutdown().await;
         state.lifecycle.shutdown().await;
         state.maintenance.shutdown().await;
+        if let Ok(sources) = &state.source_acquisition {
+            sources.shutdown().await;
+        }
         state.builds.shutdown().await;
         state.store.shutdown().await;
         if let Some(mut task) = self.task.take() {
@@ -972,6 +1033,14 @@ fn make_state(
             .as_ref()
             .map(|resources| resources.development_git_root()),
     );
+    // Corrupt source evidence must not prevent existing applications opening.
+    // Keep the feature error and preserve its files for explicit inspection.
+    let source_acquisition = crate::source_acquisition::SourceAcquisitionManager::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        git_environment.clone(),
+    );
     let state = Arc::new(HttpState {
         paths,
         shared,
@@ -985,6 +1054,7 @@ fn make_state(
         builds,
         git_environment,
         git_remote: crate::git_remote::GitRemoteChecker::new(),
+        source_acquisition,
         maintenance,
         lifecycle,
         metadata,
@@ -1168,6 +1238,9 @@ async fn submit_migration(
             state.history_cleanup.shutdown().await;
             state.lifecycle.shutdown().await;
             state.maintenance.shutdown().await;
+            if let Ok(sources) = &state.source_acquisition {
+                sources.shutdown().await;
+            }
             state.builds.shutdown().await;
             crate::workspace::mark_old_retired(&selected, &journal)?;
             for project in new.store.list().await? {
@@ -1589,6 +1662,7 @@ async fn management(
                 | ["trash", _, "restore" | "purge"]
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
+                | ["sources", "acquisitions"]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -1624,6 +1698,22 @@ async fn management(
     };
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
+            (Method::GET, ["sources"]) => handle.source_list().await,
+            (Method::GET, ["sources", id]) => handle.source_info(id).await,
+            (Method::POST, ["sources", "acquisitions"]) => {
+                handle.source_acquire(input(request).await?).await
+            }
+            (Method::POST, ["sources", "inspect"]) => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct InspectSource {
+                    source_path: PathBuf,
+                }
+                handle
+                    .source_inspect(input::<InspectSource>(request).await?.source_path)
+                    .await
+            }
+            (Method::POST, ["sources", "tasks", id, "cancel"]) => handle.source_cancel(id).await,
             (Method::GET, ["environment"]) => handle.environment().await,
             (Method::GET, ["environment", "git"]) => handle.git_environment().await,
             (Method::POST, ["environment", "git", "remote-check"]) => {
@@ -3340,3 +3430,7 @@ mod git_remote_tests;
 #[cfg(test)]
 #[path = "service_editor_handoff_tests.rs"]
 mod editor_handoff_tests;
+
+#[cfg(test)]
+#[path = "service_source_tests.rs"]
+mod source_tests;

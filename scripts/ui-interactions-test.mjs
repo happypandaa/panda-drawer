@@ -61,6 +61,7 @@ const { WorkspaceHub } = await component('WorkspaceHub.tsx');
 const { WorkspaceStorageSummary } = await component('StoragePanels.tsx');
 const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
 const { default: App } = await component('App.tsx');
+const { SourceAcquisitionPanel } = await component('SourceAcquisitionPanel.tsx');
 let root;
 let render;
 async function setup() {
@@ -86,6 +87,59 @@ afterEach(async () => {
   delete navigator.clipboard;
 });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
+
+test('Source acquisition preserves failed input and blocks duplicate submission and premature close', async () => {
+  await setup(); const accepted = deferred(); const calls = []; let closed = 0;
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    if (command === 'source_list') return [];
+    assert.equal(command, 'source_acquire'); calls.push(args); return accepted.promise;
+  };
+  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() { closed++; } }));
+  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
+  await click(buttonNamed('获取源码')); await click(buttonNamed('正在提交…')); await key('Escape');
+  assert.equal(calls.length, 1); assert.equal(closed, 0);
+  await act(async () => accepted.reject(new Error('Source download was rejected')));
+  assert.match(dialog().textContent, /Source download was rejected/);
+  assert.equal(document.getElementById('source-url').value, 'https://github.com/disposable/source.git');
+  assert.equal(buttonNamed('获取源码').disabled, false);
+});
+
+test('Source cancel acceptance remains pending until the real task reaches its final state', async () => {
+  await setup(); let cancelled = false; const forwarded = [];
+  const task = { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'source_list') return [];
+    if (command === 'source_acquire') return task;
+    if (command === 'source_cancel') { cancelled = true; return task; }
+    assert.equal(command, 'task_get');
+    return cancelled ? { ...task, status: 'failed', final: true, error: { code: 'SOURCE_ACQUISITION_CANCELLED', message: 'Cancelled; partial files retained' } } : task;
+  };
+  await render(h(SourceAcquisitionPanel, { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} }));
+  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
+  await click(buttonNamed('获取源码')); await click(buttonNamed('取消获取'));
+  assert.match(dialog().textContent, /已请求取消，正在等待任务停止/);
+  assert.equal(buttonNamed('获取源码').disabled, true);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
+  assert.match(dialog().textContent, /Cancelled; partial files retained/);
+  assert.equal(buttonNamed('获取源码').disabled, false);
+  assert.equal(forwarded.at(-1).final, true);
+});
+
+test('Local source inspection only requests declarations and never registers or starts an app', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'source_list') return [];
+    if (command === 'choose_path') { assert.equal(args.kind, 'source'); return '/disposable/local-source'; }
+    assert.equal(command, 'source_inspect');
+    return { sourcePath: args.sourcePath, inspection: { kind: 'needs-adaptation', executionState: 'not-executed', issues: ['Missing supported declaration'] } };
+  };
+  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() {} }));
+  await click(buttonNamed('检查本机源码目录'));
+  assert.match(dialog().textContent, /需要适配的源码 · 未执行代码/);
+  assert.match(dialog().textContent, /Missing supported declaration/);
+  assert.deepEqual(calls.map(([command]) => command), ['source_list', 'choose_path', 'source_inspect']);
+});
 
 test('Modal names itself, focuses its heading, locks the background, and restores focus/scroll/inert state', async () => {
   await setup();

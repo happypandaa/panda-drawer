@@ -32,6 +32,7 @@ pub mod resources;
 mod runtime_notice;
 pub mod runtime_policy;
 mod service;
+pub mod source_acquisition;
 mod storage;
 pub mod tasks;
 mod workspace;

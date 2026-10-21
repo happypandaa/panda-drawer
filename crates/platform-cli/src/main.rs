@@ -29,6 +29,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Acquire public source without executing it, or inspect local declarations.
+    Source {
+        #[command(subcommand)]
+        command: SourceCommand,
+    },
     /// Inspect the development service without starting it.
     Service {
         #[command(subcommand)]
@@ -79,6 +84,33 @@ enum Command {
         #[command(subcommand)]
         command: EnvironmentCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum SourceCommand {
+    List(OutputOptions),
+    Get {
+        #[arg(long)]
+        source: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    Inspect {
+        #[arg(long)]
+        path: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    Acquire {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    /// Request cancellation; inspect the returned task until it is final.
+    Cancel(TaskOptions),
 }
 
 #[derive(Subcommand)]
@@ -372,6 +404,7 @@ fn main() -> ExitCode {
         Command::Trash { command } => trash_command(command),
         Command::Workspace { command } => workspace_command(command),
         Command::Storage { command } => storage_command(command),
+        Command::Source { command } => source_command(command),
     };
     let (output, code) = match result {
         Ok(value) => {
@@ -751,6 +784,57 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
         ));
     }
     project_request(&options.project, "POST", route, Some(input))
+}
+
+fn source_command(command: SourceCommand) -> (bool, Result<Value>) {
+    match command {
+        SourceCommand::List(output) => (
+            output.json,
+            business_request("GET", "/api/v1/sources", None, None),
+        ),
+        SourceCommand::Get { source, output } => (
+            output.json,
+            validate_reference_id(&source, "source").and_then(|()| {
+                business_request("GET", &format!("/api/v1/sources/{source}"), None, None)
+            }),
+        ),
+        SourceCommand::Inspect { path, output } => (
+            output.json,
+            if Path::new(&path).is_absolute() {
+                business_request(
+                    "POST",
+                    "/api/v1/sources/inspect",
+                    None,
+                    Some(json!({"sourcePath": path})),
+                )
+            } else {
+                Err(CliError::new(
+                    "INPUT_INVALID",
+                    "--path must be an absolute source directory.",
+                ))
+            },
+        ),
+        SourceCommand::Acquire { url, name, output } => (
+            output.json,
+            business_request(
+                "POST",
+                "/api/v1/sources/acquisitions",
+                None,
+                Some(json!({"url":url, "name":name})),
+            ),
+        ),
+        SourceCommand::Cancel(options) => (
+            options.output.json,
+            validate_reference_id(&options.task, "task").and_then(|()| {
+                business_request(
+                    "POST",
+                    &format!("/api/v1/sources/tasks/{}/cancel", options.task),
+                    None,
+                    Some(json!({})),
+                )
+            }),
+        ),
+    }
 }
 
 fn git_command(command: GitCommand) -> (bool, Result<Value>) {

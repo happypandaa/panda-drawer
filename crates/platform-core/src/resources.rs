@@ -257,9 +257,11 @@ Codex 接手时，请确认当前工作目录正是上述业务项目根目录�
 
 当前 Node 秘密保存按用户最新选择：每个应用自己的本机受管槽 configuration/credentials/ 私有文件，目录0700、文件0600，是当前用户文件权限保护的明文，不是 macOS Keychain 或系统加密库。该槽与作者源码、分享包和 Git 分开；AI 不读取或复制秘密文件，不读删旧 Keychain 条目，不把秘密写进交接、日志或源码。配置入口负责保存并仅向目标 Node 创建环境注入；本条不为当前静态 project-v1 增加秘密接口。
 
-Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包默认配套私有 Git；已有显式选择优先，失效不偷偷换来源。env git set --path /绝对路径/git 与 env git clear 仅修改本平台选择，后者明确恢复默认。系统 SSH 只检查工具版本，认证仍未验证；当前未提供仓库获取或提交／分支／取回版本接口，应用日常运行不依赖 Git／SSH。不要为工具诊断读取私钥、修改全局 Git 或初始化项目仓库。
+Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包默认配套私有 Git；已有显式选择优先，失效不偷偷换来源。env git set --path /绝对路径/git 与 env git clear 仅修改本平台选择，后者明确恢复默认。系统 SSH 只检查工具版本，认证仍未验证；当前未提供提交／分支／取回版本接口，应用日常运行不依赖 Git／SSH。不要为工具诊断读取私钥、修改全局 Git 或初始化项目仓库。
 
 需要检查指定公开仓库时，明确使用 env git check --url https://github.com/owner/repository.git --json，也支持标准 Gitee HTTPS 仓库地址。它在20秒执行预算内匿名读取远端HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果只适用于该地址和本次检查时间；未返回HEAD不表示空仓库，也不改变doctor的认证未验证状态。不要把该检查加入普通离线工具诊断，不把它当作SSH／私有仓库认证或完整获取流程。
+
+实际获取公开源码须明确使用 source acquire --url 标准HTTPS仓库地址 --json，再用 task wait 核对最终任务，source list/get 查看来源版本和保留目录。source inspect --path /绝对路径 --json 只检查本机声明；source cancel --task TASK_ID --json 请求取消后仍须等待最终状态。获取不会安装或执行代码，失败/中断现场保留、重试另建目录；不要将源码候选当已登记应用或用其来源ID调用项目数据库。当前完整安装和私有仓库认证尚未开放。
 
 源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
 

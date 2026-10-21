@@ -5,9 +5,10 @@ type Props = {
   disabled: boolean;
   onAdd: () => void;
   onImport: () => void;
+  onAcquire?: () => void;
 };
 
-export function ProjectAddMenu({ disabled, onAdd, onImport }: Props) {
+export function ProjectAddMenu({ disabled, onAdd, onImport, onAcquire }: Props) {
   const disclosure = useRef<HTMLDetailsElement>(null);
   const trigger = useRef<HTMLElement>(null);
   const close = () => { disclosure.current?.removeAttribute('open'); };
@@ -33,6 +34,7 @@ export function ProjectAddMenu({ disabled, onAdd, onImport }: Props) {
   }}>
     <summary ref={trigger} aria-disabled={disabled} onClick={(event) => { if (disabled) event.preventDefault(); }}><ChevronDown size={16} />添加</summary>
     <div className="radio-add-menu-content" aria-label="项目操作">
+      {onAcquire && <button disabled={disabled} onClick={() => run(onAcquire)}><FolderOpen size={15} />获取项目源码</button>}
       <button disabled={disabled} onClick={() => run(onAdd)}><FolderOpen size={15} />添加本地应用</button>
       <button disabled={disabled} onClick={() => run(onImport)}><Upload size={15} />导入项目</button>
     </div>

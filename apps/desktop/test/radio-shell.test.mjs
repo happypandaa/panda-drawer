@@ -216,7 +216,7 @@ test('The add disclosure closes on Escape with focus return and on outside point
   assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
 });
 
-test('The toolbar separates filtering and refresh from the two add actions', async () => {
+test('The toolbar separates filtering and refresh from the source, local and import actions', async () => {
   const calls = await setup();
   const filter = document.querySelector('[aria-label="筛选项目状态"], .project-filter select');
   const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
@@ -225,7 +225,7 @@ test('The toolbar separates filtering and refresh from the two add actions', asy
   assert.equal(filter.closest('.radio-add-menu'), null);
   assert.equal(refresh.closest('.radio-add-menu'), null);
   await click(addTrigger());
-  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['添加本地应用', '导入项目']);
+  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['获取项目源码', '添加本地应用', '导入项目']);
   const before = calls.filter(([command]) => command === 'project_list').length;
   await click(refresh);
   assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);
