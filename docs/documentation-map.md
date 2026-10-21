@@ -1,6 +1,8 @@
 # 文档地图与阅读顺序
 
-更新：2026-10-20。本仓库原有总入口是根 [README](../README.md)，`docs/` 没有 `README.md`。本页是新增的分类索引，避免把历史验证记录和现行约束混在同一级阅读。
+更新：2026-10-21。本仓库原有总入口是根 [README](../README.md)，`docs/` 没有 `README.md`。本页是新增的分类索引，避免把历史验证记录和现行约束混在同一级阅读。
+
+[产品最终目标](product-goal.md)已由用户确认，涵盖制作自用、获取他人项目、分享与定制四条路径。后续先明确范围与验收，再推导整体计划和批次；此前具体界面、Git 和分批建议仍按候选方案处理。
 
 本轮用户确认的 Radio Bob 风格、亮暗主题、图标启动台及设置窗口，实施与验证见[启动台界面记录](radio-launcher-verification.md)。Node 角标简化覆盖此前卡片常驻中文类型方案，读屏、详情及运行门禁仍保留。
 
@@ -20,12 +22,12 @@
 
 ## 顶层文档分类
 
-本次整理后 `docs/` 顶层实际为 **48 份 Markdown**，其中 **18 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
+本次整理后 `docs/` 顶层实际为 **49 份 Markdown**，其中 **18 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
 
 | 类别 | 数量 | 文档 |
 | --- | ---: | --- |
 | 分类索引 | 1 | 本页 |
-| 总体入口与状态 | 4 | [主约定](platform-development-contract.md)、[里程碑](development-milestones.md)、[技术决定与待定项](remaining-technical-decisions.md)、[开发说明](development.md) |
+| 总体入口与状态 | 5 | [已确认产品目标](product-goal.md)、[主约定](platform-development-contract.md)、[里程碑](development-milestones.md)、[技术决定与待定项](remaining-technical-decisions.md)、[开发说明](development.md) |
 | 已确认的配套契约及分工 | 12 | [本地服务与 AI](local-service-and-ai-tools.md)、[备份维护](backup-and-maintenance.md)、[生命周期与工作区](project-lifecycle-and-workspace.md)、[能力与秘密](project-capabilities-and-secrets.md)、[元数据与概览](project-metadata-and-overview.md)、[存储与素材](project-storage-and-assets.md)、[发行更新](release-and-updates.md)、[工作区身份](workspace-identity.md)、[历史清理](history-cleanup.md)、[用户／AI 文档分工](application-documentation.md)、[应用开发环境与交付](app-development-environment.md)、[名称与图标](branding.md) |
 | 格式、运行与配置规范 | 5 | [项目与应用包 v1](project-and-app-format-v1.md)、[Node 总体方案](node-app-runtime.md)、[Node 启动规范](node-app-startup-spec.md)、[Node 配置设计](node-app-configuration.md)、[原生应用窗口约束](app-window-runtime-contract.md)；其中 Node 公开格式与部分细则仍按各页草案状态处理 |
 | 实施计划与当前独立子集 | 4 | [AP 外部包计划](app-package-implementation-plan.md)、[Windows 计划](windows-support-plan.md)、[NR Node 计划](node-app-implementation-plan.md)、[本机 Node 配置与运行](node-native-configuration.md) |
@@ -33,7 +35,7 @@
 | 已被取代的路线 | 1 | [早期内置 Node 与固定连接器](bundled-node-and-connectors.md) |
 | 实际验证记录 | 18 | 见下一节；只作为证据与限制，不作为新增产品要求 |
 
-另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **53 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共60个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
+另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **54 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共61个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
 
 ## 验证记录目录
 
@@ -50,6 +52,7 @@
 
 ## 按任务阅读
 
+- **制定产品路线与分批计划**：已确认产品目标 → 当前支持范围及配套契约 → 具体使用路径的验收标准 → 当前能力缺口 → 现有 M/AP/NR/Windows 计划与依赖。目标确认不替代具体方案定稿或实际验收。
 - **维护平台**：根 README → 主约定 → 里程碑与待定项 → 当前任务的配套契约 → 相关实现 → 对应验证记录。改窗口先读原生应用窗口约束；改数据／迁移先读相应保护契约。
 - **接管已有 project-v1 业务项目**：平台复制的真实交接信息 → 项目自己的 skill、当前安装环境／窗口约束、README、`project.json`、数据库说明、匹配版本的平台说明 → 当前实际 schema 和 CLI 帮助。新选型参考应用开发环境与交付要求；无需读完本仓库全部历史记录，更不能把平台源码目录当业务项目根。
 - **适配 Node 应用源码**：应用开发环境与交付要求 → 原生应用窗口约束 → 本机 Node 配置与运行 → 作者的 `local-app.json` 与用户／开发说明 → [配置声明实验规范](node-configuration-v1/README.md) → Node 启动协议 → NR 当前小步及实际验证。先核对原生源码槽与 project-v1 的边界。
