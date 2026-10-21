@@ -876,6 +876,15 @@ impl CleanupManager {
         project_id: Option<&str>,
         except: Option<&str>,
     ) -> Result<(), ApiError> {
+        match project_id {
+            Some(id) => crate::source_restore_guard::check_development_available(
+                self.paths.workspace_root(),
+                id,
+            )?,
+            None => {
+                crate::source_restore_guard::check_workspace_available(self.paths.workspace_root())?
+            }
+        }
         for directory in fs::read_dir(self.paths.workspace_root().join(".platform/operations"))? {
             let directory = directory?;
             if directory.file_name().to_str() == except {
@@ -1054,6 +1063,7 @@ impl CleanupManager {
             return Err(error("Retained workspace retirement marker is missing without an authorized cleanup record"));
         }
         self.check_references(None, None)?;
+        crate::source_restore_guard::check_workspace_available(&item.path)?;
         let manifest_path = path.parent().unwrap().join("manifest.json");
         let target_manifest_path = path.parent().unwrap().join("target-manifest.json");
         let manifest = Self::guard_file(item, &manifest_path)?;
@@ -1424,6 +1434,7 @@ impl CleanupManager {
         }
     }
     fn check_current_protection(&self) -> Result<(), ApiError> {
+        crate::source_restore_guard::check_workspace_available(self.paths.workspace_root())?;
         let directory = self
             .paths
             .workspace_root()

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProjectTask } from './ProjectTask';
 import { ProjectGitVersions } from './ProjectGitVersions';
 import type { ProjectGitVersionsResult } from './ProjectGitVersions';
+import { ProjectGitSourceRestore, sourceRestoreTaskTypes } from './ProjectGitSourceRestore';
+import type { SourceRestoreOperation, SourceRestorePreview, SourceRestoreStatus } from './ProjectGitSourceRestore';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
@@ -58,14 +60,14 @@ export function ProjectGitPanel(props: ProjectGitPanelProps) {
   return <ProjectGitProject key={props.projectId} {...props} />;
 }
 
-type Draft = { message: string; authorName: string; authorEmail: string; branchName: string };
+type Draft = { message: string; authorName: string; authorEmail: string; branchName: string; targetCommit: string };
 function ProjectGitProject(props: ProjectGitPanelProps) {
-  const [draft, setDraft] = useState<Draft>({ message: '', authorName: '', authorEmail: '', branchName: '' });
+  const [draft, setDraft] = useState<Draft>({ message: '', authorName: '', authorEmail: '', branchName: '', targetCommit: '' });
   return <ProjectGitPanelInstance key={props.instanceId ?? ''} {...props} draftValues={draft} changeDraft={setDraft} />;
 }
 
 function relevantTask(value: TaskRecord | null | undefined, projectId: string): value is TaskRecord {
-  return Boolean(value && value.projectId === projectId && ['gitInitialize', 'gitSave', 'gitBranchCreate'].includes(value.type));
+  return Boolean(value && value.projectId === projectId && ['gitInitialize', 'gitSave', 'gitBranchCreate', ...sourceRestoreTaskTypes].includes(value.type));
 }
 
 function validBranchName(name: string) {
@@ -79,9 +81,17 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const [fresh, setFresh] = useState(false);
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const { message, authorName, authorEmail, branchName } = draftValues;
+  const { message, authorName, authorEmail, branchName, targetCommit } = draftValues;
   const [acceptedDraft, setAcceptedDraft] = useState('');
   const [acceptedBranchName, setAcceptedBranchName] = useState('');
+  const [acceptedTarget, setAcceptedTarget] = useState('');
+  const [restorePreview, setRestorePreview] = useState<SourceRestorePreview | null>(null);
+  const [recovery, setRecovery] = useState<SourceRestoreStatus | null>(null);
+  const [recoveryFresh, setRecoveryFresh] = useState(false);
+  const [recoveryReading, setRecoveryReading] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
+  const [externalEditingStopped, setExternalEditingStopped] = useState(false);
+  const [restoreConfirmed, setRestoreConfirmed] = useState(false);
   const [versions, setVersions] = useState<ProjectGitVersionsResult | null>(null);
   const [versionsFresh, setVersionsFresh] = useState(false);
   const [listing, setListing] = useState(false);
@@ -111,6 +121,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     const generation = lifetime.current; const statusRequest = readSequence.current;
     const request = ++versionsSequence.current;
     versionsPending.current = true; setListing(true); setVersionsFresh(false); setVersionsError('');
+    setRestorePreview(null); setRestoreConfirmed(false);
     const valid = () => current(generation) && statusRequest === readSequence.current && request === versionsSequence.current;
     try {
       const value = await invoke<ProjectGitVersionsResult>('project_git_versions', { id: projectId, limit: 50 });
@@ -128,6 +139,19 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     const generation = lifetime.current;
     const request = ++readSequence.current;
     statusPending.current = true; setReading(true); setFresh(false); setVersionsFresh(false);
+    setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false); setRecoveryReading(true);
+    // Recovery is independently readable even when ordinary Git inspection fails.
+    // Keep these reads serial: each backend read holds the project operation lease.
+    try {
+      const value = await invoke<SourceRestoreStatus>('project_git_source_restore_status', { id: projectId });
+      if (!current(generation) || request !== readSequence.current) return;
+      setRecovery(value); setRecoveryFresh(true); setRecoveryError('');
+    } catch (cause) {
+      if (current(generation) && request === readSequence.current) setRecoveryError(messageFrom(cause));
+    } finally {
+      if (current(generation) && request === readSequence.current) setRecoveryReading(false);
+    }
+    if (!current(generation) || request !== readSequence.current) return;
     try {
       const value = await invoke<ProjectGitStatus>('project_git_status', { id: projectId });
       if (!current(generation) || request !== readSequence.current) return;
@@ -153,6 +177,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     currentTask.current = value; setTask(value); if (notify) callback.current?.(value);
     if (value.type === 'gitSave' && value.final && value.status !== 'succeeded') setAcceptedDraft('');
     if (value.type === 'gitBranchCreate' && value.final && value.status !== 'succeeded') setAcceptedBranchName('');
+    if (value.type === 'gitSourceRestoreApply' && value.final && value.status !== 'succeeded') setAcceptedTarget('');
     return becameFinal;
   }, []);
 
@@ -186,6 +211,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     readSequence.current += 1; versionsSequence.current += 1;
     statusPending.current = false; versionsPending.current = false;
     setFresh(false); setReading(false); setVersionsFresh(false); setListing(false);
+    setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false); setRecoveryReading(false);
     if (acceptTask(externalTask, false)) void read();
   }, [externalTask, projectId, acceptTask, read, task?.taskId, task?.final]);
   useEffect(() => {
@@ -195,12 +221,15 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   }, [task?.taskId, task?.final, poll]);
 
   const draft = JSON.stringify([message, authorName, authorEmail]);
-  const dirty = Boolean(message || authorName || authorEmail) && draft !== acceptedDraft || Boolean(branchName) && branchName !== acceptedBranchName;
-  useEffect(() => { draftCallback.current?.({ dirty, pending: busy }); }, [dirty, busy]);
+  const dirty = Boolean(message || authorName || authorEmail) && draft !== acceptedDraft || Boolean(branchName) && branchName !== acceptedBranchName || Boolean(targetCommit) && targetCommit !== acceptedTarget;
+  const restoreActive = Boolean(task && !task.final && sourceRestoreTaskTypes.includes(task.type));
+  useEffect(() => { draftCallback.current?.({ dirty, pending: busy || restoreActive || recoveryReading }); }, [dirty, busy, restoreActive, recoveryReading]);
   useEffect(() => () => { draftCallback.current?.({ dirty: false, pending: false }); }, []);
 
   const active = Boolean(task && !task.final);
-  const writable = !disabled && !busy && !active && !reading && !listing && fresh;
+  const idle = !busy && !active && !reading && !listing;
+  const recoveryClear = recoveryFresh && recovery?.state === 'clear';
+  const writable = !disabled && idle && fresh && recoveryClear;
   const hasChanges = Boolean(status?.changes.length);
   const branchReady = Boolean(status?.canCreateBranch && !hasChanges && status.repository.indexState === 'matched' && status.repository.head?.oid && status.repository.head.branch);
   const validAuthor = authorName.trim().length > 0 && authorName.trim().length <= 200
@@ -214,6 +243,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     pending.current = true; setBusy(true); setError(''); setNotice('');
     const generation = lifetime.current;
     readSequence.current += 1; versionsSequence.current += 1; setFresh(false); setVersionsFresh(false);
+    setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false);
     try {
       const input = operation === 'initialize'
         ? { expectedSnapshot: status.snapshotDigest, initialBranch: 'main' }
@@ -233,6 +263,51 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     } finally { pending.current = false; if (current(generation)) setBusy(false); }
   }
 
+  function selectRestoreTarget(value: string) {
+    if (pending.current || currentTask.current && !currentTask.current.final) return;
+    changeDraft({ ...draftValues, targetCommit: value });
+    setRestorePreview(null); setRestoreConfirmed(false);
+  }
+
+  async function previewRestore() {
+    if (pending.current || statusPending.current || versionsPending.current || !idle || disabled || !recoveryClear || !externalEditingStopped || !/^[0-9a-f]{40}$/.test(targetCommit)) return;
+    pending.current = true; setBusy(true); setError(''); setNotice(''); setRestorePreview(null); setRestoreConfirmed(false);
+    const generation = lifetime.current;
+    try {
+      const value = await invoke<SourceRestorePreview>('project_git_source_restore_preview', { id: projectId, input: { targetCommit } });
+      if (!current(generation)) return;
+      if (value.targetCommit !== targetCommit) throw new Error('预览的目标版本不符，请重新核对。');
+      setRestorePreview(value);
+    } catch (cause) { if (current(generation)) setError(messageFrom(cause)); }
+    finally { pending.current = false; if (current(generation)) setBusy(false); }
+  }
+
+  async function submitRestore(operation?: SourceRestoreOperation, action?: 'continue' | 'undo') {
+    if (pending.current || statusPending.current || versionsPending.current || !idle || disabled || !externalEditingStopped) return;
+    if (operation ? !recoveryFresh || !recovery?.operations.includes(operation) || (action === 'continue' ? !operation.canContinue : action !== 'undo' || !operation.canUndo)
+      : !recoveryClear || !restorePreview?.canApply || !restoreConfirmed || restorePreview.targetCommit !== targetCommit) return;
+    const input = operation
+      ? { restoreTaskId: operation.restoreTaskId, expectedPlanDigest: operation.planDigest, expectedJournalDigest: operation.journalDigest, action }
+      : { targetCommit: restorePreview!.targetCommit, expectedHead: restorePreview!.head.oid, expectedBranch: restorePreview!.head.branch, expectedSnapshot: restorePreview!.snapshotDigest, expectedPlanDigest: restorePreview!.planDigest };
+    pending.current = true; setBusy(true); setError(''); setNotice('');
+    const generation = lifetime.current;
+    readSequence.current += 1; versionsSequence.current += 1;
+    setFresh(false); setVersionsFresh(false); setRecoveryFresh(false); setRestorePreview(null); setRestoreConfirmed(false);
+    try {
+      const value = await invoke<TaskRecord>(operation ? 'project_git_source_restore_recover' : 'project_git_source_restore_apply', { id: projectId, input });
+      if (!current(generation)) return;
+      const expectedType = operation ? action === 'continue' ? 'gitSourceRestoreContinue' : 'gitSourceRestoreUndo' : 'gitSourceRestoreApply';
+      if (value.projectId !== projectId || value.type !== expectedType) throw new Error('取回任务身份不符，请重新核对恢复状态，勿重复提交。');
+      setPollError('');
+      if (!operation && (!value.final || value.status === 'succeeded')) setAcceptedTarget(targetCommit);
+      const finished = acceptTask(value);
+      setNotice(value.final ? '源码操作已结束，请核对结果和恢复状态。' : '源码操作已接受，请等待最终结果。');
+      if (finished) await read();
+    } catch (cause) {
+      if (current(generation)) { setError(messageFrom(cause)); setNotice('请重新核对恢复状态；本次未自动重试或撤回。所选版本与填写内容已保留。'); }
+    } finally { pending.current = false; if (current(generation)) setBusy(false); }
+  }
+
   async function cancel() {
     const selected = currentTask.current;
     if (pending.current || !selected || selected.final) return;
@@ -243,7 +318,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
       if (!current(generation) || currentTask.current?.taskId !== selected.taskId) return;
       if (value.taskId !== selected.taskId || value.projectId !== projectId) throw new Error('任务身份不符，请刷新状态后检查。');
       const finished = acceptTask(value);
-      setNotice(currentTask.current?.final ? '任务已经结束，请核对最终结果。' : '已请求停止，正在等待最终结果。已提交的版本不会因取消而撤销。');
+      setNotice(currentTask.current?.final ? '任务已经结束，请核对最终结果。' : sourceRestoreTaskTypes.includes(selected.type) ? '已请求停止，正在等待最终结果。可能仍需处理源码恢复状态；不会自动撤回已经替换的文件。' : '已请求停止，正在等待最终结果。已提交的版本不会因取消而撤销。');
       if (finished) await read();
     } catch (cause) { if (current(generation)) setError(messageFrom(cause)); }
     finally { pending.current = false; if (current(generation)) setBusy(false); }
@@ -251,8 +326,8 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
 
   const head = status?.repository.head;
   return <section className="project-git-panel" aria-labelledby={`${id}-title`}>
-    <div className="storage-heading"><h3 id={`${id}-title`}>源码版本</h3><button type="button" className="refresh-button" disabled={reading || listing || busy || disabled} onClick={() => { if (currentTask.current && !currentTask.current.final) void poll(); else void read(); }}>{reading ? '核对中…' : '刷新状态'}</button></div>
-    <p>在本项目的标准 Git 仓库中保存下面列出的源码和开发文档。本次不保存数据库、附件或数据快照；可从当前版本创建新分支，不提供历史版本取回或切换到已有分支。</p>
+    <div className="storage-heading"><h3 id={`${id}-title`}>源码版本</h3><button type="button" className="refresh-button" disabled={reading || listing || busy} onClick={() => { if (currentTask.current && !currentTask.current.final) void poll(); else void read(); }}>{reading ? '核对中…' : '刷新状态'}</button></div>
+    <p>在本项目的标准 Git 仓库中保存下面列出的源码和开发文档。本次不保存数据库、附件或数据快照；可创建新分支，或预览后将已保存源码取回为待保存修改。暂不切换到已有分支。</p>
     <p>仅操作本机；不会推送远端。保存前请核对文件范围，路径排除不能代替对源码中敏感内容的检查。</p>
     {error && <p className="task-error" role="alert">{error}</p>}
     {readError && <p className="task-error" role="alert">{readError}</p>}
@@ -287,7 +362,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
         <p>作者仅用于本次提交，由你填写，不读取或修改全局 Git 作者配置。</p>
         <button type="submit" className="primary-button" disabled={!writable || !status.canSave || !hasChanges || !validAuthor || !validMessage}>保存源码版本</button>
       </form>
-      <ProjectGitVersions value={versions} fresh={versionsFresh} reading={listing} error={versionsError} canRead={writable && status.canListVersions} onRead={() => { if (!writable || !status.canListVersions) return; versionsRequested.current = true; void readVersions(status); }} />
+      <ProjectGitVersions value={versions} fresh={versionsFresh} reading={listing} error={versionsError} canRead={idle && fresh && status.canListVersions} onRead={() => { if (!idle || !fresh || !status.canListVersions) return; versionsRequested.current = true; void readVersions(status); }} canSelect={idle && !disabled && recoveryClear && versionsFresh} onSelect={selectRestoreTarget} />
       <form className="create-project-form" aria-label="创建定制分支" onSubmit={event => { event.preventDefault(); void submit('create-branch'); }}>
         <h4>从当前版本创建定制分支</h4>
         <p>仅在源码与暂存区干净时，从当前版本创建并切换到新分支。当前提交、源码、暂存区、业务数据和运行产物保持不变；不会自动构建或更新应用。</p>
@@ -300,7 +375,11 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
         <button type="submit" className="primary-button" disabled={!writable || !branchReady || !validBranchName(branchName)}>创建并切换到新分支</button>
       </form>
     </>}
-    {task && <><ProjectTask key={task.taskId} task={task} />{!task.final && <><p role="status">关闭此面板不会停止任务。</p><button type="button" className="refresh-button" disabled={busy} onClick={() => void cancel()}>取消当前操作</button></>}</>}
+    <ProjectGitSourceRestore targetCommit={targetCommit} onTargetChange={selectRestoreTarget} preview={restorePreview} recovery={recovery} recoveryFresh={recoveryFresh} recoveryError={recoveryError}
+      busy={busy || active} canPreview={idle && !disabled && recoveryClear} canApply={idle && !disabled && recoveryClear} canRecover={idle && !disabled && recoveryFresh} canRefresh={idle}
+      stopped={externalEditingStopped} confirmed={restoreConfirmed} onStoppedChange={value => { setExternalEditingStopped(value); setRestoreConfirmed(false); }} onConfirmedChange={setRestoreConfirmed}
+      onPreview={() => void previewRestore()} onApply={() => void submitRestore()} onRefresh={() => void read()} onRecover={(operation, action) => void submitRestore(operation, action)} />
+    {task && <><ProjectTask key={task.taskId} task={task} />{!task.final && <><p role="status">{restoreActive ? '源码操作结束前请保留此面板。停止后仍需核对恢复状态。' : '关闭此面板不会停止任务。'}</p><button type="button" className="refresh-button" disabled={busy} onClick={() => void cancel()}>取消当前操作</button></>}</>}
   </section>;
 }
 

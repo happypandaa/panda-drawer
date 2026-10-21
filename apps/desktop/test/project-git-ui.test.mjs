@@ -70,6 +70,7 @@ async function setup({ overrides = {}, props = {}, strict = false } = {}) {
     calls.push([command, args]);
     if (overrides[command]) return overrides[command](args);
     if (command === 'project_git_status') return status();
+    if (command === 'project_git_source_restore_status') return recoveryStatus();
     throw new Error(`Unexpected disposable command: ${command}`);
   };
   let currentProps = { projectId: 'prj_a', instanceId: 'instance_a', onTask: value => tasks.push(value), onDraftStateChange: value => drafts.push(value), ...props };
@@ -97,12 +98,12 @@ const commandCalls = (calls, command) => calls.filter(([name]) => name === comma
 
 test('Opening the panel only previews local status and shows scope, exclusions and the confirmed HEAD', async () => {
   const { calls, drafts } = await setup();
-  assert.deepEqual(calls, [['project_git_status', { id: 'prj_a' }]]);
+  assert.deepEqual(calls, [['project_git_source_restore_status', { id: 'prj_a' }], ['project_git_status', { id: 'prj_a' }]]);
   assert.ok(document.body.textContent.includes(oid));
   assert.match(document.body.textContent, /分支：main/);
   assert.doesNotMatch(document.body.textContent, /refs\/heads\/main/);
   assert.match(document.body.textContent, /本次不保存数据库、附件或数据快照/);
-  assert.match(document.body.textContent, /不提供历史版本取回或切换到已有分支/);
+  assert.match(document.body.textContent, /预览后将已保存源码取回为待保存修改/);
   assert.match(document.body.textContent, /app\/\.env/);
   assert.equal(field('作者姓名').value, '');
   assert.equal(field('作者邮箱').value, '');
@@ -391,9 +392,9 @@ test('An unknown candidate commit is labeled unconfirmed and cannot be presented
 test('StrictMode remounting rejects a stale initial read and disabled props block writes without dropping drafts', async () => {
   const old = deferred(); let reads = 0;
   const { render, calls, drafts } = await setup({ strict: true, overrides: {
-    project_git_status: () => ++reads === 1 ? old.promise : status(),
+    project_git_source_restore_status: () => ++reads === 1 ? old.promise : recoveryStatus(),
   } });
-  await act(async () => old.resolve(status({ repository: { ...status().repository, root: '/disposable/stale-strict-read' } })));
+  await act(async () => old.resolve(recoveryStatus({ issues: [{ message: 'stale-strict-read' }] })));
   assert.doesNotMatch(document.body.textContent, /stale-strict-read/);
   await fill(); await render({ disabled: true }); await submit();
   assert.equal(save().disabled, true);
@@ -411,7 +412,7 @@ function branchTask(overrides = {}) { return task({ type: 'gitBranchCreate', ...
 const branchButton = () => byText('创建并切换到新分支');
 async function submitBranch() { await act(async () => document.querySelector('form[aria-label="创建定制分支"]').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
 
-test('Local versions read only after an explicit click, use the fixed limit and display bounded history without actions', async () => {
+test('Local versions read only after an explicit click and selection alone does not mutate source', async () => {
   const { calls } = await setup({ overrides: { project_git_versions: () => versions({ hasMore: true }) } });
   assert.equal(commandCalls(calls, 'project_git_versions').length, 0);
   await click(byText('查看本机版本'));
@@ -420,9 +421,10 @@ test('Local versions read only after an explicit click, use the fixed limit and 
   assert.match(history.textContent, /Disposable saved version/);
   assert.match(history.textContent, /Fixture Author.*fixture@example.invalid/);
   assert.match(history.textContent, /最近 50 个.*更早版本/);
-  assert.match(history.textContent, /不会创建分支、取回源码或访问远端/);
+  assert.match(history.textContent, /选择版本只填写取回目标，仍须预览并明确确认/);
   assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
-  assert.equal(history.querySelectorAll('button').length, 1);
+  assert.equal(history.querySelectorAll('button').length, 2);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_preview').length, 0);
 });
 
 test('A pending version read blocks competing status and writes; an instance change rejects its late list but keeps drafts', async () => {
@@ -498,7 +500,7 @@ test('Branch creation sends the checked HEAD, full branch and snapshot once, the
   assert.match(document.body.textContent, /业务数据和运行产物保持不变/);
   assert.equal(commandCalls(calls, 'project_git_versions').length, 2);
   const commands = calls.map(([command]) => command);
-  assert.deepEqual(commands, ['project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_status', 'project_git_versions']);
+  assert.deepEqual(commands, ['project_git_source_restore_status', 'project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_source_restore_status', 'project_git_status', 'project_git_versions']);
 });
 
 test('A rejected branch keeps its name and author draft, requires rechecking and never retries itself', async () => {
@@ -570,4 +572,262 @@ test('An explicit Git version without branch support retains saving and history 
   assert.equal(commandCalls(calls, 'project_git_branch_create').length, 0);
   assert.equal(commandCalls(calls, 'project_git_versions').length, 1);
   assert.equal(save().disabled, false);
+});
+
+function recoveryStatus(overrides = {}) { return { state: 'clear', operations: [], issues: [], database: { state: 'not-supported' }, ...overrides }; }
+function recoveryOperation(overrides = {}) { return { restoreTaskId: 'restore_original', targetCommit: nextOid, phase: 'applying', planDigest: 'd'.repeat(64), journalDigest: 'e'.repeat(64), canContinue: true, canUndo: true, changes: [{ path: 'app/index.ts', kind: 'modify', state: 'after' }], issues: [], ...overrides }; }
+function restorePreview(overrides = {}) { return { repositoryRoot: '/disposable/project', head: { oid, branch: 'refs/heads/main' }, targetCommit: nextOid, snapshotDigest: digest, planDigest: 'd'.repeat(64), changes: [{ path: 'app/index.ts', kind: 'modify', before: { sha256: '1'.repeat(64), size: 10, executable: false }, after: { sha256: '2'.repeat(64), size: 20, executable: false } }], totalFiles: 1, totalBytes: 20, canApply: true, issues: [], git: { path: '/disposable/git', version: '2.56.0' }, database: { state: 'not-supported' }, ...overrides }; }
+function restoreTask(overrides = {}) { return task({ type: 'gitSourceRestoreApply', phase: 'source-restore-apply', ...overrides }); }
+const stoppedCheckbox = () => [...document.querySelectorAll('label')].find(label => label.textContent === '我已停止本项目的外部编辑和 Git 操作')?.querySelector('input');
+const confirmCheckbox = () => [...document.querySelectorAll('label')].find(label => label.textContent === '我已核对文件范围，确认取回为待保存修改')?.querySelector('input');
+const targetField = () => field('要取回的本机提交');
+async function prepareRestore(target = nextOid) { await change(targetField(), target); if (!stoppedCheckbox().checked) await click(stoppedCheckbox()); await click(byText('预览取回范围')); }
+
+test('Recovery status remains readable when ordinary Git inspection fails and never starts a recovery automatically', async () => {
+  const { calls } = await setup({ overrides: {
+    project_git_source_restore_status: () => recoveryStatus({ state: 'blocked', operations: [recoveryOperation({ canContinue: false, canUndo: false, changes: [{ path: 'app/index.ts', kind: 'modify', state: 'unknown' }], issues: [{ code: 'SOURCE_RESTORE_BLOCKED', message: '外部修改需人工核对' }] })] }),
+    project_git_status: () => { throw new Error('普通 Git 检查暂时不可用'); },
+  } });
+  assert.match(document.body.textContent, /普通 Git 检查暂时不可用/);
+  assert.match(document.body.textContent, /外部修改需人工核对/);
+  assert.match(document.body.textContent, /内容尚不能确认/);
+  assert.match(document.body.textContent, /当前程序和业务数据仍可使用/);
+  assert.equal(byText('确认继续取回'), undefined); assert.equal(byText('确认撤回这次取回'), undefined);
+  assert.deepEqual(calls.map(([command]) => command), ['project_git_source_restore_status', 'project_git_status']);
+});
+
+test('Selecting a listed source version does not preview or apply until explicit review and confirmation', async () => {
+  const accepted = deferred();
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_versions: () => versions({ versions: [{ ...versions().versions[0], oid: nextOid }] }),
+    project_git_source_restore_preview: () => restorePreview({ totalFiles: 8, totalBytes: 320 }),
+    project_git_source_restore_apply: () => accepted.promise,
+  } });
+  await click(byText('查看本机版本')); await click(byText('选择此版本取回'));
+  assert.equal(targetField().value, nextOid);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_preview').length, 0);
+  assert.equal(byText('预览取回范围').disabled, true);
+  await click(stoppedCheckbox()); await click(byText('预览取回范围'));
+  assert.deepEqual(commandCalls(calls, 'project_git_source_restore_preview'), [['project_git_source_restore_preview', { id: 'prj_a', input: { targetCommit: nextOid } }]]);
+  assert.match(document.querySelector('[aria-label="源码取回预览"]').textContent, /目标源码范围 8 个文件.*本次变更 1 个文件/);
+  assert.equal(byText('确认取回源码').disabled, true);
+  await click(confirmCheckbox());
+  const applyButton = byText('确认取回源码');
+  await act(async () => { applyButton.click(); applyButton.click(); });
+  assert.deepEqual(commandCalls(calls, 'project_git_source_restore_apply'), [['project_git_source_restore_apply', { id: 'prj_a', input: { targetCommit: nextOid, expectedHead: oid, expectedBranch: 'refs/heads/main', expectedSnapshot: digest, expectedPlanDigest: 'd'.repeat(64) } }]]);
+  assert.equal(drafts.at(-1).pending, true);
+  await act(async () => accepted.resolve(restoreTask()));
+  assert.equal(drafts.at(-1).pending, true, 'An accepted restore remains a close guard until its final task');
+  assert.match(document.body.textContent, /源码操作结束前请保留此面板/);
+  assert.equal(commandCalls(calls, 'project_git_save').length, 0);
+});
+
+test('Source preview, recovery status and history reads are serialized; a late preview cannot survive an instance change', async () => {
+  const check = deferred(); const preview = deferred(); let recoveryReads = 0;
+  const { calls, drafts, render } = await setup({ overrides: {
+    project_git_source_restore_status: () => ++recoveryReads === 1 ? check.promise : recoveryStatus(),
+    project_git_status: () => branchStatus(), project_git_source_restore_preview: () => preview.promise,
+  } });
+  assert.equal(commandCalls(calls, 'project_git_status').length, 0);
+  await change(targetField(), nextOid); await click(stoppedCheckbox()); await click(byText('预览取回范围'));
+  assert.equal(commandCalls(calls, 'project_git_source_restore_preview').length, 0);
+  await act(async () => check.resolve(recoveryStatus()));
+  await fill(); await click(byText('预览取回范围'));
+  assert.equal(drafts.at(-1).pending, true);
+  await click(refresh()); await click(byText('重新核对恢复状态')); await click(byText('查看本机版本')); await submitBranch();
+  assert.equal(commandCalls(calls, 'project_git_status').length, 1);
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 0);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_status').length, 1);
+  await render({ instanceId: 'instance_new' });
+  await act(async () => preview.resolve(restorePreview()));
+  assert.equal(targetField().value, nextOid); assert.equal(field('版本说明').value, '保存本机源码修改');
+  assert.equal(document.querySelector('[aria-label="源码取回预览"]'), null);
+  assert.equal(stoppedCheckbox().checked, false);
+  assert.equal(drafts.at(-1).pending, false);
+});
+
+test('Editing the target or refreshing status expires the preview and its confirmation without discarding drafts', async () => {
+  const { calls } = await setup({ overrides: { project_git_status: () => branchStatus(), project_git_source_restore_preview: ({ input }) => restorePreview({ targetCommit: input.targetCommit }) } });
+  await fill(); await prepareRestore(); await click(confirmCheckbox());
+  await change(targetField(), oid);
+  assert.equal(document.querySelector('[aria-label="源码取回预览"]'), null);
+  await click(byText('预览取回范围')); assert.equal(confirmCheckbox().checked, false);
+  await click(confirmCheckbox()); await click(refresh());
+  assert.equal(document.querySelector('[aria-label="源码取回预览"]'), null);
+  assert.equal(targetField().value, oid); assert.equal(field('作者姓名').value, 'Disposable Author');
+  assert.equal(commandCalls(calls, 'project_git_source_restore_apply').length, 0);
+});
+
+test('Unsupported commit IDs and a preview with unknown paths cannot be applied', async () => {
+  const { calls } = await setup({ overrides: { project_git_source_restore_preview: () => restorePreview({ canApply: false, issues: [{ code: 'SOURCE_RESTORE_SCOPE', message: '未知文件不允许替换' }] }) } });
+  await click(stoppedCheckbox());
+  for (const value of ['main', 'abc123', 'A'.repeat(40), 'a'.repeat(64)]) { await change(targetField(), value); assert.equal(byText('预览取回范围').disabled, true); await click(byText('预览取回范围')); }
+  assert.match(document.body.textContent, /40 位小写 SHA-1/); assert.match(document.body.textContent, /64 位提交仍可在版本列表中查看/);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_preview').length, 0);
+  await prepareRestore(); assert.match(document.body.textContent, /未知文件不允许替换/);
+  assert.equal(byText('确认取回源码').disabled, true); assert.equal(confirmCheckbox().disabled, true);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_apply').length, 0);
+});
+
+test('A stale apply preserves the target, requires a fresh preview and never retries or rolls back automatically', async () => {
+  let previews = 0;
+  const { calls } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_source_restore_preview: () => restorePreview({ planDigest: ++previews === 1 ? 'd'.repeat(64) : 'f'.repeat(64) }),
+    project_git_source_restore_apply: () => { throw { code: 'SOURCE_RESTORE_STALE', message: '预览已过期' }; },
+  } });
+  await prepareRestore(); await click(confirmCheckbox()); await click(byText('确认取回源码'));
+  assert.equal(targetField().value, nextOid); assert.match(document.body.textContent, /预览已过期/);
+  assert.equal(document.querySelector('[aria-label="源码取回预览"]'), null);
+  assert.equal(byText('预览取回范围').disabled, true);
+  await tick(); assert.equal(commandCalls(calls, 'project_git_source_restore_apply').length, 1);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_recover').length, 0);
+  await click(byText('重新核对恢复状态')); await click(byText('预览取回范围')); await click(confirmCheckbox()); await click(byText('确认取回源码'));
+  assert.equal(commandCalls(calls, 'project_git_source_restore_apply')[1][1].input.expectedPlanDigest, 'f'.repeat(64));
+});
+
+test('Pending recovery blocks development while local history remains available and only verified recovery actions are offered', async () => {
+  const { calls } = await setup({ overrides: {
+    project_git_status: () => branchStatus({ changes: status().changes }), project_git_versions: () => versions(),
+    project_git_source_restore_status: () => recoveryStatus({ state: 'pending', operations: [recoveryOperation({ canUndo: false })] }),
+  } });
+  await fill(); await change(field('新分支名称'), 'custom/new');
+  assert.equal(save().disabled, true); assert.equal(branchButton().disabled, true); assert.equal(byText('预览取回范围').disabled, true);
+  await click(byText('查看本机版本'));
+  assert.equal(commandCalls(calls, 'project_git_versions').length, 1);
+  assert.equal(byText('选择此版本取回').disabled, true);
+  assert.equal(byText('确认撤回这次取回'), undefined); assert.equal(byText('确认继续取回').disabled, true);
+  await click(stoppedCheckbox()); assert.equal(byText('确认继续取回').disabled, false);
+});
+
+test('Recovery actions bind fresh journal digests; failures retain evidence and require an explicit recheck', async () => {
+  let reads = 0;
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_source_restore_status: () => recoveryStatus({ state: 'pending', operations: [recoveryOperation({ journalDigest: ++reads === 1 ? 'e'.repeat(64) : 'f'.repeat(64) })] }),
+    project_git_status: () => { throw new Error('Ordinary status remains unavailable'); },
+    project_git_source_restore_recover: () => { throw { code: 'SOURCE_RESTORE_CHANGED', message: '现场已变化' }; },
+  } });
+  await click(stoppedCheckbox()); await click(byText('确认继续取回'));
+  assert.deepEqual(commandCalls(calls, 'project_git_source_restore_recover')[0], ['project_git_source_restore_recover', { id: 'prj_a', input: { restoreTaskId: 'restore_original', expectedPlanDigest: 'd'.repeat(64), expectedJournalDigest: 'e'.repeat(64), action: 'continue' } }]);
+  assert.equal(byText('确认继续取回').disabled, true); assert.equal(byText('确认撤回这次取回').disabled, true);
+  assert.match(document.body.textContent, /现场已变化/); assert.equal(drafts.at(-1).pending, false);
+  await tick(); assert.equal(commandCalls(calls, 'project_git_source_restore_recover').length, 1);
+  await click(byText('重新核对恢复状态')); await click(byText('确认撤回这次取回'));
+  assert.equal(commandCalls(calls, 'project_git_source_restore_recover')[1][1].input.expectedJournalDigest, 'f'.repeat(64));
+  assert.equal(commandCalls(calls, 'project_git_source_restore_recover')[1][1].input.action, 'undo');
+});
+
+test('An interrupted restore keeps closing blocked while active, then exposes recovery without claiming an automatic undo', async () => {
+  let final = false;
+  const { calls, drafts } = await setup({ props: { task: restoreTask() }, overrides: {
+    task_get: () => final ? restoreTask({ final: true, status: 'interrupted', error: { code: 'SOURCE_RESTORE_INTERRUPTED', message: '源码取回已中断', details: { operationOutcome: 'unknown', restoreTaskId: 'restore_original', pending: true } } }) : restoreTask(),
+    project_git_cancel: () => restoreTask(),
+    project_git_source_restore_status: () => recoveryStatus({ state: 'pending', operations: [recoveryOperation()] }),
+  } });
+  assert.equal(drafts.at(-1).pending, true);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_status').length, 0);
+  await click(byText('取消当前操作')); assert.match(document.body.textContent, /不会自动撤回已经替换的文件/);
+  assert.equal(drafts.at(-1).pending, true);
+  final = true; await tick();
+  assert.equal(drafts.at(-1).pending, false);
+  assert.match(document.body.textContent, /操作结果尚不能确认/); assert.match(document.body.textContent, /源码取回尚未处理完成/);
+  assert.doesNotMatch(document.body.textContent, /已回退到恢复前|已撤回这次源码取回/);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_recover').length, 0);
+});
+
+for (const [type, state, expected] of [['gitSourceRestoreApply', 'completed', /源码已取回为待保存修改/], ['gitSourceRestoreContinue', 'not-applied', /本次没有应用源码修改/], ['gitSourceRestoreUndo', 'undone', /这次源码取回已撤回/]]) {
+  test(`A final ${type} renders its actual ${state} outcome without claiming a saved version, database restore or build`, async () => {
+    await setup({ props: { task: restoreTask({ type, final: true, status: 'succeeded', result: { operationOutcome: 'committed', state, targetCommit: nextOid, restoreTaskId: 'restore_original' } }) } });
+    const result = document.querySelector('.build-task');
+    assert.match(result.textContent, expected); assert.match(result.textContent, /取回来源提交/);
+    assert.doesNotMatch(result.textContent, /源码版本已保存|备份任务已完成|项目仍保持维护|新网页已发布/);
+  });
+}
+
+test('Project details refuse close and tab changes during a restore preview, submission and accepted running task', async () => {
+  const { ProjectOverview } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/ProjectOverview.tsx'))).href);
+  const preview = deferred(); const accepted = deferred(); let guard;
+  globalThis.__PROJECT_GIT_INVOKE__ = async command => {
+    if (command === 'project_metadata') return { name: 'Disposable restore fixture', description: '', metadataRevision: 'fixture_revision', manifest: {}, iconStatus: { state: 'default' }, metadataIssues: [] };
+    if (command === 'project_git_source_restore_status') return recoveryStatus();
+    if (command === 'project_git_status') return branchStatus();
+    if (command === 'project_git_source_restore_preview') return preview.promise;
+    if (command === 'project_git_source_restore_apply') return accepted.promise;
+    if (command === 'task_get') return restoreTask();
+    throw new Error(`Unexpected overview fixture command: ${command}`);
+  };
+  document.body.innerHTML = '<div id="root"></div>';
+  root = createRoot(document.getElementById('root'));
+  await act(async () => root.render(h(ProjectOverview, {
+    project: { id: 'prj_a', name: 'Disposable restore fixture', projectRoot: '/disposable/project', state: 'ready', manifest: {}, issues: [] },
+    instanceId: 'instance_a', initialTab: 'git', status: { mode: 'normal', recoveryRequired: false, activeTask: null }, disabled: false,
+    onTask: () => {}, onChanged: async () => {}, onClose: () => assert.fail('This pending operation must not close'), onDismissGuardChange: value => { guard = value; },
+  })));
+  await prepareRestore();
+  let allowed;
+  await act(async () => { allowed = guard(); }); assert.equal(allowed, false);
+  assert.match(document.body.textContent, /请等待完成后再关闭/);
+  assert.equal([...document.querySelectorAll('[role="tab"]')].every(tab => tab.disabled), true);
+  await act(async () => preview.resolve(restorePreview()));
+  await click(confirmCheckbox()); await click(byText('确认取回源码'));
+  await act(async () => { allowed = guard(); }); assert.equal(allowed, false);
+  await act(async () => accepted.resolve(restoreTask()));
+  await act(async () => { allowed = guard(); }); assert.equal(allowed, false);
+  assert.equal([...document.querySelectorAll('[role="tab"]')].every(tab => tab.disabled), true);
+  assert.match(document.body.textContent, /源码操作结束前请保留此面板/);
+});
+
+test('Recovery neither accepts an unapplied target draft nor clears a target accepted by a separate apply', async () => {
+  let needsRecovery = true; let recoveryCalls = 0;
+  const selectedTarget = 'f'.repeat(40);
+  const { drafts } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_source_restore_status: () => needsRecovery ? recoveryStatus({ state: 'pending', operations: [recoveryOperation()] }) : recoveryStatus(),
+    project_git_source_restore_preview: ({ input }) => restorePreview({ targetCommit: input.targetCommit }),
+    project_git_source_restore_apply: () => restoreTask({ taskId: 'apply_selected_target', final: true, status: 'succeeded', result: { operationOutcome: 'committed', state: 'completed', targetCommit: selectedTarget } }),
+    project_git_source_restore_recover: ({ input }) => {
+      if (++recoveryCalls === 1) {
+        needsRecovery = false;
+        return restoreTask({ taskId: 'continue_previous_restore', type: 'gitSourceRestoreContinue', final: true, status: 'succeeded', result: { operationOutcome: 'committed', state: 'completed', targetCommit: nextOid } });
+      }
+      assert.equal(input.action, 'undo');
+      return restoreTask({ taskId: 'undo_previous_restore', type: 'gitSourceRestoreUndo', final: true, status: 'failed', error: { code: 'SOURCE_RESTORE_INTERRUPTED', message: '人工恢复失败', details: { operationOutcome: 'unknown', pending: true } } });
+    },
+  } });
+  await change(targetField(), selectedTarget); await click(stoppedCheckbox());
+  await click(byText('确认继续取回'));
+  assert.equal(targetField().value, selectedTarget);
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: false }, 'Recovering the previous operation did not submit this target draft');
+  await click(byText('预览取回范围')); await click(confirmCheckbox()); await click(byText('确认取回源码'));
+  assert.deepEqual(drafts.at(-1), { dirty: false, pending: false }, 'Only applying the selected target accepts this draft');
+  needsRecovery = true; await click(byText('重新核对恢复状态')); await click(byText('确认撤回这次取回'));
+  assert.match(document.body.textContent, /人工恢复失败/);
+  assert.equal(targetField().value, selectedTarget);
+  assert.deepEqual(drafts.at(-1), { dirty: false, pending: false }, 'An unrelated failed recovery does not clear the accepted apply draft');
+});
+
+const durabilityWarning = { code: 'SOURCE_RESTORE_DURABILITY_WARNING', message: '源码终态已读回确认，但磁盘同步未确认；请保留现场。' };
+for (const retained of [false, true]) {
+  test(`A ${retained ? 'retained committed' : 'successful'} restore result displays its durability warning without denying the verified source outcome`, async () => {
+    const result = { operation: 'source-restore', operationOutcome: 'committed', state: 'completed', pending: false, targetCommit: nextOid, issues: [durabilityWarning], durabilityWarning };
+    const value = retained
+      ? restoreTask({ final: true, status: 'failed', error: { code: 'TASK_FINALIZATION_FAILED', message: '任务记录收尾失败', details: { operationOutcome: 'committed', result, durabilityWarning } } })
+      : restoreTask({ final: true, status: 'succeeded', result });
+    await setup({ props: { task: value } });
+    const rendered = document.querySelector('.build-task');
+    assert.match(rendered.textContent, retained ? /源码操作已应用，但收尾未全部确认/ : /源码已取回为待保存修改/);
+    assert.match(rendered.textContent, /磁盘同步未确认/);
+    assert.equal([...rendered.querySelectorAll('[role="alert"]')].filter(element => element.textContent.includes('SOURCE_RESTORE_DURABILITY_WARNING')).length, 1, 'A retained warning is visible once, even if also present in error details');
+    assert.doesNotMatch(rendered.textContent, /本次没有应用源码修改|源码版本已保存|备份任务已完成/);
+  });
+}
+
+test('A verified not-applied failure also shows its terminal durability warning outside a retained result', async () => {
+  await setup({ props: { task: restoreTask({ final: true, status: 'interrupted', error: { code: 'SOURCE_RESTORE_INTERRUPTED', message: '已停止本次取回', details: { operationOutcome: 'not_committed', pending: false, durabilityWarning } } }) } });
+  const rendered = document.querySelector('.build-task');
+  assert.match(rendered.textContent, /已确认本次没有应用源码修改/);
+  assert.match(rendered.textContent, /磁盘同步未确认/);
+  assert.ok([...rendered.querySelectorAll('[role="alert"]')].some(element => element.textContent.includes('SOURCE_RESTORE_DURABILITY_WARNING')));
+  assert.doesNotMatch(rendered.textContent, /源码已取回为待保存修改|源码版本已保存/);
 });

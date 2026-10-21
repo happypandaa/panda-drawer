@@ -1,6 +1,6 @@
 # 开发环境与数据隔离
 
-2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；已接公开源码获取、本机源码保存、历史列表与新建定制分支；私有认证与分支取回尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
+2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；已接公开源码获取、本机源码保存、历史列表与新建定制分支；另接显式源码取回及中断处理；私有认证与已有分支切换尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
@@ -234,7 +234,7 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 
 `env git doctor`、`env git set --path /绝对路径/git`、`env git clear` 均支持 `--json`，在线通过现有管理认证访问 `GET /api/v1/environment/git` 或 `PUT /api/v1/environment/git`。PUT 输入分别为 `{"gitPath":"/绝对路径/git"}` 与 `{"gitPath":null}`。响应包括 `ready`、`git` 的实际路径／版本、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，并分别提供 `ssh` 与 `authentication`。默认位置仅供定位，不代替 `ready`／问题结果；CLI 离线不自行选用终端 Git。
 
-系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。公开源码获取和 project-v1 本机源码提交、历史列表、新建定制分支有独立入口；取回旧源码尚未开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
+系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。公开源码获取和 project-v1 本机源码提交、历史列表、新建定制分支及显式源码取回有独立入口；已有分支切换尚未开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
 
 ### 本机源码版本保存
 
@@ -250,7 +250,23 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 
 `project git branch-create --project ID --input FILE --json` 对应 `POST /api/v1/projects/:id/git/branches`。完整输入为 `name`（新分支短名）、`expectedHead`（现存完整提交号）、`expectedBranch`（状态返回的 `refs/heads/...`）和 `expectedSnapshot`。只允许在干净且已保存的当前版本新建分支并将 HEAD 指向它；已有同名分支、过期核对、未知／暂存／冲突内容均拒绝。不会取回其他提交或替换源码、索引、活库、附件及当前产物。仅此操作要求已验证的 Git2.56.0 引用事务；2.54.0 的保存和列表仍可用，分支限制单独放在 `branchCreationIssue` 中，不自动换工具。
 
-新建分支返回 `gitBranchCreate` 持久任务，沿用取消入口和已提交／未提交／未知结果；成功结果含原分支、新分支及当前提交。开始修改前先等待最终结果。现有分支切换、旧源码取回、合并／拉取及数据库版本仍未实现，不能用新建分支代替这些操作。
+新建分支返回 `gitBranchCreate` 持久任务，沿用取消入口和已提交／未提交／未知结果；成功结果含原分支、新分支及当前提交。开始修改前先等待最终结果。现有分支切换、合并／拉取及数据库版本仍未实现，不能用新建分支代替这些操作。旧源码取回是下面的独立显式操作。
+
+### 取回本机已保存源码
+
+取回将选定本机提交的允许开发文件放回当前工作树，形成待保存修改。它不移动HEAD、不替换索引、活库、附件或当前运行产物，也不自动保存版本、构建或重载网页。开始前须停止外部编辑，并保存现有改动；平台只能检查文件身份与摘要，不能撤销已经打开的外部编辑器权限。
+
+先调用 `project git source-restore-preview --project ID --input FILE --json`，输入 `{"targetCommit":"完整40位小写SHA-1本机提交号"}`，对应管理 `POST /api/v1/projects/:id/git/source-restore-preview`。本步取回只接受完整40位小写SHA-1本机提交，拒绝SHA-256、任意revision与联网取对象；历史列表的可读范围不因此缩小。返回当前 `head`、`snapshotDigest`、`planDigest`、目标提交、逐文件增删改和前后摘要／大小／执行位、`canApply` 及问题。无差异不能重复应用。目标整个树须符合当前允许范围，清单原始字节必须一致且实际不替换；保护路径、未知材料、链接／子模块、目录与文件互换、大小写或Unicode碰撞均拒绝，不静默丢弃目标文件。
+
+核对后调用 `project git source-restore --project ID --input FILE --json`，输入完整包含 `targetCommit`、`expectedHead`、`expectedBranch`、`expectedSnapshot`、`expectedPlanDigest`，对应 `POST .../git/source-restores`。必须来自新鲜预览，原索引与当前源码干净；返回 `gitSourceRestoreApply` 持久任务。任务的取消入口仍为 `project git cancel`，中途停止可能已取回部分文件，不能当作自动撤回。
+
+恢复现场在工作区 `.platform/project-state/source-restore/{projectId}/{taskId}/`，与旧备份／维护状态分开。原文件与候选材料用于确认逐文件状态；未完成或损坏现场阻止后续开发写入、交给新编辑器、迁移和相关历史清理，当前网页、业务SQL及附件继续使用。现场不作为缓存删除，不以删除journal、重新登记或清空目录解除保护。
+
+当前事务使用macOS同卷原子文件操作，不以跨卷复制覆盖降级。内部检查限制为源码最多10,000文件、单文件64 MiB、总源码256 MiB、单条恢复记录4 MiB；执行预算120秒，准备文件时保留至少64 MiB可用空间。这些是检查边界，不是磁盘配额或进程硬限。恢复记录扫描另有单项目16 MiB／1000任务、工作区64 MiB／4096项目及任务目录项的累计预算；新操作发布前计入其完整记录与阶段增长，超限拒绝新取回，已有终态证据保留。尚无自动证据清理入口。
+
+先停止本项目的外部编辑与Git操作。平台不会持有可能在崩溃后残留的Git锁来冒充外部写入隔离；每步核对仓库绑定和外部锁，异常时保留双方文件。最终记录已替换但目录同步失败时，若精确读回终态及内容，可报告操作已提交并显示耐久性未确认的警告；不会同时宣称仍有可继续的恢复任务。
+
+`project git source-recovery --project ID --json` 对应 `GET .../git/source-recovery`，只读返回 `clear`／`pending`／`blocked` 及保留任务、计划摘要、journal摘要、每个文件的已知状态与允许动作。显式继续或撤回使用 `project git source-recover --project ID --input FILE --json`／`POST .../git/source-recoveries`，完整输入为 `restoreTaskId`、`expectedPlanDigest`、`expectedJournalDigest`、`action:"continue"` 或 `"undo"`。恢复须绑定唯一未完成现场，取得操作占用后再次核对；第三方改动、未知状态或摘要过期时保留双方内容并拒绝覆盖。成功取回后再自行保存Git版本与构建；成功撤回仅还原该次源码取回，不回滚业务数据。
 
 `env git check --url https://github.com/owner/repository.git --json` 明确发起 `POST /api/v1/environment/git/remote-check`；也支持标准 `https://gitee.com/owner/repository.git`。这一步只检查公开 HTTPS，拒绝凭据、端口、查询参数、片段和仓库内页面；不使用系统 SSH，也不读取用户账号凭据或配置。服务沿用已选择的 Git，失效不回退；此检查当前仅支持 Git 2.54.0 与 2.56.0（包括对应版本的 Apple Git 标识），其他工具即使 `doctor` 可用也会明确拒绝检查，保留选择。
 

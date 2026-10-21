@@ -257,6 +257,14 @@ enum ProjectGitCommand {
     },
     /// Create and switch to a new branch at the current clean HEAD, without changing source files.
     BranchCreate(ProjectGitInputOptions),
+    /// Preview exact local source files to retrieve, without changing them.
+    SourceRestorePreview(ProjectGitInputOptions),
+    /// Apply a freshly confirmed source retrieval plan; do not change HEAD, index or business data.
+    SourceRestore(ProjectGitInputOptions),
+    /// Inspect retained source-retrieval state without replaying it.
+    SourceRecovery(ProjectOptions),
+    /// Explicitly continue or undo exactly the retained source-retrieval operation.
+    SourceRecover(ProjectGitInputOptions),
     /// Initialize main using the exact expectedSnapshot from a fresh status.
     Init(ProjectGitInputOptions),
     /// Save scoped source with explicit author, message, expectedHead and expectedSnapshot.
@@ -569,6 +577,34 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
                     .map_err(|_| CliError::new("INPUT_INVALID", "Provide name, expectedHead, expectedBranch and expectedSnapshot from a fresh status."))?;
                 project_request(&options.project, "POST", "/git/branches", Some(body))
             }),
+        ),
+        ProjectGitCommand::SourceRestorePreview(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSourceRestorePreviewInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide targetCommit as a complete local commit ID."))?;
+                project_request(&options.project, "POST", "/git/source-restore-preview", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRestore(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSourceRestoreApplyInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide targetCommit, expectedHead, expectedBranch, expectedSnapshot and expectedPlanDigest from a fresh preview."))?;
+                project_request(&options.project, "POST", "/git/source-restores", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRecover(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSourceRestoreRecoverInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide restoreTaskId, expectedPlanDigest, expectedJournalDigest and action continue or undo from current recovery status."))?;
+                project_request(&options.project, "POST", "/git/source-recoveries", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRecovery(options) => (
+            options.output.json,
+            project_request(&options.project, "GET", "/git/source-recovery", None),
         ),
         ProjectGitCommand::Init(options) => (
             options.input.output.json,
@@ -1596,6 +1632,52 @@ mod tests {
 
     #[test]
     fn project_git_cli_requires_explicit_input_and_never_accepts_maintenance_alias() {
+        for command in ["source-restore-preview", "source-restore", "source-recover"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable"
+            ])
+            .is_err());
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable",
+                "--input",
+                "-",
+                "--json"
+            ])
+            .is_ok());
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable",
+                "--input",
+                "-",
+                "--maintenance",
+                "maintenance_sample"
+            ])
+            .is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "source-recovery",
+            "--project",
+            "prj_disposable",
+            "--json"
+        ])
+        .is_ok());
         for limit in ["1", "50", "100"] {
             assert!(Cli::try_parse_from([
                 "local-projects-dev",

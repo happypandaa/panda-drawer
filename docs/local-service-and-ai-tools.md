@@ -197,6 +197,10 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `POST /api/v1/projects/:id/git/initialize` | 按明确范围初始化本机源码仓库，返回任务 | 管理凭据 |
 | `POST /api/v1/projects/:id/git/saves` | 按新鲜预览及明确作者保存源码版本，返回任务 | 管理凭据 |
 | `POST /api/v1/projects/:id/git/branches` | 在当前干净版本创建并指向新定制分支，返回任务 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/source-restore-preview` | 只读预览完整本机SHA-1提交的源码取回范围与摘要，返回HTTP200 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/source-restores` | 应用明确核对的源码取回计划，返回任务及HTTP202 | 管理凭据 |
+| `GET /api/v1/projects/:id/git/source-recovery` | 只读核对保留的源码取回现场，不接受查询参数 | 管理凭据 |
+| `POST /api/v1/projects/:id/git/source-recoveries` | 凭当前计划／现场摘要明确继续或撤回一次未完成取回，返回任务及HTTP202 | 管理凭据 |
 | `POST /api/v1/projects/:id/git/tasks/:taskId/cancel` | 请求停止本项目 Git 任务，继续核对最终结果 | 管理凭据 |
 | `GET /api/v1/projects` | 列出项目基本信息、状态与带时效的空间摘要 | 管理凭据 |
 | `POST /api/v1/projects` | 创建项目目录、模板和空数据库 | 管理凭据 |

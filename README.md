@@ -14,7 +14,7 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；应用运行使用固定私有 Node，不在登记或启动时安装依赖。本轮 Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建，保留明确选择兼容本机环境的入口；构建选择不影响应用运行 Node。执行摘要随项目 skill 的同一份环境／窗口约束分发。
 
-第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 已接 project-v1 候选构建和 Node 安装依赖准备；私有 Git 2.56.0 提供选择与诊断、公开 GitHub/Gitee HTTPS HEAD 检查与源码获取，以及本机源码保存、历史列表与新建定制分支。系统 SSH 只检查版本，私有认证、分支取回与数据库版本尚未实现。不把这些子步视为技术计划整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
+第一版应用兼容范围已收敛为[Radio 类应用](docs/app-development-environment.md#首版兼容基线radio-类应用)：静态网页、单个受管 Node、同进程 SDK 与外部 HTTP 服务。标准应用包、新电脑交接、数据保护与 Windows 仍按各自实际进度推进。受管 Node/npm 已接 project-v1 候选构建和 Node 安装依赖准备；私有 Git 2.56.0 提供选择与诊断、公开 GitHub/Gitee HTTPS HEAD 检查与源码获取，以及本机源码保存、历史列表、新建定制分支和显式源码取回／中断处理。系统 SSH 只检查版本，私有认证、已有分支切换与数据库版本尚未实现。不把这些子步视为技术计划整体完成，实际验证与限制见[技术实施计划](docs/technical-implementation-plan.md)。
 
 [项目与应用包格式 v1](docs/project-and-app-format-v1.md)集中说明现有 `project.json`、源码 `package.json` 与外部包 `local-app.json` 的分工、目录、字段、JSON Schema、最小示例及校验层级。现有项目和完整 ZIP 已实现；外部包仍待实现，初始数据、更新和检测预算等细则继续标为候选。[原安装与分享设计](docs/web-app-package-design.md)保留详细流程，不改变当前导入与备份规则。
 

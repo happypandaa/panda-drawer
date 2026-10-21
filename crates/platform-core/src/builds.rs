@@ -247,7 +247,7 @@ impl BuildManager {
         maintenance_id: Option<&str>,
     ) -> Result<TaskRecord, ApiError> {
         let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self.store.reserve_task(project_id, &task_id)?;
+        let lease = self.store.reserve_development_task(project_id, &task_id)?;
         self.store
             .control(project_id)?
             .check(false, maintenance_id, false)?;
@@ -304,7 +304,37 @@ impl BuildManager {
             return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
         }
         let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self.store.reserve_task(project_id, &task_id)?;
+        let lease = self.store.reserve_development_task(project_id, &task_id)?;
+        self.record_operation(project_id, kind, task_id, lease)
+    }
+    pub(crate) fn create_source_restore_recovery_operation(
+        &self,
+        project_id: &str,
+        kind: &str,
+        permit: &crate::source_restore_guard::SourceRestoreRecoveryPermit,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        if !matches!(kind, "gitSourceRestoreContinue" | "gitSourceRestoreUndo") {
+            return Err(ApiError::new(
+                "INVALID_TASK_TYPE",
+                "Expected an explicit source restore recovery operation",
+            ));
+        }
+        let task_id = format!("task_{}", Uuid::new_v4().simple());
+        let lease = self
+            .store
+            .reserve_source_restore_recovery_task(project_id, &task_id, permit)?;
+        self.record_operation(project_id, kind, task_id, lease)
+    }
+    fn record_operation(
+        &self,
+        project_id: &str,
+        kind: &str,
+        task_id: String,
+        lease: crate::projects::ProjectTaskLease,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
         let record = TaskRecord {
             task_id,
             project_id: Some(project_id.into()),
@@ -612,6 +642,7 @@ impl BuildManager {
         let project = self.store.project(project_id)?;
         let _operation = project.operation_gate.read().await;
         project.check()?;
+        self.store.check_development_available(project_id)?;
         let tools = self.environment.resolve().await?;
         self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
         self.phase(id, "input-digest")?;

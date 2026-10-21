@@ -686,7 +686,43 @@ impl ProjectStore {
         }
     }
     pub(crate) fn reserve_task(&self, id: &str, task: &str) -> Result<ProjectTaskLease, ApiError> {
+        // Real project keys always receive the development gate, including the
+        // target lease of a lifecycle copy. Source/Node task namespaces retain
+        // their existing non-project coordination without inspecting user paths.
+        if valid_id(id) {
+            return self.reserve_development_task(id, task);
+        }
         self.reserve_operation(id, ProjectOperation::Task(task.into()))
+    }
+    pub(crate) fn check_development_available(&self, id: &str) -> Result<(), ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        crate::source_restore_guard::check_development_available(&self.workspace, id)
+    }
+    pub(crate) fn reserve_development_task(
+        &self,
+        id: &str,
+        task: &str,
+    ) -> Result<ProjectTaskLease, ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
+        self.check_development_available(id)?;
+        Ok(lease)
+    }
+    pub(crate) fn reserve_source_restore_recovery_task(
+        &self,
+        id: &str,
+        task: &str,
+        permit: &crate::source_restore_guard::SourceRestoreRecoveryPermit,
+    ) -> Result<ProjectTaskLease, ApiError> {
+        let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
+        // Revalidate after admission: a previously displayed recovery summary is
+        // not permission to bypass a newer journal or another pending operation.
+        permit.revalidate(&self.workspace, id)?;
+        Ok(lease)
     }
     pub(crate) fn reserve_transient_operation(
         &self,

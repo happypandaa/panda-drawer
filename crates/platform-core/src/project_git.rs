@@ -42,6 +42,14 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_METADATA: u64 = 8 * 1024 * 1024;
 
+#[path = "project_git_restore.rs"]
+mod source_restore;
+pub use source_restore::{
+    GitSourceRestoreApplyInput, GitSourceRestorePreview, GitSourceRestorePreviewInput,
+    GitSourceRestoreRecoverInput, GitSourceRestoreRecoveryStatus, RecoveryChange,
+    RecoveryOperation, RestoreAction, RestoreChange, RestoreDescriptor,
+};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitInitInput {
@@ -153,6 +161,7 @@ pub struct ProjectGitStatus {
     pub can_list_versions: bool,
     pub can_create_branch: bool,
     pub branch_creation_issue: Option<ApiError>,
+    pub source_restore: crate::source_restore_guard::SourceRestoreState,
     pub database: Value,
     pub issues: Vec<ApiError>,
 }
@@ -231,6 +240,8 @@ impl ProjectGitManager {
             snapshot.view.issues.push(error);
         }
         self.add_recovery_issue(project_id, &mut snapshot.view)?;
+        snapshot.view.source_restore =
+            crate::source_restore_guard::inspect(self.paths.workspace_root(), project_id);
         finalize_capabilities(&mut snapshot.view);
         Ok(snapshot.view)
     }
@@ -397,8 +408,22 @@ impl ProjectGitManager {
             Operation::Initialize(_) => "gitInitialize",
             Operation::Save(_) => "gitSave",
             Operation::CreateBranch(_) => "gitBranchCreate",
+            Operation::RestoreApply(_) => "gitSourceRestoreApply",
+            Operation::RestoreRecover(ref input) => input.task_kind(),
         };
-        let (task, lease) = self.tasks.create_operation(project_id, kind)?;
+        let (task, lease) = if let Operation::RestoreRecover(input) = &operation {
+            let permit = crate::source_restore_guard::validate_recovery(
+                self.paths.workspace_root(),
+                project_id,
+                &input.restore_task_id,
+                &input.expected_plan_digest,
+                &input.expected_journal_digest,
+            )?;
+            self.tasks
+                .create_source_restore_recovery_operation(project_id, kind, &permit)?
+        } else {
+            self.tasks.create_operation(project_id, kind)?
+        };
         let (sender, cancel) = watch::channel(false);
         self.active
             .lock()
@@ -410,11 +435,29 @@ impl ProjectGitManager {
         let runner = tokio::spawn(async move {
             let _lease = lease;
             let branch_operation = matches!(operation, Operation::CreateBranch(_));
+            let restore_operation = matches!(
+                operation,
+                Operation::RestoreApply(_) | Operation::RestoreRecover(_)
+            );
+            let recovery_task = match &operation {
+                Operation::RestoreRecover(input) => Some(input.restore_task_id.clone()),
+                _ => None,
+            };
             let result = manager
                 .run(&project_id, &task_id, operation, stop, cancel)
                 .await
-                .map_err(|error| {
-                    if branch_operation && error.details.get("operationOutcome").is_none() {
+                .map_err(|mut error| {
+                    // A recovery task can stop before entering its filesystem
+                    // runner (for example while waiting for the read gate). The
+                    // original published transaction still needs explicit action.
+                    if let Some(task) = recovery_task {
+                        if error.details.get("pending").is_none() {
+                            error = error.detail("restoreTaskId", task).detail("pending", true);
+                        }
+                    }
+                    if (branch_operation || restore_operation)
+                        && error.details.get("operationOutcome").is_none()
+                    {
                         error.outcome("not_committed")
                     } else {
                         error
@@ -453,7 +496,12 @@ impl ProjectGitManager {
         let task = self.tasks.task(task_id)?;
         if !matches!(
             task.task_type.as_str(),
-            "gitInitialize" | "gitSave" | "gitBranchCreate"
+            "gitInitialize"
+                | "gitSave"
+                | "gitBranchCreate"
+                | "gitSourceRestoreApply"
+                | "gitSourceRestoreContinue"
+                | "gitSourceRestoreUndo"
         ) {
             return Err(input_error());
         }
@@ -541,6 +589,19 @@ impl ProjectGitManager {
         project.check()?;
         self.store.control(project_id)?.check(false, None, false)?;
         self.tasks.phase(task_id, "git-preview")?;
+        let operation = match operation {
+            Operation::RestoreApply(input) => {
+                return self
+                    .source_restore_apply_inner(&project, task_id, input, &mut context)
+                    .await
+            }
+            Operation::RestoreRecover(input) => {
+                return self
+                    .source_restore_recover_inner(&project, task_id, input, &mut context)
+                    .await
+            }
+            other => other,
+        };
         let tools = context.resolve(&self.git).await?;
         let mut snapshot = inspect(&project, Some(&tools), &mut context, None).await?;
         self.add_recovery_issue(project_id, &mut snapshot.view)?;
@@ -557,6 +618,9 @@ impl ProjectGitManager {
             Operation::CreateBranch(input) => {
                 self.create_branch_inner(&project, task_id, input, snapshot, &tools, &mut context)
                     .await
+            }
+            Operation::RestoreApply(_) | Operation::RestoreRecover(_) => {
+                unreachable!("restore operations are dispatched before Git resolution")
             }
         }
     }
@@ -1020,6 +1084,8 @@ enum Operation {
     Initialize(GitInitInput),
     Save(GitSaveInput),
     CreateBranch(GitCreateBranchInput),
+    RestoreApply(GitSourceRestoreApplyInput),
+    RestoreRecover(GitSourceRestoreRecoverInput),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1075,6 +1141,11 @@ fn finalize_capabilities(view: &mut ProjectGitStatus) {
         && head_oid(view).is_some()
         && view.changes.is_empty()
         && view.branch_creation_issue.is_none();
+    if view.source_restore.check().is_err() {
+        view.can_initialize = false;
+        view.can_save = false;
+        view.can_create_branch = false;
+    }
 }
 async fn inspect(
     project: &ProjectHandle,
@@ -1155,6 +1226,7 @@ async fn inspect(
         can_list_versions: false,
         can_create_branch: false,
         branch_creation_issue: None,
+        source_restore: Default::default(),
         database: database_boundary(),
         issues: std::mem::take(&mut scan.issues),
     };

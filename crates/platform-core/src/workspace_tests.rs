@@ -64,6 +64,38 @@ async fn commit(
     store.pause_workspace().await;
     copy_and_commit(paths, store, &task.task_id).unwrap()
 }
+
+#[tokio::test]
+async fn source_restore_guard_blocks_pending_migration_and_preserves_completed_evidence() {
+    let (_temp, paths, store, id, dest) = fixture().await;
+    let relative = PathBuf::from(".platform/project-state/source-restore")
+        .join(&id)
+        .join("task_restore");
+    let path = paths.workspace_root().join(&relative).join("journal.json");
+    let mut journal = json!({"schemaVersion":1,"operation":"sourceRestore","projectId":id,
+        "taskId":"task_restore","phase":"applying","planDigest":"a".repeat(64)});
+    builds::atomic_json(&path, &journal).unwrap();
+    assert_eq!(
+        validate_idle(&paths).unwrap_err().code,
+        "PROJECT_SOURCE_RESTORE_PENDING"
+    );
+    let evidence = path.parent().unwrap().join("retained-source");
+    fs::write(&evidence, b"retained operation evidence").unwrap();
+    journal["phase"] = json!("completed");
+    builds::atomic_json(&path, &journal).unwrap();
+    validate_idle(&paths).unwrap();
+    let (_selected, _journal) = commit(&paths, &store, &dest).await;
+    assert_eq!(
+        fs::read(dest.join(&relative).join("journal.json")).unwrap(),
+        fs::read(&path).unwrap()
+    );
+    assert_eq!(
+        fs::read(dest.join(&relative).join("retained-source")).unwrap(),
+        b"retained operation evidence"
+    );
+    assert!(evidence.exists());
+    store.shutdown().await;
+}
 #[tokio::test]
 async fn migration_preserves_protected_trees_links_database_and_state_excludes_only_active_dependencies(
 ) {

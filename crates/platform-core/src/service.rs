@@ -175,6 +175,7 @@ impl EditorHandoffLease {
             ));
         }
         state.store.check_workspace_available()?;
+        state.store.check_development_available(&self.project_id)?;
         let project = state.store.project(&self.project_id)?;
         project.validate_epoch(None)?;
         if project.root != self.project_root {
@@ -678,6 +679,97 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn project_git_source_restore_preview(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSourceRestorePreviewInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_preview(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_apply(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSourceRestoreApplyInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_apply(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_status(
+        &self,
+        id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_status(id, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_recover(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSourceRestoreRecoverInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_recover(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
     pub async fn project_git_initialize(
         &self,
         id: &str,
@@ -884,6 +976,7 @@ impl RuntimeHandle {
     }
     pub async fn handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
+        state.store.check_development_available(id)?;
         let project = state.store.project(id)?;
         let resources = state.resources.as_ref().ok_or_else(|| {
             ApiError::new(
@@ -1409,6 +1502,9 @@ async fn submit_migration(
                     .detail("projectId", project.id));
                 }
             }
+            // Source-only recovery does not stop runtime use. Reject a retained
+            // operation before migration would pause that still-usable runtime.
+            crate::source_restore_guard::check_workspace_available(state.paths.workspace_root())?;
             state.storage.quiesce().await;
             state.store.pause_workspace().await;
             let mut guards = vec![];
@@ -1908,7 +2004,12 @@ async fn management(
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | ["sources", "acquisitions"]
                 | ["sources", "captures"]
-                | ["projects", _, "git", "initialize" | "saves" | "branches"]
+                | [
+                    "projects",
+                    _,
+                    "git",
+                    "initialize" | "saves" | "branches" | "source-restores" | "source-recoveries"
+                ]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -1972,6 +2073,30 @@ async fn management(
             (Method::POST, ["projects", id, "git", "branches"]) => {
                 handle
                     .project_git_create_branch(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "source-restore-preview"]) => {
+                handle
+                    .project_git_source_restore_preview(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "source-restores"]) => {
+                handle
+                    .project_git_source_restore_apply(id, input(request).await?)
+                    .await
+            }
+            (Method::GET, ["projects", id, "git", "source-recovery"]) => {
+                if !query(&request)?.is_empty() {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Source recovery status does not accept query parameters.",
+                    ));
+                }
+                handle.project_git_source_restore_status(id).await
+            }
+            (Method::POST, ["projects", id, "git", "source-recoveries"]) => {
+                handle
+                    .project_git_source_restore_recover(id, input(request).await?)
                     .await
             }
             (Method::POST, ["projects", id, "git", "initialize"]) => {
