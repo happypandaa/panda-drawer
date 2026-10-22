@@ -120,6 +120,33 @@ server.shutdown(); server.server_close()
 }
 
 #[tokio::test]
+async fn deletion_preview_blocks_a_live_backend_until_normal_shutdown_is_confirmed() {
+    let fixture = Fixture::new("keep-manifest");
+    let registered = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registered["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    let running_preview = fixture.manager.delete_preview(id).await;
+    let stopped = fixture.manager.stop(id).await;
+    assert!(
+        stopped.is_ok(),
+        "artificial service must complete normal shutdown"
+    );
+    let running_preview = running_preview.unwrap();
+    assert_eq!(running_preview["canDelete"], false);
+    assert!(!running_preview["blockedReasons"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let stopped_preview = fixture.manager.delete_preview(id).await.unwrap();
+    assert_eq!(stopped_preview["canDelete"], true);
+    assert!(fixture.slot(id).join("registration.json").is_file());
+}
+
+#[tokio::test]
 async fn failed_final_detail_rolls_back_only_the_newly_started_backend() {
     let fixture = Fixture::new("remove-manifest");
     let registered = fixture

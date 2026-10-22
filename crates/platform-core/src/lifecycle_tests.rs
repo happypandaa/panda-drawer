@@ -74,11 +74,17 @@ impl Fixture {
         panic!("lifecycle task timed out");
     }
     async fn project(&self, kind: &str, input: Value) -> TaskRecord {
-        let task = self
-            .lifecycle
-            .submit_project(&self.id, kind, input)
-            .await
-            .unwrap();
+        let task = if kind == "delete" {
+            self.lifecycle
+                .submit_legacy_delete(&self.id, input)
+                .await
+                .unwrap()
+        } else {
+            self.lifecycle
+                .submit_project(&self.id, kind, input)
+                .await
+                .unwrap()
+        };
         self.wait(&task).await
     }
     async fn stop(self) {
@@ -1301,5 +1307,352 @@ async fn final_lifecycle_journal_failure_blocks_in_memory_and_reconciles_its_own
         Some("Preserve newer metadata during gate recovery")
     );
     control.check(true, None, false).unwrap();
+    fixture.stop().await;
+}
+
+// System-trash deletion is tested against disposable, instance-local sinks.
+// No automated lifecycle fixture may touch the user's real OS trash.
+fn use_disposable_system_trash(fixture: &Fixture) -> PathBuf {
+    let sink = fixture.paths.data_root().join("disposable-system-trash");
+    let destination = sink.clone();
+    fixture
+        .lifecycle
+        .set_system_trash_sink_for_test(move |source| {
+            fs::create_dir_all(&destination)?;
+            let target = destination.join(source.file_name().unwrap());
+            move_directory(source, &target)?;
+            Ok(target)
+        });
+    sink
+}
+async fn system_delete(fixture: &Fixture) -> TaskRecord {
+    let task = fixture
+        .lifecycle
+        .submit_project(&fixture.id, "delete", json!({}))
+        .await
+        .unwrap();
+    fixture.wait(&task).await
+}
+
+#[tokio::test]
+async fn system_trash_delete_moves_complete_project_and_keeps_independent_history() {
+    let fixture = Fixture::new().await;
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    fs::create_dir(root.join(".git")).unwrap();
+    fs::write(root.join(".git/local-only-history"), b"not synchronized").unwrap();
+    fs::write(root.join("app/unsaved.txt"), b"uncommitted development").unwrap();
+    fs::write(
+        root.join("data/main.sqlite-wal"),
+        b"uncheckpointed evidence",
+    )
+    .unwrap();
+    let backups = fixture
+        .paths
+        .workspace_root()
+        .join("backups")
+        .join(&fixture.id);
+    fs::create_dir_all(&backups).unwrap();
+    fs::write(backups.join("legacy.zip"), b"existing independent backup").unwrap();
+    let sink = use_disposable_system_trash(&fixture);
+    let task = system_delete(&fixture).await;
+    let result = good(&task);
+    assert_eq!(result["operationOutcome"], "system_trashed");
+    assert_eq!(result["originalPath"], json!(root));
+    assert_eq!(result["systemTrashPath"], json!(sink.join(&fixture.id)));
+    assert_eq!(result["platformRestoreAvailable"], false);
+    assert_eq!(result["historicalBackupsRetained"], true);
+    assert!(result.get("trashId").is_none());
+    assert!(!root.exists());
+    assert!(fixture.store.list().await.unwrap().is_empty());
+    let retained = sink.join(&fixture.id);
+    assert_eq!(
+        fs::read(retained.join(".git/local-only-history")).unwrap(),
+        b"not synchronized"
+    );
+    assert_eq!(
+        fs::read(retained.join("app/unsaved.txt")).unwrap(),
+        b"uncommitted development"
+    );
+    assert_eq!(
+        fs::read(retained.join("data/attachments/original.txt")).unwrap(),
+        b"independent attachment"
+    );
+    assert_eq!(
+        fs::read(retained.join("data/main.sqlite-wal")).unwrap(),
+        b"uncheckpointed evidence"
+    );
+    assert_eq!(
+        fs::read(backups.join("legacy.zip")).unwrap(),
+        b"existing independent backup"
+    );
+    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
+    let journal: Journal = read_json(&fixture.lifecycle.journal_path(&task.task_id)).unwrap();
+    assert!(journal.system_trash && journal.committed && journal.resolved);
+    assert_eq!(journal.system_trash_path, Some(retained));
+    assert!(fixture
+        .store
+        .session_generation(&fixture.id)
+        .unwrap()
+        .is_some());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn system_trash_failure_keeps_project_and_does_not_fallback_to_permanent_delete() {
+    let fixture = Fixture::new().await;
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    let before = fs::read(root.join("data/attachments/original.txt")).unwrap();
+    fixture.lifecycle.set_system_trash_sink_for_test(|_| {
+        Err(ApiError::new(
+            "SYSTEM_TRASH_FAILED",
+            "Disposable permission-denied example",
+        ))
+    });
+    let task = system_delete(&fixture).await;
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.error.as_ref().unwrap().code, "SYSTEM_TRASH_FAILED");
+    assert_eq!(
+        task.error.as_ref().unwrap().details["operationOutcome"],
+        "not_deleted"
+    );
+    assert_eq!(
+        fs::read(root.join("data/attachments/original.txt")).unwrap(),
+        before
+    );
+    assert!(fixture.store.project(&fixture.id).is_ok());
+    assert!(
+        !fixture
+            .store
+            .control(&fixture.id)
+            .unwrap()
+            .get()
+            .recovery_required
+    );
+    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
+    fixture.stop().await;
+}
+
+async fn interrupted_system_delete(fixture: Fixture, moved: bool, receipt: bool) -> Fixture {
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    let (task, lease) = fixture
+        .tasks
+        .create_operation(&fixture.id, "delete")
+        .unwrap();
+    let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    journal.system_trash = true;
+    journal.source_project_id = Some(fixture.id.clone());
+    journal.directory_identity = Some(persistent_identity(&root).unwrap());
+    journal.control = Some(fixture.store.control(&fixture.id).unwrap().get());
+    journal.phase = "system-trash-intent".into();
+    if moved {
+        fixture.store.close_database(&fixture.id).await;
+        let destination = fixture
+            .paths
+            .data_root()
+            .join("disposable-interrupted-trash");
+        move_directory(&root, &destination).unwrap();
+        if receipt {
+            journal.system_trash_path = Some(destination);
+            journal.phase = "system-trash-moved".into();
+        }
+    }
+    fixture.lifecycle.save(&journal).unwrap();
+    drop(lease);
+    fixture.restart_task(task).await
+}
+
+#[tokio::test]
+async fn system_trash_restart_reconciles_verified_receipt_without_repeating_move() {
+    let fixture = interrupted_system_delete(Fixture::new().await, true, true).await;
+    let path = fixture
+        .paths
+        .data_root()
+        .join("disposable-interrupted-trash");
+    assert!(path.join("data/main.sqlite").is_file());
+    assert!(fixture.store.list().await.unwrap().is_empty());
+    let journals =
+        fs::read_dir(fixture.paths.workspace_root().join(".platform/operations")).unwrap();
+    let journal: Journal = journals
+        .filter_map(Result::ok)
+        .find_map(|entry| read_json(&entry.path().join("lifecycle.json")).ok())
+        .unwrap();
+    assert!(journal.committed && journal.resolved);
+    assert_eq!(journal.result["operationOutcome"], "system_trashed");
+    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn system_trash_restart_without_receipt_preserves_ambiguous_move_for_inspection() {
+    let fixture = interrupted_system_delete(Fixture::new().await, true, false).await;
+    let retained = fixture
+        .paths
+        .data_root()
+        .join("disposable-interrupted-trash");
+    assert!(retained.join("data/attachments/original.txt").is_file());
+    assert!(
+        fixture
+            .store
+            .control(&fixture.id)
+            .unwrap()
+            .get()
+            .recovery_required
+    );
+    let journals =
+        fs::read_dir(fixture.paths.workspace_root().join(".platform/operations")).unwrap();
+    let journal: Journal = journals
+        .filter_map(Result::ok)
+        .find_map(|entry| read_json(&entry.path().join("lifecycle.json")).ok())
+        .unwrap();
+    assert!(!journal.committed && !journal.resolved);
+    assert_eq!(journal.error.unwrap().code, "RECOVERY_REQUIRED");
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn system_trash_restart_before_move_retains_original_and_resolves_not_deleted() {
+    let fixture = interrupted_system_delete(Fixture::new().await, false, false).await;
+    assert!(fixture.store.project(&fixture.id).is_ok());
+    assert!(
+        !fixture
+            .store
+            .control(&fixture.id)
+            .unwrap()
+            .get()
+            .recovery_required
+    );
+    let journals =
+        fs::read_dir(fixture.paths.workspace_root().join(".platform/operations")).unwrap();
+    let journal: Journal = journals
+        .filter_map(Result::ok)
+        .find_map(|entry| read_json(&entry.path().join("lifecycle.json")).ok())
+        .unwrap();
+    assert!(journal.resolved && !journal.committed);
+    assert_eq!(journal.result["operationOutcome"], "not_deleted");
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn system_trash_delete_refuses_replaced_source_directory() {
+    let fixture = Fixture::new().await;
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    fixture.store.close_database(&fixture.id).await;
+    use_disposable_system_trash(&fixture);
+    let gate = fixture.store.gate(&fixture.id);
+    let guard = gate.read().await;
+    let task = fixture
+        .lifecycle
+        .submit_project(&fixture.id, "delete", json!({}))
+        .await
+        .unwrap();
+    let original = fixture
+        .paths
+        .data_root()
+        .join("disposable-original-before-replacement");
+    move_directory(&root, &original).unwrap();
+    fs::create_dir(&root).unwrap();
+    fs::write(
+        root.join("keep.txt"),
+        b"replacement is not the authorized object",
+    )
+    .unwrap();
+    drop(guard);
+    let result = fixture.wait(&task).await;
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "PROJECT_IDENTITY_CHANGED");
+    assert_eq!(
+        fs::read(root.join("keep.txt")).unwrap(),
+        b"replacement is not the authorized object"
+    );
+    assert!(original.join("data/main.sqlite").is_file());
+    assert!(
+        fixture
+            .store
+            .control(&fixture.id)
+            .unwrap()
+            .get()
+            .recovery_required
+    );
+    fixture.stop().await;
+}
+
+/// Explicit native integration evidence; never runs as part of the normal suite.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "moves one newly created disposable web project into the real macOS Trash"]
+async fn native_disposable_web_delete_system_trash_smoke() {
+    let fixture = Fixture::new().await;
+    let original = fixture.store.project(&fixture.id).unwrap().root;
+    fs::create_dir(original.join(".git")).unwrap();
+    fs::write(
+        original.join(".git/disposable-local-history"),
+        b"not remotely synchronized",
+    )
+    .unwrap();
+    let task = system_delete(&fixture).await;
+    let result = good(&task);
+    assert_eq!(result["operationOutcome"], "system_trashed");
+    let destination = PathBuf::from(result["systemTrashPath"].as_str().unwrap());
+    assert!(!original.exists());
+    assert_eq!(
+        fs::read(destination.join(".git/disposable-local-history")).unwrap(),
+        b"not remotely synchronized"
+    );
+    assert_eq!(
+        fs::read(destination.join("data/attachments/original.txt")).unwrap(),
+        b"independent attachment"
+    );
+    assert!(fixture.store.list().await.unwrap().is_empty());
+    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
+    eprintln!(
+        "Disposable native web-project deletion evidence: {}",
+        destination.display()
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn system_trash_native_error_keeps_returned_location_as_unverified_evidence() {
+    let fixture = Fixture::new().await;
+    let retained = fixture
+        .paths
+        .data_root()
+        .join("disposable-unconfirmed-native-result");
+    let destination = retained.clone();
+    fixture
+        .lifecycle
+        .set_system_trash_sink_for_test(move |source| {
+            move_directory(source, &destination)?;
+            Err(ApiError::new(
+                "SYSTEM_TRASH_RESULT_UNCONFIRMED",
+                "Disposable native verification failure",
+            )
+            .detail("systemTrashPath", json!(destination)))
+        });
+    let task = system_delete(&fixture).await;
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(
+        task.error.as_ref().unwrap().code,
+        "SYSTEM_TRASH_RESULT_UNCONFIRMED"
+    );
+    assert_eq!(
+        task.error.as_ref().unwrap().details["operationOutcome"],
+        "needs_attention"
+    );
+    assert!(retained.join("data/main.sqlite").is_file());
+    let journal: Journal = read_json(&fixture.lifecycle.journal_path(&task.task_id)).unwrap();
+    assert!(!journal.resolved && !journal.committed);
+    assert_eq!(
+        journal.error.as_ref().unwrap().details["systemTrashError"]["details"]["systemTrashPath"],
+        json!(retained)
+    );
+    assert!(
+        fixture
+            .store
+            .control(&fixture.id)
+            .unwrap()
+            .get()
+            .recovery_required
+    );
     fixture.stop().await;
 }

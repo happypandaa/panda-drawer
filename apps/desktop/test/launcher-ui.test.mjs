@@ -259,8 +259,8 @@ test('Node hexagon stays visible when stopped or failed; missing configuration c
   assert.equal(enters, 1);
   await openMenu();
   assert.match(menu().textContent, /Node 服务项目/);
-  assert.equal(menu().querySelectorAll('[role="menuitem"]').length, 1);
-  assert.doesNotMatch(menu().textContent, /删除项目/);
+  assert.equal(menu().querySelectorAll('[role="menuitem"]').length, 2);
+  assert.match(menu().textContent, /删除项目/);
 });
 
 test('Pending Node entry disables opening and details while keeping accessible configuration status', async () => {

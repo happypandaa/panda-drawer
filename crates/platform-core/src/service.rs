@@ -882,6 +882,16 @@ impl RuntimeHandle {
     pub fn node_install_list(&self) -> std::result::Result<Value, ApiError> {
         self.current().node_install.list()
     }
+    pub fn node_install_require_idle(&self) -> std::result::Result<(), ApiError> {
+        let state = self.current();
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        state.node_install.require_idle()
+    }
     pub async fn node_install_prepare(
         &self,
         apps: Arc<crate::node_apps::NodeApps>,
@@ -1081,6 +1091,7 @@ impl RuntimeHandle {
         let state = self.current();
         let mut value = crate::workspace::info(&state.paths, &state.store)?;
         value["cleanupTask"] = json!(state.history_cleanup.latest_task()?);
+        value["projectDeletionMode"] = json!("system-trash");
         Ok(value)
     }
     pub async fn workspace_migrate(&self, input: Value) -> std::result::Result<Value, ApiError> {

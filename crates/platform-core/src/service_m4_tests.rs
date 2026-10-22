@@ -80,7 +80,15 @@ async fn trash_restore_requires_new_session_and_old_document_remains_rejected_wi
     let (old_cookie, old_epoch) = browser(&service, &id).await;
     let deleted = wait(
         &handle,
-        handle.project_delete(&id, json!({})).await.unwrap(),
+        serde_json::to_value(
+            handle
+                .current()
+                .lifecycle
+                .submit_legacy_delete(&id, json!({}))
+                .await
+                .unwrap(),
+        )
+        .unwrap(),
     )
     .await;
     assert_eq!(deleted["status"], "succeeded", "{deleted}");
@@ -230,5 +238,50 @@ async fn target_disappearing_before_commit_resumes_only_source_without_invalidat
     )
     .await;
     assert_eq!(data["ok"], true, "{data}");
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn system_trash_delete_retires_old_browser_session_and_preserves_other_project() {
+    let (_temporary, paths, service, id) = fixture().await;
+    let handle = service.handle();
+    let keep = service
+        .store()
+        .create(CreateProjectInput {
+            name: "Disposable other project retained".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let (cookie, epoch) = browser(&service, &id).await;
+    let destination = paths.data_root().join("disposable-system-trash");
+    let retained = destination.clone();
+    handle
+        .current()
+        .lifecycle
+        .set_system_trash_sink_for_test(move |source| {
+            std::fs::rename(source, &destination)?;
+            Ok(destination.clone())
+        });
+    let deleted = wait(
+        &handle,
+        handle.project_delete(&id, json!({})).await.unwrap(),
+    )
+    .await;
+    assert_eq!(deleted["status"], "succeeded", "{deleted}");
+    assert_eq!(deleted["result"]["operationOutcome"], "system_trashed");
+    assert_eq!(deleted["result"]["platformRestoreAvailable"], false);
+    assert!(retained.join("data/main.sqlite").is_file());
+    assert!(service.store().project(&keep.id).is_ok());
+    let response = browser_sql(
+        &service.info().base_url,
+        &id,
+        &cookie,
+        &epoch,
+        "INSERT INTO notes VALUES('late','must fail')",
+    )
+    .await;
+    assert_eq!(response["error"]["code"], "PROJECT_TRASHED");
+    assert_eq!(handle.trash_list().await.unwrap(), json!([]));
     service.shutdown().await.unwrap();
 }

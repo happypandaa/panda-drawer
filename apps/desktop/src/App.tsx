@@ -101,7 +101,7 @@ function App() {
     nodeListRevision.current++;
     setNodeApps((current) => current.some((value) => value.id === app.id) ? current.map((value) => value.id === app.id ? app : value) : [...current, app]);
   }, []);
-  function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'details') {
+  function requestNodeApp(app: NodeAppDetail, intent: NodeAppRequest['intent']) {
     if (nodeDraft.pending || nodeModalOpen) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
@@ -390,7 +390,7 @@ function App() {
     if (task?.taskId !== requestedDelete.taskId || !task.final) return;
     if (task.status === 'succeeded' && selectedOverviewId.current === requestedDelete.projectId) {
       dismissOverview();
-      setNotice('项目已移入回收站，可在“空间与工作区 → 回收站”恢复。');
+      setNotice(task.result?.operationOutcome === 'system_trashed' ? '项目已移入系统废纸篓。文件找回请使用 Finder，应用不会自动恢复。' : task.result?.operationOutcome === 'trashed' ? '旧版项目已移入平台回收记录，请在旧版回收记录中核对。' : '删除任务已完成，请在管理任务中核对实际结果与目录。');
     }
     setRequestedDelete(null);
   }, [requestedDelete, tasks, lifecycleTasks, dismissOverview]);
@@ -470,7 +470,7 @@ function App() {
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
             {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
               {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
-              {filteredNodeApps.map((app) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} />)}
+              {filteredNodeApps.map((app) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />)}
             </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
@@ -511,7 +511,7 @@ function App() {
         <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} onCreate={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (settingsBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
         <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
       </Modal>}
-        <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
+        <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={(appId) => { nodeListRevision.current++; setNodeApps((current) => current.filter((app) => app.id !== appId)); setNodeRequest(null); setNotice('应用及其本机数据已移入系统废纸篓。文件找回请使用 Finder，应用不会自动恢复。'); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>
@@ -524,7 +524,7 @@ function App() {
         </Modal>}
         {overviewProject && overview && <Modal title={overviewProject.name} description="项目详情与维护" wide beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
           {feedback}
-          {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作移入回收站或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
+          {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作删除或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
           <div className="project-dialog-actions">
             <button className="primary-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Monitor size={16} />进入项目</button>
             <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={16} />{building.includes(overviewProject.id) ? '构建中…' : '构建项目'}</button>

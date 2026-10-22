@@ -2823,6 +2823,8 @@ dependencies = [
  "futures-util",
  "libc",
  "mime_guess",
+ "objc2",
+ "objc2-foundation",
  "platform-preflight",
  "png 0.18.1",
  "regex",

@@ -93,6 +93,22 @@ impl NodeInstallTasks {
     pub fn issues(&self) -> &[ApiError] {
         &self.issues
     }
+    /// Native application deletion holds the window-operation lock across this
+    /// check and the move. Installation submissions use that same lock, while
+    /// this guard also rejects an already running asynchronous prepare task.
+    pub fn require_idle(&self) -> Result<()> {
+        self.store.check_workspace_available()?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(interrupted());
+        }
+        if !self.active.lock().unwrap().is_empty() {
+            return Err(ApiError::new(
+                "NODE_INSTALL_BUSY",
+                "安装任务尚未结束，请等待完成或取消准备后再删除应用。",
+            ));
+        }
+        Ok(())
+    }
     pub fn list(&self) -> Result<Value> {
         self.store.check_workspace_available()?;
         let mut issues = self.issues.clone();

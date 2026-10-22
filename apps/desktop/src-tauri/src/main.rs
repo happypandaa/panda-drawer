@@ -994,10 +994,7 @@ async fn node_install_prepare(
     input: platform_core::node_install_tasks::PrepareNodeInstallInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .node_install_prepare(state.node_apps.clone(), input)
-        .await
+    node_windows::prepare_install(&state, input).await
 }
 #[tauri::command]
 async fn node_install_candidate(
@@ -1080,6 +1077,27 @@ async fn node_app_configuration(
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     state.node_apps.configuration(&app_id).await
+}
+#[tauri::command]
+async fn node_app_delete_preview(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::delete_preview(&app, &state, &app_id).await
+}
+#[tauri::command]
+async fn node_app_delete(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    input: platform_core::node_apps::DeleteNodeAppInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::delete(&app, &state, &app_id, input).await
 }
 #[tauri::command]
 async fn node_app_configuration_save(
@@ -1526,7 +1544,7 @@ fn main() {
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_cancel,
-            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
+            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,

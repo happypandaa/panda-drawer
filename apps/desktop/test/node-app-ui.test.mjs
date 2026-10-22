@@ -65,7 +65,7 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
   root = createRoot(document.getElementById('root'));
   globalThis.__NODE_FORM_INVOKE__ = mock;
   await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...props })));
-  if (Component === NodeAppsPanel && props.request !== null && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
+  if (Component === NodeAppsPanel && props.request !== null && props.request?.intent !== 'delete' && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
 function input(name) { const metadata = fields.find((field) => field.name === name); const label = [...document.querySelectorAll('label')].find((element) => element.textContent === `${metadata.label}${metadata.required ? '必填' : '选填'}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
@@ -469,7 +469,8 @@ test('Node details reopen without a secret and expose only supported tabs and ac
   await openDetails('Disposable Node fixture');
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
   assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
-  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /删除项目|备份维护/.test(value.textContent)), false);
+  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /备份维护/.test(value.textContent)), false);
+  assert.ok(byText('删除项目'));
   await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-close-draft');
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   await click(byText('丢弃草稿并关闭'));
@@ -538,4 +539,100 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
   assert.equal(document.querySelector('[role=dialog] h2').textContent, 'Disposable Node fixture');
   assert.match(document.querySelector('[role=dialog]').textContent, /Artificial configuration read failure/);
+});
+
+function deletionPreview(value = app(), extra = {}) {
+  return { appId: value.id, name: value.name, path: `/disposable/node-apps/${value.id}`, externalSourcePath: value.sourcePath, canDelete: true, blockedReasons: [], previewId: 'delete_preview_disposable', git: { state: 'unverified', remoteSync: 'unverified' }, ...extra };
+}
+
+test('Node deletion previews the owned folder without needing a readable source and warns about local-only Git', async () => {
+  const value = app({ lastError: 'Source is missing' }); const calls = [];
+  await setup(async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_delete_preview'); return deletionPreview(value);
+  }, { request: { app: value, intent: 'delete', token: 1 } });
+  const confirm = document.querySelector('[aria-label="删除 Node 应用确认"]');
+  assert.ok(confirm); assert.match(confirm.textContent, /源码版本功能，尚未提供远程推送、拉取或同步/);
+  assert.match(confirm.textContent, /未提交或未推送/); assert.match(confirm.textContent, /本机 Git 仓库/);
+  assert.match(confirm.textContent, /数据库、附件和本机配置不能靠现有源码版本恢复/);
+  assert.match(confirm.textContent, /Finder/); assert.match(confirm.textContent, /重新核对登记状态/); assert.match(confirm.textContent, /不会自动启动/);
+  assert.equal(confirm.querySelector('.project-delete-path').textContent, `/disposable/node-apps/${value.id}`);
+  assert.match(confirm.textContent, /原作者的外部源码目录保留/);
+  assert.equal(byText('确认删除应用').disabled, true);
+  assert.deepEqual(calls, [['node_app_delete_preview', { appId: value.id }]]);
+  await click(byText('取消，保留应用'));
+  assert.equal(document.querySelector('[aria-label="删除 Node 应用确认"]'), null);
+  assert.equal(calls.length, 1);
+});
+
+test('Node deletion requires acknowledgement, rejects duplicate submissions, and removes the card only on confirmed success', async () => {
+  const value = app(); const result = deferred(); const deleted = []; const pending = []; let submissions = 0;
+  await setup(async (command, args) => {
+    if (command === 'node_app_delete_preview') return deletionPreview(value);
+    assert.equal(command, 'node_app_delete'); assert.deepEqual(args, { appId: value.id, input: { previewId: 'delete_preview_disposable' } }); submissions++; return result.promise;
+  }, { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id), onDraftStateChange: state => pending.push(state.pending) });
+  await click(document.querySelector('.project-delete-confirmation input[type=checkbox]'));
+  const submitDelete = byText('确认删除应用'); await click(submitDelete); await click(submitDelete);
+  assert.equal(submissions, 1); assert.deepEqual(deleted, []); assert.ok(document.querySelector('[role=dialog]'));
+  assert.equal(byText('重新核对删除范围').disabled, true); assert.equal(byText('取消，保留应用').disabled, true);
+  assert.equal(pending.at(-1), true);
+  await act(async () => result.resolve({ appId: value.id, operationOutcome: 'system_trashed' }));
+  assert.deepEqual(deleted, [value.id]); assert.equal(document.querySelector('[role=dialog]'), null); assert.equal(pending.at(-1), false);
+});
+
+test('Failed Node trash keeps the application visible and requires a new preview rather than an implicit permanent delete', async () => {
+  const value = app(); const calls = []; const deleted = []; let previews = 0;
+  await setup(async (command) => {
+    calls.push(command);
+    if (command === 'node_app_delete_preview') return deletionPreview(value, { previewId: `preview_${++previews}` });
+    if (command === 'node_app_delete') throw new Error('System trash denied fixture');
+    throw new Error(command);
+  }, { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+  await click(document.querySelector('.project-delete-confirmation input[type=checkbox]')); await click(byText('确认删除应用'));
+  assert.match(document.querySelector('[role=dialog]').textContent, /System trash denied fixture/);
+  assert.ok(document.querySelector('[role=dialog]')); assert.deepEqual(deleted, []);
+  assert.equal(byText('确认删除应用').disabled, true);
+  await click(byText('重新核对删除范围')); assert.equal(previews, 2);
+  assert.equal(document.querySelector('.project-delete-confirmation input[type=checkbox]').checked, false);
+  assert.deepEqual(calls, ['node_app_delete_preview', 'node_app_delete', 'node_app_delete_preview']);
+});
+
+test('A running Node application cannot be deleted until its window and service are stopped', async () => {
+  const value = app({ state: 'running' }); const calls = [];
+  await setup(async (command) => { calls.push(command); assert.equal(command, 'node_app_delete_preview'); return deletionPreview(value, { canDelete: false, blockedReasons: ['请先关闭应用窗口。'] }); }, { request: { app: value, intent: 'delete', token: 1 } });
+  assert.match(document.querySelector('.project-delete-confirmation').textContent, /请先关闭应用窗口/);
+  assert.equal(document.querySelector('.project-delete-confirmation input[type=checkbox]').disabled, true);
+  assert.equal(byText('确认删除应用').disabled, true);
+  assert.deepEqual(calls, ['node_app_delete_preview']);
+});
+
+test('An old deletion preview cannot be confirmed after the platform instance changes', async () => {
+  const value = app(); const old = deferred(); let reads = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'delete', token: 1 } };
+  await setup(async command => { assert.equal(command, 'node_app_delete_preview'); return ++reads === 1 ? old.promise : deletionPreview(value, { previewId: 'current_preview' }); }, props);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  await act(async () => old.resolve(deletionPreview(value, { previewId: 'stale_preview' })));
+  assert.equal(byText('确认删除应用').disabled, true);
+  await click(byText('重新核对删除范围'));
+  assert.equal(reads, 2); assert.equal(byText('确认删除应用').disabled, true);
+  await click(document.querySelector('.project-delete-confirmation input[type=checkbox]'));
+  assert.equal(byText('确认删除应用').disabled, false);
+});
+
+test('The shared project shell removes a Node card only after a confirmed system-trash response', async () => {
+  const value = app(); const state = { nodes: [value] }; const result = deferred(); let submissions = 0;
+  await setup(shellMock(state, async (command) => {
+    if (command === 'node_app_delete_preview') return deletionPreview(value);
+    if (command === 'node_app_delete') { submissions++; return result.promise; }
+    throw new Error(command);
+  }), {}, App);
+  const entry = document.querySelector(`[aria-label='进入项目「${value.name}」']`);
+  await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+  await click(document.querySelector(`[aria-label='删除项目「${value.name}」']`));
+  await click(document.querySelector('.project-delete-confirmation input[type=checkbox]')); await click(byText('确认删除应用'));
+  assert.equal(submissions, 1); assert.equal(document.querySelectorAll('.project-card').length, 1);
+  assert.equal(document.querySelector('.radio-toolbar .primary-button').disabled, true);
+  await act(async () => { state.nodes = []; result.resolve({ appId: value.id, operationOutcome: 'system_trashed' }); });
+  assert.equal(document.querySelectorAll('.project-card').length, 0); assert.equal(document.querySelector('[role=dialog]'), null);
+  assert.match(document.querySelector('.notice-success').textContent, /应用及其本机数据已移入系统废纸篓/);
 });

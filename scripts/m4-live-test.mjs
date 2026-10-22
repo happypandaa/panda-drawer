@@ -1,18 +1,19 @@
 // Creates only M4 可丢弃 projects. It never deletes or edits an original project.
-// Run only after an M4 app is explicitly launched; no settings are written here.
+// Run only after the current system-trash app is explicitly launched. New disposable
+// folders remain in the macOS Trash as evidence; this script never restores or purges them.
 import assert from 'node:assert/strict';
 import { copyFile, mkdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   archivePath, artifactRoot, assertDisposable, backup, backupIdOf, begin, business, cli,
-  corruptArchivedDatabase, createProject, end, expectBusinessError, expectFailure, info, inspectArchive, invoke,
+  corruptArchivedDatabase, createProject, end, expectBusinessError, expectFailure, info, inspectArchive,
   maintenance, operation, projectIdOf, restore, runtime, saveReport, session, sha256,
-  sql, succeeded, trash, trashIdOf, waitTask,
+  requireSystemTrashDeletion, sql, succeeded, verifySystemTrashed, waitTask,
 } from './m4-test-utils.mjs';
 
 const current = runtime();
-// Fail before creating a fixture if the connected package has not reached M4.
-cli(['workspace', 'info']);
+// Fail before creating a fixture if the running package has older delete semantics.
+requireSystemTrashDeletion();
 const source = createProject('导入导出复制回收验证');
 const root = source.projectRoot, id = source.id, tasks = [], checks = [], projects = [id];
 const check = text => { checks.push(text); console.log(`PASS ${text}`); };
@@ -149,52 +150,51 @@ check('maintenance export/import keeps an independent session and new-ID baselin
 // Restore the source's pre-change baseline so it can finish maintenance cleanly.
 succeeded(restore(id, sourceMaintenance.baselineBackupId, tasks, sourceMaintenance.maintenanceId));
 sourceMaintenance = maintenance(id); succeeded(end(id, sourceMaintenance.maintenanceId, tasks));
-const beforeTrash = await session(current, id);
-const deleted = operation('delete', id, {}, tasks); succeeded(deleted); const trashId = trashIdOf(deleted);
-assert.ok(!cli(['project', 'list']).some(project => project.id === id));
-assert.ok(JSON.stringify(cli(['trash', 'list'])).includes(trashId));
-assert.ok(importFailure({ archivePath: exportedPath, mode: 'original' }), 'Trash retains original ID occupancy');
-const deletedPage = await business(current, beforeTrash, 'db/execute', 'POST', { sql: 'SELECT 1' });
-assert.ok(!deletedPage.ok, 'Deleted project cannot use old session');
-succeeded(trash('restore', trashId, tasks));
-const afterTrash = await session(current, id); assert.notEqual(afterTrash.epoch, beforeTrash.epoch);
-await expectBusinessError(await business(current, { ...afterTrash, epoch: beforeTrash.epoch }, 'db/execute', 'POST', { sql: 'SELECT 1' }), 'PROJECT_RELOAD_REQUIRED');
+const beforeDelete = await session(current, id);
+const legacyTrashBefore = cli(['trash', 'list']);
+const deleted = operation('delete', id, {}, tasks);
+const firstSystemTrashPath = await verifySystemTrashed(deleted, source);
+assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore, 'Existing platform trash records remain unchanged');
+for (const [path, hash] of Object.entries(hashes)) assert.equal(sha256(await readFile(join(firstSystemTrashPath, path))), hash, path);
+const deletedPage = await business(current, beforeDelete, 'db/execute', 'POST', { sql: 'SELECT 1' });
+assert.ok(!deletedPage.ok, 'Deleted project cannot use its old session');
 assert.equal(sha256(await readFile(archivePath(id, manualBackupId))), manualBackupHash);
-check('trash occupies the ID; restoration preserves content and rejects old documents with new cookies');
-
-const secondDelete = operation('delete', id, {}, tasks); succeeded(secondDelete); const purgeId = trashIdOf(secondDelete);
-succeeded(trash('purge', purgeId, tasks));
-assert.equal(sha256(await readFile(archivePath(id, manualBackupId))), manualBackupHash, 'Purge keeps historical backups');
-assert.equal(sha256(await readFile(exportedPath)), archiveBeforeImport, 'Purge keeps external exports');
+assert.equal(sha256(await readFile(exportedPath)), archiveBeforeImport);
 const originalImport = operation('import', undefined, { archivePath: exportedPath, mode: 'original' }, tasks);
 succeeded(originalImport); assert.equal(projectIdOf(originalImport), id);
-const reimported = await session(current, id); assert.notEqual(reimported.epoch, afterTrash.epoch);
-await expectBusinessError(await business(current, { ...reimported, epoch: afterTrash.epoch }, 'db/execute', 'POST', { sql: 'SELECT 1' }), 'PROJECT_RELOAD_REQUIRED');
+const reimported = await session(current, id); assert.notEqual(reimported.epoch, beforeDelete.epoch);
+await expectBusinessError(await business(current, { ...reimported, epoch: beforeDelete.epoch }, 'db/execute', 'POST', { sql: 'SELECT 1' }), 'PROJECT_RELOAD_REQUIRED');
 assert.deepEqual(sql(id, 'SELECT id, uuid, value FROM m4_probe').rows, [row]);
-check('purge affects only selected trash; old backups and exports permit original-ID reimport with fresh document identity');
+check('system Trash receives the complete project; existing platform trash, backups and external exports are retained; original-ID ZIP import requires a new document identity');
+
+// An independent second OS entry must not overwrite the first one. Recovery in
+// this probe uses the existing public ZIP import, never an in-app trash restore.
+const reimportedProject = assertDisposable(info(id));
+const secondDelete = operation('delete', id, {}, tasks);
+const secondSystemTrashPath = await verifySystemTrashed(secondDelete, reimportedProject);
+assert.notEqual(secondSystemTrashPath, firstSystemTrashPath);
+assert.equal(sha256(await readFile(archivePath(id, manualBackupId))), manualBackupHash);
+const secondImport = operation('import', undefined, { archivePath: exportedPath, mode: 'original' }, tasks);
+succeeded(secondImport); assert.equal(projectIdOf(secondImport), id);
+const afterSecondImport = await session(current, id); assert.notEqual(afterSecondImport.epoch, reimported.epoch);
+await expectBusinessError(await business(current, { ...afterSecondImport, epoch: reimported.epoch }, 'db/execute', 'POST', { sql: 'SELECT 1' }), 'PROJECT_RELOAD_REQUIRED');
+assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore);
+check('repeated deletion produces distinct system Trash entries and never revives old documents or purges earlier evidence');
 
 // This new fixture has never opened a business database worker. Backup opens and
 // closes its own read-only handle before the bytes are intentionally damaged.
-const damaged = createProject('坏库回收验证'); projects.push(damaged.id);
+const damaged = createProject('坏库系统废纸篓验证'); projects.push(damaged.id);
 const damagedBackup = backup(damaged.id, tasks); succeeded(damagedBackup); const damagedBackupId = backupIdOf(damagedBackup);
 const healthyHistoryHash = sha256(await readFile(archivePath(damaged.id, damagedBackupId)));
 const damagedBytes = Buffer.from('M4 deliberately damaged SQLite fixture; preserve me');
 await writeFile(join(damaged.projectRoot, 'data/main.sqlite'), damagedBytes);
-const damagedDelete = operation('delete', damaged.id, {}, tasks); succeeded(damagedDelete); const damagedTrashId = trashIdOf(damagedDelete);
-const retainedPath = join(current.workspaceRoot, '.platform/trash', damagedTrashId, 'project/data/main.sqlite');
-assert.equal(sha256(await readFile(retainedPath)), sha256(damagedBytes));
-succeeded(trash('restore', damagedTrashId, tasks));
-assert.equal(sha256(await readFile(join(damaged.projectRoot, 'data/main.sqlite'))), sha256(damagedBytes));
-const damagedState = maintenance(damaged.id);
-assert.equal(damagedState.mode, 'maintenance'); assert.equal(damagedState.readyForChanges, false);
-assert.ok(damagedState.maintenanceId); assert.ok(damagedState.lastError);
-assert.equal(invoke(['db', 'execute', '--project', damaged.id, '--input', '-'], { sql: 'SELECT 1', maintenanceId: damagedState.maintenanceId }, true).ok, false);
-const damagedAgain = operation('delete', damaged.id, { maintenanceId: damagedState.maintenanceId }, tasks); succeeded(damagedAgain);
-const damagedPurgeId = trashIdOf(damagedAgain);
-assert.equal(sha256(await readFile(join(current.workspaceRoot, '.platform/trash', damagedPurgeId, 'project/data/main.sqlite'))), sha256(damagedBytes));
-succeeded(trash('purge', damagedPurgeId, tasks));
+const damagedDelete = operation('delete', damaged.id, {}, tasks);
+const damagedSystemTrashPath = await verifySystemTrashed(damagedDelete, damaged);
+assert.equal(sha256(await readFile(join(damagedSystemTrashPath, 'data/main.sqlite'))), sha256(damagedBytes));
 assert.equal(sha256(await readFile(archivePath(damaged.id, damagedBackupId))), healthyHistoryHash);
-check('damaged database moves and restores byte-for-byte into blocked maintenance; re-delete and purge retain verified history');
+assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore);
+check('damaged database moves byte-for-byte to system Trash without a healthy-current-database prerequisite; independent historical backup stays unchanged');
 
-await saveReport('m4-live.json', { ok: true, projectId: id, projectRoot: root, workspaceRoot: current.workspaceRoot, instanceId: current.instanceId, projects, maintenanceCopyId, maintenanceImportedId, checks, tasks, exportedPath, manualBackupId, stableHashes: hashes });
-console.log(`M4 live completed; source ${id}; report .test-artifacts/m4-live.json`);
+const reportName = `m4-system-trash-live-${id}.json`;
+await saveReport(reportName, { ok: true, projectId: id, projectRoot: root, workspaceRoot: current.workspaceRoot, instanceId: current.instanceId, projects, maintenanceCopyId, maintenanceImportedId, checks, tasks, exportedPath, manualBackupId, stableHashes: hashes, systemTrashPaths: [firstSystemTrashPath, secondSystemTrashPath, damagedSystemTrashPath], deletionMode: 'system-trash', systemTrashRetainedAsEvidence: true });
+console.log(`M4 system-trash live completed; source ${id}; report .test-artifacts/${reportName}`);

@@ -117,6 +117,70 @@ pub(super) async fn apply_install(
         .await
 }
 
+/// Preparation submission shares the same native admission lock as install
+/// commit and deletion. Its durable background task is checked by the idle
+/// guard before a later delete; no new preparation can pass that check midway.
+pub(super) async fn prepare_install(
+    state: &AppState,
+    input: platform_core::node_install_tasks::PrepareNodeInstallInput,
+) -> Result<Value, ApiError> {
+    let _operation = state.node_windows.operations.lock().await;
+    alive(state)?;
+    state
+        .handle
+        .node_install_prepare(state.node_apps.clone(), input)
+        .await
+}
+
+fn deletion_window_blocker(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+) -> Result<Option<String>, ApiError> {
+    Ok(
+        (session(state, id).is_some() || app.get_webview_window(&label(id)?).is_some())
+            .then(|| "请先处理草稿并正常关闭此应用窗口，等待后台服务完成收尾后再删除。".into()),
+    )
+}
+
+pub(super) async fn delete_preview(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+) -> Result<Value, ApiError> {
+    let _operation = state.node_windows.operations.lock().await;
+    alive(state)?;
+    let mut preview = state.node_apps.delete_preview(id).await?;
+    let mut blockers = preview["blockedReasons"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(reason) = deletion_window_blocker(app, state, id)? {
+        blockers.push(Value::String(reason));
+    }
+    if let Err(error) = state.handle.node_install_require_idle() {
+        blockers.push(Value::String(error.message));
+    }
+    preview["canDelete"] = Value::Bool(blockers.is_empty());
+    preview["blockedReasons"] = Value::Array(blockers);
+    Ok(preview)
+}
+
+pub(super) async fn delete(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+    input: platform_core::node_apps::DeleteNodeAppInput,
+) -> Result<Value, ApiError> {
+    let _operation = state.node_windows.operations.lock().await;
+    alive(state)?;
+    state.handle.node_install_require_idle()?;
+    if let Some(reason) = deletion_window_blocker(app, state, id)? {
+        return Err(ApiError::new("NODE_DELETE_WINDOW_OPEN", reason));
+    }
+    state.node_apps.delete(id, input).await
+}
+
 pub(super) async fn open(
     app: &tauri::AppHandle,
     state: &AppState,
