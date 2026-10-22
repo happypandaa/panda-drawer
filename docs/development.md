@@ -300,12 +300,14 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 
 ## 9 M4 生命周期与工作区迁移
 
+2026-10-22 用户确认普通下载后安装、完整 ZIP 导入和复制均生成新本机实例 ID，允许重复获取并独立并存。编辑既有实例保留 ID；显式同实例更新、备份／回收站恢复和公开工作区迁移保留原身份。作者 `app.id` 与本机实例 ID 分开；本轮不增加自动去重、派生或合并，不重新分配既有项目 ID、不改动既有用户数据。完整 ZIP 的实际入口与原身份兼容规则如下；该确认不扩展旧备份体系，也不开放尚未实现的安装格式。
+
 以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
 
 | 命令 | 输入与结果 |
 | --- | --- |
 | `project export --project ID --input export.json` | `destinationPath` 为绝对 ZIP 路径；覆盖须显式 `overwrite: true`；维护时携带 `maintenanceId` |
-| `project import --input import.json` | `archivePath` 为绝对路径，`mode` 必须明确为 `original` 或 `copy`，可选 `name` |
+| `project import --input import.json` | `archivePath` 为绝对路径，`mode` 可省略，默认 `copy`，可选 `name`；显式 `original` 保留归档身份和名称 |
 | `project copy --project ID --input copy.json` | 可选 `name`、`maintenanceId`；创建独立新平台 ID，保留业务主键 |
 | `project delete --project ID` | 移入回收站；维护中通过 `--maintenance ID` 或 `--input` 传本轮 ID |
 | `trash list` / `trash info --trash ID` | 回收项状态、原项目、路径和恢复可用性 |
@@ -314,7 +316,7 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 | `workspace info` | 当前根目录、文件系统、迁移任务及保留旧根；未知统计为 `null` |
 | `workspace migrate --input migration.json` | `destinationPath` 为已存在、空、可写且独立的本机 APFS 目录 |
 
-这些命令均支持 `--json`。请求例子分别为 `{"destinationPath":"/绝对路径/project.zip"}`、`{"archivePath":"/绝对路径/project.zip","mode":"copy","name":"副本名称"}`、`{"destinationPath":"/绝对路径/新的空工作区"}`。导入原 ID 时，活跃项目、回收站和正在登记的操作均占用身份，不能覆盖冲突对象。复制与导入为副本不全局替换用户文字、业务 UUID 或附件名；不升级固定 SDK 或覆盖业务说明。已验证网页直接复用，不要求 Node 或重新构建。
+这些命令均支持 `--json`。请求例子分别为 `{"destinationPath":"/绝对路径/project.zip"}`、`{"archivePath":"/绝对路径/project.zip"}`（默认新 ID；可另给 `name`）、`{"destinationPath":"/绝对路径/新的空工作区"}`。管理界面同样默认“作为新项目导入”；重复导入同一 ZIP 生成不同实例。显式 `{"archivePath":"/绝对路径/project.zip","mode":"original"}` 才保留原 ID，活跃项目、回收站和正在登记的操作均占用身份，不能覆盖冲突对象。复制与默认导入不全局替换用户文字、业务 UUID 或附件名；不升级固定 SDK 或覆盖业务说明。已验证网页直接复用，不要求 Node 或重新构建。
 
 维护快照与来源不明的快照登记为新的本机维护会话，建立对应目标 ID 的完整基线；已知待构建要求继续保留。若登记成功而基线失败，任务会返回 `registered_maintenance_not_ready`，项目已经存在但 `readyForChanges: false`；先查询项目/维护状态，以该会话重试基线，不自动再次导入或复制。回收站恢复遇到坏库也不创建空库；恢复字节保留并阻断业务，修复或再次删除均按当前维护 ID 操作。清除部分失败时为 `purgeIncomplete`，不能承诺仍完整可恢复；按原回收项明确重试。
 

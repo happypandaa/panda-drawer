@@ -38,9 +38,22 @@ function PathInput({ label, value, onChange, kind, disabled, suggestedName }: { 
 
 export function ImportPanel({ onTask, onClose, disabled }: { onTask: TaskHandler; onClose: () => void; disabled: boolean }) {
   const panel = useReveal();
-  const [path, setPath] = useState(''); const [mode, setMode] = useState<'original' | 'copy'>('original'); const [name, setName] = useState('');
+  const [path, setPath] = useState(''); const [mode, setMode] = useState<'original' | 'copy'>('copy'); const [name, setName] = useState('');
   const { pending, error, submit } = useOperation(onTask);
-  return <section ref={panel} className="lifecycle-card" aria-labelledby="import-title"><div className="section-heading"><div><h2 id="import-title">导入完整项目</h2><p>从平台导出的 ZIP 恢复项目。导入先校验归档，不运行项目脚本。</p></div><button className="icon-button" onClick={onClose} disabled={pending} aria-label="关闭导入"><X size={18} /></button></div><form onSubmit={(event) => { event.preventDefault(); void submit('project_import', { input: { archivePath: path.trim(), mode, ...(mode === 'copy' && name.trim() ? { name: name.trim() } : {}) } }); }}><PathInput label="完整项目 ZIP" kind="import" value={path} onChange={setPath} disabled={pending || disabled} /><fieldset disabled={pending || disabled} className="choice-group"><legend>导入方式</legend><label><input type="radio" name="import-mode" checked={mode === 'original'} onChange={() => setMode('original')} />恢复原项目 ID</label><label><input type="radio" name="import-mode" checked={mode === 'copy'} onChange={() => setMode('copy')} />作为新副本导入</label></fieldset><p className="project-help">{mode === 'original' ? '保留原项目身份。如果该 ID 已在项目列表或回收站中，平台会拒绝导入，不会覆盖。' : '生成新的项目 ID，数据库、附件和源码各自独立。'}</p>{mode === 'copy' && <label>副本名称（选填）<input value={name} onChange={(event) => setName(event.target.value)} disabled={pending || disabled} /></label>}<div className="form-footer"><span>维护中的快照会继续保持维护。</span><button className="primary-button" type="submit" disabled={pending || disabled || !path.trim().startsWith('/')}><Upload size={14} />{pending ? '正在提交…' : '校验并导入'}</button></div></form>{error && <p className="task-error" role="alert">{error}</p>}</section>;
+  return <section ref={panel} className="lifecycle-card" aria-labelledby="import-title">
+    <div className="section-heading"><div><h2 id="import-title">导入完整项目</h2><p>从平台导出的 ZIP 导入项目。导入先校验归档，不运行项目脚本。</p></div><button className="icon-button" onClick={onClose} disabled={pending} aria-label="关闭导入"><X size={18} /></button></div>
+    <form onSubmit={(event) => { event.preventDefault(); void submit('project_import', { input: { archivePath: path.trim(), mode, ...(mode === 'copy' && name.trim() ? { name: name.trim() } : {}) } }); }}>
+      <PathInput label="完整项目 ZIP" kind="import" value={path} onChange={setPath} disabled={pending || disabled} />
+      <fieldset disabled={pending || disabled} className="choice-group"><legend>导入方式</legend>
+        <label><input type="radio" name="import-mode" value="copy" checked={mode === 'copy'} onChange={() => setMode('copy')} />作为新项目导入（默认）</label>
+        <label><input type="radio" name="import-mode" value="original" checked={mode === 'original'} onChange={() => setMode('original')} />保留原 ID（用于恢复）</label>
+      </fieldset>
+      <p className="project-help">{mode === 'original' ? '用于接回原项目身份。如果该 ID 已在项目列表或回收站中，平台会拒绝导入，不会覆盖或合并。' : '每次导入都生成新 ID，重复导入可以并存；数据库、附件和源码各自独立。'}</p>
+      {mode === 'copy' && <label>副本名称（选填）<input value={name} onChange={(event) => setName(event.target.value)} disabled={pending || disabled} /></label>}
+      <div className="form-footer"><span>维护中的快照会继续保持维护。</span><button className="primary-button" type="submit" disabled={pending || disabled || !path.trim().startsWith('/')}><Upload size={14} />{pending ? '正在提交…' : '校验并导入'}</button></div>
+    </form>
+    {error && <p className="task-error" role="alert">{error}</p>}
+  </section>;
 }
 
 export function ProjectLifecyclePanel({ project, status, onTask, disabled, active = true, deleteRequested = 0, onDraftStateChange }: {

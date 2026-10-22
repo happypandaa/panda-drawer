@@ -237,7 +237,9 @@ enum ProjectCommand {
     Handoff(ProjectOptions),
     /// Export a validated complete ZIP to destinationPath in JSON.
     Export(ProjectInputOptions),
-    /// Import archivePath with mode original or copy; never overwrites a project.
+    /// Import archivePath as a fresh project by default; never overwrites a project.
+    ///
+    /// JSON mode defaults to copy. Set original only to recover an archived project identity.
     Import(InputOptions),
     /// Create an independent project copy, optionally choosing a name in JSON.
     Copy(ProjectMutationOptions),
@@ -522,16 +524,11 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
         ),
         ProjectCommand::Import(options) => (
             options.output.json,
-            read_input(&options.input).and_then(|input| {
-                validate_path_field(&input, "archivePath")?;
-                if !matches!(input["mode"].as_str(), Some("original" | "copy")) {
-                    return Err(CliError::new(
-                        "INPUT_INVALID",
-                        "Import mode must explicitly be original or copy.",
-                    ));
-                }
-                business_request("POST", "/api/v1/projects/imports", None, Some(input))
-            }),
+            read_input(&options.input)
+                .and_then(prepare_project_import_input)
+                .and_then(|input| {
+                    business_request("POST", "/api/v1/projects/imports", None, Some(input))
+                }),
         ),
         ProjectCommand::Copy(options) => {
             (options.output.json, mutation_request(options, "/copies"))
@@ -776,6 +773,21 @@ fn validate_path_field(input: &Value, field: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn prepare_project_import_input(mut input: Value) -> Result<Value> {
+    validate_path_field(&input, "archivePath")?;
+    match input.get("mode") {
+        None => input["mode"] = json!("copy"),
+        Some(Value::String(mode)) if matches!(mode.as_str(), "original" | "copy") => {}
+        Some(_) => {
+            return Err(CliError::new(
+                "INPUT_INVALID",
+                "Import mode must be original or copy; omit it to create a fresh project.",
+            ));
+        }
+    }
+    Ok(input)
 }
 
 fn database_command(command: DatabaseCommand) -> (bool, Result<Value>) {
@@ -1902,6 +1914,36 @@ mod tests {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         assert!(Cli::try_parse_from(["cli", "backup", "restore", "--project", "p_test"]).is_err());
+    }
+
+    #[test]
+    fn project_import_defaults_to_fresh_identity_and_preserves_explicit_modes() {
+        let archive = std::env::temp_dir().join("disposable-project.zip");
+        let input = json!({"archivePath":archive,"name":"Shared project"});
+        let mut expected = input.clone();
+        expected["mode"] = json!("copy");
+        assert_eq!(prepare_project_import_input(input).unwrap(), expected);
+
+        for mode in ["copy", "original"] {
+            let input = json!({"archivePath":archive,"mode":mode,"name":"Shared project"});
+            assert_eq!(prepare_project_import_input(input.clone()).unwrap(), input);
+        }
+        for mode in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!([]),
+            json!({}),
+            json!(""),
+            json!("fresh"),
+        ] {
+            assert_eq!(
+                prepare_project_import_input(json!({"archivePath":archive,"mode":mode}))
+                    .unwrap_err()
+                    .code,
+                "INPUT_INVALID"
+            );
+        }
     }
 
     #[test]

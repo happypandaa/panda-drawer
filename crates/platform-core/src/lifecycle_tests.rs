@@ -560,6 +560,114 @@ async fn export_copy_import_preserve_data_metadata_and_independent_files_without
 }
 
 #[tokio::test]
+async fn repeated_imports_without_mode_create_independent_copies_and_preserve_business_ids() {
+    let fixture = Fixture::new().await;
+    let original = fixture.store.project(&fixture.id).unwrap();
+    let source_relative = "app/src/disposable-import-evidence.txt";
+    let attachment_relative = "data/attachments/original.txt";
+    fs::write(original.root.join(source_relative), b"original source").unwrap();
+    let original_manifest = fs::read(original.root.join("project.json")).unwrap();
+    let original_database = sha256(&original.root.join("data/main.sqlite")).unwrap();
+    let archive = fixture.export_path("disposable-repeated-import.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let archive_digest = sha256(&archive).unwrap();
+
+    let mut imported_ids = Vec::new();
+    for _ in 0..2 {
+        let submitted = fixture
+            .lifecycle
+            .submit_import(json!({"archivePath":archive}))
+            .await
+            .unwrap();
+        let imported = fixture.wait(&submitted).await;
+        let id = good(&imported)["projectId"].as_str().unwrap().to_owned();
+        assert_ne!(id, fixture.id);
+        assert!(!imported_ids.contains(&id));
+        imported_ids.push(id);
+    }
+    let first = fixture.store.project(&imported_ids[0]).unwrap();
+    let second = fixture.store.project(&imported_ids[1]).unwrap();
+    let evidence = |root: &Path| {
+        let database = rusqlite::Connection::open(root.join("data/main.sqlite")).unwrap();
+        database
+            .query_row("SELECT id,value FROM evidence", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+    };
+    for project in [&original, &first, &second] {
+        assert_eq!(
+            evidence(&project.root),
+            ("business-uuid".into(), "original".into())
+        );
+        assert_eq!(
+            fs::read(project.root.join(source_relative)).unwrap(),
+            b"original source"
+        );
+        assert_eq!(
+            fs::read(project.root.join(attachment_relative)).unwrap(),
+            b"independent attachment"
+        );
+    }
+    for relative in ["data/main.sqlite", attachment_relative, source_relative] {
+        let mut identities = Vec::new();
+        for project in [&original, &first, &second] {
+            let metadata = fs::metadata(project.root.join(relative)).unwrap();
+            assert_eq!(metadata.nlink(), 1);
+            let identity = (metadata.dev(), metadata.ino());
+            assert!(!identities.contains(&identity));
+            identities.push(identity);
+        }
+    }
+
+    rusqlite::Connection::open(first.root.join("data/main.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE evidence SET value='first-copy-only' WHERE id='business-uuid'",
+            [],
+        )
+        .unwrap();
+    fs::write(first.root.join(source_relative), b"first copy source").unwrap();
+    fs::write(
+        first.root.join(attachment_relative),
+        b"first copy attachment",
+    )
+    .unwrap();
+    assert_eq!(
+        evidence(&first.root),
+        ("business-uuid".into(), "first-copy-only".into())
+    );
+    for project in [&original, &second] {
+        assert_eq!(
+            evidence(&project.root),
+            ("business-uuid".into(), "original".into())
+        );
+        assert_eq!(
+            fs::read(project.root.join(source_relative)).unwrap(),
+            b"original source"
+        );
+        assert_eq!(
+            fs::read(project.root.join(attachment_relative)).unwrap(),
+            b"independent attachment"
+        );
+    }
+    assert_eq!(
+        fs::read(original.root.join("project.json")).unwrap(),
+        original_manifest
+    );
+    assert_eq!(
+        sha256(&original.root.join("data/main.sqlite")).unwrap(),
+        original_database
+    );
+    assert_eq!(sha256(&archive).unwrap(), archive_digest);
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn export_collision_and_project_destination_leave_original_files_unchanged() {
     let fixture = Fixture::new().await;
     let archive = fixture.export_path("existing.zip");
