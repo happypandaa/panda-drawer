@@ -197,7 +197,7 @@ confirmReload.listeners.click();
 assert.equal(reloads, 1);
 assertDraftPreserved();
 await changeState({ mode: 'normal', reloadRequired: true, trashed: true });
-assert.match(heading.textContent, /移入回收站/);
+assert.match(heading.textContent, /项目已删除/);
 assert.equal(reload.hidden, true);
 assertDraftPreserved();
 await changeState({ mode: 'normal', reloadRequired: true, instanceChanged: true });
@@ -206,7 +206,7 @@ assert.equal(reload.hidden, true);
 assertDraftPreserved();
 for (const [code, titlePattern] of [
   ['WORKSPACE_MIGRATING', /工作区正在迁移/],
-  ['PROJECT_TRASHED', /移入回收站/],
+  ['PROJECT_TRASHED', /项目已删除/],
   ['SERVICE_INSTANCE_CHANGED', /服务已切换/],
   ['INVALID_SESSION', /连接已失效/],
 ]) {

@@ -19,18 +19,38 @@ async fn history_cleanup_http_requires_admin_confirmation_and_preserves_other_pr
     let disposable = tests::create(&service, "Disposable history fixture").await;
     let marker = keep.project_root.join("README.md");
     let before = std::fs::read(&marker).unwrap();
-    let deleted = serde_json::to_value(
-        service
-            .handle()
-            .current()
-            .lifecycle
-            .submit_legacy_delete(&disposable.id, json!({}))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let backup = service
+        .handle()
+        .backup_create(&disposable.id, json!({}))
+        .await
+        .unwrap();
+    let backup = final_task(&service, backup["taskId"].as_str().unwrap()).await;
+    assert_eq!(backup["status"], "succeeded");
+    let restored = service
+        .handle()
+        .backup_restore(
+            &disposable.id,
+            json!({"backupId":backup["result"]["backupId"]}),
+        )
+        .await
+        .unwrap();
+    let restored = final_task(&service, restored["taskId"].as_str().unwrap()).await;
+    assert_eq!(restored["status"], "succeeded");
+    let control = service
+        .handle()
+        .maintenance_status(&disposable.id)
+        .await
+        .unwrap();
+    let ended = service
+        .handle()
+        .maintenance_end(
+            &disposable.id,
+            json!({"maintenanceId":control["maintenanceId"]}),
+        )
+        .await
+        .unwrap();
     assert_eq!(
-        final_task(&service, deleted["taskId"].as_str().unwrap()).await["status"],
+        final_task(&service, ended["taskId"].as_str().unwrap()).await["status"],
         "succeeded"
     );
     let base = service.info().base_url;

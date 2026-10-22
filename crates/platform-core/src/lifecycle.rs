@@ -307,11 +307,12 @@ impl LifecycleManager {
         tasks: Arc<BuildManager>,
         maintenance: Arc<MaintenanceManager>,
     ) -> Result<Arc<Self>, ApiError> {
-        for relative in [".platform/operations", ".platform/trash"] {
-            let path = paths.workspace_root().join(relative);
-            check_no_symlinks(&path, true)?;
-            fs::create_dir_all(path)?;
-        }
+        let operations = paths.workspace_root().join(".platform/operations");
+        check_no_symlinks(&operations, true)?;
+        fs::create_dir_all(operations)?;
+        // Existing legacy records remain guarded for interrupted-operation
+        // recovery and migration, but fresh workspaces need no private trash.
+        check_no_symlinks(&paths.workspace_root().join(".platform/trash"), true)?;
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
             paths,
@@ -634,7 +635,10 @@ impl LifecycleManager {
         self.launch(journal, input, vec![lease]);
         Ok(record)
     }
-    pub async fn submit_trash(
+    // Compatibility fixtures exercise historical completion and recovery, but
+    // production never starts another platform-trash operation.
+    #[cfg(test)]
+    pub(crate) async fn submit_trash(
         self: &Arc<Self>,
         trash_id: &str,
         kind: &str,
@@ -735,8 +739,11 @@ impl LifecycleManager {
             "copy" => self.copy(journal, input).await,
             "import" => self.import(journal, input).await,
             "delete" if journal.system_trash => self.delete(journal).await,
+            #[cfg(test)]
             "delete" => self.delete_legacy(journal).await,
+            #[cfg(test)]
             "trashRestore" => self.restore_trash(journal).await,
+            #[cfg(test)]
             "trashPurge" => self.purge(journal).await,
             _ => Err(ApiError::new(
                 "INVALID_INPUT",
@@ -1070,6 +1077,7 @@ impl LifecycleManager {
         self.notify(&id);
         Ok(journal.result.clone())
     }
+    #[cfg(test)]
     async fn delete_legacy(&self, journal: &mut Journal) -> Result<Value, ApiError> {
         self.phase(journal, "trash-freeze")?;
         let id = journal.project_id.clone();
@@ -1123,6 +1131,7 @@ impl LifecycleManager {
         self.notify(&id);
         Ok(journal.result.clone())
     }
+    #[cfg(test)]
     async fn restore_trash(&self, journal: &mut Journal) -> Result<Value, ApiError> {
         self.phase(journal, "trash-restore-check")?;
         let trash_id = journal.trash_id.clone().unwrap();
@@ -1182,6 +1191,7 @@ impl LifecycleManager {
         self.finish_journal(journal)?;
         Ok(journal.result.clone())
     }
+    #[cfg(test)]
     fn check_protection(
         &self,
         project: &str,
@@ -1215,6 +1225,7 @@ impl LifecycleManager {
         }
         Ok(())
     }
+    #[cfg(test)]
     async fn purge(&self, journal: &mut Journal) -> Result<Value, ApiError> {
         let trash_id = journal.trash_id.clone().unwrap();
         self.check_protection(&journal.project_id, &trash_id, Some(&journal.task_id))?;
@@ -1284,6 +1295,7 @@ impl LifecycleManager {
     }
     /// A history cleanup owns the workspace gate. It supplies the exact,
     /// preview-bound file deletion; lifecycle intent and retirement stay here.
+    #[cfg(test)]
     pub(crate) fn cleanup_trash_with<F>(
         &self,
         trash_id: &str,
@@ -1371,9 +1383,15 @@ impl LifecycleManager {
         }
         result.map_err(|error| error.detail("childTaskId", task.task_id))
     }
-    pub async fn trash_list(&self) -> Result<Value, ApiError> {
+    #[cfg(test)]
+    pub(crate) async fn trash_list(&self) -> Result<Value, ApiError> {
         let mut result = vec![];
-        for entry in fs::read_dir(self.paths.workspace_root().join(".platform/trash"))? {
+        let entries = match fs::read_dir(self.paths.workspace_root().join(".platform/trash")) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(json!([])),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
             let entry = entry?;
             let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -1390,7 +1408,8 @@ impl LifecycleManager {
         result.sort_by_key(|value| std::cmp::Reverse(value["deletedAt"].as_u64().unwrap_or(0)));
         Ok(json!(result))
     }
-    pub async fn trash_info(&self, id: &str) -> Result<Value, ApiError> {
+    #[cfg(test)]
+    pub(crate) async fn trash_info(&self, id: &str) -> Result<Value, ApiError> {
         let record = self.read_trash(id)?;
         let project = self.trash_root(id)?.join("project");
         let root = project.clone();
@@ -1711,6 +1730,7 @@ fn clear_project_provenance(workspace: &Path, id: &str) -> Result<(), ApiError> 
     }
     Ok(())
 }
+#[cfg(test)]
 fn tree_size(root: &Path) -> Result<u64, ApiError> {
     let metadata = match fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
@@ -1726,6 +1746,7 @@ fn tree_size(root: &Path) -> Result<u64, ApiError> {
     }
     Ok(size)
 }
+#[cfg(test)]
 fn inspect_restored_project(
     root: &Path,
     id: &str,

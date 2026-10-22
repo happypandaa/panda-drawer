@@ -1071,22 +1071,6 @@ impl RuntimeHandle {
                 .await?
         ))
     }
-    pub async fn trash_list(&self) -> std::result::Result<Value, ApiError> {
-        self.current().lifecycle.trash_list().await
-    }
-    pub async fn trash_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        self.current().lifecycle.trash_info(id).await
-    }
-    pub async fn trash_restore(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current().lifecycle.submit_trash(id, "restore").await?
-        ))
-    }
-    pub async fn trash_purge(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current().lifecycle.submit_trash(id, "purge").await?
-        ))
-    }
     pub async fn workspace_info(&self) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         let mut value = crate::workspace::info(&state.paths, &state.store)?;
@@ -2013,7 +1997,6 @@ async fn management(
                 "builds" | "backups" | "restore" | "maintenance" | "exports" | "copies" | "trash"
             ] | ["projects", _, "maintenance", "end"]
                 | ["projects", "imports"]
-                | ["trash", _, "restore" | "purge"]
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | ["sources", "acquisitions"]
@@ -2228,10 +2211,6 @@ async fn management(
                     .workspace_migrate(input::<Value>(request).await?)
                     .await
             }
-            (Method::GET, ["trash"]) => handle.trash_list().await,
-            (Method::GET, ["trash", id]) => handle.trash_info(id).await,
-            (Method::POST, ["trash", id, "restore"]) => handle.trash_restore(id).await,
-            (Method::POST, ["trash", id, "purge"]) => handle.trash_purge(id).await,
             (Method::POST, ["projects", "imports"]) => {
                 handle.project_import(input::<Value>(request).await?).await
             }

@@ -143,6 +143,33 @@ fn good(task: &TaskRecord) -> &Value {
     task.result.as_ref().unwrap()
 }
 
+#[tokio::test]
+async fn initialization_does_not_create_private_trash_and_still_rejects_legacy_symlinks() {
+    let fixture = Fixture::new().await;
+    let legacy = fixture.paths.workspace_root().join(".platform/trash");
+    assert!(!legacy.exists());
+    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
+    let outside = fixture.paths.data_root().join("legacy-symlink-target");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("preserve"), b"disposable protected target").unwrap();
+    std::os::unix::fs::symlink(&outside, &legacy).unwrap();
+    let failure = LifecycleManager::new(
+        fixture.paths.clone(),
+        fixture.store.clone(),
+        fixture.tasks.clone(),
+        fixture.maintenance.clone(),
+    )
+    .err()
+    .expect("A legacy trash symlink must remain rejected");
+    assert_eq!(failure.code, "UNSAFE_PATH");
+    assert_eq!(
+        fs::read(outside.join("preserve")).unwrap(),
+        b"disposable protected target"
+    );
+    fs::remove_file(legacy).unwrap();
+    fixture.stop().await;
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fail_closed() {

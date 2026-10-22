@@ -611,12 +611,12 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     requests.push(command);
     if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return [];
     throw new Error(`Navigation must not mutate or open a native chooser: ${command}`);
   };
   await render(h(WorkspaceHub, hubProps()));
-  assert.deepEqual(requests, ['workspace_storage', 'trash_list']);
-  assert.equal(hubTab('旧版回收记录'), undefined, 'New deletions use the system trash; empty legacy records have no tab');
+  assert.deepEqual(requests, ['workspace_storage']);
+  assert.deepEqual([...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent), ['空间总览', '工作区位置', '清理历史']);
+  assert.equal(hubTab('旧版回收记录'), undefined, 'Legacy trash navigation is retired regardless of its contents');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
   await click(buttonNamed('查看工作区位置'));
   assert.equal(document.activeElement, hubTab('工作区位置'));
@@ -624,7 +624,7 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.equal(document.querySelector('.workspace-migration-form'), null);
   await click(hubTab('空间总览'));
   assert.equal(buttonNamed('查看旧版回收记录'), undefined);
-  assert.deepEqual([...new Set(requests)], ['workspace_storage', 'trash_list']);
+  assert.deepEqual([...new Set(requests)], ['workspace_storage']);
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
 
@@ -645,7 +645,7 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
   const rows = () => [...document.querySelectorAll('.workspace-retention-list > div')];
   const row = (prefix) => rows().find((element) => element.querySelector('dt').textContent.startsWith(prefix));
-  assert.equal(row('旧版回收记录'), undefined, 'A known complete zero category should not imply retained content');
+  assert.equal(row('历史删除资料与记录'), undefined, 'A known complete zero category should not imply retained content');
   assert.match(row('历史备份').textContent, /尚未统计/);
   assert.equal(row('操作现场').querySelector('strong').title, '1500 字节');
   assert.equal(row('共享缓存').querySelector('strong').title, '500 字节');
@@ -655,8 +655,13 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   assert.match(document.querySelector('.workspace-retention-explanation').textContent, /不再与上方数字相加|不等于可以释放/);
   data = { ...data, workspace: { ...data.workspace, complete: false, stale: true }, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
   await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
-  assert.match(row('旧版回收记录').textContent, /0 B.*已过期/);
+  assert.match(row('历史删除资料与记录').textContent, /0 B.*已过期/);
   assert.match(row('迁移保留目录').textContent, /尚未统计.*部分统计/);
+  data = { ...data, workspace: { ...data.workspace, totalBytes: 2042, complete: true, stale: false, categories: { ...data.workspace.categories, trash: { totalBytes: 42 } } } };
+  await render(h(WorkspaceStorageSummary, { revision: 3, enabled: true }));
+  assert.equal(row('历史删除资料与记录').querySelector('strong').title, '42 字节');
+  assert.match(row('历史删除资料与记录').textContent, /不提供项目恢复或清理入口/);
+  assert.doesNotMatch(document.querySelector('.workspace-summary-card').textContent, /旧版回收记录|回收站/);
 });
 
 function cleanupPlan(extra = {}) {
@@ -676,7 +681,7 @@ async function acknowledgeCleanup() {
 
 test('Cleanup controls identify same-name projects and copy or submit only the associated scope', async () => {
   await setup(); const copied = []; const submissions = [];
-  const items = ['kept', 'disposable'].map((suffix) => ({ id: `trash_${suffix}`, kind: 'trash', label: '回收站完整项目', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/workspace/.platform/trash/trash_${suffix}`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));
+  const items = ['kept', 'disposable'].map((suffix) => ({ id: `original_${suffix}`, kind: 'recoveryOriginal', label: '已完成恢复的原现场', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/workspace/.platform/operations/task_${suffix}/original`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));
   const plan = cleanupPlan({ items });
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
@@ -692,7 +697,7 @@ test('Cleanup controls identify same-name projects and copy or submit only the a
     const checkbox = row.querySelector('input'); const copy = row.querySelector('button');
     for (const control of [checkbox, copy]) {
       const name = control.getAttribute('aria-label');
-      assert.ok(name.includes('回收站项目')); assert.ok(name.includes(items[index].name));
+      assert.ok(name.includes('已完成恢复的原现场')); assert.ok(name.includes(items[index].name));
       assert.ok(name.includes(items[index].projectId)); assert.ok(name.includes(items[index].path));
     }
     await click(copy);
@@ -701,7 +706,7 @@ test('Cleanup controls identify same-name projects and copy or submit only the a
   await click(rows[1].querySelector('input')); await acknowledgeCleanup();
   assert.equal(rows[0].querySelector('input').checked, false);
   await click(buttonNamed('确认永久清理所选内容'));
-  assert.deepEqual(submissions, [{ planId: plan.planId, itemIds: ['trash_disposable'], confirmation: plan.confirmationText }]);
+  assert.deepEqual(submissions, [{ planId: plan.planId, itemIds: ['original_disposable'], confirmation: plan.confirmationText }]);
 });
 
 test('Cleanup review reveals its heading, keeps typing focus and restores the review action on cancel', async () => {
@@ -752,7 +757,7 @@ test('Cleanup acceptance and its first final transition reveal results without o
     assert.equal(document.activeElement, resultHeading); assert.equal(scrolled.at(-1), resultHeading);
     const acceptedScrollCount = scrolled.length;
     document.getElementById('trigger').focus();
-    props = { ...props, cleanupTask: { ...running, status: 'running', phase: 'cleaning-trash' } };
+    props = { ...props, cleanupTask: { ...running, status: 'running', phase: 'cleaning-recovery-original' } };
     await render(h(WorkspaceCleanupPanel, props));
     assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, acceptedScrollCount);
     const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
@@ -767,7 +772,7 @@ test('Cleanup completion in a hidden tab does not move focus then or when return
   await setup(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
   HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this); };
   try {
-    const running = { taskId: 'task_cleanup_hidden', type: 'workspaceCleanup', projectId: null, final: false, status: 'running', phase: 'cleaning-trash', result: null };
+    const running = { taskId: 'task_cleanup_hidden', type: 'workspaceCleanup', projectId: null, final: false, status: 'running', phase: 'cleaning-recovery-original', result: null };
     const props = cleanupProps({ active: false, cleanupTask: running });
     await render(h(WorkspaceCleanupPanel, props));
     const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
@@ -872,50 +877,21 @@ test('A cleaned retired workspace remains an explicit historical record instead 
   assert.match(record.textContent, /disposable\/old-workspace/);
 });
 
-test('Trash ignores out-of-order details, keeps confirmation bound to its selected ID, and resets it after tab changes', async () => {
-  await setup(); const first = deferred(); const second = deferred();
-  const entries = ['A', 'B'].map((id) => ({ trashId: `trash_${id}`, projectId: `prj_${id}`, name: 'Same display name', state: 'trashed', restoreAvailable: true, issues: [] }));
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return entries;
-    if (command === 'trash_info') return args.trashId === 'trash_A' ? first.promise : second.promise;
-    throw new Error(`Unexpected mutation/request: ${command}`);
-  };
-  await render(h(WorkspaceHub, hubProps()));
-  await click(hubTab('旧版回收记录'));
-  const rows = [...document.querySelectorAll('.trash-row')];
-  await click(rows[0]); await click(rows[1]);
-  await act(async () => second.resolve(entries[1]));
-  await click(buttonNamed('永久删除…'));
-  await inputValue(document.querySelector('.purge-confirmation input:not([type="checkbox"])'), 'Same display name');
-  await click(document.querySelector('.purge-confirmation input[type="checkbox"]'));
-  assert.equal(buttonNamed('确认永久删除完整项目').disabled, false);
-  await act(async () => first.resolve(entries[0]));
-  assert.match(document.querySelector('.workspace-trash-details').textContent, /trash_B/);
-  assert.doesNotMatch(document.querySelector('.workspace-trash-details').textContent, /trash_A/);
-  await click(hubTab('工作区位置')); await click(hubTab('旧版回收记录'));
-  assert.equal(document.querySelector('.purge-confirmation'), null);
-});
-
-test('Trash refuses restore for a record explicitly marked unavailable', async () => {
-  await setup();
-  const entry = { trashId: 'trash_unavailable', projectId: 'prj_unavailable', name: 'Needs review', state: 'needsAttention', restoreAvailable: false, issues: ['Identity mismatch'] };
-  globalThis.__UI_TEST_INVOKE__ = async (command) => {
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return [entry];
-    if (command === 'trash_info') return entry;
-    throw new Error(`Unexpected request: ${command}`);
-  };
-  await render(h(WorkspaceHub, hubProps())); await click(hubTab('旧版回收记录')); await click(document.querySelector('.trash-row'));
-  assert.equal(buttonNamed('恢复项目').disabled, true);
-  assert.match(document.querySelector('.workspace-trash-details').textContent, /Identity mismatch/);
+test('Historical cleanup refuses retired internal-trash plans instead of offering an unsupported delete action', async () => {
+  await setup(); const requests = [];
+  const plan = cleanupPlan({ items: [{ id: 'legacy_trash', kind: 'trash', label: 'Legacy fixture', path: '/disposable/workspace/.platform/trash/legacy', totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }] });
+  globalThis.__UI_TEST_INVOKE__ = async (command) => { requests.push(command); assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(plan); };
+  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
+  assert.match(document.querySelector('.workspace-cleanup-card [role="alert"]').textContent, /条目不完整/);
+  assert.equal(document.querySelector('.workspace-cleanup-item'), null);
+  assert.equal(buttonNamed('核对所选清理范围'), undefined);
+  assert.deepEqual(requests, ['workspace_cleanup_preview']);
 });
 
 test('A failed migration submission still settles after leaving and returning to its tab', async () => {
   await setup(); const result = deferred(); let submissions = 0;
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return [];
     assert.equal(command, 'workspace_migrate'); submissions++; return result.promise;
   };
   await render(h(WorkspaceHub, hubProps())); await click(hubTab('工作区位置')); await click(buttonNamed('迁移工作区'));

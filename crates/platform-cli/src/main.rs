@@ -20,7 +20,7 @@ const MAX_BUSINESS_RESPONSE_BYTES: u64 = 8_200_000;
     name = "local-projects-dev",
     version,
     about = "Manage projects in the isolated development platform",
-    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, restore or purge trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -63,11 +63,6 @@ enum Command {
     Maintenance {
         #[command(subcommand)]
         command: MaintenanceCommand,
-    },
-    /// Inspect and explicitly restore or permanently purge deleted projects.
-    Trash {
-        #[command(subcommand)]
-        command: TrashCommand,
     },
     /// Inspect project files, measured storage, and explicit safe cleanup.
     Storage {
@@ -287,23 +282,6 @@ struct ProjectGitInputOptions {
 }
 
 #[derive(Subcommand)]
-enum TrashCommand {
-    List(OutputOptions),
-    Info(TrashOptions),
-    Restore(TrashOptions),
-    /// Permanently remove this trash entry's project files. Does not remove historical backups or exported ZIPs.
-    Purge(TrashOptions),
-}
-
-#[derive(Args)]
-struct TrashOptions {
-    #[arg(long)]
-    trash: String,
-    #[command(flatten)]
-    output: OutputOptions,
-}
-
-#[derive(Subcommand)]
 enum WorkspaceCommand {
     Info(OutputOptions),
     Storage(OutputOptions),
@@ -456,7 +434,6 @@ fn main() -> ExitCode {
         Command::Db { command } => database_command(command),
         Command::Backup { command } => backup_command(command),
         Command::Maintenance { command } => maintenance_command(command),
-        Command::Trash { command } => trash_command(command),
         Command::Workspace { command } => workspace_command(command),
         Command::Storage { command } => storage_command(command),
         Command::Source { command } => source_command(command),
@@ -629,31 +606,6 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
             )),
         ),
     }
-}
-
-fn trash_command(command: TrashCommand) -> (bool, Result<Value>) {
-    let (options, method, suffix) = match command {
-        TrashCommand::List(options) => {
-            return (
-                options.json,
-                business_request("GET", "/api/v1/trash", None, None),
-            )
-        }
-        TrashCommand::Info(options) => (options, "GET", ""),
-        TrashCommand::Restore(options) => (options, "POST", "/restore"),
-        TrashCommand::Purge(options) => (options, "POST", "/purge"),
-    };
-    (
-        options.output.json,
-        validate_reference_id(&options.trash, "trash").and_then(|()| {
-            business_request(
-                method,
-                &format!("/api/v1/trash/{}{suffix}", options.trash),
-                None,
-                (method == "POST").then(|| json!({})),
-            )
-        }),
-    )
 }
 
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
@@ -1929,10 +1881,6 @@ mod tests {
                 "--maintenance",
                 "maintenance_a",
             ],
-            vec!["cli", "trash", "list", "--json"],
-            vec!["cli", "trash", "info", "--trash", "trash_a"],
-            vec!["cli", "trash", "restore", "--trash", "trash_a"],
-            vec!["cli", "trash", "purge", "--trash", "trash_a"],
             vec!["cli", "workspace", "info", "--json"],
             vec!["cli", "workspace", "identity-repair-plan", "--json"],
             vec![
@@ -1950,7 +1898,6 @@ mod tests {
         for args in [
             vec!["cli", "project", "export", "--project", "p_test"],
             vec!["cli", "project", "import"],
-            vec!["cli", "trash", "purge"],
             vec!["cli", "workspace", "migrate"],
             vec!["cli", "workspace", "identity-repair"],
         ] {
@@ -1973,11 +1920,28 @@ mod tests {
             "archivePath"
         )
         .is_ok());
-        let (_, result) = trash_command(TrashCommand::Purge(TrashOptions {
-            trash: "../project".into(),
-            output: OutputOptions { json: true },
-        }));
-        assert_eq!(result.unwrap_err().code, "INPUT_INVALID");
+    }
+
+    #[test]
+    fn retired_platform_trash_commands_are_unavailable_and_not_advertised() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let help = command.render_long_help().to_string();
+        assert!(command.find_subcommand("trash").is_none());
+        assert!(!help.contains("restore or purge trash"));
+        for args in [
+            vec!["cli", "trash", "list", "--json"],
+            vec!["cli", "trash", "info", "--trash", "trash_a"],
+            vec!["cli", "trash", "restore", "--trash", "trash_a"],
+            vec!["cli", "trash", "purge", "--trash", "trash_a"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args).err().unwrap().kind(),
+                clap::error::ErrorKind::InvalidSubcommand
+            );
+        }
+        assert!(Cli::try_parse_from(["cli", "project", "delete", "--project", "p_test",]).is_ok());
     }
 
     #[test]

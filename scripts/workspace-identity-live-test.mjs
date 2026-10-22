@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -104,14 +104,25 @@ function projectMembership(sampleId) {
   return cli(['project', 'list']).filter(project => project.id !== sampleId)
     .map(({ id, name, projectRoot }) => ({ id, name, projectRoot })).sort((a, b) => a.id.localeCompare(b.id));
 }
-function trashMembership(sampleTrashId) {
-  return cli(['trash', 'list']).filter(item => item.trashId !== sampleTrashId)
-    .map(({ trashId, projectId, name, state: status }) => ({ trashId, projectId, name, state: status }))
-    .sort((a, b) => a.trashId.localeCompare(b.trashId));
+async function trashMembership(sampleTrashId) {
+  const workspace = (await readJson(join(dataRoot, 'settings.json'))).workspaceRoot;
+  const root = join(workspace, '.platform/trash');
+  const meta = await lstat(root); assert.ok(meta.isDirectory() && !meta.isSymbolicLink());
+  const result = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^trash_[a-f0-9]{32}$/.test(entry.name) || entry.name === sampleTrashId) continue;
+    const recordPath = join(root, entry.name, 'record.json');
+    const info = await lstat(recordPath); assert.ok(info.isFile() && !info.isSymbolicLink());
+    const record = await readJson(recordPath);
+    assert.equal(record.trashId, entry.name);
+    if (!['trashed', 'purging', 'purgeIncomplete', 'needsAttention'].includes(record.state)) continue;
+    result.push({ trashId: record.trashId, projectId: record.projectId, name: record.name, state: record.state === 'purging' ? 'purgeIncomplete' : record.state });
+  }
+  return result.sort((a, b) => a.trashId.localeCompare(b.trashId));
 }
-function assertMembership() {
+async function assertMembership() {
   assert.deepEqual(projectMembership(state.projectId), state.beforeProjects, 'Pre-existing project membership changed');
-  assert.deepEqual(trashMembership(state.trashId), state.beforeTrash, 'Pre-existing trash membership changed');
+  assert.deepEqual(await trashMembership(state.trashId), state.beforeTrash, 'Pre-existing trash membership changed');
 }
 function sampleInfo() {
   assert.match(state.projectId, /^prj_[a-f0-9]{32}$/);
@@ -273,7 +284,7 @@ async function sampleEvidence(runtime) {
     assert.equal(operation.directory.volumeUuid, registered.root.volumeUuid);
     assert.equal(operation.directory.inode, registered.root.inode);
   }
-  assertMembership();
+  await assertMembership();
   return { runtime, registration: registered, row: state.row, attachment: state.attachment,
     backup: { backupId: state.backupId, path: archive, sha256: state.backupSha256 },
     trash: { trashId: state.trashId, path: trashPath, sha256: hash(trashBytes), state: trashRecord.state, root: trashRoot },
@@ -308,10 +319,10 @@ try {
     assert.notEqual(cli(['workspace', 'info']).projectDeletionMode, 'system-trash',
       'Historical internal-trash prepare is unavailable on system-trash packages. No sample was created. Use scripts/m4-live-test.mjs for a fresh disposable system-trash run; keep existing identity evidence for inspect/verify.');
     assert.ok(!projectMembership().some(project => project.name === sampleName), 'Same-named sample already exists; do not create another');
-    assert.ok(!trashMembership().some(item => item.name === sampleName), 'Same-named sample is retained in trash; inspect it instead');
+    assert.ok(!(await trashMembership()).some(item => item.name === sampleName), 'Same-named sample is retained in trash; inspect it instead');
     state = { schemaVersion: 1, test: 'workspace-identity-live', status: 'preparing', startedAt: now(),
       workspaceRoot: runtime.workspaceRoot, cliPath, beforeRuntime: runtime,
-      beforeProjects: projectMembership(), beforeTrash: trashMembership(), tasks: [],
+      beforeProjects: projectMembership(), beforeTrash: await trashMembership(), tasks: [],
       row: { id: 73, business_uuid: `identity-repair-${randomUUID()}`, value: '本轮可丢弃样本：保持业务主键与附件' } };
     // This exclusive reservation survives failures, including an ambiguous
     // create response. A second prepare cannot silently create another sample.
@@ -351,7 +362,7 @@ try {
     const trashRecord = await readJson(join(state.workspaceRoot, '.platform/trash', state.trashId, 'record.json'));
     state.trashedIdentity = identity(trashRecord.rootIdentity, 'new trash.rootIdentity');
     await matchesCurrentInode(state.trashedIdentity, join(state.workspaceRoot, '.platform/trash', state.trashId, 'project'), true);
-    assertMembership();
+    await assertMembership();
     await task('trashRestore', ['trash', 'restore', '--trash', state.trashId]);
     await completePreparationEvidence(runtime);
   } else if (phase === 'inspect') {

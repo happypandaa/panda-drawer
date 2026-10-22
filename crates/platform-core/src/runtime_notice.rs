@@ -42,8 +42,8 @@ pub(crate) fn script() -> &'static str {
     let heading = '';
     let explanation = '';
     if (state?.trashed) {
-      heading = '项目已移入回收站';
-      explanation = '当前页面不能继续保存。请先复制草稿或保存到别处；如需继续使用，请在平台回收站恢复项目，再从平台重新进入。';
+      heading = '项目已删除';
+      explanation = '当前页面不能继续保存，请先复制草稿或保存到别处。新删除的文件请在系统废纸篓中查找，平台不提供恢复入口。';
     } else if (state?.instanceChanged) {
       heading = '工作区服务已切换，需要重新进入';
       explanation = '迁移后旧页面身份已失效，当前草稿仍保留。请先复制未保存内容或保存到别处，再从平台重新加载项目或获取新的浏览器入口。';

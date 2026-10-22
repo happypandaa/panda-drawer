@@ -90,6 +90,31 @@ impl Fixture {
         assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
         task.result.unwrap()["trashId"].as_str().unwrap().into()
     }
+    // Persist the shape accepted by an older release without submitting another
+    // deletion. The current manager must only read or reject this old plan.
+    async fn legacy_cleanup_plan(&self, trash: &str) -> Value {
+        let preview = self.preview().await;
+        let path = self
+            .cleanup
+            .root()
+            .join("plans")
+            .join(format!("{}.json", preview["planId"].as_str().unwrap()));
+        let mut plan: Plan = serde_json::from_value(read_json(&path).unwrap()).unwrap();
+        let mut item = candidate(
+            &self
+                .paths
+                .workspace_root()
+                .join(".platform/trash")
+                .join(trash)
+                .join("project"),
+        );
+        item.id = format!("trash_{trash}");
+        item.kind = "trash".into();
+        item.project_id = Some(self.project.clone());
+        plan.items = vec![item];
+        builds::atomic_json(&path, &plan).unwrap();
+        plan.public()
+    }
     async fn restore_original(&self) -> String {
         let backup = self
             .wait(
@@ -227,7 +252,7 @@ fn input(plan: &Value, ids: Vec<String>) -> Value {
 #[tokio::test]
 async fn source_restore_guard_invalidates_cleanup_plan_and_keeps_recovery_out_of_candidates() {
     let fixture = Fixture::new().await;
-    let trash = fixture.delete().await;
+    let restore = fixture.restore_original().await;
     let plan = fixture.preview().await;
     assert_eq!(plan["items"][0]["canClean"], true);
     let journal = fixture
@@ -250,7 +275,7 @@ async fn source_restore_guard_invalidates_cleanup_plan_and_keeps_recovery_out_of
         .wait(
             fixture
                 .cleanup
-                .submit(input(&plan, vec![format!("trash_{trash}")]))
+                .submit(input(&plan, vec![format!("original_{restore}")]))
                 .unwrap(),
         )
         .await;
@@ -265,9 +290,9 @@ async fn source_restore_guard_invalidates_cleanup_plan_and_keeps_recovery_out_of
     assert!(fixture
         .paths
         .workspace_root()
-        .join(".platform/trash")
-        .join(trash)
-        .join("project/data/main.sqlite")
+        .join(".platform/operations")
+        .join(restore)
+        .join("original/data/main.sqlite")
         .exists());
     assert_eq!(fs::read(&retained).unwrap(), b"only recovery evidence");
     fs::write(&journal, b"bad journal stays protected").unwrap();
@@ -279,9 +304,8 @@ async fn source_restore_guard_invalidates_cleanup_plan_and_keeps_recovery_out_of
     fixture.stop().await;
 }
 
-#[cfg(target_os = "macos")]
 #[tokio::test]
-async fn cleanup_preview_uses_stable_trash_identity_and_rejects_unbound_legacy_renumbering() {
+async fn legacy_trash_is_absent_from_new_plans_and_unconsumed_old_plans_cannot_delete_it() {
     let fixture = Fixture::new().await;
     let trash = fixture.delete().await;
     let directory = fixture
@@ -290,36 +314,104 @@ async fn cleanup_preview_uses_stable_trash_identity_and_rejects_unbound_legacy_r
         .join(".platform/trash")
         .join(&trash);
     let path = directory.join("record.json");
-    let original = read_json(&path).unwrap();
-    let actual = directory_identity(&directory.join("project")).unwrap();
-    for (identity, allowed) in [
-        (
-            json!({"device":actual.device.wrapping_add(1),"inode":actual.inode,"volumeUuid":original["rootIdentity"]["volumeUuid"]}),
-            true,
-        ),
-        (
-            json!({"device":actual.device,"inode":actual.inode,"volumeUuid":Uuid::new_v4().to_string()}),
-            false,
-        ),
-        (json!([actual.device.wrapping_add(1), actual.inode]), false),
-        (json!([actual.device, actual.inode]), true),
+    let original = fs::read(&path).unwrap();
+    assert_eq!(fixture.preview().await["items"], json!([]));
+    let old = fixture.legacy_cleanup_plan(&trash).await;
+    assert_eq!(
+        fixture
+            .cleanup
+            .submit(input(&old, vec![format!("trash_{trash}")]))
+            .unwrap_err()
+            .code,
+        "CLEANUP_KIND_RETIRED"
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+    // Even incomplete or unreadable old metadata cannot become a new cleanup
+    // target or prevent scanning the still-supported history scopes.
+    for bytes in [
+        b"{\"state\":\"purgeIncomplete\"}".as_slice(),
+        b"invalid record",
     ] {
-        let mut record = original.clone();
-        record["rootIdentity"] = identity;
-        builds::atomic_json(&path, &record).unwrap();
-        let preview = fixture.preview().await;
-        let item = preview["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == format!("trash_{trash}"))
-            .unwrap();
-        assert_eq!(item["canClean"], allowed, "{item}");
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(fixture.preview().await["items"], json!([]));
         assert_eq!(
             fs::read(directory.join("project/data/attachments/keep.txt")).unwrap(),
             b"persistent attachment"
         );
     }
+    fs::write(path, original).unwrap();
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn consumed_legacy_cleanup_plan_remains_readable_after_restart_without_deleting_again() {
+    let fixture = Fixture::new().await;
+    let trash = fixture.delete().await;
+    let preview = fixture.legacy_cleanup_plan(&trash).await;
+    let path = fixture
+        .cleanup
+        .root()
+        .join("plans")
+        .join(format!("{}.json", preview["planId"].as_str().unwrap()));
+    let mut plan: Plan = serde_json::from_value(read_json(&path).unwrap()).unwrap();
+    let task = fixture
+        .tasks
+        .create_workspace_operation("workspaceCleanup")
+        .unwrap();
+    plan.task_id = Some(task.task_id.clone());
+    plan.selected_ids = vec![format!("trash_{trash}")];
+    builds::atomic_json(&path, &plan).unwrap();
+    let receipt = fixture.cleanup.receipt(&task.task_id);
+    builds::atomic_json(&receipt.join("task.json"), &task).unwrap();
+    builds::atomic_json(
+        &receipt.join("selection.json"),
+        &json!({"planId":plan.plan_id,"workspaceRoot":plan.workspace_root,"itemIds":plan.selected_ids}),
+    )
+    .unwrap();
+    let payload = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/trash")
+        .join(&trash)
+        .join("project");
+    let before = scan(&payload).unwrap();
+    let record_path = payload.parent().unwrap().join("record.json");
+    let record = fs::read(&record_path).unwrap();
+    fixture.cleanup.shutdown().await;
+    fixture.lifecycle.shutdown().await;
+    fixture.maintenance.shutdown().await;
+    fixture.tasks.shutdown().await;
+    let tasks = BuildManager::new(
+        fixture.paths.clone(),
+        fixture.store.clone(),
+        "http://127.0.0.1:9".into(),
+    )
+    .unwrap();
+    let restarted = CleanupManager::new(
+        fixture.paths.clone(),
+        fixture.store.clone(),
+        tasks.clone(),
+        fixture.lifecycle.clone(),
+        "instance-restarted".into(),
+    )
+    .unwrap();
+    let duplicate = restarted
+        .submit(input(&preview, plan.selected_ids))
+        .unwrap();
+    assert_eq!(duplicate.task_id, task.task_id);
+    assert_eq!(duplicate.status, TaskStatus::Interrupted);
+    assert_eq!(
+        restarted.latest_task().unwrap().unwrap().task_id,
+        task.task_id
+    );
+    assert_eq!(
+        read_json(&receipt.join("task.json")).unwrap()["error"]["code"],
+        "WORKSPACE_CLEANUP_INTERRUPTED"
+    );
+    assert_eq!(scan(&payload).unwrap(), before);
+    assert_eq!(fs::read(record_path).unwrap(), record);
+    restarted.shutdown().await;
+    tasks.shutdown().await;
     fixture.stop().await;
 }
 
@@ -413,58 +505,38 @@ fn special_files_and_root_symlinks_are_never_cleanup_candidates() {
     assert!(scan(&alias).is_err());
 }
 #[tokio::test]
-async fn real_trash_cleanup_keeps_backups_and_record_and_consumes_plan_once() {
+async fn completed_original_cleanup_keeps_backups_and_journal_and_consumes_plan_once() {
     let fixture = Fixture::new().await;
-    let backup = fixture
-        .wait(
-            fixture
-                .maintenance
-                .submit(&fixture.project, "backup", OperationInput::default())
-                .await
-                .unwrap(),
-        )
-        .await;
-    assert_eq!(backup.status, TaskStatus::Succeeded);
+    let restore = fixture.restore_original().await;
     let backups = fixture
         .paths
         .workspace_root()
         .join("backups")
         .join(&fixture.project);
     let before = fs::read_dir(&backups).unwrap().count();
-    let trash = fixture.delete().await;
     let plan = fixture.preview().await;
     let item = plan["items"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|item| item["id"] == format!("trash_{trash}"))
+        .find(|item| item["id"] == format!("original_{restore}"))
         .unwrap();
     assert_eq!(item["canClean"], true, "{item}");
-    let request = input(&plan, vec![format!("trash_{trash}")]);
+    let request = input(&plan, vec![format!("original_{restore}")]);
     let accepted = fixture.cleanup.submit(request.clone()).unwrap();
     let duplicate = fixture.cleanup.submit(request).unwrap();
     assert_eq!(accepted.task_id, duplicate.task_id);
     let task = fixture.wait(accepted).await;
     assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
     assert_eq!(task.result.as_ref().unwrap()["completed"], true);
-    let record = read_json(
-        &fixture
-            .paths
-            .workspace_root()
-            .join(".platform/trash")
-            .join(&trash)
-            .join("record.json"),
-    )
-    .unwrap();
-    assert_eq!(record["state"], "purged");
-    assert_eq!(fs::read_dir(backups).unwrap().count(), before);
-    assert!(!fixture
+    let operation = fixture
         .paths
         .workspace_root()
-        .join(".platform/trash")
-        .join(trash)
-        .join("project")
-        .exists());
+        .join(".platform/operations")
+        .join(restore);
+    assert!(operation.join("journal.json").is_file());
+    assert_eq!(fs::read_dir(backups).unwrap().count(), before);
+    assert!(!operation.join("original").exists());
     assert!(fixture.cleanup.latest_task().unwrap().is_some());
     let different = fixture
         .cleanup
@@ -476,9 +548,9 @@ async fn real_trash_cleanup_keeps_backups_and_record_and_consumes_plan_once() {
 #[tokio::test]
 async fn plan_expiry_runtime_change_invalid_selection_and_active_operations_do_not_delete() {
     let fixture = Fixture::new().await;
-    let trash = fixture.delete().await;
+    let restore = fixture.restore_original().await;
     let plan = fixture.preview().await;
-    let request = input(&plan, vec![format!("trash_{trash}")]);
+    let request = input(&plan, vec![format!("original_{restore}")]);
     let path = fixture
         .cleanup
         .root()
@@ -516,29 +588,29 @@ async fn plan_expiry_runtime_change_invalid_selection_and_active_operations_do_n
     assert!(fixture
         .paths
         .workspace_root()
-        .join(".platform/trash")
-        .join(trash)
-        .join("project")
+        .join(".platform/operations")
+        .join(restore)
+        .join("original")
         .exists());
     fixture.stop().await;
 }
 #[tokio::test]
 async fn changed_preview_and_unresolved_restore_reference_block_deletion() {
     let fixture = Fixture::new().await;
-    let trash = fixture.delete().await;
+    let restore = fixture.restore_original().await;
     let plan = fixture.preview().await;
     let payload = fixture
         .paths
         .workspace_root()
-        .join(".platform/trash")
-        .join(&trash)
-        .join("project");
+        .join(".platform/operations")
+        .join(&restore)
+        .join("original");
     fs::write(payload.join("new-user-file"), "draft").unwrap();
     let task = fixture
         .wait(
             fixture
                 .cleanup
-                .submit(input(&plan, vec![format!("trash_{trash}")]))
+                .submit(input(&plan, vec![format!("original_{restore}")]))
                 .unwrap(),
         )
         .await;
@@ -766,6 +838,84 @@ async fn migrated_workspace_cleanup_survives_restart_without_phantom_storage() {
     restarted.shutdown().await;
     fixture.stop().await;
 }
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn purged_legacy_record_and_journal_preserve_retained_workspace_cleanup_ownership() {
+    let fixture = Fixture::new().await;
+    let backup = fixture
+        .wait(
+            fixture
+                .maintenance
+                .submit(&fixture.project, "backup", OperationInput::default())
+                .await
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(backup.status, TaskStatus::Succeeded);
+    let backup_id = backup.result.unwrap()["backupId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let trash = fixture.delete().await;
+    let (fixture, source, migration) = fixture.migrate().await;
+    let archive = fixture
+        .paths
+        .workspace_root()
+        .join("backups")
+        .join(&fixture.project)
+        .join(format!("{backup_id}.zip"));
+    let archive_hash = hash_file(&archive).unwrap();
+    let purged = fixture
+        .wait(
+            fixture
+                .lifecycle
+                .submit_trash(&trash, "purge")
+                .await
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(purged.status, TaskStatus::Succeeded);
+    let record = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/trash")
+        .join(&trash)
+        .join("record.json");
+    assert_eq!(read_json(&record).unwrap()["state"], "purged");
+    let plan = fixture.preview().await;
+    assert!(!plan["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["kind"] == "trash"));
+    let id = format!("retained_{migration}");
+    assert_eq!(
+        plan["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["canClean"],
+        true,
+        "{plan}"
+    );
+    let cleaned = fixture
+        .wait(fixture.cleanup.submit(input(&plan, vec![id])).unwrap())
+        .await;
+    assert_eq!(cleaned.status, TaskStatus::Succeeded, "{:?}", cleaned.error);
+    assert!(!source.exists());
+    assert_eq!(hash_file(&archive).unwrap(), archive_hash);
+    assert_eq!(read_json(&record).unwrap()["state"], "purged");
+    assert!(fixture
+        .paths
+        .workspace_root()
+        .join(".platform/operations")
+        .join(purged.task_id)
+        .join("lifecycle.json")
+        .is_file());
+    fixture.stop().await;
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn modified_old_source_missing_current_trash_and_target_identity_all_block_cleanup() {

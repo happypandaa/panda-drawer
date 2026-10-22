@@ -405,7 +405,7 @@ function App() {
       if (task?.taskId !== requested.taskId || !task.final) continue;
       if (task.status === 'succeeded') {
         if (selectedOverviewId.current === requested.projectId) dismissOverview();
-        postMessage({ id: `delete:${task.taskId}`, level: task.result?.operationOutcome === 'system_trashed' ? 'info' : 'warning', title: `「${requested.name}」的删除结果`, message: task.result?.operationOutcome === 'system_trashed' ? '项目已移入系统废纸篓。找回文件请使用 Finder。' : task.result?.operationOutcome === 'trashed' ? '项目已移入旧版回收记录，请在对应记录中核对。' : '删除任务已结束，请在管理任务中核对实际结果与目录。' });
+        postMessage({ id: `delete:${task.taskId}`, level: task.result?.operationOutcome === 'system_trashed' ? 'info' : 'warning', title: `「${requested.name}」的删除结果`, message: task.result?.operationOutcome === 'system_trashed' ? '项目已移入系统废纸篓。找回文件请使用 Finder。' : '删除任务已结束，请在管理任务中核对实际结果与目录。' });
       } else if (selectedOverviewId.current !== requested.projectId) postMessage({ id: `delete:${task.taskId}`, level: 'error', title: `「${requested.name}」未能完成删除`, message: `${task.error?.message ?? '删除结果需要核对'}。请到管理任务查看详情，勿重复删除。` });
       completed.push(task.taskId);
     }

@@ -95,7 +95,16 @@ async fn trash_restore_requires_new_session_and_old_document_remains_rejected_wi
     let trash = deleted["result"]["trashId"].as_str().unwrap();
     let wire = browser_sql(&base, &id, &old_cookie, &old_epoch, "SELECT * FROM notes").await;
     assert_eq!(wire["error"]["code"], "PROJECT_TRASHED");
-    let restored = wait(&handle, handle.trash_restore(trash).await.unwrap()).await;
+    let restored = wait(
+        &handle,
+        json!(handle
+            .current()
+            .lifecycle
+            .submit_trash(trash, "restore")
+            .await
+            .unwrap()),
+    )
+    .await;
     assert_eq!(restored["status"], "succeeded", "{restored}");
     // Reusing the old Cookie to fetch a new document is also forbidden.
     let response = reqwest::Client::new()
@@ -119,6 +128,63 @@ async fn trash_restore_requires_new_session_and_old_document_remains_rejected_wi
     let current = browser_sql(&base, &id, &new_cookie, &new_epoch, "SELECT * FROM notes").await;
     assert_eq!(current["ok"], true);
     assert_eq!(current["data"]["rows"].as_array().unwrap().len(), 1);
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retired_platform_trash_routes_cannot_read_or_mutate_legacy_payloads() {
+    let (_temporary, paths, service, id) = fixture().await;
+    let handle = service.handle();
+    let deleted = wait(
+        &handle,
+        json!(handle
+            .current()
+            .lifecycle
+            .submit_legacy_delete(&id, json!({}))
+            .await
+            .unwrap()),
+    )
+    .await;
+    assert_eq!(deleted["status"], "succeeded", "{deleted}");
+    let trash_id = deleted["result"]["trashId"].as_str().unwrap();
+    let trash_root = paths
+        .workspace_root()
+        .join(".platform/trash")
+        .join(trash_id);
+    let record = std::fs::read(trash_root.join("record.json")).unwrap();
+    let database = std::fs::read(trash_root.join("project/data/main.sqlite")).unwrap();
+    let client = reqwest::Client::new();
+    let token = paths.read_control_token().unwrap();
+    for (method, suffix) in [
+        (Method::GET, String::new()),
+        (Method::GET, format!("/{trash_id}")),
+        (Method::POST, format!("/{trash_id}/restore")),
+        (Method::POST, format!("/{trash_id}/purge")),
+    ] {
+        let response = client
+            .request(
+                method,
+                format!("{}/api/v1/trash{suffix}", service.info().base_url),
+            )
+            .bearer_auth(&token)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "NOT_FOUND", "{body}");
+        assert!(body.get("data").is_none(), "{body}");
+        assert_eq!(
+            std::fs::read(trash_root.join("record.json")).unwrap(),
+            record
+        );
+        assert_eq!(
+            std::fs::read(trash_root.join("project/data/main.sqlite")).unwrap(),
+            database
+        );
+        assert!(service.store().project(&id).is_err());
+    }
     service.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -263,11 +329,20 @@ async fn system_trash_delete_retires_old_browser_session_and_preserves_other_pro
             std::fs::rename(source, &destination)?;
             Ok(destination.clone())
         });
-    let deleted = wait(
-        &handle,
-        handle.project_delete(&id, json!({})).await.unwrap(),
-    )
-    .await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/v1/projects/{id}/trash",
+            service.info().base_url
+        ))
+        .bearer_auth(paths.read_control_token().unwrap())
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let submitted: Value = response.json().await.unwrap();
+    assert_eq!(submitted["ok"], true, "{submitted}");
+    let deleted = wait(&handle, submitted["data"].clone()).await;
     assert_eq!(deleted["status"], "succeeded", "{deleted}");
     assert_eq!(deleted["result"]["operationOutcome"], "system_trashed");
     assert_eq!(deleted["result"]["platformRestoreAvailable"], false);
@@ -282,6 +357,9 @@ async fn system_trash_delete_retires_old_browser_session_and_preserves_other_pro
     )
     .await;
     assert_eq!(response["error"]["code"], "PROJECT_TRASHED");
-    assert_eq!(handle.trash_list().await.unwrap(), json!([]));
+    assert_eq!(
+        handle.current().lifecycle.trash_list().await.unwrap(),
+        json!([])
+    );
     service.shutdown().await.unwrap();
 }

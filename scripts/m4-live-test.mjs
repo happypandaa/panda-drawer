@@ -8,13 +8,13 @@ import {
   archivePath, artifactRoot, assertDisposable, backup, backupIdOf, begin, business, cli,
   corruptArchivedDatabase, createProject, end, expectBusinessError, expectFailure, info, inspectArchive,
   maintenance, operation, projectIdOf, restore, runtime, saveReport, session, sha256,
-  requireSystemTrashDeletion, sql, succeeded, verifySystemTrashed, waitTask,
+  legacyTrashEvidence, requireSystemTrashDeletion, sql, succeeded, verifySystemTrashed, waitTask,
 } from './m4-test-utils.mjs';
 
 const current = runtime();
 // Fail before creating a fixture if the running package has older delete semantics.
 requireSystemTrashDeletion();
-const source = createProject('导入导出复制回收验证');
+const source = createProject('导入导出复制删除验证');
 const root = source.projectRoot, id = source.id, tasks = [], checks = [], projects = [id];
 const check = text => { checks.push(text); console.log(`PASS ${text}`); };
 const output = join(artifactRoot, 'm4-exports', id); await mkdir(output, { recursive: true });
@@ -151,10 +151,10 @@ check('maintenance export/import keeps an independent session and new-ID baselin
 succeeded(restore(id, sourceMaintenance.baselineBackupId, tasks, sourceMaintenance.maintenanceId));
 sourceMaintenance = maintenance(id); succeeded(end(id, sourceMaintenance.maintenanceId, tasks));
 const beforeDelete = await session(current, id);
-const legacyTrashBefore = cli(['trash', 'list']);
+const legacyTrashBefore = await legacyTrashEvidence();
 const deleted = operation('delete', id, {}, tasks);
 const firstSystemTrashPath = await verifySystemTrashed(deleted, source);
-assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore, 'Existing platform trash records remain unchanged');
+assert.deepEqual(await legacyTrashEvidence(), legacyTrashBefore, 'Existing platform trash records remain unchanged');
 for (const [path, hash] of Object.entries(hashes)) assert.equal(sha256(await readFile(join(firstSystemTrashPath, path))), hash, path);
 const deletedPage = await business(current, beforeDelete, 'db/execute', 'POST', { sql: 'SELECT 1' });
 assert.ok(!deletedPage.ok, 'Deleted project cannot use its old session');
@@ -178,7 +178,7 @@ const secondImport = operation('import', undefined, { archivePath: exportedPath,
 succeeded(secondImport); assert.equal(projectIdOf(secondImport), id);
 const afterSecondImport = await session(current, id); assert.notEqual(afterSecondImport.epoch, reimported.epoch);
 await expectBusinessError(await business(current, { ...afterSecondImport, epoch: reimported.epoch }, 'db/execute', 'POST', { sql: 'SELECT 1' }), 'PROJECT_RELOAD_REQUIRED');
-assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore);
+assert.deepEqual(await legacyTrashEvidence(), legacyTrashBefore);
 check('repeated deletion produces distinct system Trash entries and never revives old documents or purges earlier evidence');
 
 // This new fixture has never opened a business database worker. Backup opens and
@@ -192,7 +192,7 @@ const damagedDelete = operation('delete', damaged.id, {}, tasks);
 const damagedSystemTrashPath = await verifySystemTrashed(damagedDelete, damaged);
 assert.equal(sha256(await readFile(join(damagedSystemTrashPath, 'data/main.sqlite'))), sha256(damagedBytes));
 assert.equal(sha256(await readFile(archivePath(damaged.id, damagedBackupId))), healthyHistoryHash);
-assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore);
+assert.deepEqual(await legacyTrashEvidence(), legacyTrashBefore);
 check('damaged database moves byte-for-byte to system Trash without a healthy-current-database prerequisite; independent historical backup stays unchanged');
 
 const reportName = `m4-system-trash-live-${id}.json`;

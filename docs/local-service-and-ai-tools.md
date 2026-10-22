@@ -226,11 +226,7 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `POST /api/v1/projects/{id}/exports` | 导出当前项目完整快照 | 管理凭据 |
 | `POST /api/v1/projects/imports` | 从完整 ZIP 导入原项目或新副本 | 管理凭据 |
 | `POST /api/v1/projects/{id}/copies` | 复制为独立新项目 | 管理凭据 |
-| `POST /api/v1/projects/{id}/trash` | 将项目移入回收站 | 管理凭据 |
-| `GET /api/v1/trash` | 列出回收站项目 | 管理凭据 |
-| `GET /api/v1/trash/{id}` | 查看回收站记录和占用 | 管理凭据 |
-| `POST /api/v1/trash/{id}/restore` | 以原 ID 从回收站恢复 | 管理凭据 |
-| `POST /api/v1/trash/{id}/purge` | 永久清除指定回收站项，不连带删除备份 | 管理凭据 |
+| `POST /api/v1/projects/{id}/trash` | 将完整项目目录移入 macOS 系统废纸篓 | 管理凭据 |
 | `GET /api/v1/workspace` | 查看当前工作区和迁移状态 | 管理凭据 |
 | `POST /api/v1/workspace/migrations` | 提交工作区迁移 | 管理凭据 |
 | `GET /api/v1/projects/{id}/storage` | 当前空间分类、统计时效与关联历史 | 管理凭据 |
@@ -386,11 +382,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform project export --project ID --input request.json --json` | 导出当前快照，指定 ZIP 目标位置 |
 | `platform project import --input request.json --json` | 输入 ZIP 路径及 `original` 或 `copy` 模式 |
 | `platform project copy --project ID --input request.json --json` | 复制内容，生成新 ID，可指定名称 |
-| `platform project delete --project ID --input request.json --json` | 仅移入回收站，返回回收站 ID |
-| `platform trash list --json` | 列出回收站记录 |
-| `platform trash info --trash ID --json` | 查看指定回收站项 |
-| `platform trash restore --trash ID --json` | 从回收站恢复原项目 |
-| `platform trash purge --trash ID --json` | 永久清除指定回收站项 |
+| `platform project delete --project ID --input request.json --json` | 移入 macOS 系统废纸篓，返回持久任务及系统返回位置 |
 | `platform workspace info --json` | 查看当前工作区 |
 | `platform workspace migrate --input request.json --json` | 指定目标目录并提交迁移任务 |
 | `platform storage info --project ID --json` | 查看空间分类与统计时效 |
@@ -399,7 +391,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform storage cleanup --project ID --input request.json --json` | 清理明确类别，保护素材及恢复现场 |
 | `platform workspace storage --json` | 查看平台程序、工作区与已知其他本机占用 |
 
-当前可调用命令包括 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait/logs`；M3 的 `backup create/list/info/restore`、`maintenance status/begin/end`；M4 的 `project export/import/copy/delete`、`trash list/info/restore/purge`、`workspace info/migrate`；M5 的 `project metadata get/set`、`storage info/scan/files/cleanup` 和 `workspace storage`。`service start`、历史备份另存/删除及旧根清理没有因此加入。
+当前可调用命令包括 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait/logs`；M3 的 `backup create/list/info/restore`、`maintenance status/begin/end`；M4 的 `project export/import/copy/delete`、`workspace info/migrate`；M5 的 `project metadata get/set`、`storage info/scan/files/cleanup` 和 `workspace storage`。`service start`、历史备份另存/删除及旧根清理没有因此加入。
 
 对既有项目的操作显式指定项目 ID，不依赖当前目录猜测目标。创建项目请求至少包含 `name`，可包含 `description`；平台生成稳定 ID 和标准目录。恢复请求必须包含明确的 `backupId`，不能默认恢复某个未知备份。
 
