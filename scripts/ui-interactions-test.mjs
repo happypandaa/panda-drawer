@@ -628,6 +628,23 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
 
+test('Workspace storage identifies webpage project files and counts deletion receipts as platform records', async () => {
+  await setup();
+  globalThis.__UI_TEST_INVOKE__ = async (command) => {
+    assert.equal(command, 'workspace_storage');
+    return { platformProgram: { totalBytes: 0, complete: true }, workspace: { totalBytes: 1295, complete: true, categories: { projects: { bytes: 1250 }, control: { bytes: 45 } } }, otherLocalLocations: [] };
+  };
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
+  const rows = [...document.querySelectorAll('.workspace-storage-breakdown > div')];
+  const projectRow = rows.find((row) => row.querySelector('dt').textContent === '网页项目文件');
+  const controlRow = rows.find((row) => row.querySelector('dt').textContent === '平台控制记录');
+  assert.equal(projectRow.querySelector('dd').title, '1250 字节');
+  assert.equal(controlRow.querySelector('dd').title, '45 字节');
+  assert.match(document.querySelector('.workspace-summary-card').textContent, /包含源码、依赖、网页产物和数据。Node 应用计入“其他已知位置”/);
+  assert.equal(rows.some((row) => /当前项目|回收站/.test(row.querySelector('dt').textContent)), false);
+  assert.doesNotMatch(document.querySelector('.workspace-summary-card').textContent, /历史删除资料与记录|回收站/);
+});
+
 test('Storage explains retained sizes within their scopes, aggregates old roots, and preserves unknown measurements', async () => {
   await setup();
   let data = {

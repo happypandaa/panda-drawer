@@ -119,7 +119,16 @@ function combinedLocations(parts: StoragePart[]): StoragePart {
 function scopeStatus(part?: StoragePart) { return part ? `${part.complete ? '统计完整' : '部分统计 / 未知'}${part.stale ? ' · 已过期' : ''}` : '尚未统计'; }
 function scopeName(name: string) { return ({ applicationData: '应用设置与运行记录', retainedWorkspace: '迁移保留目录', platformProgram: '平台程序', workspace: '当前工作区' } as Record<string, string>)[name] ?? '已知本地位置'; }
 function ScopeDetails({ part }: { part?: StoragePart }) {
-  return <><code className="workspace-scope-path">{String(part?.root ?? part?.path ?? '')}</code>{Boolean(part?.completedAt) && <small className="storage-timestamp">扫描时间：{timeText(part!.completedAt as string | number)}</small>}<Issues items={part?.issues} />{Boolean(part?.categories) && <dl className="workspace-storage-breakdown">{Object.entries(part!.categories as Record<string, StoragePart>).map(([name, item]) => <div key={name}><dt>{({ projects: '当前项目', backups: '历史备份', trash: '历史删除资料与记录', operations: '操作现场', sharedCache: '共享缓存', control: '平台控制记录', metadata: '平台元数据', logs: '日志', other: '其他', applicationData: '应用数据', platformProgram: '程序文件', retainedWorkspace: '保留文件' } as Record<string, string>)[name] ?? name}</dt><dd title={exactBytes(partBytes(item))}>{bytesText(partBytes(item))}</dd></div>)}</dl>}</>;
+  const categories = part?.categories as Record<string, StoragePart> | undefined;
+  return <>
+    <code className="workspace-scope-path">{String(part?.root ?? part?.path ?? '')}</code>
+    {Boolean(part?.completedAt) && <small className="storage-timestamp">扫描时间：{timeText(part!.completedAt as string | number)}</small>}
+    <Issues items={part?.issues} />
+    {categories && <>
+      <dl className="workspace-storage-breakdown">{Object.entries(categories).map(([name, item]) => <div key={name}><dt>{({ projects: '网页项目文件', backups: '历史备份', trash: '历史删除资料与记录', operations: '操作现场', sharedCache: '共享缓存', control: '平台控制记录', metadata: '平台元数据', logs: '日志', other: '其他', applicationData: '应用数据', platformProgram: '程序文件', retainedWorkspace: '保留文件' } as Record<string, string>)[name] ?? name}</dt><dd title={exactBytes(partBytes(item))}>{bytesText(partBytes(item))}</dd></div>)}</dl>
+      {categories.projects && <p className="project-help">网页项目文件包含源码、依赖、网页产物和数据。Node 应用计入“其他已知位置”。</p>}
+    </>}
+  </>;
 }
 function ScopeCard({ label, part, compact }: { label: string; part?: StoragePart; compact: boolean }) {
   return <div className="storage-category workspace-scope-card"><span>{label}</span><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong><small>{scopeStatus(part)}</small>{Boolean(part?.completedAt) && <small className="storage-timestamp">{timeText(part!.completedAt as string | number)}</small>}<details className="workspace-disclosure" open={compact ? undefined : true}><summary>查看位置与分类</summary><div className="workspace-disclosure-body"><ScopeDetails part={part} /></div></details></div>;

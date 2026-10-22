@@ -1498,7 +1498,21 @@ fn workspace_category(path: &str) -> String {
     } else if in_root(path, "backups") {
         "backups"
     } else if in_root(path, ".platform/trash") {
-        "trash"
+        let relative = Path::new(path).strip_prefix(".platform/trash").unwrap();
+        let mut parts = relative.iter();
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(owner), Some(file), None)
+                if owner
+                    .to_str()
+                    .is_some_and(|id| id.starts_with("trash_") && valid_id(id))
+                    && file == "record.json" =>
+            {
+                // Retired deletion receipts are control evidence, not project
+                // payload. Keep every other legacy file visible as history.
+                "control"
+            }
+            _ => "trash",
+        }
     } else if in_root(path, ".platform/operations") {
         "operations"
     } else if in_root(path, ".platform/cache") {
