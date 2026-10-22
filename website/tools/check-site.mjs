@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const output = path.join(root, 'public');
+const output = path.join(root, 'dist');
 const origin = new URL(readFileSync(path.join(root, '_config.yml'), 'utf8').match(/^url: (.+)$/m)[1]).origin;
 const files = (dir) => readdirSync(dir).flatMap(name => {
   const file = path.join(dir, name);
