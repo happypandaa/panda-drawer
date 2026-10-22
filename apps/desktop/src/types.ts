@@ -141,19 +141,6 @@ export interface BackupDetails extends BackupSummary {
   excludedPaths?: string[];
 }
 
-export interface TrashEntry {
-  trashId: string;
-  projectId: string;
-  name: string;
-  deletedAt: string | number | null;
-  sizeBytes: number | null;
-  mode: string;
-  state: 'trashed' | 'purgeIncomplete' | 'needsAttention';
-  path?: string;
-  issues?: string[];
-  lastTaskId?: string | null;
-  activeTask?: string | { taskId: string } | null;
-}
 export interface RetainedWorkspaceRoot {
   path?: string;
   sourcePath?: string;

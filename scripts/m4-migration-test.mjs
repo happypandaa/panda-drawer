@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
   archivePath, artifactRoot, backup, backupIdOf, begin, business, cli, createProject, dataRoot, expectBusinessError,
   info, maintenance, operation, readReport, runtime, saveReport, session, sha256, sql,
-  requireSystemTrashDeletion, succeeded, verifySystemTrashed,
+  legacyTrashEvidence, requireSystemTrashDeletion, succeeded, verifySystemTrashed,
 } from './m4-test-utils.mjs';
 
 const phase = process.argv[2]; assert.ok(['prepare', 'verify'].includes(phase));
@@ -130,7 +130,6 @@ if (phase === 'prepare') {
   assert.equal(sha256(await readFile(originalDatabase)), retainedDatabaseDigest, 'New runtime writes must leave the retained source database unchanged');
   const handoff = cli(['project', 'handoff', '--project', saved.ready.id]); assert.ok(JSON.stringify(handoff).includes(current.workspaceRoot));
   assert.ok(!cli(['project', 'list']).some(project => project.id === saved.deletedId));
-  assert.ok(!cli(['trash', 'list']).some(entry => entry.projectId === saved.deletedId));
   assert.deepEqual(await exactTree(saved.systemTrashPath), saved.systemTrashTree, 'Migration must not move or modify OS-owned Trash entries');
   const migrations = await readdir(join(dataRoot, 'migrations')); assert.ok(migrations.length > 0);
   await saveReport(`m4-system-trash-migration-static-${current.instanceId}.json`, { ok: true, source: saved.workspaceRoot, destination: current.workspaceRoot, comparedActiveProjects: saved.projects.length, comparedProtectedTrees: Object.keys(saved.preserved).length, reboundTrashRecords, capturedAt: new Date().toISOString(), lifecycleProbeStillPending: true });
@@ -138,7 +137,7 @@ if (phase === 'prepare') {
   // sample in the migrated root. Existing legacy trash is only read/compared.
   const retainedBackup = archivePath(saved.deletedId, saved.deletedBackupId);
   const historyDigest = sha256(await readFile(retainedBackup));
-  const legacyTrashBefore = cli(['trash', 'list']);
+  const legacyTrashBefore = await legacyTrashEvidence();
   const probe = createProject('迁移后系统废纸篓验证');
   sql(probe.id, 'CREATE TABLE m4_after_migration(id INTEGER PRIMARY KEY, value TEXT)');
   sql(probe.id, 'INSERT INTO m4_after_migration VALUES (?, ?)', [1, 'deleted from the migrated workspace']);
@@ -151,7 +150,7 @@ if (phase === 'prepare') {
   const finalSystemTrashPath = await verifySystemTrashed(deletedAgain, probe);
   assert.equal(await readFile(join(finalSystemTrashPath, 'data/attachments/system-trash.txt'), 'utf8'), 'disposable post-migration attachment');
   assert.ok(!(await business(current, probeDocument, 'context')).ok, 'Deleted migrated project must reject its old session');
-  assert.deepEqual(cli(['trash', 'list']), legacyTrashBefore, 'Post-migration deletion must not create or change legacy platform trash');
+  assert.deepEqual(await legacyTrashEvidence(), legacyTrashBefore, 'Post-migration deletion must not create or change legacy platform trash');
   assert.equal(sha256(await readFile(retainedBackup)), historyDigest, 'Post-migration delete must retain earlier independent history');
   assert.equal(sha256(await readFile(probeBackup)), probeHistoryDigest, 'Post-migration delete must retain its independent historical backup');
   assert.deepEqual(await exactTree(saved.systemTrashPath), saved.systemTrashTree, 'New deletion must not touch the earlier OS Trash entry');

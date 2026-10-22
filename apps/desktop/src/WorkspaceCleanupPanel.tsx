@@ -6,7 +6,7 @@ import { bytesText, exactBytes, timeText } from './storage-utils';
 import type { ByteCount, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
-type CleanupKind = 'retainedWorkspace' | 'recoveryOriginal' | 'trash';
+type CleanupKind = 'retainedWorkspace' | 'recoveryOriginal';
 interface CleanupItem {
   id: string;
   kind: CleanupKind;
@@ -38,7 +38,7 @@ interface CleanupPanelProps {
   onRefresh: () => Promise<void>;
   onPendingChange?: (pending: boolean) => void;
 }
-const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移保留目录', recoveryOriginal: '已完成恢复的原现场', trash: '回收站项目' };
+const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移保留目录', recoveryOriginal: '已完成恢复的原现场' };
 const confirmationPhrase = '永久清理所选内容';
 function readPlan(result: Record<string, unknown> | null): CleanupPlan {
   if (!result || typeof result.planId !== 'string' || !result.planId || typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt) || typeof result.workspaceRoot !== 'string' || !Array.isArray(result.items) || !Array.isArray(result.preserved) || result.confirmationText !== confirmationPhrase) throw new Error('清理范围返回不完整，请重新扫描；未提交任何清理操作。');
@@ -46,7 +46,7 @@ function readPlan(result: Record<string, unknown> | null): CleanupPlan {
   for (const value of result.items) {
     if (!value || typeof value !== 'object') throw new Error('清理范围中的条目无效，请重新扫描。');
     const item = value as Record<string, unknown>;
-    if (typeof item.id !== 'string' || !item.id || ids.has(item.id) || !['retainedWorkspace', 'recoveryOriginal', 'trash'].includes(String(item.kind)) || typeof item.label !== 'string' || typeof item.path !== 'string' || !item.path.startsWith('/') || typeof item.canClean !== 'boolean' || !Array.isArray(item.blockedReasons) || !item.blockedReasons.every((reason) => typeof reason === 'string')) throw new Error('清理范围中的条目不完整，请重新扫描。');
+    if (typeof item.id !== 'string' || !item.id || ids.has(item.id) || !['retainedWorkspace', 'recoveryOriginal'].includes(String(item.kind)) || typeof item.label !== 'string' || typeof item.path !== 'string' || !item.path.startsWith('/') || typeof item.canClean !== 'boolean' || !Array.isArray(item.blockedReasons) || !item.blockedReasons.every((reason) => typeof reason === 'string')) throw new Error('清理范围中的条目不完整，请重新扫描。');
     ids.add(item.id);
   }
   if (!result.preserved.every((value) => typeof value === 'string')) throw new Error('清理范围缺少明确的保留内容，请重新扫描。');
@@ -191,7 +191,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       {confirmationCurrent && <div className="operation-confirmation workspace-cleanup-confirmation" aria-label="历史清理范围确认"><h3 ref={reviewHeading} tabIndex={-1}>永久清理以下 {selectedItems.length} 项？</h3><p>所选目录会直接永久删除。其中全部文件，包括源码、数据库、附件、网页、说明和历史副本，都将无法恢复。</p><ul>{selectedItems.map((item) => <li key={item.id}><strong>{item.label}</strong><code>{item.path}</code><span>{bytesText(item.totalBytes)}{item.projectId ? ` · 项目 ${item.projectId}` : ''}</span></li>)}</ul><p>当前工作区：<code>{plan.workspaceRoot}</code>。上方“本次始终保留”范围不会删除。</p><label htmlFor={`${id}-confirmation`}>输入“{plan.confirmationText}”确认<input id={`${id}-confirmation`} value={typedConfirmation} disabled={planBlocked} autoComplete="off" onChange={(event) => setTypedConfirmation(event.target.value)} /></label><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={planBlocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对全部目录及保留内容，并已停止外部 AI、编辑器和工具使用或写入这些历史目录</label><div className="confirmation-actions"><button className="danger-button" disabled={planBlocked || typedConfirmation !== plan.confirmationText || !acknowledged} onClick={() => void submit()}>{pending === 'cleanup' ? '正在提交…' : '确认永久清理所选内容'}</button><button className="refresh-button" disabled={pending === 'cleanup' || cleanupRunning} onClick={cancelReview}>取消，继续保留</button></div></div>}
     </>}
     {cleanupTask && <div className="workspace-cleanup-result"><h3 ref={resultHeading} tabIndex={-1}>清理任务与实际结果</h3><ProjectTask task={cleanupTask} /><CleanupResult task={cleanupTask} /></div>}
-    {(pending === 'cleanup' || cleanupRunning) && <p className="workspace-operation-status" role="status">清理任务会持续执行，切换页签不会取消。请等待最终结果；迁移和回收站写操作暂时停用。</p>}
+    {(pending === 'cleanup' || cleanupRunning) && <p className="workspace-operation-status" role="status">清理任务会持续执行，切换页签不会取消。请等待最终结果；其他管理写操作暂时停用。</p>}
     {(error || pollError) && <p className="task-error" role="alert">{error || pollError}</p>}{notice && <p className="workspace-inline-notice" role="status">{notice}</p>}
   </section>;
 }

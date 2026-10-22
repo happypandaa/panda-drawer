@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, readlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -70,7 +70,6 @@ export function begin(id, records) { return waitTask(cli(['maintenance', 'begin'
 export function end(id, maintenanceId, records) { return waitTask(cli(['maintenance', 'end', '--project', id, '--input', '-'], { maintenanceId }), records); }
 export function restore(id, backupId, records, maintenanceId) { return waitTask(cli(['backup', 'restore', '--project', id, '--input', '-'], { backupId, ...(maintenanceId ? { maintenanceId } : {}) }), records); }
 export function backup(id, records, maintenanceId) { return waitTask(cli(['backup', 'create', '--project', id, ...(maintenanceId ? ['--maintenance', maintenanceId] : [])]), records); }
-export function trash(command, trashId, records) { return waitTask(cli(['trash', command, '--trash', trashId]), records); }
 export function expectFailure(args, input, records) {
   const wire = invoke(args, input, true);
   if (!wire.ok) return wire.error;
@@ -78,8 +77,25 @@ export function expectFailure(args, input, records) {
 }
 export const backupIdOf = task => { const value = (task.result ?? task).backupId; assert.equal(typeof value, 'string'); return value; };
 export const projectIdOf = task => { const data = task.result ?? task; const value = data.projectId ?? data.project?.id ?? data.id; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
-// Historical platform-trash evidence only; new deletes use verifySystemTrashed.
-export const trashIdOf = task => { const data = task.result ?? task; const value = data.trashId ?? data.trash?.trashId; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
+// Read-only historical evidence. The retired trash API is never used by new probes.
+export async function legacyTrashEvidence(workspaceRoot = settings().workspaceRoot) {
+  const root = join(workspaceRoot, '.platform/trash');
+  try { const meta = await lstat(root); assert.ok(meta.isDirectory() && !meta.isSymbolicLink()); }
+  catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+  async function visit(relative = '') {
+    const result = {};
+    for (const name of (await readdir(join(root, relative))).sort()) {
+      const key = relative ? `${relative}/${name}` : name;
+      const absolute = join(root, key); const meta = await lstat(absolute);
+      if (meta.isSymbolicLink()) result[key] = { kind: 'symlink', target: await readlink(absolute) };
+      else if (meta.isDirectory()) { result[key] = { kind: 'directory' }; Object.assign(result, await visit(key)); }
+      else if (meta.isFile()) result[key] = { kind: 'file', bytes: meta.size, sha256: sha256(await readFile(absolute)) };
+      else throw new Error(`Unsupported retained evidence ${absolute}`);
+    }
+    return result;
+  }
+  return visit();
+}
 // Probe the connected service before any disposable project is created. A new
 // CLI may still be connected to an older package, so CLI help is insufficient.
 export function requireSystemTrashDeletion() {
@@ -107,7 +123,6 @@ export async function verifySystemTrashed(task, project) {
   const manifest = JSON.parse(await readFile(join(result.systemTrashPath, 'project.json'), 'utf8'));
   assert.equal(manifest.id, project.id);
   assert.ok(!cli(['project', 'list']).some(value => value.id === project.id));
-  assert.ok(!cli(['trash', 'list']).some(value => value.projectId === project.id), 'New deletion must not enter platform trash');
   return result.systemTrashPath;
 }
 export const archivePath = (id, backupId) => join(settings().workspaceRoot, 'backups', id, `${backupId}.zip`);

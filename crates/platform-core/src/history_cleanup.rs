@@ -161,7 +161,6 @@ pub(crate) struct CleanupManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
-    lifecycle: Arc<LifecycleManager>,
     instance_id: String,
     admission: Mutex<()>,
     running: Mutex<Vec<JoinHandle<()>>>,
@@ -482,7 +481,7 @@ impl CleanupManager {
         paths: RuntimePaths,
         store: Arc<ProjectStore>,
         tasks: Arc<BuildManager>,
-        lifecycle: Arc<LifecycleManager>,
+        _lifecycle: Arc<LifecycleManager>,
         instance_id: String,
     ) -> Result<Arc<Self>, ApiError> {
         let root = paths.data_root().join("cleanup");
@@ -513,7 +512,6 @@ impl CleanupManager {
             paths,
             store,
             tasks,
-            lifecycle,
             instance_id,
             admission: Mutex::new(()),
             running: Mutex::new(vec![]),
@@ -628,6 +626,17 @@ impl CleanupManager {
                 .any(|item| &item.id == id && item.can_clean)
         }) {
             return Err(error("Selection includes an unknown or protected item"));
+        }
+        // Old consumed plans above remain readable as task receipts. An old
+        // unconsumed preview cannot authorize a retired kind of deletion.
+        if plan.items.iter().any(|item| {
+            selected.contains(&item.id)
+                && !matches!(item.kind.as_str(), "retainedWorkspace" | "recoveryOriginal")
+        }) {
+            return Err(ApiError::new(
+                "CLEANUP_KIND_RETIRED",
+                "This cleanup kind is no longer available; preview the remaining supported history",
+            ));
         }
         self.store.begin_workspace_cleanup()?;
         let guard = WorkspaceGuard(self.store.clone());
@@ -768,31 +777,6 @@ impl CleanupManager {
             self.inspect(&mut item, |item| self.validate_original(item, &id));
             items.push(item);
         }
-        for directory in fs::read_dir(self.paths.workspace_root().join(".platform/trash"))? {
-            let directory = directory?;
-            let id = directory.file_name().to_string_lossy().into_owned();
-            if !id.starts_with("trash_") || !valid_id(&id) {
-                continue;
-            }
-            let record_path = directory.path().join("record.json");
-            let record = read_json(&record_path)?;
-            if !matches!(
-                record["state"].as_str(),
-                Some("trashed" | "purgeIncomplete" | "purging" | "needsAttention")
-            ) {
-                continue;
-            }
-            let mut item = Candidate::new(
-                format!("trash_{id}"),
-                "trash",
-                "回收站项目文件（保留历史备份）",
-                directory.path().join("project"),
-            );
-            self.inspect(&mut item, |item| {
-                self.validate_trash(item, &id, &record_path, &record)
-            });
-            items.push(item);
-        }
         items.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
         Ok(items)
     }
@@ -854,15 +838,12 @@ impl CleanupManager {
                     ));
                 }
             }
-        } else {
-            let allowed = if item.kind == "trash" {
-                ".platform/trash"
-            } else {
-                ".platform/operations"
-            };
-            if !path.starts_with(self.paths.workspace_root().join(allowed)) {
+        } else if item.kind == "recoveryOriginal" {
+            if !path.starts_with(self.paths.workspace_root().join(".platform/operations")) {
                 return Err(error("Payload is outside its recorded owner directory"));
             }
+        } else {
+            return Err(error("Unsupported cleanup kind"));
         }
         check_no_symlinks(path, false)
     }
@@ -1010,30 +991,6 @@ impl CleanupManager {
         Err(error(
             "Original identity changed without a matching committed migration inventory",
         ))
-    }
-    fn validate_trash(
-        &self,
-        item: &mut Candidate,
-        trash: &str,
-        path: &Path,
-        record: &Value,
-    ) -> Result<(), ApiError> {
-        Self::guard_file(item, path)?;
-        let id = record["projectId"]
-            .as_str()
-            .filter(|id| valid_id(id))
-            .ok_or_else(|| error("Trash project identity is invalid"))?;
-        item.project_id = Some(id.into());
-        item.name = record["name"].as_str().map(str::to_owned);
-        if record["trashId"] != trash || record["schemaVersion"] != 1 {
-            return Err(error("Trash record identity is invalid"));
-        }
-        let expected: PersistedIdentity = serde_json::from_value(record["rootIdentity"].clone())?;
-        if !matches_persisted_root(&expected, item)? {
-            return Err(error("Trash root identity changed"));
-        }
-        self.store.check_identity_available(id, Some(trash), None)?;
-        self.check_references(Some(id), None)
     }
     fn validate_retained(
         &self,
@@ -1519,19 +1476,7 @@ impl CleanupManager {
             }
             self.tasks.phase(task, &format!("cleaning-{}", item.kind))?;
             let log = receipt.join(format!("{}.progress.jsonl", item.id));
-            let operation = if item.kind == "trash" {
-                let trash = item.id.strip_prefix("trash_").unwrap();
-                self.lifecycle.cleanup_trash_with(trash, task, |path| {
-                    if path != item.path {
-                        return Err(error(
-                            "Lifecycle trash path differs from the confirmed plan",
-                        ));
-                    }
-                    remove_tree(item, &log)
-                })
-            } else {
-                remove_tree(item, &log)
-            };
+            let operation = remove_tree(item, &log);
             let result = match operation {
                 Ok(removed) => {
                     json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"progressPath":log,"migrationId":item.id.strip_prefix("retained_")})

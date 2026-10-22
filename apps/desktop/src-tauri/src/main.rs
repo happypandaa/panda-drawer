@@ -1185,45 +1185,6 @@ async fn node_app_open_help(
 }
 
 #[tauri::command]
-async fn trash_info(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    trash_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    state.handle.trash_info(&trash_id).await
-}
-
-#[tauri::command]
-async fn trash_restore(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    trash_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    state.handle.trash_restore(&trash_id).await
-}
-
-#[tauri::command]
-async fn trash_purge(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    trash_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    state.handle.trash_purge(&trash_id).await
-}
-
-#[tauri::command]
-async fn trash_list(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    state.handle.trash_list().await
-}
-
-#[tauri::command]
 async fn workspace_info(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1551,10 +1512,6 @@ fn main() {
             project_import,
             project_copy,
             project_delete,
-            trash_list,
-            trash_info,
-            trash_restore,
-            trash_purge,
             workspace_info,
             workspace_migrate,
             project_list,

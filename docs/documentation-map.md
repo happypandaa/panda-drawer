@@ -10,6 +10,8 @@
 
 本轮用户确认的 Radio Bob 风格、亮暗主题、图标启动台及设置窗口，实施与验证见[启动台界面记录](radio-launcher-verification.md)。Node 角标简化覆盖此前卡片常驻中文类型方案，读屏、详情及运行门禁仍保留。
 
+2026-10-22 删除统一改用[macOS 系统废纸篓](system-trash-deletion.md)，旧平台回收站已按用户授权清理本机遗留项目并[退役](legacy-trash-retirement.md)。旧任务及迁移证据继续保留；操作提醒采用[独立消息入口](operation-messages.md)。
+
 ## 权威关系
 
 1. 用户在当前会话中的明确要求，以及仓库 [AGENTS.md](../AGENTS.md) 的项目保护、固定身份、公开迁移和分步提交要求。

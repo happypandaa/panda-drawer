@@ -317,18 +317,6 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid #77776e; outlin
 .danger-zone { border-top: 1px solid #e9e4df; margin-top: 26px; padding-top: 22px; }
 .danger-button { border: 1px solid #d9bab3; background: #fff8f6; color: #9a493b; border-radius: 7px; padding: 9px 12px; font: inherit; font-size: 12px; cursor: pointer; }
 .danger-button:disabled { opacity: .45; cursor: not-allowed; }
-.trash-list { border: 1px solid #e3e8e3; border-radius: 9px; overflow: hidden; }
-.trash-row { display: flex; width: 100%; align-items: center; gap: 14px; padding: 16px; text-align: left; border: 0; border-bottom: 1px solid #e3e8e3; background: white; color: #4f6359; cursor: pointer; }
-.trash-row:last-child { border-bottom: 0; }
-.trash-row.selected { background: #f0f5ef; }
-.trash-row>span { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
-.trash-row>span:last-child { margin-left: auto; text-align: right; }
-.trash-row code { font-size: 11px; }
-.trash-details { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e3e8e3; }
-.trash-details dl { font-size: 12px; }
-.trash-details dl>div { display: flex; gap: 12px; margin: 8px 0; }
-.trash-details dd { margin: 0; overflow-wrap: anywhere; }
-.purge-confirmation { border-color: #d9bab3; background: #fff8f6; margin-top: 18px; }
 .retained-roots { border-top: 1px solid #e3e8e3; margin-top: 24px; padding-top: 20px; }
 .retained-roots>code { display: block; overflow-wrap: anywhere; font-size: 12px; margin: 8px 0; }
 .lifecycle-tasks { margin-bottom: 20px; }
@@ -630,21 +618,6 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .workspace-disclosure-body .path-row { grid-template-columns: 110px minmax(0,1fr); padding: 10px 0; }
 .workspace-migration-confirmation code { overflow-wrap: anywhere; }
 .workspace-operation-status, .workspace-inline-notice { margin: 16px 0 20px; padding: 14px 16px; background: #f4f7ee; border: 1px solid #e0e7d5; border-radius: 8px; color: #7b8d67; font-size: 13px; line-height: 1.8; }
-.workspace-trash-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: start; gap: 24px; }
-.workspace-trash-list { border: 1px solid var(--border); border-radius: 9px; overflow-y: auto; max-height: 620px; }
-.workspace-trash-list .trash-row { padding: 16px; gap: 12px; min-height: 90px; }
-.workspace-trash-list .trash-row > span:first-of-type { min-width: 0; }
-.workspace-trash-list .trash-row strong { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-.workspace-trash-list .trash-row small { font-size: 11px; line-height: 1.6; }
-.workspace-trash-list .trash-row > span:last-child { white-space: nowrap; font-size: 12px; }
-.workspace-trash-details { min-width: 0; padding: 20px; background: #fafbf7; border: 1px solid #e5eadd; border-radius: 9px; }
-.workspace-trash-detail-heading h3 { font-size: 16px; overflow-wrap: anywhere; margin: 0 0 8px; }
-.workspace-trash-detail-heading > span { font-size: 12px; color: #8b987c; }
-.workspace-trash-details dl { margin: 20px 0; }
-.workspace-trash-details dl > div { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 12px; margin: 12px 0; font-size: 12px; line-height: 1.8; }
-.workspace-trash-details dt { color: #96a189; }
-.workspace-trash-details dd { margin: 0; overflow-wrap: anywhere; color: #6a7b59; }
-.workspace-trash-details > p { font-size: 12px; }
 .workspace-empty-state { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 44px 20px; color: #98a48c; }
 .workspace-empty-state p { margin: 16px 0 6px; color: #7e8b70; font-size: 14px; }
 .workspace-empty-state > span { font-size: 12px; line-height: 1.8; }
@@ -726,7 +699,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 @media (min-width: 1440px) { .project-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
 @media (max-width: 1060px) { main { padding: 28px 24px; } .page-heading { flex-wrap: wrap; } .heading-actions { justify-content: flex-start; } .project-card { padding: 20px; } }
 @media (max-width: 760px) { main { padding: 24px 18px; } .modal-layer { padding: 16px; } .modal-dialog { max-height: calc(100dvh - 32px); border-radius: 12px; } .modal-header, .modal-content { padding: 20px; } .modal-content .overview-tabs { top: -20px; } .project-card { padding: 18px; } .project-toolbar { gap: 8px; } .project-filter select { max-width: 130px; padding-right: 20px; } .project-actions { grid-template-columns: 1fr; } .modal-content .backup-detail-column { padding-left: 0; } }
-@media (max-width: 1060px) { .workspace-trash-layout { grid-template-columns: 1fr; } .workspace-scope-card { padding: 16px; } .workspace-scope-card > strong { font-size: 23px; } }
+@media (max-width: 1060px) { .workspace-scope-card { padding: 16px; } .workspace-scope-card > strong { font-size: 23px; } }
 @media (max-width: 760px) { .workspace-hub-tabs { width: 100%; } .workspace-hub-tabs button { flex: 1; padding: 10px 12px; } .workspace-scope-grid { grid-template-columns: 1fr; } .workspace-hub-panel > .lifecycle-card { padding: 20px; } .workspace-scope-card { padding: 20px; } }
 .node-apps-intro { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 10px; background: #f3f5ee; color: #5d6d51; margin-bottom: 20px; }
 .node-apps-intro > div { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 240px; }
@@ -1187,7 +1160,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] .text-button:hover:not(:disabled) { color: var(--radio-text); }
 :root[data-theme] .icon-button:hover:not(:disabled) { color: var(--radio-text); background: var(--radio-selected); }
 :root[data-theme] :is(.modal-layer) { background: #17131f66; backdrop-filter: blur(5px); }
-:root[data-theme] :is(.modal-dialog, .create-card, .workspace-card, .diagnostics-card, .status-card, .backup-panel, .lifecycle-card, .project-overview, .project-size-row, .trash-row, .lifecycle-tasks .build-task, .project-search-empty, .guide-disclosure, .recent-tasks, .workspace-cleanup-item, .node-app-list-item, .node-app-empty, .node-app-detail) {
+:root[data-theme] :is(.modal-dialog, .create-card, .workspace-card, .diagnostics-card, .status-card, .backup-panel, .lifecycle-card, .project-overview, .project-size-row, .lifecycle-tasks .build-task, .project-search-empty, .guide-disclosure, .recent-tasks, .workspace-cleanup-item, .node-app-list-item, .node-app-empty, .node-app-detail) {
   color: var(--radio-text);
   border-color: var(--radio-line);
   background: var(--radio-surface);
@@ -1200,9 +1173,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(section, article, dl, details, form, li) { border-color: var(--radio-line); }
 :root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .node-field-variable, .node-field-default, .node-secret-status, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
 :root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-app-heading h2, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
-:root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .trash-details, .history-storage-row, .attachment-row, .workspace-trash-summary) { border-color: var(--radio-line); }
-:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .workspace-trash-details, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
-:root[data-theme] :is(.backup-row:hover, .backup-row-selected, .trash-row.selected, .project-size-row:hover, .node-app-list-item.selected) { border-color: var(--radio-focus); color: var(--radio-text); background: var(--radio-selected); box-shadow: none; }
+:root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .history-storage-row, .attachment-row) { border-color: var(--radio-line); }
+:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
+:root[data-theme] :is(.backup-row:hover, .backup-row-selected, .project-size-row:hover, .node-app-list-item.selected) { border-color: var(--radio-focus); color: var(--radio-text); background: var(--radio-selected); box-shadow: none; }
 :root[data-theme] :is(.workspace-hub-tabs) { border-color: var(--radio-line); background: var(--radio-subtle); }
 :root[data-theme] :is(.workspace-hub-tabs button, .overview-tabs button) { color: var(--radio-muted); }
 :root[data-theme] .workspace-hub-tabs button[aria-selected='true'] { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-surface); }
@@ -1211,7 +1184,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea)::placeholder { color: var(--radio-muted); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea, select):focus-visible { outline-color: var(--radio-focus); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) input:is([type='checkbox'], [type='radio']) { accent-color: var(--radio-focus); }
-:root[data-theme] :is(.notice-error, .danger-button, .project-delete-section, .project-delete-confirmation, .purge-confirmation, .node-process-failed) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
+:root[data-theme] :is(.notice-error, .danger-button, .project-delete-section, .project-delete-confirmation, .node-process-failed) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
 :root[data-theme] :is(.danger-button:hover:not(:disabled), .project-delete:hover:not(:disabled)) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
 :root[data-theme] :is(.project-delete-section h3, .project-delete-section p, .task-error, .node-process-failed, .project-delete, .resource-missing) { color: var(--radio-danger); }
 :root[data-theme] :is(.operation-confirmation, .maintenance-active, .overview-unsaved-note, .node-config-warning, .node-endpoint-confirmation, .workspace-cleanup-item-result.needs-attention) { color: var(--radio-warning); border-color: var(--radio-warning-line); background: var(--radio-warning-surface); }
