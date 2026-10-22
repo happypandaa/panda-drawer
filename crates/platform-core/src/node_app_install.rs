@@ -362,7 +362,7 @@ impl NodeAppInstaller {
         target: InstallTargetSnapshot,
         tools: Toolchain,
         control: InstallControl,
-        tasks: &BuildManager,
+        tasks: &Arc<BuildManager>,
     ) -> Result<PreparedNodeInstall> {
         require_task(tasks, task_id, "nodeInstallPrepare")?;
         let result = self
@@ -390,7 +390,7 @@ impl NodeAppInstaller {
         target: InstallTargetSnapshot,
         tools: Toolchain,
         control: InstallControl,
-        tasks: &BuildManager,
+        tasks: &Arc<BuildManager>,
     ) -> Result<PreparedNodeInstall> {
         target.validate()?;
         control.check()?;
@@ -452,7 +452,7 @@ impl NodeAppInstaller {
         source: &VerifiedNodeSource,
         tools: &Toolchain,
         control: &InstallControl,
-        tasks: &BuildManager,
+        tasks: &Arc<BuildManager>,
     ) -> Result<PreparedNodeInstall> {
         tasks.phase(&journal.prepare_task_id, "copying")?;
         let operation = self.operation(&journal.candidate_id)?;
@@ -485,7 +485,15 @@ impl NodeAppInstaller {
         validate_npm_input(&npm_root)?;
         tasks.phase(&journal.prepare_task_id, "dependencies")?;
         tasks.append(&journal.prepare_task_id, b"Preparing production dependencies with npm ci --omit=dev --ignore-scripts. No application or lifecycle script is started.\n")?;
-        npm_ci(&operation, &npm_root, tools, control).await?;
+        npm_ci(
+            &operation,
+            &npm_root,
+            tools,
+            control,
+            tasks,
+            &journal.prepare_task_id,
+        )
+        .await?;
         control.check()?;
         let package: Value = serde_json::from_slice(&read_small(&npm_root.join("package.json"))?)?;
         if package["dependencies"]
@@ -1238,6 +1246,8 @@ async fn npm_ci(
     cwd: &Path,
     tools: &Toolchain,
     control: &InstallControl,
+    tasks: &Arc<BuildManager>,
+    task_id: &str,
 ) -> Result<()> {
     control.check()?;
     let home = operation.join("npm-home");
@@ -1290,8 +1300,16 @@ async fn npm_ci(
         .ok_or_else(|| invalid("安装子进程身份不可用。"))? as i32;
     let mut group = ProcessGroup(Some(pid));
     let mut readers = [
-        Some(tokio::spawn(drain(child.stdout.take().unwrap()))),
-        Some(tokio::spawn(drain(child.stderr.take().unwrap()))),
+        Some(tokio::spawn(drain(
+            child.stdout.take().unwrap(),
+            tasks.clone(),
+            task_id.into(),
+        ))),
+        Some(tokio::spawn(drain(
+            child.stderr.take().unwrap(),
+            tasks.clone(),
+            task_id.into(),
+        ))),
     ];
     let mut next_space_check = Instant::now() + NPM_SPACE_INTERVAL;
     let result = loop {
@@ -1349,9 +1367,7 @@ async fn npm_ci(
     let cleanup_deadline = Instant::now() + Duration::from_secs(2);
     while unsafe { libc::kill(-pid, 0) } == 0 {
         if Instant::now() >= cleanup_deadline {
-            for reader in readers.into_iter().flatten() {
-                reader.abort();
-            }
+            abort_output_readers(readers).await;
             return Err(failure(
                 "NODE_INSTALL_CLEANUP_PENDING",
                 "安装子进程尚未确认完全退出，不能报告取消完成；现场保留。",
@@ -1360,9 +1376,7 @@ async fn npm_ci(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     if std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-        for reader in readers.into_iter().flatten() {
-            reader.abort();
-        }
+        abort_output_readers(readers).await;
         return Err(failure(
             "NODE_INSTALL_CLEANUP_PENDING",
             "无法核对安装进程组的收尾状态，现场保留。",
@@ -1383,16 +1397,20 @@ async fn npm_ci(
             }
         }
     }
-    result?;
     if !output_ok {
         return Err(failure(
             "NODE_INSTALL_OUTPUT_LIMIT",
             "依赖准备输出未完成，现场保留。",
         ));
     }
+    result?;
     check_npm_space(operation, control).await
 }
-async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin) -> Result<()> {
+async fn drain(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    tasks: Arc<BuildManager>,
+    task_id: String,
+) -> Result<()> {
     let mut total = 0;
     let mut buffer = [0; 8192];
     loop {
@@ -1400,10 +1418,25 @@ async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin) -> Result<()> {
         if n == 0 {
             return Ok(());
         }
+        // Use the same task-bound, locked public log as project builds. Keep
+        // this installer's smaller per-stream limit, including a partial chunk.
+        let retained = n.min(MAX_OUTPUT - total);
+        if retained > 0 {
+            tasks.append(&task_id, &buffer[..retained])?;
+        }
         total += n;
         if total > MAX_OUTPUT {
             return Err(invalid("输出超限。"));
         }
+    }
+}
+async fn abort_output_readers(readers: [Option<tokio::task::JoinHandle<Result<()>>>; 2]) {
+    let readers: Vec<_> = readers.into_iter().flatten().collect();
+    for reader in &readers {
+        reader.abort();
+    }
+    for reader in readers {
+        let _ = reader.await;
     }
 }
 struct ProcessGroup(Option<i32>);

@@ -143,6 +143,25 @@ fn live_control() -> (watch::Sender<bool>, watch::Sender<bool>, InstallControl) 
 }
 const NPM_OK: &str = "mkdir -p node_modules; printf '{}' > node_modules/.package-lock.json";
 
+fn public_logs(tasks: &BuildManager, task_id: &str) -> String {
+    let mut cursor = 0;
+    let mut text = String::new();
+    loop {
+        let page = tasks.logs(task_id, cursor).unwrap();
+        assert!(!page.truncated);
+        assert!(page.gaps.is_empty());
+        text.push_str(&page.text);
+        if page.eof {
+            return text;
+        }
+        assert!(
+            page.next_cursor > cursor,
+            "final task log must make progress"
+        );
+        cursor = page.next_cursor;
+    }
+}
+
 fn sentinels(slot: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     [
         (
@@ -244,7 +263,13 @@ async fn npm_failure_retains_candidate_and_never_registers_or_rewrites_existing_
     let slot = fixture.installer.slot(&installed.app_id).unwrap();
     let files = sentinels(&slot);
     let before = fs::read(slot.join("registration.json")).unwrap();
-    fs::write(&fixture.tools.npm.path, "mkdir -p node_modules; printf candidate-only > node_modules/evidence; printf 'simulated dependency download failure' >&2; exit 42").unwrap();
+    fs::write(&fixture.tools.npm.path, r#"
+mkdir -p node_modules
+printf candidate-only > node_modules/evidence
+awk 'BEGIN { for (i = 0; i < 42000; i++) printf "~"; print "\nstdout-tail" }'
+awk 'BEGIN { for (i = 0; i < 42000; i++) printf "^"; print "\nstderr-tail: simulated E404 download failure" }' >&2
+exit 42
+"#).unwrap();
     fixture.tools.npm.version = "fault-injection".into();
     let task = fixture
         .tasks
@@ -266,6 +291,12 @@ async fn npm_failure_retains_candidate_and_never_registers_or_rewrites_existing_
     assert_eq!(error.code, "NODE_INSTALL_NPM_FAILED");
     let final_task = fixture.tasks.task(&task.task_id).unwrap();
     assert!(final_task.status.is_final());
+    let logs = public_logs(&fixture.tasks, &task.task_id);
+    assert!(logs.len() > 64_000, "exercise the public log's next cursor");
+    assert_eq!(logs.bytes().filter(|byte| *byte == b'~').count(), 42000);
+    assert_eq!(logs.bytes().filter(|byte| *byte == b'^').count(), 42000);
+    assert!(logs.contains("stdout-tail"));
+    assert!(logs.contains("stderr-tail: simulated E404 download failure"));
     let id = final_task.result.unwrap()["candidateId"]
         .as_str()
         .unwrap()
@@ -283,7 +314,7 @@ async fn npm_failure_retains_candidate_and_never_registers_or_rewrites_existing_
 
 #[tokio::test]
 async fn cancellation_terminates_npm_before_reporting_completion_and_preserves_evidence() {
-    let fixture = Fixture::new("printf '%s' \"$$\" > npm-fixture-pid; /bin/sleep 60 & wait");
+    let fixture = Fixture::new("printf 'stdout-before-cancel\n'; printf 'stderr-before-cancel\n' >&2; printf '%s' \"$$\" > npm-fixture-pid; /bin/sleep 60 & wait");
     let target = InstallTargetSnapshot::fresh();
     let task = fixture
         .tasks
@@ -327,6 +358,9 @@ async fn cancellation_terminates_npm_before_reporting_completion_and_preserves_e
     );
     assert!(marker.exists(), "interrupted candidate evidence remains");
     assert!(!expected_slot.exists());
+    let logs = public_logs(&fixture.tasks, &task.task_id);
+    assert!(logs.contains("stdout-before-cancel"));
+    assert!(logs.contains("stderr-before-cancel"));
     assert_eq!(
         fixture
             .tasks
@@ -338,6 +372,58 @@ async fn cancellation_terminates_npm_before_reporting_completion_and_preserves_e
         "NODE_INSTALL_CANCELLED"
     );
     fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn npm_output_limit_preserves_bounded_public_output_and_stops_the_process_group() {
+    for redirect in ["", " >&2"] {
+        let fixture = Fixture::new(&format!(
+            "printf '%s' \"$$\" > npm-fixture-pid; awk 'BEGIN {{ for (i = 0; i < {}; i++) printf \"x\" }}'{redirect}; /bin/sleep 60 & wait",
+            MAX_OUTPUT + 1,
+        ));
+        let task = fixture
+            .tasks
+            .create_workspace_operation("nodeInstallPrepare")
+            .unwrap();
+        let target = InstallTargetSnapshot::fresh();
+        let slot = fixture.installer.slot(&target.app_id).unwrap();
+        let (_stop, _cancel, mut control) = live_control();
+        control.deadline = Instant::now() + Duration::from_secs(5);
+        let error = fixture
+            .installer
+            .prepare(
+                &task.task_id,
+                fixture.source(),
+                target,
+                fixture.tools.clone(),
+                control,
+                &fixture.tasks,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "NODE_INSTALL_OUTPUT_LIMIT");
+        let final_task = fixture.tasks.task(&task.task_id).unwrap();
+        assert!(final_task.status.is_final());
+        let logs = public_logs(&fixture.tasks, &task.task_id);
+        let output = logs.rsplit_once('\n').unwrap().1;
+        assert_eq!(output, "x".repeat(MAX_OUTPUT));
+        let candidate_id = final_task.result.as_ref().unwrap()["candidateId"]
+            .as_str()
+            .unwrap();
+        let operation = fixture.installer.operation(candidate_id).unwrap();
+        let pid: i32 = fs::read_to_string(operation.join("program/npm-fixture-pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_ne!(
+            unsafe { libc::kill(-pid, 0) },
+            0,
+            "output overflow must stop the owned group"
+        );
+        assert!(!slot.exists());
+        assert!(operation.exists(), "overflow evidence remains available");
+        fixture.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -750,6 +836,7 @@ async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "NODE_INSTALL_NPM_FAILED");
+    assert!(public_logs(&fixture.tasks, &task.task_id).contains("ECONNREFUSED"));
     assert!(!slot.exists());
     fixture.shutdown().await;
 }
