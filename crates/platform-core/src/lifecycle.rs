@@ -550,7 +550,9 @@ impl LifecycleManager {
             .archive_path
             .clone()
             .ok_or_else(|| ApiError::new("INVALID_INPUT", "archivePath is required"))?;
-        let mode = input.mode.as_deref().unwrap_or("original");
+        // Ordinary imports create an independent local instance. Preserving an
+        // archive's identity is an explicit recovery choice, never an update.
+        let mode = input.mode.as_deref().unwrap_or("copy");
         if !matches!(mode, "original" | "copy") {
             return Err(ApiError::new(
                 "INVALID_INPUT",
