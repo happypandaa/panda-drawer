@@ -971,7 +971,45 @@ test('Project details offer one native window action and send only the desktop o
   await click(enter); await click(enter);
   assert.deepEqual(calls, [{ projectId: 'prj_native_window', target: 'desktop', reload: false }]);
   await act(async () => opened.resolve({ projectId: 'prj_native_window', target: 'desktop', reused: false }));
-  assert.match(dialog().textContent, /已在独立窗口打开/);
+  assert.equal(dialog().querySelector('.notice-success'), null);
+  assert.equal(enter.disabled, false);
+});
+
+test('Reusing a native project window leaves no persistent success notice in the launcher or settings', async () => {
+  await setup();
+  const state = { projects: [appProject('prj_reused_window', 'Reusable window fixture')] };
+  mockApp(state, async (command) => {
+    assert.equal(command, 'project_open');
+    return { projectId: 'prj_reused_window', target: 'desktop', reused: true };
+  });
+  await render(h(App));
+  await click(document.querySelector('[aria-label="进入项目「Reusable window fixture」"]'));
+  assert.equal(document.querySelector('.notice-success'), null);
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.equal(dialog().querySelector('.notice-success'), null);
+  await click(closeButton());
+  assert.equal(document.querySelector('.notice-success'), null);
+});
+
+test('Settings isolate project feedback even when a pending open fails after settings appear', async () => {
+  await setup(); const opened = deferred();
+  const state = { projects: [appProject('prj_failed_window', 'Failed window fixture')] };
+  mockApp(state, async (command) => {
+    if (command === 'environment_doctor' || command === 'environment_git_doctor') throw new Error('Disposable settings check failed');
+    assert.equal(command, 'project_open'); return opened.promise;
+  });
+  await render(h(App));
+  await click(document.querySelector('[aria-label="进入项目「Failed window fixture」"]'));
+  await click(document.querySelector('[aria-label="设置"]'));
+  await act(async () => opened.reject(new Error('Disposable window could not open')));
+  assert.equal(dialog().querySelector('.notice-error'), null);
+  assert.doesNotMatch(dialog().textContent, /Disposable window could not open/);
+  assert.match(dialog().querySelector('.environment-issue[role="alert"]').textContent, /Disposable settings check failed/);
+  await click(closeButton());
+  assert.match(document.querySelector('.radio-notices [role="alert"]').textContent, /Disposable window could not open/);
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.equal(dialog().querySelector('.notice-error'), null);
+  assert.doesNotMatch(dialog().textContent, /Disposable window could not open/);
 });
 
 test('App keeps the selected project and its draft after an external list removal, while disabling mutations', async () => {

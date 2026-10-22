@@ -251,10 +251,9 @@ function App() {
     setError(null);
     setNotice(null);
     try {
-      const result = await invoke<OpenProjectResult>('project_open', { projectId: project.id, target, reload });
-      setNotice(target === 'browser'
-        ? `已将「${project.name}」交给默认浏览器打开。`
-        : reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
+      await invoke<OpenProjectResult>('project_open', { projectId: project.id, target, reload });
+      if (target === 'browser') setNotice(`已将「${project.name}」交给默认浏览器打开。`);
+      else if (reload) setNotice(`已重新加载「${project.name}」的当前网页产物。`);
     } catch (cause) {
       setError(messageFrom(cause));
     } finally {
@@ -479,7 +478,6 @@ function App() {
       </main>
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects}` : totalProjects} APPS</span><span title={info?.workspaceRoot}>LOCAL FIRST</span></footer>
       {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={settingsBusy} onClose={() => setSettingsOpen(false)}>
-        {feedback}
         <section className="runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">运行环境</h3>
           <dl className="radio-settings-summary"><div><dt>平台服务</dt><dd>{info ? '已就绪' : loading ? '读取中…' : '未连接'}</dd></div><div><dt>包内资源</dt><dd>{info ? resourcesReady ? '读取正常' : '需要检查' : '尚未读取'}</dd></div></dl>
