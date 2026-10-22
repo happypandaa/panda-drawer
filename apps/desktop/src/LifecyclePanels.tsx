@@ -57,6 +57,8 @@ export function ProjectLifecyclePanel({ project, status, onTask, disabled, activ
   const [chooseError, setChooseError] = useState('');
   const { pending, error, submit } = useOperation(onTask);
   const deleteSection = useRef<HTMLElement>(null);
+  const deleteEntry = useRef<HTMLButtonElement>(null);
+  const previousDeleteConfirm = useRef(false);
   const chooserGeneration = useRef(0);
   const handledDeleteRequest = useRef(0);
   const chooserLock = useRef(false);
@@ -71,6 +73,13 @@ export function ProjectLifecyclePanel({ project, status, onTask, disabled, activ
     if (!active) { setDeleteConfirm(false); setDeleteAcknowledged(false); }
     else if (deleteRequested > handledDeleteRequest.current) { handledDeleteRequest.current = deleteRequested; setDeleteConfirm(true); setDeleteAcknowledged(false); deleteSection.current?.focus({ preventScroll: true }); }
   }, [active, deleteRequested]);
+  useEffect(() => {
+    const wasConfirming = previousDeleteConfirm.current;
+    previousDeleteConfirm.current = deleteConfirm;
+    if (!active) return;
+    if (deleteConfirm && !wasConfirming) deleteSection.current?.focus({ preventScroll: true });
+    else if (!deleteConfirm && wasConfirming) deleteEntry.current?.focus({ preventScroll: true });
+  }, [deleteConfirm, active]);
   async function chooseExportPath() {
     if (blocked || chooserLock.current) return;
     chooserLock.current = true; setChoosing(true); setChooseError(''); const generation = ++chooserGeneration.current;
@@ -81,15 +90,16 @@ export function ProjectLifecyclePanel({ project, status, onTask, disabled, activ
     finally { if (generation === chooserGeneration.current) { chooserLock.current = false; setChoosing(false); } }
   }
   return <section className="lifecycle-card lifecycle-panel-embedded" aria-label="项目更多操作">
-    <section ref={deleteSection} className="project-delete-section" tabIndex={-1} aria-labelledby="project-delete-title">
-      <div className="project-delete-heading"><div><h3 id="project-delete-title"><Trash2 size={17} />删除项目</h3><p>删除完整项目目录并移入 macOS 系统废纸篓。</p></div>{!deleteConfirm && <button className="danger-button" disabled={deleteBlocked} onClick={() => { setDeleteConfirm(true); setDeleteAcknowledged(false); }}><Trash2 size={14} />删除项目</button>}</div>
-      {deleteConfirm && <div className="operation-confirmation project-delete-confirmation" role="group" aria-label="删除项目确认">
-        <strong>删除「{project.name}」并移入系统废纸篓？</strong>
-        <p>项目 ID：<code>{project.id}</code></p>
-        <p>以下完整目录中的源码、SDK、本机 Git 仓库、数据库、附件、当前网页和项目内说明将一起移入系统废纸篓，并从项目列表移除。</p><code className="project-delete-path">{project.projectRoot}</code><p>目录外的历史备份、操作与恢复现场、来源副本以及外部导出的 ZIP 保留。</p><DeletionNotice />
-        <p>已有项目窗口将无法继续保存。请先处理窗口内的未保存内容和本页尚未保存的编辑。</p>
-        <label className="checkbox-label"><input type="checkbox" checked={deleteAcknowledged} disabled={deleteBlocked} onChange={(event) => setDeleteAcknowledged(event.target.checked)} />我已核对删除目录和版本／同步风险，并处理未保存内容</label>
-        <div className="confirmation-actions"><button className="danger-button" disabled={deleteBlocked || !deleteAcknowledged} onClick={() => { if (!deleteBlocked && deleteAcknowledged) void submit('project_delete', { projectId: project.id, input: maintenanceInput }, () => { setDeleteConfirm(false); setDeleteAcknowledged(false); }); }}><Trash2 size={14} />{pending ? '正在提交…' : '确认删除项目'}</button><button className="refresh-button" disabled={pending} onClick={() => { setDeleteConfirm(false); setDeleteAcknowledged(false); }}>取消，保留项目</button></div>
+    <section ref={deleteSection} className={`project-delete-section${deleteConfirm ? ' is-confirming-delete' : ''}`} tabIndex={-1} aria-labelledby="project-delete-title">
+      {!deleteConfirm && <div className="project-delete-heading"><div><h3 id="project-delete-title"><Trash2 size={17} />删除项目</h3><p>完整项目目录将移入系统废纸篓。</p></div><button ref={deleteEntry} className="danger-button" disabled={deleteBlocked} onClick={() => { setDeleteConfirm(true); setDeleteAcknowledged(false); }}><Trash2 size={14} />删除项目</button></div>}
+      {deleteConfirm && <div className="project-delete-confirmation compact-delete-confirmation" role="group" aria-label="删除项目确认">
+        <h3 id="project-delete-title">删除项目？</h3>
+        <p className="project-delete-summary">整个项目及其本机数据将移入系统废纸篓。</p>
+        <DeletionNotice />
+        <details className="project-delete-details"><summary>查看删除范围</summary><div><p>包括源码、SDK、本机 Git、数据库、附件、网页和项目说明。</p><code className="project-delete-path">{project.projectRoot}</code><p>项目 ID：<code>{project.id}</code></p><p>目录外的历史备份、恢复现场、来源副本及导出文件保留。</p><p>数据库、附件和配置无法从源码版本恢复。文件找回请使用 Finder 废纸篓，再核对登记状态。</p></div></details>
+        <p className="project-delete-draft">请先处理项目窗口和本页未保存的内容。</p>
+        <label className="checkbox-label"><input type="checkbox" checked={deleteAcknowledged} disabled={deleteBlocked} onChange={(event) => setDeleteAcknowledged(event.target.checked)} />我已确认删除范围及未同步风险</label>
+        <div className="confirmation-actions"><button className="refresh-button" disabled={pending} onClick={() => { setDeleteConfirm(false); setDeleteAcknowledged(false); }}>取消</button><button className="danger-button" disabled={deleteBlocked || !deleteAcknowledged} onClick={() => { if (!deleteBlocked && deleteAcknowledged) void submit('project_delete', { projectId: project.id, input: maintenanceInput }, () => { setDeleteConfirm(false); setDeleteAcknowledged(false); }); }}>{pending ? '正在移入…' : '移入废纸篓'}</button></div>
       </div>}
       {status?.recoveryRequired && <p className="task-error">项目有待处理的恢复状态，请先在备份维护中查看。</p>}
       {!status && <p className="project-help">维护状态尚未读取，请先刷新状态再删除。</p>}

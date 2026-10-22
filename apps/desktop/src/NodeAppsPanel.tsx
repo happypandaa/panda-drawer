@@ -93,6 +93,9 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const sequence = useRef(0);
   const selected = useRef<string | null>(null);
   const confirmation = useRef<HTMLDivElement>(null);
+  const deletionPanel = useRef<HTMLElement>(null);
+  const deleteEntry = useRef<HTMLButtonElement>(null);
+  const previousDeleteOpen = useRef(false);
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
   const base = useId();
   const dirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
@@ -193,6 +196,11 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   }, [addRequest, enabled, pending]);
   useEffect(() => { modalCallback.current?.(modalOpen || addOpen); }, [modalOpen, addOpen]);
   useEffect(() => { if (dismissConfirm || requestedSelection) confirmation.current?.focus(); }, [dismissConfirm, requestedSelection]);
+  useEffect(() => {
+    if (deleteOpen) deletionPanel.current?.focus({ preventScroll: true });
+    else if (previousDeleteOpen.current && modalOpen) deleteEntry.current?.focus({ preventScroll: true });
+    previousDeleteOpen.current = deleteOpen;
+  }, [deleteOpen, modalOpen]);
   useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || installPending }); }, [dirty, pending, loading, installPending]);
   useEffect(() => {
     if (!enabled || !detail || pending || installPending || loading || !modalOpen || deleteOpen) return;
@@ -338,30 +346,36 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   }
 
   return <>
-    {modalOpen && detail && <Modal title={detail.name} description="项目详情与应用配置" wide closeDisabled={Boolean(pending) || installPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
+    {modalOpen && detail && <Modal title={deleteOpen ? '删除项目？' : detail.name} description={deleteOpen ? undefined : '项目详情与应用配置'} wide={!deleteOpen} className={deleteOpen ? 'node-delete-modal' : ''} closeDisabled={Boolean(pending) || installPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
       <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
         {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的应用配置</strong><p>关闭会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
         {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="重新读取配置确认"><strong>当前配置有未保存的修改</strong><p>继续会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并重新读取</button></div></div>}
         {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
         {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
-        <header className="node-app-heading"><div><h2 id={`${base}-title`}>{detail.name}</h2><span className="node-runtime-label"><Server size={14} />Node 服务</span></div><span className={`node-process-state node-process-${detail.state}`} role="status">{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : stateLabels[detail.state]}</span></header>
+        <div hidden={deleteOpen}>
+        <header className="node-app-heading"><span className="node-runtime-label"><Server size={14} />Node 服务</span><span className={`node-process-state node-process-${detail.state}`} role="status">{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : stateLabels[detail.state]}</span></header>
         <div className="node-runtime-actions">
-          <button className="primary-button" disabled={blocked || loading || deleteOpen || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={15} />进入项目</button><button className="danger-button" disabled={blocked || loading} onClick={() => void previewDeletion(detail)}><Trash2 size={15} />删除项目</button>
+          <button className="primary-button" disabled={blocked || loading || deleteOpen || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={15} />进入项目</button><button ref={deleteEntry} className="danger-button" disabled={blocked || loading} onClick={() => void previewDeletion(detail)}><Trash2 size={15} />删除项目</button>
         </div>
         {detail.lastError && <p className="task-error node-inline-message" role="alert">{detail.lastError}</p>}
         {statusError && <p className="task-error node-inline-message" role="alert">{statusError}</p>}
         {detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : '先补齐必填项，再重启应用。'}</p>}
         {detail.configuration.missingRequired.length > 0 && <p className="node-config-warning"><CircleAlert size={16} /><span>请先配置：{detail.configuration.missingRequired.map((name) => detail.fields.find((field) => field.name === name)?.label ?? name).join('、')}。补齐并保存后，再明确点击“进入项目”。</span></p>}
-        {deleteOpen && <section className="operation-confirmation project-delete-confirmation" role="group" aria-label="删除 Node 应用确认">
-          <h3>删除「{detail.name}」并移入系统废纸篓？</h3>
-          <p>删除以下应用实例的整个目录，其中包括已安装程序及依赖、业务数据、附件、本机配置与密钥、缓存和运行记录。</p>
-          {deletePreview ? <><code className="project-delete-path">{deletePreview.path}</code>{deletePreview.externalSourcePath && <p>原作者的外部源码目录保留：<code>{deletePreview.externalSourcePath}</code></p>}<p>独立来源副本、安装准备现场和目录外的历史资料保留。</p></> : <p role="status">{pending === 'delete-preview' ? '正在核对应用目录与运行状态…' : '删除范围尚未核对，请重新核对后再确认。'}</p>}
+        </div>
+        {deleteOpen && <section ref={deletionPanel} className="project-delete-confirmation compact-delete-confirmation" tabIndex={-1} role="group" aria-label="删除 Node 应用确认">
+          <div className="project-delete-target"><span className="project-delete-icon" aria-hidden="true"><Trash2 size={22} /></span><strong>{detail.name}</strong></div>
+          <p className="project-delete-summary">整个应用及其本机数据将移入系统废纸篓。</p>
           <DeletionNotice />
-          {dirty && <p>当前配置有未保存的修改。删除不会保存这些草稿，请先另存需要保留的内容。</p>}
+          {deletePreview ? <details className="project-delete-details"><summary>查看删除范围</summary><div>
+            <p>包括程序、依赖、数据、附件、配置与密钥、缓存和本机 Git。</p><code className="project-delete-path">{deletePreview.path}</code>
+            {deletePreview.externalSourcePath && <p>外部源码保留：<code>{deletePreview.externalSourcePath}</code></p>}<p>独立来源副本、安装材料和目录外的历史资料保留。</p>
+            <p>数据库、附件和配置无法从源码版本恢复。找回文件请使用 Finder 废纸篓，再核对登记状态；应用不会自动启动。</p>
+          </div></details> : <p role="status" className="project-delete-read-status">{pending === 'delete-preview' ? '正在核对…' : '请重新核对删除范围。'}</p>}
+          {dirty && <p className="project-delete-draft">尚有未保存的配置，删除不会保存草稿。</p>}
           {deletePreview?.blockedReasons?.map((reason) => <p className="task-error" key={reason}>{reason}</p>)}
-          {deletePreview && !deletePreview.canDelete && <p>请先关闭应用窗口并等待后台服务完全停止，再重新核对。</p>}
-          <label className="checkbox-label"><input type="checkbox" checked={deleteAcknowledged} disabled={blocked || !deletePreview?.canDelete} onChange={(event) => setDeleteAcknowledged(event.target.checked)} />我已核对删除目录和版本／同步风险，并处理未保存内容</label>
-          <div className="confirmation-actions"><button className="danger-button" disabled={blocked || !deletePreview?.canDelete || !deleteAcknowledged} onClick={() => void deleteApp()}><Trash2 size={14} />{pending === 'delete' ? '正在移入系统废纸篓…' : '确认删除应用'}</button><button className="refresh-button" disabled={blocked} onClick={() => void previewDeletion(detail)}>重新核对删除范围</button><button className="refresh-button" disabled={blocked} onClick={() => { setDeleteOpen(false); setDeletePreview(null); setDeleteAcknowledged(false); }}>取消，保留应用</button></div>
+          {!blocked && !deletePreview?.canDelete && <button className="text-button" onClick={() => void previewDeletion(detail)}>重新核对删除范围</button>}
+          <label className="checkbox-label"><input type="checkbox" checked={deleteAcknowledged} disabled={blocked || !deletePreview?.canDelete} onChange={(event) => setDeleteAcknowledged(event.target.checked)} />我已确认删除范围及未同步风险</label>
+          <div className="confirmation-actions"><button className="refresh-button" disabled={blocked} onClick={() => { setDeleteOpen(false); setDeletePreview(null); setDeleteAcknowledged(false); }}>取消</button><button className="danger-button" disabled={blocked || !deletePreview?.canDelete || !deleteAcknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在移入…' : '移入废纸篓'}</button></div>
         </section>}
         <div hidden={deleteOpen}>
         <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{([['overview', '概览', Info], ['configuration', '应用配置', KeyRound], ['runtime', '运行状态', Activity]] as const).map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
