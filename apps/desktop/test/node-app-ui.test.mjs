@@ -332,7 +332,8 @@ test('Closing an app sends one stop request and returns the manager to its unope
   await act(async () => closed.resolve(app()));
   assert.equal(byText('关闭应用').disabled, true);
   assert.equal(byText('进入项目').disabled, false);
-  assert.match(document.body.textContent, /应用已关闭，相关服务已停止/);
+  assert.match(document.querySelector('[id$="-runtime-panel"]').textContent, /已停止/);
+  assert.equal(document.querySelector('.workspace-inline-notice.node-inline-message'), null);
 });
 
 test('Incomplete required configuration blocks opening an application and identifies the field to finish', async () => {
@@ -676,5 +677,7 @@ test('The shared project shell removes a Node card only after a confirmed system
   assert.equal(document.querySelector('.radio-toolbar .primary-button').disabled, true);
   await act(async () => { state.nodes = []; result.resolve({ appId: value.id, operationOutcome: 'system_trashed' }); });
   assert.equal(document.querySelectorAll('.project-card').length, 0); assert.equal(document.querySelector('[role=dialog]'), null);
-  assert.match(document.querySelector('.notice-success').textContent, /应用及其本机数据已移入系统废纸篓/);
+  assert.equal(document.querySelector('.notice-success'), null);
+  await click(document.querySelector('.radio-messages-button'));
+  assert.match(document.querySelector('[role=dialog]').textContent, /应用及其本机数据已移入系统废纸篓/);
 });

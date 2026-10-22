@@ -133,6 +133,133 @@ test('The real shell has two navigation choices, with runtime and about in a sin
   assert.equal(calls.some(([command]) => /project_create|workspace_migrate|environment_node_set/.test(command)), false);
 });
 
+test('The dedicated message entry opens an empty message list and returns focus when dismissed', async () => {
+  await setup();
+  const entry = document.querySelector('.radio-messages-button');
+  assert.equal(entry.getAttribute('aria-label'), '消息，0 条');
+  assert.equal(entry.getAttribute('aria-expanded'), 'false');
+  await act(async () => entry.focus());
+  await click(entry);
+  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, '消息');
+  assert.match(dialog().textContent, /暂无消息/);
+  assert.equal(dialog().querySelector('[aria-label="操作消息"]'), null);
+  assert.equal(byText('全部清除', dialog()), undefined);
+  assert.equal(entry.getAttribute('aria-expanded'), 'true');
+  await key(dialog(), 'Escape');
+  assert.equal(dialog(), null);
+  assert.equal(document.activeElement, entry);
+  assert.equal(entry.getAttribute('aria-expanded'), 'false');
+  await click(entry);
+  await click(document.querySelector('[aria-label="关闭消息"]'));
+  assert.equal(dialog(), null);
+});
+
+test('A refresh failure appears only in messages and never leaks into settings or project creation', async () => {
+  let fail = false;
+  await setup({ overrides: { project_list: () => {
+    if (fail) throw new Error('Disposable project list read failed');
+    return [];
+  } } });
+  fail = true;
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  assert.equal(document.querySelector('.radio-messages-button').getAttribute('aria-label'), '消息，1 条');
+  assert.doesNotMatch(document.querySelector('.radio-main').textContent, /Disposable project list read failed/);
+  assert.equal(document.querySelector('.radio-main .notice-error, .radio-main .notice-success'), null);
+
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
+  assert.doesNotMatch(dialog().textContent, /Disposable project list read failed|项目列表读取失败/);
+  assert.equal(dialog().querySelector('.notice-error, .notice-success, .app-messages-list'), null);
+  await click(document.querySelector('[aria-label="关闭设置"]'));
+
+  await click(document.querySelector('.radio-toolbar .primary-button'));
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, '新建项目');
+  assert.doesNotMatch(dialog().textContent, /Disposable project list read failed|项目列表读取失败/);
+  assert.equal(dialog().querySelector('.notice-error, .notice-success, .app-messages-list, [role="alert"]'), null);
+  await click(document.querySelector('[aria-label="关闭新建项目"]'));
+
+  await click(document.querySelector('.radio-messages-button'));
+  const messages = dialog().querySelector('[aria-label="操作消息"]');
+  assert.equal(messages.children.length, 1);
+  assert.match(messages.textContent, /项目列表读取失败/);
+  assert.match(messages.textContent, /Disposable project list read failed/);
+  assert.equal(document.querySelectorAll('.app-message').length, 1);
+});
+
+test('Messages support dismissing one result and clearing the remaining messages', async () => {
+  const project = { id: 'prj_disposable_message_controls', name: 'Disposable message controls', description: '', projectRoot: '/disposable/radio-shell/message-controls', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
+  await setup({ projects: [project], overrides: {
+    node_app_list: () => { throw new Error('Disposable Node read failure'); },
+    maintenance_status: () => { throw new Error('Disposable maintenance read failure'); },
+  } });
+  const entry = document.querySelector('.radio-messages-button');
+  assert.equal(entry.getAttribute('aria-label'), '消息，2 条');
+  await click(entry);
+  assert.equal(dialog().querySelector('[aria-label="操作消息"]').children.length, 2);
+  assert.match(dialog().textContent, /部分项目暂时无法读取/);
+  assert.match(dialog().textContent, /维护状态读取失败/);
+  await click(dialog().querySelector('[aria-label="清除消息：维护状态读取失败"]'));
+  assert.equal(dialog().querySelector('[aria-label="操作消息"]').children.length, 1);
+  assert.doesNotMatch(dialog().textContent, /维护状态读取失败/);
+  assert.match(dialog().textContent, /部分项目暂时无法读取/);
+  assert.equal(entry.getAttribute('aria-label'), '消息，1 条');
+  await click(byText('全部清除', dialog()));
+  assert.equal(dialog().querySelector('[aria-label="操作消息"]'), null);
+  assert.match(dialog().textContent, /暂无消息/);
+  assert.equal(entry.getAttribute('aria-label'), '消息，0 条');
+  await click(document.querySelector('[aria-label="关闭消息"]'));
+  await click(entry);
+  assert.match(dialog().textContent, /暂无消息/);
+});
+
+for (const [command, title] of [
+  ['project_list', '项目列表读取失败'],
+  ['node_app_list', '部分项目暂时无法读取'],
+  ['maintenance_status', '维护状态读取失败'],
+]) {
+  test(`Repeated ${command} failures produce one message, and a successful refresh clears it`, async () => {
+    let fail = false;
+    const project = { id: `prj_disposable_message_${command}`, name: `Disposable ${command} message`, description: '', projectRoot: `/disposable/radio-shell/${command}`, documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
+    await setup({ projects: [project], overrides: { [command]: () => {
+      if (fail) throw new Error(`Disposable ${command} refresh failure`);
+      return command === 'project_list' ? [project] : command === 'node_app_list' ? [] : { mode: 'ready', recoveryRequired: false, activeTask: null };
+    } } });
+    const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
+    const entry = document.querySelector('.radio-messages-button');
+    fail = true;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await click(refresh);
+      assert.equal(entry.getAttribute('aria-label'), '消息，1 条');
+      await click(entry);
+      const messages = dialog().querySelector('[aria-label="操作消息"]');
+      assert.equal(messages.children.length, 1);
+      assert.match(messages.textContent, new RegExp(title));
+      await click(document.querySelector('[aria-label="关闭消息"]'));
+    }
+    fail = false;
+    await click(refresh);
+    assert.equal(entry.getAttribute('aria-label'), '消息，0 条');
+    await click(entry);
+    assert.match(dialog().textContent, /暂无消息/);
+    assert.equal(dialog().querySelector('[aria-label="操作消息"]'), null);
+  });
+}
+
+test('A project creation failure stays beside its form rather than becoming a cross-page message', async () => {
+  await setup({ overrides: { project_create: () => { throw new Error('Disposable creation validation failure'); } } });
+  await click(document.querySelector('.radio-toolbar .primary-button'));
+  await change(document.getElementById('project-name'), 'Disposable creation failure fixture');
+  await click(byText('创建项目', dialog()));
+  assert.match(dialog().querySelector('[role="alert"]').textContent, /Disposable creation validation failure/);
+  assert.equal(document.querySelector('.radio-messages-button').getAttribute('aria-label'), '消息，0 条');
+  assert.equal(document.getElementById('project-name').value, 'Disposable creation failure fixture');
+  await click(document.querySelector('[aria-label="关闭新建项目"]'));
+  await click(document.querySelector('.radio-messages-button'));
+  assert.match(dialog().textContent, /暂无消息/);
+  assert.doesNotMatch(dialog().textContent, /Disposable creation validation failure/);
+});
+
 test('Light and dark choices persist and apply to html so body-level settings portals share the theme', async () => {
   window.localStorage.setItem(APPEARANCE_KEY, 'dark');
   await setup();
@@ -287,6 +414,40 @@ test('Active management work keeps a compact home indicator that opens its full 
   const history = dialog().querySelector('.radio-settings-tasks');
   assert.equal(history.open, true);
   assert.match(history.querySelector('[aria-label="进行中的管理任务"]').textContent, /清理历史 · 正在执行/);
+});
+
+test('Refreshing a finished management task clears an earlier polling error before polling stops', async () => {
+  const pending = { taskId: 'disposable_message_poll_recovery', projectId: null, type: 'workspaceCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
+  const finished = { ...pending, status: 'succeeded', final: true, phase: 'completed', result: {} };
+  let reads = 0;
+  let recovered = false;
+  const calls = await setup({ overrides: {
+    workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', activeTask: null, lastTaskId: pending.taskId, retainedRoots: [] }),
+    task_get: ({ taskId }) => {
+      assert.equal(taskId, pending.taskId);
+      reads++;
+      if (reads === 1) return pending;
+      if (!recovered) throw new Error('Disposable task status polling failure');
+      return finished;
+    },
+  } });
+  assert.equal(reads, 1);
+  await act(async () => new Promise(resolve => setTimeout(resolve, 1100)));
+  const entry = document.querySelector('.radio-messages-button');
+  assert.equal(entry.getAttribute('aria-label'), '消息，1 条');
+  await click(entry);
+  assert.match(dialog().querySelector('[aria-label="操作消息"]').textContent, /任务状态暂时无法读取/);
+  assert.match(dialog().textContent, /Disposable task status polling failure/);
+  await click(document.querySelector('[aria-label="关闭消息"]'));
+
+  recovered = true;
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  assert.equal(calls.filter(([command]) => command === 'workspace_info').length, 2);
+  assert.equal(document.querySelector('.radio-task-indicator'), null);
+  assert.equal(entry.getAttribute('aria-label'), '消息，0 条');
+  await click(entry);
+  assert.match(dialog().textContent, /暂无消息/);
+  assert.equal(dialog().querySelector('[aria-label="操作消息"]'), null);
 });
 
 test('The add disclosure cannot open before bootstrap, and closes when Node entry becomes pending', async () => {

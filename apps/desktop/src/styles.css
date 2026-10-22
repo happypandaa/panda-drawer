@@ -1343,3 +1343,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .radio-settings-modal :is(.path-row dd, .runtime-details > div) { min-width: 0; }
 .radio-settings-modal :is(code, .path-row dd, .runtime-details code) { white-space: normal; overflow-wrap: anywhere; }
+
+/* Operation messages have one entry point rather than following each panel. */
+.radio-messages-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; flex-shrink: 0; padding: 7px 11px; border: 1px solid var(--radio-line); border-radius: 999px; color: var(--radio-text); background: transparent; font-size: 12px; white-space: nowrap; }
+.radio-messages-button:hover:not(:disabled) { background: var(--radio-selected); }
+.radio-messages-count { display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding-inline: 4px; border-radius: 999px; color: var(--radio-secondary); background: var(--radio-subtle); font: 500 10px/1 var(--radio-mono); }
+.radio-messages-modal { width: 520px; max-height: calc(100dvh - 32px); }
+.radio-messages-modal .modal-header { align-items: center; min-height: 54px; padding: 14px 20px; }
+.radio-messages-modal .modal-header h2 { font-size: 16px; line-height: 24px; }
+.radio-messages-modal .modal-content { padding: 16px 20px 20px; }
+.app-messages-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--radio-muted); font-size: 12px; }
+.app-messages-toolbar .text-button { font-size: 12px; }
+.app-messages-list { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.app-message { display: grid; grid-template-columns: 18px minmax(0, 1fr) 24px; align-items: start; gap: 10px; padding: 14px 12px; border: 1px solid var(--radio-line); border-radius: 9px; background: var(--radio-subtle); }
+.app-message-icon { display: flex; margin-top: 1px; color: var(--radio-secondary); }
+.app-message.is-warning .app-message-icon { color: var(--radio-warning); }
+.app-message.is-error .app-message-icon { color: var(--radio-danger); }
+.app-message-content { min-width: 0; }
+.app-message-content h3 { margin: 0; font-size: 13px; line-height: 20px; font-weight: 600; overflow-wrap: anywhere; }
+:root[data-theme] .app-message-content p { margin: 5px 0 0; color: var(--radio-secondary); font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.app-message-dismiss { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; margin-top: -2px; }
+.app-messages-empty { display: grid; justify-items: center; gap: 10px; padding: 32px 12px; color: var(--radio-muted); }
+.app-messages-empty p { margin: 0; font-size: 13px; }
+@media (max-width: 720px) {
+  .radio-messages-button { gap: 5px; min-height: 32px; padding: 5px 8px; }
+  .radio-messages-label { display: none; }
+  .radio-messages-count { min-width: 16px; height: 16px; padding-inline: 3px; font-size: 9px; }
+}

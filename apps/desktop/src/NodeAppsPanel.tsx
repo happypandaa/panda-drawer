@@ -277,8 +277,6 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
       if (!alive.current || selected.current !== appId) return;
       accept(value, !dirty);
       setStatusError('');
-      if (command === 'node_app_stop') setNotice(value.state === 'stopped' ? '应用已关闭，相关服务已停止。已保存的配置保留。' : '关闭结果已更新，请查看应用状态。');
-      if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? '应用窗口已打开。关闭窗口会停止本应用。' : '打开结果已更新，请查看应用状态。');
     } catch (cause) { if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
   }
