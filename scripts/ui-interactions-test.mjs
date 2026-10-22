@@ -1006,7 +1006,10 @@ test('Settings isolate project feedback even when a pending open fails after set
   assert.doesNotMatch(dialog().textContent, /Disposable window could not open/);
   assert.match(dialog().querySelector('.environment-issue[role="alert"]').textContent, /Disposable settings check failed/);
   await click(closeButton());
-  assert.match(document.querySelector('.radio-notices [role="alert"]').textContent, /Disposable window could not open/);
+  assert.equal(document.querySelector('.radio-notices [role="alert"]'), null);
+  await click(document.querySelector('.radio-messages-button'));
+  assert.match(dialog().textContent, /Disposable window could not open/);
+  await click(closeButton());
   await click(document.querySelector('[aria-label="设置"]'));
   assert.equal(dialog().querySelector('.notice-error'), null);
   assert.doesNotMatch(dialog().textContent, /Disposable window could not open/);
@@ -1089,7 +1092,7 @@ test('AI handoff remains selectable when the clipboard rejects access', async ()
   await act(async () => text.focus());
   assert.equal(text.selectionStart, 0); assert.equal(text.selectionEnd, text.value.length);
   assert.equal(attempts, 1);
-  assert.match(dialog().querySelector('[role="status"]').textContent, /可以选中下面的文字并复制/);
+  assert.match(document.querySelector('.handoff-card [role="status"]').textContent, /无法自动复制.*手动复制/);
   assert.doesNotMatch(dialog().textContent, /已复制「/);
   await click(buttonNamed('收起全文'));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
@@ -1357,7 +1360,49 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.equal(submissions, 2); assert.ok(dialog(), 'Queued acceptance is not final success');
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
   assert.equal(dialog(), null);
-  assert.match(document.querySelector('.notice-success').textContent, /项目已移入系统废纸篓/);
+  assert.equal(document.querySelector('.notice-success'), null);
+  await click(document.querySelector('.radio-messages-button'));
+  assert.match(dialog().textContent, /项目已移入系统废纸篓/);
+});
+
+test('A background delete keeps another project detail open and records the original project result in messages', async () => {
+  await setup(); const completion = deferred(); let submissions = 0; let polls = 0;
+  const deleted = appProject('prj_disposable_background_delete', 'Disposable background deletion A');
+  const next = appProject('prj_disposable_background_detail', 'Disposable current detail B');
+  const state = { projects: [deleted, next] };
+  const task = { taskId: 'task_disposable_background_delete', type: 'delete', projectId: deleted.id, status: 'queued', final: false, phase: 'queued' };
+  mockApp(state, async (command, args) => {
+    if (command === 'project_delete') {
+      assert.equal(args.projectId, deleted.id); submissions++; return task;
+    }
+    assert.equal(command, 'task_get'); assert.equal(args.taskId, task.taskId); polls++;
+    return completion.promise;
+  });
+  await render(h(App)); await openProjectMenu(deleted.name);
+  await click(document.querySelector(`[aria-label='删除项目「${deleted.name}」']`));
+  await click(document.querySelector('.project-delete-confirmation input'));
+  await click(buttonNamed('移入废纸篓'));
+  assert.equal(submissions, 1); assert.ok(dialog(), 'Task acceptance does not close the detail');
+  await click(closeButton());
+  assert.equal(dialog(), null);
+  await openDetails(next.name);
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, next.name);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
+  assert.ok(polls > 0);
+  await act(async () => {
+    state.projects = [next];
+    completion.resolve({ ...task, status: 'succeeded', final: true, phase: 'completed', result: { operationOutcome: 'system_trashed', originalPath: deleted.projectRoot, systemTrashPath: '/disposable/system-trash/prj_disposable_background_delete' } });
+  });
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, next.name, 'Completing another project deletion must not dismiss this detail');
+  assert.doesNotMatch(dialog().textContent, /Disposable background deletion A|项目已移入系统废纸篓|删除结果/);
+  assert.equal(submissions, 1);
+  await click(closeButton());
+  await click(document.querySelector('.radio-messages-button'));
+  const result = dialog().querySelector('.app-message');
+  assert.ok(result); assert.equal(dialog().querySelectorAll('.app-message').length, 1);
+  assert.match(result.querySelector('h3').textContent, /「Disposable background deletion A」的删除结果/);
+  assert.match(result.textContent, /项目已移入系统废纸篓/);
+  assert.doesNotMatch(result.textContent, /Disposable current detail B/);
 });
 
 test('App blocks closing a pending create, shows its failure inside the modal, and preserves the name on reopening', async () => {
