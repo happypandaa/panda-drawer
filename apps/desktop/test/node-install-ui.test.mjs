@@ -165,6 +165,61 @@ test('A pending prepare blocks duplicate submission and late cancellation acknow
   assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
 });
 
+test('Cancellation stays pending until confirmed, then labels the task and retained preparation without retrying or changing API status', async () => {
+  let finished = false;
+  const error = { code: 'NODE_INSTALL_CANCELLED', message: '安装准备已取消，当前程序及数据未改变。' };
+  const cancelled = task({ status: 'failed', final: true, phase: 'failed', error, result: { candidateId, installed: false, partialFilesRetained: true } });
+  const { calls, tasks, installs } = await setup({ overrides: {
+    node_install_prepare: () => task(),
+    node_install_cancel: () => task(),
+    task_get: () => finished ? cancelled : task(),
+    node_install_list: () => ({ candidates: finished ? [history({ state: 'failed', prepared: null, error })] : [], issues: [] }),
+  } });
+  await choose(); await prepareClick(); await click(byText('取消准备'));
+  assert.equal(document.querySelector('.build-task-heading strong').textContent, '准备应用安装 · 正在执行');
+  assert.match(document.body.textContent, /已请求取消准备，正在等待任务停止/);
+  assert.doesNotMatch(document.querySelector('.build-task').textContent, /已取消|安装准备已停止/);
+  assert.equal(byText('准备安装材料').disabled, true);
+  finished = true; await tick();
+  assert.equal(document.querySelector('.build-task-heading strong').textContent, '准备应用安装 · 已取消');
+  assert.equal(document.querySelector('.build-task-heading span').textContent, '安装准备已停止');
+  assert.match(document.querySelector('.build-task').textContent, /安装准备已取消，当前程序及数据未改变。 \(NODE_INSTALL_CANCELLED\)/);
+  assert.match(document.querySelector('[aria-label="保留的安装记录"] article p').textContent, /准备已取消，现场保留/);
+  assert.equal(select().value, sourceId);
+  assert.equal(byText('准备安装材料').disabled, false);
+  assert.equal(byText('取消准备'), undefined);
+  assert.equal(byText('确认安装'), undefined);
+  assert.equal(tasks.at(-1), cancelled);
+  assert.equal(cancelled.status, 'failed');
+  assert.equal(cancelled.phase, 'failed');
+  assert.deepEqual(installs, []);
+  assert.equal(commandCalls(calls, 'node_install_prepare').length, 1);
+  assert.equal(commandCalls(calls, 'node_install_cancel').length, 1);
+  assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
+});
+
+test('Unconfirmed cleanup, ordinary failure, shutdown and apply errors keep their original task and retained-record states', async () => {
+  for (const [type, status, code, heading, recordLabel] of [
+    ['nodeInstallPrepare', 'failed', 'NODE_INSTALL_CLEANUP_PENDING', '准备应用安装 · 失败', '未完成，现场保留'],
+    ['nodeInstallPrepare', 'failed', 'NODE_INSTALL_NPM_FAILED', '准备应用安装 · 失败', '未完成，现场保留'],
+    ['nodeInstallPrepare', 'interrupted', 'NODE_INSTALL_INTERRUPTED', '准备应用安装 · 已中断', '已中断，现场保留'],
+    ['nodeInstallApply', 'failed', 'NODE_INSTALL_CANCELLED', '安装或更新应用 · 失败', '未完成，现场保留'],
+  ]) {
+    const error = { code, message: '人工保留诊断' };
+    const terminal = task({ type, status, final: true, phase: status, error });
+    const { calls } = await setup({ props: { task: terminal }, overrides: {
+      node_install_list: () => ({ candidates: [history({ state: status, prepared: null, error, applyTaskId: type === 'nodeInstallApply' ? 'task_apply' : null })], issues: [] }),
+    } });
+    assert.equal(document.querySelector('.build-task-heading strong').textContent, heading);
+    assert.equal(document.querySelector('.build-task-heading span').textContent, status);
+    assert.ok(document.querySelector('[aria-label="保留的安装记录"] article p').textContent.includes(recordLabel));
+    assert.match(document.querySelector('.build-task').textContent, new RegExp(code));
+    assert.equal(commandCalls(calls, 'node_install_prepare').length, 0);
+    assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
+    await unmount();
+  }
+});
+
 test('Polling failure retains the active prepare and selected source without allowing duplicate work', async () => {
   const { calls } = await setup({ overrides: {
     node_install_prepare: () => task(), task_get: () => { throw new Error('人工状态失败'); },

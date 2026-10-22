@@ -54,6 +54,10 @@ function eligible(source: SourceInstallCandidate) {
     && sourcePattern.test(source.sourceId) && typeof source.contentDigest === 'string' && digestPattern.test(source.contentDigest);
 }
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
+function cancelledPreparationRecord(item: InstallRecord) {
+  return item.state === 'failed' && Boolean(item.prepareTaskId) && item.applyTaskId === null
+    && record(item.error) && item.error.code === 'NODE_INSTALL_CANCELLED';
+}
 function preparedResult(value: unknown): PreparedNodeInstall | null {
   if (!record(value) || typeof value.candidateId !== 'string' || !candidatePattern.test(value.candidateId)
     || typeof value.appId !== 'string' || !appPattern.test(value.appId)
@@ -354,7 +358,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     <section aria-label="保留的安装记录"><div className="storage-heading"><h4>保留的安装记录</h4><button type="button" className="refresh-button" disabled={listing || busy} onClick={() => void readList()}>{listing ? '读取记录…' : '刷新安装记录'}</button></div>
       {listError && <p role="alert">{listError}</p>}{listIssues.map((issue, index) => <p role="alert" key={index}>{messageFrom(issue)}</p>)}
       {!listing && !listError && !visibleRecords.length && <p>暂无此目标的安装记录。</p>}
-      {visibleRecords.map(item => <article className="operation-confirmation" key={item.candidateId}><p><code>{item.candidateId}</code> · {({ preparing: '正在准备', prepared: '已准备，尚未安装', committing: '正在提交或需要恢复核对', committed: '已提交安装', failed: '未完成，现场保留', interrupted: '已中断，现场保留', 'needs-attention': '结果需要核对', unavailable: '记录不可用' } as Record<string, string>)[item.state] ?? '状态需要核对'}</p>{Boolean(item.error) && <p role="alert">{messageFrom(item.error)}</p>}{item.issues.map((issue, index) => <p role="alert" key={index}>{messageFrom(issue)}</p>)}{['prepared', 'committed', 'preparing', 'committing'].includes(item.state) && <button type="button" className="refresh-button" disabled={busy || active || checking || disabled} onClick={() => void resume(item)}>{item.state === 'prepared' ? '核验并继续安装' : item.state === 'committed' ? '核验已安装结果' : '继续查看任务'}</button>}</article>)}
+      {visibleRecords.map(item => <article className="operation-confirmation" key={item.candidateId}><p><code>{item.candidateId}</code> · {cancelledPreparationRecord(item) ? '准备已取消，现场保留' : ({ preparing: '正在准备', prepared: '已准备，尚未安装', committing: '正在提交或需要恢复核对', committed: '已提交安装', failed: '未完成，现场保留', interrupted: '已中断，现场保留', 'needs-attention': '结果需要核对', unavailable: '记录不可用' } as Record<string, string>)[item.state] ?? '状态需要核对'}</p>{Boolean(item.error) && <p role="alert">{messageFrom(item.error)}</p>}{item.issues.map((issue, index) => <p role="alert" key={index}>{messageFrom(issue)}</p>)}{['prepared', 'committed', 'preparing', 'committing'].includes(item.state) && <button type="button" className="refresh-button" disabled={busy || active || checking || disabled} onClick={() => void resume(item)}>{item.state === 'prepared' ? '核验并继续安装' : item.state === 'committed' ? '核验已安装结果' : '继续查看任务'}</button>}</article>)}
     </section>
   </section>;
 }
