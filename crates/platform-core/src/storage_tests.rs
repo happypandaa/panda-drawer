@@ -470,6 +470,108 @@ async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
     f.stop().await;
 }
 #[tokio::test]
+async fn workspace_deletion_receipts_are_control_without_hiding_legacy_payload() {
+    let (_temp, paths) = RuntimePaths::for_test();
+    let fixtures: &[(&str, &[u8])] = &[
+        (
+            ".platform/trash/trash_retired/record.json",
+            b"retired receipt",
+        ),
+        (
+            ".platform/trash/trash_retained/record.json",
+            b"retained receipt",
+        ),
+        (
+            ".platform/trash/trash_retained/project/data/record.json",
+            b"user data",
+        ),
+        (
+            ".platform/trash/trash_retained/project/source.txt",
+            b"source",
+        ),
+        (
+            ".platform/trash/trash_retained/other.json",
+            b"unknown history",
+        ),
+        (".platform/trash/record.json", b"unknown root file"),
+        (
+            ".platform/trash/unknown_owner/record.json",
+            b"unknown owner",
+        ),
+    ];
+    for (index, (relative, bytes)) in fixtures.iter().enumerate() {
+        let path = paths.workspace_root().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        if index == 1 {
+            let receipts_only = scope_scan(
+                paths.workspace_root(),
+                json!({"kind": "workspace"}),
+                &[],
+                workspace_category,
+            );
+            assert!(receipts_only["categories"]["trash"].is_null());
+            assert_eq!(receipts_only["categories"]["control"]["fileCount"], 2);
+        }
+    }
+    let result = workspace_scan(&paths, None, "disposable-deletion-accounting").unwrap();
+    let current = &result["workspace"];
+    let control_bytes = fixtures[..2]
+        .iter()
+        .map(|(_, bytes)| bytes.len() as u64)
+        .sum::<u64>();
+    let history_bytes = fixtures[2..]
+        .iter()
+        .map(|(_, bytes)| bytes.len() as u64)
+        .sum::<u64>();
+    assert_eq!(current["categories"]["control"]["bytes"], control_bytes);
+    assert_eq!(current["categories"]["control"]["fileCount"], 2);
+    assert_eq!(current["categories"]["trash"]["bytes"], history_bytes);
+    assert_eq!(current["categories"]["trash"]["fileCount"], 5);
+    assert_eq!(current["totalBytes"], control_bytes + history_bytes);
+    assert_eq!(current["complete"], true);
+    let category_sum = current["categories"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|value| numeric(&value["bytes"]).unwrap())
+        .sum::<u64>();
+    assert_eq!(numeric(&current["totalBytes"]), Some(category_sum));
+    for (relative, bytes) in fixtures {
+        assert_eq!(
+            fs::read(paths.workspace_root().join(relative)).unwrap(),
+            *bytes
+        );
+    }
+}
+
+#[test]
+fn workspace_receipt_classification_requires_the_exact_control_record_path() {
+    assert_eq!(
+        workspace_category(".platform/trash/trash_owner/record.json"),
+        "control"
+    );
+    for path in [
+        ".platform/trash/trash_owner/project/data/record.json",
+        ".platform/trash/trash_owner/project/record.json",
+        ".platform/trash/trash_owner/record.json/nested",
+        ".platform/trash/trash_owner/record.json.backup",
+        ".platform/trash/unknown_owner/record.json",
+        ".platform/trash/record.json",
+    ] {
+        assert_eq!(workspace_category(path), "trash", "{path}");
+    }
+    assert_eq!(
+        workspace_category("projects/prj_owned/data/record.json"),
+        "projects"
+    );
+    assert_eq!(
+        workspace_category(".platform/trash-other/record.json"),
+        "control"
+    );
+}
+
+#[tokio::test]
 async fn workspace_ranges_are_disjoint_include_retained_copy_and_exclude_program_links() {
     let f = Fixture::new().await;
     let app = f.paths.data_root().join("Actual Installation.app");
