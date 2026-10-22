@@ -43,7 +43,7 @@ require('fs').writeFileSync('node_modules/new-build-file', 'only the candidate')
         "old installed lock",
     )
     .unwrap();
-    fs::write(app.join(".git"), "gitdir: ../do-not-read").unwrap();
+    fs::write(app.join(".hg"), "excluded version-control material").unwrap();
     let old_record = b"legacy dependency record must not even be parsed";
     fs::write(project.root.join(".platform/dependencies.json"), old_record).unwrap();
     let before_dependencies = tree_digest(&app.join("node_modules"), false).unwrap();
@@ -90,8 +90,8 @@ require('fs').writeFileSync('node_modules/new-build-file', 'only the candidate')
         old_record
     );
     assert_eq!(
-        fs::read(app.join(".git")).unwrap(),
-        b"gitdir: ../do-not-read"
+        fs::read(app.join(".hg")).unwrap(),
+        b"excluded version-control material"
     );
     manager.shutdown().await;
     store.shutdown().await;

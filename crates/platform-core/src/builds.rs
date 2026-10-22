@@ -1,6 +1,8 @@
 //! Local build orchestration. All limits here are internal test parameters, not SDK promises.
 use crate::{
     environment::{EnvironmentManager, Toolchain},
+    git_environment::GitEnvironmentManager,
+    project_git::BuildGitGuard,
     projects::{check_no_symlinks, checked_relative},
     tasks::{TaskRecord, TaskStatus},
     ApiError, ProjectHandle, ProjectManifest, ProjectStore, RuntimePaths,
@@ -24,7 +26,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, watch},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -130,6 +132,8 @@ pub struct BuildManager {
     store: Arc<ProjectStore>,
     base_url: String,
     environment: EnvironmentManager,
+    git_environment: GitEnvironmentManager,
+    git_stop: watch::Sender<bool>,
     registry: Mutex<Registry>,
     sender: mpsc::Sender<String>,
     runner: Mutex<Option<JoinHandle<()>>>,
@@ -150,6 +154,15 @@ impl BuildManager {
         store: Arc<ProjectStore>,
         base_url: String,
         managed_node: Option<PathBuf>,
+    ) -> Result<Arc<Self>, ApiError> {
+        Self::with_managed_node_and_git(paths, store, base_url, managed_node, None)
+    }
+    pub fn with_managed_node_and_git(
+        paths: RuntimePaths,
+        store: Arc<ProjectStore>,
+        base_url: String,
+        managed_node: Option<PathBuf>,
+        managed_git: Option<PathBuf>,
     ) -> Result<Arc<Self>, ApiError> {
         let tasks = paths.workspace_root().join(".platform/tasks");
         ensure_dir(&tasks)?;
@@ -199,6 +212,11 @@ impl BuildManager {
                 }
                 None => EnvironmentManager::new(paths.data_root().to_path_buf()),
             },
+            git_environment: GitEnvironmentManager::new(
+                paths.data_root().to_path_buf(),
+                managed_git,
+            ),
+            git_stop: watch::channel(false).0,
             paths,
             store,
             base_url,
@@ -508,6 +526,7 @@ impl BuildManager {
     }
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.git_stop.send_replace(true);
         let runner = self.runner.lock().unwrap().take();
         if let Some(runner) = runner {
             let _ = runner.await;
@@ -643,6 +662,9 @@ impl BuildManager {
         let _operation = project.operation_gate.read().await;
         project.check()?;
         self.store.check_development_available(project_id)?;
+        let git_guard =
+            BuildGitGuard::capture(&project, &self.git_environment, self.git_stop.subscribe())
+                .await?;
         let tools = self.environment.resolve().await?;
         self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
         self.phase(id, "input-digest")?;
@@ -682,6 +704,7 @@ impl BuildManager {
                 &project,
                 &tools,
                 &candidate,
+                &git_guard,
                 &task_root,
                 &baseline,
                 old_digest.clone(),
@@ -724,6 +747,7 @@ impl BuildManager {
         project: &ProjectHandle,
         tools: &Toolchain,
         candidate: &candidate::BuildCandidate,
+        git_guard: &BuildGitGuard,
         task_root: &Path,
         baseline: &str,
         old_digest: Option<String>,
@@ -766,6 +790,12 @@ impl BuildManager {
         )
         .await?;
         self.checkpoint(start)?;
+        git_guard
+            .recheck(project, self.git_stop.subscribe())
+            .await?;
+        // No more awaits before publication: validate source, candidate, live
+        // output and staging again after the potentially slow Git inspection.
+        self.checkpoint(start)?;
         self.phase(id, "artifact-validation")?;
         let entry_relative = Path::new(&project.manifest.entry)
             .strip_prefix(&project.manifest.output_dir)
@@ -806,6 +836,7 @@ impl BuildManager {
             sdk_version: sdk_version(source)?,
             entry_relative,
         };
+        self.checkpoint(start)?;
         self.phase(id, "publish")?;
         // From the journal onward the filesystem transaction must reach a recoverable outcome.
         publish(&self.paths, project, &staging, &provenance, old_digest)?;
@@ -1827,6 +1858,9 @@ mod tests {
     const BUILD: &str = r#"const fs=require('fs');const p=require('path');const out=process.argv[process.argv.indexOf('--outDir')+1];fs.mkdirSync(out,{recursive:true});fs.writeFileSync(p.join(out,'index.html'),'<html><body>generation-one</body></html>');"#;
     mod candidate_pipeline {
         include!("build_pipeline_candidate_tests.rs");
+    }
+    mod git_pipeline {
+        include!("build_pipeline_git_tests.rs");
     }
 
     async fn wait(manager: &BuildManager, id: &str) -> TaskRecord {

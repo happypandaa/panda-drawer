@@ -1314,13 +1314,16 @@ fn make_state(
         data_root: paths.data_root().into(),
         sqlite_version: rusqlite::version().into(),
     };
-    let builds = BuildManager::with_managed_node(
+    let builds = BuildManager::with_managed_node_and_git(
         paths.clone(),
         store.clone(),
         info.base_url.clone(),
         resources
             .as_ref()
             .map(|resources| resources.development_node_root()),
+        resources
+            .as_ref()
+            .map(|resources| resources.development_git_root()),
     )?;
     let maintenance =
         crate::maintenance::MaintenanceManager::new(paths.clone(), store.clone(), builds.clone())?;

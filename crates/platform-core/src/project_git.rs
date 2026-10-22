@@ -42,6 +42,10 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_METADATA: u64 = 8 * 1024 * 1024;
 
+#[path = "project_git_build_guard.rs"]
+mod build_guard;
+pub(crate) use build_guard::BuildGitGuard;
+
 #[path = "project_git_restore.rs"]
 mod source_restore;
 pub use source_restore::{
@@ -1679,7 +1683,11 @@ fn inspect_repository_files(
         owned: Option<&IndexLock>,
         issues: &mut Vec<ApiError>,
         count: &mut usize,
+        depth: usize,
     ) -> Result<(), ApiError> {
+        if depth > 64 {
+            return Err(limit());
+        }
         check_no_symlinks(path, false)?;
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -1690,7 +1698,7 @@ fn inspect_repository_files(
             let path = entry.path();
             let meta = fs::symlink_metadata(&path)?;
             if meta.is_dir() {
-                visit(root, &path, owned, issues, count)?;
+                visit(root, &path, owned, issues, count, depth + 1)?;
             } else if !meta.is_file() || meta.nlink() != 1 {
                 return Err(unsafe_path());
             }
@@ -1725,7 +1733,7 @@ fn inspect_repository_files(
         }
         Ok(())
     }
-    visit(root, root, owned_lock, issues, &mut count)
+    visit(root, root, owned_lock, issues, &mut count, 0)
 }
 fn repository_digest(root: &Path) -> Result<String, ApiError> {
     let mut digest = Sha256::new();
@@ -1762,6 +1770,14 @@ async fn check_config_file(
     context: &mut Context,
     issues: &mut Vec<ApiError>,
 ) -> Result<(), ApiError> {
+    check_config_path(&project.root.join(".git"), tools, context, issues).await
+}
+async fn check_config_path(
+    git_dir: &Path,
+    tools: &GitToolchain,
+    context: &mut Context,
+    issues: &mut Vec<ApiError>,
+) -> Result<(), ApiError> {
     for key in [
         "core.autocrlf",
         "core.attributesFile",
@@ -1774,7 +1790,7 @@ async fn check_config_file(
         let mut command = git_command(tools, context.root(), None);
         command
             .args(["config", "--file"])
-            .arg(project.root.join(".git/config"))
+            .arg(git_dir.join("config"))
             .args(["--no-includes", "--get", key]);
         let output = context.run(command, Vec::new()).await?;
         if output.code == 1 {
@@ -1806,7 +1822,7 @@ async fn check_config_file(
     let mut command = git_command(tools, context.root(), None);
     command
         .args(["config", "--file"])
-        .arg(project.root.join(".git/config"))
+        .arg(git_dir.join("config"))
         .args(["--no-includes", "--get-regexp", "^include"]);
     let output = context.run(command, Vec::new()).await?;
     if output.code == 0 {
