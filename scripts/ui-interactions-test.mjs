@@ -615,15 +615,15 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
     throw new Error(`Navigation must not mutate or open a native chooser: ${command}`);
   };
   await render(h(WorkspaceHub, hubProps()));
-  assert.deepEqual(requests, ['workspace_storage']);
+  assert.deepEqual(requests, ['workspace_storage', 'trash_list']);
+  assert.equal(hubTab('旧版回收记录'), undefined, 'New deletions use the system trash; empty legacy records have no tab');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
   await click(buttonNamed('查看工作区位置'));
   assert.equal(document.activeElement, hubTab('工作区位置'));
   assert.equal(hubTab('工作区位置').getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
-  await click(hubTab('空间总览')); await click(buttonNamed('管理回收站'));
-  assert.equal(document.activeElement, hubTab('回收站'));
-  assert.equal(hubTab('回收站').getAttribute('aria-selected'), 'true');
+  await click(hubTab('空间总览'));
+  assert.equal(buttonNamed('查看旧版回收记录'), undefined);
   assert.deepEqual([...new Set(requests)], ['workspace_storage', 'trash_list']);
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
@@ -645,7 +645,7 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
   const rows = () => [...document.querySelectorAll('.workspace-retention-list > div')];
   const row = (prefix) => rows().find((element) => element.querySelector('dt').textContent.startsWith(prefix));
-  assert.equal(row('回收站'), undefined, 'A known complete zero category should not imply retained content');
+  assert.equal(row('旧版回收记录'), undefined, 'A known complete zero category should not imply retained content');
   assert.match(row('历史备份').textContent, /尚未统计/);
   assert.equal(row('操作现场').querySelector('strong').title, '1500 字节');
   assert.equal(row('共享缓存').querySelector('strong').title, '500 字节');
@@ -655,7 +655,7 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   assert.match(document.querySelector('.workspace-retention-explanation').textContent, /不再与上方数字相加|不等于可以释放/);
   data = { ...data, workspace: { ...data.workspace, complete: false, stale: true }, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
   await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
-  assert.match(row('回收站').textContent, /0 B.*已过期/);
+  assert.match(row('旧版回收记录').textContent, /0 B.*已过期/);
   assert.match(row('迁移保留目录').textContent, /尚未统计.*部分统计/);
 });
 
@@ -882,7 +882,7 @@ test('Trash ignores out-of-order details, keeps confirmation bound to its select
     throw new Error(`Unexpected mutation/request: ${command}`);
   };
   await render(h(WorkspaceHub, hubProps()));
-  await click(hubTab('回收站'));
+  await click(hubTab('旧版回收记录'));
   const rows = [...document.querySelectorAll('.trash-row')];
   await click(rows[0]); await click(rows[1]);
   await act(async () => second.resolve(entries[1]));
@@ -893,7 +893,7 @@ test('Trash ignores out-of-order details, keeps confirmation bound to its select
   await act(async () => first.resolve(entries[0]));
   assert.match(document.querySelector('.workspace-trash-details').textContent, /trash_B/);
   assert.doesNotMatch(document.querySelector('.workspace-trash-details').textContent, /trash_A/);
-  await click(hubTab('工作区位置')); await click(hubTab('回收站'));
+  await click(hubTab('工作区位置')); await click(hubTab('旧版回收记录'));
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
 
@@ -906,7 +906,7 @@ test('Trash refuses restore for a record explicitly marked unavailable', async (
     if (command === 'trash_info') return entry;
     throw new Error(`Unexpected request: ${command}`);
   };
-  await render(h(WorkspaceHub, hubProps())); await click(hubTab('回收站')); await click(document.querySelector('.trash-row'));
+  await render(h(WorkspaceHub, hubProps())); await click(hubTab('旧版回收记录')); await click(document.querySelector('.trash-row'));
   assert.equal(buttonNamed('恢复项目').disabled, true);
   assert.match(document.querySelector('.workspace-trash-details').textContent, /Identity mismatch/);
 });
@@ -924,7 +924,7 @@ test('A failed migration submission still settles after leaving and returning to
   await click(document.querySelector('.workspace-migration-confirmation input[type="checkbox"]'));
   await click(buttonNamed('确认开始迁移'));
   assert.equal(submissions, 1);
-  await click(hubTab('回收站'));
+  await click(hubTab('空间总览'));
   await act(async () => result.reject(new Error('Migration fixture rejected')));
   await click(hubTab('工作区位置'));
   assert.equal(document.querySelector('.workspace-migration-form input:not([type="checkbox"])').disabled, false);
@@ -1297,9 +1297,15 @@ test('App retains a failed delete dialog and closes it only after its accepted t
       return submissions === 1 ? { ...task, taskId: 'task_failed_delete', status: 'failed', final: true, error: { code: 'FIXTURE_FAILURE', message: 'Delete fixture failed' } } : task;
     }
     assert.equal(command, 'task_get');
-    return { ...task, status: 'succeeded', final: true, phase: 'completed' };
+    return { ...task, status: 'succeeded', final: true, phase: 'completed', result: { operationOutcome: 'system_trashed', originalPath: '/disposable/workspace/projects/prj_A', systemTrashPath: '/disposable/system-trash/prj_A' } };
   });
   await render(h(App)); await openProjectMenu('Fixture A'); await click(document.querySelector('[aria-label="删除项目「Fixture A」"]'));
+  const scope = document.querySelector('.project-delete-confirmation');
+  assert.equal(scope.querySelector('.project-delete-path').textContent, '/disposable/workspace/projects/prj_A');
+  assert.match(scope.textContent, /本机 Git 仓库/);
+  assert.match(scope.textContent, /尚未提供远程推送、拉取或同步/);
+  assert.match(scope.textContent, /数据库、附件和本机配置不能靠现有源码版本恢复/);
+  assert.match(scope.textContent, /目录外的历史备份、操作与恢复现场/);
   await click(document.querySelector('.project-delete-confirmation input'));
   await click(buttonNamed('确认删除项目'));
   assert.ok(dialog()); assert.match(dialog().textContent, /Delete fixture failed/);
@@ -1309,7 +1315,7 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.equal(submissions, 2); assert.ok(dialog(), 'Queued acceptance is not final success');
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
   assert.equal(dialog(), null);
-  assert.match(document.querySelector('.notice-success').textContent, /项目已移入回收站/);
+  assert.match(document.querySelector('.notice-success').textContent, /项目已移入系统废纸篓/);
 });
 
 test('App blocks closing a pending create, shows its failure inside the modal, and preserves the name on reopening', async () => {

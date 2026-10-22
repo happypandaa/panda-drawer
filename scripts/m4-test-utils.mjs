@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -78,7 +78,38 @@ export function expectFailure(args, input, records) {
 }
 export const backupIdOf = task => { const value = (task.result ?? task).backupId; assert.equal(typeof value, 'string'); return value; };
 export const projectIdOf = task => { const data = task.result ?? task; const value = data.projectId ?? data.project?.id ?? data.id; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
+// Historical platform-trash evidence only; new deletes use verifySystemTrashed.
 export const trashIdOf = task => { const data = task.result ?? task; const value = data.trashId ?? data.trash?.trashId; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
+// Probe the connected service before any disposable project is created. A new
+// CLI may still be connected to an older package, so CLI help is insufficient.
+export function requireSystemTrashDeletion() {
+  assert.equal(process.platform, 'darwin', 'System-trash live probes currently target macOS');
+  const workspace = cli(['workspace', 'info']);
+  assert.equal(workspace.projectDeletionMode, 'system-trash',
+    'The connected service does not advertise system-trash deletion. Launch the current package before creating fixtures.');
+  return workspace;
+}
+export async function verifySystemTrashed(task, project) {
+  const result = succeeded(task);
+  assertDisposable(project);
+  assert.equal(result.projectId, project.id);
+  assert.equal(result.operationOutcome, 'system_trashed', JSON.stringify(task));
+  assert.equal(result.originalPath, project.projectRoot);
+  assert.equal(result.platformRestoreAvailable, false);
+  assert.equal(result.historicalBackupsRetained, true);
+  assert.ok(!result.trashId, 'New deletion must not create a platform trash ID');
+  assert.equal(typeof result.systemTrashPath, 'string');
+  assert.ok(isAbsolute(result.systemTrashPath));
+  assert.notEqual(result.systemTrashPath, project.projectRoot);
+  await assert.rejects(lstat(project.projectRoot), { code: 'ENOENT' }, 'Deleted project directory must leave the active workspace');
+  const retained = await lstat(result.systemTrashPath);
+  assert.ok(retained.isDirectory() && !retained.isSymbolicLink(), 'Returned system Trash entry must be the ordinary project directory');
+  const manifest = JSON.parse(await readFile(join(result.systemTrashPath, 'project.json'), 'utf8'));
+  assert.equal(manifest.id, project.id);
+  assert.ok(!cli(['project', 'list']).some(value => value.id === project.id));
+  assert.ok(!cli(['trash', 'list']).some(value => value.projectId === project.id), 'New deletion must not enter platform trash');
+  return result.systemTrashPath;
+}
 export const archivePath = (id, backupId) => join(settings().workspaceRoot, 'backups', id, `${backupId}.zip`);
 export async function session(current, id) {
   const launch = cli(['project', 'url', '--project', id]);
@@ -95,5 +126,5 @@ export function business(current, document, route, method = 'GET', body) {
   return fetch(`${current.baseUrl}/p/${document.id}/api/v1/${route}`, { method, headers: { Cookie: document.cookie, Origin: current.baseUrl, 'X-Platform-Document-Epoch': document.epoch, ...(json ? { 'Content-Type': 'application/json' } : {}) }, body: body === undefined ? undefined : json ? JSON.stringify(body) : body });
 }
 export async function expectBusinessError(response, code) { const wire = await response.json(); assert.equal(wire.ok, false, JSON.stringify(wire)); assert.equal(wire.error.code, code, JSON.stringify(wire)); }
-export async function saveReport(name, value, privateFile = false) { const path = join(artifactRoot, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, JSON.stringify(value, null, 2), { mode: privateFile ? 0o600 : 0o644 }); return path; }
+export async function saveReport(name, value, privateFile = false, exclusive = false) { const path = join(artifactRoot, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, JSON.stringify(value, null, 2), { mode: privateFile ? 0o600 : 0o644, flag: exclusive ? 'wx' : 'w' }); return path; }
 export const readReport = async name => JSON.parse(await readFile(join(artifactRoot, name), 'utf8'));

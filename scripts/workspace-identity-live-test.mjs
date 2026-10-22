@@ -1,5 +1,7 @@
-// Real-service acceptance: prepare one disposable project, restart the desktop
-// separately, then verify it. Never starts an app, migrates, repairs, or purges.
+// Historical internal-trash acceptance. inspect/verify retain read-only access
+// to old evidence; prepare refuses current system-trash services before creating
+// a project or reserving state. Use m4-live-test.mjs for new disposable deletion.
+// Never starts an app, migrates, repairs, or purges.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -10,7 +12,11 @@ import { fileURLToPath } from 'node:url';
 
 const usage = `Usage: node scripts/workspace-identity-live-test.mjs prepare|inspect|verify
 
-prepare creates exactly one project named M5 可丢弃 · 身份修复验收 · 20261019.
+This is the historical internal-trash suite. On current system-trash packages,
+prepare refuses before creating a project; use scripts/m4-live-test.mjs instead.
+inspect/verify remain available for already-saved historical evidence.
+
+On a historical package, prepare creates exactly one project named M5 可丢弃 · 身份修复验收 · 20261019.
 It saves SQL and an attachment, creates a backup, deletes to trash, and restores
 that same project. The sample, backup, trash record, and task evidence are kept.
 inspect only completes evidence for the same instance after all three saved tasks succeeded; it never resubmits mutations.
@@ -299,6 +305,8 @@ try {
   assert.ok(canonicalRelative && !isAbsolute(canonicalRelative) && !canonicalRelative.startsWith('..'), 'Evidence symlink leaves .test-artifacts');
   const runtime = await currentRuntime();
   if (phase === 'prepare') {
+    assert.notEqual(cli(['workspace', 'info']).projectDeletionMode, 'system-trash',
+      'Historical internal-trash prepare is unavailable on system-trash packages. No sample was created. Use scripts/m4-live-test.mjs for a fresh disposable system-trash run; keep existing identity evidence for inspect/verify.');
     assert.ok(!projectMembership().some(project => project.name === sampleName), 'Same-named sample already exists; do not create another');
     assert.ok(!trashMembership().some(item => item.name === sampleName), 'Same-named sample is retained in trash; inspect it instead');
     state = { schemaVersion: 1, test: 'workspace-identity-live', status: 'preparing', startedAt: now(),

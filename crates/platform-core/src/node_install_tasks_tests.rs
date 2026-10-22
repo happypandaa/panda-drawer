@@ -20,6 +20,42 @@ struct Fixture {
     installs: Arc<NodeInstallTasks>,
     stop: watch::Sender<bool>,
 }
+
+#[tokio::test]
+async fn application_deletion_requires_installation_to_be_idle_and_settled() {
+    let mut fixture = Fixture::new("exit 0");
+    fixture.installs.require_idle().unwrap();
+    let (cancel, _) = watch::channel(false);
+    fixture
+        .installs
+        .active
+        .lock()
+        .unwrap()
+        .insert("disposable-preparing".into(), cancel);
+    assert_eq!(
+        fixture.installs.require_idle().unwrap_err().code,
+        "NODE_INSTALL_BUSY"
+    );
+    fixture.installs.active.lock().unwrap().clear();
+    fixture.installs.require_idle().unwrap();
+    fixture.installs.stopping.store(true, Ordering::Release);
+    assert_eq!(
+        fixture.installs.require_idle().unwrap_err().code,
+        "NODE_INSTALL_INTERRUPTED"
+    );
+    fixture.installs.stopping.store(false, Ordering::Release);
+    Arc::get_mut(&mut fixture.installs)
+        .unwrap()
+        .issues
+        .push(ApiError::new(
+            "NODE_INSTALL_RECOVERY_REQUIRED",
+            "disposable unresolved installation",
+        ));
+    // Unrelated interrupted installation evidence stays in .installations;
+    // it must not permanently prevent deleting a healthy independent slot.
+    fixture.installs.require_idle().unwrap();
+    fixture.shutdown().await;
+}
 impl Fixture {
     fn new(npm_body: &str) -> Self {
         let (temp, paths) = RuntimePaths::for_test();

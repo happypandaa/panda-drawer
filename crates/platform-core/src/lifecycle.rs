@@ -49,6 +49,10 @@ struct Journal {
     project_id: String,
     source_project_id: Option<String>,
     trash_id: Option<String>,
+    #[serde(default)]
+    system_trash: bool,
+    #[serde(default)]
+    system_trash_path: Option<PathBuf>,
     target_epoch: String,
     phase: String,
     directory_identity: Option<PersistedIdentity>,
@@ -85,6 +89,8 @@ pub(crate) struct LifecycleManager {
     running: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
     events: broadcast::Sender<String>,
+    #[cfg(test)]
+    system_trash_sink: Mutex<Option<Arc<dyn Fn(&Path) -> Result<PathBuf, ApiError> + Send + Sync>>>,
 }
 
 fn now_ms() -> u64 {
@@ -315,6 +321,8 @@ impl LifecycleManager {
             running: Mutex::new(vec![]),
             stopping: AtomicBool::new(false),
             events,
+            #[cfg(test)]
+            system_trash_sink: Mutex::new(None),
         });
         manager.recover()?;
         Ok(manager)
@@ -460,6 +468,8 @@ impl LifecycleManager {
             project_id: project.into(),
             source_project_id: None,
             trash_id: None,
+            system_trash: false,
+            system_trash_path: None,
             target_epoch: Uuid::new_v4().to_string(),
             phase: "intent".into(),
             directory_identity: None,
@@ -478,6 +488,25 @@ impl LifecycleManager {
         kind: &str,
         value: Value,
     ) -> Result<TaskRecord, ApiError> {
+        self.submit_project_inner(id, kind, value, false).await
+    }
+    // Existing internal-trash evidence is retained and readable. Only tests may
+    // create old-format entries; public deletion always uses the system trash.
+    #[cfg(test)]
+    pub(crate) async fn submit_legacy_delete(
+        self: &Arc<Self>,
+        id: &str,
+        value: Value,
+    ) -> Result<TaskRecord, ApiError> {
+        self.submit_project_inner(id, "delete", value, true).await
+    }
+    async fn submit_project_inner(
+        self: &Arc<Self>,
+        id: &str,
+        kind: &str,
+        value: Value,
+        legacy_delete: bool,
+    ) -> Result<TaskRecord, ApiError> {
         self.check_running()?;
         let input = Self::input(value)?;
         if !matches!(kind, "export" | "copy" | "delete") {
@@ -488,6 +517,9 @@ impl LifecycleManager {
         }
         let (root, manifest) = self.store.metadata_root(id)?;
         self.authorize(id, input.maintenance_id.as_deref())?;
+        if kind == "delete" && !legacy_delete {
+            self.ensure_system_trash_supported()?;
+        }
         if kind == "export" {
             self.export_destination(
                 input
@@ -504,6 +536,11 @@ impl LifecycleManager {
                 "Export and copy require a valid project manifest",
             ));
         }
+        let deletion_identity = if kind == "delete" && !legacy_delete {
+            Some(persistent_identity(&root)?)
+        } else {
+            None
+        };
         let (mut record, source_lease) = self.tasks.create_operation(id, kind)?;
         let target = if kind == "copy" {
             format!("prj_{}", Uuid::new_v4().simple())
@@ -514,7 +551,12 @@ impl LifecycleManager {
         journal.source_project_id = Some(id.into());
         journal.destination = input.destination_path.clone();
         if kind == "delete" {
-            journal.trash_id = Some(format!("trash_{}", Uuid::new_v4().simple()));
+            if legacy_delete {
+                journal.trash_id = Some(format!("trash_{}", Uuid::new_v4().simple()));
+            } else {
+                journal.system_trash = true;
+                journal.directory_identity = deletion_identity;
+            }
         }
         let mut leases = vec![source_lease];
         let prepare = (|| {
@@ -692,7 +734,8 @@ impl LifecycleManager {
             "export" => self.export(journal, input).await,
             "copy" => self.copy(journal, input).await,
             "import" => self.import(journal, input).await,
-            "delete" => self.delete(journal).await,
+            "delete" if journal.system_trash => self.delete(journal).await,
+            "delete" => self.delete_legacy(journal).await,
             "trashRestore" => self.restore_trash(journal).await,
             "trashPurge" => self.purge(journal).await,
             _ => Err(ApiError::new(
@@ -943,7 +986,91 @@ impl LifecycleManager {
         }
         Ok(journal.result.clone())
     }
+    #[cfg(test)]
+    pub(crate) fn set_system_trash_sink_for_test(
+        &self,
+        sink: impl Fn(&Path) -> Result<PathBuf, ApiError> + Send + Sync + 'static,
+    ) {
+        *self.system_trash_sink.lock().unwrap() = Some(Arc::new(sink));
+    }
+    fn ensure_system_trash_supported(&self) -> Result<(), ApiError> {
+        #[cfg(test)]
+        if self.system_trash_sink.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        crate::system_trash::ensure_supported()
+    }
+    async fn move_to_system_trash(
+        &self,
+        root: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<PathBuf, ApiError> {
+        let root = root.to_path_buf();
+        let expected = expected.clone();
+        #[cfg(test)]
+        let sink = self.system_trash_sink.lock().unwrap().clone();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(sink) = sink {
+                if !matches_identity(&expected, &root)? {
+                    return Err(ApiError::new("PROJECT_IDENTITY_CHANGED", "Project directory changed at the system-trash boundary; no files were moved"));
+                }
+                return sink(&root);
+            }
+            crate::system_trash::move_directory_with_identity(&root, &expected)
+        }).await.map_err(|_| ApiError::new("SYSTEM_TRASH_RESULT_UNCONFIRMED", "System-trash worker stopped before its result could be recorded; inspect the original directory and OS trash").outcome("unknown"))?
+    }
     async fn delete(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+        self.phase(journal, "system-trash-freeze")?;
+        let id = journal.project_id.clone();
+        let control = self.store.control(&id)?;
+        let freeze = Freeze::new(control.clone());
+        self.notify(&id);
+        let gate = self.store.gate(&id);
+        let guard = gate.write().await;
+        self.store.close_database(&id).await;
+        let (root, _) = self.store.metadata_root(&id)?;
+        let expected = journal.directory_identity.clone().ok_or_else(|| {
+            ApiError::new(
+                "RECOVERY_REQUIRED",
+                "System-trash delete lacks its original directory identity",
+            )
+        })?;
+        if !matches_identity(&expected, &root)? {
+            return Err(ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "Project directory changed before deletion; no files were moved",
+            ));
+        }
+        journal.control = Some(control.get());
+        journal.result = json!({"projectId":id,"originalPath":root,"platformRestoreAvailable":false,"historicalBackupsRetained":true,"operationOutcome":"not_deleted"});
+        // Record intent before calling the OS. If the host dies after the move
+        // but before its returned URL is durable, recovery remains ambiguous.
+        self.phase(journal, "system-trash-intent")?;
+        let destination = self.move_to_system_trash(&root, &expected).await?;
+        journal.system_trash_path = Some(destination.clone());
+        self.phase(journal, "system-trash-returned")?;
+        if root.try_exists().unwrap_or(true)
+            || !crate::system_trash::moved_directory_matches(&expected, &destination)?
+        {
+            return Err(ApiError::new(
+                "SYSTEM_TRASH_RESULT_UNVERIFIED",
+                "The OS move result could not be verified; inspect the retained deletion operation",
+            ));
+        }
+        journal.result = json!({"projectId":id,"originalPath":root,"systemTrashPath":destination,"platformRestoreAvailable":false,"historicalBackupsRetained":true,"operationOutcome":"system_trashed"});
+        self.phase(journal, "system-trash-moved")?;
+        self.store
+            .unregister_lifecycle(&id, &journal.target_epoch, None)?;
+        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &id)?;
+        journal.committed = true;
+        self.finish_journal(journal)?;
+        drop(guard);
+        drop(freeze);
+        self.notify(&id);
+        Ok(journal.result.clone())
+    }
+    async fn delete_legacy(&self, journal: &mut Journal) -> Result<Value, ApiError> {
         self.phase(journal, "trash-freeze")?;
         let id = journal.project_id.clone();
         let control = self.store.control(&id)?;
@@ -1391,6 +1518,35 @@ impl LifecycleManager {
                     );
                 }
             }
+            "delete" if journal.system_trash => {
+                if let Some(destination) = &journal.system_trash_path {
+                    let destination_matches = expected.as_ref().is_some_and(|identity| {
+                        crate::system_trash::moved_directory_matches(identity, destination)
+                            .unwrap_or(false)
+                    });
+                    if !root.try_exists().unwrap_or(true) && destination_matches {
+                        self.store.unregister_lifecycle(
+                            &journal.project_id,
+                            &journal.target_epoch,
+                            None,
+                        )?;
+                        MaintenanceManager::invalidate_storage(
+                            self.paths.workspace_root(),
+                            &journal.project_id,
+                        )?;
+                        journal.committed = true;
+                        journal.result = json!({"projectId":journal.project_id,"originalPath":root,"systemTrashPath":destination,"platformRestoreAvailable":false,"historicalBackupsRetained":true,"operationOutcome":"system_trashed"});
+                    } else {
+                        return self.ambiguous(journal, "System-trash destination or original directory changed; inspect the OS trash and retained deletion receipt");
+                    }
+                } else if matches(&root) {
+                    // No verified move occurred. Never issue another OS call
+                    // from recovery, which could delete a replacement object.
+                    outcome = "not_deleted";
+                } else {
+                    return self.ambiguous(journal, "Cannot verify whether the original project entered the system trash; no automatic retry was attempted");
+                }
+            }
             "delete" => {
                 let trash_id = journal.trash_id.as_deref().ok_or_else(|| {
                     ApiError::new("RECOVERY_REQUIRED", "Delete journal lacks trashId")
@@ -1493,7 +1649,11 @@ impl LifecycleManager {
             }
         }
         if !journal.committed {
-            journal.result = json!({"projectId":journal.project_id,"trashId":journal.trash_id,"operationOutcome":outcome});
+            journal.result = if journal.system_trash {
+                json!({"projectId":journal.project_id,"originalPath":root,"systemTrashPath":journal.system_trash_path,"platformRestoreAvailable":false,"historicalBackupsRetained":true,"operationOutcome":outcome})
+            } else {
+                json!({"projectId":journal.project_id,"trashId":journal.trash_id,"operationOutcome":outcome})
+            };
         } else {
             self.clear_completion_gate(journal)?;
         }
@@ -1501,12 +1661,30 @@ impl LifecycleManager {
         Ok(journal.result.clone())
     }
     fn ambiguous(&self, journal: &mut Journal, message: &str) -> Result<Value, ApiError> {
+        let mut cause = ApiError::new("RECOVERY_REQUIRED", message).outcome("needs_attention");
+        if journal.system_trash {
+            // Keep the OS's returned location even when the native move could
+            // not be verified. It is evidence, never an automatic retry target.
+            cause = cause.detail(
+                "originalPath",
+                json!(self
+                    .paths
+                    .workspace_root()
+                    .join("projects")
+                    .join(&journal.project_id)),
+            );
+            if let Some(previous) = journal.error.as_ref() {
+                if previous.code != "RECOVERY_REQUIRED" {
+                    cause = cause.detail("systemTrashError", json!(previous));
+                } else if let Some(native) = previous.details.get("systemTrashError") {
+                    cause = cause.detail("systemTrashError", native.clone());
+                }
+            }
+        }
         let error = self
             .store
             .control(&journal.project_id)?
-            .mark_recovery_required(
-                ApiError::new("RECOVERY_REQUIRED", message).outcome("needs_attention"),
-            );
+            .mark_recovery_required(cause);
         journal.error = Some(error.clone());
         self.save(journal)?;
         Ok(

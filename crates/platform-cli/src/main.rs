@@ -241,7 +241,7 @@ enum ProjectCommand {
     Import(InputOptions),
     /// Create an independent project copy, optionally choosing a name in JSON.
     Copy(ProjectMutationOptions),
-    /// Move the complete project to trash. This is reversible.
+    /// Move the complete project folder (including local Git and data) to the macOS system Trash. No in-app restore or remote sync is provided.
     Delete(ProjectMutationOptions),
 }
 

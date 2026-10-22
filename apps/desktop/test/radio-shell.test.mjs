@@ -533,7 +533,7 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   assert.equal(byText('创建第一个项目', dialog()).disabled, true);
   // This guide action has no disabled attribute; the parent callback must
   // independently preserve the settings window while configuration is pending.
-  await click(byText('查看工作区与回收站', dialog()));
+  await click(byText('查看空间与工作区', dialog()));
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
   assert.equal(document.querySelector('[aria-label="工作台导航"] [aria-current="page"]').textContent, '我的项目');
   await act(async () => document.querySelector('.node-path-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));

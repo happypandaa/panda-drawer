@@ -38,6 +38,7 @@ mod service;
 pub mod source_acquisition;
 pub mod source_restore_guard;
 mod storage;
+mod system_trash;
 pub mod tasks;
 mod workspace;
 pub use tasks::{TaskRecord, TaskStatus};

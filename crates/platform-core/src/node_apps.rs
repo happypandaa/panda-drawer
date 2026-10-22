@@ -22,6 +22,10 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[path = "node_app_delete.rs"]
+mod deletion;
+pub use deletion::DeleteNodeAppInput;
+
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_APP_ERROR", message)
@@ -68,6 +72,7 @@ struct Inner {
     running: BTreeMap<String, Running>,
     errors: BTreeMap<String, String>,
     shutting_down: bool,
+    deletion_previews: BTreeMap<String, deletion::DeletePreview>,
 }
 
 pub struct NodeApps {
@@ -275,6 +280,7 @@ impl NodeApps {
         private_dir(&self.root)?;
         for record in self.registrations()? {
             if record.source_path == source {
+                self.require_no_pending_delete(&record.id)?;
                 return self.detail(&record, &self.manifest(&record)?, &inner);
             }
         }
@@ -313,6 +319,7 @@ impl NodeApps {
     }
 
     fn require_install_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
+        self.require_no_pending_delete(id)?;
         if inner.shutting_down || inner.running.contains_key(id) {
             return Err(ApiError::new(
                 "NODE_INSTALL_BUSY",
@@ -422,7 +429,7 @@ impl NodeApps {
     }
 
     fn available_detail(&self, record: &Registration, inner: &Inner) -> Value {
-        self.manifest(record).and_then(|manifest|self.detail(record,&manifest,inner))
+        self.require_no_pending_delete(&record.id).and_then(|()|self.manifest(record)).and_then(|manifest|self.detail(record,&manifest,inner))
             .unwrap_or_else(|error|json!({
                 "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                 "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
@@ -441,6 +448,7 @@ impl NodeApps {
 
     pub async fn save(&self, id: &str, input: SaveConfigurationRequest) -> Result<Value> {
         let inner = self.inner.lock().await;
+        self.require_no_pending_delete(id)?;
         let record = self.registration(id)?;
         let manifest = self.manifest(&record)?;
         self.store(id)?
@@ -468,6 +476,7 @@ impl NodeApps {
     }
 
     async fn start_locked(&self, id: &str, inner: &mut Inner) -> Result<()> {
+        self.require_no_pending_delete(id)?;
         if inner.shutting_down {
             return Err(fail("平台正在关闭，不能启动应用。"));
         }

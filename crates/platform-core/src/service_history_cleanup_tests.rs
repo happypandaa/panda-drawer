@@ -19,11 +19,16 @@ async fn history_cleanup_http_requires_admin_confirmation_and_preserves_other_pr
     let disposable = tests::create(&service, "Disposable history fixture").await;
     let marker = keep.project_root.join("README.md");
     let before = std::fs::read(&marker).unwrap();
-    let deleted = service
-        .handle()
-        .project_delete(&disposable.id, json!({}))
-        .await
-        .unwrap();
+    let deleted = serde_json::to_value(
+        service
+            .handle()
+            .current()
+            .lifecycle
+            .submit_legacy_delete(&disposable.id, json!({}))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         final_task(&service, deleted["taskId"].as_str().unwrap()).await["status"],
         "succeeded"
