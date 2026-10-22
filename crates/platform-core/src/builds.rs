@@ -662,9 +662,11 @@ impl BuildManager {
         let _operation = project.operation_gate.read().await;
         project.check()?;
         self.store.check_development_available(project_id)?;
+        self.phase(id, "git-build-check")?;
         let git_guard =
             BuildGitGuard::capture(&project, &self.git_environment, self.git_stop.subscribe())
                 .await?;
+        self.phase(id, "environment")?;
         let tools = self.environment.resolve().await?;
         self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
         self.phase(id, "input-digest")?;
@@ -790,6 +792,7 @@ impl BuildManager {
         )
         .await?;
         self.checkpoint(start)?;
+        self.phase(id, "git-build-check")?;
         git_guard
             .recheck(project, self.git_stop.subscribe())
             .await?;
