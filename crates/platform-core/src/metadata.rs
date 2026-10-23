@@ -105,6 +105,7 @@ impl MetadataManager {
 
     fn check_writable(&self, id: &str, maintenance: Option<&str>) -> Result<(), ApiError> {
         self.store.check_workspace_available()?;
+        self.store.check_development_available(id)?;
         if let Some(task) = self.store.active_task(id) {
             return Err(ApiError::new(
                 "PROJECT_BUSY",
@@ -209,12 +210,18 @@ impl MetadataManager {
             }
         }
         let revision = format!("metadata_{:x}", digest.finalize());
-        let editable = valid.is_ok() && registration_valid;
+        let source_restore = crate::source_restore_guard::inspect(self.store.workspace_root(), id);
+        let development = source_restore.check();
+        if let Err(error) = &development {
+            issues.push(error.message.clone());
+        }
+        let editable = valid.is_ok() && registration_valid && development.is_ok();
         let response = json!({
             "projectId":id,"projectRoot":root,"name":manifest.as_ref().and_then(|m|m["name"].as_str()).unwrap_or(id),
             "description":manifest.as_ref().and_then(|m|m["description"].as_str()).unwrap_or(""),
             "icon":icon,"metadataRevision":if editable{Some(&revision)}else{None},"iconStatus":icon_status,
             "iconDataUrl":data_url,"metadataIssues":issues,"manifest":manifest,
+            "sourceRestore":source_restore,
             "iconLimits":{"maxBytes":ICON_MAX,"maxDimension":ICON_DIMENSION,"maxPixels":ICON_PIXELS,"classification":"internalTest"}
         });
         Ok(Snapshot {

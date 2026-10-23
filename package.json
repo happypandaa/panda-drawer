@@ -14,7 +14,7 @@
     "build": "node scripts/desktop.mjs build",
     "build:app": "node scripts/desktop.mjs build --bundles app",
     "check": "npm run prepare:desktop && npm run build --workspace @local-projects/desktop && node scripts/rust.mjs check --locked --workspace --all-targets",
-    "test": "npm run prepare:desktop && node scripts/rust.mjs test --locked --workspace",
+    "test": "npm run test:project-directory-names && npm run prepare:desktop && node scripts/rust.mjs test --locked --workspace",
     "rust": "node scripts/rust.mjs",
     "env:windows": "node scripts/windows-environment.mjs",
     "check:windows:toolchain": "node scripts/windows-toolchain-smoke.mjs",
@@ -26,6 +26,11 @@
     "test:node-runtime": "node --test scripts/package-node-runtime-test.mjs",
     "test:windows:node-runtime": "node --test scripts/package-windows-node-runtime-test.mjs scripts/windows-resources-test.mjs",
     "test:node": "node scripts/rust.mjs test --locked -p platform-node",
+    "test:local-directory-starter": "node --test scripts/local-directory-starter-test.mjs",
+    "generate:project-directory-names": "node scripts/generate-project-directory-names.mjs",
+    "test:project-directory-names": "node scripts/generate-project-directory-names.mjs --check",
+    "test:development-node": "node --test scripts/package-development-node-test.mjs",
+    "test:development-git": "node --test scripts/package-development-git-test.mjs",
     "test:platform-support": "node scripts/platform-support-test.mjs",
     "test:preflight": "node scripts/rust.mjs test --locked -p platform-preflight --lib",
     "cli": "node scripts/rust.mjs run -p platform-cli --",
@@ -53,6 +58,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3",
-    "jsdom": "26.1.0"
+    "jsdom": "26.1.0",
+    "transliteration": "2.6.2"
   }
 }

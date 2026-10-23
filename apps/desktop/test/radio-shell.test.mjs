@@ -66,6 +66,7 @@ const bootstrap = {
   resources: { sdk: true, template: true, readme: true, cli: true }, cliPath: '/disposable/radio-shell/cli',
 };
 const environment = { ready: true, node: { path: '/disposable/node', version: 'v24.0.0' }, npm: { path: '/disposable/npm', version: '11.0.0' }, selection: 'detected', configuredNodePath: null, supportedNodeRange: 'fixture', recommendedNode: 'fixture', downloadUrl: 'https://example.invalid/node', issues: [] };
+const gitEnvironment = { ready: true, git: { path: '/disposable/platform/git/bin/git', version: '2.56.0' }, selection: 'managed', configuredGitPath: null, managedGitPath: '/disposable/platform/git/bin/git', ssh: { ready: true, selection: 'system', executable: { path: '/usr/bin/ssh', version: 'OpenSSH fixture' }, issues: [] }, authentication: { state: 'not-checked', reason: '只检测工具，不访问仓库。' }, issues: [] };
 const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
@@ -79,6 +80,7 @@ async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [] };
     if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false, activeTask: null };
     if (command === 'environment_doctor') return environment;
+    if (command === 'environment_git_doctor') return gitEnvironment;
     if (command === 'workspace_storage') return { platformProgram: { totalBytes: 0, complete: true }, workspace: { totalBytes: 0, complete: true, categories: {} }, otherLocalLocations: [] };
     throw new Error(`Unexpected fixture command: ${command}`);
   };
@@ -214,7 +216,7 @@ test('The add disclosure closes on Escape with focus return and on outside point
   assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
 });
 
-test('The toolbar separates filtering and refresh from the two add actions', async () => {
+test('The toolbar separates filtering and refresh from the source, local and import actions', async () => {
   const calls = await setup();
   const filter = document.querySelector('[aria-label="筛选项目状态"], .project-filter select');
   const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
@@ -223,10 +225,42 @@ test('The toolbar separates filtering and refresh from the two add actions', asy
   assert.equal(filter.closest('.radio-add-menu'), null);
   assert.equal(refresh.closest('.radio-add-menu'), null);
   await click(addTrigger());
-  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['添加本地应用', '导入项目']);
+  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['获取项目源码', '添加本地应用', '导入项目']);
   const before = calls.filter(([command]) => command === 'project_list').length;
   await click(refresh);
   assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);
+});
+
+for (const label of ['添加本地应用', '导入项目']) {
+  test(`A null-target blur before the ${label} click keeps the action available`, async () => {
+    const calls = await setup();
+    await act(async () => addTrigger().focus());
+    await click(addTrigger());
+    const action = byText(label, addDisclosure());
+    await act(async () => {
+      action.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
+      addTrigger().dispatchEvent(new window.FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    });
+    assert.equal(addDisclosure().open, true);
+    assert.equal(dialog(), null);
+    await click(action);
+    assert.equal(addDisclosure().open, false);
+    if (label === '添加本地应用') assert.equal(dialog().querySelector('h2').textContent, label);
+    else assert.equal(document.querySelector('[aria-labelledby="import-title"] h2').textContent, '导入完整项目');
+    assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
+  });
+}
+
+test('The add disclosure still closes when keyboard focus moves to an outside control', async () => {
+  await setup();
+  await act(async () => addTrigger().focus());
+  await click(addTrigger());
+  await act(async () => byText('导入项目', addDisclosure()).focus());
+  assert.equal(addDisclosure().open, true);
+  const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
+  await act(async () => refresh.focus());
+  assert.equal(addDisclosure().open, false);
+  assert.equal(document.activeElement, refresh);
 });
 
 test('Completed management history lives in settings without occupying the home notice area', async () => {
@@ -277,6 +311,205 @@ test('The add disclosure cannot open before bootstrap, and closes when Node entr
   assert.ok(dialog());
 });
 
+test('Managed build tools show their verified paths separately from the default location', async () => {
+  const managed = { ...environment, selection: 'managed', managedNodePath: '/disposable/platform/node/bin/node', node: { path: '/disposable/platform/node/bin/node', version: 'v24.0.0' }, npm: { path: '/disposable/platform/node/lib/node_modules/npm/bin/npm-cli.js', version: '11.0.0' } };
+  await setup({ overrides: { environment_doctor: () => managed } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
+  assert.match(panel.textContent, /应用运行 Node 不受这里的构建选择影响/);
+  assert.match(panel.textContent, /默认受管位置只说明工具所在位置；是否可用以本次检测结果为准/);
+  assert.match(panel.textContent, /可以构建/);
+  assert.ok([...panel.querySelectorAll('code')].some(value => value.textContent === managed.npm.path));
+  assert.equal(document.getElementById('node-path').value, '');
+  assert.equal(panel.textContent.includes(environment.downloadUrl), false);
+  assert.equal(byText('自动查找', panel), undefined);
+});
+
+test('An invalid managed location stays unavailable and recommends repairing the platform or selecting local tools', async () => {
+  await setup({ overrides: { environment_doctor: () => ({ ...environment, ready: false, node: null, npm: null, selection: 'managed', managedNodePath: '/disposable/missing-managed-node', issues: [{ code: 'NODE_NOT_FOUND', message: '人工受管工具缺失' }] }) } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
+  assert.match(panel.textContent, /构建环境需要配置/);
+  assert.match(panel.textContent, /人工受管工具缺失/);
+  assert.match(panel.textContent, /修复或重新安装平台，或明确选择兼容的本机 Node\/npm/);
+  assert.equal(panel.textContent.includes(environment.downloadUrl), false);
+  assert.doesNotMatch(panel.textContent, /可以构建/);
+  assert.ok([...panel.querySelectorAll('code')].some(value => value.textContent === '/disposable/missing-managed-node'));
+});
+
+test('A failed explicit build tool choice persists until restoring the managed default sends null', async () => {
+  const managedNodePath = '/disposable/platform/node/bin/node';
+  const explicit = { ...environment, ready: false, node: null, npm: null, selection: 'explicit', configuredNodePath: '/disposable/old-explicit-node', managedNodePath, issues: [{ code: 'NODE_NOT_FOUND', message: '人工显式路径失效' }] };
+  const calls = await setup({ overrides: { environment_doctor: () => explicit, environment_node_set: () => ({ ...environment, selection: 'managed', managedNodePath }) } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：明确选择的本机 Node\/npm/);
+  assert.match(panel.textContent, /失效时不会自动改用其他工具/);
+  assert.equal(document.getElementById('node-path').value, explicit.configuredNodePath);
+  await click(byText('重新检测', panel));
+  assert.equal(document.getElementById('node-path').value, explicit.configuredNodePath);
+  assert.equal(calls.some(([command]) => command === 'environment_node_set'), false);
+  assert.match(panel.textContent, /恢复默认工具会清除显式路径，使用平台配套 Node\/npm/);
+  await click(byText('恢复默认工具', panel));
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_node_set'), [['environment_node_set', { nodePath: null }]]);
+  assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
+  assert.equal(document.getElementById('node-path').value, '');
+});
+
+test('A development service without managed tools describes automatic detection and clears the explicit choice', async () => {
+  const calls = await setup({ overrides: { environment_node_set: () => environment } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-runtime-details summary'));
+  const panel = document.querySelector('.build-environment');
+  assert.match(panel.textContent, /当前来源：本机自动探测/);
+  assert.match(panel.textContent, /没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境/);
+  assert.doesNotMatch(panel.textContent, /默认受管 Node 位置/);
+  await click(byText('恢复默认工具', panel));
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_node_set'), [['environment_node_set', { nodePath: null }]]);
+});
+
+test('Available Git and SSH tools keep authentication explicitly unverified and do not access a repository', async () => {
+  const calls = await setup();
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-git-details summary'));
+  const panel = document.querySelector('.git-environment');
+  assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具可用');
+  assert.match(panel.textContent, /当前来源：平台受管 Git/);
+  assert.match(panel.textContent, /已找到系统 SSH 工具/);
+  assert.match(panel.textContent, /这不代表账号认证或仓库访问已通过/);
+  assert.match(panel.querySelector('.git-authentication').textContent, /认证状态：未验证。只检测工具，不访问仓库/);
+  assert.match(panel.textContent, /仓库获取与版本操作尚未接入/);
+  assert.ok([...panel.querySelectorAll('code')].some(value => value.textContent === gitEnvironment.git.path));
+  assert.ok([...panel.querySelectorAll('code')].some(value => value.textContent === gitEnvironment.ssh.executable.path));
+  assert.deepEqual(calls.filter(([command]) => /git|ssh/.test(command)), [['environment_git_doctor', undefined]]);
+});
+
+test('Missing SSH does not hide a usable Git tool or suggest authentication succeeded', async () => {
+  await setup({ overrides: { environment_git_doctor: () => ({ ...gitEnvironment, ssh: { ready: false, selection: 'system', executable: null, issues: [{ code: 'SSH_NOT_FOUND', message: '人工系统 SSH 缺失' }] } }) } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-git-details summary'));
+  const panel = document.querySelector('.git-environment');
+  assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具可用');
+  assert.match(panel.textContent, /系统 SSH 工具暂不可用/);
+  assert.match(panel.textContent, /人工系统 SSH 缺失 \(SSH_NOT_FOUND\)/);
+  assert.match(panel.textContent, /认证状态：未验证/);
+  assert.doesNotMatch(panel.textContent, /Git 工具不可用|平台配套 Git 暂不可用/);
+  assert.equal(panel.querySelector('.git-authentication code'), null);
+  assert.equal(byText('恢复默认工具', panel).disabled, false);
+});
+
+test('A failed explicit Git choice remains selected until an explicit clear sends null', async () => {
+  const explicit = { ...gitEnvironment, ready: false, git: null, selection: 'explicit', configuredGitPath: '/disposable/missing-explicit-git', issues: [{ code: 'GIT_NOT_FOUND', message: '人工显式 Git 缺失' }] };
+  const calls = await setup({ overrides: { environment_git_doctor: () => explicit, environment_git_set: () => gitEnvironment } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-git-details summary'));
+  const panel = document.querySelector('.git-environment');
+  assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具不可用');
+  assert.match(panel.textContent, /当前来源：明确选择的本机 Git/);
+  assert.match(panel.textContent, /已保留你明确选择的路径，失效时不会自动更换工具/);
+  assert.equal(document.getElementById('git-path').value, explicit.configuredGitPath);
+  await click(byText('重新检测', panel));
+  assert.equal(document.getElementById('git-path').value, explicit.configuredGitPath);
+  assert.equal(calls.some(([command]) => command === 'environment_git_set'), false);
+  await click(byText('恢复默认工具', panel));
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_git_set'), [['environment_git_set', { gitPath: null }]]);
+  assert.equal(document.getElementById('git-path').value, '');
+  assert.match(panel.textContent, /当前来源：平台受管 Git/);
+});
+
+test('Unreadable Git settings keep the source unresolved and allow an explicit repair or clear', async () => {
+  const calls = await setup({ overrides: {
+    environment_git_doctor: () => ({ ...gitEnvironment, ready: false, git: null, selection: 'unresolved', issues: [{ code: 'GIT_TOOLCHAIN_INVALID', message: '人工 Git 选择设置无法解析' }] }),
+    environment_git_set: ({ gitPath }) => gitPath === null ? gitEnvironment : ({ ...gitEnvironment, selection: 'explicit', configuredGitPath: gitPath, git: { ...gitEnvironment.git, path: gitPath } }),
+  } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-git-details summary'));
+  const panel = document.querySelector('.git-environment');
+  const input = document.getElementById('git-path');
+  assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具尚未核验');
+  assert.match(panel.textContent, /当前来源：尚未确定（选择设置无法读取）/);
+  assert.match(panel.textContent, /人工 Git 选择设置无法解析/);
+  assert.match(panel.textContent, /尚未选用默认工具/);
+  assert.doesNotMatch(panel.textContent, /当前来源：平台受管 Git|当前来源：明确选择的本机 Git|平台配套 Git 暂不可用/);
+  assert.equal(input.disabled, false);
+  await change(input, '/disposable/repaired-git');
+  await click(byText('保存路径', panel));
+  assert.equal(input.value, '/disposable/repaired-git');
+  assert.match(panel.textContent, /当前来源：明确选择的本机 Git/);
+  await click(byText('恢复默认工具', panel));
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_git_set'), [
+    ['environment_git_set', { gitPath: '/disposable/repaired-git' }],
+    ['environment_git_set', { gitPath: null }],
+  ]);
+  assert.equal(input.value, '');
+  assert.match(panel.textContent, /当前来源：平台受管 Git/);
+});
+
+test('Concurrent Git saves and Node probes keep settings blocked until both finish in either order', async () => {
+  for (const first of ['git', 'node']) {
+    const nodeRead = deferred();
+    const gitSave = deferred();
+    const calls = await setup({ overrides: { environment_doctor: () => nodeRead.promise, environment_git_set: () => gitSave.promise } });
+    await click(document.querySelector('[aria-label="设置"]'));
+    await click(document.querySelector('.radio-git-details summary'));
+    const panel = document.querySelector('.git-environment');
+    await change(document.getElementById('git-path'), '/disposable/selected-git');
+    await click(byText('保存路径', panel));
+    assert.deepEqual(calls.filter(([command]) => command === 'environment_git_set'), [['environment_git_set', { gitPath: '/disposable/selected-git' }]]);
+    const assertBlocked = async () => {
+      assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, true);
+      assert.equal(byText('完成', dialog()).disabled, true);
+      await click(byText('完成', dialog()));
+      await click(document.querySelector('[aria-label="关闭设置"]'));
+      await key(dialog(), 'Escape');
+      await click(document.querySelector('.modal-layer'));
+      assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
+      assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
+    };
+    await assertBlocked();
+    await act(async () => first === 'git' ? gitSave.resolve(gitEnvironment) : nodeRead.resolve(environment));
+    await assertBlocked();
+    assert.equal(document.getElementById('git-path').disabled, first !== 'git');
+    assert.equal(document.getElementById('node-path').disabled, first !== 'node');
+    await act(async () => first === 'git' ? nodeRead.resolve(environment) : gitSave.resolve(gitEnvironment));
+    assert.equal(byText('完成', dialog()).disabled, false);
+    assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
+    await click(byText('完成', dialog()));
+    assert.equal(dialog(), null);
+    await unmount();
+  }
+});
+
+test('A failed Git save keeps its draft, rejects repeated pending submissions and does not retry itself', async () => {
+  const save = deferred();
+  const calls = await setup({ overrides: { environment_git_set: () => save.promise } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('.radio-git-details summary'));
+  const panel = document.querySelector('.git-environment');
+  const input = document.getElementById('git-path');
+  await change(input, '/disposable/git-draft');
+  await click(byText('保存路径', panel));
+  await act(async () => panel.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+  await click(byText('恢复默认工具', panel));
+  assert.equal(input.disabled, true);
+  assert.deepEqual(calls.filter(([command]) => command === 'environment_git_set'), [['environment_git_set', { gitPath: '/disposable/git-draft' }]]);
+  await act(async () => save.reject(new Error('Artificial Git configuration failure')));
+  assert.equal(input.value, '/disposable/git-draft');
+  assert.match(panel.querySelector('[role="alert"]').textContent, /Artificial Git configuration failure/);
+  assert.equal(input.disabled, false);
+  assert.equal(byText('完成', dialog()).disabled, false);
+  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('.radio-git-details summary'));
+  assert.equal(input.value, '/disposable/git-draft');
+  assert.equal(calls.filter(([command]) => command === 'environment_git_set').length, 1);
+  assert.equal(calls.filter(([command]) => command === 'environment_git_doctor').length, 1);
+});
+
 test('Pending environment configuration blocks every settings dismissal, rejects duplicate saves and keeps a failed draft', async () => {
   const configuration = deferred();
   const calls = await setup({ overrides: { environment_node_set: () => configuration.promise } });
@@ -300,7 +533,7 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   assert.equal(byText('创建第一个项目', dialog()).disabled, true);
   // This guide action has no disabled attribute; the parent callback must
   // independently preserve the settings window while configuration is pending.
-  await click(byText('查看工作区与回收站', dialog()));
+  await click(byText('查看工作区与历史保留项目', dialog()));
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
   assert.equal(document.querySelector('[aria-label="工作台导航"] [aria-current="page"]').textContent, '我的项目');
   await act(async () => document.querySelector('.node-path-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));

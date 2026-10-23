@@ -34,16 +34,22 @@ pub fn script() -> &'static str {
   let lastConnectionCheck = 0;
 
   function canReloadDocument() {
-    return reloadRequired && state?.mode !== 'maintenance' && !state?.recoveryRequired && !state?.trashed && !state?.workspaceMigrating && !state?.instanceChanged && !expired;
+    return reloadRequired && state?.mode !== 'maintenance' && !state?.recoveryRequired && !state?.deleted && !state?.deletionIncomplete && !state?.trashed && !state?.workspaceMigrating && !state?.instanceChanged && !expired;
   }
 
   function render() {
     if (!host) return;
     let heading = '';
     let explanation = '';
-    if (state?.trashed) {
-      heading = '项目已移入回收站';
-      explanation = '当前页面不能继续保存。请先复制草稿或保存到别处；如需继续使用，请在平台回收站恢复项目，再从平台重新进入。';
+    if (state?.deleted) {
+      heading = '项目已永久删除，不能继续保存';
+      explanation = '当前页面和未提交草稿仍保留，请先复制需要的内容或保存到别处。本次删除不进入平台或系统回收站，重新加载不能恢复项目。';
+    } else if (state?.deletionIncomplete) {
+      heading = '项目删除未完成，不能继续保存';
+      explanation = '部分项目文件可能已永久删除。请先复制未提交草稿或保存到别处，再到平台核对删除任务和残留范围；平台不会自动恢复已删除文件。';
+    } else if (state?.trashed) {
+      heading = '项目已移入历史保留项目';
+      explanation = '当前页面不能继续保存。请先复制草稿或保存到别处；这是旧版保留的副本，如需继续使用，请在“空间与工作区 → 历史保留项目”恢复，再从平台重新进入。';
     } else if (state?.instanceChanged) {
       heading = '工作区服务已切换，需要重新进入';
       explanation = '迁移后旧页面身份已失效，当前草稿仍保留。请先复制未保存内容或保存到别处，再从平台重新加载项目或获取新的浏览器入口。';
@@ -75,7 +81,7 @@ pub fn script() -> &'static str {
       heading = 'Windows 样本只读查看';
       explanation = '当前阶段可查看初始应用和数据库结构。SQL 写入、附件保存、构建和维护尚未开放。';
     }
-    window.dispatchEvent(new CustomEvent('platform:state', {detail:{...state, offline, expired, reloadRequired}}));
+    window.dispatchEvent(new CustomEvent('platform:state', {detail:{...state, offline, expired, reloadRequired:reloadRequired || Boolean(state?.deleted || state?.deletionIncomplete)}}));
     host.hidden = !heading;
     if (title.textContent !== heading) title.textContent = heading;
     if (detail.textContent !== explanation) detail.textContent = explanation;
@@ -103,10 +109,12 @@ pub fn script() -> &'static str {
       const value = await response.json();
       if (!response.ok || value.ok !== true) {
         if (value.error?.code === 'PROJECT_RELOAD_REQUIRED') reloadRequired = true;
-        else if (value.error?.code === 'PROJECT_TRASHED') state = { ...state, trashed: true };
+        else if (value.error?.code === 'PROJECT_DELETED') state = { ...state, deleted: true, deletionIncomplete: false, trashed: false };
+        else if (value.error?.code === 'PROJECT_DELETE_INCOMPLETE') state = { ...state, deletionIncomplete: true, deleted: false, trashed: false };
+        else if (value.error?.code === 'PROJECT_TRASHED') state = { ...state, trashed: true, deleted: false, deletionIncomplete: false };
         else if (value.error?.code === 'WORKSPACE_MIGRATING') state = { ...state, workspaceMigrating: true };
-        else if (value.error?.code === 'SERVICE_INSTANCE_CHANGED') { state = { ...state, instanceChanged: true, workspaceMigrating: false, trashed: false }; expired = true; }
-        else if (value.error?.code === 'INVALID_SESSION' || response.status === 401) { expired = true; state = { ...state, workspaceMigrating: false, trashed: false }; }
+        else if (value.error?.code === 'SERVICE_INSTANCE_CHANGED') { state = { ...state, instanceChanged: true, workspaceMigrating: false, trashed: false, deleted: false, deletionIncomplete: false }; expired = true; }
+        else if (value.error?.code === 'INVALID_SESSION' || response.status === 401) { expired = true; state = { ...state, workspaceMigrating: false, trashed: false, deleted: false, deletionIncomplete: false }; }
         else throw new Error('Status unavailable');
       } else if (value.apiVersion === 1 && value.data?.projectId === projectId && value.data?.state) {
         state = value.data.state;

@@ -46,6 +46,15 @@ impl ProjectResources {
         }
         Ok(Self { root, cli_path })
     }
+    /// Development tools are optional for running published apps. A missing or
+    /// damaged bundle is reported by the build environment, not startup.
+    pub fn development_node_root(&self) -> PathBuf {
+        self.root.join("development-node")
+    }
+    /// Git is an optional development tool, independent of app execution.
+    pub fn development_git_root(&self) -> PathBuf {
+        self.root.join("development-git")
+    }
     pub fn install(&self, staging: &Path, manifest: &ProjectManifest) -> Result<(), ApiError> {
         copy_tree(&self.root.join("template/app"), &staging.join("app"))?;
         crate::builds::install_starter(staging, manifest, &self.root.join("template"))?;
@@ -87,7 +96,11 @@ First read the project-owned skill at `.agents/skills/local-projects-app/SKILL.m
 
 This project starts with a ready-to-open welcome application, its matching React source and an empty independent database. Creating and opening it requires neither Node nor dependency downloads. The bundled template is recorded separately from user build tasks; after changing source, request a platform build to publish the new version. A failed first build preserves the initial application, but does not roll back any separately committed database changes.
 
-For this static project-v1 type, the native platform runs the local service and owns SQLite and attachments. Node is needed only for builds (minimum 22.12, recommended 24 LTS, supported branches 22/24). Do not start a separate backend or Vite development server. Open the published application from the platform in its single native application window. Opening it again only focuses the same window without reloading or losing drafts. Do not create popups, another WebView, an external browser window, or use window.open/target=_blank to extend the application. For a separately registered Node application, the platform starts its backend when opening its window and stops it when that application window closes; that rule does not turn this static project into a Node source slot.
+For this static project-v1 type, the native platform runs the local service and owns SQLite and attachments. Node is needed only for builds (minimum 22.12, recommended 24 LTS, supported branches 22/24). The Mac internal bundle defaults to its separate managed Node/npm installation and preserves an existing explicit local choice; use the platform env doctor command to inspect the service-selected tools. An unavailable selected toolchain fails without silently switching sources. This selection does not change the fixed Node used to run registered applications. Do not start a separate backend or Vite development server. Open the published application from the platform in its single native application window. Opening it again only focuses the same window without reloading or losing drafts. Do not create popups, another WebView, an external browser window, or use window.open/target=_blank to extend the application. For a separately registered Node application, the platform starts its backend when opening its window and stops it when that application window closes; that rule does not turn this static project into a Node source slot.
+
+Git is an optional development tool. The Mac internal bundle supplies a separate private Git; `env git doctor --json` reports the selected path/version and system SSH tool status. Tool readiness does not mean repository authentication is verified. `env git set --path /absolute/path/git` selects a local executable for this platform only; `env git clear` explicitly restores the bundled default. Broken selections do not silently fall back. These commands do not acquire repositories or provide commit/branch/restore operations, and published application execution does not require Git or SSH.
+
+For an explicit public repository check, use `env git check --url https://github.com/owner/repository.git --json`; standard Gitee HTTPS repository addresses are also supported. This command anonymously reads only the remote HEAD within a 20-second execution budget, without reading account credentials, cloning/downloading a repository, pushing, or changing a project. The result is specific to that URL and check time; no returned HEAD does not prove an empty repository. It does not change the doctor's unverified authentication state and does not add SSH or private-repository authentication. Do not run a remote check as part of routine offline tool diagnosis.
 
 The current Node configuration choice stores secrets in each application's private local slot under configuration/credentials/ (directory mode 0700, file mode 0600). These are plaintext files protected by the current user's file permissions, not an OS encrypted vault or macOS Keychain. The slot is separate from author source, shared packages and Git. Do not read/copy these secrets or touch older Keychain entries; the platform configuration flow manages them and injects only the target backend's environment. This does not add secret storage to this static project-v1 type.
 
@@ -238,9 +251,17 @@ Resource limits exposed by this development runtime are internal test parameters
 - 默认平台集成说明：{platform_docs}
 业务文档和 skill 的 PROJECT_ROOT 指上述业务项目根目录；skill 的 references/ 等资源链接相对该 skill 所在目录解析。当前目录、安装约束和 CLI 以上述实际路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
 
+Codex 接手时，请确认当前工作目录正是上述业务项目根目录。平台“在 Codex 打开”只准备项目目录，不自动发送需求。若 CLI 报本机连接受限或服务不可达，先核对平台是否运行及本会话对本机服务的访问权限；不要据此删除连接记录、重建项目、直接打开 SQLite 或绕过工具权限。不能访问时保留已完成的源码修改，给出待执行的公开 CLI 请求与未验事项，由用户在允许访问的平台会话中继续。
+
 平台应用窗口约束：每个应用实例最多一个原生窗口，重复打开只聚焦已有窗口，不重载或丢弃草稿；不得弹出新窗口、调用 window.open/target=_blank、另建 WebView 或转外部浏览器作为运行方式。业务确认与表单留在当前窗口内，不用脚本 alert/confirm/prompt。网页类型不启动自己的 Node；Node 类型由平台在打开应用时后台启动唯一后端，关闭应用窗口就停止，启动中的重复打开复用同一次任务。保存配置不启动或重启，明确重启或关窗后再打开才使用新配置。此交接仍针对已有 project-v1，不把独立 Node 源码槽的能力套入其安装、数据或迁移生命周期。
 
 当前 Node 秘密保存按用户最新选择：每个应用自己的本机受管槽 configuration/credentials/ 私有文件，目录0700、文件0600，是当前用户文件权限保护的明文，不是 macOS Keychain 或系统加密库。该槽与作者源码、分享包和 Git 分开；AI 不读取或复制秘密文件，不读删旧 Keychain 条目，不把秘密写进交接、日志或源码。配置入口负责保存并仅向目标 Node 创建环境注入；本条不为当前静态 project-v1 增加秘密接口。
+
+Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包默认配套私有 Git；已有显式选择优先，失效不偷偷换来源。env git set --path /绝对路径/git 与 env git clear 仅修改本平台选择，后者明确恢复默认。系统 SSH 只检查工具版本，认证仍未验证；当前未提供提交／分支／取回版本接口，应用日常运行不依赖 Git／SSH。不要为工具诊断读取私钥、修改全局 Git 或初始化项目仓库。
+
+需要检查指定公开仓库时，明确使用 env git check --url https://github.com/owner/repository.git --json，也支持标准 Gitee HTTPS 仓库地址。它在20秒执行预算内匿名读取远端HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果只适用于该地址和本次检查时间；未返回HEAD不表示空仓库，也不改变doctor的认证未验证状态。不要把该检查加入普通离线工具诊断，不把它当作SSH／私有仓库认证或完整获取流程。
+
+实际获取公开源码须明确使用 source acquire --url 标准HTTPS仓库地址 --json，再用 task wait 核对最终任务，source list/get 查看来源版本和保留目录。source inspect --path /绝对路径 --json 只检查本机声明；source cancel --task TASK_ID --json 请求取消后仍须等待最终状态。获取不会安装或执行代码，失败/中断现场保留、重试另建目录；不要将源码候选当已登记应用或用其来源ID调用项目数据库。当前完整安装和私有仓库认证尚未开放。
 
 源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
 
@@ -278,7 +299,7 @@ SQL 输入格式和维护规则以 skill、项目文档及 CLI 帮助为准；�
             database_docs = root.join("docs/database.md").display(),
             platform_docs = root.join("docs/platform.md").display(),
         );
-        json!({"projectId":id,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"runtimeConstraintsPath":constraints,"cliPath":self.cli_path,"text":text})
+        json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,"readmePath":readme,"skillPath":skill,"skillSource":if local_skill {"project"} else {"installation"},"runtimeConstraintsPath":constraints,"cliPath":self.cli_path,"text":text})
     }
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
@@ -573,7 +594,8 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn installed_template_is_ready_without_node_and_reopening_never_overwrites_it() {
+    async fn installed_template_is_ready_without_development_tools_and_reopening_never_overwrites_it(
+    ) {
         let (_temporary, paths) = RuntimePaths::for_test();
         let root = paths.data_root().join("test-install");
         let cli = installation(&root);
@@ -588,6 +610,20 @@ mod tests {
                 .doctor()
                 .await
                 .ready
+        );
+        fs::write(
+            paths.data_root().join("git-toolchain.json"),
+            r#"{"schemaVersion":1,"gitPath":"/missing/git"}"#,
+        )
+        .unwrap();
+        assert!(
+            !crate::git_environment::GitEnvironmentManager::new(
+                paths.data_root().into(),
+                Some(root.join("development-git"))
+            )
+            .doctor()
+            .await
+            .ready
         );
         let resources = Arc::new(ProjectResources::new(root.clone(), cli.clone()).unwrap());
         let store =
@@ -731,12 +767,20 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(error.code, "INVALID_TEMPLATE");
-            assert_eq!(
-                fs::read_dir(paths.workspace_root().join("projects"))
-                    .unwrap()
-                    .count(),
-                0
-            );
+            assert!(store.list().await.unwrap().is_empty());
+            let retained = fs::read_dir(paths.workspace_root().join("projects"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(retained.len(), 1);
+            assert!(retained[0]
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(".creating-prj_"));
+            assert_eq!(error.details["candidatePath"], json!(retained[0]));
+            assert!(!Path::new(error.details["projectRoot"].as_str().unwrap()).exists());
             store.shutdown().await;
         }
     }

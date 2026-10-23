@@ -20,7 +20,7 @@ const MAX_BUSINESS_RESPONSE_BYTES: u64 = 8_200_000;
     name = "local-projects-dev",
     version,
     about = "Manage projects in the isolated development platform",
-    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using system Node/npm, manage complete backups and maintenance, export/import/copy projects, restore or purge trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, permanently delete selected projects, restore or purge legacy trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -29,6 +29,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Acquire public source without executing it, or inspect local declarations.
+    Source {
+        #[command(subcommand)]
+        command: SourceCommand,
+    },
     /// Inspect the development service without starting it.
     Service {
         #[command(subcommand)]
@@ -59,7 +64,7 @@ enum Command {
         #[command(subcommand)]
         command: MaintenanceCommand,
     },
-    /// Inspect and explicitly restore or permanently purge deleted projects.
+    /// Inspect and explicitly restore or purge legacy trash entries.
     Trash {
         #[command(subcommand)]
         command: TrashCommand,
@@ -74,11 +79,47 @@ enum Command {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
-    /// Diagnose the service and its actual Node/npm build environment.
+    /// Diagnose the service and its Node/npm and optional Git development tools.
     Env {
         #[command(subcommand)]
         command: EnvironmentCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum SourceCommand {
+    /// Copy bounded local source into a new managed candidate, without executing it.
+    Capture {
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    List(OutputOptions),
+    Get {
+        #[arg(long)]
+        source: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    Inspect {
+        #[arg(long)]
+        path: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    Acquire {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    /// Request cancellation; inspect the returned task until it is final.
+    Cancel(TaskOptions),
 }
 
 #[derive(Subcommand)]
@@ -96,6 +137,33 @@ enum EnvironmentCommand {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Diagnose/select Git, or explicitly check public HTTPS repository access.
+    Git {
+        #[command(subcommand)]
+        command: GitCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GitCommand {
+    /// Report Git and system SSH tools. Does not check repository authentication.
+    Doctor(OutputOptions),
+    /// Persist an explicit absolute Git executable path for this platform only.
+    Set {
+        #[arg(long)]
+        path: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    /// Clear the explicit path and select the bundled Git toolchain.
+    Clear(OutputOptions),
+    /// Read a public GitHub/Gitee repository HEAD over HTTPS, without credentials, clone or push.
+    Check {
+        #[arg(long)]
+        url: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
 }
 
 #[derive(Subcommand)]
@@ -107,7 +175,7 @@ enum NodeCommand {
         #[command(flatten)]
         output: OutputOptions,
     },
-    /// Clear the explicit path and use automatic discovery again.
+    /// Clear the explicit path and restore the service's default toolchain.
     Clear(OutputOptions),
 }
 
@@ -147,6 +215,11 @@ struct OutputOptions {
 
 #[derive(Subcommand)]
 enum ProjectCommand {
+    /// Inspect and explicitly save this project's local source versions.
+    Git {
+        #[command(subcommand)]
+        command: ProjectGitCommand,
+    },
     List(OutputOptions),
     Metadata {
         #[command(subcommand)]
@@ -164,12 +237,58 @@ enum ProjectCommand {
     Handoff(ProjectOptions),
     /// Export a validated complete ZIP to destinationPath in JSON.
     Export(ProjectInputOptions),
-    /// Import archivePath with mode original or copy; never overwrites a project.
+    /// Import archivePath as a fresh project by default; never overwrites a project.
+    ///
+    /// JSON mode defaults to copy. Set original only to recover an archived project identity.
     Import(InputOptions),
     /// Create an independent project copy, optionally choosing a name in JSON.
     Copy(ProjectMutationOptions),
-    /// Move the complete project to trash. This is reversible.
+    /// Permanently delete this project's files without using platform or system trash.
+    ///
+    /// This cannot be undone. Historical backups and recovery evidence are retained.
+    /// Omitted expectedDocumentEpoch is read from current project info before submission.
     Delete(ProjectMutationOptions),
+}
+
+#[derive(Subcommand)]
+enum ProjectGitCommand {
+    Status(ProjectOptions),
+    /// Read bounded local history reachable from the current HEAD, without fetching.
+    Versions {
+        #[command(flatten)]
+        project: ProjectOptions,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    /// Create and switch to a new branch at the current clean HEAD, without changing source files.
+    BranchCreate(ProjectGitInputOptions),
+    /// Preview exact local source files to retrieve, without changing them.
+    SourceRestorePreview(ProjectGitInputOptions),
+    /// Apply a freshly confirmed source retrieval plan; do not change HEAD, index or business data.
+    SourceRestore(ProjectGitInputOptions),
+    /// Inspect retained source-retrieval state without replaying it.
+    SourceRecovery(ProjectOptions),
+    /// Explicitly continue or undo exactly the retained source-retrieval operation.
+    SourceRecover(ProjectGitInputOptions),
+    /// Initialize main using the exact expectedSnapshot from a fresh status.
+    Init(ProjectGitInputOptions),
+    /// Save scoped source with explicit author, message, expectedHead and expectedSnapshot.
+    Save(ProjectGitInputOptions),
+    /// Request cancellation, then inspect the persistent final result.
+    Cancel {
+        #[command(flatten)]
+        project: ProjectOptions,
+        #[arg(long)]
+        task: String,
+    },
+}
+
+#[derive(Args)]
+struct ProjectGitInputOptions {
+    #[arg(long)]
+    project: String,
+    #[command(flatten)]
+    input: InputOptions,
 }
 
 #[derive(Subcommand)]
@@ -334,6 +453,9 @@ fn main() -> ExitCode {
         Command::Env {
             command: EnvironmentCommand::Node { command },
         } => node_command(command),
+        Command::Env {
+            command: EnvironmentCommand::Git { command },
+        } => git_command(command),
         Command::Task { command } => task_command(command),
         Command::Project { command } => project_command(command),
         Command::Db { command } => database_command(command),
@@ -342,6 +464,7 @@ fn main() -> ExitCode {
         Command::Trash { command } => trash_command(command),
         Command::Workspace { command } => workspace_command(command),
         Command::Storage { command } => storage_command(command),
+        Command::Source { command } => source_command(command),
     };
     let (output, code) = match result {
         Ok(value) => {
@@ -374,6 +497,7 @@ fn main() -> ExitCode {
 
 fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
     match command {
+        ProjectCommand::Git { command } => project_git_command(command),
         ProjectCommand::Metadata { command } => match command {
             MetadataCommand::Get(options) => (
                 options.output.json,
@@ -403,22 +527,17 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
         ),
         ProjectCommand::Import(options) => (
             options.output.json,
-            read_input(&options.input).and_then(|input| {
-                validate_path_field(&input, "archivePath")?;
-                if !matches!(input["mode"].as_str(), Some("original" | "copy")) {
-                    return Err(CliError::new(
-                        "INPUT_INVALID",
-                        "Import mode must explicitly be original or copy.",
-                    ));
-                }
-                business_request("POST", "/api/v1/projects/imports", None, Some(input))
-            }),
+            read_input(&options.input)
+                .and_then(prepare_project_import_input)
+                .and_then(|input| {
+                    business_request("POST", "/api/v1/projects/imports", None, Some(input))
+                }),
         ),
         ProjectCommand::Copy(options) => {
             (options.output.json, mutation_request(options, "/copies"))
         }
         ProjectCommand::Delete(options) => {
-            (options.output.json, mutation_request(options, "/trash"))
+            (options.output.json, mutation_request(options, "/deletions"))
         }
         ProjectCommand::Info(options) => (
             options.output.json,
@@ -438,6 +557,77 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
         ProjectCommand::Refresh(options) => {
             (options.output.json, mutation_request(options, "/refresh"))
         }
+    }
+}
+
+fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
+    match command {
+        ProjectGitCommand::Status(options) => (
+            options.output.json,
+            project_request(&options.project, "GET", "/git", None),
+        ),
+        ProjectGitCommand::Versions { project, limit } => (
+            project.output.json,
+            project_request(&project.project, "GET", &format!("/git/versions?limit={limit}"), None),
+        ),
+        ProjectGitCommand::BranchCreate(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitCreateBranchInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide name, expectedHead, expectedBranch and expectedSnapshot from a fresh status."))?;
+                project_request(&options.project, "POST", "/git/branches", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRestorePreview(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSourceRestorePreviewInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide targetCommit as a complete local commit ID."))?;
+                project_request(&options.project, "POST", "/git/source-restore-preview", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRestore(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSourceRestoreApplyInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide targetCommit, expectedHead, expectedBranch, expectedSnapshot and expectedPlanDigest from a fresh preview."))?;
+                project_request(&options.project, "POST", "/git/source-restores", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRecover(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSourceRestoreRecoverInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide restoreTaskId, expectedPlanDigest, expectedJournalDigest and action continue or undo from current recovery status."))?;
+                project_request(&options.project, "POST", "/git/source-recoveries", Some(body))
+            }),
+        ),
+        ProjectGitCommand::SourceRecovery(options) => (
+            options.output.json,
+            project_request(&options.project, "GET", "/git/source-recovery", None),
+        ),
+        ProjectGitCommand::Init(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitInitInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide expectedSnapshot and initialBranch main."))?;
+                project_request(&options.project, "POST", "/git/initialize", Some(body))
+            }),
+        ),
+        ProjectGitCommand::Save(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitSaveInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide explicit expectedHead (null for no commit), expectedSnapshot, message and author name/email."))?;
+                project_request(&options.project, "POST", "/git/saves", Some(body))
+            }),
+        ),
+        ProjectGitCommand::Cancel { project, task } => (
+            project.output.json,
+            validate_reference_id(&task, "task").and_then(|()| project_request(
+                &project.project, "POST", &format!("/git/tasks/{task}/cancel"), Some(json!({})),
+            )),
+        ),
     }
 }
 
@@ -588,6 +778,21 @@ fn validate_path_field(input: &Value, field: &str) -> Result<()> {
     Ok(())
 }
 
+fn prepare_project_import_input(mut input: Value) -> Result<Value> {
+    validate_path_field(&input, "archivePath")?;
+    match input.get("mode") {
+        None => input["mode"] = json!("copy"),
+        Some(Value::String(mode)) if matches!(mode.as_str(), "original" | "copy") => {}
+        Some(_) => {
+            return Err(CliError::new(
+                "INPUT_INVALID",
+                "Import mode must be original or copy; omit it to create a fresh project.",
+            ));
+        }
+    }
+    Ok(input)
+}
+
 fn database_command(command: DatabaseCommand) -> (bool, Result<Value>) {
     match command {
         DatabaseCommand::Schema(options) => (
@@ -694,7 +899,47 @@ fn mutation_request(options: ProjectMutationOptions, route: &str) -> Result<Valu
         .transpose()?
         .unwrap_or_else(|| json!({}));
     let input = merge_maintenance(input, options.maintenance.as_deref())?;
+    if route == "/deletions" {
+        return submit_project_deletion(input, |method, suffix, body| {
+            project_request(&options.project, method, suffix, body)
+        });
+    }
     project_request(&options.project, "POST", route, Some(input))
+}
+
+fn submit_project_deletion(
+    mut input: Value,
+    mut request: impl FnMut(&str, &str, Option<Value>) -> Result<Value>,
+) -> Result<Value> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| CliError::new("INPUT_INVALID", "JSON input must be an object."))?;
+    if let Some(value) = object.get("expectedDocumentEpoch") {
+        if !value.as_str().is_some_and(|epoch| !epoch.is_empty()) {
+            return Err(CliError::new(
+                "INPUT_INVALID",
+                "expectedDocumentEpoch must be a nonempty string. No deletion was submitted.",
+            ));
+        }
+    } else {
+        let info = request("GET", "", None)?;
+        if info["ok"] != true {
+            return Ok(info);
+        }
+        let epoch = info["data"]["documentEpoch"]
+            .as_str()
+            .filter(|epoch| !epoch.is_empty())
+            .ok_or_else(|| {
+                CliError::new(
+                    "SERVICE_PROTOCOL_ERROR",
+                    "Project info did not provide a current documentEpoch. No deletion was submitted.",
+                )
+            })?;
+        input["expectedDocumentEpoch"] = json!(epoch);
+    }
+    // Preserve an explicit reviewed epoch. A changed target must be rejected by
+    // the service, never rebound and retried after an unsuccessful write.
+    request("POST", "/deletions", Some(input))
 }
 
 fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
@@ -721,6 +966,106 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
         ));
     }
     project_request(&options.project, "POST", route, Some(input))
+}
+
+fn source_command(command: SourceCommand) -> (bool, Result<Value>) {
+    match command {
+        SourceCommand::Capture { path, name, output } => (output.json, {
+            let body = json!({"sourcePath":path,"name":name});
+            validate_path_field(&body, "sourcePath").and_then(|()| {
+                business_request("POST", "/api/v1/sources/captures", None, Some(body))
+            })
+        }),
+        SourceCommand::List(output) => (
+            output.json,
+            business_request("GET", "/api/v1/sources", None, None),
+        ),
+        SourceCommand::Get { source, output } => (
+            output.json,
+            validate_reference_id(&source, "source").and_then(|()| {
+                business_request("GET", &format!("/api/v1/sources/{source}"), None, None)
+            }),
+        ),
+        SourceCommand::Inspect { path, output } => (
+            output.json,
+            if Path::new(&path).is_absolute() {
+                business_request(
+                    "POST",
+                    "/api/v1/sources/inspect",
+                    None,
+                    Some(json!({"sourcePath": path})),
+                )
+            } else {
+                Err(CliError::new(
+                    "INPUT_INVALID",
+                    "--path must be an absolute source directory.",
+                ))
+            },
+        ),
+        SourceCommand::Acquire { url, name, output } => (
+            output.json,
+            business_request(
+                "POST",
+                "/api/v1/sources/acquisitions",
+                None,
+                Some(json!({"url":url, "name":name})),
+            ),
+        ),
+        SourceCommand::Cancel(options) => (
+            options.output.json,
+            validate_reference_id(&options.task, "task").and_then(|()| {
+                business_request(
+                    "POST",
+                    &format!("/api/v1/sources/tasks/{}/cancel", options.task),
+                    None,
+                    Some(json!({})),
+                )
+            }),
+        ),
+    }
+}
+
+fn git_command(command: GitCommand) -> (bool, Result<Value>) {
+    match command {
+        GitCommand::Check { url, output } => (
+            output.json,
+            business_request(
+                "POST",
+                "/api/v1/environment/git/remote-check",
+                None,
+                Some(json!({"url": url})),
+            ),
+        ),
+        GitCommand::Doctor(output) => (
+            output.json,
+            business_request("GET", "/api/v1/environment/git", None, None),
+        ),
+        GitCommand::Set { path, output } => (
+            output.json,
+            if Path::new(&path).is_absolute() {
+                business_request(
+                    "PUT",
+                    "/api/v1/environment/git",
+                    None,
+                    Some(json!({"gitPath": path})),
+                )
+            } else {
+                Err(CliError::new(
+                    "INPUT_INVALID",
+                    "--path must be an absolute Git executable path.",
+                ))
+            },
+        ),
+        GitCommand::Clear(output) => (
+            output.json,
+            business_request(
+                "PUT",
+                "/api/v1/environment/git",
+                None,
+                Some(json!({"gitPath": null})),
+            ),
+        ),
+    }
 }
 
 fn node_command(command: NodeCommand) -> (bool, Result<Value>) {
@@ -1131,12 +1476,7 @@ fn environment_doctor() -> Result<Value> {
     });
     let paths = match discover_paths() {
         Ok(paths) => paths,
-        Err(error) if error.code == "SERVICE_NOT_RUNNING" => {
-            result["service"]["diagnostic"] =
-                serde_json::to_value(error).expect("Error serializes");
-            return Ok(result);
-        }
-        Err(error) => return Err(error),
+        Err(error) => return environment_service_failure(result, error),
     };
     result["candidatePaths"] = json!({
         "dataRoot": paths.data_root(),
@@ -1157,13 +1497,29 @@ fn environment_doctor() -> Result<Value> {
             }
             Ok(result)
         }
-        Err(error) if error.code == "SERVICE_NOT_RUNNING" => {
-            result["service"]["diagnostic"] =
-                serde_json::to_value(error).expect("Error serializes");
-            Ok(result)
-        }
-        Err(error) => Err(error),
+        Err(error) => environment_service_failure(result, error),
     }
+}
+
+fn environment_service_failure(mut result: Value, error: CliError) -> Result<Value> {
+    let (status, message) = match error.code {
+        "SERVICE_NOT_RUNNING" => (
+            "offline",
+            "No active development service record is available. Open the desktop application to inspect its build environment.",
+        ),
+        "SERVICE_UNREACHABLE" => (
+            "unreachable",
+            "The recorded service could not be reached. Its running state and build environment have not been verified.",
+        ),
+        "LOCAL_ACCESS_DENIED" => (
+            "blocked",
+            "Local access was denied. The service's running state and build environment have not been verified.",
+        ),
+        _ => return Err(error),
+    };
+    result["service"] = json!({"status": status, "diagnostic": error});
+    result["buildEnvironment"] = json!({"status": "unavailable", "message": message});
+    Ok(result)
 }
 
 fn local_client() -> Result<Client> {
@@ -1226,10 +1582,31 @@ fn query_runtime(paths: &RuntimePaths, discovery: &Discovery) -> Result<Value> {
     Ok(runtime)
 }
 
+fn local_connection_error(error: &(dyn std::error::Error + 'static)) -> CliError {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            return CliError::new(
+                "LOCAL_ACCESS_DENIED",
+                "Local access to the recorded development service was denied. Allow this tool to connect to the local platform through its permission controls, or manually run the managed CLI command in a permitted terminal. The service's running state is unverified; no retry was made.",
+            );
+        }
+        cause = error.source();
+    }
+    // Never include the request URL, headers, token or raw transport error.
+    CliError::new(
+        "SERVICE_UNREACHABLE",
+        "A development service record exists, but this process could not reach that service. It may be unavailable or local access may be restricted; its running state is unverified. Check the application and local connection permissions. No retry was made.",
+    )
+}
+
 fn fetch_json(request: RequestBuilder) -> Result<Value> {
-    let response = request.send().map_err(|_| {
-        CliError::new("SERVICE_NOT_RUNNING", "The development service could not be reached within the timeout. Open 熊猫应用小抽屉（开发版） and retry.")
-    })?;
+    let response = request
+        .send()
+        .map_err(|error| local_connection_error(&error))?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err(CliError::new("SERVICE_UNAUTHORIZED", "The development service rejected this instance's credential. Retry after confirming the application is running."));
     }
@@ -1307,6 +1684,146 @@ mod tests {
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn project_git_cli_requires_explicit_input_and_never_accepts_maintenance_alias() {
+        for command in ["source-restore-preview", "source-restore", "source-recover"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable"
+            ])
+            .is_err());
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable",
+                "--input",
+                "-",
+                "--json"
+            ])
+            .is_ok());
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable",
+                "--input",
+                "-",
+                "--maintenance",
+                "maintenance_sample"
+            ])
+            .is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "source-recovery",
+            "--project",
+            "prj_disposable",
+            "--json"
+        ])
+        .is_ok());
+        for limit in ["1", "50", "100"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                "versions",
+                "--project",
+                "prj_disposable",
+                "--limit",
+                limit,
+                "--json"
+            ])
+            .is_ok());
+        }
+        for limit in ["0", "101", "-1", "bad"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                "versions",
+                "--project",
+                "prj_disposable",
+                "--limit",
+                limit
+            ])
+            .is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "branch-create",
+            "--project",
+            "prj_disposable"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "branch-create",
+            "--project",
+            "prj_disposable",
+            "--input",
+            "disposable-input.json",
+            "--json"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "status",
+            "--project",
+            "prj_disposable",
+            "--json"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "save",
+            "--project",
+            "prj_disposable"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "save",
+            "--project",
+            "prj_disposable",
+            "--input",
+            "-",
+            "--maintenance",
+            "maintenance_sample"
+        ])
+        .is_err());
+        let input = json!({"expectedSnapshot":"a".repeat(64),"message":"Disposable commit","author":{"name":"Sample","email":"sample@example.invalid"}});
+        assert!(
+            serde_json::from_value::<platform_core::project_git::GitSaveInput>(input.clone())
+                .is_err()
+        );
+        let mut explicit = input;
+        explicit["expectedHead"] = Value::Null;
+        assert!(
+            serde_json::from_value::<platform_core::project_git::GitSaveInput>(explicit).is_ok()
+        );
+    }
 
     fn discovery() -> Discovery {
         Discovery {
@@ -1440,6 +1957,158 @@ mod tests {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         assert!(Cli::try_parse_from(["cli", "backup", "restore", "--project", "p_test"]).is_err());
+    }
+
+    #[test]
+    fn permanent_delete_binds_current_epoch_and_preserves_other_input_fields() {
+        let mut calls = Vec::new();
+        let accepted = json!({"ok":true,"data":{"taskId":"task_disposable"}});
+        let result = submit_project_deletion(
+            json!({"maintenanceId":"maintenance_disposable"}),
+            |method, suffix, body| {
+                calls.push((method.to_owned(), suffix.to_owned(), body));
+                if method == "GET" {
+                    Ok(json!({"ok":true,"data":{"documentEpoch":"current-disposable-epoch"}}))
+                } else {
+                    Ok(accepted.clone())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(result, accepted);
+        assert_eq!(
+            calls,
+            vec![
+                ("GET".into(), "".into(), None),
+                (
+                    "POST".into(),
+                    "/deletions".into(),
+                    Some(
+                        json!({"maintenanceId":"maintenance_disposable","expectedDocumentEpoch":"current-disposable-epoch"})
+                    ),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn permanent_delete_preserves_explicit_stale_epoch_without_read_or_write_retry() {
+        let input = json!({"expectedDocumentEpoch":"previous-reviewed-epoch"});
+        let rejected = json!({"ok":false,"error":{"code":"PROJECT_RELOAD_REQUIRED"}});
+        let mut writes = 0;
+        let result = submit_project_deletion(input.clone(), |method, suffix, body| {
+            assert_eq!(method, "POST");
+            assert_eq!(suffix, "/deletions");
+            assert_eq!(body, Some(input.clone()));
+            writes += 1;
+            Ok(rejected.clone())
+        })
+        .unwrap();
+        assert_eq!(result, rejected);
+        assert_eq!(writes, 1);
+
+        let mut calls = 0;
+        let error = submit_project_deletion(input, |method, _, _| {
+            assert_eq!(method, "POST");
+            calls += 1;
+            Err(CliError::unknown(
+                "Disposable response loss; query the original task.",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.code, "REQUEST_OUTCOME_UNKNOWN");
+    }
+
+    #[test]
+    fn permanent_delete_never_writes_when_current_identity_cannot_be_read() {
+        for info in [
+            json!({"ok":true,"data":{}}),
+            json!({"ok":true,"data":{"documentEpoch":null}}),
+            json!({"ok":true,"data":{"documentEpoch":""}}),
+            json!({"ok":true,"data":{"documentEpoch":42}}),
+        ] {
+            let mut calls = 0;
+            assert_eq!(
+                submit_project_deletion(json!({}), |method, _, _| {
+                    assert_eq!(method, "GET");
+                    calls += 1;
+                    Ok(info.clone())
+                })
+                .unwrap_err()
+                .code,
+                "SERVICE_PROTOCOL_ERROR"
+            );
+            assert_eq!(calls, 1);
+        }
+        let rejected = json!({"ok":false,"error":{"code":"PROJECT_NOT_FOUND"}});
+        assert_eq!(
+            submit_project_deletion(json!({}), |method, _, _| {
+                assert_eq!(method, "GET");
+                Ok(rejected.clone())
+            })
+            .unwrap(),
+            rejected
+        );
+        assert_eq!(
+            submit_project_deletion(json!({}), |method, _, _| {
+                assert_eq!(method, "GET");
+                Err(CliError::new(
+                    "SERVICE_UNREACHABLE",
+                    "Disposable read failure",
+                ))
+            })
+            .unwrap_err()
+            .code,
+            "SERVICE_UNREACHABLE"
+        );
+        for epoch in [
+            json!(null),
+            json!(false),
+            json!(42),
+            json!({}),
+            json!([]),
+            json!(""),
+        ] {
+            assert_eq!(
+                submit_project_deletion(json!({"expectedDocumentEpoch":epoch}), |_, _, _| {
+                    panic!("Invalid explicit identity must not trigger any request")
+                })
+                .unwrap_err()
+                .code,
+                "INPUT_INVALID"
+            );
+        }
+    }
+
+    #[test]
+    fn project_import_defaults_to_fresh_identity_and_preserves_explicit_modes() {
+        let archive = std::env::temp_dir().join("disposable-project.zip");
+        let input = json!({"archivePath":archive,"name":"Shared project"});
+        let mut expected = input.clone();
+        expected["mode"] = json!("copy");
+        assert_eq!(prepare_project_import_input(input).unwrap(), expected);
+
+        for mode in ["copy", "original"] {
+            let input = json!({"archivePath":archive,"mode":mode,"name":"Shared project"});
+            assert_eq!(prepare_project_import_input(input.clone()).unwrap(), input);
+        }
+        for mode in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!([]),
+            json!({}),
+            json!(""),
+            json!("fresh"),
+        ] {
+            assert_eq!(
+                prepare_project_import_input(json!({"archivePath":archive,"mode":mode}))
+                    .unwrap_err()
+                    .code,
+                "INPUT_INVALID"
+            );
+        }
     }
 
     #[test]
@@ -1616,6 +2285,116 @@ mod tests {
     }
 
     #[test]
+    fn connection_failures_classify_permission_sources_without_exposing_details() {
+        #[derive(Debug)]
+        struct TransportError(Box<dyn std::error::Error + Send + Sync>);
+        impl std::fmt::Display for TransportError {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "http://127.0.0.1:12345/?token=private-sentinel")
+            }
+        }
+        impl std::error::Error for TransportError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        for (kind, expected) in [
+            (std::io::ErrorKind::PermissionDenied, "LOCAL_ACCESS_DENIED"),
+            (std::io::ErrorKind::ConnectionRefused, "SERVICE_UNREACHABLE"),
+            (std::io::ErrorKind::TimedOut, "SERVICE_UNREACHABLE"),
+            (std::io::ErrorKind::NotFound, "SERVICE_UNREACHABLE"),
+        ] {
+            let error = TransportError(Box::new(TransportError(Box::new(std::io::Error::new(
+                kind,
+                "Authorization: Bearer private-sentinel",
+            )))));
+            let diagnostic = local_connection_error(&error);
+            assert_eq!(diagnostic.code, expected);
+            assert!(!diagnostic.retryable);
+            let serialized = serde_json::to_string(&diagnostic).unwrap();
+            assert!(!serialized.contains("private-sentinel"));
+            assert!(!serialized.contains("127.0.0.1"));
+            assert_eq!(diagnostic.details, json!({}));
+        }
+    }
+
+    #[test]
+    fn doctor_distinguishes_missing_record_unreachable_and_blocked_service() {
+        for (code, status) in [
+            ("SERVICE_NOT_RUNNING", "offline"),
+            ("SERVICE_UNREACHABLE", "unreachable"),
+            ("LOCAL_ACCESS_DENIED", "blocked"),
+        ] {
+            let result = environment_service_failure(
+                json!({"runtime":null, "candidatePaths":{"dataRoot":"/disposable"}}),
+                CliError::new(code, "fixed diagnostic"),
+            )
+            .unwrap();
+            assert_eq!(result["service"]["status"], status);
+            assert_eq!(result["service"]["diagnostic"]["code"], code);
+            assert_eq!(result["service"]["diagnostic"]["retryable"], false);
+            assert_eq!(result["buildEnvironment"]["status"], "unavailable");
+            assert!(result["runtime"].is_null());
+            assert_eq!(result["candidatePaths"]["dataRoot"], "/disposable");
+        }
+        assert_eq!(
+            environment_service_failure(json!({}), identity_error("discovery"))
+                .unwrap_err()
+                .code,
+            "SERVICE_IDENTITY_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn refused_local_connection_is_unreachable_not_missing_discovery() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let error = fetch_json(
+            local_client()
+                .unwrap()
+                .get(format!("{origin}/healthz"))
+                .bearer_auth("private-refused-sentinel"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "SERVICE_UNREACHABLE");
+        assert!(!error.retryable);
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(!serialized.contains("private-refused-sentinel"));
+        assert!(!serialized.contains(&origin));
+        let doctor = environment_service_failure(json!({}), error).unwrap();
+        assert_eq!(doctor["service"]["status"], "unreachable");
+    }
+
+    #[test]
+    fn failed_local_handshake_is_not_retried() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            drop(stream);
+            listener.set_nonblocking(true).unwrap();
+            let until = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < until {
+                match listener.accept() {
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+                    result => panic!("unexpected second connection: {result:?}"),
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let error =
+            fetch_json(local_client().unwrap().get(format!("{origin}/healthz"))).unwrap_err();
+        assert_eq!(error.code, "SERVICE_UNREACHABLE");
+        server.join().unwrap();
+    }
+
+    #[test]
     fn local_http_client_does_not_follow_redirects() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -1734,6 +2513,51 @@ mod tests {
         .is_ok());
         let (_, result) = node_command(NodeCommand::Set {
             path: "node".into(),
+            output: OutputOptions { json: true },
+        });
+        assert_eq!(result.unwrap_err().code, "INPUT_INVALID");
+    }
+
+    #[test]
+    fn git_commands_keep_diagnosis_selection_and_clear_separate() {
+        for arguments in [
+            vec!["platform", "env", "git", "doctor", "--json"],
+            vec!["platform", "env", "git", "clear", "--json"],
+            vec![
+                "platform",
+                "env",
+                "git",
+                "check",
+                "--url",
+                "https://github.com/git/git.git",
+                "--json",
+            ],
+            vec![
+                "platform",
+                "env",
+                "git",
+                "set",
+                "--path",
+                "/disposable/git",
+                "--json",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_ok());
+        }
+        assert!(Cli::try_parse_from(["platform", "env", "git", "set"]).is_err());
+        assert!(Cli::try_parse_from(["platform", "env", "git", "check"]).is_err());
+        assert!(Cli::try_parse_from([
+            "platform",
+            "env",
+            "git",
+            "check",
+            "--url",
+            "https://gitee.com/mirrors/git.git",
+            "--clone",
+        ])
+        .is_err());
+        let (_, result) = git_command(GitCommand::Set {
+            path: "git".into(),
             output: OutputOptions { json: true },
         });
         assert_eq!(result.unwrap_err().code, "INPUT_INVALID");

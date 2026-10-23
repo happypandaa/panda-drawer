@@ -170,22 +170,23 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
   onDelete: () => void;
 }) {
   const state = status?.recoveryRequired ? 'recoveryRequired' : status?.mode === 'maintenance' ? 'maintenance' : project.state;
-  const busy = task && !task.final;
+  const taskStatus = !task || task.final ? null : task.type === 'storageScan' ? '正在统计空间' : '任务进行中';
   const size = project.storage?.currentProject;
   const metadata = size?.totalBytes != null ? `${bytesText(size.totalBytes)}${size.stale ? ' · 待扫描' : size.complete === false ? ' · 部分统计' : ''}` : '空间尚未统计';
   return <LauncherTile id={project.id} name={project.name} runtime="static-web" iconDataUrl={project.iconDataUrl}
     disabled={blocked || project.state !== 'ready' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? '请先在详情中检查状态或构建项目' : blocked ? '请先处理项目维护或等待工作区任务完成' : undefined}
     description={project.description} metadata={metadata}
-    statuses={[readOnly && state === 'ready' ? '可只读打开' : null, state !== 'ready' ? labels[state] : null, busy ? '任务进行中' : null, opening ? '进入中…' : null].filter((value): value is string => Boolean(value))}
+    statuses={[readOnly && state === 'ready' ? '可只读打开' : null, state !== 'ready' ? labels[state] : null, taskStatus, opening ? '进入中…' : null].filter((value): value is string => Boolean(value))}
     actions={[
       { label: '查看详情', accessibleLabel: `查看项目「${project.name}」的详情`, disabled: detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
       { label: '删除项目', accessibleLabel: `删除项目「${project.name}」`, disabled: deletingDisabled || Boolean(deleteUnavailableReason), unavailableReason: deleteUnavailableReason, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },
     ]} />;
 }
 
-export function NodeProjectCard({ app, blocked, opening, detailsDisabled = false, onEnter, onDetails }: {
-  app: NodeAppDetail; blocked: boolean; opening: boolean; detailsDisabled?: boolean; onEnter: () => void; onDetails: () => void;
+export function NodeProjectCard({ app, blocked, opening, detailsDisabled = false, deleteUnavailableReason, onEnter, onDetails, onDelete }: {
+  app: NodeAppDetail; blocked: boolean; opening: boolean; detailsDisabled?: boolean; deleteUnavailableReason?: string;
+  onEnter: () => void; onDetails: () => void; onDelete?: () => void;
 }) {
   const needsConfiguration = !app.configuration.canStart;
   const runtimeState = app.state === 'running' ? '运行中' : app.state === 'starting' ? '打开中' : app.state === 'stopping' ? '关闭中' : app.state === 'failed' ? '需要检查' : null;
@@ -193,5 +194,8 @@ export function NodeProjectCard({ app, blocked, opening, detailsDisabled = false
     description={app.lastError ?? (needsConfiguration ? '进入前请先完成应用配置。' : undefined)}
     metadata={app.restartRequired ? '已保存配置' : needsConfiguration ? undefined : '配置完整'}
     statuses={[runtimeState, needsConfiguration ? '需要配置' : null, app.restartRequired ? '待重启' : null, opening && !['starting', 'stopping'].includes(app.state) ? '进入中…' : null].filter((value): value is string => Boolean(value))}
-    actions={[{ label: '查看详情', accessibleLabel: `查看项目「${app.name}」的详情`, disabled: opening || detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails }]} />;
+    actions={[
+      { label: '查看详情', accessibleLabel: `查看项目「${app.name}」的详情`, disabled: opening || detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
+      { label: '删除项目', accessibleLabel: `删除项目「${app.name}」`, disabled: blocked || opening || !onDelete || Boolean(deleteUnavailableReason), unavailableReason: deleteUnavailableReason, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: () => onDelete?.() },
+    ]} />;
 }

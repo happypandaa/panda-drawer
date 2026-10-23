@@ -1,0 +1,29 @@
+/* Cactus's original CSS and type scale are retained in /css/style.css. */
+a:focus-visible, button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 4px;
+}
+
+/* Preserve the original copy icon while making it keyboard operable. */
+button.btn-copy {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.highlight:focus-within .btn-copy {
+  opacity: 1;
+}
+
+/* The upstream hit-target rule only matches the English label "Menu". */
+@media screen and (max-width: 480px) {
+  #header #nav ul li.icon {
+    right: 0;
+  }
+  #header #nav ul a[aria-label="目录"] {
+    display: inline-block;
+    min-width: 48px;
+    min-height: 48px;
+  }
+}

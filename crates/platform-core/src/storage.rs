@@ -1639,20 +1639,15 @@ fn workspace_scan(
     // These project rows are references into the workspace scope, never added
     // again to its total or to knownLocalTotal.
     let mut project_rows = vec![];
-    let projects = paths.workspace_root().join("projects");
-    if let Ok(entries) = fs::read_dir(&projects) {
-        for entry in entries.flatten() {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if !valid_id(&id) {
+    {
+        for (id, path) in crate::projects::enumerate_project_roots(paths.workspace_root())? {
+            if !path.try_exists()? {
                 continue;
             }
-            let mut row = scope_scan(
-                &entry.path(),
-                json!({"kind":"project","projectId":id}),
-                &[],
-                |_| "project".into(),
-            );
-            row["name"] = read_json::<Value>(&entry.path().join("project.json"))
+            let mut row = scope_scan(&path, json!({"kind":"project","projectId":id}), &[], |_| {
+                "project".into()
+            });
+            row["name"] = read_json::<Value>(&path.join("project.json"))
                 .ok()
                 .and_then(|v| v.get("name").cloned())
                 .unwrap_or_else(|| json!(id));

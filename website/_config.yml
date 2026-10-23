@@ -1,0 +1,99 @@
+title: 熊猫应用小抽屉
+subtitle: 给自己的小应用，一个家。
+description: |
+  把自己的小应用，收进一个抽屉。
+
+  借助 **Codex** 或 **WorkBuddy**，把想法做成日常用得上的小工具；也可以从别人的应用开始，慢慢改成自己喜欢的样子。
+
+  熊猫抽屉负责集中打开和管理应用，AI 帮你制作和修改。先读 [入门指南](/wiki/getting-started/)，或者直接开始下面的教程。
+
+  当前为 macOS 内部开发版。公开安装包尚未发布，Windows 仍在适配中。
+author: 熊猫抽屉
+language: zh-CN
+timezone: Asia/Shanghai
+url: https://panda-app-drawer.ethan8899.chatgpt.site
+root: /
+permalink: tutorials/:title/
+pretty_urls:
+  trailing_index: false
+  trailing_html: false
+source_dir: source
+public_dir: dist
+tag_dir: tags
+archive_dir: tutorials
+category_dir: categories
+code_dir: downloads/code
+skip_render:
+  - robots.txt
+ignore:
+  - '**/css/rtl.styl'
+new_post_name: :title.md
+default_layout: post
+external_link:
+  enable: true
+  field: site
+  exclude: []
+filename_case: 0
+render_drafts: false
+post_asset_folder: false
+relative_link: false
+future: false
+highlight:
+  enable: true
+  line_number: true
+  auto_detect: false
+  tab_replace: '  '
+  wrap: true
+  hljs: false
+prismjs:
+  enable: false
+index_generator:
+  path: ''
+  per_page: 10
+  order_by: -date
+date_format: YYYY-MM-DD
+time_format: HH:mm:ss
+updated_option: date
+per_page: 10
+pagination_dir: page
+theme: cactus
+theme_config:
+  colorscheme: dark
+  page_width: 48
+  projects_url: /apps/
+  nav:
+    home: /
+    wiki: /wiki/
+    articles: /tutorials/
+    projects: /apps/
+  social_links:
+    - icon: github
+      label: 查看项目源码
+      link: https://github.com/happypandaa/postgresUI
+  logo:
+    enabled: true
+    width: 50
+    height: 50
+    url: /images/panda.png
+    gravatar: false
+    grayout: false
+  favicon:
+    desktop:
+      url: /images/panda.png
+      gravatar: false
+    android: false
+    apple: false
+  copyright:
+    start_year: 2026
+  posts_overview:
+    show_all_posts: false
+    post_count: 5
+    sort_updated: false
+  post:
+    show_updated: false
+  cdn:
+    enable: false
+  error_404:
+    enabled: true
+    title: 没找到这个页面
+    description: 页面可能已移动。可以从首页、Wiki 或教程重新开始。

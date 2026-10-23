@@ -768,7 +768,12 @@ impl CleanupManager {
             self.inspect(&mut item, |item| self.validate_original(item, &id));
             items.push(item);
         }
-        for directory in fs::read_dir(self.paths.workspace_root().join(".platform/trash"))? {
+        let legacy_trash = match fs::read_dir(self.paths.workspace_root().join(".platform/trash")) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        for directory in legacy_trash.into_iter().flatten() {
             let directory = directory?;
             let id = directory.file_name().to_string_lossy().into_owned();
             if !id.starts_with("trash_") || !valid_id(&id) {
@@ -785,7 +790,7 @@ impl CleanupManager {
             let mut item = Candidate::new(
                 format!("trash_{id}"),
                 "trash",
-                "回收站项目文件（保留历史备份）",
+                "旧版保留项目文件（保留历史备份）",
                 directory.path().join("project"),
             );
             self.inspect(&mut item, |item| {
@@ -876,6 +881,15 @@ impl CleanupManager {
         project_id: Option<&str>,
         except: Option<&str>,
     ) -> Result<(), ApiError> {
+        match project_id {
+            Some(id) => crate::source_restore_guard::check_development_available(
+                self.paths.workspace_root(),
+                id,
+            )?,
+            None => {
+                crate::source_restore_guard::check_workspace_available(self.paths.workspace_root())?
+            }
+        }
         for directory in fs::read_dir(self.paths.workspace_root().join(".platform/operations"))? {
             let directory = directory?;
             if directory.file_name().to_str() == except {
@@ -1054,6 +1068,7 @@ impl CleanupManager {
             return Err(error("Retained workspace retirement marker is missing without an authorized cleanup record"));
         }
         self.check_references(None, None)?;
+        crate::source_restore_guard::check_workspace_available(&item.path)?;
         let manifest_path = path.parent().unwrap().join("manifest.json");
         let target_manifest_path = path.parent().unwrap().join("target-manifest.json");
         let manifest = Self::guard_file(item, &manifest_path)?;
@@ -1099,6 +1114,29 @@ impl CleanupManager {
         Ok(())
     }
     fn check_retained_owners(&self, item: &Candidate, manifest: &[Value]) -> Result<(), ApiError> {
+        let mut directory_owners = BTreeMap::<String, String>::new();
+        // Resolve ownership from platform registrations, never from the slug or
+        // a manifest found in an unregistered folder. Current bindings remain
+        // available after an accepted partial cleanup removes old registrations.
+        for workspace in [self.paths.workspace_root(), item.path.as_path()] {
+            if !workspace.join("projects").is_dir()
+                || !workspace.join(".platform/project-state").is_dir()
+            {
+                continue;
+            }
+            for (id, path) in crate::projects::enumerate_project_roots(workspace)? {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| error("Unknown historical project directory binding"))?;
+                if directory_owners.get(name).is_some_and(|owner| owner != &id) {
+                    return Err(error(
+                        "Historical and current project directory ownership disagree",
+                    ));
+                }
+                directory_owners.insert(name.into(), id);
+            }
+        }
         let mut projects = BTreeSet::new();
         for entry in manifest {
             let path = Path::new(
@@ -1111,10 +1149,10 @@ impl CleanupManager {
                 .map(|part| part.as_os_str().to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             if components.first().is_some_and(|part| part == "projects") && components.len() > 1 {
-                if !valid_id(&components[1]) {
-                    return Err(error("Unknown historical project identity"));
-                }
-                projects.insert(components[1].clone());
+                let id = directory_owners
+                    .get(&components[1])
+                    .ok_or_else(|| error("Unknown historical project directory owner"))?;
+                projects.insert(id.clone());
             }
             if components.len() == 4
                 && components[0] == ".platform"
@@ -1424,6 +1462,7 @@ impl CleanupManager {
         }
     }
     fn check_current_protection(&self) -> Result<(), ApiError> {
+        crate::source_restore_guard::check_workspace_available(self.paths.workspace_root())?;
         let directory = self
             .paths
             .workspace_root()
@@ -1547,25 +1586,22 @@ fn migration_exclusions(root: &Path) -> Result<BTreeSet<PathBuf>, ApiError> {
         PathBuf::from(SELECTION),
         PathBuf::from(RETIRED),
     ]);
-    let directories = match fs::read_dir(root.join("projects")) {
-        Ok(entries) => entries,
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(excluded),
-        Err(failure) => return Err(failure.into()),
-    };
-    for directory in directories {
-        let directory = directory?;
-        let id = directory.file_name().to_string_lossy().into_owned();
-        if !valid_id(&id) || !directory.file_type()?.is_dir() {
+    if !root.join("projects").try_exists()? {
+        return Ok(excluded);
+    }
+    for (id, path) in crate::projects::enumerate_project_roots(root)? {
+        if !path.is_dir() {
             continue;
         }
-        let manifest_path = directory.path().join("project.json");
+        let manifest_path = path.join("project.json");
         if let Ok(manifest) = read_json(&manifest_path)
             .and_then(|value| serde_json::from_value::<ProjectManifest>(value).map_err(Into::into))
         {
-            if crate::projects::validate_manifest(&manifest, &id, &directory.path()).is_ok() {
+            if crate::projects::validate_manifest(&manifest, &id, &path).is_ok() {
                 excluded.insert(
-                    PathBuf::from("projects")
-                        .join(id)
+                    path.strip_prefix(root)
+                        .map_err(|_| error("Project directory is outside the workspace"))?
+                        .to_path_buf()
                         .join(manifest.source_dir)
                         .join("node_modules"),
                 );
@@ -1830,6 +1866,30 @@ fn relative_parent(
 }
 fn remove_tree(item: &Candidate, progress_path: &Path) -> Result<Value, ApiError> {
     remove_tree_with_hook(item, progress_path, |_, _| Ok(()))
+}
+
+/// Explicit permanent deletion shares the descriptor-relative removal boundary
+/// with historical cleanup, without enrolling content in any recycle facility.
+pub(crate) fn remove_owned_directory(
+    path: &Path,
+    expected: &PersistedIdentity,
+    progress_path: &Path,
+) -> Result<Value, ApiError> {
+    if !expected.matches_path(path).map_err(error)? {
+        return Err(error("Permanent deletion target identity changed"));
+    }
+    let mut item = Candidate::new(
+        "permanent-delete".into(),
+        "ownedDirectory",
+        "平台项目目录",
+        path.into(),
+    );
+    item.root_identity = Some(directory_identity(path)?);
+    item.persistent_root_identity = Some(expected.clone());
+    item.parents = parent_identities(path)?;
+    item.entries = scan(path)?;
+    item.can_clean = true;
+    remove_tree(&item, progress_path)
 }
 fn remove_tree_with_hook(
     item: &Candidate,

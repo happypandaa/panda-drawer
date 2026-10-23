@@ -53,7 +53,7 @@ export function ManagerShell({ page, onPageChange, onSettings, navigationDisable
 
 export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, loading, checkedAt,
   menuDisabled, refreshDisabled, createDisabled, addUnavailableReason, importUnavailableReason,
-  onRefresh, onCreate, onAdd, onImport,
+  onRefresh, onCreate, onAdd, onImport, onAcquire,
 }: {
   query: string;
   onQueryChange: (query: string) => void;
@@ -70,6 +70,7 @@ export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, l
   onCreate: () => void;
   onAdd?: () => void;
   onImport?: () => void;
+  onAcquire?: () => void;
 }) {
   return <div className="radio-toolbar">
     <label className="project-search"><Search size={16} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={event => onQueryChange(event.target.value)} placeholder="搜索项目…" /></label>
@@ -78,7 +79,7 @@ export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, l
     <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || refreshDisabled} onClick={() => void onRefresh()}><RefreshCw size={16} className={loading ? 'rotating' : undefined} /></button>
     <ProjectAddMenu disabled={menuDisabled}
       addUnavailableReason={addUnavailableReason} importUnavailableReason={importUnavailableReason}
-      onAdd={onAdd} onImport={onImport} />
+      onAdd={onAdd} onImport={onImport} onAcquire={onAcquire} />
     <button className="primary-button" onClick={onCreate} disabled={createDisabled}>新建项目</button>
   </div>;
 }

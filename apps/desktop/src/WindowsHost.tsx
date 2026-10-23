@@ -302,7 +302,7 @@ export function WindowsHost() {
         deleteUnavailableReason={deferredReason} readOnly detailsDisabled={busy || nodeModalOpen}
         onEnter={() => void openProject(project, 'desktop')} onDetails={() => showDetails(project)} onDelete={() => {}} />)}
       {filteredNodeApps.map(app => <NodeProjectCard key={'node:' + app.id} app={app} blocked={!nodeAllowed || busy || nodeModalOpen}
-        detailsDisabled={!nodeAllowed || busy || nodeModalOpen} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} />)}
+        deleteUnavailableReason={deferredReason} detailsDisabled={!nodeAllowed || busy || nodeModalOpen} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} />)}
     </ProjectCollection>
     {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={diagnosticLoading} onClose={() => setSettingsOpen(false)}>
       {feedback}
@@ -333,6 +333,7 @@ export function WindowsHost() {
     </Modal>}
     <NodeAppsPanel enabled={nodeAllowed && !hostBusy} request={nodeRequest} addRequest={nodeAddRequest}
       chooseSourceCommand="node_app_choose_source" unavailableReason={nodeUnavailableReason} onMutationError={nodeMutationError}
+      directoryOnboarding={capabilities.nodeDirectoryOnboarding} managedInstallation={capabilities.nodeManagedInstall} deletion={capabilities.nodeDelete}
       onAppChanged={acceptNodeApp} onModalStateChange={reportNodeModal} onDraftStateChange={reportNodeDraft} />
     {showCreate && <CreateProjectForm name={name} description={description} onNameChange={setName} onDescriptionChange={setDescription}
       onSubmit={createProject} onClose={() => { if (!createPending.current) setShowCreate(false); }} creating={creating} disabled={blocked || busy}

@@ -1,6 +1,20 @@
 # 文档地图与阅读顺序
 
-更新：2026-10-20。本仓库原有总入口是根 [README](../README.md)，`docs/` 没有 `README.md`。本页是新增的分类索引，避免把历史验证记录和现行约束混在同一级阅读。
+更新：2026-10-23。本仓库原有总入口是根 [README](../README.md)，`docs/` 没有 `README.md`。本页是新增的分类索引，避免把历史验证记录和现行约束混在同一级阅读。
+
+当前[直接删除契约](application-deletion.md)覆盖早期“删除先进回收站”：确认后永久删除选中受管实例，不进入平台或系统回收站；外部引用只删平台登记及私有配置／数据，外部文件夹保留。旧备份、旧回收项与恢复证据继续保全，历史验证记录不改写为本次结果。
+
+[本地目录接入](local-directory-onboarding.md)记录“添加本地应用”的三条已确认路径：空目录确认初始化、有效 Node 预览添加、其他目录复制完整 AI 只读检查说明；独立自包含的 [`local-folder-review`](../skills/local-folder-review/SKILL.md)随复制内容直接提供，不要求接收 AI 已安装技能，也不在已有目录写文件。
+
+[管理界面操作提示](management-feedback.md)规定普通成功自动消失、错误在原上下文手动关闭、离开即丢弃及迟到结果隔离；迁移／清理跟随真实任务最终状态，局部操作保留局部反馈。
+
+[可读项目目录名](project-directory-names.md)规定新建、复制及完整 ZIP 导入的命名：固定 npm 转写数据、原生离线执行与完整 ID 派生短码，已有目录、Node 私有槽和用户选定外部目录不改名。
+
+[产品最终目标](product-goal.md)已由用户确认，涵盖制作自用、获取他人项目、分享与定制四条路径。用户进一步明确先解决技术能力，再完善设计、交互和使用提示；后续先明确范围与验收，再按技术依赖推导整体计划和批次。Git 工具选择与诊断已进入实施子步；仓库获取、版本操作和认证仍按后续步骤落实。
+
+[技术实施计划](technical-implementation-plan.md)按最新取舍收敛为 10 项修改，覆盖工具、获取、Git、构建、安装、定制、分享和旧备份退役，逐项列出前置与验收；替代原 32 步，不改写 AP/NR/W 的历史编号或完成状态。范围取舍已确认，具体推荐实现仍需细化；本轮已授权正式实施，第1项规则与只读诊断见[对象、目录与 Git 边界](project-object-boundaries.md)，第2项已接配套开发 Node/npm，以及私有 Git 工具选择／诊断子步；系统 SSH 只检查版本，认证及仓库操作仍待实现，实际记录见技术计划末尾。
+
+用户最新确认仅保留项目 Git 版本管理，退出独立本地备份体系；[原备份精简评估](git-backup-simplification-review.md)的私有 Git 恢复仓库建议已取消，本文档仅保留历史盘点。数据库提交方向保留，`dist` 是否提交仍待评估，具体边界以最新技术计划为准；旧资料保全，旧备份流程尚未退役；第1项只读对象诊断已完成。
 
 本轮用户确认的 Radio Bob 风格、亮暗主题、图标启动台及设置窗口，实施与验证见[启动台界面记录](radio-launcher-verification.md)。Node 角标简化覆盖此前卡片常驻中文类型方案，读屏、详情及运行门禁仍保留。
 
@@ -20,20 +34,20 @@
 
 ## 顶层文档分类
 
-本次整理后 `docs/` 顶层实际为 **48 份 Markdown**，其中 **18 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
+本次整理后 `docs/` 顶层实际为 **58 份 Markdown**，其中 **19 份是验证记录**；下表按用途互斥归类，不把所有文件称为并列规范。
 
 | 类别 | 数量 | 文档 |
 | --- | ---: | --- |
 | 分类索引 | 1 | 本页 |
-| 总体入口与状态 | 4 | [主约定](platform-development-contract.md)、[里程碑](development-milestones.md)、[技术决定与待定项](remaining-technical-decisions.md)、[开发说明](development.md) |
-| 已确认的配套契约及分工 | 12 | [本地服务与 AI](local-service-and-ai-tools.md)、[备份维护](backup-and-maintenance.md)、[生命周期与工作区](project-lifecycle-and-workspace.md)、[能力与秘密](project-capabilities-and-secrets.md)、[元数据与概览](project-metadata-and-overview.md)、[存储与素材](project-storage-and-assets.md)、[发行更新](release-and-updates.md)、[工作区身份](workspace-identity.md)、[历史清理](history-cleanup.md)、[用户／AI 文档分工](application-documentation.md)、[应用开发环境与交付](app-development-environment.md)、[名称与图标](branding.md) |
+| 总体入口与状态 | 5 | [已确认产品目标](product-goal.md)、[主约定](platform-development-contract.md)、[里程碑](development-milestones.md)、[技术决定与待定项](remaining-technical-decisions.md)、[开发说明](development.md) |
+| 已确认的配套契约及分工 | 16 | [本地服务与 AI](local-service-and-ai-tools.md)、[备份维护](backup-and-maintenance.md)、[生命周期与工作区](project-lifecycle-and-workspace.md)、[直接删除](application-deletion.md)、[本地目录接入](local-directory-onboarding.md)、[管理界面操作提示](management-feedback.md)、[可读项目目录名](project-directory-names.md)、[能力与秘密](project-capabilities-and-secrets.md)、[元数据与概览](project-metadata-and-overview.md)、[存储与素材](project-storage-and-assets.md)、[发行更新](release-and-updates.md)、[工作区身份](workspace-identity.md)、[历史清理](history-cleanup.md)、[用户／AI 文档分工](application-documentation.md)、[应用开发环境与交付](app-development-environment.md)、[名称与图标](branding.md) |
 | 格式、运行与配置规范 | 5 | [项目与应用包 v1](project-and-app-format-v1.md)、[Node 总体方案](node-app-runtime.md)、[Node 启动规范](node-app-startup-spec.md)、[Node 配置设计](node-app-configuration.md)、[原生应用窗口约束](app-window-runtime-contract.md)；其中 Node 公开格式与部分细则仍按各页草案状态处理 |
-| 实施计划与当前独立子集 | 4 | [AP 外部包计划](app-package-implementation-plan.md)、[Windows 计划](windows-support-plan.md)、[NR Node 计划](node-app-implementation-plan.md)、[本机 Node 配置与运行](node-native-configuration.md) |
+| 实施计划与当前独立子集 | 7 | [整体技术计划](technical-implementation-plan.md)、[AP 外部包计划](app-package-implementation-plan.md)、[Windows 计划](windows-support-plan.md)、[NR Node 计划](node-app-implementation-plan.md)、[本机 Node 配置与运行](node-native-configuration.md)、[对象与目录边界](project-object-boundaries.md)、[Node 源码安装与更新](node-managed-installation.md) |
 | 待确认讨论稿 | 3 | [资源限额](resource-limits-proposal.md)、[历史管理接口](history-management-interfaces-proposal.md)、[外部包安装分享设计](web-app-package-design.md) |
-| 已被取代的路线 | 1 | [早期内置 Node 与固定连接器](bundled-node-and-connectors.md) |
-| 实际验证记录 | 18 | 见下一节；只作为证据与限制，不作为新增产品要求 |
+| 已被取代的路线 | 2 | [早期内置 Node 与固定连接器](bundled-node-and-connectors.md)、[Git 备份精简评估](git-backup-simplification-review.md) |
+| 实际验证记录 | 19 | 见下一节；只作为证据与限制，不作为新增产品要求 |
 
-另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **53 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共60个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
+另有 **5 份嵌套 Markdown**：配置声明实验规范的 [README](node-configuration-v1/README.md)，静态最小应用的 [README](project-format-v1/examples/minimal-app/README.md)、[用户说明](project-format-v1/examples/minimal-app/docs/USER_GUIDE.md)、[开发说明](project-format-v1/examples/minimal-app/docs/DEVELOPMENT.md)，及[最小项目说明](project-format-v1/examples/minimal-project/README.md)。所以 `docs/` 共 **63 份 Markdown**；再加 **3 份 JSON Schema、3 份 JSON 示例和1份示例 HTML，共70个文件**。该计数不包含平台 SDK、模板、skill、生成资源或 `.test-artifacts/`，新增文档后应重新盘点。
 
 ## 验证记录目录
 
@@ -45,11 +59,13 @@
 | 清理与身份，3 份 | [历史清理](history-cleanup-verification.md)、[清理 GUI](history-cleanup-gui-verification.md)、[工作区身份修复](workspace-identity-repair-verification.md) |
 | Node 早期试验，2 份 | [隔离运行](node-runtime-trial-verification.md)、[radio 外部服务与浏览器试跑](node-radio-live-verification.md) |
 | Windows，1 份 | [W1 环境与门禁](windows-w1-verification.md) |
+| 本轮完整场景，1 份 | [三场景与样本登记](three-scenario-verification.md) |
 
 当前本机 Node 接入与后续原生窗口的实际结果归入[本机配置与运行](node-native-configuration.md#验证记录)，不把早期浏览器记录改写成原生验收。
 
 ## 按任务阅读
 
+- **制定产品路线与分批计划**：已确认产品目标 → 当前支持范围及配套契约 → [整体技术计划](technical-implementation-plan.md)中的基线、依赖和验收 → 现有 M/AP/NR/Windows 对应步骤。目标确认不替代具体方案定稿或实际验收。
 - **维护平台**：根 README → 主约定 → 里程碑与待定项 → 当前任务的配套契约 → 相关实现 → 对应验证记录。改窗口先读原生应用窗口约束；改数据／迁移先读相应保护契约。
 - **接管已有 project-v1 业务项目**：平台复制的真实交接信息 → 项目自己的 skill、当前安装环境／窗口约束、README、`project.json`、数据库说明、匹配版本的平台说明 → 当前实际 schema 和 CLI 帮助。新选型参考应用开发环境与交付要求；无需读完本仓库全部历史记录，更不能把平台源码目录当业务项目根。
 - **适配 Node 应用源码**：应用开发环境与交付要求 → 原生应用窗口约束 → 本机 Node 配置与运行 → 作者的 `local-app.json` 与用户／开发说明 → [配置声明实验规范](node-configuration-v1/README.md) → Node 启动协议 → NR 当前小步及实际验证。先核对原生源码槽与 project-v1 的边界。

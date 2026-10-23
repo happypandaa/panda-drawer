@@ -1,6 +1,8 @@
 //! Local build orchestration. All limits here are internal test parameters, not SDK promises.
 use crate::{
     environment::{EnvironmentManager, Toolchain},
+    git_environment::GitEnvironmentManager,
+    project_git::BuildGitGuard,
     projects::{check_no_symlinks, checked_relative},
     tasks::{TaskRecord, TaskStatus},
     ApiError, ProjectHandle, ProjectManifest, ProjectStore, RuntimePaths,
@@ -24,7 +26,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, watch},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -36,6 +38,12 @@ const LOG_PAGE: usize = 64_000;
 const DIGEST_RULE: u32 = platform_project_format::DIGEST_RULE_VERSION;
 pub(crate) use platform_project_format::{StarterDistribution, StarterProvenance};
 use platform_project_format::build_config;
+
+#[path = "build_result.rs"]
+mod build_result;
+#[path = "build_candidate.rs"]
+mod candidate;
+pub use build_result::BuildResultRecovery;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,12 +96,6 @@ struct LogMeta {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DependencyRecord {
-    fingerprint: String,
-    installed_lock_digest: String,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct Journal {
     project_id: String,
     provenance: BuildProvenance,
@@ -101,6 +103,7 @@ struct Journal {
 }
 struct Registry {
     records: HashMap<String, TaskRecord>,
+    legacy_build_times: HashMap<String, Option<SystemTime>>,
     active: HashSet<String>,
     leases: HashMap<String, crate::projects::ProjectTaskLease>,
 }
@@ -109,6 +112,8 @@ pub struct BuildManager {
     store: Arc<ProjectStore>,
     base_url: String,
     environment: EnvironmentManager,
+    git_environment: GitEnvironmentManager,
+    git_stop: watch::Sender<bool>,
     registry: Mutex<Registry>,
     sender: mpsc::Sender<String>,
     runner: Mutex<Option<JoinHandle<()>>>,
@@ -122,6 +127,23 @@ impl BuildManager {
         store: Arc<ProjectStore>,
         base_url: String,
     ) -> Result<Arc<Self>, ApiError> {
+        Self::with_managed_node(paths, store, base_url, None)
+    }
+    pub fn with_managed_node(
+        paths: RuntimePaths,
+        store: Arc<ProjectStore>,
+        base_url: String,
+        managed_node: Option<PathBuf>,
+    ) -> Result<Arc<Self>, ApiError> {
+        Self::with_managed_node_and_git(paths, store, base_url, managed_node, None)
+    }
+    pub fn with_managed_node_and_git(
+        paths: RuntimePaths,
+        store: Arc<ProjectStore>,
+        base_url: String,
+        managed_node: Option<PathBuf>,
+        managed_git: Option<PathBuf>,
+    ) -> Result<Arc<Self>, ApiError> {
         let tasks = paths.workspace_root().join(".platform/tasks");
         ensure_dir(&tasks)?;
         ensure_dir(
@@ -130,6 +152,7 @@ impl BuildManager {
                 .join(".platform/project-state/builds"),
         )?;
         let mut records = HashMap::new();
+        let mut legacy_build_times = HashMap::new();
         for entry in fs::read_dir(&tasks)? {
             let path = entry?.path();
             if !path.is_dir() {
@@ -149,6 +172,12 @@ impl BuildManager {
                     "Task record identity does not match its directory",
                 ));
             }
+            if record.task_type == "build" {
+                // Startup recovery rewrites task.json. Capture the old mtime
+                // first; it is only a labelled fallback, never submission order.
+                legacy_build_times
+                    .insert(record.task_id.clone(), build_result::modified(&record_path));
+            }
             if !record.status.is_final() {
                 record.status = TaskStatus::Interrupted;
                 record.error = Some(ApiError::new(
@@ -164,12 +193,23 @@ impl BuildManager {
         let (sender, mut receiver) = mpsc::channel::<String>(BUILD_QUEUE);
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
-            environment: EnvironmentManager::new(paths.data_root().to_path_buf()),
+            environment: match managed_node {
+                Some(root) => {
+                    EnvironmentManager::with_managed_node(paths.data_root().to_path_buf(), root)
+                }
+                None => EnvironmentManager::new(paths.data_root().to_path_buf()),
+            },
+            git_environment: GitEnvironmentManager::new(
+                paths.data_root().to_path_buf(),
+                managed_git,
+            ),
+            git_stop: watch::channel(false).0,
             paths,
             store,
             base_url,
             registry: Mutex::new(Registry {
                 records,
+                legacy_build_times,
                 active: HashSet::new(),
                 leases: HashMap::new(),
             }),
@@ -213,7 +253,7 @@ impl BuildManager {
         maintenance_id: Option<&str>,
     ) -> Result<TaskRecord, ApiError> {
         let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self.store.reserve_task(project_id, &task_id)?;
+        let lease = self.store.reserve_development_task(project_id, &task_id)?;
         self.store
             .control(project_id)?
             .check(false, maintenance_id, false)?;
@@ -252,7 +292,53 @@ impl BuildManager {
             error: None,
         };
         ensure_dir(&self.task_dir(&record.task_id))?;
-        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
+        // The admission record starts final: if pointer persistence fails (or
+        // the process exits before acceptance), no queued orphan is retained.
+        let mut pending = record.clone();
+        pending.status = TaskStatus::Failed;
+        pending.phase = "not-started".into();
+        pending.error = Some(
+            ApiError::new(
+                "BUILD_SUBMISSION_INCOMPLETE",
+                "构建提交尚未完成，未启动构建；请核对保留记录后明确重试。",
+            )
+            .outcome("not_started"),
+        );
+        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &pending)?;
+        let admission =
+            build_result::remember(self.paths.workspace_root(), &record).and_then(|()| {
+                atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record).map_err(
+                    |error| {
+                        ApiError::new(
+                            "BUILD_RESULT_PERSISTENCE_FAILED",
+                            "无法保存本次构建任务，构建尚未启动；请保留任务记录并检查存储状态。",
+                        )
+                        .detail("taskPersistenceError", json!(error))
+                    },
+                )
+            });
+        if let Err(error) = admission {
+            // No queue send or retained lease until both records are durable.
+            // Even if the pointer rename happened before its fsync failed, it
+            // must resolve to a final failure rather than a queued orphan.
+            let error = error
+                .detail("taskId", record.task_id.clone())
+                .outcome("not_started");
+            let mut failed = record;
+            failed.status = TaskStatus::Failed;
+            failed.phase = "not-started".into();
+            failed.error = Some(error.clone());
+            let saved = atomic_json(&self.task_dir(&failed.task_id).join("task.json"), &failed);
+            registry.legacy_build_times.insert(
+                failed.task_id.clone(),
+                build_result::modified(&self.task_dir(&failed.task_id).join("task.json")),
+            );
+            registry.records.insert(failed.task_id.clone(), failed);
+            return Err(match saved {
+                Ok(()) => error,
+                Err(persistence) => error.detail("taskPersistenceError", json!(persistence)),
+            });
+        }
         registry.active.insert(project_id.into());
         registry.leases.insert(task_id, lease);
         registry
@@ -270,7 +356,50 @@ impl BuildManager {
             return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
         }
         let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self.store.reserve_task(project_id, &task_id)?;
+        let lease = self.store.reserve_development_task(project_id, &task_id)?;
+        self.record_operation(project_id, kind, task_id, lease)
+    }
+    /// Permanent deletion may explicitly retry its own quarantine, but never
+    /// bypasses pending source-restore protection or the project operation gate.
+    pub(crate) fn create_delete_operation(
+        &self,
+        project_id: &str,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        let task_id = format!("task_{}", Uuid::new_v4().simple());
+        let lease = self.store.reserve_delete_task(project_id, &task_id)?;
+        self.record_operation(project_id, "delete", task_id, lease)
+    }
+    pub(crate) fn create_source_restore_recovery_operation(
+        &self,
+        project_id: &str,
+        kind: &str,
+        permit: &crate::source_restore_guard::SourceRestoreRecoveryPermit,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        if !matches!(kind, "gitSourceRestoreContinue" | "gitSourceRestoreUndo") {
+            return Err(ApiError::new(
+                "INVALID_TASK_TYPE",
+                "Expected an explicit source restore recovery operation",
+            ));
+        }
+        let task_id = format!("task_{}", Uuid::new_v4().simple());
+        let lease = self
+            .store
+            .reserve_source_restore_recovery_task(project_id, &task_id, permit)?;
+        self.record_operation(project_id, kind, task_id, lease)
+    }
+    fn record_operation(
+        &self,
+        project_id: &str,
+        kind: &str,
+        task_id: String,
+        lease: crate::projects::ProjectTaskLease,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
         let record = TaskRecord {
             task_id,
             project_id: Some(project_id.into()),
@@ -353,8 +482,17 @@ impl BuildManager {
             .records
             .get_mut(id)
             .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task not found"))?;
-        record.status = TaskStatus::Failed;
-        record.phase = "failed".into();
+        record.status = if error.code == "NODE_INSTALL_INTERRUPTED" {
+            TaskStatus::Interrupted
+        } else {
+            TaskStatus::Failed
+        };
+        record.phase = if record.status == TaskStatus::Interrupted {
+            "interrupted"
+        } else {
+            "failed"
+        }
+        .into();
         record.result = Some(result);
         record.error = Some(error);
         atomic_json(&self.task_dir(id).join("task.json"), record)
@@ -384,6 +522,17 @@ impl BuildManager {
             .get(id)
             .cloned()
             .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task was not found"))
+    }
+    /// Restores a build result independently of storage and maintenance tasks.
+    /// Legacy mtime selection is explicitly uncertain about submission order.
+    pub fn latest_build(&self, project_id: &str) -> BuildResultRecovery {
+        let registry = self.registry.lock().unwrap();
+        build_result::recover(
+            self.paths.workspace_root(),
+            project_id,
+            &registry.records,
+            &registry.legacy_build_times,
+        )
     }
     pub fn logs(&self, id: &str, cursor: u64) -> Result<TaskLogs, ApiError> {
         let task = self.task(id)?;
@@ -435,6 +584,7 @@ impl BuildManager {
     }
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.git_stop.send_replace(true);
         let runner = self.runner.lock().unwrap().take();
         if let Some(runner) = runner {
             let _ = runner.await;
@@ -483,7 +633,13 @@ impl BuildManager {
                 record.error = None;
             }
             Err(error) => {
-                record.status = if error.code == "BUILD_INTERRUPTED" {
+                record.status = if matches!(
+                    error.code.as_str(),
+                    "BUILD_INTERRUPTED"
+                        | "SOURCE_ACQUISITION_INTERRUPTED"
+                        | "PROJECT_GIT_INTERRUPTED"
+                        | "NODE_INSTALL_INTERRUPTED"
+                ) {
                     TaskStatus::Interrupted
                 } else {
                     TaskStatus::Failed
@@ -563,9 +719,20 @@ impl BuildManager {
         let project = self.store.project(project_id)?;
         let _operation = project.operation_gate.read().await;
         project.check()?;
+        self.store.check_development_available(project_id)?;
+        self.phase(id, "git-build-check")?;
+        let git_guard =
+            BuildGitGuard::capture(&project, &self.git_environment, self.git_stop.subscribe())
+                .await?;
+        self.phase(id, "environment")?;
         let tools = self.environment.resolve().await?;
         self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
-        let source = checked_relative(&project.root, &project.manifest.source_dir, false)?;
+        self.phase(id, "input-digest")?;
+        let baseline = snapshot_input_digest(&project)?;
+        let task_root = checked_relative(&project.root, &format!(".platform/builds/{id}"), true)?;
+        ensure_dir(&task_root)?;
+        let candidate = candidate::BuildCandidate::prepare(&project, &task_root, &baseline)?;
+        let source = candidate.source();
         let package: Value = serde_json::from_slice(&fs::read(source.join("package.json"))?)?;
         let lock: Value = serde_json::from_slice(&fs::read(source.join("package-lock.json"))?)?;
         validate_lock(&package, &lock)?;
@@ -581,10 +748,6 @@ impl BuildManager {
                 "build.script must name an existing package.json script",
             ));
         }
-        self.phase(id, "input-digest")?;
-        let baseline = snapshot_input_digest(&project)?;
-        let task_root = checked_relative(&project.root, &format!(".platform/builds/{id}"), true)?;
-        ensure_dir(&task_root)?;
         let output = checked_relative(&project.root, &project.manifest.output_dir, true)?;
         let old_digest = if output.exists() {
             Some(tree_digest(&output, false)?)
@@ -600,7 +763,8 @@ impl BuildManager {
                 id,
                 &project,
                 &tools,
-                &source,
+                &candidate,
+                &git_guard,
                 &task_root,
                 &baseline,
                 old_digest.clone(),
@@ -642,45 +806,28 @@ impl BuildManager {
         id: &str,
         project: &ProjectHandle,
         tools: &Toolchain,
-        source: &Path,
+        candidate: &candidate::BuildCandidate,
+        git_guard: &BuildGitGuard,
         task_root: &Path,
         baseline: &str,
         old_digest: Option<String>,
         start: Instant,
     ) -> Result<Value, ApiError> {
-        let dependency_path = project.root.join(".platform/dependencies.json");
-        let fingerprint = dependency_fingerprint(source, tools)?;
-        let installed_lock = source.join("node_modules/.package-lock.json");
-        let reusable = read_optional::<DependencyRecord>(&dependency_path)?.is_some_and(|record| {
-            record.fingerprint == fingerprint
-                && installed_lock.is_file()
-                && file_digest(&installed_lock).ok().as_ref() == Some(&record.installed_lock_digest)
-        });
-        if !reusable {
-            self.phase(id, "dependencies")?;
-            self.append(id, b"Installing exact locked dependencies with npm ci.\n")?;
-            self.command(id, tools, source, &["ci", "--no-audit", "--no-fund"], start)
-                .await?;
-            ensure_unchanged(project, baseline)?;
-            if !installed_lock.is_file() {
-                return Err(ApiError::new(
-                    "DEPENDENCIES_INVALID",
-                    "npm ci did not produce an installed dependency lockfile",
-                ));
-            }
-            atomic_json(
-                &dependency_path,
-                &DependencyRecord {
-                    fingerprint,
-                    installed_lock_digest: file_digest(&installed_lock)?,
-                },
-            )?;
-        } else {
-            self.append(
-                id,
-                b"Reusing dependencies: lockfile, SDK, Node/npm and installed lock match.\n",
-            )?;
+        let source = candidate.source();
+        self.phase(id, "dependencies")?;
+        self.append(id, b"Installing exact locked dependencies in a private source candidate with npm ci. Existing project dependencies are not reused.\n")?;
+        self.command(id, tools, source, &["ci", "--no-audit", "--no-fund"], start)
+            .await?;
+        ensure_unchanged(project, baseline)?;
+        candidate.ensure_unchanged(&project.manifest, baseline)?;
+        let installed_lock = checked_relative(source, "node_modules/.package-lock.json", true)?;
+        if !installed_lock.is_file() {
+            return Err(ApiError::new(
+                "DEPENDENCIES_INVALID",
+                "npm ci did not produce an installed dependency lockfile",
+            ));
         }
+        candidate.validate_installed_links()?;
         self.checkpoint(start)?;
         ensure_unchanged(project, baseline)?;
         self.phase(id, "build")?;
@@ -702,6 +849,13 @@ impl BuildManager {
             start,
         )
         .await?;
+        self.checkpoint(start)?;
+        self.phase(id, "git-build-check")?;
+        git_guard
+            .recheck(project, self.git_stop.subscribe())
+            .await?;
+        // No more awaits before publication: validate source, candidate, live
+        // output and staging again after the potentially slow Git inspection.
         self.checkpoint(start)?;
         self.phase(id, "artifact-validation")?;
         let entry_relative = Path::new(&project.manifest.entry)
@@ -726,6 +880,7 @@ impl BuildManager {
             return Err(ApiError::new("BUILD_OUTPUT_CONTRACT_VIOLATED","Build script modified the current output directory instead of only writing to --outDir"));
         }
         ensure_unchanged(project, baseline)?;
+        candidate.ensure_unchanged(&project.manifest, baseline)?;
         let artifact_digest = tree_digest(&staging, false)?;
         self.checkpoint(start)?;
         project.check()?;
@@ -742,6 +897,7 @@ impl BuildManager {
             sdk_version: sdk_version(source)?,
             entry_relative,
         };
+        self.checkpoint(start)?;
         self.phase(id, "publish")?;
         // From the journal onward the filesystem transaction must reach a recoverable outcome.
         publish(&self.paths, project, &staging, &provenance, old_digest)?;
@@ -771,6 +927,11 @@ impl BuildManager {
         let mut command = Command::new(&tools.node.path);
         command
             .arg(&tools.npm.path)
+            // CLI options override inherited npm prefix/global settings, so ci
+            // cannot select the original project as its installation target.
+            .arg("--prefix")
+            .arg(cwd)
+            .arg("--global=false")
             .args(args)
             .current_dir(cwd)
             .env("PATH", &tools.path)
@@ -782,10 +943,12 @@ impl BuildManager {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .process_group(0);
+        candidate::isolate_git_environment(&mut command, cwd)?;
         let mut child = command
             .spawn()
             .map_err(|error| ApiError::new("BUILD_PROCESS_FAILED", error.to_string()))?;
         let pid = child.id().unwrap() as i32;
+        let mut group = candidate::BuildProcessGroup(Some(pid));
         let log = self.task_dir(id);
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -818,6 +981,7 @@ impl BuildManager {
                 libc::kill(-pid, libc::SIGKILL);
             }
         }
+        group.0 = None;
         let mut reader_error = None;
         for mut reader in [out, err] {
             match tokio::time::timeout(Duration::from_secs(2), &mut reader).await {
@@ -1045,20 +1209,6 @@ pub(crate) fn tree_digest(root: &Path, source: bool) -> Result<String, ApiError>
     hash_tree(root, source, &mut hasher)?;
     Ok(format!("{:x}", hasher.finalize()))
 }
-fn file_digest(path: &Path) -> Result<String, ApiError> {
-    check_no_symlinks(path, false)?;
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut bytes = [0u8; 65536];
-    loop {
-        let n = file.read(&mut bytes)?;
-        if n == 0 {
-            break;
-        }
-        digest.update(&bytes[..n]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
-}
 pub fn input_digest(project: &ProjectHandle) -> Result<String, ApiError> {
     let manifest = read_manifest(project)?;
     digest_manifest(project, &manifest)
@@ -1128,19 +1278,6 @@ fn validate_lock(package: &Value, lock: &Value) -> Result<(), ApiError> {
         }
     }
     Ok(())
-}
-fn dependency_fingerprint(source: &Path, tools: &Toolchain) -> Result<String, ApiError> {
-    let mut digest = Sha256::new();
-    for name in ["package.json", "package-lock.json"] {
-        digest.update(fs::read(checked_relative(source, name, false)?)?);
-    }
-    if source.join("vendor").exists() {
-        hash_tree(&source.join("vendor"), false, &mut digest)?;
-    }
-    digest.update(serde_json::to_vec(
-        &json!({"node":tools.node,"npm":tools.npm}),
-    )?);
-    Ok(format!("{:x}", digest.finalize()))
 }
 fn sdk_version(source: &Path) -> Result<Option<String>, ApiError> {
     let package: Value = serde_json::from_slice(&fs::read(source.join("package.json"))?)?;
@@ -1779,6 +1916,16 @@ mod tests {
         fs::write(app.join("build.cjs"), script).unwrap();
     }
     const BUILD: &str = r#"const fs=require('fs');const p=require('path');const out=process.argv[process.argv.indexOf('--outDir')+1];fs.mkdirSync(out,{recursive:true});fs.writeFileSync(p.join(out,'index.html'),'<html><body>generation-one</body></html>');"#;
+    mod candidate_pipeline {
+        include!("build_pipeline_candidate_tests.rs");
+    }
+    mod git_pipeline {
+        include!("build_pipeline_git_tests.rs");
+    }
+    mod result_recovery {
+        include!("build_result_tests.rs");
+    }
+
     async fn wait(manager: &BuildManager, id: &str) -> TaskRecord {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
@@ -1867,16 +2014,17 @@ mod tests {
             manager.info(&project.manifest.id).await.unwrap()["sourceState"],
             "matched"
         );
+        let output_violation = format!(
+            "const fs=require('fs');fs.writeFileSync({},'bad');",
+            serde_json::to_string(&project.root.join("dist/index.html")).unwrap()
+        );
         let cases = [
             ("process.exit(2);", "BUILD_FAILED"),
             (
                 "const fs=require('fs');fs.appendFileSync('build.cjs','\\n// changed');",
                 "BUILD_INPUT_CHANGED",
             ),
-            (
-                "const fs=require('fs');fs.writeFileSync('../dist/index.html','bad');",
-                "BUILD_OUTPUT_CONTRACT_VIOLATED",
-            ),
+            (output_violation.as_str(), "BUILD_OUTPUT_CONTRACT_VIOLATED"),
         ];
         for (extra, code) in cases {
             fs::write(
@@ -2061,10 +2209,16 @@ mod tests {
         let (_temp, paths) = RuntimePaths::for_test();
         let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
         let project = project(&store, "Cancel").await;
-        fixture(
-            &project,
-            r#"const fs=require('fs');const cp=require('child_process');const child=cp.spawn(process.execPath,['-e',"const fs=require('fs');setInterval(()=>fs.appendFileSync('../.platform/child-ticks','x'),20)"],{stdio:'ignore'});fs.writeFileSync('../.platform/child.pid',String(child.pid));setInterval(()=>{},1000);"#,
+        let ticks_path = project.root.join(".platform/child-ticks");
+        let child_code = format!(
+            "const fs=require('fs');setInterval(()=>fs.appendFileSync({},'x'),20)",
+            serde_json::to_string(&ticks_path).unwrap()
         );
+        let script = format!(
+            "const cp=require('child_process');cp.spawn(process.execPath,['-e',{}],{{stdio:'ignore'}});setInterval(()=>{{}},1000);",
+            serde_json::to_string(&child_code).unwrap()
+        );
+        fixture(&project, &script);
         let manager =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into())
                 .unwrap();

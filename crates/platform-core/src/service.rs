@@ -108,6 +108,12 @@ struct HttpState {
     expected_host: String,
     store: Arc<ProjectStore>,
     builds: Arc<BuildManager>,
+    git_environment: crate::git_environment::GitEnvironmentManager,
+    git_remote: crate::git_remote::GitRemoteChecker,
+    project_git: std::result::Result<Arc<crate::project_git::ProjectGitManager>, ApiError>,
+    node_install: Arc<crate::node_install_tasks::NodeInstallTasks>,
+    source_acquisition:
+        std::result::Result<Arc<crate::source_acquisition::SourceAcquisitionManager>, ApiError>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
     resources: Option<Arc<ProjectResources>>,
     tickets: Mutex<HashMap<String, Ticket>>,
@@ -145,6 +151,41 @@ impl RuntimeSwitch {
 pub struct RuntimeHandle {
     shared: Arc<RuntimeSwitch>,
     pinned: Option<Arc<HttpState>>,
+}
+/// Keeps the resolved project in this workspace while a native editor is opened.
+/// This lease ends after dispatch; it does not track subsequent editing in the AI.
+pub struct EditorHandoffLease {
+    pub project_root: PathBuf,
+    project_id: String,
+    _task: crate::projects::ProjectTaskLease,
+    active: Active,
+}
+impl EditorHandoffLease {
+    pub fn validate(&self) -> std::result::Result<(), ApiError> {
+        let state = &self.active.0;
+        if state.stopping.load(Ordering::SeqCst)
+            || state
+                .shared
+                .upgrade()
+                .is_none_or(|shared| shared.closing.load(Ordering::Acquire))
+        {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        state.store.check_workspace_available()?;
+        state.store.check_development_available(&self.project_id)?;
+        let project = state.store.project(&self.project_id)?;
+        project.validate_epoch(None)?;
+        if project.root != self.project_root {
+            return Err(ApiError::new(
+                "HANDOFF_CHANGED",
+                "项目位置已变化，请重新准备接手说明",
+            ));
+        }
+        Ok(())
+    }
 }
 impl RuntimeHandle {
     fn current(&self) -> Arc<HttpState> {
@@ -185,6 +226,14 @@ impl RuntimeHandle {
             });
         }
         let state = self.current();
+        // Layout diagnostics use the registered, validated handle, never an
+        // untrusted manifest retained by the error summary. They cannot change
+        // runtime readiness or initialize a repository.
+        value["objectLayout"] = state
+            .store
+            .project(id)
+            .map(|project| crate::object_layout::project_layout(&project.root, &project.manifest))
+            .unwrap_or(Value::Null);
         match state.metadata.info(id).await {
             Ok(metadata) => {
                 for key in [
@@ -526,8 +575,408 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn git_environment(&self) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().git_environment.doctor().await))
+    }
+    pub async fn check_git_remote(
+        &self,
+        input: crate::git_remote::GitRemoteCheckInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        // Native commands also participate in shutdown drain. HTTP requests
+        // retain their outer guard while this operation holds its own guard.
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        state.store.check_workspace_available()?;
+        Ok(json!(
+            state
+                .git_remote
+                .check(&state.git_environment, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn set_git_path(
+        &self,
+        git_path: Option<String>,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        Ok(json!(
+            state
+                .git_environment
+                .configure_git(git_path.map(PathBuf::from))
+                .await?
+        ))
+    }
+    pub async fn project_git_status(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .status(id, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_versions(
+        &self,
+        id: &str,
+        limit: u32,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .versions(id, limit, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_create_branch(
+        &self,
+        id: &str,
+        input: crate::project_git::GitCreateBranchInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .create_branch(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_preview(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSourceRestorePreviewInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_preview(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_apply(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSourceRestoreApplyInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_apply(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_status(
+        &self,
+        id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_status(id, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_source_restore_recover(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSourceRestoreRecoverInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .source_restore_recover(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_initialize(
+        &self,
+        id: &str,
+        input: crate::project_git::GitInitInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .initialize(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_save(
+        &self,
+        id: &str,
+        input: crate::project_git::GitSaveInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .save(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_cancel(
+        &self,
+        id: &str,
+        task_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        if state.builds.task(task_id)?.project_id.as_deref() != Some(id) {
+            return Err(ApiError::new(
+                "PROJECT_GIT_INPUT_INVALID",
+                "任务不属于当前项目。",
+            ));
+        }
+        Ok(json!(state
+            .project_git
+            .as_ref()
+            .map_err(Clone::clone)?
+            .cancel(task_id)?))
+    }
+    pub async fn source_list(&self) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .list()?))
+    }
+    pub async fn source_capture(
+        &self,
+        input: crate::source_acquisition::CaptureLocalSourceInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .source_acquisition
+                .as_ref()
+                .map_err(Clone::clone)?
+                .capture(input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    // Installation is native-manager-only: the native window owner must retain
+    // its operation lock around apply and check that the target has no window.
+    pub fn node_install_target(&self, candidate_id: &str) -> std::result::Result<String, ApiError> {
+        self.current().node_install.target_app_id(candidate_id)
+    }
+    pub fn node_install_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        self.current().node_install.candidate(candidate_id)
+    }
+    pub fn node_install_issues(&self) -> Value {
+        json!(self.current().node_install.issues())
+    }
+    pub fn node_install_list(&self) -> std::result::Result<Value, ApiError> {
+        self.current().node_install.list()
+    }
+    pub async fn node_install_prepare(
+        &self,
+        apps: Arc<crate::node_apps::NodeApps>,
+        input: crate::node_install_tasks::PrepareNodeInstallInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .node_install
+                .prepare(apps, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn node_install_apply(
+        &self,
+        apps: Arc<crate::node_apps::NodeApps>,
+        candidate_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .node_install
+                .apply(apps, candidate_id, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub fn node_install_cancel(&self, task_id: &str) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().node_install.cancel(task_id)?))
+    }
+    pub async fn source_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .info(id)?))
+    }
+    pub async fn source_inspect(&self, path: PathBuf) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .inspect_local(path)?))
+    }
+    pub async fn source_acquire(
+        &self,
+        input: crate::source_acquisition::AcquireSourceInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .source_acquisition
+                .as_ref()
+                .map_err(Clone::clone)?
+                .submit(input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn source_cancel(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        Ok(json!(state
+            .source_acquisition
+            .as_ref()
+            .map_err(Clone::clone)?
+            .cancel(id)?))
+    }
     pub async fn handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
+        state.store.check_development_available(id)?;
         let project = state.store.project(id)?;
         let resources = state.resources.as_ref().ok_or_else(|| {
             ApiError::new(
@@ -535,7 +984,43 @@ impl RuntimeHandle {
                 "This service has no installed project template or CLI resources",
             )
         })?;
-        Ok(resources.handoff(&project.root, id))
+        let mut handoff = resources.handoff(&project.root, id);
+        handoff["instanceId"] = json!(state.info.instance_id);
+        Ok(handoff)
+    }
+    pub fn editor_handoff_lease(
+        &self,
+        id: &str,
+        expected_project_root: &std::path::Path,
+        expected_instance_id: &str,
+    ) -> std::result::Result<EditorHandoffLease, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let active = Active(state.clone());
+        if state.info.instance_id != expected_instance_id {
+            return Err(ApiError::new(
+                "HANDOFF_CHANGED",
+                "平台已重启或工作区已变化，请重新准备接手说明",
+            ));
+        }
+        let task = state
+            .store
+            .reserve_transient_operation(id, "editor-handoff")?;
+        let project = state.store.project(id)?;
+        if project.root != expected_project_root {
+            return Err(ApiError::new(
+                "HANDOFF_CHANGED",
+                "项目位置已变化，请重新准备接手说明",
+            ));
+        }
+        let lease = EditorHandoffLease {
+            project_root: project.root,
+            project_id: id.into(),
+            _task: task,
+            active,
+        };
+        lease.validate()?;
+        Ok(lease)
     }
     pub async fn project_export(
         &self,
@@ -704,10 +1189,17 @@ impl RuntimeService {
     }
     pub async fn shutdown(mut self) -> Result<()> {
         self.shared.closing.store(true, Ordering::Release);
+        // Migration waits for source/project leases held by long-running work.
+        // Signal that work before awaiting migration, then let migration finish
+        // its durable commit/recovery path instead of aborting its runner.
+        let before_migration = self.shared.snapshot();
+        before_migration.stopping.store(true, Ordering::SeqCst);
+        let _ = before_migration.stop.send(true);
         let migration = self.shared.migration_runner.lock().unwrap().take();
         if let Some(task) = migration {
             task.await.context("Workspace migration runner panicked")?;
         }
+        // A committed migration may have installed a new state while we waited.
         let state = self.shared.snapshot();
         state.stopping.store(true, Ordering::SeqCst);
         let _ = state.stop.send(true);
@@ -725,6 +1217,13 @@ impl RuntimeService {
         state.history_cleanup.shutdown().await;
         state.lifecycle.shutdown().await;
         state.maintenance.shutdown().await;
+        state.node_install.shutdown().await;
+        if let Ok(sources) = &state.source_acquisition {
+            sources.shutdown().await;
+        }
+        if let Ok(git) = &state.project_git {
+            git.shutdown().await;
+        }
         state.builds.shutdown().await;
         state.store.shutdown().await;
         if let Some(mut task) = self.task.take() {
@@ -815,7 +1314,17 @@ fn make_state(
         data_root: paths.data_root().into(),
         sqlite_version: rusqlite::version().into(),
     };
-    let builds = BuildManager::new(paths.clone(), store.clone(), info.base_url.clone())?;
+    let builds = BuildManager::with_managed_node_and_git(
+        paths.clone(),
+        store.clone(),
+        info.base_url.clone(),
+        resources
+            .as_ref()
+            .map(|resources| resources.development_node_root()),
+        resources
+            .as_ref()
+            .map(|resources| resources.development_git_root()),
+    )?;
     let maintenance =
         crate::maintenance::MaintenanceManager::new(paths.clone(), store.clone(), builds.clone())?;
     let lifecycle = crate::lifecycle::LifecycleManager::new(
@@ -840,6 +1349,32 @@ fn make_state(
     )?;
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
+    let git_environment = crate::git_environment::GitEnvironmentManager::new(
+        paths.data_root().into(),
+        resources
+            .as_ref()
+            .map(|resources| resources.development_git_root()),
+    );
+    // Corrupt source evidence must not prevent existing applications opening.
+    // Keep the feature error and preserve its files for explicit inspection.
+    let source_acquisition = crate::source_acquisition::SourceAcquisitionManager::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        git_environment.clone(),
+    );
+    let project_git = crate::project_git::ProjectGitManager::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        git_environment.clone(),
+    );
+    let node_install = crate::node_install_tasks::NodeInstallTasks::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        source_acquisition.clone(),
+    );
     let state = Arc::new(HttpState {
         paths,
         shared,
@@ -851,6 +1386,11 @@ fn make_state(
         ),
         store,
         builds,
+        git_environment,
+        git_remote: crate::git_remote::GitRemoteChecker::new(),
+        project_git,
+        node_install,
+        source_acquisition,
         maintenance,
         lifecycle,
         metadata,
@@ -953,6 +1493,7 @@ async fn submit_migration(
             while state.store.has_active_tasks() {
                 tokio::time::sleep(Duration::from_millis(40)).await;
             }
+            crate::projects::check_pending_deletions(state.paths.workspace_root())?;
             // Reject unresolved recovery before any filesystem copying.
             for project in state.store.list().await? {
                 if crate::projects::valid_id(&project.id)
@@ -965,6 +1506,9 @@ async fn submit_migration(
                     .detail("projectId", project.id));
                 }
             }
+            // Source-only recovery does not stop runtime use. Reject a retained
+            // operation before migration would pause that still-usable runtime.
+            crate::source_restore_guard::check_workspace_available(state.paths.workspace_root())?;
             state.storage.quiesce().await;
             state.store.pause_workspace().await;
             let mut guards = vec![];
@@ -1034,6 +1578,13 @@ async fn submit_migration(
             state.history_cleanup.shutdown().await;
             state.lifecycle.shutdown().await;
             state.maintenance.shutdown().await;
+            state.node_install.shutdown().await;
+            if let Ok(sources) = &state.source_acquisition {
+                sources.shutdown().await;
+            }
+            if let Ok(git) = &state.project_git {
+                git.shutdown().await;
+            }
             state.builds.shutdown().await;
             crate::workspace::mark_old_retired(&selected, &journal)?;
             for project in new.store.list().await? {
@@ -1389,12 +1940,27 @@ async fn management(
             [
                 "projects",
                 _,
-                "builds" | "backups" | "restore" | "maintenance" | "exports" | "copies" | "trash"
+                "builds"
+                    | "backups"
+                    | "restore"
+                    | "maintenance"
+                    | "exports"
+                    | "copies"
+                    | "trash"
+                    | "deletions"
             ] | ["projects", _, "maintenance", "end"]
                 | ["projects", "imports"]
                 | ["trash", _, "restore" | "purge"]
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
+                | ["sources", "acquisitions"]
+                | ["sources", "captures"]
+                | [
+                    "projects",
+                    _,
+                    "git",
+                    "initialize" | "saves" | "branches" | "source-restores" | "source-recoveries"
+                ]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -1430,7 +1996,114 @@ async fn management(
     };
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
+            (Method::GET, ["projects", id, "git"]) => handle.project_git_status(id).await,
+            (Method::GET, ["projects", id, "git", "versions"]) => {
+                let parameters = query(&request)?;
+                if parameters.keys().any(|key| key != "limit") {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Only limit is accepted for local Git history.",
+                    ));
+                }
+                let limit = parameters
+                    .get("limit")
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|_| {
+                        ApiError::new("INVALID_INPUT", "limit must be an integer from 1 to 100")
+                    })?
+                    .unwrap_or(50);
+                if !(1..=100).contains(&limit) {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "limit must be an integer from 1 to 100",
+                    ));
+                }
+                handle.project_git_versions(id, limit).await
+            }
+            (Method::POST, ["projects", id, "git", "branches"]) => {
+                handle
+                    .project_git_create_branch(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "source-restore-preview"]) => {
+                handle
+                    .project_git_source_restore_preview(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "source-restores"]) => {
+                handle
+                    .project_git_source_restore_apply(id, input(request).await?)
+                    .await
+            }
+            (Method::GET, ["projects", id, "git", "source-recovery"]) => {
+                if !query(&request)?.is_empty() {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Source recovery status does not accept query parameters.",
+                    ));
+                }
+                handle.project_git_source_restore_status(id).await
+            }
+            (Method::POST, ["projects", id, "git", "source-recoveries"]) => {
+                handle
+                    .project_git_source_restore_recover(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "initialize"]) => {
+                handle
+                    .project_git_initialize(id, input(request).await?)
+                    .await
+            }
+            (Method::POST, ["projects", id, "git", "saves"]) => {
+                handle.project_git_save(id, input(request).await?).await
+            }
+            (Method::POST, ["projects", id, "git", "tasks", task_id, "cancel"]) => {
+                handle.project_git_cancel(id, task_id).await
+            }
+            (Method::GET, ["sources"]) => handle.source_list().await,
+            (Method::GET, ["sources", id]) => handle.source_info(id).await,
+            (Method::POST, ["sources", "acquisitions"]) => {
+                handle.source_acquire(input(request).await?).await
+            }
+            (Method::POST, ["sources", "captures"]) => {
+                handle.source_capture(input(request).await?).await
+            }
+            (Method::POST, ["sources", "inspect"]) => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct InspectSource {
+                    source_path: PathBuf,
+                }
+                handle
+                    .source_inspect(input::<InspectSource>(request).await?.source_path)
+                    .await
+            }
+            (Method::POST, ["sources", "tasks", id, "cancel"]) => handle.source_cancel(id).await,
             (Method::GET, ["environment"]) => handle.environment().await,
+            (Method::GET, ["environment", "git"]) => handle.git_environment().await,
+            (Method::POST, ["environment", "git", "remote-check"]) => {
+                handle.check_git_remote(input(request).await?).await
+            }
+            (Method::PUT, ["environment", "git"]) => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct GitConfig {
+                    git_path: Value,
+                }
+                let value = input::<GitConfig>(request).await?.git_path;
+                let path = match value {
+                    Value::Null => None,
+                    Value::String(path) => Some(path),
+                    _ => {
+                        return Err(ApiError::new(
+                            "INVALID_GIT_PATH",
+                            "gitPath must be an absolute path string or null",
+                        ))
+                    }
+                };
+                handle.set_git_path(path).await
+            }
             (Method::PUT, ["environment", "node"]) => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1507,7 +2180,11 @@ async fn management(
             (Method::POST, ["projects", id, "copies"]) => {
                 handle.project_copy(id, optional_json(request).await?).await
             }
-            (Method::POST, ["projects", id, "trash"]) => {
+            (Method::POST, ["projects", _, "trash"]) => Err(ApiError::new(
+                "PROJECT_TRASH_RETIRED",
+                "Creating recycle-bin entries is retired. Permanent deletion requires the explicit projects/{id}/deletions endpoint; existing recycle-bin contents remain available.",
+            )),
+            (Method::POST, ["projects", id, "deletions"]) => {
                 handle
                     .project_delete(id, optional_json(request).await?)
                     .await
@@ -1648,8 +2325,8 @@ fn session(
                 "Project session has expired; reopen from the platform",
             )
         })?;
-    if state.store.is_retired(id)?.is_some() {
-        return Err(ApiError::new("PROJECT_TRASHED","Project has been moved to the recycle bin; reopen it through the platform after restoring"));
+    if let Some(retired) = state.store.is_retired(id)? {
+        return Err(crate::projects::project_removed_error(&retired));
     }
     if _session.lifecycle_generation != state.store.session_generation(id)? {
         return Err(ApiError::new(
@@ -3056,3 +3733,31 @@ mod m5_tests;
 #[cfg(test)]
 #[path = "service_history_cleanup_tests.rs"]
 mod history_cleanup_tests;
+
+#[cfg(test)]
+#[path = "service_object_layout_tests.rs"]
+mod object_layout_tests;
+
+#[cfg(test)]
+#[path = "service_git_environment_tests.rs"]
+mod git_environment_tests;
+
+#[cfg(test)]
+#[path = "service_git_remote_tests.rs"]
+mod git_remote_tests;
+
+#[cfg(test)]
+#[path = "service_editor_handoff_tests.rs"]
+mod editor_handoff_tests;
+
+#[cfg(test)]
+#[path = "service_source_tests.rs"]
+mod source_tests;
+
+#[cfg(test)]
+#[path = "service_project_git_tests.rs"]
+mod project_git_tests;
+
+#[cfg(test)]
+#[path = "service_node_install_tests.rs"]
+mod node_install_tests;

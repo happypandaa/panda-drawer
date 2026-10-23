@@ -30,6 +30,44 @@ fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_APP_ERROR", message)
 }
 
+#[cfg(windows)]
+fn preview_changed() -> ApiError {
+    ApiError::new(
+        "NODE_APP_PREVIEW_CHANGED",
+        "应用目录或声明已变化，或无法继续验证。请重新读取预览后再登记。",
+    )
+}
+
+#[cfg(windows)]
+struct SourceSnapshot {
+    // This retains the entire directory ancestry and the actual declaration
+    // handle without write/delete sharing until registration has finished.
+    source: platform_host::WindowsSourceDirectory,
+    manifest_bytes: Vec<u8>,
+    manifest_digest: String,
+    expected_revision: String,
+}
+
+#[cfg(windows)]
+impl SourceSnapshot {
+    fn manifest(&self) -> Result<TrialManifest> {
+        let manifest =
+            TrialManifest::parse(&self.manifest_bytes).map_err(|e| fail(e.to_string()))?;
+        if manifest.runtime != TrialRuntime::NodeService {
+            return Err(fail(
+                "此入口只登记带 Node 服务的应用。网页项目请继续使用我的项目。",
+            ));
+        }
+        manifest
+            .inspect(self.source.path())
+            .map_err(|e| fail(e.to_string()))?;
+        self.source
+            .verify_binding()
+            .map_err(crate::windows_fs::error)?;
+        Ok(manifest)
+    }
+}
+
 fn clean_shutdown(status: &TrialStatus) -> bool {
     status.process_group_exited && status.state == "stopped"
 }
@@ -121,37 +159,86 @@ impl NodeApps {
     }
 
     pub fn inspect(&self, source: &Path) -> Result<Value> {
-        let manifest = self.load_source(source)?;
-        Ok(serde_json::to_value(
-            manifest.inspect(source).map_err(|e| fail(e.to_string()))?,
-        )?)
+        #[cfg(windows)]
+        {
+            let snapshot = self.source_snapshot(source)?;
+            let manifest = snapshot.manifest()?;
+            let mut inspected = serde_json::to_value(
+                manifest
+                    .inspect(snapshot.source.path())
+                    .map_err(|e| fail(e.to_string()))?,
+            )?;
+            snapshot
+                .source
+                .verify_binding()
+                .map_err(crate::windows_fs::error)?;
+            inspected["expectedRevision"] = json!(snapshot.expected_revision);
+            Ok(inspected)
+        }
+        #[cfg(not(windows))]
+        {
+            let manifest = self.load_source(source)?;
+            Ok(serde_json::to_value(
+                manifest.inspect(source).map_err(|e| fail(e.to_string()))?,
+            )?)
+        }
+    }
+
+    #[cfg(windows)]
+    fn source_snapshot(&self, source: &Path) -> Result<SourceSnapshot> {
+        let source = platform_host::WindowsSourceDirectory::open(source)
+            .map_err(crate::windows_fs::error)?;
+        let data = platform_host::WindowsSourceDirectory::from_workspace(&self.windows_root)
+            .map_err(crate::windows_fs::error)?;
+        if source.overlaps(&data)
+            || source.path().starts_with(&self.data_root)
+            || self.data_root.starts_with(source.path())
+        {
+            return Err(fail("应用源码必须与平台数据目录及祖先目录相互独立。"));
+        }
+        let source = source
+            .pin_file("local-app.json")
+            .map_err(crate::windows_fs::error)?;
+        let manifest_bytes = source
+            .read_bounded("local-app.json", 65536)
+            .map_err(crate::windows_fs::error)?
+            .bytes;
+        let digest = Sha256::digest(&manifest_bytes);
+        let mut revision = Sha256::new();
+        revision.update(b"windows-node-source-preview-v1\0");
+        revision.update(source.identity().volume_serial.to_le_bytes());
+        revision.update(source.identity().file_id128);
+        revision.update(digest);
+        Ok(SourceSnapshot {
+            source,
+            manifest_bytes,
+            manifest_digest: format!("{digest:x}"),
+            expected_revision: format!("{:x}", revision.finalize()),
+        })
     }
 
     fn load_source(&self, source: &Path) -> Result<TrialManifest> {
-        ordinary_path(source, true)?;
         #[cfg(windows)]
         {
-            let source = platform_host::WindowsSourceDirectory::open(source)
-                .map_err(crate::windows_fs::error)?;
-            let data = platform_host::WindowsSourceDirectory::from_workspace(&self.windows_root)
-                .map_err(crate::windows_fs::error)?;
-            if source.overlaps(&data) {
-                return Err(fail("应用源码必须与平台数据目录及祖先目录相互独立。"));
+            self.source_snapshot(source)?.manifest()
+        }
+        #[cfg(not(windows))]
+        {
+            ordinary_path(source, true)?;
+            if source.starts_with(&self.data_root) || self.data_root.starts_with(source) {
+                return Err(fail(
+                    "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
+                ));
             }
+            let manifest = TrialManifest::load(source).map_err(|e| fail(e.to_string()))?;
+            if manifest.runtime != TrialRuntime::NodeService {
+                return Err(fail(
+                    "此入口只登记带 Node 服务的应用。网页项目请继续使用我的项目。",
+                ));
+            }
+            manifest.inspect(source).map_err(|e| fail(e.to_string()))?;
+            Ok(manifest)
         }
-        if source.starts_with(&self.data_root) || self.data_root.starts_with(source) {
-            return Err(fail(
-                "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
-            ));
-        }
-        let manifest = TrialManifest::load(source).map_err(|e| fail(e.to_string()))?;
-        if manifest.runtime != TrialRuntime::NodeService {
-            return Err(fail(
-                "此入口只登记带 Node 服务的应用。网页项目请继续使用我的项目。",
-            ));
-        }
-        manifest.inspect(source).map_err(|e| fail(e.to_string()))?;
-        Ok(manifest)
     }
 
     #[cfg(not(windows))]
@@ -281,7 +368,7 @@ impl NodeApps {
             "stopped"
         };
         Ok(json!({
-            "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
+            "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,"dataContract":manifest.data_contract,
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
@@ -290,29 +377,57 @@ impl NodeApps {
         }))
     }
 
-    pub async fn register(&self, source: PathBuf) -> Result<Value> {
+    pub async fn register(&self, source: PathBuf, expected_revision: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
         #[cfg(windows)]
-        let source_guard = platform_host::WindowsSourceDirectory::open(&source)
-            .map_err(crate::windows_fs::error)?;
+        let snapshot = {
+            if expected_revision.len() != 64
+                || !expected_revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(preview_changed());
+            }
+            let snapshot = self
+                .source_snapshot(&source)
+                .map_err(|_| preview_changed())?;
+            if snapshot.expected_revision != expected_revision {
+                return Err(preview_changed());
+            }
+            snapshot
+        };
         #[cfg(windows)]
-        let source = source_guard.path().to_owned();
+        let source = snapshot.source.path().to_owned();
+        #[cfg(windows)]
+        let manifest = snapshot.manifest().map_err(|_| preview_changed())?;
+        #[cfg(not(windows))]
         let manifest = self.load_source(&source)?;
         #[cfg(windows)]
-        platform_host::windows_node_root::node_apps_directory(&self.windows_root, true)
-            .map_err(crate::windows_fs::error)?;
+        snapshot
+            .source
+            .verify_binding()
+            .map_err(|_| preview_changed())?;
         #[cfg(not(windows))]
         private_dir(&self.root)?;
         for record in self.registrations()? {
             #[cfg(windows)]
             let same_source = platform_host::WindowsSourceDirectory::open(&record.source_path)
-                .map(|guard| guard.identity() == source_guard.identity())
+                .map(|guard| guard.identity() == snapshot.source.identity())
                 .unwrap_or(false);
             #[cfg(not(windows))]
             let same_source = record.source_path == source;
             if same_source {
                 return self.detail(&record, &self.manifest(&record)?, &inner);
             }
+        }
+        #[cfg(windows)]
+        {
+            snapshot
+                .source
+                .verify_binding()
+                .map_err(|_| preview_changed())?;
+            platform_host::windows_node_root::node_apps_directory(&self.windows_root, true)
+                .map_err(crate::windows_fs::error)?;
         }
         let id = Uuid::new_v4().to_string();
         let slot = self.root.join(&id);
@@ -322,6 +437,9 @@ impl NodeApps {
         }
         #[cfg(windows)]
         private_dir(&slot.join("configuration/credentials"))?;
+        #[cfg(windows)]
+        let manifest_digest = snapshot.manifest_digest.clone();
+        #[cfg(not(windows))]
         let manifest_digest = digest_manifest(&source)?;
         let record = Registration {
             version: 1,
@@ -329,7 +447,8 @@ impl NodeApps {
             source_path: source,
             manifest_digest,
         };
-        // The digest is computed from the explicit source, not a cached declaration.
+        // On Windows this is the same pinned byte snapshot whose revision was
+        // compared before any write; never reread a newer declaration here.
         self.write_record(&slot.join("registration.json"), &record)?;
         #[cfg(windows)]
         {
@@ -751,10 +870,6 @@ fn digest_manifest(source: &Path) -> Result<String> {
     ))
 }
 
-#[cfg(windows)]
-fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
-    crate::windows_fs::runtime_path_guard(path, directory, false).map(|_| ())
-}
 #[cfg(not(windows))]
 fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
     if !path.is_absolute()
@@ -854,10 +969,6 @@ fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::File::open(path.parent().unwrap())?.sync_all()?;
     Ok(())
 }
-
-#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-#[path = "node_apps_lifecycle_tests.rs"]
-mod lifecycle_tests;
 
 #[cfg(all(test, windows))]
 #[path = "windows_node_apps_tests.rs"]

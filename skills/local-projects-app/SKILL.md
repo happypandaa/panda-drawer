@@ -11,7 +11,7 @@ description: 接管、修改和验证 Local Projects 平台内的业务应用。
 
 ## 先识别环境、接入类型与窗口约束
 
-默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。内置 Node 只负责运行，不附 npm 或用户端源码构建／依赖安装流程。
+默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node，登记和启动不安装依赖。Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建入口；用平台 `env doctor` 核对实际工具，保留已有显式本机选择，失效不自动回退。构建选择不影响应用运行 Node。另有私有 Git 工具选择与诊断，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；现有 project-v1 已在独立候选中准备依赖和构建，公开仓库获取已提供独立命令；已接本机源码保存、历史列表及新建定制分支；Node 安装候选可准备生产依赖，仍需原生明确确认安装；另有显式源码取回与中断处理；认证尚未接入。
 
 Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Python、Docker、数据库服务器或额外 CLI。确有外部环境要求时，在选型前说明，分别写明本机软件与在线账号／Key 的准备、用途和缺失影响；声明不代表平台已经支持。具体环境、交付与当前构建边界同样在下述随附约束中，先读后选方案。
 
@@ -111,7 +111,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 网页附件通过 SDK `files` 接口保存和读取。数据库保存相对 `data/attachments/` 的逻辑路径，不保存临时访问 URL。用户素材不放进 `app/public/` 或 `dist/`。SQL 与附件上传不是一个事务，业务流程需处理部分成功；SDK 的具体调用及限制见项目 `docs/platform.md`。
 
-## 导入导出、复制和回收站
+## 导入导出、复制、直接删除与旧回收站
 
 仅在用户任务涉及这些操作时使用；正常编辑项目不需要先复制或删除。先核对当前 CLI 帮助，旧安装包可能不支持 M4。所有变更返回任务 ID，等待原任务最终状态；写入响应丢失时查询任务和项目，不自动再次复制、导入或删除。
 
@@ -125,13 +125,19 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 "$PROJECT_CLI" trash restore --trash "$TRASH_ID" --json
 ```
 
-导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，已有文件只有显式 `overwrite: true` 才覆盖；导入为 `{"archivePath":"/绝对路径/project.zip","mode":"original"}` 或 `mode: "copy"`，可选 `name`。`copy.json` 可指定副本名称。维护中的导出、复制、删除须传本轮 `maintenanceId` 或 `--maintenance`。暂停外部直接文件写入后再做完整快照。
+导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，已有文件只有显式 `overwrite: true` 才覆盖；普通导入为 `{"archivePath":"/绝对路径/project.zip"}`，省略 `mode` 默认 `copy`，每次生成独立新 ID，允许重复获取；只有明确恢复归档身份才传 `mode: "original"`，可选 `name`。`copy.json` 可指定副本名称。维护中的导出、复制、删除须传本轮 `maintenanceId` 或 `--maintenance`。暂停外部直接文件写入后再做完整快照。
 
 原 ID 导入不能覆盖活跃项目、回收站或登记中的同 ID；副本得到新平台 ID，但业务主键、业务 UUID 和附件名保持。完成后使用返回的新 ID 和 `project handoff` 核对项目根，不依赖复制过来的业务 README 内旧路径或旧 ID。平台不会全局重写用户文字，也不因复制升级 SDK。已有可复用网页无需 Node 即可打开。
 
 维护/未知快照导入或复制后有独立的维护 ID 和新项目基线，原有待构建要求继续保留。任务返回 `registered_maintenance_not_ready` 时，项目已登记但基线未成功；查询该项目的维护状态，以同一维护 ID 重试基线，不重新导入制造另一个副本。确认 `readyForChanges` 后才修改。
 
-`project delete` 先完整移入回收站；恢复保留原 ID 并推进页面代次。坏库恢复保留字节，保持维护阻断而不创建空数据库。用户明确要求永久清除选定回收项时使用 `trash purge --trash "$TRASH_ID" --json`；它不删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 表示部分清除，不能再承诺完整恢复；检查原任务和回收项后再处理。
+2026-10-23 当前删除规则：`project delete` 直接永久删除选中实例的源码、网页、数据库、附件等项目目录内容，不进入平台或系统回收站，无法撤销。执行前核对项目 ID、实际目录和永久删除范围，并确认用户要求删除该实例；不要将其作为编辑、导入冲突或验证的例行收尾。历史备份、外部 ZIP、旧回收项及受保护恢复证据继续保留。部分失败或结果未知时查看原任务与残留，不承诺可以恢复、不自动重放删除。
+
+删除 JSON 可显式给出已核对的 `expectedDocumentEpoch`，CLI 不替换该值；省略时先只读查询当前 `project info.documentEpoch` 再绑定提交。读取失败或身份缺失时不会删除；过期身份由服务拒绝，不重新读取身份来自动重试永久删除。HTTP 直接调用必须自行提供该字段，不允许无绑定删除。
+
+`trash list/info/restore/purge` 仅兼容旧版本留下的回收项，不表示新删除可恢复。旧项恢复保留原 ID 并推进页面代次；坏库恢复保留字节并阻断业务，不创建空库。只有用户明确要求永久清除选定旧回收项才使用 `trash purge --trash "$TRASH_ID" --json`；它不连带删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 需核对原任务和残留，不能承诺完整恢复。
+
+Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 Node CLI 删除入口。受管安装删除其登记、程序代次、私有配置／秘密、数据和缓存；外部目录引用只删除平台登记与私有配置／数据／缓存，整个外部目录保留。独立来源、安装证据、旧运行恢复记录及删除回执保留，不手工递归清空 Node 槽。
 
 ## 工作区迁移后的继续工作
 
@@ -145,8 +151,8 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 1. 根据用户需求修改业务源码，设计可用的空状态、加载状态、表单校验、保存反馈和错误恢复。无需 AI 在线才能完成日常操作。
 2. 需要新依赖时有意修改 `app/package.json`，用 npm 更新并保留对应锁文件。不要删除锁文件绕过安装错误，也不要用不同内容覆盖同版本 SDK 包。SDK 升级应明确更新版本、vendor、锁文件和说明。
-3. 用 `env doctor --json` 检查**桌面服务实际选用**的 Node/npm。当前支持 Node `^22.12.0 || ^24.0.0`，推荐 24 LTS，系统自行安装；不是任意更高主版本都已支持。缺少 Node 影响构建，不影响已发布网页和数据操作。
-4. 提交平台构建，再检查任务结果和日志。构建脚本必须接受 `--outDir ABSOLUTE_DIRECTORY`；平台会在需要时执行 `npm ci`，构建到暂存目录并验证后发布。不要自行向 `dist/` 拷贝产物，也不要在构建中操作业务数据或启动常驻进程。
+3. 用 `env doctor --json` 检查**桌面服务实际选用**的 Node/npm。当前支持 Node `^22.12.0 || ^24.0.0`，推荐 24 LTS；有受管资源的环境默认使用配套工具，已有显式本机路径优先且失效不回退。不是任意更高主版本都已支持。缺少构建工具影响构建，不影响已发布网页和数据操作。
+4. 提交平台构建，再检查任务结果和日志。构建脚本必须接受 `--outDir ABSOLUTE_DIRECTORY`；平台复制 `sourceDir` 内普通源码，每次在独立候选执行 `npm ci`，构建到暂存目录并验证后发布。不复用或修改原源码 `node_modules`；只支持源码目录内 file/workspace 依赖，候选不带根清单、数据或 Git，脚本不能假设它们存在。候选不是系统权限沙箱。不要自行向 `dist/` 拷贝产物，也不要在构建中操作业务数据或启动常驻进程。
 
 ```sh
 "$PROJECT_CLI" env doctor --json
@@ -171,7 +177,25 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 ## 当前能力与交接
 
-当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+
+`env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机源码保存、历史列表、新建定制分支和源码取回有独立命令，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
+
+需要检查指定公开仓库时，明确执行 `env git check --url https://github.com/owner/repository.git --json`；也支持标准 Gitee HTTPS 仓库地址。检查在 20 秒执行预算内匿名读取 HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果绑定该地址与本次时间，不改变 `doctor` 的认证未验证状态；`readable-no-head` 不表示仓库为空。不要把远端检查加入普通离线工具诊断，不将其扩为 SSH／私有仓库认证、仓库获取或完整路线已交付。
+
+实际源码获取使用 `source acquire --url https://github.com/owner/repository.git --json`（也支持 Gitee），返回异步任务；`task wait --task TASK_ID --json` 等待最终结果。`source list --json`、`source get --source SOURCE_ID --json` 查看下载来源、精确提交和候选目录；`source inspect --path /绝对路径 --json` 仅检查本机声明。明确接入本机源码副本用 `source capture --path /绝对路径 [--name 名称] --json`：按路径排除已知数据、凭据、依赖、Git 控制与本机状态，不能通用识别任意文件中的秘密。`source cancel --task TASK_ID --json` 只是请求取消，继续核对最终状态。下载／复制不安装或运行代码，不创建业务项目；失败和中断现场保留，重试是新目录。Node 受管安装和更新另在原生管理窗口准备并确认，没有 Node 安装 HTTP／CLI 提交入口；通用应用包和私有认证仍未开放，不以候选ID调用数据库。
+
+明确保存 project-v1 源码时，先用 `project git status --project PROJECT_ID --json` 检查范围、排除项、改动和问题；只支持项目根普通标准仓库，已有 app 子仓库／父仓库不自动搬迁。若 `canInitialize:true`，明确执行 `project git init --project PROJECT_ID --input FILE --json`，输入含最新 `expectedSnapshot` 和 `initialBranch:"main"`，等待最终成功后重新读取状态。
+
+保存用 `project git save --project PROJECT_ID --input FILE --json`，完整输入含最新 `expectedSnapshot`、明确的 `expectedHead`（尚无提交则 JSON null）、`message`、`author:{name,email}`。作者必须来自用户明确提供或会话已确认的信息，不猜身份、不读写全局身份；缺作者先保留待保存内容。`canSave:false` 时处理报告的问题后重新检查，不强制重置、不覆盖暂存内容。不将整个项目目录直接加入提交。
+
+返回任务后通过 `task get/wait/logs` 核对最终结果，取消用 `project git cancel --project PROJECT_ID --task TASK_ID --json`，请求取消不表示提交未发生。`operationOutcome:committed` 表示已提交但可能收尾需检查，`unknown` 需保留现场核对，不能自动重试。此步骤保存源码开发材料，不包含活库、附件、配置、依赖或运行产物；数据库快照仍未提供，不自动推送。任意文件内的秘密不能通用识别，提交前仍须核对明确范围。
+
+`project git versions --project PROJECT_ID --limit 50 --json` 只读当前 HEAD 可达的本机历史；范围1–100、默认50，`hasMore` 表示更早记录未显示，不取回文件或联网。明确创建定制分支时，先重新读取状态，要求 `canCreateBranch:true`；调用 `project git branch-create --project PROJECT_ID --input FILE --json`，输入完整包含新分支短名 `name`、最新 `expectedHead`、`expectedBranch` 和 `expectedSnapshot`，等待任务最终结果。此操作只在当前干净版本创建并指向新分支，保留源码／索引／业务数据／当前产物，不覆盖已有分支。仅分支创建要求Git2.56.0；工具不支持时按 `branchCreationIssue` 说明处理，不擅自换工具。分支创建后再开始业务修改；已有分支切换、合并不在当前入口范围；旧源码取回是下述独立显式操作。
+
+用户明确要取回已保存源码时，先停止对该项目的外部编辑，保留并保存现有改动。用 `project git source-restore-preview --project PROJECT_ID --input FILE --json`，输入 `targetCommit` 为完整40位小写SHA-1本机提交号；核对允许范围、逐文件增删改和 `canApply`。不接受任意revision／SHA-256，不联网取对象，目标清单必须逐字节一致。确认后调用 `project git source-restore --project PROJECT_ID --input FILE --json`，完整输入来自本次预览的 `targetCommit`、`expectedHead`、`expectedBranch`、`expectedSnapshot`、`expectedPlanDigest`；等待同一任务最终结果，不自动重发。
+
+取回只将允许源码放回工作树作为待保存改动；不改变HEAD／索引，不回退活库、附件、当前程序，不自动commit/build。取消或断开可能已改变部分源码：用 `project git source-recovery --project PROJECT_ID --json` 读取真实现场。仅在允许动作且当前任务已授权该处理时，调用 `project git source-recover --project PROJECT_ID --input FILE --json`，输入当前 `restoreTaskId`、`expectedPlanDigest`、`expectedJournalDigest`、`action:"continue"` 或 `"undo"`。新结果到来前不重试，不删除或修改journal，不用强制重置解除保护。未完成现场暂停开发写入／新的AI接手，当前网页、SQL与附件继续使用；遇第三种文件状态保留双方内容并说明阻断。成功取回后按需求再保存版本、构建和验证数据。
 
 当前开发版资源限额标记为 `internalTest`，查询运行时限制并处理超限错误，不在业务说明中承诺这些数值是正式产品默认值。联网仅按项目 `runtimeRequirements` 声明的公开接口使用；不把私有 API 密钥、管理令牌放进前端、清单或数据库。录音、拍照等能力还需要浏览器权限和实际环境支持，声明本身不等于授权成功。
 

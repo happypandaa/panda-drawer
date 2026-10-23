@@ -1,5 +1,7 @@
 #[path = "browser_download.rs"]
 mod browser_download;
+#[path = "codex_handoff.rs"]
+mod codex_handoff;
 #[path = "node_windows.rs"]
 mod node_windows;
 #[path = "window_sizes.rs"]
@@ -105,6 +107,7 @@ enum PathChoice {
     Workspace,
     Icon,
     Nodeapp,
+    Source,
 }
 
 #[tauri::command]
@@ -143,10 +146,17 @@ async fn choose_path(
                 let _ = sender.send(path);
             }),
         PathChoice::Nodeapp => dialog
-            .set_title("选择包含 local-app.json 的 Node 应用源码目录")
+            .set_title("选择本地项目文件夹（空目录或已有项目）")
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
+        PathChoice::Source => {
+            dialog
+                .set_title("选择要检查的项目源码目录")
+                .pick_folder(move |path| {
+                    let _ = sender.send(path);
+                })
+        }
     }
     receiver
         .await
@@ -814,8 +824,311 @@ async fn workspace_migrate(
     state.handle.workspace_migrate(input).await
 }
 
+#[tauri::command]
+async fn source_list(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_list().await
+}
+
+#[tauri::command]
+async fn project_git_status(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_status(&id).await
+}
+#[tauri::command]
+async fn project_git_versions(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    limit: u32,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_versions(&id, limit).await
+}
+#[tauri::command]
+async fn project_git_branch_create(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitCreateBranchInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_create_branch(&id, input).await
+}
+#[tauri::command]
+async fn project_git_source_restore_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitSourceRestorePreviewInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .project_git_source_restore_preview(&id, input)
+        .await
+}
+#[tauri::command]
+async fn project_git_source_restore_apply(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitSourceRestoreApplyInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .project_git_source_restore_apply(&id, input)
+        .await
+}
+#[tauri::command]
+async fn project_git_source_restore_status(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_source_restore_status(&id).await
+}
+#[tauri::command]
+async fn project_git_source_restore_recover(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitSourceRestoreRecoverInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .project_git_source_restore_recover(&id, input)
+        .await
+}
+#[tauri::command]
+async fn project_git_initialize(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitInitInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_initialize(&id, input).await
+}
+#[tauri::command]
+async fn project_git_save(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitSaveInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_save(&id, input).await
+}
+#[tauri::command]
+async fn project_git_cancel(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.project_git_cancel(&id, &task_id).await
+}
+#[tauri::command]
+async fn source_info(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_info(&source_id).await
+}
+#[tauri::command]
+async fn source_inspect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .source_inspect(PathBuf::from(source_path))
+        .await
+}
+#[tauri::command]
+async fn source_acquire(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::source_acquisition::AcquireSourceInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_acquire(input).await
+}
+#[tauri::command]
+async fn source_cancel(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_cancel(&task_id).await
+}
+
+#[tauri::command]
+async fn source_capture(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::source_acquisition::CaptureLocalSourceInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.source_capture(input).await
+}
+#[tauri::command]
+async fn node_install_prepare(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::node_install_tasks::PrepareNodeInstallInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .handle
+        .node_install_prepare(state.node_apps.clone(), input)
+        .await
+}
+#[tauri::command]
+async fn node_install_candidate(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    candidate_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.node_install_candidate(&candidate_id)
+}
+#[tauri::command]
+async fn node_install_issues(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    Ok(state.handle.node_install_issues())
+}
+#[tauri::command]
+async fn node_install_list(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.node_install_list()
+}
+#[tauri::command]
+async fn node_install_cancel(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.node_install_cancel(&task_id)
+}
+#[tauri::command]
+async fn node_install_apply(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    candidate_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::apply_install(&app, &state, &candidate_id).await
+}
+
 // These commands deliberately belong only to the native manager. Node pages
 // receive neither this command surface nor the private backend credentials.
+#[tauri::command]
+async fn node_app_directory_inspect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let apps = state.node_apps.clone();
+    tokio::task::spawn_blocking(move || apps.inspect_directory(&PathBuf::from(source_path)))
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "LOCAL_DIRECTORY_CHECK_FAILED",
+                "目录检查未完成，请重新检查。",
+            )
+        })?
+}
+#[tauri::command]
+async fn node_app_directory_initialize(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+    input: platform_core::node_apps::DirectoryInitializeInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "SERVICE_STOPPING",
+            "平台正在退出，请稍后重新检查目录。",
+        ));
+    }
+    let apps = state.node_apps.clone();
+    tokio::task::spawn_blocking(move || {
+        if app
+            .state::<AppState>()
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "平台正在退出，尚未开始初始化，请稍后重新检查目录。",
+            )
+            .outcome("not_started"));
+        }
+        apps.initialize_directory(&PathBuf::from(source_path), input)
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "LOCAL_DIRECTORY_INITIALIZE_INTERRUPTED",
+            "初始化结果未能确认，请保留目录中的文件并重新检查；不会自动重复初始化。",
+        )
+        .outcome("unknown")
+    })?
+}
+#[tauri::command]
+async fn node_app_directory_register(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+    expected_revision: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "SERVICE_STOPPING",
+            "平台正在退出，请稍后重新检查目录。",
+        ));
+    }
+    state
+        .node_apps
+        .register_directory(PathBuf::from(source_path), expected_revision)
+        .await
+}
 #[tauri::command]
 async fn node_app_inspect(
     window: tauri::WebviewWindow,
@@ -830,9 +1143,10 @@ async fn node_app_register(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     source_path: String,
+    expected_revision: String,
 ) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    state.node_apps.register(PathBuf::from(source_path)).await
+    // Legacy IPC callers must pass through the same reviewed-directory check.
+    node_app_directory_register(window, state, source_path, expected_revision).await
 }
 #[tauri::command]
 async fn node_app_list(
@@ -841,6 +1155,26 @@ async fn node_app_list(
 ) -> Result<Vec<Value>, ApiError> {
     require_manager(&window)?;
     state.node_apps.list().await
+}
+#[tauri::command]
+async fn node_app_delete_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.delete_preview(&app_id).await
+}
+#[tauri::command]
+async fn node_app_delete(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    input: platform_core::node_apps::DeleteNodeAppInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    node_windows::delete(&app, &state, &app_id, input).await
 }
 #[tauri::command]
 async fn node_app_configuration(
@@ -1025,6 +1359,45 @@ async fn environment_node_set(
 }
 
 #[tauri::command]
+async fn environment_git_doctor(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.git_environment().await
+}
+
+#[tauri::command]
+async fn environment_git_set(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    git_path: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let path = match git_path {
+        Value::Null => None,
+        Value::String(path) => Some(path),
+        _ => {
+            return Err(ApiError::new(
+                "INVALID_GIT_PATH",
+                "gitPath must be an absolute path string or null",
+            ))
+        }
+    };
+    state.handle.set_git_path(path).await
+}
+
+#[tauri::command]
+async fn environment_git_remote_check(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    input: platform_core::git_remote::GitRemoteCheckInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.handle.check_git_remote(input).await
+}
+
+#[tauri::command]
 async fn project_handoff(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1032,6 +1405,27 @@ async fn project_handoff(
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     state.handle.handoff(&project_id).await
+}
+
+#[tauri::command]
+async fn project_open_codex(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    expected_project_root: String,
+    expected_instance_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.editor_handoff_lease(
+        &project_id,
+        std::path::Path::new(&expected_project_root),
+        &expected_instance_id,
+    )?;
+    let app = codex_handoff::installed_app().await?;
+    // Recheck after signature validation: closing/migration may have started.
+    lease.validate()?;
+    codex_handoff::open(&app, &lease.project_root).await?;
+    Ok(serde_json::json!({"projectRoot":lease.project_root,"requested":true}))
 }
 
 struct InstalledResources {
@@ -1233,7 +1627,10 @@ pub fn run() {
         }))
         .invoke_handler(tauri::generate_handler![
             bootstrap_info,
-            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
+            source_list,source_info,source_inspect,source_acquire,source_cancel,
+            source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
+            project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_cancel,
+            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,
@@ -1263,7 +1660,11 @@ pub fn run() {
             task_logs,
             environment_doctor,
             environment_node_set,
-            project_handoff
+            environment_git_doctor,
+            environment_git_set,
+            environment_git_remote_check,
+            project_handoff,
+            project_open_codex
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),

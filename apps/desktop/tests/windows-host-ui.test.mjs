@@ -670,6 +670,41 @@ test('Ready Windows roots share Node and web counts, search and filters without 
   assert.deepEqual(nodeCalls().map(call => call.command), ['node_app_list']);
 });
 
+test('Main-only acquisition, install, directory initialization, Git, Codex and Node deletion stay gated on Windows', async () => {
+  // Managed metadata can arrive in an observation without granting a host the
+  // corresponding business commands. These replies still do not touch disk.
+  const node = nodeSample({ installation: { kind: 'managed', generation: 2, sourceId: 'synthetic-source', sourceDigest: 'synthetic-digest' } });
+  await setup(status('ready', [project()]), async command => {
+    if (command === 'node_app_list') return [node];
+    if (command === 'node_app_configuration') return node;
+    throw new Error('Unexpected Node command: ' + command);
+  });
+  await openActions();
+  assert.equal(findButton('获取项目源码'), undefined);
+  await projectMenu(node.name);
+  const deletion = document.querySelector('[role="menuitem"][aria-label^="删除项目"]');
+  assert.equal(deletion.disabled, true);
+  assert.ok(deletion.title.trim());
+  await clickElement(deletion);
+  await key('Escape');
+  await details(node.name);
+  assert.equal(findButton('删除项目', dialog()), undefined);
+  assert.equal(findButton('选择更新来源或查看候选', dialog()), undefined);
+  assert.equal(dialog().querySelector('.node-install-panel, .node-delete-confirmation'), null);
+  assert.match(dialog().textContent, /完整外部分发包、迁移、备份与回收流程尚未接入/);
+  await click('应用配置', dialog());
+  await click('运行状态', dialog());
+  await key('Escape');
+  await beginNodeAdd();
+  assert.ok(findButton('选择应用目录', dialog()));
+  assert.equal(findButton('生成起始项目', dialog()), undefined);
+  assert.equal(dialog().querySelector('.local-directory-panel'), null);
+  await key('Escape');
+  await openSettings();
+  for (const selector of ['.radio-git-details', '.git-environment', '.handoff-card', '.source-acquisition-panel', '.node-install-panel']) assert.equal(document.querySelector(selector), null, selector);
+  assert.deepEqual(commands, ['project_status', 'node_app_list', 'node_app_configuration']);
+});
+
 test('Failed Node reads retain samples and disable Node actions until an explicit successful refresh', async () => {
   const node = nodeSample();
   await setup(status('ready', [project()]), async () => [node]);
@@ -742,7 +777,7 @@ test('Pending Node entry excludes duplicate starts and same-tick web, refresh an
 
 test('Windows source selection previews first, registers once and opens configuration without starting', async () => {
   const node = nodeSample();
-  const preview = { runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+  const preview = { expectedRevision: 'synthetic-reviewed-source-revision', runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
   await setup(status('ready', [project()]), async command => {
     if (command === 'node_app_list') return [];
     if (command === 'node_app_choose_source') return node.sourcePath;
@@ -759,9 +794,57 @@ test('Windows source selection previews first, registers once and opens configur
   assert.match(dialog().textContent, /登记不读取旧的 .env，也不会自动运行应用/);
   assert.equal(nodeCalls().some(call => call.command === 'node_app_register'), false);
   await click('登记此应用', dialog());
-  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath } });
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath, expectedRevision: preview.expectedRevision } });
   assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
   assert.equal(cards().length, 2);
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_start'), false);
+});
+
+for (const invalidRevision of [undefined, '', '   ', null, 42]) {
+  test(`Windows cannot register a source preview without a valid revision (${JSON.stringify(invalidRevision)})`, async () => {
+    const node = nodeSample();
+    await setup(status('ready'), async command => {
+      if (command === 'node_app_list') return [];
+      if (command === 'node_app_choose_source') return node.sourcePath;
+      if (command === 'node_app_inspect') return { expectedRevision: invalidRevision, runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+      throw new Error('Unexpected Node command: ' + command);
+    });
+    await beginNodeAdd();
+    await click('选择应用目录', dialog());
+    assert.match(dialog().textContent, /目录核对未返回有效修订/);
+    assert.match(dialog().textContent, /synthetic-node-source/);
+    assert.equal(findButton('登记此应用', dialog()), undefined);
+    assert.equal(nodeCalls().some(call => call.command === 'node_app_register'), false);
+  });
+}
+
+test('Changed Windows source revisions revoke the reviewed preview and require another explicit selection before registration', async () => {
+  const node = nodeSample(); let previews = 0; let registrations = 0;
+  await setup(status('ready'), async command => {
+    if (command === 'node_app_list') return [];
+    if (command === 'node_app_choose_source') return node.sourcePath;
+    if (command === 'node_app_inspect') return { expectedRevision: `synthetic-review-${++previews}`, runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+    if (command === 'node_app_register') {
+      if (++registrations === 1) throw { code: 'NODE_APP_PREVIEW_CHANGED', message: '目录身份或声明已变化，请重新检查后登记。', details: { operationOutcome: 'not_started' } };
+      return node;
+    }
+    throw new Error('Unexpected Node command: ' + command);
+  });
+  await beginNodeAdd();
+  await click('选择应用目录', dialog());
+  await click('登记此应用', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-review-1' } });
+  assert.match(dialog().textContent, /目录身份或声明已变化/);
+  assert.match(dialog().textContent, /synthetic-node-source/);
+  assert.equal(dialog().querySelector('.node-inspection-preview'), null);
+  assert.equal(findButton('登记此应用', dialog()), undefined);
+  assert.equal(registrations, 1);
+  await click('选择应用目录', dialog());
+  assert.equal(registrations, 1, 'A fresh preview cannot replay a rejected registration');
+  await click('登记此应用', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-review-2' } });
+  assert.equal(registrations, 2);
+  assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
   assert.equal(nodeCalls().some(call => call.command === 'node_app_start'), false);
 });
 
@@ -794,7 +877,7 @@ test('Unknown registration preserves its source and does not register again when
   await setup(status('ready', [project()]), async command => {
     if (command === 'node_app_list') return registered ? [node] : [];
     if (command === 'node_app_choose_source') return node.sourcePath;
-    if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'fixture', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+    if (command === 'node_app_inspect') return { expectedRevision: 'synthetic-unknown-registration-review', runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'fixture', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
     if (command === 'node_app_register') { registered = true; throw { message: '合成登记响应中断', details: { operationOutcome: 'unknown' } }; }
     throw new Error(command);
   });
@@ -802,6 +885,7 @@ test('Unknown registration preserves its source and does not register again when
   await click('选择应用目录', dialog());
   await click('登记此应用', dialog());
   assert.match(dialog().textContent, /synthetic-node-source/);
+  assert.ok(dialog().querySelector('.node-inspection-preview'), 'An unknown mutation retains its reviewed evidence for reconciliation');
   assert.equal(findButton('登记此应用', dialog()).disabled, true);
   await click('登记此应用', dialog());
   assert.equal(nodeCalls().filter(call => call.command === 'node_app_register').length, 1);

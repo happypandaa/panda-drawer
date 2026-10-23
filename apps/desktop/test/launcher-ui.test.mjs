@@ -167,7 +167,7 @@ test('Menu delegates details and deletion only to existing parent callbacks', as
 
 test('Maintenance and task statuses remain distinct, and each action retains its own gate', async () => {
   let enters = 0;
-  await render(ProjectCard, { blocked: true, detailsDisabled: true, onEnter: () => enters++, status: { mode: 'maintenance', recoveryRequired: false }, task: { final: false } });
+  await render(ProjectCard, { blocked: true, detailsDisabled: true, onEnter: () => enters++, status: { mode: 'maintenance', recoveryRequired: false }, task: { type: 'build', status: 'running', final: false } });
   assert.equal(enter().disabled, true);
   assert.match(description(), /维护中/);
   assert.match(description(), /任务进行中/);
@@ -185,6 +185,43 @@ test('Maintenance and task statuses remain distinct, and each action retains its
   assert.equal(menu(), null);
   await key(enter(), 'ContextMenu');
   assert.equal(menu(), null);
+});
+
+test('A background space scan has consistent accessible and visible status without blocking entry, and clears when final', async () => {
+  let enters = 0;
+  const task = { taskId: 'disposable_space_scan', projectId: fixture.id, type: 'storageScan', status: 'running', final: false, phase: 'scanning', result: null, error: null };
+  await render(ProjectCard, { task, onEnter: () => enters++ });
+  assert.equal(enter().disabled, false);
+  assert.equal(enter().getAttribute('aria-busy'), 'false');
+  for (const text of [description(), tile().title, enter().title]) {
+    assert.match(text, /正在统计空间/);
+    assert.doesNotMatch(text, /任务进行中/);
+  }
+  await click(enter());
+  assert.equal(enters, 1);
+  await openMenu();
+  assert.equal(menu().querySelector('.launcher-menu-status').textContent, '正在统计空间');
+  for (const status of ['succeeded', 'failed', 'interrupted']) {
+    await render(ProjectCard, { task: { ...task, status, final: true } });
+    assert.doesNotMatch(description(), /正在统计空间|任务进行中/);
+    assert.doesNotMatch(tile().title, /正在统计空间|任务进行中/);
+    assert.equal(menu().querySelector('.launcher-menu-status'), null);
+  }
+});
+
+test('Space scanning preserves maintenance and recovery warnings and their entry gates', async () => {
+  for (const [status, warning] of [[{ mode: 'maintenance', recoveryRequired: false }, '维护中'], [{ mode: 'normal', recoveryRequired: true }, '恢复待处理']]) {
+    await render(ProjectCard, { blocked: true, status, task: { type: 'storageScan', status: 'queued', final: false } });
+    assert.equal(enter().disabled, true);
+    for (const text of [description(), tile().title, enter().title]) {
+      assert.ok(text.includes(warning));
+      assert.match(text, /正在统计空间/);
+      assert.doesNotMatch(text, /任务进行中/);
+    }
+    await openMenu();
+    assert.equal(menu().querySelector('.launcher-menu-status').textContent, `${warning} · 正在统计空间`);
+    assert.equal(document.querySelector('[aria-label="查看项目「My actual app」的详情"]').disabled, false);
+  }
 });
 
 test('Unbuilt and recovery projects keep accessible status, keyboard details and cannot enter', async () => {
@@ -222,8 +259,8 @@ test('Node hexagon stays visible when stopped or failed; missing configuration c
   assert.equal(enters, 1);
   await openMenu();
   assert.match(menu().textContent, /Node 服务项目/);
-  assert.equal(menu().querySelectorAll('[role="menuitem"]').length, 1);
-  assert.doesNotMatch(menu().textContent, /删除项目/);
+  assert.equal(menu().querySelectorAll('[role="menuitem"]').length, 2);
+  assert.match(menu().textContent, /删除项目/);
 });
 
 test('Pending Node entry disables opening and details while keeping accessible configuration status', async () => {

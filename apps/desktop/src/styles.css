@@ -1,3 +1,7 @@
+@import './ProjectDetails.css';
+@import './ProjectStoragePanel.css';
+@import './ProjectLifecyclePanel.css';
+
 :root {
   --surface: #fff;
   --border: #e3e4dc;
@@ -224,6 +228,10 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid #77776e; outlin
 .handoff-card { background:white; border:1px solid #e5e3df; border-radius:10px; padding:24px; margin-bottom:24px; }
 .handoff-card textarea { width:100%; box-sizing:border-box; border:1px solid #ddd; border-radius:7px; padding:12px; resize:vertical; font:11px/1.7 ui-monospace, monospace; color:#444; background:#faf9f7; }
 .build-environment { margin-bottom:22px; }
+.git-environment { margin-bottom:22px; }
+.radio-git-details { margin-top:12px; }
+.git-environment > p, .git-environment .environment-status, .git-environment .node-path-form, .git-authentication { margin-inline:24px; }
+.git-environment .node-path-form, .git-authentication { margin-bottom:24px; }
 .environment-status { display:flex; flex-wrap:wrap; align-items:center; gap:16px; font-size:11px; color:#777; margin:18px 0; }
 .environment-issue { font-size:12px; line-height:1.7; color:#8a5836; overflow-wrap:anywhere; }
 .node-path-form { margin-top:20px; padding-top:20px; border-top:1px solid #eceae7; }
@@ -784,6 +792,18 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .node-source-details > summary { cursor: pointer; }
 .node-source-details p { line-height: 1.9; margin: 12px 0; }
 .node-source-details code, .node-selected-source { display: block; overflow-wrap: anywhere; line-height: 1.8; }
+.object-layout-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--radio-line, #e9ede6); color: var(--radio-secondary, #758070); font-size: 13px; line-height: 1.8; }
+.object-layout-panel > summary { cursor: pointer; color: var(--radio-secondary, #7c8670); padding-bottom: 10px; }
+.object-layout-panel h4 { margin: 20px 0 6px; color: var(--radio-text, #3e4e38); font-size: 13px; }
+.object-layout-panel p { margin: 8px 0; }
+.object-layout-paths { margin: 8px 0 16px; }
+.object-layout-paths > div { margin: 12px 0; }
+.object-layout-paths dt { color: var(--radio-muted, #939c8c); font-size: 12px; }
+.object-layout-paths dd { margin: 3px 0 0; }
+.object-layout-panel code { font-size: 12px; overflow-wrap: anywhere; user-select: text; }
+.object-layout-markers { padding-left: 20px; }
+.object-layout-markers li { margin: 10px 0; }
+.object-layout-markers span { display: block; color: var(--radio-muted, #939c8c); font-size: 12px; }
 .node-add-dialog > p, .node-inspection-preview > p { font-size: 13px; color: #818b73; line-height: 1.9; }
 .node-selected-source { color: #7e8a70; padding: 14px; margin-top: 16px; border: 1px solid #e1e7d8; border-radius: 7px; background: #f8faf4; }
 .node-inspection-preview { border-top: 1px solid #e5eadc; padding-top: 18px; margin-top: 20px; }
@@ -1032,6 +1052,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .radio-notices { flex-shrink: 0; padding: 16px 32px 0; }
 .radio-notices:empty { display: none; }
 .radio-notices > :last-child { margin-bottom: 0; }
+.project-list-feedback { margin: 16px 32px 0; }
+.project-list-feedback:empty { display: none; }
+.project-list-feedback > strong { display: block; margin-bottom: 8px; font-size: 13px; }
+.project-list-feedback .notice { margin-bottom: 0; }
 .radio-task-indicator { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--radio-line); border-radius: 9px; color: var(--radio-secondary); background: var(--radio-surface); font-size: 12px; }
 .radio-task-indicator .text-button { padding: 2px 0; font-size: 12px; color: var(--radio-text); }
 .radio-settings-modal .radio-settings-tasks { margin: 12px 0; }
@@ -1252,6 +1276,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-footer { min-height: 32px; padding: 7px 20px; font-size: 9px; }
   .radio-workspace-view { padding: 22px 20px; }
   .radio-notices { padding: 12px 20px 0; }
+  .project-list-feedback { margin-inline: 20px; }
   .radio-main > .guide-disclosure, .radio-main > .recent-tasks { margin-inline: 20px; }
   .radio-main > .project-search-empty, .radio-main > .workspace-card { margin: 20px; }
   .radio-main > .workspace-location { padding-inline: 20px; }
@@ -1293,3 +1318,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .radio-settings-modal :is(.path-row dd, .runtime-details > div) { min-width: 0; }
 .radio-settings-modal :is(code, .path-row dd, .runtime-details code) { white-space: normal; overflow-wrap: anywhere; }
+
+.node-delete-confirmation { margin: 18px 0; }
+.node-delete-confirmation h3 { color: var(--danger, #ba3c3c); }
+.node-delete-paths { display: grid; gap: 6px; padding-left: 20px; }
+.node-delete-paths code { overflow-wrap: anywhere; word-break: break-word; }
+
+.local-directory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.local-directory-path, .local-directory-prompt, .local-directory-empty { display: grid; gap: 10px; margin: 16px 0; }
+.local-directory-path input, .local-directory-prompt textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.local-directory-prompt textarea { resize: vertical; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.local-directory-review { margin-top: 18px; }
