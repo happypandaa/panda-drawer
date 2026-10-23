@@ -308,6 +308,44 @@ test('Escape closes only the explanation and returns keyboard focus to its infor
   assert.equal(input('MODEL').value, 'keep this draft after Escape');
 });
 
+test('An entry failure switches away from configuration and unmounts its explanation without losing the draft or parent close guard', async () => {
+  const entered = deferred(); const calls = [];
+  const value = app({ state: 'running', runningRevision: 1 });
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_open');
+    return entered.promise;
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await change(input('MODEL'), 'draft retained after entry failure');
+  assert.equal(byText('进入项目').disabled, false, 'Returning to an already running app does not need to apply this draft');
+  await click(byText('进入项目'));
+  assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
+  assert.equal(input('MODEL').disabled, true);
+  await click(byLabel('设置 MODEL说明'));
+  const explanation = document.querySelector('.node-field-help-modal');
+  assert.ok(explanation);
+  assert.equal(explanation.closest('[hidden]'), null);
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 2);
+  assert.ok(explanation.contains(document.activeElement));
+
+  await act(async () => entered.reject(new Error('Artificial entry focus failure')));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  assert.equal(document.querySelector('.node-field-help-modal'), null, 'A hidden configuration panel cannot retain a child modal on the stack');
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.match(document.querySelector('[role=alert]').textContent, /Artificial entry focus failure/);
+  assert.equal(document.activeElement.closest('[hidden], [inert]'), null);
+  await click(byText('应用配置'));
+  assert.equal(document.querySelector('.node-field-help-modal'), null, 'Returning to configuration does not reopen the previous explanation');
+  assert.equal(input('MODEL').value, 'draft retained after entry failure');
+  assert.equal(input('MODEL').disabled, false);
+  await act(async () => document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  assert.ok(byLabel('关闭配置确认'));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  assert.equal(input('MODEL').value, 'draft retained after entry failure');
+  assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
+});
+
 test('Missing required fields use invalid controls while an incomplete configuration remains saveable', async () => {
   const calls = [];
   const configuration = { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY', 'REQUIRED'], canStart: false };

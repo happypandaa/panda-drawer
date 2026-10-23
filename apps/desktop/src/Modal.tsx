@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useRef } from 'react';
+import { createContext, useContext, useId, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
@@ -65,6 +65,9 @@ function registerModal(entry: ModalEntry) {
   return () => {
     const wasTop = entries.at(-1) === entry;
     const index = entries.indexOf(entry);
+    // Layout cleanup runs before React removes this portal from the DOM.
+    // Deactivate it before exposing the next dialog to accessibility clients.
+    entry.dialog.removeAttribute('aria-modal');
     if (index >= 0) entries.splice(index, 1);
     modalSessions.get(owner)?.sync();
     const top = entries.at(-1);
@@ -85,20 +88,53 @@ function retainModalSession(owner: Document) {
     const previousFocus = owner.activeElement;
     const previousOverflow = owner.body.style.overflow;
     const previousInert = new Map<Element, boolean>();
+    let inertSiblings = new Set<Element>();
+    let activePath = new Set<Element>();
     let count = 0;
     const top = () => modalStacks.get(owner)?.at(-1);
     function sync() {
       const active = top();
       if (!active) return;
-      for (const element of Array.from(owner.body.children)) {
-        if (!previousInert.has(element)) previousInert.set(element, element.hasAttribute('inert'));
-        if (element === active.layer) element.removeAttribute('inert');
-        else element.setAttribute('inert', '');
+      const path = new Set<Element>();
+      const siblings = new Set<Element>();
+      let modalRoot = active.dialog;
+      let current: Element | null = active.layer;
+      while (current && current !== owner.body) {
+        path.add(current);
+        const parent: Element | null = current.parentElement;
+        for (const sibling of Array.from(parent?.children ?? [])) {
+          if (sibling !== current) siblings.add(sibling);
+        }
+        if (parent?.matches('.modal-dialog[role="dialog"]')) modalRoot = parent as HTMLDivElement;
+        current = parent;
       }
+      // Nested dialogs stay inside the existing ARIA modal root. Switching
+      // sibling roots in WebKit can leave the entire accessibility tree empty.
+      modalStacks.get(owner)?.forEach((entry) => {
+        if (entry.dialog !== modalRoot) entry.dialog.removeAttribute('aria-modal');
+      });
+      // Restore branches owned by the preceding top dialog, then protect every
+      // sibling along the new active path without hiding any of its ancestors.
+      for (const element of inertSiblings) {
+        if (!siblings.has(element) && !previousInert.get(element)) element.removeAttribute('inert');
+      }
+      for (const element of activePath) {
+        if (!path.has(element) && previousInert.get(element)) element.setAttribute('inert', '');
+      }
+      for (const element of path) {
+        if (!previousInert.has(element)) previousInert.set(element, element.hasAttribute('inert'));
+        if (element.hasAttribute('inert')) element.removeAttribute('inert');
+      }
+      for (const element of siblings) {
+        if (!previousInert.has(element)) previousInert.set(element, element.hasAttribute('inert'));
+        if (!element.hasAttribute('inert')) element.setAttribute('inert', '');
+      }
+      inertSiblings = siblings;
+      activePath = path;
       modalStacks.get(owner)?.forEach((entry, index) => {
         entry.layer.style.zIndex = String(100 + index);
-        entry.dialog.setAttribute('aria-modal', String(entry === active));
       });
+      if (modalRoot.getAttribute('aria-modal') !== 'true') modalRoot.setAttribute('aria-modal', 'true');
     }
     function onKeyDown(event: KeyboardEvent) {
       const active = top();
@@ -125,7 +161,7 @@ function retainModalSession(owner: Document) {
       if (active && event.target instanceof Node && !active.dialog.contains(event.target)) active.heading.focus();
     }
     const observer = new MutationObserver(sync);
-    observer.observe(owner.body, { childList: true });
+    observer.observe(owner.body, { childList: true, subtree: true });
     owner.addEventListener('keydown', onKeyDown, true);
     owner.addEventListener('focusin', onFocusIn);
     owner.body.style.overflow = 'hidden';
@@ -168,7 +204,7 @@ export function Modal({ title, description, children, onClose, closeDisabled = f
     if (!current.closeDisabled && (!current.beforeClose || current.beforeClose())) current.onClose();
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!layer.current || !dialog.current || !heading.current) return;
     const owner = layer.current.ownerDocument;
     const releaseSession = retainModalSession(owner);
@@ -181,15 +217,16 @@ export function Modal({ title, description, children, onClose, closeDisabled = f
     };
   }, []);
 
-  return createPortal(
+  const contents = (
     <ModalParent.Provider value={identity.current}><div ref={layer} className="modal-layer" onClick={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
-      <div ref={dialog} className={`modal-dialog${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined}>
+      <div ref={dialog} className={`modal-dialog${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} role="dialog" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined}>
         <header className="modal-header">
           <div><h2 ref={heading} id={titleId} title={title} tabIndex={-1}>{title}</h2>{description && <p id={descriptionId}>{description}</p>}</div>
           <button className="icon-button modal-close" type="button" onClick={requestClose} disabled={closeDisabled} aria-label={`关闭${title}`}><X size={20} /></button>
         </header>
         <div className="modal-content">{children}</div>
       </div>
-    </div></ModalParent.Provider>, document.body,
+    </div></ModalParent.Provider>
   );
+  return parent ? contents : createPortal(contents, document.body);
 }
