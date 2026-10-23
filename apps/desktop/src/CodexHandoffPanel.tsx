@@ -1,4 +1,5 @@
-import { Copy, FolderOpen } from 'lucide-react';
+import { ChevronRight, Copy, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 export interface ProjectHandoff {
@@ -8,23 +9,29 @@ export interface ProjectHandoff {
 }
 export type HandoffAction = 'copy' | 'codex';
 
-export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, feedback }: {
+export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, feedback, children, buildAction }: {
   handoff: ProjectHandoff | null;
   action: HandoffAction | null;
   disabled: boolean;
   onPrepare: (action: HandoffAction) => void;
   onClear: () => void;
   feedback?: ReactNode;
+  children?: ReactNode;
+  buildAction?: ReactNode;
 }) {
-  return <section className="handoff-card" aria-labelledby="handoff-title">
-    <div className="section-heading"><div><h3 id="handoff-title">让 AI 继续开发</h3><p>一键复制软件介绍、当前项目目录和开发操作说明。粘贴给 AI 后，再告诉它你的需求。</p></div></div>
-    <div className="project-dialog-actions">
-      <button className="primary-button" disabled={disabled || action !== null} onClick={() => onPrepare('codex')}><FolderOpen size={16} />{action === 'codex' ? '正在准备并打开…' : '复制说明并在 Codex 打开'}</button>
-      <button className="refresh-button" disabled={disabled || action !== null} onClick={() => onPrepare('copy')}><Copy size={16} />{action === 'copy' ? '正在准备说明…' : '复制 AI 接手说明'}</button>
+  const [showHelp, setShowHelp] = useState(false);
+  return <section className="detail-actions" aria-label="应用操作与开发更新">
+    <div className="detail-action-row">
+      {children}
+      <div className="detail-development-actions" aria-label="开发与更新">
+        <button className="refresh-button detail-copy-prompt" disabled={disabled || action !== null} onClick={() => onPrepare('copy')}><Copy size={20} />{action === 'copy' ? '正在准备说明…' : '复制提示词'}</button>
+        <button className="refresh-button" disabled={disabled || action !== null} onClick={() => onPrepare('codex')}><ExternalLink size={20} />{action === 'codex' ? '正在准备并打开…' : '在 Codex 打开'}</button>
+        {buildAction}
+      </div>
     </div>
+    <div className="detail-action-hint"><p>想修改功能？把需求交给 AI，完成后构建更新。</p><button className="text-button" aria-expanded={showHelp || Boolean(handoff)} onClick={() => { if (showHelp || handoff) { setShowHelp(false); if (handoff) onClear(); } else setShowHelp(true); }}>{showHelp || handoff ? '收起交接说明' : '查看交接说明'}<ChevronRight size={16} /></button></div>
     {feedback}
-    <p className="project-help">Codex 需已安装在这台电脑上。此操作只在 Codex 新任务草稿中打开项目目录；请粘贴说明、补充需求后自行发送，不会自动提交任务。</p>
-    <p className="project-help">接收说明的 AI 需要能访问这台电脑上的项目目录。仅聊天的 AI 也能了解背景，但不能直接修改本机文件。</p>
+    {showHelp && <div className="detail-handoff-help"><p>Codex 需已安装在这台电脑上。打开后请粘贴说明、补充需求并自行发送。</p><p>接收说明的 AI 需要能访问这台电脑上的项目目录。仅聊天的 AI 可以了解背景，但不能直接修改本机文件。</p></div>}
     {handoff && <div className="handoff-preview">
       {handoff.projectRoot && <dl className="path-list"><div className="path-row"><dt>本次项目目录</dt><dd><code>{handoff.projectRoot}</code></dd></div></dl>}
       <div className="section-heading"><label htmlFor="ai-handoff-text">完整说明 · 可核对或手动复制</label><button className="text-button" disabled={action !== null} onClick={onClear}>收起全文</button></div>

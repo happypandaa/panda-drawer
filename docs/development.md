@@ -42,9 +42,13 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 业务应用窗口另有可选的清单 `window` 初始尺寸，默认 1080×780；之后默认记住每个项目的上次普通窗口逻辑尺寸。该本机偏好独立保存在固定数据根 `app-window-sizes.json`，不修改业务数据库或工作区设置；声明字段、关闭保存、迁移隔离及已登记 Node 声明摘要门禁见[应用窗口尺寸](app-window-runtime-contract.md#应用窗口尺寸)。管理窗尺寸与此分开，原生拖动缩放等实际验收另记。
 
-“详情”弹窗集中展示概览、空间与文件、备份维护、更多操作；原生窗口进入、构建和 AI 交接也在详情中。未提交的基本信息、备份备注和导出/复制表单在页签间保留，关闭时提示处理；提交或原生文件选择尚未完成时阻止关闭。切换页签会撤销删除、恢复与结束维护的确认，重新操作需要重新核对。
+2026-10-23 起，网页应用“详情”弹窗提供“概览 / 空间与文件 / 更多操作”三个页签。进入应用、打开本地目录、“复制提示词”“在 Codex 打开”和“构建更新”常显，交接长说明按需展开。基本信息和清理选择在页签间保留，关闭时提示处理；提交、原生文件选择和操作核对尚未完成时阻止关闭及切换页签。离开更多操作或空间页会撤销对应的删除／清理确认。
 
-新建成功后直接打开项目详情，点击“复制 AI 接手说明”获取可直接发送给其他 AI 的中文说明，包含熊猫应用小抽屉的用途、当前业务项目目录与 ID、实际 skill/CLI 路径、文档与构建/数据库操作方式。复制仅由点击触发；同时展开全文，剪贴板不可用时可选取手动复制。接收说明的 AI 需要能访问本机目录才能直接修改文件。说明按当前平台生成，不覆盖旧项目文档；项目移出列表或工作区切换后会撤销旧的待复制结果。
+新建成功后直接打开项目详情，点击“复制提示词”获取可直接发送给其他 AI 的中文说明，包含熊猫应用小抽屉的用途、当前业务项目目录与 ID、实际 skill/CLI 路径、文档与构建/数据库操作方式。“在 Codex 打开”复制同一说明并打开本机任务草稿，由用户粘贴并发送。复制仅由点击触发；同时展开全文，剪贴板不可用时可选取手动复制。接收说明的 AI 需要能访问本机目录才能直接修改文件。说明按当前平台生成，不覆盖旧项目文档；项目移出列表或工作区切换后会撤销旧的待复制结果。
+
+普通详情不再提供“源码版本”、创建独立副本或旧备份中心。Git 检查、保存、分支及取回由 AI 通过现有 CLI／管理接口处理，唯一 Git 历史原样保留。旧维护／恢复、未完成源码取回或无法核实的状态会显示按需处理入口；结束维护和继续／撤回均需明确确认，源码操作绑定重新核对的摘要并要求停止外部修改。正在执行的处理任务保持详情关闭门禁，失败不自动重试。更多操作只保留导出 ZIP 和永久删除；导出先弹窗说明包含业务数据库和用户文件，选择位置后提交，碰到同名文件才另行确认替换。
+
+本轮按[已确认的 Figma 设计](https://www.figma.com/design/lUu4diXxz5954rK7PDUG8G?node-id=2-80)实施。界面与交互回归 300 项、Rust 空间模块 14 项、TypeScript／Vite 构建及开发版 `.app` 打包通过。独立可丢弃浏览器样本检查了三页、嵌套导出弹窗、滚动与 800 像素宽窗口；原生调用使用模拟响应，不能据此声称原生保存框、真实导出／删除或设备权限已重新实测。正常清理的 Rust 回归核实不创建维护会话或 ZIP 基线，并保留任务锁及恢复保护。本轮没有对已有开发项目执行清理、导出、删除或迁移；现存源码、数据、备份及恢复现场继续保留。网站构建与 14 页、466 个本地链接／资源／锚点检查通过。
 
 “空间与工作区”使用“空间总览 / 工作区位置 / 历史保留项目 / 清理历史”页签。默认只显示三类空间摘要与项目排行，明细按需展开；工作区迁移需先展开表单并明确确认。所有维护、删除、恢复及迁移继续使用已有原生任务与门禁。
 
@@ -126,7 +130,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 给 AI 的窗口约束现由 skill 主入口链接到随目录携带的 `references/app-window-runtime.md`；它说明原生单窗口、打开自动启动 Node、关窗停止、禁止额外窗口／业务弹窗，并先区分 project-v1 与独立 Node 源码槽。主规则见[应用窗口契约](app-window-runtime-contract.md)，全部文档分类与阅读顺序见[文档地图](documentation-map.md)。准备资源／新建时沿用整个 skill 目录复制，不为补说明覆盖既有项目文件。
 
-仓库 `skills/local-projects-app/` 是 skill 的维护源，准备步骤复制到包内资源，新建时复制到项目 `.agents/skills/local-projects-app/`。README、AGENTS.md 和 CLAUDE.md 引用它；`project handoff` 和“复制 AI 接手说明”提供实际项目、README、skill 和 CLI 绝对路径。skill 说明业务项目的读取、修改、数据库操作、构建、验证、备份维护、生命周期与迁移后的交接，不要求 AI 修改平台工程。资源更新只用于新建项目和安装包后备说明；旧项目的 skill、SDK、源码和文档不随升级覆盖，调用新能力前核对当前 CLI 帮助。它不是全局安装项，不承诺所有 AI 客户端自动识别；无法自动发现时按交接文本显式读取。
+仓库 `skills/local-projects-app/` 是 skill 的维护源，准备步骤复制到包内资源，新建时复制到项目 `.agents/skills/local-projects-app/`。README、AGENTS.md 和 CLAUDE.md 引用它；`project handoff` 和“复制提示词”提供实际项目、README、skill 和 CLI 绝对路径。skill 说明业务项目的读取、修改、数据库操作、构建、验证、备份维护、生命周期与迁移后的交接，不要求 AI 修改平台工程。资源更新只用于新建项目和安装包后备说明；旧项目的 skill、SDK、源码和文档不随升级覆盖，调用新能力前核对当前 CLI 帮助。它不是全局安装项，不承诺所有 AI 客户端自动识别；无法自动发现时按交接文本显式读取。
 
 项目 ID 由平台生成。下列命令均支持 `--json`，复杂输入使用文件或 `--input -` 从标准输入读取；不要把 SQL、令牌或多行 JSON 拼入 shell 命令。
 
@@ -244,7 +248,7 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 
 ### 本机源码版本保存
 
-项目详情“源码版本”先读取范围和改动，再明确初始化或保存。CLI 为 `project git status --project ID --json`、`project git init --project ID --input FILE --json`、`project git save --project ID --input FILE --json`、`project git cancel --project ID --task TASK_ID --json`。初始化输入为 `expectedSnapshot` 与 `initialBranch:"main"`；保存须明确提供 `expectedHead`（无提交时为 JSON null）、`expectedSnapshot`、`message`、`author:{name,email}`。快照和 HEAD 来自最新状态，不默认采用全局作者，不自动重试写请求。
+Git 版本管理由 AI 先读取范围和改动，再明确初始化或保存，普通应用详情不展示完整 Git 面板。CLI 为 `project git status --project ID --json`、`project git init --project ID --input FILE --json`、`project git save --project ID --input FILE --json`、`project git cancel --project ID --task TASK_ID --json`。初始化输入为 `expectedSnapshot` 与 `initialBranch:"main"`；保存须明确提供 `expectedHead`（无提交时为 JSON null）、`expectedSnapshot`、`message`、`author:{name,email}`。快照和 HEAD 来自最新状态，不默认采用全局作者，不自动重试写请求。
 
 管理 HTTP 为 `GET /api/v1/projects/:id/git`、`POST .../git/initialize`、`POST .../git/saves`、`POST .../git/tasks/:taskId/cancel`。初始化／保存返回持久任务，取消仅请求停止；提交点之后可能最终成功，`committed`／`unknown`／`not_committed` 结果分别保留，不凭连接失败重新提交。
 
@@ -252,7 +256,7 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 
 ### 本机版本列表与新建定制分支
 
-`project git versions --project ID --limit 50 --json` 对应 `GET /api/v1/projects/:id/git/versions?limit=50`，只列出当前 HEAD 可达的本机提交，不接受任意 revision、不访问远端。`limit` 默认50、范围1–100；返回 `head`、`versions`（提交号、父提交、说明、作者、时间）、`hasMore` 与实际工具。界面显式读取最近50条，暂不翻页；普通未提交或暂存改动不阻止只读列表，但不安全仓库、恢复现场和已跟踪保护路径仍拒绝。
+`project git versions --project ID --limit 50 --json` 对应 `GET /api/v1/projects/:id/git/versions?limit=50`，只列出当前 HEAD 可达的本机提交，不接受任意 revision、不访问远端。`limit` 默认50、范围1–100；返回 `head`、`versions`（提交号、父提交、说明、作者、时间）、`hasMore` 与实际工具。AI 可通过此接口查询，普通详情不展示版本列表；普通未提交或暂存改动不阻止只读列表，但不安全仓库、恢复现场和已跟踪保护路径仍拒绝。
 
 `project git branch-create --project ID --input FILE --json` 对应 `POST /api/v1/projects/:id/git/branches`。完整输入为 `name`（新分支短名）、`expectedHead`（现存完整提交号）、`expectedBranch`（状态返回的 `refs/heads/...`）和 `expectedSnapshot`。只允许在干净且已保存的当前版本新建分支并将 HEAD 指向它；已有同名分支、过期核对、未知／暂存／冲突内容均拒绝。不会取回其他提交或替换源码、索引、活库、附件及当前产物。仅此操作要求已验证的 Git2.56.0 引用事务；2.54.0 的保存和列表仍可用，分支限制单独放在 `branchCreationIssue` 中，不自动换工具。
 
@@ -300,7 +304,7 @@ npm run cli -- maintenance end --project prj_实际ID --input end-maintenance.js
 
 持久维护记录在工作区 `.platform/project-state/maintenance/{projectId}.json`，与旧项目登记、构建来源分开保存；升级读取默认 ready 状态，不重写已有项目文件。操作暂存、恢复候选、日志和原现场在 `.platform/operations/{taskId}/`。恢复先验证候选，再停止业务、保留完整原目录并切换；原库损坏时也保留 WAL/SHM。未解决现场不作为缓存清除，重启根据日志和目录身份核对完成、回退或待处理结果。
 
-手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。基础 UI 显示备份列表、详情、任务和维护/恢复状态；历史备份另存、手动删除、迁移旧根清理仍未按讨论稿提供。M5 已实现统一空间扫描和白名单清理；其当前用法见第 10 节。
+现存兼容实现中，手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。2026-10-23 的详情改造移除了常驻备份列表和旧维护中心，只在存在未完成操作时提供核对与处理入口；既有旧 ZIP、维护／恢复现场与记录继续保留，CLI／兼容逻辑未因撤下 UI 而删除。迁移旧根等已确认的范围清理另见“空间与工作区 → 清理历史”。M5 已实现统一空间扫描和白名单清理；其当前用法见第 10 节。
 
 M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建可丢弃项目；`m3-restart-test.mjs prepare|verify` 在真正退出重启前后检查维护保留。`m3-compatibility-test.mjs prepare|verify` 只读核对升级前已有项目持久文件，不因 SQLite checkpoint 改变数据库字节而误判为平台覆盖。执行结果、故障模拟与交互证据见 [M3 验证记录](m3-verification.md)。
 
@@ -312,7 +316,7 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 
 早期 `m4-live-test.mjs`、`m4-migration-test.mjs` 与 `workspace-identity-live-test.mjs` 的软删除流程仅对应旧版本，默认在任何服务查询或样本创建前直接拒绝运行。只有明确连接旧版 CLI／服务时才可设置 `LEGACY_SOFT_DELETE_REGRESSION=1`；不能用该开关对当前永久删除版本运行。其历史逻辑与证据保留，不把旧脚本转换为新的破坏性验收；本轮仅检查语法，没有执行这些 live 脚本。
 
-以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
+以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。普通应用详情只提供导出与删除，不再提供直接创建独立副本的表单；需要独立副本时，可导出完整项目 ZIP，再按默认新 ID 导入。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
 
 | 命令 | 输入与结果 |
 | --- | --- |

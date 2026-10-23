@@ -282,6 +282,12 @@ async fn attachments_use_bounded_pages_stable_ties_and_reject_changed_cursors() 
 #[tokio::test]
 async fn cleanup_only_deletes_identified_dependencies_completed_cache_and_logs() {
     let f = Fixture::new().await;
+    let control_before = f.store.control(&f.id).unwrap().get();
+    assert_eq!(control_before.mode, "ready");
+    assert!(control_before.maintenance_id.is_none());
+    assert!(control_before.baseline_backup_id.is_none());
+    let backups = f.paths.workspace_root().join("backups").join(&f.id);
+    assert!(!backups.exists());
     let (build, lease) = f.tasks.create_operation(&f.id, "build").unwrap();
     f.tasks
         .append(&build.task_id, b"completed build log")
@@ -354,6 +360,55 @@ async fn cleanup_only_deletes_identified_dependencies_completed_cache_and_logs()
         .join(build.task_id)
         .join("task.json")
         .is_file());
+    let control_after = f.store.control(&f.id).unwrap().get();
+    assert_eq!(control_after.mode, "ready");
+    assert!(control_after.maintenance_id.is_none());
+    assert!(control_after.baseline_backup_id.is_none());
+    assert!(!backups.exists());
+    f.stop().await;
+}
+#[tokio::test]
+async fn cleanup_waits_for_project_readers_and_rechecks_new_recovery_protection() {
+    let f = Fixture::new().await;
+    f.write("app/node_modules/kept", b"dependency");
+    let reader = f.store.gate(&f.id).read_owned().await;
+    let task = f
+        .storage
+        .submit_cleanup(&f.id, json!({"categories":["dependencies"]}))
+        .await
+        .unwrap();
+    // Admission reserves the project immediately, while deletion must wait for
+    // existing readers and then inspect the current protection state again.
+    tokio::task::yield_now().await;
+    assert!(!f.tasks.task(&task.task_id).unwrap().status.is_final());
+    assert_eq!(
+        fs::read(f.root.join("app/node_modules/kept")).unwrap(),
+        b"dependency"
+    );
+    assert_eq!(
+        f.storage
+            .submit_cleanup(&f.id, json!({"categories":["dependencies"]}))
+            .await
+            .unwrap_err()
+            .code,
+        "PROJECT_BUSY"
+    );
+    let control = f.store.control(&f.id).unwrap();
+    let mut state = control.get();
+    state.recovery_required = true;
+    control.set(state).unwrap();
+    drop(reader);
+    let task = f.wait(&task).await;
+    assert_eq!(task.status, TaskStatus::Failed, "{task:?}");
+    assert_eq!(task.error.as_ref().unwrap().code, "RECOVERY_REQUIRED");
+    assert_eq!(
+        task.result.as_ref().unwrap()["operationOutcome"],
+        "not_started"
+    );
+    assert_eq!(
+        fs::read(f.root.join("app/node_modules/kept")).unwrap(),
+        b"dependency"
+    );
     f.stop().await;
 }
 #[tokio::test]

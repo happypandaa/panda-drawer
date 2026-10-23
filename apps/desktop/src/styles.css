@@ -1,3 +1,7 @@
+@import './ProjectDetails.css';
+@import './ProjectStoragePanel.css';
+@import './ProjectLifecyclePanel.css';
+
 :root {
   --surface: #fff;
   --border: #e3e4dc;
