@@ -62,7 +62,8 @@ const { WorkspaceStorageSummary } = await component('StoragePanels.tsx');
 const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
 const { default: App } = await component('App.tsx');
 const { SourceAcquisitionPanel } = await component('SourceAcquisitionPanel.tsx');
-const { ImportPanel } = await component('LifecyclePanels.tsx');
+const { ImportPanel, ProjectLifecyclePanel } = await component('LifecyclePanels.tsx');
+const { ProjectTask } = await component('ProjectTask.tsx');
 let root;
 let render;
 async function setup() {
@@ -414,7 +415,7 @@ test('Modal pending gate blocks every close path and uses current props without 
   assert.equal(closes, 1); assert.equal(guards, 1);
 });
 
-const project = { id: 'prj_ui_test', name: 'Disposable DOM fixture', state: 'ready', issues: [] };
+const project = { id: 'prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
 const normalStatus = { mode: 'normal', readyForChanges: false, recoveryRequired: false };
 function backupProps(extra = {}) {
   return { project, status: normalStatus, embedded: true, active: true, onTask() {}, onChanged: async () => {}, onClose() {}, ...extra };
@@ -623,6 +624,42 @@ test('Overview tabs support keyboard navigation and revoke delete acknowledgemen
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
 });
 
+test('Permanent deletion requires a known project epoch and never submits a missing identity', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async (...args) => { calls.push(args); throw new Error('A missing identity must not submit'); };
+  await render(h(ProjectLifecyclePanel, { project: { ...project, projectRoot: '/disposable/missing-epoch', documentEpoch: '' }, status: normalStatus, onTask() {}, disabled: false, active: true, deleteRequested: 1 }));
+  assert.match(document.querySelector('.project-delete-section').textContent, /项目身份尚未读取.*刷新项目列表/);
+  assert.equal(document.querySelector('.project-delete-confirmation input').disabled, true);
+  assert.equal(buttonNamed('确认永久删除项目').disabled, true);
+  await click(buttonNamed('确认永久删除项目'));
+  assert.deepEqual(calls, []);
+});
+
+test('Deletion acknowledgment is revoked for changed epoch, root or service and submits only the current epoch', async () => {
+  await setup(); const calls = [];
+  let props = { project: { ...project, projectRoot: '/disposable/reviewed-project' }, instanceId: 'old-instance', status: normalStatus, onTask() {}, disabled: false, active: true, deleteRequested: 1 };
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    calls.push([command, args]);
+    return { taskId: 'task_identity_checked', type: 'delete', projectId: project.id, status: 'failed', final: true, phase: 'failed', result: { operationOutcome: 'not_deleted' } };
+  };
+  await render(h(ProjectLifecyclePanel, props));
+  for (const change of [
+    { project: { ...props.project, documentEpoch: '22222222-2222-4222-8222-222222222222' } },
+    { project: { ...props.project, documentEpoch: '22222222-2222-4222-8222-222222222222', projectRoot: '/disposable/new-reviewed-project' } },
+    { instanceId: 'new-instance' },
+  ]) {
+    await click(document.querySelector('.project-delete-confirmation input'));
+    assert.equal(buttonNamed('确认永久删除项目').disabled, false);
+    props = { ...props, ...change }; await render(h(ProjectLifecyclePanel, props));
+    assert.equal(document.querySelector('.project-delete-confirmation'), null);
+    assert.deepEqual(calls, []);
+    await click(document.querySelector('.project-delete-heading button'));
+    assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
+  }
+  await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: props.project.documentEpoch } }]]);
+});
+
 function hubProps(extra = {}) {
   return { workspace: { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] }, revision: 1, enabled: true, migrating: false, projects: [], onTask() {}, onRefresh: async () => {}, onSelect() {}, ...extra };
 }
@@ -644,9 +681,9 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.equal(document.activeElement, hubTab('工作区位置'));
   assert.equal(hubTab('工作区位置').getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
-  await click(hubTab('空间总览')); await click(buttonNamed('管理回收站'));
-  assert.equal(document.activeElement, hubTab('回收站'));
-  assert.equal(hubTab('回收站').getAttribute('aria-selected'), 'true');
+  await click(hubTab('空间总览')); await click(buttonNamed('查看历史保留项目'));
+  assert.equal(document.activeElement, hubTab('历史保留项目'));
+  assert.equal(hubTab('历史保留项目').getAttribute('aria-selected'), 'true');
   assert.deepEqual([...new Set(requests)], ['workspace_storage', 'trash_list']);
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
@@ -668,7 +705,7 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
   const rows = () => [...document.querySelectorAll('.workspace-retention-list > div')];
   const row = (prefix) => rows().find((element) => element.querySelector('dt').textContent.startsWith(prefix));
-  assert.equal(row('回收站'), undefined, 'A known complete zero category should not imply retained content');
+  assert.equal(row('历史保留项目'), undefined, 'A known complete zero category should not imply retained content');
   assert.match(row('历史备份').textContent, /尚未统计/);
   assert.equal(row('操作现场').querySelector('strong').title, '1500 字节');
   assert.equal(row('共享缓存').querySelector('strong').title, '500 字节');
@@ -678,7 +715,7 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   assert.match(document.querySelector('.workspace-retention-explanation').textContent, /不再与上方数字相加|不等于可以释放/);
   data = { ...data, workspace: { ...data.workspace, complete: false, stale: true }, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
   await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
-  assert.match(row('回收站').textContent, /0 B.*已过期/);
+  assert.match(row('历史保留项目').textContent, /0 B.*已过期/);
   assert.match(row('迁移保留目录').textContent, /尚未统计.*部分统计/);
 });
 
@@ -715,7 +752,7 @@ test('Cleanup controls identify same-name projects and copy or submit only the a
     const checkbox = row.querySelector('input'); const copy = row.querySelector('button');
     for (const control of [checkbox, copy]) {
       const name = control.getAttribute('aria-label');
-      assert.ok(name.includes('回收站项目')); assert.ok(name.includes(items[index].name));
+      assert.ok(name.includes('旧版保留项目')); assert.ok(name.includes(items[index].name));
       assert.ok(name.includes(items[index].projectId)); assert.ok(name.includes(items[index].path));
     }
     await click(copy);
@@ -905,7 +942,7 @@ test('Trash ignores out-of-order details, keeps confirmation bound to its select
     throw new Error(`Unexpected mutation/request: ${command}`);
   };
   await render(h(WorkspaceHub, hubProps()));
-  await click(hubTab('回收站'));
+  await click(hubTab('历史保留项目'));
   const rows = [...document.querySelectorAll('.trash-row')];
   await click(rows[0]); await click(rows[1]);
   await act(async () => second.resolve(entries[1]));
@@ -916,7 +953,7 @@ test('Trash ignores out-of-order details, keeps confirmation bound to its select
   await act(async () => first.resolve(entries[0]));
   assert.match(document.querySelector('.workspace-trash-details').textContent, /trash_B/);
   assert.doesNotMatch(document.querySelector('.workspace-trash-details').textContent, /trash_A/);
-  await click(hubTab('工作区位置')); await click(hubTab('回收站'));
+  await click(hubTab('工作区位置')); await click(hubTab('历史保留项目'));
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
 
@@ -929,7 +966,7 @@ test('Trash refuses restore for a record explicitly marked unavailable', async (
     if (command === 'trash_info') return entry;
     throw new Error(`Unexpected request: ${command}`);
   };
-  await render(h(WorkspaceHub, hubProps())); await click(hubTab('回收站')); await click(document.querySelector('.trash-row'));
+  await render(h(WorkspaceHub, hubProps())); await click(hubTab('历史保留项目')); await click(document.querySelector('.trash-row'));
   assert.equal(buttonNamed('恢复项目').disabled, true);
   assert.match(document.querySelector('.workspace-trash-details').textContent, /Identity mismatch/);
 });
@@ -947,7 +984,7 @@ test('A failed migration submission still settles after leaving and returning to
   await click(document.querySelector('.workspace-migration-confirmation input[type="checkbox"]'));
   await click(buttonNamed('确认开始迁移'));
   assert.equal(submissions, 1);
-  await click(hubTab('回收站'));
+  await click(hubTab('历史保留项目'));
   await act(async () => result.reject(new Error('Migration fixture rejected')));
   await click(hubTab('工作区位置'));
   assert.equal(document.querySelector('.workspace-migration-form input:not([type="checkbox"])').disabled, false);
@@ -1310,29 +1347,63 @@ test('Automatic storage scans do not hide a failed build or replace the result o
   assert.match(dialog().querySelector('.project-last-task').textContent, /新网页已发布/);
 });
 
-test('App retains a failed delete dialog and closes it only after its accepted task succeeds', async () => {
+test('Delete task results distinguish permanent deletion, partial deletion, no deletion and legacy retention', async () => {
+  await setup();
+  for (const [operationOutcome, expected, rejected] of [
+    ['deleted', /项目文件已永久删除/, /可从.*恢复|完整项目已移入回收站/],
+    ['delete_incomplete', /部分项目文件可能已删除/, /项目文件已永久删除/],
+    ['not_deleted', /尚未执行删除/, /项目文件已永久删除/],
+    ['trashed', /旧版移入回收站.*历史保留项目/, /项目文件已永久删除/],
+  ]) {
+    await render(h(ProjectTask, { task: { taskId: `task_delete_${operationOutcome}`, type: 'delete', projectId: 'prj_fixture', status: operationOutcome === 'delete_incomplete' ? 'failed' : 'succeeded', final: true, phase: 'completed', error: null, result: { operationOutcome } } }));
+    const result = document.querySelector('.build-task').textContent;
+    assert.match(result, expected); assert.doesNotMatch(result, rejected);
+  }
+});
+
+test('App retains a failed delete dialog and closes it only after its accepted task confirms deleted', async () => {
   await setup(); let submissions = 0;
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
   const task = { taskId: 'task_delete_fixture', type: 'delete', projectId: 'prj_A', status: 'queued', final: false, phase: 'queued' };
-  mockApp(state, async (command) => {
+  mockApp(state, async (command, args) => {
     if (command === 'project_delete') {
+      assert.deepEqual(args, { projectId: 'prj_A', input: { expectedDocumentEpoch: project.documentEpoch } });
       submissions++;
       return submissions === 1 ? { ...task, taskId: 'task_failed_delete', status: 'failed', final: true, error: { code: 'FIXTURE_FAILURE', message: 'Delete fixture failed' } } : task;
     }
     assert.equal(command, 'task_get');
-    return { ...task, status: 'succeeded', final: true, phase: 'completed' };
+    state.projects = [];
+    return { ...task, status: 'succeeded', final: true, phase: 'completed', result: { operationOutcome: 'deleted' } };
   });
   await render(h(App)); await openProjectMenu('Fixture A'); await click(document.querySelector('[aria-label="删除项目「Fixture A」"]'));
+  assert.match(dialog().textContent, /永久删除.*无法撤销/);
+  assert.match(dialog().textContent, /历史备份.*不会自动删除/);
+  assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(document.querySelector('.project-delete-confirmation input'));
-  await click(buttonNamed('确认删除项目'));
+  await click(buttonNamed('确认永久删除项目'));
   assert.ok(dialog()); assert.match(dialog().textContent, /Delete fixture failed/);
   await click(document.querySelector('.project-delete-heading button'));
   await click(document.querySelector('.project-delete-confirmation input'));
-  await click(buttonNamed('确认删除项目'));
+  await click(buttonNamed('确认永久删除项目'));
   assert.equal(submissions, 2); assert.ok(dialog(), 'Queued acceptance is not final success');
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
   assert.equal(dialog(), null);
-  assert.match(document.querySelector('.notice-success').textContent, /项目已移入回收站/);
+  assert.match(document.querySelector('.notice-success').textContent, /项目已永久删除/);
+});
+
+test('A final deletion task with an incomplete or missing outcome keeps the project details open', async () => {
+  await setup();
+  for (const outcome of ['delete_incomplete', null]) {
+    mockApp({ projects: [appProject('prj_delete_review', 'Deletion review fixture')] }, async command => {
+      assert.equal(command, 'project_delete');
+      return { taskId: `task_review_${outcome}`, type: 'delete', projectId: 'prj_delete_review', status: 'succeeded', final: true, phase: 'completed', error: null, result: outcome ? { operationOutcome: outcome, remainingPath: '/disposable/workspace/projects/prj_delete_review' } : null };
+    });
+    await render(h(App)); await openProjectMenu('Deletion review fixture'); await click(document.querySelector('[aria-label="删除项目「Deletion review fixture」"]'));
+    await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+    assert.ok(dialog()); assert.equal(document.querySelector('.notice-success'), null);
+    assert.match(dialog().textContent, outcome ? /部分项目文件可能已删除/ : /永久删除结果尚不能确认/);
+    await render(null);
+  }
 });
 
 test('App blocks closing a pending create, shows its failure inside the modal, and preserves the name on reopening', async () => {

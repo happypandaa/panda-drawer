@@ -197,16 +197,34 @@ confirmReload.listeners.click();
 assert.equal(reloads, 1);
 assertDraftPreserved();
 await changeState({ mode: 'normal', reloadRequired: true, trashed: true });
-assert.match(heading.textContent, /移入回收站/);
+assert.match(heading.textContent, /历史保留项目/);
 assert.equal(reload.hidden, true);
 assertDraftPreserved();
+for (const [flag, titlePattern] of [
+  ['deleted', /项目已永久删除/],
+  ['deletionIncomplete', /项目删除未完成/],
+]) {
+  await changeState({ mode: 'normal', reloadRequired: true, [flag]: true });
+  assert.match(heading.textContent, titlePattern);
+  assert.match(detail.textContent, /草稿|未提交/);
+  assert.doesNotMatch(detail.textContent, /请在.*恢复|回收站恢复/);
+  assert.equal(reload.hidden, true);
+  assert.equal(confirmation.hidden, true);
+  reload.listeners.click();
+  confirmReload.listeners.click();
+  assert.equal(reloads, 1, 'deleted projects cannot reload the old document');
+  assert.equal(platformEvents.at(-1).detail.reloadRequired, true, 'old media helpers receive a stop signal');
+  assertDraftPreserved();
+}
 await changeState({ mode: 'normal', reloadRequired: true, instanceChanged: true });
 assert.match(heading.textContent, /服务已切换/);
 assert.equal(reload.hidden, true);
 assertDraftPreserved();
 for (const [code, titlePattern] of [
   ['WORKSPACE_MIGRATING', /工作区正在迁移/],
-  ['PROJECT_TRASHED', /移入回收站/],
+  ['PROJECT_TRASHED', /历史保留项目/],
+  ['PROJECT_DELETED', /项目已永久删除/],
+  ['PROJECT_DELETE_INCOMPLETE', /项目删除未完成/],
   ['SERVICE_INSTANCE_CHANGED', /服务已切换/],
   ['INVALID_SESSION', /连接已失效/],
 ]) {
@@ -219,7 +237,11 @@ for (const [code, titlePattern] of [
   assert.equal(reload.hidden, true);
   reload.listeners.click();
   confirmReload.listeners.click();
-  assert.equal(reloads, 1, 'old instances, trash, and migration cannot reload the old URL');
+  assert.equal(reloads, 1, 'old instances, deleted projects, legacy trash, and migration cannot reload the old URL');
+  if (code === 'PROJECT_DELETED' || code === 'PROJECT_DELETE_INCOMPLETE') {
+    assert.doesNotMatch(detail.textContent, /请在.*恢复|回收站恢复/);
+    assert.equal(platformEvents.at(-1).detail.reloadRequired, true);
+  }
   assertDraftPreserved();
 }
 responseError = null;
@@ -262,7 +284,8 @@ console.log(JSON.stringify({
     'inline confirmation, cancellation and Escape preserve drafts',
     'only final confirmation reloads without native dialogs',
     'new maintenance cancels pending reload',
-    'trash, migration pause and old instance notices via events and errors',
+    'permanent and partial deletion preserve drafts, block reload and signal media shutdown',
+    'legacy retained projects, migration and old instance notices via events and errors',
     'immutable document epoch',
     'read-only requests',
     'back/forward cache reconnection',

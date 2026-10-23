@@ -21,11 +21,13 @@ async fn history_cleanup_http_requires_admin_confirmation_and_preserves_other_pr
     let before = std::fs::read(&marker).unwrap();
     let deleted = service
         .handle()
-        .project_delete(&disposable.id, json!({}))
+        .current()
+        .lifecycle
+        .submit_legacy_trash_for_test(&disposable.id, json!({}))
         .await
         .unwrap();
     assert_eq!(
-        final_task(&service, deleted["taskId"].as_str().unwrap()).await["status"],
+        final_task(&service, &deleted.task_id).await["status"],
         "succeeded"
     );
     let base = service.info().base_url;

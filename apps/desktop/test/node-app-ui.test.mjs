@@ -65,7 +65,7 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
   root = createRoot(document.getElementById('root'));
   globalThis.__NODE_FORM_INVOKE__ = mock;
   await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...props })));
-  if (Component === NodeAppsPanel && props.request !== null && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
+  if (Component === NodeAppsPanel && props.request !== null && props.request?.intent !== 'delete' && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
 function input(name) { const metadata = fields.find((field) => field.name === name); const label = [...document.querySelectorAll('label')].find((element) => element.textContent === `${metadata.label}${metadata.required ? '必填' : '选填'}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
@@ -87,6 +87,155 @@ async function openDetails(name) {
 async function submit() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 function baseMock(value, action) { return async (command, args) => { if (command === 'node_app_list') return [value]; if (command === 'node_app_configuration') return value; return action(command, args); }; }
+
+function deletionPreview(value, ownership = 'managed', expectedRevision = 'fresh-disposable-revision') {
+  return { appId: value.id, name: value.name, ownership, expectedRevision, platformRoot: `/disposable/platform/${value.id}`, sourcePath: '/disposable/original-source', deletePaths: [`/disposable/platform/${value.id}/data`, `/disposable/platform/${value.id}/configuration`, ...(ownership === 'managed' ? [`/disposable/platform/${value.id}/generations`] : [])], preservedPaths: ['/disposable/original-source', '/disposable/install-evidence'] };
+}
+
+test('Node deletion reads ownership-specific scope, requires acknowledgment and sends no filesystem paths', async () => {
+  for (const ownership of ['managed', 'external']) {
+    const value = app(); const preview = deletionPreview(value, ownership); const finished = deferred(); const calls = []; const deleted = [];
+    await setup(baseMock(value, async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'node_app_delete_preview') return preview;
+      if (command === 'node_app_delete') return finished.promise;
+      throw new Error(command);
+    }), { instanceId: 'same', request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+    const confirmation = document.querySelector('[aria-label="永久删除 Node 项目确认"]');
+    assert.match(confirmation.textContent, /不会为本次删除保存可恢复副本/);
+    assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本实例的程序、业务数据、应用配置与密钥/ : /原始应用目录及其中的全部文件保持原样/);
+    for (const path of [...preview.deletePaths, ...preview.preservedPaths]) assert.ok(confirmation.textContent.includes(path));
+    assert.equal(byText('确认永久删除项目').disabled, true);
+    assert.deepEqual(calls, [['node_app_delete_preview', { appId: value.id }]]);
+    await click(confirmation.querySelector('input[type=checkbox]'));
+    await click(byText('确认永久删除项目'));
+    assert.equal(byText('正在永久删除…').disabled, true);
+    await click(byText('正在永久删除…'));
+    assert.deepEqual(calls.at(-1), ['node_app_delete', { appId: value.id, input: { expectedRevision: preview.expectedRevision } }]);
+    assert.equal(calls.filter(([command]) => command === 'node_app_delete').length, 1);
+    await act(async () => finished.resolve({ appId: value.id, operationOutcome: 'deleted', ownership, sourcePreserved: true, evidenceRetained: true }));
+    assert.deepEqual(deleted, [value.id]); assert.equal(document.querySelector('[role=dialog]'), null);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Failed Node deletion preserves the scope and error, then requires a new preview and acknowledgment', async () => {
+  const value = app({ state: 'running' }); let previews = 0; const writes = []; const deleted = [];
+  await setup(baseMock(value, async (command, args) => {
+    if (command === 'node_app_delete_preview') return deletionPreview(value, 'external', `revision-${++previews}`);
+    if (command === 'node_app_delete') { writes.push(args); throw { code: 'NODE_APP_WINDOW_OPEN', message: '请先关闭项目窗口，再删除。' }; }
+    throw new Error(command);
+  }), { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+  await click(document.querySelector('.node-delete-confirmation input'));
+  await click(byText('确认永久删除项目'));
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /请先关闭项目窗口/);
+  assert.equal(byText('确认永久删除项目').disabled, true);
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /disposable\/original-source/);
+  await click(byText('重新核对删除范围'));
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+  await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+  assert.deepEqual(writes.map(value => value.input.expectedRevision), ['revision-1', 'revision-2']);
+  assert.deepEqual(deleted, []);
+});
+
+test('Leaving Node deletion discards acknowledgment and configuration drafts block starting deletion', async () => {
+  const value = app(); let previews = 0;
+  await setup(baseMock(value, async command => {
+    assert.equal(command, 'node_app_delete_preview'); previews++; return deletionPreview(value);
+  }), { request: { app: value, intent: 'delete', token: 1 } });
+  await click(document.querySelector('.node-delete-confirmation input'));
+  await click(byText('应用配置'));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null);
+  await change(input('AI_KEY'), 'artificial-private-draft');
+  assert.equal(byText('删除项目').disabled, true);
+  assert.equal(previews, 1);
+  await change(input('AI_KEY'), ''); await click(byText('删除项目'));
+  assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('A previous service instance cannot approve Node deletion with a late preview', async () => {
+  const value = app(); const delayed = deferred(); let previews = 0; const deleted = [];
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppDeleted: id => deleted.push(id), request: { app: value, intent: 'delete', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_delete_preview') { previews++; return previews === 1 ? delayed.promise : deletionPreview(value, 'managed', 'new-revision'); }
+    throw new Error(command);
+  }), props);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  await act(async () => delayed.resolve(deletionPreview(value, 'external', 'old-revision')));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null); assert.deepEqual(deleted, []);
+  await click(byText('删除项目'));
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /平台安装副本/);
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('Instance changes release a pending Node deletion locally and ignore its late result without replay', async () => {
+  const value = app(); const delayed = deferred(); const deleted = []; let writes = 0; let previews = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppDeleted: id => deleted.push(id), request: { app: value, intent: 'delete', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_delete_preview') return deletionPreview(value, 'managed', `revision-${++previews}`);
+    if (command === 'node_app_delete') { writes++; return delayed.promise; }
+    throw new Error(command);
+  }), props);
+  await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+  assert.equal(writes, 1);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null);
+  assert.equal(byText('删除项目').disabled, false);
+  await act(async () => delayed.resolve({ appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true }));
+  assert.deepEqual(deleted, []); assert.equal(writes, 1); assert.ok(document.querySelector('[role=dialog]'));
+  await click(byText('删除项目'));
+  assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('Workspace gates revoke an unfinished Node preview without leaving its local operation locked', async () => {
+  const value = app(); const delayed = deferred(); let previews = 0;
+  const props = { enabled: true, instanceId: 'same', onDraftStateChange() {}, request: { app: value, intent: 'delete', token: 1 } };
+  await setup(baseMock(value, async command => {
+    assert.equal(command, 'node_app_delete_preview');
+    return ++previews === 1 ? delayed.promise : deletionPreview(value);
+  }), props);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, enabled: false })));
+  await act(async () => delayed.resolve(deletionPreview(value)));
+  await act(async () => root.render(h(NodeAppsPanel, props)));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null); assert.equal(byText('删除项目').disabled, false);
+  await click(byText('删除项目'));
+  assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('A late status observation cannot resurrect a deleted Node app or its cleared detail', async () => {
+  const value = app(); const delayed = deferred(); const changes = []; const deleted = [];
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 0;
+  window.setInterval = callback => { const id = ++timerId; timers.set(id, callback); return id; };
+  window.clearInterval = id => timers.delete(id);
+  try {
+    await setup(baseMock(value, async command => {
+      if (command === 'node_app_status') return delayed.promise;
+      if (command === 'node_app_delete_preview') return deletionPreview(value);
+      if (command === 'node_app_delete') return { appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true };
+      throw new Error(command);
+    }), { instanceId: 'same', request: { app: value, intent: 'details', token: 1 }, onAppChanged: value => changes.push(value), onAppDeleted: id => deleted.push(id) });
+    await act(async () => { for (const callback of timers.values()) callback(); });
+    await click(byText('删除项目')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    const observations = changes.length;
+    await act(async () => delayed.resolve({ ...value, state: 'running' }));
+    assert.deepEqual(deleted, [value.id]); assert.equal(changes.length, observations); assert.equal(document.querySelector('[role=dialog]'), null);
+  } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
+});
+
+test('A mismatched Node deletion preview or unknown deletion result never removes the app', async () => {
+  const value = app(); const deleted = []; let previews = 0;
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_delete_preview') return { ...deletionPreview(value), appId: ++previews === 1 ? 'another-app' : value.id };
+    if (command === 'node_app_delete') return { appId: value.id, operationOutcome: 'delete_incomplete' };
+    throw new Error(command);
+  }), { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /项目身份不符/);
+  assert.equal(byText('确认永久删除项目').disabled, true);
+  await click(byText('重新核对删除范围')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /删除结果尚不能确认/);
+  assert.deepEqual(deleted, []); assert.ok(document.querySelector('[role=dialog]'));
+});
 
 test('Managed app update preserves configuration drafts and only reads candidates on explicit request', async () => {
   const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: 'gen_' + 'a'.repeat(32), sourceId: 'src_' + 'b'.repeat(32), sourceDigest: 'c'.repeat(64) } });
@@ -456,6 +605,33 @@ function shellMock(state, action = async (command) => { throw new Error(command)
   };
 }
 
+test('Deleting from a Node launcher action removes the app only after an explicit deleted result', async () => {
+  for (const metadataCleanupPending of [false, true]) {
+    const value = app(); const state = { nodes: [value] }; const writes = [];
+    await setup(shellMock(state, async (command, args) => {
+      if (command === 'node_app_delete_preview') return deletionPreview(value, 'external');
+      if (command === 'node_app_delete') {
+        writes.push(args); state.nodes = [];
+        return { appId: value.id, operationOutcome: 'deleted', ownership: 'external', sourcePreserved: true, evidenceRetained: true, metadataCleanupPending };
+      }
+      throw new Error(command);
+    }), {}, App);
+    const entry = document.querySelector(`[aria-label='进入项目「${value.name}」']`);
+    await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+    await click(document.querySelector(`[aria-label='删除项目「${value.name}」']`));
+    assert.equal(writes.length, 0);
+    assert.equal(document.querySelectorAll('.project-card').length, 1);
+    await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    assert.equal(writes.length, 1); assert.equal(document.querySelectorAll('.project-card').length, 0);
+    assert.equal(document.querySelector('[role=dialog]'), null);
+    assert.match(document.querySelector('.notice-success').textContent, /项目.*已永久删除/);
+    if (metadataCleanupPending) assert.match(document.querySelector('.notice-success').textContent, /收尾尚未完成.*不要再次提交删除/);
+    else assert.doesNotMatch(document.querySelector('.notice-success').textContent, /收尾尚未完成/);
+    assert.equal(writes.length, 1);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
 test('All project types share My Projects, counts and search without a separate Node navigation', async () => {
   const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: 'Artificial webpage', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
   await setup(shellMock(state), {}, App);
@@ -501,7 +677,8 @@ test('Node details reopen without a secret and expose only supported tabs and ac
   await openDetails('Disposable Node fixture');
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
   assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
-  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /删除项目|备份维护/.test(value.textContent)), false);
+  assert.ok(byText('删除项目'));
+  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /备份维护/.test(value.textContent)), false);
   await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-close-draft');
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   await click(byText('丢弃草稿并关闭'));

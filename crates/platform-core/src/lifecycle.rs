@@ -38,6 +38,7 @@ struct Input {
     mode: Option<String>,
     name: Option<String>,
     maintenance_id: Option<String>,
+    expected_document_epoch: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -301,11 +302,9 @@ impl LifecycleManager {
         tasks: Arc<BuildManager>,
         maintenance: Arc<MaintenanceManager>,
     ) -> Result<Arc<Self>, ApiError> {
-        for relative in [".platform/operations", ".platform/trash"] {
-            let path = paths.workspace_root().join(relative);
-            check_no_symlinks(&path, true)?;
-            fs::create_dir_all(path)?;
-        }
+        let operations = paths.workspace_root().join(".platform/operations");
+        check_no_symlinks(&operations, true)?;
+        fs::create_dir_all(operations)?;
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
             paths,
@@ -486,8 +485,21 @@ impl LifecycleManager {
                 "Unknown project lifecycle operation",
             ));
         }
-        let (root, manifest) = self.store.metadata_root(id)?;
-        self.authorize(id, input.maintenance_id.as_deref())?;
+        let deletion = (kind == "delete")
+            .then(|| self.store.deletion_root(id))
+            .transpose()?;
+        let (root, manifest) = if let Some((root, _)) = &deletion {
+            (root.clone(), None)
+        } else {
+            self.store.metadata_root(id)?
+        };
+        if kind == "delete" {
+            self.authorize_delete(id, input.maintenance_id.as_deref())?;
+            self.store
+                .validate_deletion_epoch(id, input.expected_document_epoch.as_deref())?;
+        } else {
+            self.authorize(id, input.maintenance_id.as_deref())?;
+        }
         if kind == "export" {
             self.export_destination(
                 input
@@ -504,7 +516,11 @@ impl LifecycleManager {
                 "Export and copy require a valid project manifest",
             ));
         }
-        let (mut record, source_lease) = self.tasks.create_operation(id, kind)?;
+        let (mut record, source_lease) = if kind == "delete" {
+            self.tasks.create_delete_operation(id)?
+        } else {
+            self.tasks.create_operation(id, kind)?
+        };
         let target = if kind == "copy" {
             format!("prj_{}", Uuid::new_v4().simple())
         } else {
@@ -513,12 +529,16 @@ impl LifecycleManager {
         let mut journal = Self::journal(&record, kind, &target);
         journal.source_project_id = Some(id.into());
         journal.destination = input.destination_path.clone();
-        if kind == "delete" {
-            journal.trash_id = Some(format!("trash_{}", Uuid::new_v4().simple()));
-        }
+        journal.directory_identity = deletion.map(|(_, expected)| expected);
         let mut leases = vec![source_lease];
         let prepare = (|| {
-            self.authorize(id, input.maintenance_id.as_deref())?;
+            if kind == "delete" {
+                self.authorize_delete(id, input.maintenance_id.as_deref())?;
+                self.store
+                    .validate_deletion_epoch(id, input.expected_document_epoch.as_deref())?;
+            } else {
+                self.authorize(id, input.maintenance_id.as_deref())?;
+            }
             self.save(&journal)?;
             if kind == "copy" {
                 leases.push(self.store.reserve_task(&target, &record.task_id)?);
@@ -535,6 +555,45 @@ impl LifecycleManager {
             return Err(error);
         }
         self.launch(journal, input, leases);
+        Ok(record)
+    }
+    fn authorize_delete(
+        &self,
+        id: &str,
+        maintenance: Option<&str>,
+    ) -> Result<ControlState, ApiError> {
+        crate::source_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
+        let state = self.store.control(id)?.get();
+        if state.recovery_required {
+            let owned = self.store.pending_deletion(id)?.is_some_and(|marker| {
+                state.last_error.as_ref().is_some_and(|error| {
+                    error.details["recoveryStage"] == "lifecycle-journal"
+                        && error.details["recoveryTaskId"] == marker.task_id
+                })
+            });
+            if owned {
+                return Ok(state);
+            }
+        }
+        self.authorize(id, maintenance)
+    }
+    /// Compatibility fixtures must seed the historical transaction explicitly;
+    /// the public delete entry never creates new recycle-bin contents.
+    #[cfg(test)]
+    pub(crate) async fn submit_legacy_trash_for_test(
+        self: &Arc<Self>,
+        id: &str,
+        value: Value,
+    ) -> Result<TaskRecord, ApiError> {
+        let input = Self::input(value)?;
+        self.store.metadata_root(id)?;
+        self.authorize(id, input.maintenance_id.as_deref())?;
+        let (record, lease) = self.tasks.create_operation(id, "delete")?;
+        let mut journal = Self::journal(&record, "delete", id);
+        journal.source_project_id = Some(id.into());
+        journal.trash_id = Some(format!("trash_{}", Uuid::new_v4().simple()));
+        self.save(&journal)?;
+        self.launch(journal, input, vec![lease]);
         Ok(record)
     }
     pub async fn submit_import(self: &Arc<Self>, value: Value) -> Result<TaskRecord, ApiError> {
@@ -694,7 +753,8 @@ impl LifecycleManager {
             "export" => self.export(journal, input).await,
             "copy" => self.copy(journal, input).await,
             "import" => self.import(journal, input).await,
-            "delete" => self.delete(journal).await,
+            "delete" if journal.trash_id.is_some() => self.delete_to_trash_legacy(journal).await,
+            "delete" => self.delete(journal, input).await,
             "trashRestore" => self.restore_trash(journal).await,
             "trashPurge" => self.purge(journal).await,
             _ => Err(ApiError::new(
@@ -945,7 +1005,141 @@ impl LifecycleManager {
         }
         Ok(journal.result.clone())
     }
-    async fn delete(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+    async fn delete(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
+        self.phase(journal, "delete-freeze")?;
+        let id = journal.project_id.clone();
+        let control = self.store.control(&id)?;
+        let _freeze = Freeze::new(control.clone());
+        self.notify(&id);
+        let gate = self.store.gate(&id);
+        let _guard = gate.write().await;
+        self.store.close_database(&id).await;
+        crate::source_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
+        self.check_protection(&id, "", Some(&journal.task_id))?;
+        let (root, expected) = self.store.deletion_root(&id)?;
+        self.store
+            .validate_deletion_epoch(&id, input.expected_document_epoch.as_deref())?;
+        if !journal
+            .directory_identity
+            .as_ref()
+            .is_some_and(|identity| identity.matches_captured(&expected))
+        {
+            return Err(ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "Project directory changed after deletion was requested; no files were removed",
+            ));
+        }
+        journal.control = Some(control.get());
+        self.phase(journal, "delete-prepared")?;
+        self.store
+            .begin_deletion(&id, &journal.task_id, &journal.target_epoch, &expected)?;
+        self.phase(journal, "delete-intent")?;
+        if root.try_exists()? {
+            let workspace = self.paths.workspace_root().to_owned();
+            let progress = self
+                .operation(&journal.task_id)
+                .join("delete-progress.ndjson");
+            tokio::task::spawn_blocking(move || {
+                crate::history_cleanup::remove_owned_directory(
+                    &workspace.join("projects").join(&id),
+                    &expected,
+                    &progress,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))??;
+        }
+        self.finish_direct_delete(journal)
+    }
+    fn finish_direct_delete(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+        let marker = self
+            .store
+            .pending_deletion(&journal.project_id)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    "PROJECT_IDENTITY_CHANGED",
+                    "Deletion ownership marker is missing",
+                )
+            })?;
+        if marker.task_id != journal.task_id
+            || marker.target_epoch != journal.target_epoch
+            || !journal
+                .directory_identity
+                .as_ref()
+                .is_some_and(|identity| identity.matches_captured(&marker.root_identity))
+        {
+            return Err(ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "Another operation owns the deletion target; its files and state were retained",
+            ));
+        }
+        self.store.retire_deleted_project(&marker)?;
+        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &journal.project_id)?;
+        journal.committed = true;
+        journal.result = json!({"projectId":journal.project_id,"operationOutcome":"deleted","restoreAvailable":false,"historicalBackupsRetained":true});
+        self.finish_journal(journal)?;
+        self.clear_completion_gate(journal)?;
+        self.store.finish_deletion_marker(
+            &journal.project_id,
+            &journal.task_id,
+            &journal.target_epoch,
+        )?;
+        Ok(journal.result.clone())
+    }
+    fn reconcile_direct_delete(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+        let marker = self.store.pending_deletion(&journal.project_id)?;
+        let owned = marker.as_ref().is_some_and(|marker| {
+            marker.task_id == journal.task_id
+                && marker.target_epoch == journal.target_epoch
+                && journal
+                    .directory_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.matches_captured(&marker.root_identity))
+        });
+        if journal.resolved {
+            // Removing a completed marker is bookkeeping only. A later instance
+            // or retry's marker must never be touched by historical recovery.
+            if journal.committed && owned {
+                self.store.finish_deletion_marker(
+                    &journal.project_id,
+                    &journal.task_id,
+                    &journal.target_epoch,
+                )?;
+            }
+            return Ok(journal.result.clone());
+        }
+        if journal.committed && marker.is_none() && journal.result["operationOutcome"] == "deleted"
+        {
+            // The durable completion may outlive a later same-ID import. Its
+            // result is historical; it must not reset the new owner's state.
+            journal.resolved = true;
+            self.save(journal)?;
+            return Ok(journal.result.clone());
+        }
+        let mut outcome = "not_deleted";
+        if owned {
+            match self.store.deletion_root(&journal.project_id) {
+                Ok((root, _)) if !root.try_exists()? => return self.finish_direct_delete(journal),
+                Ok(_) => outcome = "delete_incomplete",
+                Err(error) => {
+                    journal.error = Some(error);
+                    outcome = "needs_attention";
+                }
+            }
+        } else if marker.is_some() || journal.phase == "delete-intent" {
+            // An old journal is not authority over a later same-ID instance.
+            // In particular, do not call ambiguous(), which changes its control.
+            outcome = "needs_attention";
+        }
+        journal.result = json!({"projectId":journal.project_id,"operationOutcome":outcome,"restoreAvailable":false,
+            "remainingPath":self.paths.workspace_root().join("projects").join(&journal.project_id),
+            "historicalBackupsRetained":true});
+        journal.resolved = true;
+        self.save(journal)?;
+        Ok(journal.result.clone())
+    }
+    async fn delete_to_trash_legacy(&self, journal: &mut Journal) -> Result<Value, ApiError> {
         self.phase(journal, "trash-freeze")?;
         let id = journal.project_id.clone();
         let control = self.store.control(&id)?;
@@ -1248,7 +1442,12 @@ impl LifecycleManager {
     }
     pub async fn trash_list(&self) -> Result<Value, ApiError> {
         let mut result = vec![];
-        for entry in fs::read_dir(self.paths.workspace_root().join(".platform/trash"))? {
+        let root = self.paths.workspace_root().join(".platform/trash");
+        check_no_symlinks(&root, true)?;
+        if !root.try_exists()? {
+            return Ok(json!([]));
+        }
+        for entry in fs::read_dir(root)? {
             let entry = entry?;
             let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -1327,6 +1526,9 @@ impl LifecycleManager {
         Ok(())
     }
     fn reconcile(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+        if journal.kind == "delete" && journal.trash_id.is_none() {
+            return self.reconcile_direct_delete(journal);
+        }
         if journal.resolved {
             return Ok(journal.result.clone());
         }

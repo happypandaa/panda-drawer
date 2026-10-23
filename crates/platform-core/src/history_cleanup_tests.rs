@@ -83,7 +83,7 @@ impl Fixture {
     async fn delete(&self) -> String {
         let task = self
             .lifecycle
-            .submit_project(&self.project, "delete", json!({}))
+            .submit_legacy_trash_for_test(&self.project, json!({}))
             .await
             .unwrap();
         let task = self.wait(task).await;

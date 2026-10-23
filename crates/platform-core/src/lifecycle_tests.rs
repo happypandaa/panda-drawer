@@ -73,10 +73,22 @@ impl Fixture {
         }
         panic!("lifecycle task timed out");
     }
-    async fn project(&self, kind: &str, input: Value) -> TaskRecord {
+    async fn project(&self, kind: &str, mut input: Value) -> TaskRecord {
+        if kind == "delete" && input.get("expectedDocumentEpoch").is_none() {
+            input["expectedDocumentEpoch"] =
+                json!(self.store.registered_epoch(&self.id).unwrap().unwrap());
+        }
         let task = self
             .lifecycle
             .submit_project(&self.id, kind, input)
+            .await
+            .unwrap();
+        self.wait(&task).await
+    }
+    async fn legacy_delete(&self, input: Value) -> TaskRecord {
+        let task = self
+            .lifecycle
+            .submit_legacy_trash_for_test(&self.id, input)
             .await
             .unwrap();
         self.wait(&task).await
@@ -137,12 +149,15 @@ fn good(task: &TaskRecord) -> &Value {
     task.result.as_ref().unwrap()
 }
 
+#[path = "direct_delete_tests.rs"]
+mod direct_delete;
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fail_closed() {
     for legacy in [false, true] {
         let fixture = Fixture::new().await;
-        let deleted = fixture.project("delete", json!({})).await;
+        let deleted = fixture.legacy_delete(json!({})).await;
         let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
         let directory = fixture.lifecycle.trash_root(&trash).unwrap();
         let root = directory.join("project");
@@ -195,7 +210,7 @@ async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fai
 #[tokio::test]
 async fn legacy_tuple_trash_record_remains_restorable_on_its_verified_device() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let directory = fixture.lifecycle.trash_root(&trash).unwrap();
     let mut record: Value = read_json(&directory.join("record.json")).unwrap();
@@ -264,7 +279,7 @@ async fn migrate_fixture(fixture: Fixture) -> (Fixture, PathBuf, String) {
 async fn migration_rebinds_verified_trash_and_real_restore_keeps_source_unchanged() {
     let fixture = Fixture::new().await;
     let old_epoch = fixture.store.project(&fixture.id).unwrap().document_epoch;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let trash_root = fixture.lifecycle.trash_root(&trash).unwrap();
     let record_bytes = fs::read(trash_root.join("record.json")).unwrap();
@@ -336,7 +351,7 @@ async fn migration_rebinds_verified_trash_and_real_restore_keeps_source_unchange
 #[tokio::test]
 async fn migration_rebinds_partial_purge_residue_and_only_explicit_retry_deletes_copy() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let trash_root = fixture.lifecycle.trash_root(&trash).unwrap();
     let database_path = trash_root.join("project/data/main.sqlite");
@@ -393,7 +408,7 @@ async fn migration_rebinds_partial_purge_residue_and_only_explicit_retry_deletes
 #[tokio::test]
 async fn migration_preserves_unverified_trash_identity_and_malformed_metadata() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let record_path = fixture
         .lifecycle
@@ -743,7 +758,7 @@ async fn delete_restore_and_purge_preserve_epochs_backups_and_corrupt_database_b
         b"retained external SHM bytes",
     )
     .unwrap();
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     assert_eq!(
         fixture.store.project(&fixture.id).err().unwrap().code,
@@ -788,7 +803,7 @@ async fn delete_restore_and_purge_preserve_epochs_backups_and_corrupt_database_b
         .is_err());
     assert!(original.check().is_err());
     let deleted = fixture
-        .project("delete", json!({"maintenanceId":state.maintenance_id}))
+        .legacy_delete(json!({"maintenanceId":state.maintenance_id}))
         .await;
     let trash = good(&deleted)["trashId"].as_str().unwrap();
     let request = fixture
@@ -914,7 +929,7 @@ async fn installed_copy_restart_recovers_response_without_replaying_registration
 async fn delete_and_restore_restart_reconcile_completed_moves_with_lost_task_response() {
     let fixture = Fixture::new().await;
     let old = fixture.store.project(&fixture.id).unwrap();
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let path = fixture.lifecycle.journal_path(&deleted.task_id);
     let mut journal: Journal = read_json(&path).unwrap();
@@ -1002,7 +1017,7 @@ async fn pending_import_reservation_is_released_when_no_directory_was_committed(
 #[tokio::test]
 async fn interrupted_purge_keeps_retryable_residual_record_and_never_replays_deletion() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let root = fixture
         .lifecycle
@@ -1062,7 +1077,7 @@ async fn interrupted_purge_keeps_retryable_residual_record_and_never_replays_del
 #[tokio::test]
 async fn unrelated_unresolved_recovery_reference_blocks_permanent_purge() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let other = format!("task_{}", Uuid::new_v4().simple());
     builds::atomic_json(
@@ -1273,7 +1288,7 @@ impl Drop for ImmutableFile {
 #[tokio::test]
 async fn real_purge_failure_reports_residue_and_explicit_retry_finishes() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let root = fixture
         .lifecycle
@@ -1319,7 +1334,7 @@ async fn committed_purge_response_lost_cannot_retire_a_later_same_id_import() {
             .project("export", json!({"destinationPath":archive}))
             .await,
     );
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let submitted = fixture
         .lifecycle

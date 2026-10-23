@@ -1,5 +1,7 @@
 # 本地服务与 AI 工具接口
 
+2026-10-23 当前删除按[直接删除契约](application-deletion.md)：`project delete` 使用 `POST /api/v1/projects/{id}/deletions`，直接永久删除所选项目，不进入平台或系统回收站。旧 `POST .../{id}/trash` 已退役并拒绝新请求，不能把旧客户端的可恢复删除静默升级为永久删除。`/api/v1/trash` 与 `trash` CLI 仅兼容旧回收项，旧备份和恢复证据继续保留。Node 独立槽的预览／删除仅开放给原生管理窗口，无新增 HTTP 或 CLI 删除入口。
+
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
 状态：v0.19，本地服务及配套接口已确认；Mac 内部版本已接独立 Node 本机槽、配置与原生窗口运行子集，并为 project-v1 接入受管开发 Node/npm；完整 Node 安装与生命周期、Git、跨系统验收及正式发行未完成。M1 至 M5 的历史实现和验证保留原范围。
@@ -226,11 +228,12 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `POST /api/v1/projects/{id}/exports` | 导出当前项目完整快照 | 管理凭据 |
 | `POST /api/v1/projects/imports` | 从完整 ZIP 导入原项目或新副本 | 管理凭据 |
 | `POST /api/v1/projects/{id}/copies` | 复制为独立新项目 | 管理凭据 |
-| `POST /api/v1/projects/{id}/trash` | 将项目移入回收站 | 管理凭据 |
-| `GET /api/v1/trash` | 列出回收站项目 | 管理凭据 |
-| `GET /api/v1/trash/{id}` | 查看回收站记录和占用 | 管理凭据 |
-| `POST /api/v1/trash/{id}/restore` | 以原 ID 从回收站恢复 | 管理凭据 |
-| `POST /api/v1/trash/{id}/purge` | 永久清除指定回收站项，不连带删除备份 | 管理凭据 |
+| `POST /api/v1/projects/{id}/deletions` | 直接永久删除项目，不进入平台或系统回收站 | 管理凭据 |
+| `POST /api/v1/projects/{id}/trash` | 已退役：拒绝新请求，避免扩大旧客户端的删除授权 | 管理凭据 |
+| `GET /api/v1/trash` | 历史兼容：列出旧回收站项目 | 管理凭据 |
+| `GET /api/v1/trash/{id}` | 历史兼容：查看旧回收站记录和占用 | 管理凭据 |
+| `POST /api/v1/trash/{id}/restore` | 历史兼容：以原 ID 从旧回收站恢复 | 管理凭据 |
+| `POST /api/v1/trash/{id}/purge` | 历史兼容：永久清除指定旧回收项，不连带删除备份 | 管理凭据 |
 | `GET /api/v1/workspace` | 查看当前工作区和迁移状态 | 管理凭据 |
 | `POST /api/v1/workspace/migrations` | 提交工作区迁移 | 管理凭据 |
 | `GET /api/v1/projects/{id}/storage` | 当前空间分类、统计时效与关联历史 | 管理凭据 |
@@ -273,7 +276,7 @@ stdout 与 stderr 分别限制为 64 KiB；stderr 只计量，不保存或返回
 
 `handoff` 结果为 `projectId`、`readmePath`、`cliPath` 和 `text`；交接不嵌入令牌、Cookie 或短期 ticket。AI 编辑完成并等待构建成功后，再取得新的浏览器入口。环境与任务日志属于管理接口，带浏览器 Origin 的请求即使持有管理 token 也拒绝；项目会话不能调用。
 
-生命周期接口的登记、冲突、维护和失败处理按[已确认契约](project-lifecycle-and-workspace.md)执行。回收站路由中的 `id` 是 `trashId`，不能混用项目 ID。迁移刷新实例与凭据后，CLI 重新发现服务并查询原任务；不自动重发变更操作。迁移自身的任务与日志位于固定 `appLocalDataDir/migrations/<taskId>/`，统一任务查询处理该位置差异。
+生命周期接口的登记、冲突、维护和失败处理按[已确认契约](project-lifecycle-and-workspace.md)执行。直接删除以当前项目 ID 定位，HTTP JSON 必须包含当前 `expectedDocumentEpoch`，维护中另带 `maintenanceId`；不接受任意删除路径。CLI 未显式提供 `expectedDocumentEpoch` 时先读取 `project info` 中的 `documentEpoch` 再绑定提交；显式值原样保留供服务拒绝过期身份。读取失败或身份缺失／类型错误时不提交删除，写入失败后不重新读取身份并重试。成功结果为 `operationOutcome: "deleted"`、`restoreAvailable: false`、`historicalBackupsRetained: true`；部分删除报告 `delete_incomplete` 与 `remainingPath`，保留任务和现场，不保证能恢复已删除文件。旧回收站路由中的 `id` 是 `trashId`，不能混用项目 ID。迁移刷新实例与凭据后，CLI 重新发现服务并查询原任务；不自动重发变更操作。迁移自身的任务与日志位于固定 `appLocalDataDir/migrations/<taskId>/`，统一任务查询处理该位置差异。
 
 空间接口按[已确认空间契约](project-storage-and-assets.md)执行。扫描非原子、只读且不冻结业务，重复扫描复用未完成任务；清理与同项目变更任务互斥，并按维护 ID、基线准备及恢复状态检查。`categories` 仅接受非空的 `dependencies`、`buildCache`、`logs` 列表，类别内部仍逐项核对保护条件。查询显示首次未统计、过期或不完整状态，不以零替代未知；分页字段和结果定义见空间契约。
 
@@ -386,11 +389,11 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform project export --project ID --input request.json --json` | 导出当前快照，指定 ZIP 目标位置 |
 | `platform project import --input request.json --json` | 输入 ZIP 路径及 `original` 或 `copy` 模式 |
 | `platform project copy --project ID --input request.json --json` | 复制内容，生成新 ID，可指定名称 |
-| `platform project delete --project ID --input request.json --json` | 仅移入回收站，返回回收站 ID |
-| `platform trash list --json` | 列出回收站记录 |
-| `platform trash info --trash ID --json` | 查看指定回收站项 |
-| `platform trash restore --trash ID --json` | 从回收站恢复原项目 |
-| `platform trash purge --trash ID --json` | 永久清除指定回收站项 |
+| `platform project delete --project ID --json` | 直接永久删除项目，无法从平台或系统回收站撤销；维护中携带当前维护 ID |
+| `platform trash list --json` | 历史兼容：列出旧回收站记录 |
+| `platform trash info --trash ID --json` | 历史兼容：查看指定旧回收项 |
+| `platform trash restore --trash ID --json` | 历史兼容：从旧回收站恢复原项目 |
+| `platform trash purge --trash ID --json` | 历史兼容：永久清除指定旧回收项 |
 | `platform workspace info --json` | 查看当前工作区 |
 | `platform workspace migrate --input request.json --json` | 指定目标目录并提交迁移任务 |
 | `platform storage info --project ID --json` | 查看空间分类与统计时效 |

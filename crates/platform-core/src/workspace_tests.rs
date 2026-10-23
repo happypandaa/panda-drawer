@@ -97,6 +97,45 @@ async fn source_restore_guard_blocks_pending_migration_and_preserves_completed_e
     store.shutdown().await;
 }
 #[tokio::test]
+async fn deletion_marker_created_after_migration_admission_blocks_copy_before_any_files_move() {
+    let (_temp, paths, store, id, dest) = fixture().await;
+    let (root, identity) = store.deletion_root(&id).unwrap();
+    let before = fs::read(root.join("data/attachments/.hidden")).unwrap();
+    // A project task accepted before migration may fail while migration drains.
+    store.begin_workspace_migration().unwrap();
+    let task = create(&paths, &dest).unwrap();
+    store
+        .begin_deletion(
+            &id,
+            "task_disposable_partial_delete",
+            &Uuid::new_v4().to_string(),
+            &identity,
+        )
+        .unwrap();
+    let marker = paths
+        .workspace_root()
+        .join(".platform/project-state/deleting")
+        .join(format!("{id}.json"));
+    let marker_bytes = fs::read(&marker).unwrap();
+    assert_eq!(
+        validate_idle(&paths).unwrap_err().code,
+        "PROJECT_DELETE_INCOMPLETE"
+    );
+    assert!(copy_and_commit(&paths, &store, &task.task_id).is_err());
+    assert!(fs::read_dir(&dest).unwrap().next().is_none());
+    assert_eq!(fs::read(&marker).unwrap(), marker_bytes);
+    assert_eq!(
+        fs::read(root.join("data/attachments/.hidden")).unwrap(),
+        before
+    );
+    assert_eq!(
+        paths.reinitialize_for_test().unwrap().workspace_root(),
+        paths.workspace_root()
+    );
+    store.resume_workspace();
+    store.shutdown().await;
+}
+#[tokio::test]
 async fn migration_preserves_protected_trees_links_database_and_state_excludes_only_active_dependencies(
 ) {
     let (_temp, paths, store, id, dest) = fixture().await;
