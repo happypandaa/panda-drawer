@@ -217,6 +217,7 @@ impl MaintenanceManager {
         }
         value["busy"] = json!(control.frozen.load(Ordering::Acquire));
         value["activeTask"] = json!(self.store.active_task(id));
+        value["latestBuild"] = json!(self.tasks.latest_build(id));
         value["documentEpoch"] = json!(self.store.project(id).ok().map(|p| p.document_epoch));
         Ok(value)
     }
