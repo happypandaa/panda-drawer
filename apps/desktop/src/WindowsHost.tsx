@@ -10,6 +10,7 @@ import { NodeAppsPanel } from './NodeAppsPanel';
 import type { NodeAppRequest } from './NodeAppsPanel';
 import type { NodeAppDetail } from './node-app-types';
 import { Modal } from './Modal';
+import { WindowsDevelopmentTools } from './WindowsDevelopmentTools';
 import { WINDOWS_MANAGER_CAPABILITIES as capabilities } from './manager-capabilities';
 
 interface ProjectStatus {
@@ -62,6 +63,13 @@ export function WindowsHost() {
   const [diagnostic, setDiagnostic] = useState<HostReport | null>(null);
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [developmentPending, setDevelopmentPending] = useState(false);
+  const [developmentRequiresRecheck, setDevelopmentRequiresRecheck] = useState(false);
+  const developmentInteraction = useRef(false);
+  const reportDevelopmentPending = useCallback((value: boolean) => {
+    developmentInteraction.current = value;
+    setDevelopmentPending(value);
+  }, []);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ProjectFilter>('all');
   const [selected, setSelected] = useState<ProjectInfo | null>(null);
@@ -259,7 +267,7 @@ export function WindowsHost() {
   function requestRefresh() {
     // User actions share one synchronous admission gate. Creation's accepted
     // operation still uses refresh() internally after its real acknowledgement.
-    if (nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || diagnosticPending.current || refreshPending.current) return;
+    if (developmentInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || diagnosticPending.current || refreshPending.current) return;
     return refresh();
   }
   function requestCreate() {
@@ -304,8 +312,10 @@ export function WindowsHost() {
       {filteredNodeApps.map(app => <NodeProjectCard key={'node:' + app.id} app={app} blocked={!nodeAllowed || busy || nodeModalOpen}
         deleteUnavailableReason={deferredReason} detailsDisabled={!nodeAllowed || busy || nodeModalOpen} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} />)}
     </ProjectCollection>
-    {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={diagnosticLoading} onClose={() => setSettingsOpen(false)}>
+    {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={diagnosticLoading || developmentPending} beforeClose={() => !diagnosticPending.current && !developmentInteraction.current} onClose={() => setSettingsOpen(false)}>
       {feedback}
+      <WindowsDevelopmentTools disabled={status?.rootStatus !== 'ready' || busy} onPendingChange={reportDevelopmentPending}
+        requiresRecheck={developmentRequiresRecheck} onRecheckRequiredChange={setDevelopmentRequiresRecheck} />
       <section className="runtime-view" aria-labelledby="settings-runtime-title">
         <h3 id="settings-runtime-title">运行环境</h3>
         <dl className="radio-settings-summary"><div><dt>Windows 能力阶段</dt><dd>网页只读与 Node 内部样本</dd></div><div><dt>工作区状态</dt><dd>{status ? rootLabels[status.rootStatus] : '尚未读取'}</dd></div></dl>
@@ -328,8 +338,8 @@ export function WindowsHost() {
         <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫应用小抽屉<span>Windows · 内部验证版</span></div></div>
         <p>项目数据保存在本机；Node 仅接入内部源码样本，完整备份、生命周期与外部分发尚未开放。</p>
       </section>
-      <details className="radio-settings-guide"><summary>使用指南</summary><div className="section-heading"><div><h2>创建与打开</h2><p>先创建一个可丢弃网页项目初始化固定工作区。网页初始页面已预编译，使用时无需系统 Node。</p><p>工作区就绪后，可从“添加本地应用”登记 Node 样本；先核对声明，再配置保存，最后明确进入项目。保存配置不会启动或重启应用。源码目录需保留，系统构建环境配置仍未开放。</p></div></div></details>
-      <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={diagnosticLoading} onClick={() => setSettingsOpen(false)}>完成</button></div>
+      <details className="radio-settings-guide"><summary>使用指南</summary><div className="section-heading"><div><h2>创建与打开</h2><p>先创建一个可丢弃网页项目初始化固定工作区。网页初始页面已预编译，使用时无需系统 Node。</p><p>工作区就绪后，可从“添加本地应用”登记 Node 样本；先核对声明，再配置保存，最后明确进入项目。保存配置不会启动或重启应用。源码目录需保留。上方开发工具设置不会自动构建或运行项目；应用运行仍使用包内独立 Node。</p></div></div></details>
+      <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={diagnosticLoading || developmentPending} onClick={() => { if (!diagnosticPending.current && !developmentInteraction.current) setSettingsOpen(false); }}>完成</button></div>
     </Modal>}
     <NodeAppsPanel enabled={nodeAllowed && !hostBusy} request={nodeRequest} addRequest={nodeAddRequest}
       chooseSourceCommand="node_app_choose_source" unavailableReason={nodeUnavailableReason} onMutationError={nodeMutationError}

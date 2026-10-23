@@ -538,6 +538,20 @@ fn relative_mode(
     security: Option<&Allocation>,
     allow_case_alias: bool,
 ) -> Result<Arc<Object>> {
+    relative_mode_with_hook(parent, name, directory, create, access, sharing, security, allow_case_alias, || {})
+}
+#[allow(clippy::too_many_arguments)]
+fn relative_mode_with_hook(
+    parent: HANDLE,
+    name: &str,
+    directory: bool,
+    create: bool,
+    access: u32,
+    sharing: u32,
+    security: Option<&Allocation>,
+    allow_case_alias: bool,
+    on_created: impl FnOnce(),
+) -> Result<Arc<Object>> {
     let mut units = component(name)?;
     let unicode = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
@@ -596,6 +610,7 @@ fn relative_mode(
             "WORKSPACE_OPEN_FAILED"
         },
     )?;
+    if create { on_created(); }
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(error("WORKSPACE_HANDLE_INVALID", "系统没有返回有效句柄。"));
     }
@@ -1794,7 +1809,7 @@ mod tests;
 
 #[path = "windows_node_files.rs"]
 mod node_files;
-pub use node_files::WindowsSourceDirectory;
+pub use node_files::{WindowsSourceDirectory, WindowsSourceEntry};
 
 #[cfg(feature = "test-fixtures")]
 pub use node_files::disposable_node_directory;

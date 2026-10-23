@@ -1,5 +1,7 @@
 # 2026-10-23 主线新功能 Windows 兼容审查
 
+后续实施记录：[Windows 开发工具与源码候选验证](windows-development-verification.md)。以下审查保留同步时基线；后续已开放能力以逐步验证记录为准。
+
 审查基线：`origin/main` 从 `770ec1d` 前进到 `f0b83ef`，共 43 个新提交；兼容分支本轮同步前为 `7427cfd`。本轮任务是同步和兼容性审查，不是将下列全部新功能实现到 Windows。源码行号以 `f0b83ef` 为准，合并后行号可能变化；本轮实际检查结果另行补录，不以主线 Mac 结果代替 Windows 验证。
 
 Windows 已有 W2.1 新样本创建、只读打开和旧包正常重启，W2.2a/b1/b2 私有文件与 WAL 连接实验，以及独立业务 Node 的固定 x64 资源、配置 ACL、Job 进程树、代理与窗口接入。证据见 [W2 记录](windows-w2-verification.md)及 [Windows Node 记录](windows-node-verification.md)。公开 SQL、附件、用户构建和完整生命周期仍关闭；最新真实 GUI 在系统父目录 ACL 准入前被阻断，Win10、安装和真实媒体也未通过。不能放宽系统父 ACL、变更开发身份或换根来取得通过结果。

@@ -1,6 +1,23 @@
 //! Handle-rooted Node source reads and private slot files. Source trees are
 //! trusted executable inputs, not private platform storage or a sandbox.
 use super::*;
+use windows_sys::Win32::Storage::FileSystem::{
+    FileBasicInfo, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FILE_BASIC_INFO,
+    FILE_ID_EXTD_DIR_INFO,
+};
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsSourceEntry {
+    pub name: String,
+    pub is_directory: bool,
+    pub identity: WindowsObjectIdentity,
+    pub length: u64,
+    pub last_write_time: i64,
+    pub change_time: i64,
+    pub attributes: u32,
+    pub reparse: bool,
+}
 
 #[derive(Clone)]
 pub struct WindowsSourceDirectory {
@@ -117,6 +134,33 @@ impl WindowsSourceDirectory {
         directory.verify_binding()?;
         Self::open_private(directory.path())
     }
+    /// Creates one new private child beneath a retained ordinary parent. Only
+    /// the new child receives the private ACL; the parent is never repaired.
+    pub fn create_private_in(parent: &Path, name: &str) -> Result<Self> {
+        let parent = Self::open(parent)?;
+        let security = descriptor(&user_sid()?, true)?;
+        let created = relative(
+            parent.object().raw(),
+            name,
+            true,
+            true,
+            DIRECTORY_ACCESS | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
+            DIRECTORY_SHARING,
+            Some(&security),
+        )?;
+        owner_and_acl(created.raw(), &user_sid()?, true)?;
+        parent.verify()?;
+        let mut result = Self::open_private(&parent.path.join(name))?;
+        if result.identity() != &created.identity {
+            return Err(error(
+                "NODE_PRIVATE_DIRECTORY_CHANGED",
+                "新建私有目录身份发生变化，现场已保留。",
+            ));
+        }
+        result.pins.push(created);
+        result.verify()?;
+        Ok(result)
+    }
     fn object(&self) -> &Arc<Object> {
         self.lineage
             .last()
@@ -174,6 +218,364 @@ impl WindowsSourceDirectory {
                 .iter()
                 .chain(other.lineage.iter())
                 .any(|item| &item.identity == self.identity())
+    }
+    /// Pins metadata only, without reading arbitrary source or credential bytes.
+    /// Files deny new write/delete handles; already occupied files are refused.
+    pub fn pin_entry(&self, name: &str) -> Result<(Self, WindowsSourceEntry)> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| error("NODE_DIRECTORY_POISONED", "目录检查异常，已保留现场。"))?;
+        self.verify()?;
+        let listed = self.list_unlocked()?;
+        let entry = listed
+            .iter()
+            .find(|entry| entry.name == name)
+            .ok_or_else(|| error("NODE_SOURCE_CHANGED", "目录条目已变化，请重新检查。"))?;
+        let object = relative(
+            self.object().raw(),
+            name,
+            entry.is_directory,
+            false,
+            FILE_READ_ATTRIBUTES
+                | READ_CONTROL
+                | SYNCHRONIZE
+                | if entry.is_directory {
+                    FILE_TRAVERSE
+                } else {
+                    FILE_READ_DATA
+                },
+            if entry.is_directory {
+                DIRECTORY_SHARING
+            } else {
+                FILE_SHARE_READ
+            },
+            None,
+        )?;
+        let standard = object.verify()?;
+        let basic: FILE_BASIC_INFO = info(object.raw(), FileBasicInfo)?;
+        if standard.EndOfFile < 0 {
+            return Err(error("NODE_SOURCE_METADATA_INVALID", "目录条目长度无效。"));
+        }
+        let metadata = WindowsSourceEntry {
+            name: name.into(),
+            is_directory: entry.is_directory,
+            identity: object.identity.clone(),
+            length: standard.EndOfFile as u64,
+            last_write_time: basic.LastWriteTime,
+            change_time: basic.ChangeTime,
+            attributes: basic.FileAttributes,
+            reparse: false,
+        };
+        let mut pinned = self.clone();
+        pinned.pins.push(object);
+        pinned.verify()?;
+        Ok((pinned, metadata))
+    }
+    /// Enumerates source metadata beneath the existing directory HANDLE only.
+    /// Reparse entries are reported, never opened: callers can exclude .git,
+    /// credentials and dependency trees before deciding which objects to pin.
+    pub fn source_entries(&self, limit: usize) -> Result<Vec<WindowsSourceEntry>> {
+        if limit == 0 || limit > 40_000 {
+            return Err(error(
+                "NODE_SOURCE_LIMIT_INVALID",
+                "来源目录枚举上限须为1至40000。",
+            ));
+        }
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| error("NODE_DIRECTORY_POISONED", "来源枚举异常。"))?;
+        self.verify()?;
+        let mut entries = Vec::new();
+        let mut names = HashSet::new();
+        let mut restart = true;
+        loop {
+            let mut buffer = vec![0u64; 65536 / 8];
+            let class = if restart {
+                FileIdExtdDirectoryRestartInfo
+            } else {
+                FileIdExtdDirectoryInfo
+            };
+            restart = false;
+            if unsafe {
+                GetFileInformationByHandleEx(
+                    self.object().raw(),
+                    class,
+                    buffer.as_mut_ptr().cast(),
+                    65536,
+                )
+            } == 0
+            {
+                if unsafe { GetLastError() } == ERROR_NO_MORE_FILES {
+                    break;
+                }
+                return Err(os_error("NODE_SOURCE_ENUMERATION_FAILED"));
+            }
+            let mut offset = 0;
+            loop {
+                let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+                if offset + size_of::<FILE_ID_EXTD_DIR_INFO>() > 65536 {
+                    return Err(error(
+                        "NODE_SOURCE_ENUMERATION_INVALID",
+                        "来源目录数据不完整。",
+                    ));
+                }
+                let item = unsafe {
+                    &*buffer
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(offset)
+                        .cast::<FILE_ID_EXTD_DIR_INFO>()
+                };
+                let length = item.FileNameLength as usize;
+                if length == 0
+                    || length > 510
+                    || !length.is_multiple_of(2)
+                    || offset + name_offset + length > 65536
+                {
+                    return Err(error(
+                        "NODE_SOURCE_ENUMERATION_INVALID",
+                        "来源目录名称无效。",
+                    ));
+                }
+                let units = unsafe {
+                    std::slice::from_raw_parts(
+                        buffer
+                            .as_ptr()
+                            .cast::<u8>()
+                            .add(offset + name_offset)
+                            .cast::<u16>(),
+                        length / 2,
+                    )
+                };
+                let name = String::from_utf16(units)
+                    .map_err(|_| error("NODE_SOURCE_NAME_INVALID", "来源名称不是有效Unicode。"))?;
+                if name != "." && name != ".." {
+                    component(&name)?;
+                    if entries.len() == limit {
+                        return Err(error(
+                            "NODE_SOURCE_ENUMERATION_LIMIT",
+                            "来源目录超过本次有界枚举上限。",
+                        ));
+                    }
+                    if !names.insert(name.to_lowercase()) {
+                        return Err(error(
+                            "NODE_SOURCE_NAME_COLLISION",
+                            "来源目录含大小写名称冲突。",
+                        ));
+                    }
+                    if item.EndOfFile < 0 {
+                        return Err(error("NODE_SOURCE_METADATA_INVALID", "来源条目长度无效。"));
+                    }
+                    entries.push(WindowsSourceEntry {
+                        name,
+                        is_directory: item.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+                        identity: WindowsObjectIdentity {
+                            volume_serial: self.identity().volume_serial,
+                            file_id128: item.FileId.Identifier,
+                        },
+                        length: item.EndOfFile as u64,
+                        last_write_time: item.LastWriteTime,
+                        change_time: item.ChangeTime,
+                        attributes: item.FileAttributes,
+                        reparse: item.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+                    });
+                }
+                if item.NextEntryOffset == 0 {
+                    break;
+                }
+                let next = item.NextEntryOffset as usize;
+                if next < name_offset + length || !next.is_multiple_of(8) || offset + next >= 65536
+                {
+                    return Err(error(
+                        "NODE_SOURCE_ENUMERATION_INVALID",
+                        "来源目录偏移无效。",
+                    ));
+                }
+                offset += next;
+            }
+        }
+        self.verify()?;
+        entries.sort_by(|left, right| {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(entries)
+    }
+    /// Opens the already-enumerated direct child without enumerating again,
+    /// and binds its identity and metadata before it can be read or copied.
+    pub fn pin_source_entry(
+        &self,
+        expected: &WindowsSourceEntry,
+    ) -> Result<(Self, WindowsSourceEntry)> {
+        if expected.reparse || expected.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(error(
+                "NODE_SOURCE_REPARSE_REJECTED",
+                "被选中的来源条目是重解析点。",
+            ));
+        }
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| error("NODE_DIRECTORY_POISONED", "来源读取异常。"))?;
+        self.verify()?;
+        let object = relative(
+            self.object().raw(),
+            &expected.name,
+            expected.is_directory,
+            false,
+            FILE_READ_ATTRIBUTES
+                | READ_CONTROL
+                | SYNCHRONIZE
+                | if expected.is_directory {
+                    FILE_LIST_DIRECTORY | FILE_TRAVERSE
+                } else {
+                    FILE_READ_DATA
+                },
+            if expected.is_directory {
+                DIRECTORY_SHARING
+            } else {
+                FILE_SHARE_READ
+            },
+            None,
+        )?;
+        let standard = object.verify()?;
+        let basic: FILE_BASIC_INFO = info(object.raw(), FileBasicInfo)?;
+        if standard.EndOfFile < 0 {
+            return Err(error("NODE_SOURCE_METADATA_INVALID", "来源条目长度无效。"));
+        }
+        let observed = WindowsSourceEntry {
+            name: expected.name.clone(),
+            is_directory: expected.is_directory,
+            identity: object.identity.clone(),
+            length: standard.EndOfFile as u64,
+            last_write_time: basic.LastWriteTime,
+            change_time: basic.ChangeTime,
+            attributes: basic.FileAttributes,
+            reparse: false,
+        };
+        if &observed != expected {
+            return Err(error(
+                "NODE_SOURCE_CHANGED",
+                "来源条目身份或内容元数据已变化，请重新检查。",
+            ));
+        }
+        let mut guard = self.clone();
+        if expected.is_directory {
+            guard.lineage.push(object);
+            guard.path.push(&expected.name);
+        } else {
+            guard.pins.push(object);
+        }
+        guard.verify()?;
+        Ok((guard, observed))
+    }
+    /// Reopens the same external directory with creation rights. No ACL is
+    /// supplied or repaired; the existing directory's access checks apply.
+    fn source_writer(&self) -> Result<Arc<Object>> {
+        if self.private {
+            return Err(error(
+                "NODE_EXTERNAL_DIRECTORY_REQUIRED",
+                "此入口只用于普通外部目录。",
+            ));
+        }
+        self.verify()?;
+        let parent = if self.lineage.len() > 1 {
+            &self.lineage[self.lineage.len() - 2]
+        } else if self.lineage.len() == 1 {
+            self.ancestry.objects.last().unwrap()
+        } else {
+            self.ancestry
+                .objects
+                .get(self.ancestry.objects.len().saturating_sub(2))
+                .ok_or_else(|| error("NODE_SOURCE_PATH_INVALID", "不能初始化卷根目录。"))?
+        };
+        let name = self
+            .path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| error("NODE_SOURCE_PATH_INVALID", "外部目录名称无效。"))?;
+        let writer = relative(
+            parent.raw(),
+            name,
+            true,
+            false,
+            DIRECTORY_ACCESS | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
+            DIRECTORY_SHARING,
+            None,
+        )?;
+        if writer.identity != *self.identity() {
+            return Err(error("NODE_SOURCE_CHANGED", "外部目录身份已变化。"));
+        }
+        self.verify()?;
+        Ok(writer)
+    }
+    pub fn create_source_directory(&self, name: &str) -> Result<Self> {
+        self.create_source_directory_notified(name, || {})
+    }
+    pub fn create_source_directory_notified(
+        &self,
+        name: &str,
+        on_created: impl FnOnce(),
+    ) -> Result<Self> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| error("NODE_DIRECTORY_POISONED", "目录操作异常。"))?;
+        let parent = self.source_writer()?;
+        let child = relative_mode_with_hook(
+            parent.raw(),
+            name,
+            true,
+            true,
+            DIRECTORY_ACCESS | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
+            DIRECTORY_SHARING,
+            None,
+            false,
+            on_created,
+        )?;
+        let mut result = self.clone();
+        result.lineage.push(child);
+        result.path.push(name);
+        result.verify()?;
+        Ok(result)
+    }
+    /// Returns only a newly created file, with no write/delete sharing. On any
+    /// later write failure the caller must retain the file and report its path.
+    pub fn create_source_file(&self, name: &str) -> Result<(File, WindowsObjectIdentity)> {
+        self.create_source_file_notified(name, || {})
+    }
+    pub fn create_source_file_notified(
+        &self,
+        name: &str,
+        on_created: impl FnOnce(),
+    ) -> Result<(File, WindowsObjectIdentity)> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| error("NODE_DIRECTORY_POISONED", "目录操作异常。"))?;
+        let parent = self.source_writer()?;
+        let object = relative_mode_with_hook(
+            parent.raw(),
+            name,
+            false,
+            true,
+            FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            FILE_SHARE_READ,
+            None,
+            false,
+            on_created,
+        )?;
+        let handle = object
+            .handle
+            .0
+            .try_clone()
+            .map_err(|e| error("NODE_FILE_HANDLE_FAILED", e.to_string()))?;
+        self.verify()?;
+        Ok((File::from(handle), object.identity.clone()))
     }
     pub fn open_directory(&self, name: &str) -> Result<Self> {
         self.directory(name, false)
@@ -473,6 +875,9 @@ impl WindowsSourceDirectory {
             .operation
             .lock()
             .map_err(|_| error("NODE_DIRECTORY_POISONED", "目录操作异常。"))?;
+        self.list_unlocked()
+    }
+    fn list_unlocked(&self) -> Result<Vec<WorkspaceEntry>> {
         self.verify()?;
         let mut entries = Vec::new();
         let mut names = HashSet::new();

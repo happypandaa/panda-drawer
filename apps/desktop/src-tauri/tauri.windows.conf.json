@@ -7,7 +7,9 @@
     "resources": {
       "resources/windows/node-runtime/node.exe": "resources/node-runtime/node.exe",
       "resources/windows/node-runtime/LICENSE": "resources/node-runtime/LICENSE",
-      "resources/windows/node-runtime/runtime.json": "resources/node-runtime/runtime.json"
+      "resources/windows/node-runtime/runtime.json": "resources/node-runtime/runtime.json",
+      "resources/windows/development-node/": "resources/development-node/",
+      "resources/windows/development-git/": "resources/development-git/"
     },
     "icon": ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"]
   }

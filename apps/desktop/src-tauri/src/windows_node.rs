@@ -88,7 +88,7 @@ pub(super) async fn node_app_choose_source(
     let (send, recv) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("选择独立的 Node 应用源码目录")
+        .set_title("选择本地项目文件夹（空目录或已有项目）")
         .pick_folder(move |selection| {
             let _ = send.send(
                 selection
@@ -141,6 +141,72 @@ pub(super) async fn node_app_register(
     app.state::<AppState>()
         .node_apps
         .register(PathBuf::from(source_path), &expected_revision)
+        .await
+}
+
+#[tauri::command]
+pub(super) async fn node_app_directory_inspect(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    host: tauri::State<'_, WindowsDesktopState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_active_manager(&window, &host)?;
+    let _operation = host.operation_gate.lock().await;
+    require_active_manager(&window, &host)?;
+    ensure_nodes(&app, &host).await?;
+    let apps = app.state::<AppState>().node_apps.clone();
+    tokio::task::spawn_blocking(move || apps.inspect_directory(&PathBuf::from(source_path)))
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "LOCAL_DIRECTORY_CHECK_FAILED",
+                "目录检查未完成，请重新检查。",
+            )
+        })?
+}
+
+#[tauri::command]
+pub(super) async fn node_app_directory_initialize(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    host: tauri::State<'_, WindowsDesktopState>,
+    source_path: String,
+    input: platform_node::node_apps::DirectoryInitializeInput,
+) -> Result<Value, ApiError> {
+    require_active_manager(&window, &host)?;
+    let _operation = host.operation_gate.lock().await;
+    require_active_manager(&window, &host)?;
+    ensure_nodes(&app, &host).await?;
+    let apps = app.state::<AppState>().node_apps.clone();
+    tokio::task::spawn_blocking(move || {
+        apps.initialize_directory(&PathBuf::from(source_path), input)
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "LOCAL_DIRECTORY_INITIALIZE_INTERRUPTED",
+            "初始化结果未能确认，请保留目录文件并重新检查；不会自动重复初始化。",
+        )
+        .outcome("unknown")
+    })?
+}
+
+#[tauri::command]
+pub(super) async fn node_app_directory_register(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    host: tauri::State<'_, WindowsDesktopState>,
+    source_path: String,
+    expected_revision: String,
+) -> Result<Value, ApiError> {
+    require_active_manager(&window, &host)?;
+    let _operation = host.operation_gate.lock().await;
+    require_active_manager(&window, &host)?;
+    ensure_nodes(&app, &host).await?;
+    app.state::<AppState>()
+        .node_apps
+        .register_directory(PathBuf::from(source_path), expected_revision)
         .await
 }
 

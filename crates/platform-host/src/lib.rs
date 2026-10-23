@@ -11,9 +11,16 @@ pub use windows::WebviewCache;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub mod windows_command;
+#[cfg(windows)]
+pub mod windows_development;
+#[cfg(windows)]
 pub mod windows_node_root;
 #[cfg(windows)]
 mod windows_parent_security;
+#[cfg(windows)]
+#[doc(hidden)]
+pub mod windows_process;
 #[cfg(windows)]
 pub mod windows_projects;
 #[cfg(windows)]
@@ -33,8 +40,9 @@ pub use windows_workspace::disposable_node_directory;
 #[cfg(windows)]
 pub use windows_workspace::{
     fixed_workspace_data_root, SqliteFileIdentities, SqliteFileKind, SqliteFileLease,
-    SqliteFileSet, WindowsObjectIdentity, WindowsSourceDirectory, WindowsWorkspace,
-    WorkspaceDirectory, WorkspaceEntry, WorkspaceError, WorkspaceFile, WorkspaceLock,
+    SqliteFileSet, WindowsObjectIdentity, WindowsSourceDirectory, WindowsSourceEntry,
+    WindowsWorkspace, WorkspaceDirectory, WorkspaceEntry, WorkspaceError, WorkspaceFile,
+    WorkspaceLock,
 };
 #[cfg(all(windows, feature = "test-fixtures"))]
 pub fn disposable_node_workspace(

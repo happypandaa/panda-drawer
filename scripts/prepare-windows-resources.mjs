@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { root } from './process.mjs';
 import { packageTemplate } from './package-template.mjs';
 import { packageWindowsNodeRuntime } from './package-windows-node-runtime.mjs';
+import { prepareWindowsDevelopmentNode } from './package-windows-development-node.mjs';
+import { prepareWindowsDevelopmentGit } from './package-windows-development-git.mjs';
 
 const generatedParent = path.join(root, 'apps/desktop/src-tauri/resources');
 const destination = path.join(generatedParent, 'windows');
@@ -48,7 +50,8 @@ export async function embeddedResourceFiles(directory) {
     entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
     for (const entry of entries) {
       const label = relative ? relative + '/' + entry.name : entry.name;
-      if (label === 'embedded-project-resources.json' || label === 'node-runtime') continue;
+      if (['embedded-project-resources.json', 'node-runtime', 'development-node', 'development-git'].includes(label)
+        || (!relative && /^\.development-(node|git)-stage-/.test(entry.name))) continue;
       if (entry.isDirectory()) await visit(label);
       else if (entry.isFile()) files.push([label, [...await readFile(path.join(directory, label))]]);
       else throw new Error('Embedded resources accept ordinary files and directories only: ' + label);
@@ -58,7 +61,7 @@ export async function embeddedResourceFiles(directory) {
   return files;
 }
 
-export async function prepareWindowsResources({ templateDirectory = path.join(root, 'templates/react'), nodeRuntimeArchive } = {}) {
+export async function prepareWindowsResources({ templateDirectory = path.join(root, 'templates/react'), nodeRuntimeArchive, developmentNodeArchive, developmentGitArchive } = {}) {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Windows resource assembly currently requires Windows x64.');
   }
@@ -80,6 +83,14 @@ export async function prepareWindowsResources({ templateDirectory = path.join(ro
     cache: path.join(root, '.tools/windows-node-runtime-cache'),
     ...(nodeRuntimeArchive ? { archive: nodeRuntimeArchive } : {}),
   });
+  const developmentNode = await prepareWindowsDevelopmentNode({
+    outputDir: path.join(stage, 'development-node'), cacheDir: path.join(root, '.tools/windows-development-cache'),
+    ...(developmentNodeArchive ? { archive: developmentNodeArchive } : {}),
+  });
+  const developmentGit = await prepareWindowsDevelopmentGit({
+    outputDir: path.join(stage, 'development-git'), cacheDir: path.join(root, '.tools/windows-development-cache'),
+    ...(developmentGitArchive ? { archive: developmentGitArchive } : {}),
+  });
   await cp(path.join(root, 'docs/development.md'), path.join(stage, 'README.md'));
   await writeFile(path.join(stage, 'windows-resources.json'), JSON.stringify({
     schemaVersion: 1,
@@ -89,6 +100,8 @@ export async function prepareWindowsResources({ templateDirectory = path.join(ro
     templateVersion: starter.templateVersion,
     cliIncluded: false,
     privateNodeVersion: privateNode.runtime.version,
+    developmentNodeVersion: developmentNode.version,
+    developmentGitVersion: developmentGit.version,
     preparedAt: Date.now(),
   }, null, 2) + '\n');
   // All SDK, source, starter, skill and documentation bytes are compiled into

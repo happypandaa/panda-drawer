@@ -76,7 +76,7 @@ export const WINDOWS_MANAGER_CAPABILITIES = Object.freeze({
   openBrowser: true,
   readOnlyDetails: true,
   nodeApps: true,
-  nodeDirectoryOnboarding: false,
+  nodeDirectoryOnboarding: true,
   nodeManagedInstall: false,
   nodeDelete: false,
   sourceAcquisition: false,

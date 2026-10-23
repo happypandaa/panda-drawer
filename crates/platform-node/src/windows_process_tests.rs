@@ -1,9 +1,30 @@
 //! Real official Node and native job tests. These use disposable files only.
 use super::*;
 use sha2::{Digest, Sha256};
-use std::{io::Read, path::PathBuf};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    io::Read,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    path::PathBuf,
+    time::Duration,
+};
 use tokio::io::AsyncReadExt;
-use windows_sys::Win32::{Storage::FileSystem::SYNCHRONIZE, System::Threading::*};
+use windows_sys::Win32::{
+    Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
+    Storage::FileSystem::SYNCHRONIZE,
+    System::Threading::*,
+};
+
+fn raw(handle: &OwnedHandle) -> HANDLE {
+    handle.as_raw_handle().cast()
+}
+fn owned(handle: HANDLE) -> std::io::Result<OwnedHandle> {
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle.cast()) })
+}
 
 // Independent fixture pin, verified against the official archive/checksums.
 pub(crate) fn private_node() -> PathBuf {
