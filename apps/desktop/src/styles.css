@@ -1314,3 +1314,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .node-delete-confirmation h3 { color: var(--danger, #ba3c3c); }
 .node-delete-paths { display: grid; gap: 6px; padding-left: 20px; }
 .node-delete-paths code { overflow-wrap: anywhere; word-break: break-word; }
+
+.local-directory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.local-directory-path, .local-directory-prompt, .local-directory-empty { display: grid; gap: 10px; margin: 16px 0; }
+.local-directory-path input, .local-directory-prompt textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.local-directory-prompt textarea { resize: vertical; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.local-directory-review { margin-top: 18px; }

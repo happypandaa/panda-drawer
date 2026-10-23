@@ -160,7 +160,8 @@ test('Local source inspection only requests declarations and never registers or 
   };
   await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() {} }));
   await click(buttonNamed('检查本机源码目录'));
-  assert.match(dialog().textContent, /需要适配的源码 · 未执行代码/);
+  assert.match(dialog().textContent, /尚待评估的源码 · 未执行代码/);
+  assert.match(dialog().textContent, /平台未判断能否适配/);
   assert.match(dialog().textContent, /Missing supported declaration/);
   assert.deepEqual(calls.map(([command]) => command), ['source_list', 'choose_path', 'source_inspect']);
 });

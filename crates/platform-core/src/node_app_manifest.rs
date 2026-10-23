@@ -350,11 +350,20 @@ impl TrialManifest {
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
+            // A declaration replaced by a FIFO must fail inspection instead of
+            // blocking before its opened file type can be checked.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
         let file = options
             .open(path)
             .map_err(|_| invalid("无法读取应用声明。"))?;
+        if !file
+            .metadata()
+            .map_err(|_| invalid("无法读取应用声明。"))?
+            .is_file()
+        {
+            return Err(invalid("应用声明必须是普通文件。"));
+        }
         let mut bytes = Vec::new();
         file.take((MAX_MANIFEST_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
