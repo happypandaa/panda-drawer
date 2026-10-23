@@ -57,6 +57,7 @@ const { createRoot } = await import('react-dom/client');
 const { Modal } = await component('Modal.tsx');
 const { BackupMaintenancePanel } = await component('BackupMaintenancePanel.tsx');
 const { ProjectOverview } = await component('ProjectOverview.tsx');
+const { LocalDirectoryButton } = await component('LocalDirectoryButton.tsx');
 const { WorkspaceHub } = await component('WorkspaceHub.tsx');
 const { WorkspaceStorageSummary } = await component('StoragePanels.tsx');
 const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
@@ -71,7 +72,25 @@ async function setup() {
   root = createRoot(document.getElementById('root'));
   render = async (tree) => { await act(async () => { root.render(tree); }); };
 }
-async function click(element) { assert.ok(element); await act(async () => { element.click(); }); }
+async function exposeDetails(element) {
+  assert.ok(element);
+  const disclosures = [];
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName === 'DETAILS' && !parent.open && element !== parent.querySelector(':scope > summary')) disclosures.unshift(parent);
+  }
+  for (const disclosure of disclosures) await act(async () => disclosure.querySelector(':scope > summary').click());
+}
+async function click(element) { assert.ok(element); await exposeDetails(element); await act(async () => { element.click(); }); }
+function exposedText(element) {
+  function text(node) {
+    if (!node) return '';
+    if (node.nodeType === window.Node.TEXT_NODE) return node.textContent;
+    if (!(node instanceof HTMLElement) || node.hidden || getComputedStyle(node).display === 'none') return '';
+    if (node.tagName === 'DETAILS' && !node.open) return text(node.querySelector(':scope > summary'));
+    return [...node.childNodes].map(text).join(' ');
+  }
+  return text(element).replace(/\s+/g, ' ').trim();
+}
 async function key(keyValue, shiftKey = false) {
   const event = new window.KeyboardEvent('keydown', { key: keyValue, shiftKey, bubbles: true, cancelable: true });
   await act(async () => { document.activeElement.dispatchEvent(event); });
@@ -398,6 +417,7 @@ function backupProps(extra = {}) {
 }
 async function inputValue(input, value) {
   assert.ok(input);
+  await exposeDetails(input);
   await act(async () => {
     const prototype = input instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value);
@@ -539,7 +559,7 @@ test('Project overview and Modal preserve metadata/backup drafts across tabs and
   await render(h(Modal, { title: '项目详情', onClose: close }, h(ProjectOverview, overviewProps({ onDismissGuardChange: (value) => { guard = value; }, onClose: close }))));
   const name = document.querySelector('.overview-section form input');
   await inputValue(name, 'Unsaved display name');
-  await click([...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === '备份维护'));
+  await click([...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === '历史与维护'));
   await inputValue(document.getElementById('backup-note'), 'Unsaved snapshot note');
   await click([...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === '概览'));
   assert.equal(name.value, 'Unsaved display name');
@@ -1112,7 +1132,7 @@ test('App keeps the selected project and its draft after an external list remova
   mockApp(state);
   await render(h(App)); await openDetails('Fixture A');
   await inputValue(document.querySelector('.overview-section form input'), 'Retain this edited display name');
-  await click(hubTab('备份维护'));
+  await click(hubTab('历史与维护'));
   state.projects = [];
   await click([...document.querySelectorAll('.backup-panel button')].find((button) => button.textContent.trim() === '刷新状态'));
   assert.ok(dialog(), 'An external disappearance must not discard the detail editor');
@@ -1219,7 +1239,7 @@ test('A refreshed project removal invalidates an in-flight AI handoff without di
   await render(h(App)); await openDetails('Fixture A');
   await inputValue(document.querySelector('.overview-section form input'), 'Preserve handoff fixture draft');
   await click(buttonNamed('复制 AI 接手说明'));
-  await click(hubTab('备份维护')); state.projects = [];
+  await click(hubTab('历史与维护')); state.projects = [];
   await click([...document.querySelectorAll('.backup-panel button')].find((button) => button.textContent.trim() === '刷新状态'));
   await act(async () => prepared.resolve({ text: 'Removed project must not be copied' }));
   assert.deepEqual(copied, []); assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
@@ -1348,7 +1368,7 @@ test('A changed instance or project root during a clipboard write invalidates th
     assert.ok(document.querySelector('[aria-label="给 AI 的完整说明"]'));
     if (change === 'instance') state.instanceId = 'instance_after_migration';
     else state.projects = [{ ...project, projectRoot: '/disposable/migrated/projects/current' }];
-    await click(hubTab('备份维护'));
+    await click(hubTab('历史与维护'));
     await click([...document.querySelectorAll('.backup-panel button')].find(button => button.textContent.trim() === '刷新状态'));
     assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
     await act(async () => write.resolve());
@@ -1512,4 +1532,174 @@ test('App blocks closing a pending create, shows its failure inside the modal, a
   await click([...document.querySelectorAll('.radio-toolbar button')].find((button) => button.textContent.trim() === '新建项目'));
   assert.equal(document.getElementById('project-name').value, 'Unsubmitted project draft');
   assert.equal(submissions, 1);
+});
+
+test('Software details lead with useful facts and keep editing, paths and developer tools folded', async () => {
+  await setup(); const calls = [];
+  const value = { ...appProject('prj_compact_detail', 'Compact detail fixture'), description: 'A short application description', storage: { currentProject: { totalBytes: 42000, complete: true, stale: false } } };
+  mockApp({ projects: [value] }, async (command, args) => { calls.push([command, args]); throw new Error(command); });
+  await render(h(App)); await openDetails(value.name);
+  const visible = exposedText(dialog());
+  assert.equal(dialog().classList.contains('software-detail-modal'), true);
+  assert.equal(dialog().querySelector('.modal-header p'), null);
+  assert.equal([...dialog().querySelectorAll('h2')].filter(heading => heading.textContent === value.name).length, 1);
+  assert.match(visible, /进入项目.*打开本地目录/);
+  assert.match(visible, /网页应用.*A short application description.*可打开.*42/);
+  assert.doesNotMatch(visible, /prj_compact_detail|disposable\/workspace\/projects|项目详情与维护|静态 PNG|核对时间|复制 AI 接手说明/);
+  assert.equal(document.querySelector('.overview-edit-details').open, false);
+  assert.equal(document.querySelector('.overview-technical-details').open, false);
+  assert.equal(document.querySelector('.project-development-tools').open, false);
+  assert.equal([...dialog().querySelectorAll('button')].filter(button => /删除项目/.test(exposedText(button))).length, 0);
+  await click(hubTab('更多操作'));
+  assert.equal([...dialog().querySelectorAll('button')].filter(button => button.textContent === '删除项目').length, 1);
+  assert.deepEqual(calls, []);
+});
+
+test('Opening a webpage project directory sends only its identity and keeps unsaved metadata', async () => {
+  await setup(); const opened = deferred(); const calls = [];
+  const value = appProject('prj_reveal_draft', 'Directory draft fixture');
+  mockApp({ projects: [value] }, async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'project_reveal'); return opened.promise;
+  });
+  await render(h(App)); await openDetails(value.name);
+  const name = document.querySelector('.overview-section form input');
+  await inputValue(name, 'My unfinished display name');
+  await click(buttonNamed('打开本地目录')); await click(buttonNamed('正在打开…'));
+  assert.deepEqual(calls, [['project_reveal', { projectId: value.id, target: 'root' }]]);
+  assert.equal(name.value, 'My unfinished display name');
+  assert.equal(buttonNamed('正在打开…').disabled, true);
+  assert.equal(buttonNamed('保存基本信息').disabled, false);
+  await act(async () => opened.resolve());
+  assert.equal(name.value, 'My unfinished display name');
+  assert.equal(buttonNamed('打开本地目录').disabled, false);
+  assert.equal(calls.length, 1, 'Opening a folder must not open the app, build it or save metadata');
+  await key('Escape');
+  assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
+});
+
+test('A directory opening failure stays beside the project action and does not leak into settings', async () => {
+  await setup(); const value = appProject('prj_reveal_error', 'Directory error fixture'); const calls = [];
+  mockApp({ projects: [value] }, async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'project_reveal') throw new Error('Artificial Finder failure');
+    if (command === 'environment_doctor' || command === 'environment_git_doctor') throw new Error('Independent settings fixture');
+    throw new Error(command);
+  });
+  await render(h(App)); await openDetails(value.name); await click(buttonNamed('打开本地目录'));
+  assert.match(dialog().querySelector('.detail-directory-error[role=alert]').textContent, /Artificial Finder failure/);
+  assert.equal(buttonNamed('进入项目').disabled, false);
+  assert.deepEqual(calls, [['project_reveal', { projectId: value.id, target: 'root' }]]);
+  await click(closeButton()); await click(document.querySelector('[aria-label="设置"]'));
+  assert.doesNotMatch(dialog().textContent, /Artificial Finder failure/);
+});
+
+test('An old directory failure cannot publish into a new project or release its pending action', async () => {
+  await setup(); const older = deferred(); const newer = deferred(); const calls = [];
+  const first = appProject('prj_reveal_first', 'First directory fixture'); const second = appProject('prj_reveal_second', 'Second directory fixture');
+  mockApp({ projects: [first, second] }, async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'project_reveal'); return args.projectId === first.id ? older.promise : newer.promise;
+  });
+  await render(h(App)); await openDetails(first.name); await click(buttonNamed('打开本地目录'));
+  await click(closeButton()); await openDetails(second.name); await click(buttonNamed('打开本地目录'));
+  await act(async () => older.reject(new Error('Outdated Finder failure')));
+  assert.equal(dialog().querySelector('.modal-header h2').textContent, second.name);
+  assert.doesNotMatch(dialog().textContent, /Outdated Finder failure/);
+  assert.equal(buttonNamed('正在打开…').disabled, true);
+  await act(async () => newer.resolve());
+  assert.equal(buttonNamed('打开本地目录').disabled, false);
+  assert.deepEqual(calls, [
+    ['project_reveal', { projectId: first.id, target: 'root' }],
+    ['project_reveal', { projectId: second.id, target: 'root' }],
+  ]);
+});
+
+test('Directory button identity changes revoke an old request even without a parent key', async () => {
+  await setup(); const older = deferred(); const newer = deferred(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'project_reveal'); return args.projectId === 'prj_old_directory' ? older.promise : newer.promise;
+  };
+  await render(h(LocalDirectoryButton, { projectId: 'prj_old_directory', disabled: false }));
+  await click(buttonNamed('打开本地目录'));
+  await render(h(LocalDirectoryButton, { projectId: 'prj_new_directory', disabled: false }));
+  assert.equal(buttonNamed('打开本地目录').disabled, false);
+  await click(buttonNamed('打开本地目录'));
+  await act(async () => older.reject(new Error('Old unkeyed directory failure')));
+  assert.doesNotMatch(document.body.textContent, /Old unkeyed directory failure/);
+  assert.equal(buttonNamed('正在打开…').disabled, true);
+  await act(async () => newer.resolve());
+  assert.equal(buttonNamed('打开本地目录').disabled, false);
+  assert.equal(calls.length, 2);
+});
+
+test('History and maintenance keep old tools folded and distinguish full snapshots from source Git', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async command => { calls.push(command); assert.equal(command, 'backup_list'); return []; };
+  await render(h(BackupMaintenancePanel, backupProps()));
+  const panel = document.querySelector('.backup-panel');
+  assert.equal(panel.getAttribute('aria-label'), '备份与维护');
+  assert.equal(document.querySelector('.legacy-backup-tools').open, false);
+  assert.match(exposedText(panel), /Git 仅保存本机源码，不含业务数据，尚无远程同步/);
+  assert.match(exposedText(panel), /暂无旧版完整快照/);
+  assert.doesNotMatch(exposedText(panel), /创建备份|进入维护并备份|最近 10 份|维护原因/);
+  assert.deepEqual(calls, ['backup_list']);
+});
+
+test('Legacy maintenance and recovery warnings stay visible and retain their write gates', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async command => { calls.push(command); assert.equal(command, 'backup_list'); return []; };
+  await render(h(BackupMaintenancePanel, backupProps({ status: { mode: 'maintenance', readyForChanges: false, recoveryRequired: false, maintenanceId: 'maintenance_pending', reason: 'Preserved pending maintenance' } })));
+  assert.equal(document.querySelector('.legacy-backup-tools').open, true);
+  assert.match(exposedText(document.querySelector('.backup-panel')), /维护中 · 基线尚未准备好/);
+  assert.match(exposedText(document.querySelector('.backup-panel')), /Preserved pending maintenance/);
+  assert.equal(buttonNamed('创建备份').disabled, true);
+  assert.equal(buttonNamed('重试准备基线').disabled, false);
+  await render(h(BackupMaintenancePanel, backupProps({ status: { mode: 'maintenance', readyForChanges: false, recoveryRequired: true, maintenanceId: 'maintenance_pending' } })));
+  assert.equal(document.querySelector('.legacy-backup-tools').open, true);
+  await click(document.querySelector('.legacy-backup-tools > summary'));
+  assert.equal(document.querySelector('.legacy-backup-tools').open, true, 'Recovery warnings cannot be folded away');
+  assert.match(exposedText(document.querySelector('.backup-panel')), /恢复结果需要处理.*项目保持停用/);
+  assert.equal(buttonNamed('检查并结束维护').disabled, true);
+  assert.equal(buttonNamed('重试准备基线').disabled, true);
+  assert.deepEqual(calls, ['backup_list']);
+});
+
+test('A legacy restore blocked by Git history keeps the snapshot and error instead of claiming a source rollback', async () => {
+  await setup(); let submissions = 0;
+  const snapshot = { backupId: 'backup_git_protected', verified: true, kind: 'manual', createdAt: 1, files: [], snapshotState: 'ready', note: 'Preserved historical snapshot' };
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'backup_list') return [snapshot];
+    if (command === 'backup_info') return snapshot;
+    assert.equal(command, 'backup_restore'); submissions++;
+    throw new Error('BACKUP_RESTORE_GIT_PROTECTED: Git history must remain in the current project');
+  };
+  await render(h(BackupMaintenancePanel, backupProps()));
+  await click(document.querySelector('.backup-row'));
+  assert.match(exposedText(document.querySelector('.backup-detail-column')), /重新核实 Git，发现仓库即停止/);
+  await click(buttonNamed('恢复这份备份')); await click(document.querySelector('.restore-acknowledgement input'));
+  await click(buttonNamed('确认恢复'));
+  assert.equal(submissions, 1);
+  assert.match(exposedText(document.querySelector('.backup-panel')), /BACKUP_RESTORE_GIT_PROTECTED/);
+  assert.match(exposedText(document.querySelector('.backup-detail-column')), /Preserved historical snapshot/);
+  assert.doesNotMatch(exposedText(document.querySelector('.backup-panel')), /源码版本已保存|源码已取回|恢复已完成/);
+});
+
+
+test('A newly reported Git marker blocks a previously acknowledged full snapshot restore', async () => {
+  await setup(); const requests = [];
+  const snapshot = { backupId: 'backup_marker_guard', verified: true, kind: 'manual', createdAt: 1, files: [], snapshotState: 'ready' };
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    requests.push(command);
+    if (command === 'backup_list') return [snapshot];
+    assert.equal(command, 'backup_info'); return snapshot;
+  };
+  await render(h(BackupMaintenancePanel, backupProps()));
+  await click(document.querySelector('.backup-row'));
+  await click(buttonNamed('恢复这份备份')); await click(document.querySelector('.restore-acknowledgement input'));
+  assert.equal(buttonNamed('确认恢复').disabled, false);
+  const marked = { ...project, objectLayout: { versioning: { markers: [{ path: '/disposable/project/app/.git', kind: 'file', scope: 'source' }] } } };
+  await render(h(BackupMaintenancePanel, backupProps({ project: marked })));
+  assert.equal(buttonNamed('确认恢复').disabled, true);
+  assert.match(exposedText(document.querySelector('.backup-detail-column')), /检测到本项目 Git 仓库，整项目恢复已停用/);
+  await click(buttonNamed('确认恢复'));
+  assert.deepEqual(requests, ['backup_list', 'backup_info']);
 });

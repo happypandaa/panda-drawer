@@ -327,8 +327,11 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const head = status?.repository.head;
   return <section className="project-git-panel" aria-labelledby={`${id}-title`}>
     <div className="storage-heading"><h3 id={`${id}-title`}>源码版本</h3><button type="button" className="refresh-button" disabled={reading || listing || busy} onClick={() => { if (currentTask.current && !currentTask.current.final) void poll(); else void read(); }}>{reading ? '核对中…' : '刷新状态'}</button></div>
+    <p className="detail-legacy-note">本机源码版本，不含数据库、附件和运行产物，尚无远程同步。</p>
+    <details className="detail-disclosure"><summary>版本管理说明</summary>
     <p>在本项目的标准 Git 仓库中保存下面列出的源码和开发文档。本次不保存数据库、附件或数据快照；可创建新分支，或预览后将已保存源码取回为待保存修改。暂不切换到已有分支。</p>
     <p>仅操作本机；不会推送远端。保存前请核对文件范围，路径排除不能代替对源码中敏感内容的检查。</p>
+    </details>
     {error && <p className="task-error" role="alert">{error}</p>}
     {readError && <p className="task-error" role="alert">{readError}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
@@ -336,13 +339,17 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     {reading && <p role="status">正在核对本机仓库和源码范围…</p>}
     {status && <>
       {!fresh && !reading && <p className="maintenance-warning">下面是上次预览，当前状态需要重新核对。</p>}
+      <div className="detail-summary-facts"><div><span>当前分支</span><strong>{head?.branch?.replace(/^refs\/heads\//, '') || (status.canInitialize ? '未初始化' : '尚未核验')}</strong></div><div><span>待保存的源码变更</span><strong>{status.changes.length} 项</strong></div></div>
+      {status.issues.map((issue, index) => <p key={index} className="task-error" role="alert">{messageFrom(issue)}</p>)}
+      {status.scope.protectedTrackedPaths.length > 0 && <p className="maintenance-warning">Git 中已有受保护文件，请展开仓库与文件范围核对。</p>}
+      <details className="detail-disclosure"><summary>仓库与文件范围</summary>
       <dl className="path-list">
         <div className="path-row"><dt>仓库位置</dt><dd>{repositoryLabels[status.repository.state] ?? '仓库状态需要检查'}{status.repository.root && <code className="task-result-path">{status.repository.root}</code>}</dd></div>
         <div className="path-row"><dt>已核验的当前版本</dt><dd>{head ? head.oid ? <code>{head.oid}</code> : '已核验：尚无提交' : '尚未核验 HEAD'}{head?.branch && <p>分支：<code>{head.branch.replace(/^refs\/heads\//, '')}</code></p>}</dd></div>
         <div className="path-row"><dt>暂存区</dt><dd>{status.repository.indexState === 'matched' ? '与当前版本一致' : status.repository.indexState === 'staged-changes' ? '有已有暂存或冲突内容，需要先处理' : '尚未核验'}</dd></div>
       </dl>
       {status.repository.markers.length > 0 && <details><summary>检测到的 Git 位置</summary><ul>{status.repository.markers.map((marker, index) => <li key={`${marker.path}:${index}`}><code>{marker.path}</code> · {marker.scope === 'project' ? '项目根目录' : marker.scope === 'ancestor' ? '父目录' : '源码目录'}</li>)}</ul></details>}
-      {status.issues.map((issue, index) => <p key={index} className="task-error" role="alert">{messageFrom(issue)}</p>)}
+
       <section aria-label="本次源码范围">
         <h4>本次范围 · {status.scope.complete ? '已完整核对' : '仍需检查'}</h4>
         <PathList title="允许纳入的目录与声明" items={status.scope.includedRoots.map(path => ({ path }))} />
@@ -352,6 +359,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
         <PathList key={`tracked:${status.snapshotDigest}`} title="已经被 Git 跟踪的受保护路径" items={status.scope.protectedTrackedPaths.map(path => ({ path }))} />
         {status.scope.protectedTrackedPaths.length > 0 && <p>这些受保护路径已经在已有版本或暂存区中；本步不会自行移除跟踪或改写历史。</p>}
       </section>
+      </details>
       <PathList key={`changes:${status.snapshotDigest}`} title="待保存的源码变更" items={status.changes.map(change => ({ path: change.path, reason: `${changeLabels[change.kind] ?? change.kind}${change.staged ? ' · 已有暂存变更' : ''}` }))} />
       {!status.changes.length && status.scope.complete && !status.issues.length && <p>本次范围内没有未保存的源码变更。</p>}
       {status.canInitialize && <div className="operation-confirmation"><p>初始化会在项目根目录建立 main 分支仓库，不创建版本。随后填写作者和说明，再保存第一个源码版本。</p><button type="button" className="primary-button" disabled={!writable} onClick={() => void submit('initialize')}>初始化本项目 Git</button></div>}

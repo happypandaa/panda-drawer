@@ -2,6 +2,7 @@
 
 mod browser_download;
 mod codex_handoff;
+mod local_directory;
 mod node_windows;
 mod window_sizes;
 
@@ -394,20 +395,9 @@ async fn project_reveal(
     target: String,
 ) -> Result<(), ApiError> {
     require_manager(&window)?;
-    let location = state.handle.project_location(&project_id, &target).await?;
-    let mut command = Command::new("/usr/bin/open");
-    if target == "readme" {
-        command.arg("-R");
-    }
-    command.arg(location);
-    let status = command
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err(ApiError::new("REVEAL_FAILED", "无法打开项目位置"));
-    }
-    Ok(())
+    let location = state.handle.project_location_lease(&project_id, &target)?;
+    location.validate()?;
+    local_directory::open(location.location(), target == "readme").await
 }
 
 #[tauri::command]
@@ -1079,6 +1069,26 @@ async fn node_app_configuration(
     state.node_apps.configuration(&app_id).await
 }
 #[tauri::command]
+async fn node_app_reveal(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "SERVICE_STOPPING",
+            "平台正在退出，请稍后重试",
+        ));
+    }
+    let location = state.node_apps.local_directory_lease(&app_id).await?;
+    location.validate()?;
+    local_directory::open(location.location(), false).await
+}
+#[tauri::command]
 async fn node_app_delete_preview(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -1505,7 +1515,7 @@ fn main() {
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_cancel,
-            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
+            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_reveal,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,

@@ -4,15 +4,16 @@ use crate::{
     builds::{self, BuildManager},
     control::{ControlState, Freeze},
     file_identity::PersistedIdentity,
-    projects::{check_no_symlinks, valid_id},
-    ApiError, ProjectStore, RuntimePaths, TaskRecord,
+    projects::{check_no_symlinks, checked_relative, valid_id, validate_manifest},
+    ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     fs::{self, File},
-    os::unix::fs::MetadataExt,
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -98,6 +99,9 @@ fn set_provenance(workspace: &Path, id: &str, value: &Option<Value>) -> Result<(
         Ok(())
     }
 }
+#[cfg(test)]
+type RestoreReplaceHook = Box<dyn FnOnce(&Path) + Send>;
+
 pub(crate) struct MaintenanceManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
@@ -105,6 +109,8 @@ pub(crate) struct MaintenanceManager {
     running: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
     events: broadcast::Sender<String>,
+    #[cfg(test)]
+    before_restore_replace: Mutex<Option<RestoreReplaceHook>>,
 }
 impl MaintenanceManager {
     pub fn new(
@@ -120,6 +126,8 @@ impl MaintenanceManager {
             running: Mutex::new(vec![]),
             stopping: AtomicBool::new(false),
             events,
+            #[cfg(test)]
+            before_restore_replace: Mutex::new(None),
         });
         for (task, outcome) in Self::recover(&manager.paths, &manager.store)? {
             let original = manager
@@ -242,6 +250,77 @@ impl MaintenanceManager {
         check_no_symlinks(&path, false)?;
         Ok(path)
     }
+    fn check_legacy_restore_git(&self, id: &str) -> Result<(), ApiError> {
+        let root = self.paths.workspace_root().join("projects").join(id);
+        check_no_symlinks(&root, false)?;
+        let blocked = |path: &Path| {
+            ApiError::new(
+                "BACKUP_RESTORE_GIT_PROTECTED",
+                "当前项目含 Git 仓库，旧版整项目快照不能原位恢复。请到“源码版本”预览取回已保存源码；源码取回不会恢复或替换业务数据。",
+            )
+            .detail("path", json!(path))
+            .outcome("not_started")
+        };
+        let check_marker = |path: &Path| match fs::symlink_metadata(path) {
+            Ok(_) => Err(blocked(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(ApiError::new(
+                "BACKUP_RESTORE_GIT_UNVERIFIED",
+                "无法核实当前项目的 Git 目录，已停止旧版快照恢复并保留当前文件。",
+            )
+            .detail("path", json!(path))
+            .detail("cause", error.to_string())
+            .outcome("not_started")),
+        };
+        // A .git file, directory or dangling link is enough to protect the
+        // repository. Do not follow it or require a readable/healthy repository.
+        check_marker(&root.join(".git"))?;
+        let manifest = (|| -> Result<ProjectManifest, ApiError> {
+            let path = checked_relative(&root, "project.json", false)?;
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path)?;
+            if !file.metadata()?.is_file() {
+                return Err(ApiError::new(
+                    "INVALID_PROJECT_MANIFEST",
+                    "Expected a regular project manifest",
+                ));
+            }
+            let limit = crate::database::JSON_BODY_MAX_BYTES as u64;
+            let mut bytes = Vec::new();
+            file.take(limit + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > limit {
+                return Err(ApiError::new(
+                    "INVALID_PROJECT_MANIFEST",
+                    "Project manifest exceeds the supported size",
+                ));
+            }
+            let manifest = serde_json::from_slice(&bytes)?;
+            validate_manifest(&manifest, id, &root)?;
+            Ok(manifest)
+        })()
+        .map_err(|error| {
+            ApiError::new(
+                "BACKUP_RESTORE_GIT_UNVERIFIED",
+                "无法核实当前项目的源码目录，已停止旧版快照恢复并保留当前文件。",
+            )
+            .detail("cause", json!(error))
+            .outcome("not_started")
+        })?;
+        let source = checked_relative(&root, &manifest.source_dir, true)?;
+        check_marker(&source.join(".git"))?;
+        match crate::project_git::development_git_marker(&root, &manifest) {
+            Ok(Some(marker)) => Err(blocked(&marker)),
+            Ok(None) => Ok(()),
+            Err(error) => Err(ApiError::new(
+                "BACKUP_RESTORE_GIT_UNVERIFIED",
+                "无法核实开发文件中的 Git 仓库，已停止旧版快照恢复并保留当前文件。",
+            )
+            .detail("cause", json!(error))
+            .outcome("not_started")),
+        }
+    }
     fn protected(&self, id: &str) -> Result<HashSet<String>, ApiError> {
         let state = self.store.control(id)?.get();
         let mut protected: HashSet<_> = state.protected_backup_ids.into_iter().collect();
@@ -310,6 +389,10 @@ impl MaintenanceManager {
         }
         if !valid_id(id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        if kind == "restore" {
+            // Reject before creating a task, candidate or pre-restore ZIP.
+            self.check_legacy_restore_git(id)?;
         }
         let control = self.store.control(id)?;
         let current = control.get();
@@ -647,6 +730,9 @@ impl MaintenanceManager {
         }
     }
     async fn restore(&self, task: &str, id: &str, backup: String) -> Result<Value, ApiError> {
+        // The task may have waited after admission while an external editor
+        // initialized a repository. Check again before writing recovery files.
+        self.check_legacy_restore_git(id)?;
         self.phase(task, "candidate-validation")?;
         let archive = self.archive(id, &backup)?;
         let op = self
@@ -679,6 +765,7 @@ impl MaintenanceManager {
         )?;
         // A healthy current project gets an automatic pre-restore archive. A broken
         // database must never prevent recovery; the original directory is retained in all cases.
+        self.check_legacy_restore_git(id)?;
         let pre_restore = match self
             .snapshot(
                 task,
@@ -746,6 +833,13 @@ impl MaintenanceManager {
         control.set(blocked)?;
         let result: Result<Value, ApiError> = (|| {
             self.phase(task, "preserve-original")?;
+            #[cfg(test)]
+            if let Some(before_replace) = self.before_restore_replace.lock().unwrap().take() {
+                before_replace(&root);
+            }
+            // Platform leases do not prevent an external Git initialization.
+            // Never move a newly created repository out of the active project.
+            self.check_legacy_restore_git(id)?;
             move_dir(&root, &original)?;
             self.phase(task, "install-candidate")?;
             move_dir(&candidate, &root)?;
@@ -1406,3 +1500,7 @@ mod tests {
 #[cfg(test)]
 #[path = "maintenance_restart_tests.rs"]
 mod restart_tests;
+
+#[cfg(test)]
+#[path = "maintenance_restore_git_tests.rs"]
+mod restore_git_tests;

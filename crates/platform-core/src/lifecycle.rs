@@ -81,6 +81,9 @@ struct TrashRecord {
     issues: Vec<ApiError>,
 }
 
+#[cfg(test)]
+type SystemTrashSink = Arc<dyn Fn(&Path) -> Result<PathBuf, ApiError> + Send + Sync>;
+
 pub(crate) struct LifecycleManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
@@ -90,7 +93,7 @@ pub(crate) struct LifecycleManager {
     stopping: AtomicBool,
     events: broadcast::Sender<String>,
     #[cfg(test)]
-    system_trash_sink: Mutex<Option<Arc<dyn Fn(&Path) -> Result<PathBuf, ApiError> + Send + Sync>>>,
+    system_trash_sink: Mutex<Option<SystemTrashSink>>,
 }
 
 fn now_ms() -> u64 {
