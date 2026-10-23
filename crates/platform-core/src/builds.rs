@@ -37,8 +37,11 @@ const LOG_TAIL: usize = 8_000_000;
 const LOG_PAGE: usize = 64_000;
 const DIGEST_RULE: u32 = 1;
 
+#[path = "build_result.rs"]
+mod build_result;
 #[path = "build_candidate.rs"]
 mod candidate;
+pub use build_result::BuildResultRecovery;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +127,7 @@ struct Journal {
 }
 struct Registry {
     records: HashMap<String, TaskRecord>,
+    legacy_build_times: HashMap<String, Option<SystemTime>>,
     active: HashSet<String>,
     leases: HashMap<String, crate::projects::ProjectTaskLease>,
 }
@@ -172,6 +176,7 @@ impl BuildManager {
                 .join(".platform/project-state/builds"),
         )?;
         let mut records = HashMap::new();
+        let mut legacy_build_times = HashMap::new();
         for entry in fs::read_dir(&tasks)? {
             let path = entry?.path();
             if !path.is_dir() {
@@ -190,6 +195,12 @@ impl BuildManager {
                     "TASK_RECORD_INVALID",
                     "Task record identity does not match its directory",
                 ));
+            }
+            if record.task_type == "build" {
+                // Startup recovery rewrites task.json. Capture the old mtime
+                // first; it is only a labelled fallback, never submission order.
+                legacy_build_times
+                    .insert(record.task_id.clone(), build_result::modified(&record_path));
             }
             if !record.status.is_final() {
                 record.status = TaskStatus::Interrupted;
@@ -222,6 +233,7 @@ impl BuildManager {
             base_url,
             registry: Mutex::new(Registry {
                 records,
+                legacy_build_times,
                 active: HashSet::new(),
                 leases: HashMap::new(),
             }),
@@ -304,7 +316,53 @@ impl BuildManager {
             error: None,
         };
         ensure_dir(&self.task_dir(&record.task_id))?;
-        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
+        // The admission record starts final: if pointer persistence fails (or
+        // the process exits before acceptance), no queued orphan is retained.
+        let mut pending = record.clone();
+        pending.status = TaskStatus::Failed;
+        pending.phase = "not-started".into();
+        pending.error = Some(
+            ApiError::new(
+                "BUILD_SUBMISSION_INCOMPLETE",
+                "构建提交尚未完成，未启动构建；请核对保留记录后明确重试。",
+            )
+            .outcome("not_started"),
+        );
+        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &pending)?;
+        let admission =
+            build_result::remember(self.paths.workspace_root(), &record).and_then(|()| {
+                atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record).map_err(
+                    |error| {
+                        ApiError::new(
+                            "BUILD_RESULT_PERSISTENCE_FAILED",
+                            "无法保存本次构建任务，构建尚未启动；请保留任务记录并检查存储状态。",
+                        )
+                        .detail("taskPersistenceError", json!(error))
+                    },
+                )
+            });
+        if let Err(error) = admission {
+            // No queue send or retained lease until both records are durable.
+            // Even if the pointer rename happened before its fsync failed, it
+            // must resolve to a final failure rather than a queued orphan.
+            let error = error
+                .detail("taskId", record.task_id.clone())
+                .outcome("not_started");
+            let mut failed = record;
+            failed.status = TaskStatus::Failed;
+            failed.phase = "not-started".into();
+            failed.error = Some(error.clone());
+            let saved = atomic_json(&self.task_dir(&failed.task_id).join("task.json"), &failed);
+            registry.legacy_build_times.insert(
+                failed.task_id.clone(),
+                build_result::modified(&self.task_dir(&failed.task_id).join("task.json")),
+            );
+            registry.records.insert(failed.task_id.clone(), failed);
+            return Err(match saved {
+                Ok(()) => error,
+                Err(persistence) => error.detail("taskPersistenceError", json!(persistence)),
+            });
+        }
         registry.active.insert(project_id.into());
         registry.leases.insert(task_id, lease);
         registry
@@ -475,6 +533,17 @@ impl BuildManager {
             .get(id)
             .cloned()
             .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task was not found"))
+    }
+    /// Restores a build result independently of storage and maintenance tasks.
+    /// Legacy mtime selection is explicitly uncertain about submission order.
+    pub fn latest_build(&self, project_id: &str) -> BuildResultRecovery {
+        let registry = self.registry.lock().unwrap();
+        build_result::recover(
+            self.paths.workspace_root(),
+            project_id,
+            &registry.records,
+            &registry.legacy_build_times,
+        )
     }
     pub fn logs(&self, id: &str, cursor: u64) -> Result<TaskLogs, ApiError> {
         let task = self.task(id)?;
@@ -1864,6 +1933,9 @@ mod tests {
     }
     mod git_pipeline {
         include!("build_pipeline_git_tests.rs");
+    }
+    mod result_recovery {
+        include!("build_result_tests.rs");
     }
 
     async fn wait(manager: &BuildManager, id: &str) -> TaskRecord {
