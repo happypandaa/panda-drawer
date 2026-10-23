@@ -25,6 +25,9 @@ use uuid::Uuid;
 #[path = "node_app_delete.rs"]
 mod deletion;
 pub use deletion::DeleteNodeAppInput;
+#[path = "node_app_directory.rs"]
+mod directory;
+pub use directory::DirectoryInitializeInput;
 
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
@@ -80,6 +83,8 @@ pub struct NodeApps {
     node_path: PathBuf,
     digest: String,
     inner: Mutex<Inner>,
+    directory_changes: std::sync::Mutex<()>,
+    directory_stopping: std::sync::atomic::AtomicBool,
 }
 
 impl NodeApps {
@@ -98,6 +103,8 @@ impl NodeApps {
             node_path,
             digest,
             inner: Mutex::new(Inner::default()),
+            directory_changes: std::sync::Mutex::new(()),
+            directory_stopping: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -280,11 +287,44 @@ impl NodeApps {
 
     pub async fn register(&self, source: PathBuf) -> Result<Value> {
         let inner = self.inner.lock().await;
-        let manifest = self.load_source(&source)?;
+        self.register_locked(source, &inner)
+    }
+
+    fn register_locked(&self, source: PathBuf, inner: &Inner) -> Result<Value> {
+        self.register_with_check(source, inner, None, || Ok(()))
+    }
+
+    fn register_with_check(
+        &self,
+        source: PathBuf,
+        inner: &Inner,
+        expected_manifest: Option<&str>,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Value> {
+        check()?;
+        let manifest = if let Some(expected) = expected_manifest {
+            let bytes = read_small(&source.join("local-app.json"))?;
+            if format!("{:x}", Sha256::digest(&bytes)) != expected {
+                return Err(directory::stale());
+            }
+            // Parse the declaration whose bytes the user actually previewed.
+            // A reload followed by a later matching digest could observe an ABA
+            // swap and attach an unpreviewed declaration to the registration.
+            let manifest = TrialManifest::parse(&bytes).map_err(|e| fail(e.to_string()))?;
+            if manifest.runtime != TrialRuntime::NodeService {
+                return Err(directory::stale());
+            }
+            manifest.inspect(&source).map_err(|e| fail(e.to_string()))?;
+            manifest
+        } else {
+            self.load_source(&source)?
+        };
+        check()?;
         private_dir(&self.root)?;
         for record in self.registrations()? {
             if record.source_path == source {
-                return self.detail(&record, &self.manifest(&record)?, &inner);
+                check()?;
+                return self.detail(&record, &self.manifest(&record)?, inner);
             }
         }
         let id = Uuid::new_v4().to_string();
@@ -294,6 +334,13 @@ impl NodeApps {
             private_dir(&slot.join(name))?;
         }
         let manifest_digest = digest_manifest(&source)?;
+        if expected_manifest.is_some_and(|expected| expected != manifest_digest) {
+            return Err(ApiError::new(
+                "NODE_DIRECTORY_CHANGED",
+                "应用声明已变化，请重新检查后登记。",
+            )
+            .outcome("not_started"));
+        }
         let record = ExternalRegistration {
             version: 1,
             id,
@@ -301,8 +348,9 @@ impl NodeApps {
             manifest_digest,
         };
         // The digest is computed from the explicit source, not a cached declaration.
+        check()?;
         write_new_json(&slot.join("registration.json"), &record)?;
-        self.detail(&record.into(), &manifest, &inner)
+        self.detail(&record.into(), &manifest, inner)
     }
 
     /// Preparation reads only this public snapshot. It never obtains credential
@@ -741,8 +789,18 @@ impl NodeApps {
     }
 
     pub async fn stop_all(&self) -> Result<()> {
+        self.directory_stopping
+            .store(true, std::sync::atomic::Ordering::Release);
         let mut inner = self.inner.lock().await;
         inner.shutting_down = true;
+        {
+            // Finish accepted local initialization before completing shutdown;
+            // queued initialization checks directory_stopping after admission.
+            let _directory = self
+                .directory_changes
+                .lock()
+                .map_err(|_| fail("目录初始化锁不可用。"))?;
+        }
         let ids: Vec<_> = inner.running.keys().cloned().collect();
         let mut error = None;
         for id in ids {
@@ -816,10 +874,19 @@ fn read_small(path: &Path) -> Result<Vec<u8>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut bytes = Vec::new();
-    options.open(path)?.take(65537).read_to_end(&mut bytes)?;
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > 65536 {
+            return Err(fail("应用记录必须为大小受限且不共享硬链接的普通文件。"));
+        }
+    }
+    file.take(65537).read_to_end(&mut bytes)?;
     if bytes.len() > 65536 {
         return Err(fail("应用记录超出大小限制。"));
     }

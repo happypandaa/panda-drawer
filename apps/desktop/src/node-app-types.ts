@@ -73,6 +73,15 @@ export interface NodeAppInspection {
   configuration: { fields: NodeConfigurationField[]; missingRequired: string[] };
 }
 
+export interface NodeDirectoryReview {
+  sourcePath: string;
+  state: 'empty' | 'ready' | 'needs-review';
+  expectedRevision: string;
+  inspection?: NodeAppInspection;
+  issues: string[];
+  reviewPrompt: string;
+}
+
 export type NodeSecretChange = { action: 'keep' | 'unbind' | 'rebind' } | { action: 'replace'; value: string };
 
 export interface NodeConfigurationInput {

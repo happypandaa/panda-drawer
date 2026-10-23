@@ -1,15 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, CircleAlert, ExternalLink, FolderOpen, Info, KeyRound, Monitor, RefreshCw, Save, Server, Square, Trash2 } from 'lucide-react';
+import { Activity, CircleAlert, ExternalLink, Info, KeyRound, Monitor, RefreshCw, Save, Server, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { Modal } from './Modal';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
 import { NodeInstallPanel } from './NodeInstallPanel';
 import { NodeDataContractInfo } from './NodeDataContractInfo';
+import { LocalDirectoryPanel } from './LocalDirectoryPanel';
 import type { SourceInstallCandidate } from './NodeInstallPanel';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
-import type { NodeAppDeletePreview, NodeAppDeleteResult, NodeAppDetail, NodeAppInspection, NodeConfigurationField, NodeConfigurationInput, NodeSecretChange } from './node-app-types';
+import type { NodeAppDeletePreview, NodeAppDeleteResult, NodeAppDetail, NodeConfigurationField, NodeConfigurationInput, NodeSecretChange } from './node-app-types';
 
 type SecretDraft = { action: 'keep' | 'replace' | 'unbind' | 'rebind'; value: string };
 type Draft = { ordinary: Record<string, string>; secrets: Record<string, SecretDraft> };
@@ -74,8 +75,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const [statusError, setStatusError] = useState('');
   const [notice, setNotice] = useState('');
   const [addOpen, setAddOpen] = useState(false);
-  const [sourcePath, setSourcePath] = useState('');
-  const [inspection, setInspection] = useState<NodeAppInspection | null>(null);
+  const [directoryPending, setDirectoryPending] = useState(false);
   const [requestedSelection, setRequestedSelection] = useState<NodeAppDetail | null>(null);
   const [installSources, setInstallSources] = useState<SourceInstallCandidate[] | null>(null);
   const [installPending, setInstallPending] = useState(false);
@@ -104,7 +104,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
   const base = useId();
   const dirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
-  const blocked = !enabled || Boolean(pending) || installPending;
+  const blocked = !enabled || Boolean(pending) || installPending || directoryPending;
 
   function clearDeletion() {
     deleteRead.current++;
@@ -185,18 +185,18 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     }
   }, [enabled]);
   useEffect(() => {
-    if (!request || request.token === seenRequest.current || operation.current) return;
+    if (!request || request.token === seenRequest.current || operation.current || directoryPending) return;
     seenRequest.current = request.token;
     if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
     void select(request.app, request.intent === 'enter' ? 'configuration' : 'overview', request.intent === 'enter', request.intent === 'delete');
-  }, [request, select, pending]);
+  }, [request, select, pending, directoryPending]);
   useEffect(() => {
-    if (!addRequest || addRequest === seenAdd.current || operation.current || !enabled) return;
-    seenAdd.current = addRequest; setAddOpen(true); setError(''); setSourcePath(''); setInspection(null);
-  }, [addRequest, enabled, pending]);
+    if (!addRequest || addRequest === seenAdd.current || operation.current || directoryPending || !enabled) return;
+    seenAdd.current = addRequest; setAddOpen(true); setError('');
+  }, [addRequest, enabled, pending, directoryPending]);
   useEffect(() => { modalCallback.current?.(modalOpen || addOpen); }, [modalOpen, addOpen]);
   useEffect(() => { if (dismissConfirm || requestedSelection) confirmation.current?.focus(); }, [dismissConfirm, requestedSelection]);
-  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || installPending }); }, [dirty, pending, loading, installPending]);
+  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || installPending || directoryPending }); }, [dirty, pending, loading, installPending, directoryPending]);
   useEffect(() => {
     if (!enabled || !detail || pending || installPending || loading || !modalOpen) return;
     let cancelled = false; let polling = false;
@@ -220,30 +220,10 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [enabled, detail?.id, pending, installPending, loading, modalOpen, instanceId]);
 
-  async function chooseSource() {
-    if (blocked || operation.current) return;
-    operation.current = true; setPending('choose'); setError(''); setInspection(null);
-    try {
-      const value = await invoke<string | null>('choose_path', { kind: 'nodeapp' });
-      if (!alive.current || !value) return;
-      setSourcePath(value);
-      const preview = await invoke<NodeAppInspection>('node_app_inspect', { sourcePath: value });
-      if (alive.current) setInspection(preview);
-    } catch (cause) { if (alive.current) setError(messageFrom(cause)); }
-    finally { operation.current = false; if (alive.current) setPending(null); }
-  }
-
-  async function register() {
-    if (blocked || operation.current || !inspection || !sourcePath) return;
-    operation.current = true; setPending('register'); setError('');
-    try {
-      const value = await invoke<NodeAppDetail>('node_app_register', { sourcePath });
-      if (!alive.current) return;
-      selected.current = value.id; sequence.current++;
-      accept(value, true); setAddOpen(false); setModalOpen(true); setTab('configuration'); setSourcePath(''); setInspection(null);
-      setNotice('应用已登记。请先填写配置并保存，再点击“进入项目”。');
-    } catch (cause) { if (alive.current) setError(messageFrom(cause)); }
-    finally { operation.current = false; if (alive.current) setPending(null); }
+  function acceptDirectory(value: NodeAppDetail) {
+    selected.current = value.id; sequence.current++;
+    accept(value, true); setAddOpen(false); setModalOpen(true); setTab('configuration'); setError('');
+    setNotice('项目已添加，尚未运行。请核对配置；需要填写时保存，再明确点击“进入项目”。');
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -422,8 +402,8 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
         </form>
         </div>
       </section></Modal>}
-    {addOpen && <Modal title="添加本地应用" description="选择应用目录，只读核对应用声明后再登记。" closeDisabled={Boolean(pending)} onClose={() => { setAddOpen(false); setSourcePath(''); setInspection(null); setError(''); }}>
-      <div className="node-add-dialog"><p>应用目录中需要有平台可识别的 <code>local-app.json</code>。登记后先配置，再打开应用。</p><button className="refresh-button" disabled={blocked} onClick={() => void chooseSource()}><FolderOpen size={16} />{pending === 'choose' ? '正在核对…' : '选择应用目录'}</button>{sourcePath && <code className="node-selected-source">{sourcePath}</code>}{error && <p role="alert" className="task-error">{error}</p>}{inspection && <div className="node-inspection-preview"><h3>{inspection.app.name}</h3><p>{inspection.app.description}</p><span className="node-runtime-label"><Server size={14} />{inspection.runtimeLabel} · {inspection.app.version}</span><NodeDataContractInfo value={inspection.dataContract} legacyNotice="平台未验证实际数据格式。" /><p>应用声明了 {inspection.configuration.fields.length} 项配置，其中 {inspection.configuration.fields.filter((field) => field.required).length} 项必填。登记不读取旧的 .env，也不会自动运行应用。</p><ul>{inspection.configuration.fields.map((field) => <li key={field.name}>{field.label}{field.required ? '（必填）' : '（选填）'}{field.secret ? ' · 密钥' : ''}</li>)}</ul><button className="primary-button" disabled={blocked || inspection.runtime !== 'node-service'} onClick={() => void register()}>{pending === 'register' ? '登记中…' : '登记此应用'}</button></div>}</div>
+    {addOpen && <Modal title="添加本地应用" description="选择本地项目文件夹，检查后分别确认生成起始项目或添加。" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); }}>
+      <LocalDirectoryPanel enabled={enabled && !pending && !installPending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} />
     </Modal>}
   </>;
 }

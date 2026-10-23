@@ -45,9 +45,10 @@ globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpect
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel.tsx');
+const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
 const { default: App } = await component('App.tsx');
 let root;
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; delete navigator.clipboard; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 function field(name, type, extra = {}) { return { name, type, label: `设置 ${name}`, required: false, secret: false, description: `人工说明 ${name}`, howToGet: [`人工步骤 ${name}`], ...extra }; }
@@ -531,26 +532,221 @@ test('Saving configuration does not reopen a running window; applying it require
   assert.ok(byText('进入项目'));
 });
 
-test('Adding a source folder previews first and registration never starts it', async () => {
+function directoryReview(state = 'ready', extra = {}) {
+  return { sourcePath: '/artificial/node-source', state, expectedRevision: 'directory-revision-1', issues: [], reviewPrompt: state === 'needs-review' ? '完整后端说明\n请先读取 /artificial/node-source 再检查。\n不得直接运行。' : '', ...(state === 'ready' ? { inspection: { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { id: 'org.example.preview', name: 'Artificial preview', version: '0.1.0' }, dataContract: { id: 'org.example.inspected-data', version: 1 }, configuration: { fields, missingRequired: ['AI_KEY'] } } } : {}), ...extra };
+}
+async function setupDirectory(mock, props = {}) {
+  await setup(mock, { instanceId: 'directory-instance', onPendingChange() {}, onAdded() {}, ...props }, LocalDirectoryPanel);
+}
+
+test('Adding a ready local folder previews first and binds registration to the reviewed directory without starting it', async () => {
   const calls = [];
   await setup(async (command, args) => {
     calls.push([command, args]);
     if (command === 'node_app_list') return [];
     if (command === 'choose_path') return '/artificial/node-source';
-    if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { name: 'Artificial preview', version: '0.1.0' }, dataContract: { id: 'org.example.inspected-data', version: 1 }, configuration: { fields, missingRequired: ['AI_KEY'] } };
-    if (command === 'node_app_register') return app();
+    if (command === 'node_app_directory_inspect') return directoryReview();
+    if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
     throw new Error(command);
   }, { request: null, addRequest: 1 });
-  await click(byText('选择应用目录'));
-  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_inspect', { sourcePath: '/artificial/node-source' }]]);
-  assert.ok(byText('登记此应用')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
+  await click(byText('选择本地项目文件夹'));
+  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_directory_inspect', { sourcePath: '/artificial/node-source' }]]);
+  assert.ok(byText('确认添加此项目')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
   assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /org.example.inspected-data · 版本 1/);
   assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /平台未验证实际数据格式/);
-  await click(byText('登记此应用'));
-  assert.deepEqual(calls.at(-1), ['node_app_register', { sourcePath: '/artificial/node-source' }]);
+  await click(byText('确认添加此项目'));
+  assert.deepEqual(calls.at(-1), ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'directory-revision-1' }]);
   assert.ok(document.querySelector('[role="dialog"]'));
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
   assert.equal(calls.some(([command]) => command === 'node_app_start'), false);
+});
+
+test('An empty folder requires a name and separate acknowledged initialization before explicit registration', async () => {
+  const calls = []; const added = [];
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview('empty');
+    if (command === 'node_app_directory_initialize') return directoryReview('ready', { expectedRevision: 'initialized-revision' });
+    if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
+    throw new Error(command);
+  }, { onAdded: value => added.push(value) });
+  await click(byText('选择本地项目文件夹'));
+  const name = document.querySelector('.local-directory-empty input');
+  assert.equal(name.value, 'node-source'); assert.match(document.body.textContent, /不会添加项目、安装依赖或启动应用/);
+  await change(name, ''); assert.equal(byText('在空目录生成起始项目…').disabled, true);
+  await change(name, 'My local project'); await click(byText('在空目录生成起始项目…'));
+  assert.equal(byText('确认生成起始项目').disabled, true);
+  await click(byText('取消，保留空目录'));
+  assert.equal(document.querySelector('[aria-label="生成起始项目确认"]'), null); assert.equal(calls.length, 2);
+  await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
+  assert.deepEqual(calls[2], ['node_app_directory_initialize', { sourcePath: '/artificial/node-source', input: { expectedRevision: 'directory-revision-1', name: 'My local project' } }]);
+  assert.deepEqual(added, []); assert.equal(calls.length, 3); assert.ok(byText('确认添加此项目'));
+  assert.match(document.body.textContent, /尚未添加或运行/);
+  await click(byText('确认添加此项目'));
+  assert.deepEqual(calls[3], ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'initialized-revision' }]);
+  assert.equal(added.length, 1); assert.equal(calls.length, 4);
+});
+
+test('Review-needed folders expose the complete backend prompt, copy it only explicitly and retain manual fallback', async () => {
+  const review = directoryReview('needs-review', { issues: ['人工检查问题，平台不据此判定不可适配。'], reviewPrompt: ' 保留首尾空白\n完整说明：请检查本机 /artificial/node-source。\n ' });
+  const calls = []; const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); throw new Error('Artificial clipboard denied'); } } });
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return review.sourcePath;
+    if (command === 'node_app_directory_inspect') return review;
+    throw new Error(command);
+  });
+  await click(byText('选择本地项目文件夹'));
+  assert.match(document.body.textContent, /平台尚未判断这个目录是否适配/);
+  assert.match(document.body.textContent, /能读取本机目录的 AI/);
+  assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('在空目录生成起始项目…'), undefined);
+  const prompt = document.querySelector('[aria-label="给 AI 的检查说明"]'); assert.equal(prompt.readOnly, true); assert.equal(prompt.value, review.reviewPrompt);
+  assert.deepEqual(copied, []);
+  await click(byText('复制给 AI 检查'));
+  assert.deepEqual(copied, [review.reviewPrompt]); assert.match(document.body.textContent, /复制未完成.*手动复制/);
+  assert.equal(prompt.value, review.reviewPrompt); assert.equal(document.querySelector('.local-directory-path input').value, review.sourcePath);
+  await click(byText('选择完整说明')); assert.equal(prompt.selectionStart, 0); assert.equal(prompt.selectionEnd, review.reviewPrompt.length);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); } } });
+  await click(byText('复制给 AI 检查')); assert.match(document.body.textContent, /完整检查说明已复制/);
+  await click(byText('复制目录路径')); assert.equal(copied.at(-1), review.sourcePath);
+  assert.equal(calls.length, 2, 'Copying never initializes, registers or sends anything through native APIs');
+});
+
+test('Rechecking revokes ready previews and initialization confirmation before reading and never reuses them on failure', async () => {
+  for (const state of ['ready', 'empty']) {
+    const deferredRead = deferred(); let reads = 0; const calls = [];
+    await setupDirectory(async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'choose_path') return '/artificial/node-source';
+      if (command === 'node_app_directory_inspect') return ++reads === 1 ? directoryReview(state) : deferredRead.promise;
+      throw new Error(command);
+    });
+    await click(byText('选择本地项目文件夹'));
+    if (state === 'empty') { await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); }
+    await click(byText('重新检查'));
+    assert.equal(document.querySelector('.node-inspection-preview'), null); assert.equal(document.querySelector('[aria-label="生成起始项目确认"]'), null);
+    await act(async () => deferredRead.reject(new Error('Artificial inspection failed')));
+    assert.match(document.body.textContent, /Artificial inspection failed/); assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('确认生成起始项目'), undefined);
+    assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
+    assert.equal(calls.length, 3);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Cancelling a replacement folder chooser preserves the path and prompt but revokes its old actionable preview', async () => {
+  let chooses = 0; let inspections = 0;
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return ++chooses === 1 ? '/artificial/node-source' : null;
+    if (command === 'node_app_directory_inspect') { inspections++; return directoryReview('needs-review'); }
+    throw new Error(command);
+  });
+  await click(byText('选择本地项目文件夹')); const prompt = document.querySelector('textarea').value;
+  await click(byText('重新选择文件夹'));
+  assert.match(document.body.textContent, /已取消选择/); assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
+  assert.equal(document.querySelector('textarea').value, prompt); assert.equal(inspections, 1);
+  await click(byText('重新检查')); assert.equal(inspections, 2);
+});
+
+test('Pending local-folder actions reject duplicates and adding does not reuse a failed revision', async () => {
+  const choosing = deferred(); const registering = deferred(); let registrations = 0; let reads = 0; let choices = 0; const added = [];
+  await setupDirectory(async command => {
+    if (command === 'choose_path') { choices++; return choosing.promise; }
+    if (command === 'node_app_directory_inspect') return directoryReview('ready', { expectedRevision: `review-${++reads}` });
+    if (command === 'node_app_directory_register') { registrations++; return registering.promise; }
+    throw new Error(command);
+  }, { onAdded: value => added.push(value) });
+  await click(byText('选择本地项目文件夹')); await click(byText('正在选择与检查…')); assert.equal(choices, 1);
+  await act(async () => choosing.resolve('/artificial/node-source'));
+  await click(byText('确认添加此项目')); assert.equal(byText('确认添加此项目'), undefined);
+  await act(async () => registering.reject(new Error('Reviewed directory changed')));
+  assert.equal(registrations, 1); assert.equal(byText('确认添加此项目'), undefined); assert.match(document.body.textContent, /Reviewed directory changed/);
+  await click(byText('重新检查')); assert.equal(reads, 2); assert.deepEqual(added, []);
+});
+
+test('Service changes discard late chooser, inspection, initialization and registration responses without replaying writes', async () => {
+  for (const delayedOperation of ['choose', 'inspect', 'initialize', 'register']) {
+    const delayed = deferred(); const calls = []; const added = []; const gates = [];
+    const props = { enabled: true, instanceId: 'old-directory-service', onPendingChange: value => gates.push(value), onAdded: value => added.push(value) };
+    await setupDirectory(async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'choose_path') return delayedOperation === 'choose' ? delayed.promise : '/artificial/node-source';
+      if (command === 'node_app_directory_inspect') return delayedOperation === 'inspect' ? delayed.promise : directoryReview(delayedOperation === 'initialize' ? 'empty' : 'ready');
+      if (command === 'node_app_directory_initialize' || command === 'node_app_directory_register') return delayed.promise;
+      throw new Error(command);
+    }, props);
+    await click(byText('选择本地项目文件夹'));
+    if (delayedOperation === 'initialize') {
+      await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
+    }
+    if (delayedOperation === 'register') await click(byText('确认添加此项目'));
+    const submitted = calls.length;
+    await act(async () => root.render(h(LocalDirectoryPanel, { ...props, instanceId: 'new-directory-service' })));
+    const result = delayedOperation === 'choose' ? '/artificial/late-chooser' : delayedOperation === 'register' ? app({ sourcePath: '/artificial/node-source' }) : directoryReview();
+    await act(async () => delayed.resolve(result));
+    assert.equal(calls.length, submitted); assert.deepEqual(added, []); assert.equal(gates.at(-1), false);
+    assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('确认生成起始项目'), undefined);
+    assert.doesNotMatch(document.body.textContent, /late-chooser/);
+    assert.equal(byText(delayedOperation === 'choose' ? '选择本地项目文件夹' : '重新选择文件夹').disabled, false);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Disabled local-folder access invalidates its unfinished review and keeps the selected path for an explicit recheck', async () => {
+  const delayed = deferred(); let reads = 0;
+  const props = { enabled: true, instanceId: 'same-service', onPendingChange() {}, onAdded() {} };
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return ++reads === 1 ? delayed.promise : directoryReview();
+    throw new Error(command);
+  }, props);
+  await click(byText('选择本地项目文件夹'));
+  await act(async () => root.render(h(LocalDirectoryPanel, { ...props, enabled: false })));
+  await act(async () => delayed.resolve(directoryReview()));
+  assert.equal(byText('重新检查').disabled, true); assert.equal(byText('确认添加此项目'), undefined);
+  await act(async () => root.render(h(LocalDirectoryPanel, props)));
+  assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
+  assert.equal(byText('确认添加此项目'), undefined);
+  await click(byText('重新检查')); assert.equal(reads, 2); assert.ok(byText('确认添加此项目'));
+});
+
+test('Closing local-folder content prevents a late chooser from inspecting or initializing after unmount', async () => {
+  const delayed = deferred(); const calls = []; const gates = [];
+  await setupDirectory(async (command, args) => { calls.push([command, args]); assert.equal(command, 'choose_path'); return delayed.promise; }, { onPendingChange: value => gates.push(value) });
+  await click(byText('选择本地项目文件夹'));
+  await act(async () => root.unmount()); root = null;
+  await act(async () => delayed.resolve('/artificial/closed-folder'));
+  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }]]); assert.equal(gates.at(-1), false);
+});
+
+test('An initialization error keeps directory and name, requires reinspection and revokes every prior acknowledgment', async () => {
+  let inspections = 0; let initializations = 0;
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview('empty', { expectedRevision: `empty-${++inspections}` });
+    if (command === 'node_app_directory_initialize') { initializations++; throw new Error('Artificial initialization needs inspection'); }
+    throw new Error(command);
+  });
+  await click(byText('选择本地项目文件夹')); await change(document.querySelector('.local-directory-empty input'), 'Preserved project name');
+  await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
+  assert.equal(initializations, 1); assert.equal(byText('确认生成起始项目'), undefined); assert.match(document.body.textContent, /Artificial initialization needs inspection/);
+  await click(byText('重新检查'));
+  assert.equal(document.querySelector('.local-directory-empty input').value, 'Preserved project name');
+  await click(byText('在空目录生成起始项目…'));
+  assert.equal(document.querySelector('[aria-label="生成起始项目确认"] input').checked, false); assert.equal(initializations, 1);
+});
+
+test('Adding rejects malformed or mismatched directory previews instead of making older material actionable', async () => {
+  for (const result of [directoryReview('ready', { sourcePath: '/artificial/different-folder' }), directoryReview('ready', { inspection: undefined }), directoryReview('needs-review', { reviewPrompt: '' }), directoryReview('empty', { expectedRevision: '' })]) {
+    await setupDirectory(async command => {
+      if (command === 'choose_path') return '/artificial/node-source';
+      assert.equal(command, 'node_app_directory_inspect'); return result;
+    });
+    await click(byText('选择本地项目文件夹'));
+    assert.ok(document.querySelector('[role=alert]')); assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('在空目录生成起始项目…'), undefined);
+    await act(async () => root.unmount()); root = null;
+  }
 });
 
 test('Input conversion refuses unsafe integers and preserves an explicit false value', () => {

@@ -144,7 +144,7 @@ async fn choose_path(
                 let _ = sender.send(path);
             }),
         PathChoice::Nodeapp => dialog
-            .set_title("选择包含 local-app.json 的 Node 应用源码目录")
+            .set_title("选择本地项目文件夹（空目录或已有项目）")
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
@@ -1047,6 +1047,87 @@ async fn node_install_apply(
 // These commands deliberately belong only to the native manager. Node pages
 // receive neither this command surface nor the private backend credentials.
 #[tauri::command]
+async fn node_app_directory_inspect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let apps = state.node_apps.clone();
+    tokio::task::spawn_blocking(move || apps.inspect_directory(&PathBuf::from(source_path)))
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "LOCAL_DIRECTORY_CHECK_FAILED",
+                "目录检查未完成，请重新检查。",
+            )
+        })?
+}
+#[tauri::command]
+async fn node_app_directory_initialize(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+    input: platform_core::node_apps::DirectoryInitializeInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "SERVICE_STOPPING",
+            "平台正在退出，请稍后重新检查目录。",
+        ));
+    }
+    let apps = state.node_apps.clone();
+    tokio::task::spawn_blocking(move || {
+        if app
+            .state::<AppState>()
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "平台正在退出，尚未开始初始化，请稍后重新检查目录。",
+            )
+            .outcome("not_started"));
+        }
+        apps.initialize_directory(&PathBuf::from(source_path), input)
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "LOCAL_DIRECTORY_INITIALIZE_INTERRUPTED",
+            "初始化结果未能确认，请保留目录中的文件并重新检查；不会自动重复初始化。",
+        )
+        .outcome("unknown")
+    })?
+}
+#[tauri::command]
+async fn node_app_directory_register(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+    expected_revision: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "SERVICE_STOPPING",
+            "平台正在退出，请稍后重新检查目录。",
+        ));
+    }
+    state
+        .node_apps
+        .register_directory(PathBuf::from(source_path), expected_revision)
+        .await
+}
+#[tauri::command]
 async fn node_app_inspect(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1546,7 +1627,7 @@ fn main() {
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_cancel,
-            node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
+            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,

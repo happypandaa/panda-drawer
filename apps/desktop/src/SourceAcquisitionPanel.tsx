@@ -9,7 +9,7 @@ import { messageFrom } from './ui-utils';
 type Inspection = { kind: string; name?: string; issues: unknown[]; executionState: string };
 type Candidate = { sourceId: string; taskId: string; name: string; status: string; url: string; provider?: string; localSourcePath?: string; captureNotice?: string; excludedPaths?: string[]; commit?: string; sourcePath?: string; evidencePath: string; inspection?: Inspection; error?: unknown; contentDigest?: string };
 const statusText: Record<string, string> = { acquiring: '正在获取', ready: '已获取，待接入', failed: '获取失败', cancelled: '已取消', interrupted: '已中断', unavailable: '记录需要检查' };
-const kindText: Record<string, string> = { 'project-v1-source': '平台网页项目源码', 'node-service-source': '带本地服务的应用源码', 'needs-adaptation': '需要适配的源码' };
+const kindText: Record<string, string> = { 'project-v1-source': '平台网页项目源码', 'node-service-source': '带本地服务的应用源码', 'needs-adaptation': '尚待评估的源码' };
 
 type Props = { disabled: boolean; instanceId?: string; onClose: () => void; onTask: (task: TaskRecord) => void; onInstalled?: () => void };
 
@@ -153,5 +153,5 @@ function SourceAcquisitionWorkflow({ disabled, instanceId, onClose, onTask, onIn
   </Modal>;
 }
 function InspectionView({ value }: { value: Inspection }) {
-  return <><p>{kindText[value.kind] ?? value.kind} · 未执行代码</p>{value.issues.map((issue, index) => <p key={index}>{messageFrom(issue)}</p>)}</>;
+  return <><p>{kindText[value.kind] ?? value.kind} · 未执行代码</p>{value.kind === 'needs-adaptation' && <p>尚未满足当前接入格式，平台未判断能否适配。需要进一步检查公开项目材料后再决定。</p>}{value.issues.map((issue, index) => <p key={index}>{messageFrom(issue)}</p>)}</>;
 }
