@@ -82,6 +82,7 @@ async fn shutdown_signals_install_before_waiting_for_public_workspace_migration(
         .node_install_prepare(
             nodes.clone(),
             PrepareNodeInstallInput {
+                build_source: false,
                 source_id: ready["sourceId"].as_str().unwrap().into(),
                 expected_source_digest: ready["contentDigest"].as_str().unwrap().into(),
                 target_app_id: None,

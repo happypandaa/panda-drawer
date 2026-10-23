@@ -92,6 +92,7 @@ async fn build_install(handle: &RuntimeHandle, apps: Arc<NodeApps>, id: &str) ->
         .node_install_prepare(
             apps.clone(),
             PrepareNodeInstallInput {
+                build_source: false,
                 source_id: ready["sourceId"].as_str().unwrap().into(),
                 expected_source_digest: ready["contentDigest"].as_str().unwrap().into(),
                 target_app_id: Some(id.into()),

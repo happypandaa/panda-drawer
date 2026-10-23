@@ -9,7 +9,8 @@ export interface SourceInstallCandidate {
   name: string;
   status: string;
   contentDigest?: string;
-  inspection?: { kind: string; name?: string; issues?: unknown[] };
+  buildSourceDigest?: string | null;
+  inspection?: { kind: string; name?: string; requiresBuild?: boolean; issues?: unknown[] };
 }
 export interface PreparedNodeInstall {
   candidateId: string;
@@ -51,7 +52,8 @@ const generationPattern = /^gen_[a-f0-9]{32}$/;
 const appPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function eligible(source: SourceInstallCandidate) {
   return source.status === 'ready' && source.inspection?.kind === 'node-service-source'
-    && sourcePattern.test(source.sourceId) && typeof source.contentDigest === 'string' && digestPattern.test(source.contentDigest);
+    && sourcePattern.test(source.sourceId) && typeof source.contentDigest === 'string' && digestPattern.test(source.contentDigest)
+    && (source.buildSourceDigest == null || digestPattern.test(source.buildSourceDigest));
 }
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 function cancelledPreparationRecord(item: InstallRecord) {
@@ -126,6 +128,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
   const binding = useRef<{ sourceId: string; digest: string } | null>(null);
   const availableSources = sources.filter(eligible);
   const selected = availableSources.find(source => source.sourceId === sourceId);
+  const requiresBuild = selected?.inspection?.requiresBuild === true && !selected.buildSourceDigest;
   const active = Boolean(task && !task.final);
   const visibleRecords = records.filter(item => item.state === 'unavailable' || item.targetAppId === (targetAppId ?? null));
   const listActive = visibleRecords.some(item => ['preparing', 'committing'].includes(item.state));
@@ -255,11 +258,11 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     const generation = lifetime.current; const choice = choiceRevision.current;
     binding.current = { sourceId: selected.sourceId, digest: selected.contentDigest! };
     try {
-      const value = await invoke<TaskRecord>('node_install_prepare', { input: { sourceId: selected.sourceId, expectedSourceDigest: selected.contentDigest, targetAppId: targetAppId ?? null } });
+      const value = await invoke<TaskRecord>('node_install_prepare', { input: { sourceId: selected.sourceId, expectedSourceDigest: selected.contentDigest, targetAppId: targetAppId ?? null, ...(requiresBuild ? { buildSource: true } : {}) } });
       if (!current(generation) || choice !== choiceRevision.current) return;
       if (value.type !== 'nodeInstallPrepare') throw new Error('返回的任务不是安装准备任务。');
       currentCandidate.current = null; setCandidate(null); setKnownCandidateId('');
-      setNotice('准备任务已接受；依赖准备完成后仍需单独确认安装。');
+      setNotice('准备任务已接受；完成后仍需单独确认安装。');
       await acceptTask(value);
     } catch (cause) { if (current(generation)) setError(messageFrom(cause)); }
     finally { pending.current = false; if (current(generation)) setBusy(false); }
@@ -337,7 +340,8 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
       </select>
       {!availableSources.length && <p>暂无可准备的源码候选。请先获取或检查带本地服务声明的源码，并确认获取状态为已完成。</p>}
       {sourceId && !selected && <p role="alert">所选源码当前不可用或已改变，请重新选择并准备。</p>}
-      <button type="submit" className="primary-button" disabled={disabled || busy || active || checking || listActive || !selected || !targetValid}>{candidate ? '重新准备安装材料' : '准备安装材料'}</button>
+      {requiresBuild && <p className="node-config-warning">此来源需要构建，将执行声明的构建脚本。</p>}
+      <button type="submit" className="primary-button" disabled={disabled || busy || active || checking || listActive || !selected || !targetValid}>{requiresBuild ? '构建并准备安装材料' : candidate ? '重新准备安装材料' : '准备安装材料'}</button>
     </form>
     {candidate && <section className="operation-confirmation" aria-label="安装候选确认">
       <h4>{candidate.manifest.app.name} · {candidate.manifest.app.version}</h4>
