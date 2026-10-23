@@ -9,7 +9,7 @@
 | 对象 | project-v1 网页项目 | 已登记的本机 Node 应用 |
 | --- | --- | --- |
 | 身份 | 原工作区 `projects/<id>/project.json` 与本机登记 | 固定数据根 `node-apps/<UUID>/registration.json` |
-| 开发源码 | 清单 `sourceDir`，默认 `app/`；目录存在不证明能重建 | `sourcePath` 仅指外部程序目录；当前清单未声明开发源码，不能据此推断可构建 |
+| 开发源码 | 清单 `sourceDir`，默认 `app/`；目录存在不证明能重建 | 作者源码由显式绑定确定；清单 `development` 声明源码根、构建和运行产物，安装副本不是 Git 仓库 |
 | 当前运行文件 | 清单 `outputDir`（默认 `dist/`）是产物镜像；正常构建发布使用 `.platform/artifacts/<buildId>/dist`，已打开窗口可能保留旧代；来源由 `buildInfo` 表达 | 外部目录下声明的 `web.root`、`backend.root` 及就绪依赖；尚非脱离作者目录的安装副本 |
 | 活跃业务数据 | 清单 `database`、`attachmentsDir`，受限于 `data/` | 本机槽 `data/`；具体数据库与附件结构由应用负责，平台未声明或接管 SQLite 路径 |
 | 用户配置、秘密 | 沿用现有能力，不虚构配置目录 | 本机槽 `configuration/`；凭据在其 `credentials/` 私有文件，不归作者目录所有 |
@@ -20,9 +20,9 @@
 
 本步新增管理接口 `project info`／桌面项目详情及 Node 详情中的 `objectLayout`。其中 `runtime.webRoot` 对 project-v1 表示清单产物目录，对本机 Node 表示外部网页运行目录；不将静态产物镜像称为所有窗口当前运行的代次。其内容是路径和能力边界的只读报告，不能作为对这些路径执行写入、checkout、清理或迁移的授权。project-v1 必须通过清单、路径及登记校验才生成报告，失败返回 `null`；Node 来源失联或声明变化也返回 `null`，保留原错误及停止流程。私有路径仅随受认证管理接口或原生管理命令返回，不新增网页访问权限。
 
-`build.state: platform-build` 只表示安全的源码目录及 `package.json`、`package-lock.json` 材料存在，可交给现有构建入口；不证明脚本、锁文件、依赖、工具环境或最终构建成功。缺材料时报告 `unavailable`，已有运行文件仍按原运行校验使用。Node 暂无平台构建入口，报告 `unavailable`。
+`build.state: platform-build` 只表示安全的源码目录及 `package.json`、`package-lock.json` 材料存在，可交给现有构建入口；不证明脚本、锁文件、依赖、工具环境或最终构建成功。缺材料时报告 `unavailable`，已有运行文件仍按原运行校验使用。Node 源码绑定与材料核验通过后可报告 `platform-build`，仍不代表构建成功。
 
-2026-10-22 新增[受管 Node 安装](node-managed-installation.md)：v2 登记指向固定数据根内 `generations/<代次>` 的独立程序，`runtime.external` 为 false；原 v1 外部目录登记保持不变。受管程序不是开发源码，`source` 仍标未核实且路径为空，构建能力不伪造为可用。新安装和更新保留来源摘要，不把安装副本当成 Git 仓库。
+2026-10-22 新增[受管 Node 安装](node-managed-installation.md)：v2 登记指向固定数据根内 `generations/<代次>` 的独立程序，`runtime.external` 为 false；原 v1 外部目录登记保持不变。受管程序不是开发源码；未绑定时 `source` 标未核实，显式绑定后报告作者源码与实际构建能力。新安装和更新保留来源摘要，不把安装副本当成 Git 仓库。
 
 ## Git 根和数据保存规则
 
@@ -49,3 +49,5 @@
 ## 验证记录
 
 本步验证与限制在完成检查后登记于[技术实施计划](technical-implementation-plan.md#本轮实施记录)。本机结果只适用于注明的 macOS 环境，不代表 Windows、自包含安装、外部 AI 集成或 Git 保存已交付。
+
+2026-10-23：用户确认的 [Node 开发流程](node-development-workflow.md)沿用一个权威源码 Git，构建生成无 Git 的运行副本；旧外部登记只通过明确更新转受管，不自动移动作者仓库。

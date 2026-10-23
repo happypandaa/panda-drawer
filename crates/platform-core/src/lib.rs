@@ -23,7 +23,10 @@ pub mod node_app_install;
 pub mod node_app_manifest;
 mod node_app_proxy;
 pub mod node_apps;
+pub mod node_development_build;
+pub mod node_development_tasks;
 pub mod node_install_tasks;
+pub use project_git::node_development_git;
 pub mod node_runtime_trial;
 pub mod object_layout;
 mod paths;
@@ -58,3 +61,5 @@ pub use database::{
 };
 pub use error::ApiError;
 pub use projects::{CreateProjectInput, ProjectHandle, ProjectInfo, ProjectManifest, ProjectStore};
+
+pub use service::{NodeDevelopmentLease, NodeGitAction};

@@ -63,7 +63,9 @@ function app(extra = {}) { return { id: 'node_fixture', name: 'Disposable Node f
 async function setup(mock, props = {}, Component = NodeAppsPanel) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
-  globalThis.__NODE_FORM_INVOKE__ = mock;
+  globalThis.__NODE_FORM_INVOKE__ = (command, args) => command === 'node_development_info'
+    ? Promise.resolve({ sourceRoot: props.request?.app?.sourcePath ?? '/artificial-source', runtimeIsSource: !props.request?.app?.installation, instanceId: props.instanceId ?? 'fixture' })
+    : mock(command, args);
   await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...props })));
   if (Component === NodeAppsPanel && props.request !== null && props.request?.intent !== 'delete' && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
 }
@@ -90,10 +92,10 @@ async function change(element, value) {
 }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function requestUpdate() {
-  const disclosure = document.querySelector('.node-update-details');
+  const disclosure = document.querySelector('.project-development-tools');
   assert.ok(disclosure);
   if (!disclosure.open) await click(disclosure.querySelector('summary'));
-  await click(byText('选择更新来源或查看候选'));
+  await click(byText('从下载的源码更新'));
 }
 async function openDetails(name) {
   const entry = document.querySelector(`[aria-label='进入项目「${name}」']`);
@@ -116,7 +118,7 @@ test('Managed app update preserves configuration drafts and only reads candidate
   }), { request: { app: value, intent: 'details', token: 1 } });
   await change(input('MODEL'), 'unfinished configuration');
   await click(byText('概览'));
-  assert.equal(byText('选择更新来源或查看候选').disabled, true);
+  assert.equal(byText('从下载的源码更新').disabled, true);
   assert.deepEqual(calls, []);
   assert.match(document.querySelector('[role=dialog]').textContent, /运行不依赖原作者目录/);
   await click(byText('应用配置')); await change(input('MODEL'), ''); await click(byText('概览'));
@@ -143,9 +145,9 @@ test('Managed update rejects an old instance source list and releases its pendin
     throw new Error(command);
   }), props);
   await click(byText('概览')); await requestUpdate();
-  assert.equal(byText('选择更新来源或查看候选').disabled, true);
+  assert.equal(byText('从下载的源码更新').disabled, true);
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
-  assert.equal(byText('选择更新来源或查看候选').disabled, false);
+  assert.equal(byText('从下载的源码更新').disabled, false);
   await requestUpdate();
   await act(async () => older.resolve([{ ...source, name: 'old-instance-source' }]));
   assert.equal(reads, 2);
@@ -167,7 +169,7 @@ test('Managed update drops old installation state on instance changes while reta
   await change(document.querySelector('.node-install-panel select'), source.sourceId);
   await click(byText('准备安装材料'));
   assert.ok(byText('取消准备'));
-  const disclosure = document.querySelector('.node-update-details');
+  const disclosure = document.querySelector('.project-development-tools');
   assert.equal(disclosure.open, true);
   await click(disclosure.querySelector('summary'));
   assert.equal(disclosure.open, true, 'An active update cannot be folded away');
@@ -793,7 +795,7 @@ test('Node details reopen without a secret and expose only supported tabs and ac
   await setup(shellMock(state), {}, App);
   await openDetails('Disposable Node fixture');
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
-  assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
+  assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态', '源码版本']);
   assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /备份维护/.test(value.textContent)), false);
   assert.ok(byText('删除项目'));
   await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-close-draft');
@@ -1010,11 +1012,11 @@ test('Node overview keeps ordinary facts visible and source details and updates 
   assert.doesNotMatch(visible, /项目详情与应用配置|保存配置不会自动打开|在独立应用窗口中使用/);
   assert.doesNotMatch(visible, /not-a-real-source|11111111-1111-4111-8111-111111111111|尚未读取或未能核验/);
   assert.equal(document.querySelector('.node-source-details').open, false);
-  assert.equal(document.querySelector('.node-update-details').open, false);
+  assert.equal(document.querySelector('.project-development-tools').open, false);
   assert.equal([...dialog.querySelectorAll('button')].filter(button => button.textContent === '删除项目').length, 1);
   await click(document.querySelector('.node-source-details > summary'));
   assert.match(exposedText(dialog), /not-a-real-source/);
-  assert.match(exposedText(dialog), /暂不支持 Git 版本管理/);
+  assert.match(exposedText(dialog), /源码版本/);
 });
 
 test('External Node overview keeps its source dependency visible without exposing long technical details', async () => {
@@ -1102,11 +1104,77 @@ test('A failed Node update remains expanded with its task result exposed', async
   await click(byText('概览')); await requestUpdate();
   await change(document.querySelector('.node-install-panel select'), source.sourceId);
   await click(byText('准备安装材料'));
-  const disclosure = document.querySelector('.node-update-details');
+  const disclosure = document.querySelector('.project-development-tools');
   assert.equal(disclosure.open, true);
   await click(disclosure.querySelector('summary'));
   assert.equal(disclosure.open, true);
   assert.match(exposedText(disclosure), /Artificial update failure/);
   assert.match(exposedText(disclosure), /准备应用安装 · 失败/);
   assert.match(document.querySelector('.node-process-state').textContent, /已停止/);
+});
+
+function disposableNodeGitStatus() {
+  return { repository: { state: 'project-root', root: '/disposable/source', markers: [], head: { oid: 'a'.repeat(40), branch: 'refs/heads/main' }, indexState: 'clean', git: null }, scope: { policy: 'node-source-v1', includedRoots: [], includedPaths: [], excluded: [], unclassifiedPaths: [], protectedTrackedPaths: [], complete: true }, changes: [{ path: 'server/main.mjs', kind: 'modify', staged: false }], snapshotDigest: 'b'.repeat(64), canInitialize: false, canSave: true, canListVersions: true, canCreateBranch: true, branchCreationIssue: null, database: { state: 'not-supported', reason: '' }, issues: [] };
+}
+function nodeGitField(label) {
+  const element = [...document.querySelectorAll('.node-git-panel label')].find(element => element.textContent === label);
+  assert.ok(element, label); return element.querySelector('input') ?? document.getElementById(element.htmlFor);
+}
+
+test('Node Git author drafts are protected by the shared detail close guard', async () => {
+  await setup(baseMock(app(), async (command, args) => { assert.equal(command, 'node_development_git'); assert.equal(args.operation, 'status'); return disposableNodeGitStatus(); }), { instanceId: 'git_fixture' });
+  await click(byText('源码版本'));
+  await change(nodeGitField('提交人'), 'Unfinished artificial author');
+  await click(document.querySelector('[aria-label^="关闭Disposable"]'));
+  assert.ok(document.querySelector('[aria-label="关闭配置确认"]'));
+  await click(byText('继续编辑'));
+  assert.equal(nodeGitField('提交人').value, 'Unfinished artificial author');
+  await click(document.querySelector('[aria-label^="关闭Disposable"]'));
+  await click(byText('丢弃草稿并关闭'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+});
+
+test('A pending Node Git save blocks detail closing and a failed save retains its draft', async () => {
+  const saved = deferred(); const calls = [];
+  await setup(baseMock(app(), async (command, args) => {
+    assert.equal(command, 'node_development_git'); calls.push(args);
+    if (args.operation === 'status') return disposableNodeGitStatus();
+    assert.equal(args.operation, 'save'); return saved.promise;
+  }), { instanceId: 'git_fixture' });
+  await click(byText('源码版本'));
+  await change(nodeGitField('版本说明'), 'Unfinished artificial version');
+  await change(nodeGitField('提交人'), 'Disposable Author');
+  await change(nodeGitField('邮箱'), 'disposable@example.invalid');
+  await click(byText('保存源码版本'));
+  const close = document.querySelector('[aria-label^="关闭Disposable"]');
+  assert.equal(close.disabled, true); await click(close);
+  assert.equal(document.querySelector('[aria-label="关闭配置确认"]'), null);
+  await act(async () => saved.reject({ message: 'Artificial stale Git save' }));
+  assert.match(document.body.textContent, /Artificial stale Git save/);
+  assert.equal(close.disabled, false);
+  await click(byText('刷新状态'));
+  assert.equal(nodeGitField('版本说明').value, 'Unfinished artificial version');
+  assert.equal(calls.filter(value => value.operation === 'save').length, 1);
+});
+
+test('A stopped Node app with a changed source manifest can request a build and preserves state on backend rejection', async () => {
+  const value = app({ state: 'failed', sourceManifestChanged: true, lastError: 'Source manifest changed; current application preserved' });
+  const calls = [];
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_development_build');
+    throw { code: 'NODE_DEVELOPMENT_BUSY', message: 'Artificial build rejected, current program and configuration preserved' };
+  }), { instanceId: 'failed_fixture', request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('概览'));
+  const tools = document.querySelector('.project-development-tools');
+  await act(async () => { tools.open = true; tools.dispatchEvent(new window.Event('toggle')); });
+  assert.equal(byText('构建并更新').disabled, false);
+  await click(byText('构建并更新'));
+  assert.match(document.body.textContent, /Artificial build rejected, current program and configuration preserved/);
+  assert.deepEqual(calls, [['node_development_build', { appId: value.id }]]);
+  assert.match(document.querySelector('.node-process-state').textContent, /运行异常/);
+  await click(byText('应用配置'));
+  assert.equal(input('AI_KEY').value, '');
+  assert.equal(input('MODEL').value, '');
+  assert.equal(document.querySelector('.node-install-panel'), null);
 });

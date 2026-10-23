@@ -8,6 +8,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 最新取舍为**仅保留项目 Git 版本管理，退役独立本地备份体系**，也取消另建私有 Git 恢复仓库的建议。[原备份精简评估](docs/git-backup-simplification-review.md)保留为历史盘点；数据库提交方向保留，`dist` 是否提交待评估。完整备份、恢复、复制与回收不再统一作为新类型安装前置，正常持久化、必要停写和失败保留当前实例仍须完成。独立备份体系的后续退役仍按计划推进；旧平台回收站已按2026-10-22用户授权清理本机遗留项目并[移除入口](docs/legacy-trash-retirement.md)，必要历史证据继续保留。
 
+已接通 [Node 源码开发](docs/node-development-workflow.md)：同一个作者 Git 仓库管理源码，详情提供打开源码、AI 接手、本机 Git 与构建更新；安装运行副本不另建 Git。远程 push/pull 与 Node 数据版本仍未提供。
+
 本轮新增[Node 源码副本、安装与更新](docs/node-managed-installation.md)：获取或接入源码后，先准备独立运行材料，再确认安装；同实例更新保留数据和配置。旧外部目录登记保持不变，实际原生通过范围持续登记在[三场景记录](docs/three-scenario-verification.md)。
 
 文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。

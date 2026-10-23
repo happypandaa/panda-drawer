@@ -68,6 +68,64 @@ pub struct TrialManifest {
     pub configuration: Option<ConfigurationDecl>,
     #[serde(default, deserialize_with = "present")]
     pub documentation: Option<DocumentationDecl>,
+    #[serde(default, deserialize_with = "present")]
+    pub development: Option<NodeDevelopmentDecl>,
+}
+
+/// Author-controlled development instructions for the one repository root.
+/// Installed program copies retain these instructions as metadata, never Git.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NodeDevelopmentDecl {
+    pub source_dir: String,
+    pub build: NodeDevelopmentBuild,
+    pub output_dir: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum NodeDevelopmentBuild {
+    None {},
+    Npm { script: String },
+}
+
+impl NodeDevelopmentDecl {
+    pub fn validate(&self) -> Result<()> {
+        // One application has one authority: the selected repository and its
+        // root manifest. Do not create a second repository in a source subdir.
+        if self.source_dir != "."
+            || (self.output_dir != "." && !relative(&self.output_dir))
+            || self.output_dir.split('/').any(|part| {
+                matches!(
+                    part.to_ascii_lowercase().as_str(),
+                    ".git"
+                        | ".platform"
+                        | "node_modules"
+                        | "data"
+                        | "configuration"
+                        | "credentials"
+                )
+            })
+        {
+            return Err(invalid(
+                "开发源码须使用仓库根，构建输出须为独立的相对目录。",
+            ));
+        }
+        if let NodeDevelopmentBuild::Npm { script } = &self.build {
+            if self.output_dir == "."
+                || script.is_empty()
+                || script.len() > 100
+                || !script
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_:-".contains(&b))
+            {
+                return Err(invalid("npm 构建须声明脚本名称和独立输出目录。"));
+            }
+        } else if self.output_dir != "." {
+            return Err(invalid("无需构建的 Node 应用使用仓库根作为运行材料。"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,6 +403,7 @@ impl TrialManifest {
                 if self.format_version != 1
                     || self.backend.is_some()
                     || self.configuration.is_some()
+                    || self.development.is_some()
                 {
                     return Err(invalid("网页项目不能声明 Node 后端或启动配置。"));
                 }
@@ -374,6 +433,9 @@ impl TrialManifest {
         }
         if let Some(config) = &self.configuration {
             config.validate()?;
+        }
+        if let Some(development) = &self.development {
+            development.validate()?;
         }
         Ok(())
     }

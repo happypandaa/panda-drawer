@@ -86,7 +86,7 @@ test('A registered Node directory is an external runtime location with unverifie
     runtime: { webRoot: '/disposable/external-node/public', backendRoot: '/disposable/external-node/server', external: true },
     build: { state: 'unavailable', reason: '未核实构建方式。' },
   }));
-  assert.match(panel.textContent, /登记的外部应用目录/);
+  assert.match(panel.textContent, /源码目录.*登记目录不证明包含可编辑源码/);
   assert.match(panel.textContent, /当前网页运行目录/);
   assert.match(panel.textContent, /当前后端运行目录/);
   assert.doesNotMatch(panel.textContent, /声明的网页产物目录|平台管理实际发布代次/);

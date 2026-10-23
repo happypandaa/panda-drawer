@@ -41,6 +41,148 @@ fn only_canonical_public_provider_urls_are_accepted() {
 }
 
 #[test]
+fn source_branch_is_optional_and_restricted_to_literal_local_branch_names() {
+    let input: AcquireSourceInput =
+        serde_json::from_value(json!({"url":"https://github.com/example/disposable"})).unwrap();
+    assert!(input.branch.is_none());
+    for branch in [
+        "main",
+        "codex/tts-providers",
+        "release/v1.2",
+        "topic_2/test-3",
+    ] {
+        assert!(validate_branch(branch).is_ok(), "{branch}");
+    }
+    for branch in [
+        "",
+        "HEAD",
+        "refs/heads/main",
+        "--upload-pack=bad",
+        "-main",
+        "main~1",
+        "main^{commit}",
+        "a..b",
+        "a//b",
+        "a/.hidden",
+        "topic.lock",
+        "topic/branch.lock",
+        "a/",
+        "a.",
+        "a@{1}",
+        "a\\b",
+        "a b",
+        "main\nnext",
+        "main:other",
+    ] {
+        assert_eq!(
+            validate_branch(branch).unwrap_err().code,
+            "SOURCE_BRANCH_INVALID",
+            "{branch}"
+        );
+    }
+    assert!(validate_branch(&"1".repeat(40)).is_err());
+    assert!(validate_branch(&"b".repeat(129)).is_err());
+    assert!(serde_json::from_value::<AcquireSourceInput>(
+        json!({"url":"https://github.com/example/disposable","branch":true})
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn invalid_branch_is_rejected_before_any_task_or_source_slot_is_created() {
+    let (_temp, _paths, store, tasks, manager) = fixture();
+    let (stop, _) = watch::channel(false);
+    let issue = manager
+        .submit(
+            AcquireSourceInput {
+                url: "https://github.com/example/disposable".into(),
+                branch: Some("--upload-pack=forbidden".into()),
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(issue.code, "SOURCE_BRANCH_INVALID");
+    assert!(manager.list().unwrap().is_empty());
+    assert!(!manager.root().exists());
+    assert!(!store.has_active_tasks());
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[tokio::test]
+async fn selected_branch_is_one_clone_argument_and_persists_without_changing_url_rules() {
+    let (_temp, paths, store, tasks, manager) = fixture();
+    let arguments = paths.data_root().join("disposable-clone-args");
+    fake_git(&paths,&format!("for arg do\ncase \"$arg\" in clone) printf '%s\\0' \"$@\" > '{}'; exit 128;; esac\ndone\nexit 128",arguments.display()));
+    let (stop, _) = watch::channel(false);
+    let task = manager
+        .submit(
+            AcquireSourceInput {
+                url: "https://github.com/example/disposable".into(),
+                branch: Some("codex/tts-providers".into()),
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    let done = final_task(&tasks, &task.task_id).await;
+    assert_eq!(done.error.unwrap().code, "SOURCE_GIT_FAILED");
+    let args = fs::read(arguments).unwrap();
+    let args: Vec<_> = args
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .map(|argument| std::str::from_utf8(argument).unwrap())
+        .collect();
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--branch", "codex/tts-providers"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--", "https://github.com/example/disposable.git"]));
+    let candidate = manager.list().unwrap().pop().unwrap();
+    assert_eq!(candidate.branch.as_deref(), Some("codex/tts-providers"));
+    let record = candidate.evidence_path.join("source.json");
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("branch");
+    atomic_json(&record, &legacy).unwrap();
+    assert_eq!(manager.info(&candidate.source_id).unwrap().branch, None);
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_branch_never_silently_accepts_a_tag_or_another_branch() {
+    let (_temp, paths, store, tasks, manager) = fixture();
+    fake_git(&paths,"operation=''\nfor arg do\ncase \"$arg\" in clone|symbolic-ref) operation=\"$arg\";; esac\nlast=\"$arg\"\ndone\ncase \"$operation\" in clone) mkdir \"$last\"; exit 0;; symbolic-ref) printf 'refs/heads/unrequested\\n'; exit 0;; esac\nexit 1");
+    let (stop, _) = watch::channel(false);
+    let task = manager
+        .submit(
+            AcquireSourceInput {
+                url: "https://github.com/example/disposable".into(),
+                branch: Some("codex/tts-providers".into()),
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    let done = final_task(&tasks, &task.task_id).await;
+    assert_eq!(done.error.unwrap().code, "SOURCE_BRANCH_UNAVAILABLE");
+    let candidate = manager.list().unwrap().pop().unwrap();
+    assert_eq!(candidate.status, "failed");
+    assert!(candidate.source_path.is_none());
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
+
+#[test]
 fn tree_validation_rejects_links_paths_collisions_and_size_without_materializing() {
     let files =
         parse_tree(&[row("100644", "a.txt", 0), row("100755", "目录/run.sh", 4)].concat()).unwrap();
@@ -214,6 +356,7 @@ async fn failed_acquisition_is_a_persisted_task_and_retry_never_reuses_slot() {
         let task = manager
             .submit(
                 AcquireSourceInput {
+                    branch: None,
                     url: "https://github.com/example/disposable.git".into(),
                     name: Some("Disposable".into()),
                 },
@@ -258,6 +401,7 @@ async fn cancellation_kills_process_group_and_holds_migration_lease_until_final(
     let task = manager
         .submit(
             AcquireSourceInput {
+                branch: None,
                 url: "https://github.com/example/disposable".into(),
                 name: None,
             },
@@ -271,6 +415,7 @@ async fn cancellation_kills_process_group_and_holds_migration_lease_until_final(
         manager
             .submit(
                 AcquireSourceInput {
+                    branch: None,
                     url: "https://github.com/example/another".into(),
                     name: None
                 },
@@ -286,6 +431,7 @@ async fn cancellation_kills_process_group_and_holds_migration_lease_until_final(
     assert!(manager
         .submit(
             AcquireSourceInput {
+                branch: None,
                 url: "https://github.com/example/another".into(),
                 name: None
             },
@@ -337,6 +483,7 @@ async fn stopped_service_interrupts_without_publishing_or_auto_retry() {
     let task = manager
         .submit(
             AcquireSourceInput {
+                branch: None,
                 url: "https://gitee.com/example/disposable".into(),
                 name: None,
             },
@@ -370,6 +517,7 @@ async fn restart_marks_unfinished_source_and_retains_evidence_without_project_re
     )
     .unwrap();
     let record = SourceRecord {
+        branch: None,
         schema_version: 1,
         source_id: id.clone(),
         task_id: task.task_id,
@@ -380,6 +528,7 @@ async fn restart_marks_unfinished_source_and_retains_evidence_without_project_re
         provider: "github".into(),
         local_source_path: None,
         capture_policy: None,
+        build_source_digest: None,
         excluded_paths: Vec::new(),
         created_at: 1,
         completed_at: None,
@@ -588,6 +737,7 @@ async fn actual_public_https_download_records_commit_and_keeps_projects_empty() 
     let task = manager
         .submit(
             AcquireSourceInput {
+                branch: None,
                 url,
                 name: Some("Disposable public download".into()),
             },
@@ -715,6 +865,8 @@ async fn local_capture_preserves_public_source_reports_exclusions_and_never_exec
         "credentials",
         "secrets",
         "tokens",
+        "user",
+        "work",
         ".env",
         "private.key",
         "business.sqlite",
@@ -887,6 +1039,12 @@ fn local_capture_rejects_data_roots_links_hardlinks_and_cross_root_dependencies(
     fs::remove_file(root.join("alias.js")).unwrap();
     for value in [
         json!({"dependencies":{"unsafe":"file:../outside"}}),
+        json!({"dependencies":{"unsafe":"~"}}),
+        json!({"dependencies":{"unsafe":"~/outside"}}),
+        json!({"dependencies":{"unsafe":"~\\outside"}}),
+        json!({"dependencies":{"unsafe":"file:~/outside"}}),
+        json!({"dependencies":{"unsafe":"link:~/outside"}}),
+        json!({"packages":{"node_modules/p":{"link":true,"resolved":"~2.1.34"}}}),
         json!({"overrides":{"nested":{"unsafe":"file:../../outside"}}}),
         json!({"packages":{"node_modules/p":{"link":true,"resolved":"../outside"}}}),
         json!({"dependencies":{"unsafe":{"version":"file:%2e%2e/outside"}}}),
@@ -903,6 +1061,88 @@ fn local_capture_rejects_data_roots_links_hardlinks_and_cross_root_dependencies(
             "{value}"
         );
     }
+}
+
+#[test]
+fn local_capture_distinguishes_registry_tilde_ranges_from_home_paths() {
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    let (_stop, _cancel, control) = capture_control(&root);
+    fs::write(
+        root.join("package.json"),
+        serde_json::to_vec(&json!({
+            "dependencies":{"regular":"~2.1.34"},
+            "devDependencies":{"dev":"~1.0"},
+            "optionalDependencies":{"optional":"~0.9.0-beta.1"},
+            "peerDependencies":{"peer":"~4"},
+            "overrides":{"nested":{"child":"~2.1.34"}}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("package-lock.json"),
+        serde_json::to_vec(&json!({
+            "lockfileVersion":3,
+            "packages":{
+                "":{"dependencies":{"regular":"~2.1.34"}},
+                "node_modules/regular":{"version":"2.1.34","dependencies":{"nested":"~1.0.0"}}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let plan = local_plan(&root, &control).unwrap();
+    assert!(validate_local_dependencies(&root, &plan, &control)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn public_capture_accepts_registry_tilde_ranges_without_executing_source() {
+    let (_temp, _paths, store, tasks, manager) = fixture();
+    let source = sample();
+    let root = source.path().canonicalize().unwrap();
+    disposable_node_source(&root, "public");
+    let path = root.join("package.json");
+    let mut package: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    package["dependencies"] = json!({"regular":"~2.1.34"});
+    fs::write(&path, serde_json::to_vec(&package).unwrap()).unwrap();
+    let path = root.join("package-lock.json");
+    let mut lock: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    lock["packages"][""]["dependencies"] = json!({"regular":"~2.1.34"});
+    lock["packages"]["node_modules/regular"] =
+        json!({"version":"2.1.34","dependencies":{"nested":"~1.0.0"}});
+    fs::write(&path, serde_json::to_vec(&lock).unwrap()).unwrap();
+    let (stop, _) = watch::channel(false);
+    let task = manager
+        .capture(
+            CaptureLocalSourceInput {
+                source_path: root.clone(),
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    let completed = final_task(&tasks, &task.task_id).await;
+    assert_eq!(
+        completed.status,
+        crate::TaskStatus::Succeeded,
+        "{completed:?}"
+    );
+    let candidate = manager.list().unwrap().pop().unwrap();
+    assert_eq!(candidate.inspection.unwrap().kind, "node-service-source");
+    assert_eq!(candidate.execution_state, "not-executed");
+    assert!(!root.join("must-not-execute").exists());
+    assert!(!candidate
+        .source_path
+        .unwrap()
+        .join("must-not-execute")
+        .exists());
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
 }
 
 #[test]

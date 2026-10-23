@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, FolderOpen, Info, KeyRound, Monitor, RefreshCw, Server, Square, Trash2 } from 'lucide-react';
+import { Activity, FolderOpen, GitBranch, Info, KeyRound, Monitor, RefreshCw, Server, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { Modal } from './Modal';
@@ -8,6 +8,9 @@ import type { NodeConfigurationDraft } from './node-configuration-validation';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
 import { DeletionNotice } from './DeletionNotice';
 import { NodeInstallPanel } from './NodeInstallPanel';
+import { NodeDevelopmentPanel } from './NodeDevelopmentPanel';
+import type { NodeDevelopmentInfo } from './NodeDevelopmentPanel';
+import { NodeGitPanel } from './NodeGitPanel';
 import type { SourceInstallCandidate } from './NodeInstallPanel';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
@@ -62,7 +65,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const [deletePreview, setDeletePreview] = useState<DeletePreview | null>(null);
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false);
   const deletedCallback = useRef(onAppDeleted); deletedCallback.current = onAppDeleted;
-  const [tab, setTab] = useState<'overview' | 'configuration' | 'runtime'>('overview');
+  const [tab, setTab] = useState<'overview' | 'configuration' | 'runtime' | 'versions'>('overview');
   const [dismissConfirm, setDismissConfirm] = useState(false);
   const [detail, setDetail] = useState<NodeAppDetail | null>(null);
   const [draft, setDraft] = useState<Draft>({ ordinary: {}, secrets: {} });
@@ -80,7 +83,12 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const [installPending, setInstallPending] = useState(false);
   const [installTask, setInstallTask] = useState<TaskRecord | null>(null);
   const [installInstance, setInstallInstance] = useState(instanceId);
-  const [updateOpen, setUpdateOpen] = useState(false);
+  const [, setUpdateOpen] = useState(false);
+  const [developmentOpen, setDevelopmentOpen] = useState(false);
+  const [developmentPending, setDevelopmentPending] = useState(false);
+  const [gitDraft, setGitDraft] = useState({ dirty: false, pending: false });
+  const [developmentInfo, setDevelopmentInfo] = useState<NodeDevelopmentInfo | null>(null);
+  const [versionsVisited, setVersionsVisited] = useState(false);
   const currentInstance = useRef(instanceId); currentInstance.current = instanceId;
   const deleteRead = useRef(0);
   const sourceRead = useRef(0);
@@ -101,8 +109,9 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const previousDeleteOpen = useRef(false);
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
   const base = useId();
-  const dirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
-  const blocked = !enabled || Boolean(pending) || installPending;
+  const configurationDirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
+  const dirty = configurationDirty || gitDraft.dirty;
+  const blocked = !enabled || Boolean(pending) || installPending || developmentPending || gitDraft.pending;
 
   const accept = useCallback((value: NodeAppDetail, resetDraft: boolean) => {
     changedCallback.current?.(value);
@@ -128,10 +137,11 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     } finally { operation.current = false; if (alive.current) setPending(null); }
   }, [accept, enabled]);
 
-  const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
+  const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' | 'versions' = 'overview', enter = false) => {
     const current = ++sequence.current;
     selected.current = app.id;
     setInstallSources(null); setInstallTask(null); setUpdateOpen(false); setDeleteOpen(false); setDeletePreview(null); setDeleteAcknowledged(false);
+    setDevelopmentOpen(false); setDevelopmentInfo(null); setVersionsVisited(false); setGitDraft({ dirty: false, pending: false });
     setDetail(app); setDraft(draftFrom(app)); setError(''); setStatusError(''); setNotice(''); setLoading(true);
     setTab(initialTab); setDismissConfirm(false); setModalOpen(!enter);
     try {
@@ -204,7 +214,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     else if (previousDeleteOpen.current && modalOpen) deleteEntry.current?.focus({ preventScroll: true });
     previousDeleteOpen.current = deleteOpen;
   }, [deleteOpen, modalOpen]);
-  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || installPending }); }, [dirty, pending, loading, installPending]);
+  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || installPending || developmentPending || gitDraft.pending }); }, [dirty, pending, loading, installPending, developmentPending, gitDraft.pending]);
   useEffect(() => {
     if (!enabled || !detail || pending || installPending || loading || !modalOpen || deleteOpen) return;
     let cancelled = false; let polling = false;
@@ -316,7 +326,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     setDraft({ ordinary: {}, secrets: {} }); setDismissConfirm(false); setRequestedSelection(null); setLoading(false);
   }
   async function prepareUpdate() {
-    if (blocked || loading || dirty || !detail?.installation || operation.current) return;
+    if (blocked || loading || dirty || !detail || operation.current) return;
     operation.current = true; setPending('read-install-sources'); setError('');
     const appId = detail.id;
     const selection = sequence.current; const request = ++sourceRead.current;
@@ -340,11 +350,11 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   }
   function changeTab(value: typeof tab) {
     if (blocked || loading) return;
-    setTab(value); setDismissConfirm(false);
+    setTab(value); if (value === 'versions') setVersionsVisited(true); setDismissConfirm(false);
   }
   function tabKeys(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const values = ['overview', 'configuration', 'runtime'] as const;
-    const next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : event.key === 'Home' ? 0 : event.key === 'End' ? 2 : null;
+    const values = ['overview', 'configuration', 'runtime', 'versions'] as const;
+    const next = event.key === 'ArrowRight' ? (index + 1) % 4 : event.key === 'ArrowLeft' ? (index + 3) % 4 : event.key === 'Home' ? 0 : event.key === 'End' ? 3 : null;
     if (next === null || blocked || loading) return;
     event.preventDefault(); changeTab(values[next]); document.getElementById(`${base}-${values[next]}-tab`)?.focus();
   }
@@ -352,9 +362,9 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const updateRequired = installSources !== null || Boolean(installTask) || installPending || pending === 'read-install-sources';
 
   return <>
-    {modalOpen && detail && <Modal title={deleteOpen ? '删除项目？' : detail.name} wide={!deleteOpen} className={deleteOpen ? 'node-delete-modal' : 'software-detail-modal'} closeDisabled={Boolean(pending) || installPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
+    {modalOpen && detail && <Modal title={deleteOpen ? '删除项目？' : detail.name} wide={!deleteOpen} className={deleteOpen ? 'node-delete-modal' : 'software-detail-modal'} closeDisabled={Boolean(pending) || installPending || developmentPending || gitDraft.pending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
       <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
-        {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的应用配置</strong><p>关闭会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
+        {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的修改</strong><p>关闭将丢弃当前草稿。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
         {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="重新读取配置确认"><strong>当前配置有未保存的修改</strong><p>继续会清空当前草稿，包括尚未保存的密钥。已保存配置不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并重新读取</button></div></div>}
         {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
         {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
@@ -386,30 +396,32 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
           <div className="confirmation-actions"><button className="refresh-button" disabled={blocked} onClick={() => { setDeleteOpen(false); setDeletePreview(null); setDeleteAcknowledged(false); }}>取消</button><button className="danger-button" disabled={blocked || !deletePreview?.canDelete || !deleteAcknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在移入…' : '移入废纸篓'}</button></div>
         </section>}
         <div hidden={deleteOpen}>
-        <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{([['overview', '概览', Info], ['configuration', '应用配置', KeyRound], ['runtime', '运行状态', Activity]] as const).map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
+        <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{([['overview', '概览', Info], ['configuration', '应用配置', KeyRound], ['runtime', '运行状态', Activity], ['versions', '源码版本', GitBranch]] as const).map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
         <div role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}>
           <div className="detail-summary-facts">
-            <div><span>应用配置</span><strong>{detail.configuration.canStart ? '配置完整' : '待配置'}</strong><button className="text-button" disabled={blocked || loading} onClick={() => changeTab('configuration')}>{detail.configuration.canStart ? '查看配置' : '填写配置'}</button></div>
+            <div><span>应用配置</span><strong>{detail.configuration.unavailable ? '暂不可用' : detail.configuration.canStart ? '配置完整' : '待配置'}</strong><button className="text-button" disabled={blocked || loading} onClick={() => changeTab(detail.configuration.unavailable ? 'runtime' : 'configuration')}>{detail.configuration.unavailable ? '查看运行状态' : detail.configuration.canStart ? '查看配置' : '填写配置'}</button></div>
             <div><span>安装方式</span><strong>{detail.installation?.kind === 'managed' ? '受管安装' : '依赖来源目录'}</strong><p>{detail.installation?.kind === 'managed' ? '程序、数据与配置保存在本机。' : '运行依赖原目录，请勿移动或删除。'}</p></div>
           </div>
-          {detail.installation?.kind === 'managed' && <details className="detail-disclosure node-update-details" open={updateOpen || updateRequired} onToggle={(event) => { if (updateRequired && !event.currentTarget.open) event.currentTarget.open = true; else setUpdateOpen(event.currentTarget.open); }}>
-            <summary onClick={(event) => { if (updateRequired) event.preventDefault(); }}>应用更新</summary>
-            <div><p>选择新的来源副本，核对后更新应用。</p><button className="refresh-button" disabled={blocked || loading || dirty} onClick={() => void prepareUpdate()}>选择更新来源或查看候选</button>
-              {installSources && installInstance === instanceId && <NodeInstallPanel sources={installSources} targetAppId={detail.id} instanceId={instanceId} task={installTask} disabled={!enabled || Boolean(pending) || loading || dirty} onPendingChange={setInstallPending} onTask={value => { setInstallTask(value); onTask?.(value); }} onInstalled={() => void refreshInstalled(detail.id)} />}
+          <details className="detail-disclosure project-development-tools" open={developmentOpen || updateRequired || developmentPending} onToggle={event => { if ((updateRequired || developmentPending) && !event.currentTarget.open) event.currentTarget.open = true; else setDevelopmentOpen(event.currentTarget.open); }}>
+            <summary onClick={event => { if (updateRequired || developmentPending) event.preventDefault(); }}>开发工具</summary><div className="detail-development-content">
+              {(developmentOpen || updateRequired || developmentPending) && <NodeDevelopmentPanel key={`${detail.id}:${instanceId}`} appId={detail.id} instanceId={instanceId} installedGeneration={detail.installation?.generation} disabled={!enabled || Boolean(pending) || loading || configurationDirty || installPending || gitDraft.pending} running={['running', 'starting', 'stopping'].includes(detail.state)} onPendingChange={setDevelopmentPending} onInfo={value => { if (developmentInfo && developmentInfo.sourceRoot !== value.sourceRoot) { sourceRead.current++; setInstallSources(null); setInstallTask(null); } setDevelopmentInfo(value); }} onPrepared={source => { setInstallSources([source]); setInstallInstance(instanceId); setUpdateOpen(true); }} onTask={onTask} />}
+              <button className="text-button" disabled={blocked || loading || dirty} onClick={() => void prepareUpdate()}>从下载的源码更新</button>
+              {installSources && installInstance === instanceId && <NodeInstallPanel sources={installSources} targetAppId={detail.id} instanceId={instanceId} task={installTask} disabled={!enabled || Boolean(pending) || loading || dirty || developmentPending || gitDraft.pending} onPendingChange={setInstallPending} onTask={value => { setInstallTask(value); onTask?.(value); }} onInstalled={() => void refreshInstalled(detail.id)} />}
             </div>
-          </details>}
+          </details>
           <details className="detail-disclosure node-source-details"><summary>详细信息</summary><div>
             <h3>来源目录</h3><code>{detail.sourcePath}</code>
             <p>{detail.installation?.kind === 'managed' ? '当前程序是独立安装副本，运行不依赖原作者目录。' : '此项目运行依赖上方来源目录，尚未核实可编辑源码与构建方式。'}</p>
             <p>“打开本地目录”显示本机实例的程序、数据和配置目录。</p>
             <dl><div><dt>项目 ID</dt><dd><code>{detail.id}</code></dd></div></dl>
-            <p>此类应用暂不支持 Git 版本管理。</p>
+            {developmentInfo && <><h3>源码仓库</h3><code>{developmentInfo.sourceRoot}</code></>}
             <ObjectLayoutPanel layout={detail.objectLayout} />
           </div></details>
         </div>
+        <div role="tabpanel" id={`${base}-versions-panel`} aria-labelledby={`${base}-versions-tab`} hidden={tab !== 'versions'}>{versionsVisited && <NodeGitPanel key={detail.id} appId={detail.id} instanceId={instanceId} sourceRoot={developmentInfo?.sourceRoot} disabled={!enabled || Boolean(pending) || loading || installPending || developmentPending} runtimeIsSource={developmentInfo?.runtimeIsSource ?? !detail.installation} onDraftStateChange={setGitDraft} />}</div>
         <div role="tabpanel" id={`${base}-runtime-panel`} aria-labelledby={`${base}-runtime-tab`} hidden={tab !== 'runtime'}><h3>运行状态</h3><p>{stateLabels[detail.state]}。关闭应用窗口会停止本应用。</p><div className="node-runtime-actions">{tab === 'runtime' && <button className="refresh-button" disabled={blocked || loading || !['running', 'starting', 'failed'].includes(detail.state)} onClick={() => void run('node_app_stop')}><Square size={14} />关闭应用</button>}<button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart || detail.state !== 'running'} onClick={() => void run('node_app_restart')}><RefreshCw size={14} />重启并应用配置</button><button className="refresh-button" disabled={blocked || loading || dirty} onClick={() => void run('node_app_status')}>刷新运行状态</button></div></div>
         <div role="tabpanel" id={`${base}-configuration-panel`} aria-labelledby={`${base}-configuration-tab`} hidden={tab !== 'configuration'}>
-        <NodeConfigurationForm key={`${detail.id}:${configurationRead}`} app={detail} draft={draft} active={tab === 'configuration' && !deleteOpen} disabled={blocked || loading} dirty={dirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} onReload={() => { if (dirty) setRequestedSelection(detail); else void select(detail, 'configuration'); }} onOpenHelp={(name) => void open('node_app_open_help', name)} />
+        {detail.configuration.unavailable ? <p className="task-error" role="alert">配置暂不可用，请先检查运行状态。</p> : <NodeConfigurationForm key={`${detail.id}:${configurationRead}`} app={detail} draft={draft} active={tab === 'configuration' && !deleteOpen} disabled={blocked || loading} dirty={configurationDirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} onReload={() => { if (dirty) setRequestedSelection(detail); else void select(detail, 'configuration'); }} onOpenHelp={(name) => void open('node_app_open_help', name)} />}
         </div>
         </div>
       </section></Modal>}

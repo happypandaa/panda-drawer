@@ -26,7 +26,7 @@ struct Session {
 }
 #[derive(Default)]
 pub(super) struct NodeWindows {
-    operations: tokio::sync::Mutex<()>,
+    pub(super) operations: tokio::sync::Mutex<()>,
     sessions: Mutex<BTreeMap<String, Arc<Mutex<Session>>>>,
 }
 impl NodeWindows {

@@ -1180,7 +1180,7 @@ test('Creating a project opens its details and offers AI handoff without copying
   assert.ok(dialog()); assert.match(dialog().textContent, /New disposable fixture/);
   assert.equal(document.querySelector('.create-project-form'), null);
   assert.equal(handoffs, 0); assert.deepEqual(copied, []);
-  assert.match(document.querySelector('.handoff-card').textContent, /软件介绍、当前项目目录/);
+  assert.match(document.querySelector('.handoff-card').textContent, /复制项目说明，在 AI 中补充开发需求/);
   await click(buttonNamed('复制 AI 接手说明'));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   await click(buttonNamed('正在准备说明…'));
@@ -1263,7 +1263,7 @@ test('Codex handoff explicitly fetches fresh instructions, copies them, then ope
   });
   await render(h(App)); await openDetails(project.name);
   assert.deepEqual(events, []);
-  assert.match(document.querySelector('.handoff-card').textContent, /不会自动提交任务/);
+  assert.match(document.querySelector('.handoff-card').textContent, /Codex 草稿.*自行发送/);
   await click(codexButton());
   assert.deepEqual(events, [
     ['project_handoff', { projectId: project.id }], ['copy', 'Fresh handoff 1'],
