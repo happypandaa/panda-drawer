@@ -44,3 +44,5 @@ AI 入口只复制说明并打开已验证 Codex 的未发送草稿，不自动�
 实际测试记录随本次验证更新；自动测试不代替真实设备、付费 AI/语音调用、Windows 或系统权限验收。
 
 Radio 的现有开发分支是 `codex/tts-providers`，没有将它擅自合入 `main` 或修改远端默认分支。重新下载该版本时须明确选择同一分支。
+
+2026-10-23 的完整 SDK 保留、原应用恢复、系统废纸篓删除及 Git 重装结果见[Radio 实际验证](radio-full-sdk-reinstall-verification.md)，包含私有仓库下载路径与未验收边界。
