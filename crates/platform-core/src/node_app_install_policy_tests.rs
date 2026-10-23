@@ -291,11 +291,11 @@ fn program_digest_rejects_external_relative_and_all_absolute_symlinks() {
 }
 
 #[test]
-fn program_digest_rejects_native_modules_and_platform_executables() {
+fn program_digest_rejects_third_party_node_addons() {
     let (_temp, root) = disposable_root();
     let control = LiveControl::new();
     put(&root, "server.cjs", b"ordinary program");
-    for extension in ["node", "dylib", "so", "dll", "exe"] {
+    for extension in ["node", "NODE"] {
         let relative = format!("node_modules/native/payload.{extension}");
         put(&root, &relative, b"disposable native payload");
         assert_eq!(

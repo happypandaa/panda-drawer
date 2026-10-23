@@ -1651,10 +1651,14 @@ fn tree_digest(root: &Path, source: bool, control: &InstallControl) -> Result<St
                     && path
                         .extension()
                         .and_then(|v| v.to_str())
-                        .is_some_and(|s| matches!(s, "node" | "dylib" | "so" | "dll" | "exe"))
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("node"))
                 {
-                    return Err(invalid("首批安装不支持本机扩展或额外平台可执行程序。"));
+                    return Err(invalid("当前安装不支持第三方 Node 原生扩展（.node）。"));
                 }
+                // Keep dependency payloads intact, including other platforms'
+                // executables and libraries. Their presence is not execution or
+                // evidence of runtime compatibility. npm lifecycle scripts stay
+                // disabled; the installer never launches these bundled tools.
                 let content = read_file(&entry.path(), MAX_FILE)?;
                 budget.1 += content.len() as u64;
                 if budget.1 > MAX_TREE {
