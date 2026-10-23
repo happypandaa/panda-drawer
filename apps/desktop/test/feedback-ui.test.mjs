@@ -98,6 +98,7 @@ async function setup({ projects = [web(), web('prj_feedback_b', 'Fixture Web B')
     if (command === 'workspace_storage') return storage;
     if (command === 'node_app_list') return nodes;
     if (command === 'node_app_configuration' || command === 'node_app_status') return nodes.find(value => value.id === args.appId);
+    if (command === 'project_git_source_restore_status') return { state: 'clear', operations: [], issues: [], database: { state: 'not-supported' } };
     if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false, activeTask: null };
     if (command === 'project_metadata') {
       const project = projects.find(value => value.id === args.projectId);
@@ -214,14 +215,14 @@ test('Opening a modal discards the list page feedback instead of moving it into 
 
 test('A rejected build submission stays beside the overview build result and is discarded on close', async () => {
   const calls = await setup({ overrides: { project_build: () => { throw new Error('Artificial build submission failure'); } } });
-  await details(); await click(byText('构建项目', dialog()));
+  await details(); await click(byText('构建更新', dialog()));
   assert.equal(calls.filter(([command]) => command === 'project_build').length, 1);
   const error = failure();
   assert.match(error.textContent, /Artificial build submission failure/);
   assert.ok(dialog().contains(error));
   assert.equal(document.querySelector('.radio-notices').querySelector('.notice-error'), null);
-  assert.equal(dialog().querySelector('.handoff-card').contains(error), false);
-  assert.equal(dialog().querySelector('.project-dialog-actions').compareDocumentPosition(error) & window.Node.DOCUMENT_POSITION_FOLLOWING, window.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.equal(dialog().querySelector('.detail-actions').contains(error), false);
+  assert.equal(dialog().querySelector('.detail-actions').compareDocumentPosition(error) & window.Node.DOCUMENT_POSITION_FOLLOWING, window.Node.DOCUMENT_POSITION_FOLLOWING);
   await advance(5000); assert.ok(failure());
   await closeDialog(); assert.equal(failure(), null);
   await details(); assert.equal(failure(), null);
@@ -230,7 +231,7 @@ test('A rejected build submission stays beside the overview build result and is 
 test('A build submission rejected after closing its overview cannot become a list page error', async () => {
   const building = deferred();
   await setup({ overrides: { project_build: () => building.promise } });
-  await details(); await click(byText('构建项目', dialog())); await closeDialog();
+  await details(); await click(byText('构建更新', dialog())); await closeDialog();
   await act(async () => building.reject(new Error('Artificial late-build submission failure')));
   assert.equal(failure(), null); assert.doesNotMatch(document.body.textContent, /Artificial late-build submission failure/);
   await details(); assert.equal(failure(), null);
@@ -239,7 +240,7 @@ test('A build submission rejected after closing its overview cannot become a lis
 test('Closing a Web overview discards the error and success owned by that overview', async () => {
   let opens = 0;
   await setup({ overrides: { project_open: ({ projectId }) => { if (++opens === 1) throw new Error('Artificial old-overview error'); return { projectId, target: 'desktop', reused: false }; } } });
-  await details(); await click(byText('进入项目', dialog())); await click(byText('进入项目', dialog()));
+  await details(); await click(byText('进入应用', dialog())); await click(byText('进入应用', dialog()));
   assert.ok(failure()); assert.ok(success());
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
   await details(); assert.equal(failure(), null); assert.equal(success(), null);
@@ -296,7 +297,7 @@ test('A workspace or service identity switch discards old messages and rejects l
 test('A late clipboard result after closing its overview never creates a new global message', async () => {
   const writing = deferred();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => writing.promise } });
-  await setup(); await details(); await click(byText('复制 AI 接手说明', dialog()));
+  await setup(); await details(); await click(byText('复制提示词', dialog()));
   await closeDialog(); await act(async () => writing.resolve());
   assert.equal(success(), null); assert.equal(failure(), null);
   await details(); assert.equal(success(), null); assert.equal(failure(), null);

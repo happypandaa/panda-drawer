@@ -745,36 +745,23 @@ for (const [type, state, expected] of [['gitSourceRestoreApply', 'completed', /�
   });
 }
 
-test('Project details refuse close and tab changes during a restore preview, submission and accepted running task', async () => {
-  const { ProjectOverview } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/ProjectOverview.tsx'))).href);
-  const preview = deferred(); const accepted = deferred(); let guard;
-  globalThis.__PROJECT_GIT_INVOKE__ = async command => {
-    if (command === 'project_metadata') return { name: 'Disposable restore fixture', description: '', metadataRevision: 'fixture_revision', manifest: {}, iconStatus: { state: 'default' }, metadataIssues: [] };
-    if (command === 'project_git_source_restore_status') return recoveryStatus();
-    if (command === 'project_git_status') return branchStatus();
-    if (command === 'project_git_source_restore_preview') return preview.promise;
-    if (command === 'project_git_source_restore_apply') return accepted.promise;
-    if (command === 'task_get') return restoreTask();
-    throw new Error(`Unexpected overview fixture command: ${command}`);
-  };
-  document.body.innerHTML = '<div id="root"></div>';
-  root = createRoot(document.getElementById('root'));
-  await act(async () => root.render(h(ProjectOverview, {
-    project: { id: 'prj_a', name: 'Disposable restore fixture', projectRoot: '/disposable/project', state: 'ready', manifest: {}, issues: [] },
-    instanceId: 'instance_a', initialTab: 'git', status: { mode: 'normal', recoveryRequired: false, activeTask: null }, disabled: false,
-    onTask: () => {}, onChanged: async () => {}, onClose: () => assert.fail('This pending operation must not close'), onDismissGuardChange: value => { guard = value; },
-  })));
+test('The independent Git component reports pending during restore preview, submission and accepted running work', async () => {
+  const preview = deferred(); const accepted = deferred();
+  const { drafts } = await setup({ overrides: {
+    project_git_status: () => branchStatus(),
+    project_git_source_restore_preview: () => preview.promise,
+    project_git_source_restore_apply: () => accepted.promise,
+    task_get: () => restoreTask(),
+  } });
   await prepareRestore();
-  let allowed;
-  await act(async () => { allowed = guard(); }); assert.equal(allowed, false);
-  assert.match(document.body.textContent, /请等待完成后再关闭/);
-  assert.equal([...document.querySelectorAll('[role="tab"]')].every(tab => tab.disabled), true);
+  assert.equal(drafts.at(-1).pending, true);
+  assert.equal(byText('预览取回范围').disabled, true);
   await act(async () => preview.resolve(restorePreview()));
+  assert.equal(drafts.at(-1).pending, false);
   await click(confirmCheckbox()); await click(byText('确认取回源码'));
-  await act(async () => { allowed = guard(); }); assert.equal(allowed, false);
+  assert.equal(drafts.at(-1).pending, true);
   await act(async () => accepted.resolve(restoreTask()));
-  await act(async () => { allowed = guard(); }); assert.equal(allowed, false);
-  assert.equal([...document.querySelectorAll('[role="tab"]')].every(tab => tab.disabled), true);
+  assert.equal(drafts.at(-1).pending, true);
   assert.match(document.body.textContent, /源码操作结束前请保留此面板/);
 });
 

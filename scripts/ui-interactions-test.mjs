@@ -417,7 +417,7 @@ test('Modal pending gate blocks every close path and uses current props without 
 });
 
 const project = { id: 'prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
-const normalStatus = { mode: 'normal', readyForChanges: false, recoveryRequired: false };
+const normalStatus = { mode: 'ready', readyForChanges: false, recoveryRequired: false };
 function backupProps(extra = {}) {
   return { project, status: normalStatus, embedded: true, active: true, onTask() {}, onChanged: async () => {}, onClose() {}, ...extra };
 }
@@ -524,59 +524,69 @@ test('Leaving the backup tab revokes restore/end confirmations while keeping the
   assert.equal(document.querySelector('.restore-acknowledgement input').checked, false);
 });
 
+const clearRecovery = { state: 'clear', operations: [], issues: [] };
+const emptyProjectStorage = { currentProject: { status: 'not_scanned', complete: false, stale: false, categories: {}, totalBytes: null }, activeTask: null };
+const emptyStorageFiles = { files: [], nextCursor: null, complete: true, issues: [] };
 const metadata = { name: project.name, description: '', metadataRevision: 'revision_fixture', iconStatus: { state: 'default' }, metadataIssues: [], manifest: { docs: { readme: 'README.md' } } };
 function overviewProps(extra = {}) {
   return { project: { ...project, projectRoot: '/disposable/dom-fixture' }, initialTab: 'overview', status: normalStatus, disabled: false, onTask() {}, onChanged: async () => {}, onHandoff() {}, onClose() {}, ...extra };
 }
 const buttonNamed = (name) => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === name);
 
-test('Project overview keeps Git drafts across tabs and asks before discarding them', async () => {
+test('Ordinary project details show three pages and never expose or submit legacy Git and backup tools', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    calls.push(command);
+    if (command === 'project_metadata') return metadata;
+    if (command === 'project_git_source_restore_status') return clearRecovery;
+    if (command === 'storage_info') return emptyProjectStorage;
+    if (command === 'storage_files') return emptyStorageFiles;
+    throw new Error(`Ordinary details must not invoke legacy operations: ${command}`);
+  };
+  await render(h(ProjectOverview, overviewProps()));
+  assert.deepEqual([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent), ['概览', '空间与文件', '更多操作']);
+  assert.equal(document.querySelector('.operation-recovery'), null);
+  await click(hubTab('空间与文件')); await click(hubTab('更多操作')); await click(hubTab('概览'));
+  assert.equal(document.querySelector('.project-git-panel'), null);
+  assert.equal(document.querySelector('.backup-panel'), null);
+  assert.doesNotMatch(document.querySelector('.project-overview').textContent, /源码版本|创建独立副本|历史与维护|旧版工具|完整快照/);
+  assert.equal(calls.some(command => /^(backup_|maintenance_begin|project_git_(initialize|save|branch|source_restore_(apply|recover)))/.test(command)), false);
+});
+
+test('Project overview and Modal preserve metadata and storage choices across pages and require explicit discard to close', async () => {
   await setup(); let guard; let closes = 0;
   globalThis.__UI_TEST_INVOKE__ = async command => {
     if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_status') return {
-      repository: { state: 'none', root: null, markers: [], head: null, indexState: 'not-inspected', git: null },
-      scope: { policy: 'project-source-v1', includedRoots: ['app'], includedPaths: [], excluded: [], unclassifiedPaths: [], protectedTrackedPaths: [], complete: true },
-      changes: [], snapshotDigest: 'a'.repeat(64), canInitialize: true, canSave: false, database: { state: 'not-supported' }, issues: [],
-    };
-    throw new Error(`Unexpected request: ${command}`);
-  };
-  const close = () => { if (!guard || guard()) closes++; };
-  await render(h(ProjectOverview, overviewProps({ initialTab: 'git', onDismissGuardChange: value => { guard = value; }, onClose: close })));
-  await inputValue(document.querySelector('.project-git-panel textarea'), 'Keep this version description');
-  await click([...document.querySelectorAll('[role="tab"]')].find(tab => tab.textContent === '概览'));
-  await act(async () => { close(); });
-  assert.equal(closes, 0);
-  assert.match(document.querySelector('[aria-label="关闭详情确认"]').textContent, /版本说明/);
-  await click(buttonNamed('继续编辑'));
-  await click([...document.querySelectorAll('[role="tab"]')].find(tab => tab.textContent === '源码版本'));
-  assert.equal(document.querySelector('.project-git-panel textarea').value, 'Keep this version description');
-});
-
-test('Project overview and Modal preserve metadata/backup drafts across tabs and require explicit discard to close', async () => {
-  await setup(); let guard; let closes = 0;
-  globalThis.__UI_TEST_INVOKE__ = async (command) => {
-    if (command === 'project_metadata') return metadata;
-    if (command === 'backup_list') return [];
+    if (command === 'project_git_source_restore_status') return clearRecovery;
+    if (command === 'storage_info') return emptyProjectStorage;
+    if (command === 'storage_files') return emptyStorageFiles;
     throw new Error(`Unexpected native request: ${command}`);
   };
   const close = () => { if (!guard || guard()) closes++; };
-  await render(h(Modal, { title: '项目详情', onClose: close }, h(ProjectOverview, overviewProps({ onDismissGuardChange: (value) => { guard = value; }, onClose: close }))));
-  const name = document.querySelector('.overview-section form input');
+  await render(h(Modal, { title: '项目详情', onClose: close }, h(ProjectOverview, overviewProps({ onDismissGuardChange: value => { guard = value; }, onClose: close }))));
+  await click(buttonNamed('编辑信息'));
+  const name = document.querySelector('.detail-metadata-form input');
   await inputValue(name, 'Unsaved display name');
-  await click([...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === '备份维护'));
-  await inputValue(document.getElementById('backup-note'), 'Unsaved snapshot note');
-  await click([...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === '概览'));
+  await click(hubTab('空间与文件'));
+  await click(buttonNamed('查看可清理内容'));
+  await click(document.querySelector('.cleanup-options input'));
+  await click(buttonNamed('检查清理范围'));
+  await click(document.querySelector('.project-storage-cleanup-details .checkbox-label input'));
+  await click(hubTab('概览'));
   assert.equal(name.value, 'Unsaved display name');
-  assert.equal(document.getElementById('backup-note').value, 'Unsaved snapshot note');
-  assert.ok(document.getElementById('backup-note').closest('[hidden]'));
+  assert.equal(document.querySelector('.cleanup-options input').checked, true);
+  assert.ok(document.querySelector('.cleanup-options').closest('[hidden]'));
+  assert.equal(document.querySelector('.project-storage-cleanup-details .operation-confirmation'), null);
+  await click(hubTab('空间与文件'));
+  await click(buttonNamed('检查清理范围'));
+  assert.equal(document.querySelector('.project-storage-cleanup-details .checkbox-label input').checked, false);
+  await click(hubTab('概览'));
   await key('Escape');
   assert.equal(closes, 0); assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
   await click(buttonNamed('继续编辑'));
   assert.equal(document.querySelector('[aria-label="关闭详情确认"]'), null);
   assert.equal(name.value, 'Unsaved display name');
-  await click(closeButton());
-  await click(buttonNamed('放弃未提交内容并关闭'));
+  await click(closeButton()); await click(buttonNamed('放弃未提交内容并关闭'));
   assert.equal(closes, 1);
 });
 
@@ -585,18 +595,19 @@ test('Project icon chooser blocks closing and ignores a late selected file after
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     requests.push(command);
     if (command === 'project_metadata') return metadata;
+    if (command === 'project_git_source_restore_status') return clearRecovery;
     if (command === 'choose_path') return chooser.promise;
     throw new Error(`A closed chooser must not write: ${command}`);
   };
   await render(h(ProjectOverview, overviewProps({ onDismissGuardChange: (value) => { guard = value; } })));
-  await click(buttonNamed('导入 PNG 图标'));
+  await click(buttonNamed('编辑信息')); await click(buttonNamed('导入 PNG 图标'));
   let canClose;
   await act(async () => { canClose = guard(); });
   assert.equal(canClose, false);
   assert.ok([...document.querySelectorAll('[role="tab"]')].every((tab) => tab.disabled));
   await render(null);
   await act(async () => chooser.resolve('/disposable/late-image.png'));
-  assert.deepEqual(requests, ['project_metadata', 'choose_path']);
+  assert.deepEqual(requests, ['project_git_source_restore_status', 'project_metadata', 'choose_path']);
   assert.equal(guard, null);
 });
 
@@ -604,7 +615,9 @@ test('Overview tabs support keyboard navigation and revoke delete acknowledgemen
   await setup();
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     if (command === 'project_metadata') return metadata;
-    if (command === 'backup_list') return [];
+    if (command === 'project_git_source_restore_status') return clearRecovery;
+    if (command === 'storage_info') return emptyProjectStorage;
+    if (command === 'storage_files') return emptyStorageFiles;
     throw new Error(`Unexpected native request: ${command}`);
   };
   await render(h(ProjectOverview, overviewProps({ initialTab: 'manage' })));
@@ -1004,6 +1017,10 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
     if (command === 'maintenance_status') return normalStatus;
     if (command === 'project_metadata') return { ...metadata, name: state.projects.find((item) => item.id === args.projectId)?.name ?? 'Removed fixture' };
     if (command === 'backup_list') return [];
+    if (command === 'project_git_source_restore_status') return clearRecovery;
+    if (command === 'storage_info') return emptyProjectStorage;
+    if (command === 'storage_files') return emptyStorageFiles;
+    if (command === 'storage_scan') return { taskId: 'task_disposable_scan', projectId: args.projectId, type: 'storageScan', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
     return custom(command, args);
   };
 }
@@ -1026,11 +1043,11 @@ test('Project details offer one native window action and send only the desktop o
   });
   await render(h(App)); await openDetails('Native window fixture');
   assert.ok(dialog().textContent.includes(projectRoot), 'Show the actual registered directory rather than reconstructing it from the ID');
-  const actions = dialog().querySelector('.project-dialog-actions');
+  const actions = dialog().querySelector('.detail-action-row');
   assert.ok(actions);
-  assert.equal([...actions.querySelectorAll('button')].filter((button) => button.textContent === '进入项目').length, 1);
+  assert.equal([...actions.querySelectorAll('button')].filter((button) => button.textContent === '进入应用').length, 1);
   assert.equal([...actions.querySelectorAll('button')].some((button) => /浏览器/.test(button.textContent)), false);
-  const enter = actions.querySelector('button');
+  const enter = buttonNamed('进入应用');
   await click(enter); await click(enter);
   assert.deepEqual(calls, [{ projectId: 'prj_native_window', target: 'desktop', reload: false }]);
   await act(async () => opened.resolve({ projectId: 'prj_native_window', target: 'desktop', reused: false }));
@@ -1042,15 +1059,16 @@ test('App keeps the selected project and its draft after an external list remova
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
   mockApp(state);
   await render(h(App)); await openDetails('Fixture A');
-  await inputValue(document.querySelector('.overview-section form input'), 'Retain this edited display name');
-  await click(hubTab('备份维护'));
+  await click(buttonNamed('编辑信息'));
+  await inputValue(document.querySelector('.detail-metadata-form input'), 'Retain this edited display name');
+  await click(hubTab('空间与文件'));
   state.projects = [];
-  await click([...document.querySelectorAll('.backup-panel button')].find((button) => button.textContent.trim() === '刷新状态'));
+  await click(buttonNamed('重新扫描'));
   assert.ok(dialog(), 'An external disappearance must not discard the detail editor');
   assert.match(dialog().textContent, /项目已不在当前工作区列表中/);
-  assert.ok([...document.querySelectorAll('.project-dialog-actions button')].every((button) => button.disabled));
+  assert.ok([...document.querySelectorAll('.detail-action-row button')].every((button) => button.disabled));
   await click(hubTab('概览'));
-  assert.equal(document.querySelector('.overview-section form input').value, 'Retain this edited display name');
+  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Retain this edited display name');
   assert.equal(buttonNamed('保存基本信息').disabled, true);
   await key('Escape');
   assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
@@ -1066,8 +1084,8 @@ test('App rejects a late AI handoff for a closed project after another project i
     assert.equal(command, 'project_handoff');
     return args.projectId === 'prj_A' ? first.promise : { text: 'Current handoff for B' };
   });
-  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制 AI 接手说明'));
-  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制 AI 接手说明'));
+  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制提示词'));
+  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制提示词'));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current handoff for B');
   await act(async () => first.resolve({ text: 'Stale handoff for A' }));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current handoff for B');
@@ -1091,15 +1109,17 @@ test('Creating a project opens its details and offers AI handoff without copying
   assert.ok(dialog()); assert.match(dialog().textContent, /New disposable fixture/);
   assert.equal(document.querySelector('.create-project-form'), null);
   assert.equal(handoffs, 0); assert.deepEqual(copied, []);
-  assert.match(document.querySelector('.handoff-card').textContent, /软件介绍、当前项目目录/);
-  await click(buttonNamed('复制 AI 接手说明'));
+  assert.equal(buttonNamed('复制提示词').disabled, false);
+  assert.equal(buttonNamed('在 Codex 打开').disabled, false);
+  assert.equal(buttonNamed('构建更新').disabled, false);
+  await click(buttonNamed('复制提示词'));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   await click(buttonNamed('正在准备说明…'));
   assert.equal(handoffs, 1);
   await act(async () => prepared.resolve({ text: `Platform description and project root: ${created.projectRoot}` }));
   assert.deepEqual(copied, [`Platform description and project root: ${created.projectRoot}`]);
-  assert.equal(buttonNamed('复制 AI 接手说明').disabled, false);
-  assert.match(document.querySelector('.handoff-card [role="status"]').textContent, /已复制/);
+  assert.equal(buttonNamed('复制提示词').disabled, false);
+  assert.match(document.querySelector('.detail-actions [role="status"]').textContent, /已复制/);
 });
 
 test('AI handoff remains selectable when the clipboard rejects access', async () => {
@@ -1108,7 +1128,7 @@ test('AI handoff remains selectable when the clipboard rejects access', async ()
   mockApp({ projects: [appProject('prj_A', 'Fixture A')] }, async (command) => {
     assert.equal(command, 'project_handoff'); return { text: 'Complete platform introduction and current project paths' };
   });
-  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制 AI 接手说明'));
+  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制提示词'));
   const text = document.querySelector('[aria-label="给 AI 的完整说明"]');
   assert.equal(text.value, 'Complete platform introduction and current project paths');
   await act(async () => text.focus());
@@ -1118,7 +1138,7 @@ test('AI handoff remains selectable when the clipboard rejects access', async ()
   assert.doesNotMatch(dialog().textContent, /已复制「/);
   await click(buttonNamed('收起全文'));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
-  assert.ok(buttonNamed('复制 AI 接手说明'));
+  assert.ok(buttonNamed('复制提示词'));
 });
 
 test('Clipboard writes stay ordered across project changes when an older system write is still pending', async () => {
@@ -1131,9 +1151,9 @@ test('Clipboard writes stay ordered across project changes when an older system 
   mockApp({ projects: [appProject('prj_A', 'Fixture A'), appProject('prj_B', 'Fixture B')] }, async (command, args) => {
     assert.equal(command, 'project_handoff'); return { text: args.projectId === 'prj_A' ? 'Handoff A' : 'Handoff B' };
   });
-  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制 AI 接手说明'));
+  await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制提示词'));
   assert.deepEqual(started, ['Handoff A']);
-  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制 AI 接手说明'));
+  await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制提示词'));
   assert.deepEqual(started, ['Handoff A'], 'The new write must wait for an already-started system write');
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   await act(async () => firstWrite.resolve());
@@ -1148,19 +1168,20 @@ test('A refreshed project removal invalidates an in-flight AI handoff without di
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
   mockApp(state, async (command) => { assert.equal(command, 'project_handoff'); return prepared.promise; });
   await render(h(App)); await openDetails('Fixture A');
-  await inputValue(document.querySelector('.overview-section form input'), 'Preserve handoff fixture draft');
-  await click(buttonNamed('复制 AI 接手说明'));
-  await click(hubTab('备份维护')); state.projects = [];
-  await click([...document.querySelectorAll('.backup-panel button')].find((button) => button.textContent.trim() === '刷新状态'));
+  await click(buttonNamed('编辑信息'));
+  await inputValue(document.querySelector('.detail-metadata-form input'), 'Preserve handoff fixture draft');
+  await click(buttonNamed('复制提示词'));
+  await click(hubTab('空间与文件')); state.projects = [];
+  await click(buttonNamed('重新扫描'));
   await act(async () => prepared.resolve({ text: 'Removed project must not be copied' }));
   assert.deepEqual(copied, []); assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
-  assert.equal(buttonNamed('复制 AI 接手说明').disabled, true);
+  assert.equal(buttonNamed('复制提示词').disabled, true);
   await click(hubTab('概览'));
-  assert.equal(document.querySelector('.overview-section form input').value, 'Preserve handoff fixture draft');
+  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Preserve handoff fixture draft');
 });
 
 const codexHandoff = (project, text = 'Fresh project instructions', instanceId = 'instance_dom_fixture') => ({ text, projectRoot: project.projectRoot, instanceId });
-const codexButton = () => buttonNamed('复制说明并在 Codex 打开');
+const codexButton = () => buttonNamed('在 Codex 打开');
 
 test('Codex handoff explicitly fetches fresh instructions, copies them, then opens only the checked project', async () => {
   await setup(); const events = []; let handoffs = 0;
@@ -1174,7 +1195,8 @@ test('Codex handoff explicitly fetches fresh instructions, copies them, then ope
   });
   await render(h(App)); await openDetails(project.name);
   assert.deepEqual(events, []);
-  assert.match(document.querySelector('.handoff-card').textContent, /不会自动提交任务/);
+  await click(buttonNamed('查看交接说明'));
+  assert.match(document.querySelector('.detail-handoff-help').textContent, /自行发送/);
   await click(codexButton());
   assert.deepEqual(events, [
     ['project_handoff', { projectId: project.id }], ['copy', 'Fresh handoff 1'],
@@ -1187,7 +1209,7 @@ test('Codex handoff explicitly fetches fresh instructions, copies them, then ope
   await click(codexButton());
   assert.equal(handoffs, 2);
   assert.equal(events.filter(([name]) => name === 'project_open_codex').length, 2);
-  await click(buttonNamed('复制 AI 接手说明'));
+  await click(buttonNamed('复制提示词'));
   assert.equal(handoffs, 3);
   assert.equal(events.filter(([name]) => name === 'project_open_codex').length, 2, 'Generic copy never opens Codex');
 });
@@ -1239,8 +1261,8 @@ test('Codex handoff and native-open pending phases each reject duplicate and gen
   });
   await render(h(App)); await openDetails(project.name); await click(codexButton());
   assert.equal(buttonNamed('正在准备并打开…').disabled, true);
-  assert.equal(buttonNamed('复制 AI 接手说明').disabled, true);
-  await click(buttonNamed('正在准备并打开…')); await click(buttonNamed('复制 AI 接手说明'));
+  assert.equal(buttonNamed('复制提示词').disabled, true);
+  await click(buttonNamed('正在准备并打开…')); await click(buttonNamed('复制提示词'));
   assert.deepEqual(calls, ['project_handoff']);
   await act(async () => handoff.resolve(codexHandoff(project)));
   assert.equal(buttonNamed('正在准备并打开…').disabled, true);
@@ -1259,7 +1281,7 @@ test('Closing a Codex request before handoff returns prevents copying or opening
     assert.equal(command, 'project_open_codex'); opens.push(args); return { projectRoot: project.projectRoot, requested: true };
   });
   await render(h(App)); await openDetails(project.name); await click(codexButton());
-  await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制 AI 接手说明'));
+  await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制提示词'));
   await act(async () => prepared.resolve(codexHandoff(project, 'Stale handoff')));
   assert.deepEqual(copied, ['Current handoff']); assert.deepEqual(opens, []);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current handoff');
@@ -1279,8 +1301,8 @@ test('A changed instance or project root during a clipboard write invalidates th
     assert.ok(document.querySelector('[aria-label="给 AI 的完整说明"]'));
     if (change === 'instance') state.instanceId = 'instance_after_migration';
     else state.projects = [{ ...project, projectRoot: '/disposable/migrated/projects/current' }];
-    await click(hubTab('备份维护'));
-    await click([...document.querySelectorAll('.backup-panel button')].find(button => button.textContent.trim() === '刷新状态'));
+    await click(hubTab('空间与文件'));
+    await click(buttonNamed('重新扫描'));
     assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
     await act(async () => write.resolve());
     assert.deepEqual(opens, []);
@@ -1297,7 +1319,7 @@ test('A late Codex launch response cannot replace the new project handoff or rep
     assert.equal(command, 'project_open_codex'); return opened.promise;
   });
   await render(h(App)); await openDetails(project.name); await click(codexButton());
-  await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制 AI 接手说明'));
+  await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制提示词'));
   await act(async () => opened.resolve({ projectRoot: project.projectRoot, requested: true }));
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current instructions');
   assert.doesNotMatch(dialog().querySelector('[role="status"]').textContent, /已请求 Codex/);
@@ -1338,13 +1360,13 @@ test('Automatic storage scans do not hide a failed build or replace the result o
     project.storage = {};
     return { ...scan, status: 'succeeded', final: true, phase: 'completed' };
   });
-  await render(h(App)); await openDetails(project.name); await click(buttonNamed('构建项目'));
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('构建更新'));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
   assert.match(dialog().textContent, /Explicit build failure must stay visible/);
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
   assert.match(dialog().textContent, /Explicit build failure must stay visible/);
-  assert.equal(buttonNamed('构建项目').disabled, false);
-  await click(buttonNamed('构建项目'));
+  assert.equal(buttonNamed('构建更新').disabled, false);
+  await click(buttonNamed('构建更新'));
   assert.equal(submissions, 2);
   assert.doesNotMatch(dialog().textContent, /Explicit build failure must stay visible/);
   assert.match(dialog().querySelector('.project-last-task').textContent, /新网页已发布/);
@@ -1385,7 +1407,10 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   await click(document.querySelector('.project-delete-confirmation input'));
   await click(buttonNamed('确认永久删除项目'));
   assert.ok(dialog()); assert.match(dialog().textContent, /Delete fixture failed/);
+  await click(buttonNamed('取消，保留项目'));
   await click(document.querySelector('.project-delete-heading button'));
+  assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
+  assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(document.querySelector('.project-delete-confirmation input'));
   await click(buttonNamed('确认永久删除项目'));
   assert.equal(submissions, 2); assert.ok(dialog(), 'Queued acceptance is not final success');

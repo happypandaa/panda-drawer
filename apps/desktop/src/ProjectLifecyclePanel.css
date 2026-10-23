@@ -1,0 +1,193 @@
+/* The application-detail actions and archive review share the Figma detail tokens. */
+.project-more-panel,
+.modal-content .project-more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.project-more-panel > h2 {
+  margin: 0;
+  color: var(--radio-text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 28px;
+}
+.project-more-panel p.project-more-intro {
+  margin: 0;
+  color: var(--radio-secondary);
+  font-size: 14px;
+  line-height: 22px;
+}
+.project-more-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  padding: 24px;
+  border: 1px solid var(--radio-line);
+  border-radius: 12px;
+}
+.project-more-icon {
+  display: flex;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  color: var(--radio-focus);
+  background: var(--radio-subtle);
+}
+.project-more-description { flex: 1; min-width: 0; }
+.project-more-panel .project-more-description h3 {
+  margin: 0 0 4px;
+  color: var(--radio-text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+:root[data-theme] .project-more-panel .project-more-description p {
+  margin: 0;
+  color: var(--radio-secondary);
+  font-size: 14px;
+  line-height: 22px;
+}
+.project-more-panel .project-more-row > button,
+.project-export-modal .project-export-actions > button {
+  flex-shrink: 0;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+:root[data-theme] .project-more-panel .project-delete-section {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.project-more-panel .project-delete-heading {
+  flex-wrap: nowrap;
+  align-items: center;
+  background: var(--radio-danger-surface);
+  border-color: transparent;
+}
+.project-more-panel .project-delete-heading .project-more-icon {
+  color: var(--radio-danger);
+  background: transparent;
+}
+.project-more-panel .project-delete-heading .project-more-description h3 { color: var(--radio-danger); }
+.project-more-panel .project-delete-heading > .danger-button { border: 1px solid transparent; }
+.project-more-panel p.project-more-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--radio-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+.project-more-footnote > svg { flex-shrink: 0; }
+.project-more-panel .project-delete-confirmation { margin-top: 16px; }
+.project-more-panel .project-delete-section > .project-help,
+.project-more-panel .project-delete-section > .task-error { margin: 12px 0 0; }
+
+.modal-dialog.project-export-modal {
+  width: 560px;
+  border: 0;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px #17112217;
+}
+:root[data-theme] .modal-dialog.project-export-modal { box-shadow: 0 12px 40px #17112217; }
+.project-export-modal .modal-header {
+  align-items: center;
+  gap: 12px;
+  padding: 32px 32px 0;
+  border: 0;
+}
+.project-export-modal .modal-header > div { flex: 1; }
+.project-export-modal .modal-title-group { gap: 12px; }
+.project-export-modal .modal-title-icon { width: 44px; height: 44px; color: var(--radio-focus); background: transparent; }
+.project-export-modal .modal-header h2 {
+  color: var(--radio-text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 28px;
+}
+.project-export-modal .modal-close { margin: 0; }
+.project-export-title-icon {
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  color: var(--radio-focus);
+  border-radius: 12px;
+  background: var(--radio-header);
+}
+.project-export-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px 32px 32px;
+  scrollbar-gutter: auto;
+}
+.project-export-modal .project-export-description {
+  margin: 0;
+  color: var(--radio-secondary);
+  font-size: 14px;
+  line-height: 22px;
+}
+.project-export-includes {
+  padding: 20px;
+  border-radius: 12px;
+  color: var(--radio-text);
+  background: var(--radio-subtle);
+}
+.project-export-includes h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+.project-export-includes ul { display: flex; flex-direction: column; gap: 12px; list-style: none; padding: 0; margin: 0; }
+.project-export-includes li { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; line-height: 22px; }
+.project-export-includes li > svg { flex-shrink: 0; color: var(--radio-success); }
+.project-export-excludes { margin: 0; color: var(--radio-secondary); font-size: 12px; line-height: 20px; }
+.project-export-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  margin: 0;
+  border-radius: 8px;
+  color: var(--radio-warning);
+  background: var(--radio-warning-surface);
+  font-size: 12px;
+  line-height: 20px;
+}
+.project-export-warning > svg { flex-shrink: 0; }
+.project-export-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.project-export-collision { padding: 16px; border: 1px solid var(--radio-warning-line); border-radius: 8px; color: var(--radio-warning); background: var(--radio-warning-surface); font-size: 13px; line-height: 22px; }
+.project-export-collision strong { display: block; font-weight: 500; }
+.project-export-collision code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
+.project-export-collision p { margin: 8px 0 0; }
+.project-export-modal .task-error { margin: 0; font-size: 13px; line-height: 22px; }
+@media (max-width: 760px) {
+  .project-more-row { flex-wrap: wrap; padding: 20px; gap: 16px; }
+  .project-more-panel .project-delete-heading { flex-wrap: wrap; }
+  .project-more-row .project-more-description { flex-basis: calc(100% - 64px); }
+  .project-more-panel .project-more-row > button { margin-left: 64px; }
+}
+
+:root[data-theme] .modal-dialog.project-export-modal > .modal-header { background: var(--radio-surface); }
+:root[data-theme] .project-export-modal p.project-export-warning { color: var(--radio-warning); }

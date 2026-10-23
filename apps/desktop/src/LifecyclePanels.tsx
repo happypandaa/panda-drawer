@@ -1,8 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Copy, Download, FolderOpen, Trash2, Upload, X } from 'lucide-react';
+import { Download, FileArchive, FolderOpen, Info, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { ProjectExportDialog } from './ProjectExportDialog';
 
 type TaskHandler = (task: TaskRecord) => void;
 function useReveal() {
@@ -10,16 +11,31 @@ function useReveal() {
   useEffect(() => { panel.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, []);
   return panel;
 }
-function useOperation(onTask: TaskHandler) {
+function useOperation(onTask: TaskHandler, scope?: string) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lock = useRef(false);
+  const generation = useRef(0);
+  const alive = useRef(true);
+  const callback = useRef(onTask); callback.current = onTask;
+  useEffect(() => {
+    alive.current = true; generation.current++; lock.current = false; setPending(false); setError(null);
+    return () => { alive.current = false; generation.current++; };
+  }, [scope]);
   async function submit(command: string, args: Record<string, unknown>, after?: () => void) {
     if (lock.current) return;
     lock.current = true; setPending(true); setError(null);
-    try { onTask(await invoke<TaskRecord>(command, args)); after?.(); }
-    catch (cause) { setError(messageFrom(cause)); }
-    finally { lock.current = false; setPending(false); }
+    const current = generation.current;
+    const isCurrent = () => alive.current && current === generation.current;
+    try {
+      const task = await invoke<TaskRecord>(command, args);
+      if (!isCurrent()) return;
+      callback.current(task);
+      if (task.status === 'failed' || task.status === 'interrupted') setError(task.error ? messageFrom(task.error) : '操作未完成，请查看任务详情。');
+      else after?.();
+    }
+    catch (cause) { if (isCurrent()) setError(messageFrom(cause)); }
+    finally { if (isCurrent()) { lock.current = false; setPending(false); } }
   }
   return { pending, error, submit };
 }
@@ -60,67 +76,55 @@ export function ProjectLifecyclePanel({ project, status, onTask, disabled, activ
   project: ProjectInfo; status?: MaintenanceStatus; onTask: TaskHandler; onClose?: () => void; disabled: boolean;
   active?: boolean; deleteRequested?: number; onDraftStateChange?: (state: { dirty: boolean; pending: boolean }) => void; instanceId?: string;
 }) {
-  const [path, setPath] = useState('');
-  const [overwrite, setOverwrite] = useState(false);
-  const [name, setName] = useState('');
+  const [exportOpen, setExportOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false);
-  const [choosing, setChoosing] = useState(false);
-  const [chooseError, setChooseError] = useState('');
-  const { pending, error, submit } = useOperation(onTask);
+  const identity = JSON.stringify([project.id, project.projectRoot, project.documentEpoch, instanceId]);
+  const { pending, error, submit } = useOperation(onTask, identity);
   const deleteSection = useRef<HTMLElement>(null);
-  const chooserGeneration = useRef(0);
   const handledDeleteRequest = useRef(0);
-  const chooserLock = useRef(false);
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
-  const pathId = useId();
+  const headingId = useId();
+  const deleteTitleId = useId();
   const maintenanceInput = status?.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {};
-  const blocked = pending || choosing || disabled || !active || !status || Boolean(status.activeTask) || Boolean(status.recoveryRequired);
-  const deleteBlocked = blocked || !project.documentEpoch;
-  useEffect(() => { draftCallback.current?.({ dirty: Boolean(path || name || overwrite), pending: pending || choosing }); }, [path, name, overwrite, pending, choosing]);
-  useEffect(() => () => { chooserGeneration.current++; draftCallback.current?.({ dirty: false, pending: false }); }, [project.id]);
-  useEffect(() => { setDeleteConfirm(false); setDeleteAcknowledged(false); }, [project.id, project.projectRoot, project.documentEpoch, project.name, instanceId]);
+  const blocked = pending || disabled || !active || !status || Boolean(status.activeTask) || Boolean(status.recoveryRequired);
+  const deleteBlocked = blocked || exportOpen || !project.documentEpoch;
+  useEffect(() => { draftCallback.current?.({ dirty: false, pending: pending || exportOpen }); }, [pending, exportOpen]);
+  useEffect(() => () => { draftCallback.current?.({ dirty: false, pending: false }); }, []);
+  useEffect(() => { setExportOpen(false); setDeleteConfirm(false); setDeleteAcknowledged(false); }, [identity, project.name]);
   useEffect(() => {
-    if (!active) { setDeleteConfirm(false); setDeleteAcknowledged(false); }
+    if (!active) { setExportOpen(false); setDeleteConfirm(false); setDeleteAcknowledged(false); }
     else if (deleteRequested > handledDeleteRequest.current) { handledDeleteRequest.current = deleteRequested; setDeleteConfirm(true); setDeleteAcknowledged(false); deleteSection.current?.focus({ preventScroll: true }); }
   }, [active, deleteRequested]);
-  async function chooseExportPath() {
-    if (blocked || chooserLock.current) return;
-    chooserLock.current = true; setChoosing(true); setChooseError(''); const generation = ++chooserGeneration.current;
-    try {
-      const selected = await invoke<string | null>('choose_path', { kind: 'export', suggestedName: `${project.id}.zip` });
-      if (generation === chooserGeneration.current && selected) setPath(selected);
-    } catch (cause) { if (generation === chooserGeneration.current) setChooseError(messageFrom(cause)); }
-    finally { if (generation === chooserGeneration.current) { chooserLock.current = false; setChoosing(false); } }
-  }
-  return <section className="lifecycle-card lifecycle-panel-embedded" aria-label="项目更多操作">
-    <section ref={deleteSection} className="project-delete-section" tabIndex={-1} aria-labelledby="project-delete-title">
-      <div className="project-delete-heading"><div><h3 id="project-delete-title"><Trash2 size={17} />删除项目</h3><p>永久删除本项目的源码、数据、附件和当前网页。平台不会为本次删除保存可恢复副本。</p></div>{!deleteConfirm && <button className="danger-button" disabled={deleteBlocked} onClick={() => { setDeleteConfirm(true); setDeleteAcknowledged(false); }}><Trash2 size={14} />删除项目</button>}</div>
+  return <section className="lifecycle-card lifecycle-panel-embedded project-more-panel" aria-labelledby={headingId}>
+    <h2 id={headingId}>更多操作</h2>
+    <p className="project-more-intro">导出归档，或管理这台电脑上的应用。</p>
+    <section className="project-more-row project-export-row" aria-label="导出应用">
+      <span className="project-more-icon" aria-hidden="true"><FileArchive size={20} /></span>
+      <div className="project-more-description"><h3>导出 ZIP</h3><p>保存一份包含源码、应用文件、数据库和用户文件的归档。</p></div>
+      <button type="button" className="refresh-button" disabled={blocked} onClick={() => setExportOpen(true)}><Download size={20} />导出 ZIP</button>
+    </section>
+    <section ref={deleteSection} className="project-delete-section" tabIndex={-1} aria-labelledby={deleteTitleId}>
+      <div className="project-delete-heading project-more-row">
+        <span className="project-more-icon" aria-hidden="true"><Trash2 size={20} /></span>
+        <div className="project-more-description"><h3 id={deleteTitleId}>删除应用</h3><p>永久删除当前应用及其本机数据，无法撤销。</p></div>
+        {!deleteConfirm && <button type="button" className="danger-button" disabled={deleteBlocked} onClick={() => { setDeleteConfirm(true); setDeleteAcknowledged(false); }}><Trash2 size={20} />删除应用</button>}
+      </div>
       {deleteConfirm && <div className="operation-confirmation project-delete-confirmation" role="group" aria-label="删除项目确认">
         <strong>永久删除「{project.name}」？此操作无法撤销。</strong>
         <p>项目 ID：<code>{project.id}</code></p>
         <p>将永久删除此项目目录内的源码、数据库、附件、图标、当前网页和说明，并从项目列表移除。</p><code className="workspace-scope-path">{project.projectRoot}</code><p>历史备份、旧版保留项目、迁移旧目录、操作与恢复证据和外部导出的 ZIP 不会自动删除。</p>
         <p>已有项目窗口将无法继续保存。请先处理窗口内的未保存内容和本页尚未保存的编辑。</p>
         <label className="checkbox-label"><input type="checkbox" checked={deleteAcknowledged} disabled={deleteBlocked} onChange={(event) => setDeleteAcknowledged(event.target.checked)} />我已核对项目和删除目录，处理未保存内容，并理解永久删除无法撤销</label>
-        <div className="confirmation-actions"><button className="danger-button" disabled={deleteBlocked || !deleteAcknowledged} onClick={() => { if (!deleteBlocked && deleteAcknowledged) void submit('project_delete', { projectId: project.id, input: { ...maintenanceInput, expectedDocumentEpoch: project.documentEpoch } }, () => { setDeleteConfirm(false); setDeleteAcknowledged(false); }); }}><Trash2 size={14} />{pending ? '正在提交…' : '确认永久删除项目'}</button><button className="refresh-button" disabled={pending} onClick={() => { setDeleteConfirm(false); setDeleteAcknowledged(false); }}>取消，保留项目</button></div>
+        <div className="confirmation-actions"><button type="button" className="danger-button" disabled={deleteBlocked || !deleteAcknowledged} onClick={() => { if (!deleteBlocked && deleteAcknowledged) void submit('project_delete', { projectId: project.id, input: { ...maintenanceInput, expectedDocumentEpoch: project.documentEpoch } }, () => { setDeleteConfirm(false); setDeleteAcknowledged(false); }); }}><Trash2 size={14} />{pending ? '正在提交…' : '确认永久删除项目'}</button><button type="button" className="refresh-button" disabled={pending} onClick={() => { setDeleteConfirm(false); setDeleteAcknowledged(false); }}>取消，保留项目</button></div>
       </div>}
       {status?.recoveryRequired && <p className="task-error">项目有待处理的恢复现场，请先核对并处理，保留相关证据。</p>}
       {!status && <p className="project-help">维护状态尚未读取，请先刷新状态再删除。</p>}
       {!project.documentEpoch && <p className="project-help" role="status">项目身份尚未读取，不能确认删除。请关闭详情并刷新项目列表，重新核对后再删除。</p>}
       {(disabled || Boolean(status?.activeTask)) && <p className="project-help">当前操作进行中，请等待完成后再删除。</p>}
     </section>
-    <div className="lifecycle-columns">
-      <form onSubmit={(event) => { event.preventDefault(); if (!blocked && path.trim().startsWith('/')) void submit('project_export', { projectId: project.id, input: { destinationPath: path.trim(), overwrite, ...maintenanceInput } }, () => { setPath(''); setOverwrite(false); }); }}>
-        <h3><Download size={16} />导出完整 ZIP</h3><p>将源码、数据、附件、网页和项目说明保存为归档，可在另一工作区导入。</p>
-        <div className="path-input"><label htmlFor={pathId}>导出位置</label><span className="path-input-controls"><input id={pathId} value={path} onChange={(event) => setPath(event.target.value)} disabled={blocked} placeholder="/Users/你的名字/Documents/项目.zip" autoComplete="off" /><button type="button" className="refresh-button" disabled={blocked} onClick={() => void chooseExportPath()}><FolderOpen size={14} />{choosing ? '选择中…' : '选择路径'}</button></span>{chooseError && <p role="alert" className="task-error">{chooseError}</p>}</div>
-        <label className="checkbox-label"><input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} disabled={blocked} />允许替换此路径已有的 ZIP（新归档校验成功后才替换）</label>
-        <button className="refresh-button" type="submit" disabled={blocked || !path.trim().startsWith('/')}><Download size={14} />导出项目</button>
-      </form>
-      <form onSubmit={(event) => { event.preventDefault(); if (!blocked) void submit('project_copy', { projectId: project.id, input: { ...(name.trim() ? { name: name.trim() } : {}), ...maintenanceInput } }, () => setName('')); }}>
-        <h3><Copy size={16} />创建独立副本</h3><p>副本拥有新的项目 ID、独立数据与附件，后续修改不会影响原项目。</p>
-        <label>副本名称（选填）<input value={name} onChange={(event) => setName(event.target.value)} placeholder={`${project.name} · 副本`} disabled={blocked} /></label><button className="refresh-button" type="submit" disabled={blocked}><Copy size={14} />创建副本</button>
-      </form>
-    </div>
+    <p className="project-more-footnote"><Info size={20} aria-hidden="true" />删除前会再次确认应用和范围，不进入平台或系统回收站。</p>
     {error && <p className="task-error" role="alert">{error}</p>}
+    {exportOpen && active && <ProjectExportDialog key={identity} project={project} status={status} disabled={blocked} onTask={onTask} onClose={() => setExportOpen(false)} />}
   </section>;
 }
