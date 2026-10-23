@@ -152,6 +152,74 @@ pub struct RuntimeHandle {
     shared: Arc<RuntimeSwitch>,
     pinned: Option<Arc<HttpState>>,
 }
+/// Pins the registered project until Finder accepts a location dispatch. It
+/// neither starts the project nor promises coordination with later Finder edits.
+pub struct ProjectLocationLease {
+    location: PathBuf,
+    project_id: String,
+    epoch: String,
+    target: String,
+    identity: crate::file_identity::PersistedIdentity,
+    _task: crate::projects::ProjectTaskLease,
+    active: Active,
+}
+impl ProjectLocationLease {
+    pub fn location(&self) -> &std::path::Path {
+        &self.location
+    }
+    pub fn validate(&self) -> std::result::Result<(), ApiError> {
+        let state = &self.active.0;
+        if state.stopping.load(Ordering::SeqCst)
+            || state
+                .shared
+                .upgrade()
+                .is_none_or(|shared| shared.closing.load(Ordering::Acquire))
+        {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "平台正在退出，请稍后重试",
+            ));
+        }
+        state.store.check_workspace_available()?;
+        let epoch = state.store.registered_epoch(&self.project_id)?;
+        let location = registered_project_location(&state.store, &self.project_id, &self.target)?;
+        if epoch.as_deref() != Some(&self.epoch)
+            || location != self.location
+            || !self.identity.matches_path(&location).unwrap_or(false)
+        {
+            return Err(ApiError::new(
+                "PROJECT_LOCATION_CHANGED",
+                "项目目录已变化，请刷新后重试",
+            ));
+        }
+        Ok(())
+    }
+}
+fn registered_project_location(
+    store: &ProjectStore,
+    id: &str,
+    target: &str,
+) -> std::result::Result<PathBuf, ApiError> {
+    let (root, manifest) = store.metadata_root(id)?;
+    match target {
+        "root" => Ok(root),
+        "readme" => {
+            let readme = manifest
+                .as_ref()
+                .and_then(|m| m.docs["readme"].as_str())
+                .unwrap_or("README.md");
+            let path = crate::projects::checked_relative(&root, readme, false)?;
+            if !path.is_file() {
+                return Err(ApiError::new("PROJECT_FILE_MISSING", "项目说明文件不存在"));
+            }
+            Ok(path)
+        }
+        _ => Err(ApiError::new(
+            "INVALID_INPUT",
+            "Only project root and README locations are supported",
+        )),
+    }
+}
 /// Keeps the resolved project in this workspace while a native editor is opened.
 /// This lease ends after dispatch; it does not track subsequent editing in the AI.
 pub struct EditorHandoffLease {
@@ -346,22 +414,41 @@ impl RuntimeHandle {
         id: &str,
         target: &str,
     ) -> std::result::Result<PathBuf, ApiError> {
+        Ok(self.project_location_lease(id, target)?.location.clone())
+    }
+    pub fn project_location_lease(
+        &self,
+        id: &str,
+        target: &str,
+    ) -> std::result::Result<ProjectLocationLease, ApiError> {
         let state = self.current();
-        let (root, manifest) = state.store.metadata_root(id)?;
-        match target {
-            "root" => Ok(root),
-            "readme" => {
-                let readme = manifest
-                    .as_ref()
-                    .and_then(|m| m.docs["readme"].as_str())
-                    .unwrap_or("README.md");
-                crate::projects::checked_relative(&root, readme, false)
-            }
-            _ => Err(ApiError::new(
-                "INVALID_INPUT",
-                "Only project root and README locations are supported",
-            )),
-        }
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let active = Active(state.clone());
+        let task = state
+            .store
+            .reserve_transient_operation(id, "local-directory")?;
+        let location = registered_project_location(&state.store, id, target)?;
+        let epoch = state.store.registered_epoch(id)?.ok_or_else(|| {
+            ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "无法核对项目目录登记，请保留现场",
+            )
+        })?;
+        let identity =
+            crate::file_identity::PersistedIdentity::capture(&location).map_err(|_| {
+                ApiError::new("PROJECT_LOCATION_CHANGED", "无法核对项目目录，请刷新后重试")
+            })?;
+        let lease = ProjectLocationLease {
+            location,
+            project_id: id.into(),
+            epoch,
+            target: target.into(),
+            identity,
+            _task: task,
+            active,
+        };
+        lease.validate()?;
+        Ok(lease)
     }
     pub async fn project_metadata_set(
         &self,
@@ -3838,6 +3925,10 @@ mod git_remote_tests;
 #[cfg(test)]
 #[path = "service_editor_handoff_tests.rs"]
 mod editor_handoff_tests;
+
+#[cfg(test)]
+#[path = "service_location_tests.rs"]
+mod location_tests;
 
 #[cfg(test)]
 #[path = "service_source_tests.rs"]

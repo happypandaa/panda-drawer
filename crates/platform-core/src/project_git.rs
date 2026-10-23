@@ -1549,6 +1549,55 @@ fn protected(path: &str, manifest: &ProjectManifest) -> Option<&'static str> {
     }
     None
 }
+/// Detect repositories in the same development scope used by source versions,
+/// without reading Git metadata or file contents. Legacy whole-project restore
+/// must preserve nested repositories as well as the platform's root repository.
+pub(crate) fn development_git_marker(
+    root: &Path,
+    manifest: &ProjectManifest,
+) -> Result<Option<PathBuf>, ApiError> {
+    let roots = included_roots(manifest);
+    let mut pending = vec![PathBuf::new()];
+    let mut count = 0;
+    while let Some(relative) = pending.pop() {
+        check_no_symlinks(&root.join(&relative), false)?;
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(root.join(&relative))? {
+            count += 1;
+            if count > MAX_FILES * 2 {
+                return Err(limit());
+            }
+            let entry = entry?;
+            let name = entry.file_name().into_string().map_err(|_| unsafe_path())?;
+            if name.chars().any(char::is_control) || name.contains('\\') {
+                return Err(unsafe_path());
+            }
+            entries.push((name, entry.path()));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, location) in entries {
+            let path = relative.join(&name);
+            let label = path.to_str().ok_or_else(unsafe_path)?;
+            // This matches scan_source's marker-before-exclusion rule. Parents
+            // such as data and node_modules are excluded before being visited.
+            if name.eq_ignore_ascii_case(".git") {
+                return Ok(Some(location));
+            }
+            if protected(label, manifest).is_some()
+                || (!included(label, &roots) && !is_ancestor(label, &roots))
+            {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&location)?;
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if !metadata.is_file() || metadata.nlink() != 1 {
+                return Err(unsafe_path().detail("path", label));
+            }
+        }
+    }
+    Ok(None)
+}
 fn scan_source(
     root: &Path,
     manifest: &ProjectManifest,

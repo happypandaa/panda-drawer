@@ -356,6 +356,43 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid #77776e; outlin
 .overview-path { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-bottom: 17px; }
 .overview-path>span { font-size: 11px; color: #939c8c; flex-basis: 100%; }
 .overview-path code { font-size: 11px; overflow-wrap: anywhere; flex-basis: 100%; user-select: text; }
+.software-detail-modal .modal-header { align-items: center; padding: 18px 24px; }
+.software-detail-modal .modal-header h2 { font-size: 19px; line-height: 1.4; }
+.detail-directory-error { flex-basis: 100%; margin: 0; }
+.detail-intro { margin: 0 0 16px; }
+.detail-type { font-size: 12px; color: var(--radio-secondary); }
+.detail-intro > p { margin: 8px 0 0; }
+.detail-summary-facts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 0 0 20px; padding: 18px; border: 1px solid var(--radio-line); border-radius: 9px; background: var(--radio-subtle); }
+.detail-summary-facts > div { min-width: 0; }
+.detail-summary-facts dt { font-size: 12px; color: var(--radio-secondary); }
+.detail-summary-facts dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 7px 0 0; font-size: 17px; overflow-wrap: anywhere; }
+.detail-summary-facts dd small { font-size: 11px; }
+.detail-summary-facts > div > span { display: block; font-size: 12px; color: var(--radio-secondary); }
+.detail-summary-facts > div > strong { display: block; margin: 7px 0 0; font-size: 17px; font-weight: 500; color: var(--radio-text); }
+.detail-summary-facts > div > button { padding: 6px 0 0; font-size: 12px; }
+.detail-disclosure { border-top: 1px solid var(--radio-line); padding: 14px 0; font-size: 13px; }
+.detail-disclosure > summary { cursor: pointer; color: var(--radio-text); line-height: 1.6; }
+.detail-disclosure > :not(summary) { margin-top: 16px; }
+.detail-disclosure .overview-section:first-of-type { border: 0; padding-top: 0; margin-top: 16px; }
+.detail-disclosure .overview-section p { font-size: 12px; }
+.detail-disclosure .metadata-icon { padding-top: 8px; }
+.detail-disclosure .overview-project-id { display: block; margin-top: 20px; overflow-wrap: anywhere; user-select: text; }
+.detail-development-content > .handoff-card { margin: 16px 0 0; padding: 16px; }
+.project-development-tools { padding: 0 0 16px; border-top: 0; }
+.project-development-tools > summary { color: var(--radio-secondary); font-size: 12px; }
+.detail-management-row, .detail-secondary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.detail-management-row { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--radio-line); }
+.detail-legacy-note { color: var(--radio-secondary); font-size: 12px; line-height: 1.7; margin: 0 0 18px; }
+.node-app-heading + .node-runtime-actions { align-items: center; }
+.node-runtime-actions .detail-delete-action { margin-left: auto; color: var(--radio-danger); }
+.node-app-modal-detail .detail-summary-facts { margin-top: 20px; }
+.node-app-modal-detail .detail-summary-facts p { font-size: 12px; line-height: 1.6; margin: 6px 0; }
+@media (max-width: 700px) {
+  .software-detail-modal .modal-header { padding: 16px 20px; }
+  .detail-summary-facts { padding: 14px; gap: 12px; }
+  .detail-summary-facts dd { font-size: 15px; }
+  .node-runtime-actions .detail-delete-action { flex: 0 1 auto; }
+}
 .project-overview>.backup-panel, .project-overview>.lifecycle-card { border: 0; margin-bottom: 0; border-radius: 0; }
 .storage-heading { justify-content: space-between; align-items: flex-start; }
 .storage-heading h2 { font-size: 18px; margin-top: 6px; }
@@ -513,6 +550,8 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .modal-content .backup-panel > .section-heading { padding: 24px 0 20px; }
 .modal-content .maintenance-summary { margin-inline: 0; padding: 18px; }
 .modal-content .backup-content { padding: 24px 0 0; }
+.software-detail-modal .backup-content { padding-top: 12px; }
+.software-detail-modal .backup-list-heading { margin-top: 8px; }
 .modal-content .panel-message, .modal-content .backup-panel > .build-task { margin-inline: 0; }
 .modal-content .handoff-card { padding: 18px; margin-bottom: 24px; background: #f9faf6; }
 .handoff-card .section-heading { padding: 0 0 16px; }

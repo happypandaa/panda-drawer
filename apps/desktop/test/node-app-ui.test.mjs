@@ -88,6 +88,12 @@ async function change(element, value) {
   });
 }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
+async function requestUpdate() {
+  const disclosure = document.querySelector('.node-update-details');
+  assert.ok(disclosure);
+  if (!disclosure.open) await click(disclosure.querySelector('summary'));
+  await click(byText('选择更新来源或查看候选'));
+}
 async function openDetails(name) {
   const entry = document.querySelector(`[aria-label='进入项目「${name}」']`);
   assert.ok(entry);
@@ -113,7 +119,7 @@ test('Managed app update preserves configuration drafts and only reads candidate
   assert.deepEqual(calls, []);
   assert.match(document.querySelector('[role=dialog]').textContent, /运行不依赖原作者目录/);
   await click(byText('应用配置')); await change(input('MODEL'), ''); await click(byText('概览'));
-  await click(byText('选择更新来源或查看候选'));
+  await requestUpdate();
   assert.deepEqual(calls, ['source_list', 'node_install_list']);
   assert.ok(document.querySelector('.node-install-panel'));
 });
@@ -135,11 +141,11 @@ test('Managed update rejects an old instance source list and releases its pendin
     if (command === 'node_install_list') return { candidates: [], issues: [] };
     throw new Error(command);
   }), props);
-  await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+  await click(byText('概览')); await requestUpdate();
   assert.equal(byText('选择更新来源或查看候选').disabled, true);
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
   assert.equal(byText('选择更新来源或查看候选').disabled, false);
-  await click(byText('选择更新来源或查看候选'));
+  await requestUpdate();
   await act(async () => older.resolve([{ ...source, name: 'old-instance-source' }]));
   assert.equal(reads, 2);
   assert.match(document.querySelector('.node-install-panel').textContent, /current-source/);
@@ -156,17 +162,22 @@ test('Managed update drops old installation state on instance changes while reta
     if (command === 'node_install_prepare' || command === 'task_get') return task;
     throw new Error(command);
   }), props);
-  await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+  await click(byText('概览')); await requestUpdate();
   await change(document.querySelector('.node-install-panel select'), source.sourceId);
   await click(byText('准备安装材料'));
   assert.ok(byText('取消准备'));
+  const disclosure = document.querySelector('.node-update-details');
+  assert.equal(disclosure.open, true);
+  await click(disclosure.querySelector('summary'));
+  assert.equal(disclosure.open, true, 'An active update cannot be folded away');
+  assert.match(exposedText(disclosure), /取消准备/);
   await click(byText('应用配置')); await change(input('MODEL'), 'unsaved model'); await change(input('AI_KEY'), 'artificial unsaved key');
   const taskCount = tasks.length;
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
   assert.equal(input('MODEL').value, 'unsaved model'); assert.equal(input('AI_KEY').value, 'artificial unsaved key');
   assert.equal(document.querySelector('.node-install-panel'), null); assert.equal(tasks.length, taskCount);
   await change(input('MODEL'), ''); await change(input('AI_KEY'), ''); await click(byText('概览'));
-  await click(byText('选择更新来源或查看候选'));
+  await requestUpdate();
   assert.equal(byText('取消准备'), undefined); assert.equal(tasks.length, taskCount);
 });
 
@@ -185,7 +196,7 @@ test('An old status poll cannot replace application metadata after an installati
       if (command === 'node_install_candidate') return { state: 'committed', result: installed };
       assert.equal(command, 'node_app_status'); polls++; return older.promise;
     }, { instanceId: 'same', onAppChanged: value => changes.push(value), request: { app: value, intent: 'details', token: 1 } });
-    await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+    await click(byText('概览')); await requestUpdate();
     await act(async () => { for (const callback of timers.values()) callback(); });
     assert.equal(polls, 1);
     await click(byText('核验已安装结果'));
@@ -207,7 +218,7 @@ test('An installation refresh from a previous service instance cannot overwrite 
     if (command === 'node_install_candidate') return { state: 'committed', result: installed };
     throw new Error(command);
   }, props);
-  await click(byText('概览')); await click(byText('选择更新来源或查看候选')); await click(byText('核验已安装结果'));
+  await click(byText('概览')); await requestUpdate(); await click(byText('核验已安装结果'));
   assert.equal(reads, 2);
   await click(byText('应用配置')); await change(input('MODEL'), 'draft across restart');
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
@@ -680,4 +691,119 @@ test('The shared project shell removes a Node card only after a confirmed system
   assert.equal(document.querySelector('.notice-success'), null);
   await click(document.querySelector('.radio-messages-button'));
   assert.match(document.querySelector('[role=dialog]').textContent, /应用及其本机数据已移入系统废纸篓/);
+});
+
+
+test('Node overview keeps ordinary facts visible and source details and updates folded by default', async () => {
+  const { value } = managedInstallFixture();
+  await setup(baseMock(value, async command => { throw new Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('概览'));
+  const dialog = document.querySelector('[role=dialog]');
+  const visible = exposedText(dialog);
+  assert.match(visible, /Node 服务.*已停止/);
+  assert.match(visible, /配置完整/);
+  assert.match(visible, /受管安装/);
+  assert.match(visible, /打开本地目录/);
+  assert.doesNotMatch(visible, /项目详情与应用配置|保存配置不会自动打开|在独立应用窗口中使用/);
+  assert.doesNotMatch(visible, /not-a-real-source|11111111-1111-4111-8111-111111111111|尚未读取或未能核验/);
+  assert.equal(document.querySelector('.node-source-details').open, false);
+  assert.equal(document.querySelector('.node-update-details').open, false);
+  assert.equal([...dialog.querySelectorAll('button')].filter(button => button.textContent === '删除项目').length, 1);
+  await click(document.querySelector('.node-source-details > summary'));
+  assert.match(exposedText(dialog), /not-a-real-source/);
+  assert.match(exposedText(dialog), /暂不支持 Git 版本管理/);
+});
+
+test('External Node overview keeps its source dependency visible without exposing long technical details', async () => {
+  await setup(baseMock(app(), async command => { throw new Error(command); }));
+  await click(byText('概览'));
+  const visible = exposedText(document.querySelector('[role=dialog]'));
+  assert.match(visible, /依赖来源目录/);
+  assert.match(visible, /运行依赖原目录，请勿移动或删除/);
+  assert.doesNotMatch(visible, /not-a-real-source/);
+});
+
+test('Opening a Node local directory sends only its identity, preserves drafts and never starts a service', async () => {
+  const opened = deferred(); const calls = []; const drafts = [];
+  await setup(baseMock(app(), async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'node_app_reveal'); return opened.promise;
+  }), { onDraftStateChange: value => drafts.push(value) });
+  await change(input('MODEL'), 'unfinished directory draft');
+  await change(input('AI_KEY'), 'artificial unsaved directory key');
+  await click(byText('打开本地目录')); await click(byText('打开本地目录'));
+  assert.deepEqual(calls, [['node_app_reveal', { appId: 'node_fixture' }]]);
+  assert.equal(input('MODEL').value, 'unfinished directory draft');
+  assert.equal(input('AI_KEY').value, 'artificial unsaved directory key');
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: true });
+  assert.equal(byText('进入项目').disabled, true);
+  assert.equal(document.querySelector('[aria-label^="关闭Disposable"]').disabled, true);
+  await act(async () => opened.resolve());
+  assert.deepEqual(drafts.at(-1), { dirty: true, pending: false });
+  assert.equal(input('MODEL').value, 'unfinished directory draft');
+  assert.equal(input('AI_KEY').value, 'artificial unsaved directory key');
+  assert.match(document.querySelector('.node-process-state').textContent, /已停止/);
+  assert.equal(byText('打开本地目录').disabled, false);
+  assert.equal(calls.length, 1);
+});
+
+test('Directory opening failure stays in the Node detail and leaves running state and draft intact', async () => {
+  const calls = [];
+  await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'node_app_reveal'); throw new Error('Artificial directory opening failure');
+  }));
+  await change(input('MODEL'), 'keep my model');
+  await click(byText('打开本地目录'));
+  assert.deepEqual(calls, [['node_app_reveal', { appId: 'node_fixture' }]]);
+  assert.match(document.querySelector('[role=dialog] [role=alert]').textContent, /Artificial directory opening failure/);
+  assert.match(document.querySelector('.node-process-state').textContent, /运行中/);
+  assert.equal(input('MODEL').value, 'keep my model');
+  assert.equal(byText('进入项目').disabled, false);
+});
+
+test('A directory result from an old connection cannot contaminate another selected Node detail', async () => {
+  const opened = deferred(); const first = app(); const second = app({ id: 'node_second', name: 'Second directory fixture' });
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: first, intent: 'details', token: 1 } };
+  await setup(async (command, args) => {
+    if (command === 'node_app_configuration') return args.appId === first.id ? first : second;
+    assert.equal(command, 'node_app_reveal'); return opened.promise;
+  }, props);
+  await click(byText('打开本地目录'));
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(byText('打开本地目录').disabled, false);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new', request: { app: second, intent: 'details', token: 2 } })));
+  await act(async () => opened.reject(new Error('Outdated directory failure')));
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
+  assert.doesNotMatch(document.querySelector('[role=dialog]').textContent, /Outdated directory failure/);
+  assert.equal(byText('打开本地目录').disabled, false);
+});
+
+test('Node overview offers one quick close action while runtime keeps its detailed controls', async () => {
+  await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async command => { throw new Error(command); }));
+  await click(byText('概览'));
+  assert.match(exposedText(document.querySelector('[role=dialog]')), /关闭应用/);
+  assert.equal([...document.querySelectorAll('button')].filter(button => button.textContent === '关闭应用').length, 1);
+  await click(byText('运行状态'));
+  assert.equal([...document.querySelectorAll('button')].filter(button => button.textContent === '关闭应用').length, 1);
+  assert.match(exposedText(document.querySelector('[role=dialog]')), /重启并应用配置/);
+});
+
+test('A failed Node update remains expanded with its task result exposed', async () => {
+  const { value, source } = managedInstallFixture();
+  const failed = { taskId: 'task_failed_update', type: 'nodeInstallPrepare', projectId: null, status: 'failed', final: true, phase: 'dependencies', error: { code: 'DISPOSABLE_FAILURE', message: 'Artificial update failure, current application preserved' } };
+  await setup(baseMock(value, async command => {
+    if (command === 'source_list') return [source];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    if (command === 'node_install_prepare') return failed;
+    throw new Error(command);
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('概览')); await requestUpdate();
+  await change(document.querySelector('.node-install-panel select'), source.sourceId);
+  await click(byText('准备安装材料'));
+  const disclosure = document.querySelector('.node-update-details');
+  assert.equal(disclosure.open, true);
+  await click(disclosure.querySelector('summary'));
+  assert.equal(disclosure.open, true);
+  assert.match(exposedText(disclosure), /Artificial update failure/);
+  assert.match(exposedText(disclosure), /准备应用安装 · 失败/);
+  assert.match(document.querySelector('.node-process-state').textContent, /已停止/);
 });

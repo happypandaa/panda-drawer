@@ -395,7 +395,19 @@ async fn manager_shutdown_cancels_git_guard_before_waiting_for_build_runner() {
     let task = manager.task(&task.task_id).unwrap();
     assert_eq!(task.status, TaskStatus::Interrupted);
     assert_eq!(task.error.unwrap().code, "BUILD_INTERRUPTED");
-    assert_eq!(unsafe { libc::kill(-pid, 0) }, -1);
+    // The direct child is reaped by shutdown; the OS can take a moment to reap
+    // its killed descendants and remove their process-group membership.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let result = unsafe { libc::kill(-pid, 0) };
+            if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Cancelled Git process group must disappear after shutdown");
     assert_eq!(tree_digest(&project.root, false).unwrap(), before);
     store.shutdown().await;
 }

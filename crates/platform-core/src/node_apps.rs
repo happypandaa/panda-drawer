@@ -25,6 +25,9 @@ use uuid::Uuid;
 #[path = "node_app_delete.rs"]
 mod deletion;
 pub use deletion::DeleteNodeAppInput;
+#[path = "node_app_location.rs"]
+mod location;
+pub use location::NodeAppLocationLease;
 
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
