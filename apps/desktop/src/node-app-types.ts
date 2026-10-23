@@ -29,6 +29,7 @@ export interface NodeAppDetail {
   restartRequired: boolean;
   runningRevision: number | null;
   lastError: string | null;
+  declarationUpdateAvailable?: boolean;
   configuration: {
     revision: number;
     values: Record<string, NodeConfigurationValue>;
@@ -44,6 +45,28 @@ export interface NodeAppInspection {
   runtimeLabel: string;
   app: { id: string; name: string; version: string; description?: string };
   configuration: { fields: NodeConfigurationField[]; missingRequired: string[] };
+}
+
+export interface NodeDeclarationUpdatePreview {
+  appId: string;
+  expectedRegisteredDigest: string;
+  expectedManifestDigest: string;
+  registeredManifestDigest: string;
+  configurationRevision: number;
+  sourcePath: string;
+  app: { id: string; name: string; version: string; description?: string };
+  backend: { entry: string; root: string; nodeMajor: number; protocolVersion: number };
+  fields: NodeConfigurationField[];
+  configuration: NodeAppDetail['configuration'];
+  requiresRetrust: true;
+  notice: string;
+}
+
+export interface NodeDeclarationUpdateInput {
+  expectedRegisteredDigest: string;
+  expectedManifestDigest: string;
+  configurationRevision: number;
+  confirmed: boolean;
 }
 
 export type NodeSecretChange = { action: 'keep' | 'unbind' | 'rebind' } | { action: 'replace'; value: string };

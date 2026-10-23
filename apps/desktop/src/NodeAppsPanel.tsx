@@ -8,7 +8,7 @@ import { NodeInstallPanel } from './NodeInstallPanel';
 import type { SourceInstallCandidate } from './NodeInstallPanel';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
-import type { NodeAppDetail, NodeAppInspection, NodeConfigurationField, NodeConfigurationInput, NodeSecretChange } from './node-app-types';
+import type { NodeAppDetail, NodeAppInspection, NodeConfigurationField, NodeConfigurationInput, NodeSecretChange, NodeDeclarationUpdateInput, NodeDeclarationUpdatePreview } from './node-app-types';
 
 type SecretDraft = { action: 'keep' | 'replace' | 'unbind' | 'rebind'; value: string };
 type Draft = { ordinary: Record<string, string>; secrets: Record<string, SecretDraft> };
@@ -72,6 +72,9 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const [installPending, setInstallPending] = useState(false);
   const [installTask, setInstallTask] = useState<TaskRecord | null>(null);
   const [installInstance, setInstallInstance] = useState(instanceId);
+  const [declarationPreview, setDeclarationPreview] = useState<NodeDeclarationUpdatePreview | null>(null);
+  const [declarationTrusted, setDeclarationTrusted] = useState(false);
+  const declarationRead = useRef(0);
   const currentInstance = useRef(instanceId); currentInstance.current = instanceId;
   const sourceRead = useRef(0);
   const statusRead = useRef(0);
@@ -93,7 +96,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const accept = useCallback((value: NodeAppDetail, resetDraft: boolean) => {
     changedCallback.current?.(value);
     if (selected.current === value.id) {
-      setDetail((current) => resetDraft || !current ? value : { ...current, state: value.state, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError });
+      setDetail((current) => resetDraft || !current ? value : { ...current, state: value.state, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError, declarationUpdateAvailable: value.declarationUpdateAvailable });
       if (resetDraft) setDraft(draftFrom(value));
     }
   }, []);
@@ -117,6 +120,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
     const current = ++sequence.current;
     selected.current = app.id;
+    declarationRead.current++; setDeclarationPreview(null); setDeclarationTrusted(false);
     setInstallSources(null); setInstallTask(null);
     setDetail(app); setDraft(draftFrom(app)); setError(''); setStatusError(''); setNotice(''); setLoading(true);
     setTab(initialTab); setDismissConfirm(false); setModalOpen(!enter);
@@ -134,9 +138,10 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; selected.current = null; draftCallback.current({ dirty: false, pending: false }); }; }, []);
   useEffect(() => {
-    sourceRead.current++; statusRead.current++;
+    sourceRead.current++; statusRead.current++; declarationRead.current++;
+    setDeclarationPreview(null); setDeclarationTrusted(false);
     setInstallSources(null); setInstallTask(null); setInstallPending(false); setInstallInstance(instanceId);
-    if (pendingOperation.current === 'read-install-sources') { operation.current = false; setPending(null); }
+    if (['read-install-sources', 'declaration-preview', 'declaration-apply'].includes(pendingOperation.current ?? '')) { operation.current = false; setPending(null); }
   }, [instanceId]);
   useEffect(() => {
     if (!request || request.token === seenRequest.current || operation.current) return;
@@ -165,7 +170,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
         if (current() && !operation.current) {
           // Status refresh never replaces configuration declarations, the saved
           // revision used by a draft, or any password text the user is editing.
-          setDetail((current) => current?.id === appId ? { ...current, state: value.state, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError } : current);
+          setDetail((current) => current?.id === appId ? { ...current, state: value.state, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError, declarationUpdateAvailable: value.declarationUpdateAvailable } : current);
           changedCallback.current?.(value);
           setStatusError('');
         }
@@ -212,6 +217,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
       const value = await invoke<NodeAppDetail>('node_app_configuration_save', { appId, input });
       if (!alive.current || selected.current !== appId) return;
       accept(value, true);
+      setDeclarationPreview(null); setDeclarationTrusted(false);
       setNotice(value.configuration.canStart ? value.restartRequired ? '配置已保存。正在运行的应用仍使用旧配置；点击“重启并应用配置”后才生效。' : '配置已保存。下次启动使用这些设置。' : '配置已保存，但仍有必填项未完成。补齐后才能启动；已运行的进程不会因此重启。');
     } catch (cause) { if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
@@ -241,10 +247,11 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   }
 
   function ordinaryChange(name: string, value: string) {
+    setDeclarationTrusted(false);
     setDraft((current) => ({ ...current, ordinary: { ...current.ordinary, [name]: value }, secrets: Object.fromEntries(Object.entries(current.secrets).map(([key, edit]) => [key, detail?.fields.find((field) => field.name === key)?.endpointField === name && edit.action === 'rebind' ? { action: 'keep', value: '' } : edit])) }));
     setNotice('');
   }
-  function secretChange(name: string, edit: SecretDraft) { setDraft((current) => ({ ...current, secrets: { ...current.secrets, [name]: edit } })); setNotice(''); }
+  function secretChange(name: string, edit: SecretDraft) { setDraft((current) => ({ ...current, secrets: { ...current.secrets, [name]: edit } })); setNotice(''); setDeclarationTrusted(false); }
   function effectiveDraft(name: string) {
     const field = detail?.fields.find((value) => value.name === name);
     return draft.ordinary[name]?.trim() ? draft.ordinary[name] : field?.default;
@@ -256,6 +263,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     return effectiveDraft(field.endpointField) !== before || detail.configuration.secretStatus[field.name] === 'endpoint-changed';
   }
   function closeDetails() {
+    declarationRead.current++; setDeclarationPreview(null); setDeclarationTrusted(false);
     sequence.current++; selected.current = null; setModalOpen(false); setDetail(null);
     setDraft({ ordinary: {}, secrets: {} }); setDismissConfirm(false); setRequestedSelection(null); setLoading(false);
   }
@@ -281,6 +289,46 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
       setDetail(value); changedCallback.current?.(value);
       // Keep the installation task and its committed-but-incomplete result visible.
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
+  }
+  const declarationBusy = Boolean(detail && !['stopped', 'failed'].includes(detail.state));
+  const declarationAvailable = detail?.declarationUpdateAvailable === true && detail.installation?.kind !== 'managed';
+  async function previewDeclaration() {
+    if (blocked || loading || dirty || operation.current || !detail || !declarationAvailable || declarationBusy) return;
+    operation.current = true; setPending('declaration-preview'); setError(''); setNotice('');
+    setDeclarationPreview(null); setDeclarationTrusted(false); statusRead.current++;
+    const appId = detail.id; const selection = sequence.current; const revision = ++declarationRead.current;
+    const current = () => alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId && declarationRead.current === revision;
+    try {
+      const value = await invoke<NodeDeclarationUpdatePreview>('node_app_declaration_update_preview', { appId });
+      if (!current()) return;
+      if (value.appId !== appId) throw new Error('应用说明预览与当前应用不一致，请重新查看。');
+      setDeclarationPreview(value);
+    } catch (cause) { if (current()) setError(messageFrom(cause)); }
+    finally { if (current()) { operation.current = false; setPending(null); } }
+  }
+  async function applyDeclaration() {
+    if (blocked || loading || dirty || operation.current || !detail || !declarationAvailable || declarationBusy || !declarationTrusted || !declarationPreview || declarationPreview.appId !== detail.id) return;
+    const input: NodeDeclarationUpdateInput = {
+      expectedRegisteredDigest: declarationPreview.expectedRegisteredDigest,
+      expectedManifestDigest: declarationPreview.expectedManifestDigest,
+      configurationRevision: declarationPreview.configurationRevision,
+      confirmed: true,
+    };
+    operation.current = true; setPending('declaration-apply'); setError(''); setNotice(''); statusRead.current++;
+    const appId = detail.id; const selection = sequence.current; const revision = ++declarationRead.current;
+    const current = () => alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId && declarationRead.current === revision;
+    try {
+      const value = await invoke<NodeAppDetail>('node_app_declaration_update_apply', { appId, input });
+      if (!current()) return;
+      statusRead.current++; accept(value, true);
+      setDeclarationPreview(null); setDeclarationTrusted(false); setTab('configuration');
+      setNotice('应用说明已更新，已保存的配置和密钥保留。请填写新增配置并保存；应用不会自动启动。');
+    } catch (cause) {
+      if (current()) {
+        setDeclarationPreview(null); setDeclarationTrusted(false);
+        setError(`${messageFrom(cause)} 请重新查看新版应用说明后再确认更新。`);
+      }
+    } finally { if (current()) { operation.current = false; setPending(null); } }
   }
   function changeTab(value: typeof tab) {
     if (blocked || loading) return;
@@ -308,6 +356,36 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
         {statusError && <p className="task-error node-inline-message" role="alert">{statusError}</p>}
         {detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : '先补齐必填项，再重启应用。'}</p>}
         {detail.configuration.missingRequired.length > 0 && <p className="node-config-warning"><CircleAlert size={16} /><span>请先配置：{detail.configuration.missingRequired.map((name) => detail.fields.find((field) => field.name === name)?.label ?? name).join('、')}。补齐并保存后，再明确点击“进入项目”。</span></p>}
+        {declarationAvailable && <section className="node-declaration-update" aria-label="更新应用说明">
+          <h3>应用说明更新</h3>
+          <p>作者修改了配置项或应用入口时，先查看当前目录中的新版说明，再明确确认更新。</p>
+          {dirty && <p className="node-config-warning">当前有未保存的配置草稿。请先保存，或通过“重新读取配置”确认丢弃，再查看和更新应用说明。</p>}
+          {declarationBusy && <p className="node-config-warning">请先关闭应用窗口，等待服务停止后再更新应用说明。</p>}
+          <button className="refresh-button" type="button" disabled={blocked || loading || dirty || declarationBusy} onClick={() => void previewDeclaration()}>{pending === 'declaration-preview' ? '正在查看新版说明…' : '查看新版应用说明'}</button>
+          {declarationPreview && <div className="node-declaration-preview">
+            <h4>待确认的新版应用说明</h4>
+            <p>来源目录：<code>{declarationPreview.sourcePath}</code></p>
+            <p>应用：{declarationPreview.app.name} · {declarationPreview.app.version} · <code>{declarationPreview.app.id}</code></p>
+            {declarationPreview.app.description && <p>{declarationPreview.app.description}</p>}
+            <p>后端入口：<code>{declarationPreview.backend.root}/{declarationPreview.backend.entry}</code> · Node {declarationPreview.backend.nodeMajor} · 协议 {declarationPreview.backend.protocolVersion}</p>
+            <p className="node-config-warning">旧版 v1 登记只保存了清单摘要，无法自动比较旧版与新版内容。请核对以下完整说明，并重新确认信任此来源和后端入口。</p>
+            {declarationPreview.notice && <p>{declarationPreview.notice}</p>}
+            <details className="node-source-details"><summary>本次核对的摘要</summary><p>已登记清单：<code>{declarationPreview.registeredManifestDigest}</code></p><p>新版清单：<code>{declarationPreview.expectedManifestDigest}</code></p></details>
+            <h4>新版配置字段（{declarationPreview.fields.length} 项）</h4>
+            {declarationPreview.fields.map((field) => <div key={field.name} className="node-config-field">
+              <strong>{field.label} · {field.required ? '必填' : '选填'}{field.secret ? ' · 密钥（secret）' : ''}</strong>
+              <p><code>{field.name}</code> · {field.type}</p>
+              <p>{field.description}</p>
+              {!field.secret && field.default !== undefined && <p>作者默认值：{valueLabel(field.default)}</p>}
+              {field.options && <p>选项：{field.options.map((option) => `${option.label}（${option.value}）`).join('、')}</p>}
+              <details className="node-field-guide"><summary>怎样获取和填写</summary><ol>{field.howToGet.map((step, index) => <li key={index}>{step}</li>)}</ol>{field.helpUrl && <p>官方说明地址：<code>{field.helpUrl}</code></p>}{field.endpointField && <p>关联地址：<code>{field.endpointField}</code></p>}</details>
+            </div>)}
+            {!declarationPreview.fields.length && <p>新版应用没有声明用户配置字段。</p>}
+            <p>更新只采用本次核对的应用说明，保留已保存的配置、密钥和应用数据；不会自动打开应用。</p>
+            <label className="checkbox-label"><input type="checkbox" checked={declarationTrusted} disabled={blocked || loading || dirty || declarationBusy} onChange={(event) => setDeclarationTrusted(event.target.checked)} />我已核对并信任此来源的新版应用说明和后端入口</label>
+            <button className="primary-button" type="button" disabled={blocked || loading || dirty || declarationBusy || !declarationTrusted} onClick={() => void applyDeclaration()}>{pending === 'declaration-apply' ? '正在更新应用说明…' : '更新应用说明'}</button>
+          </div>}
+        </section>}
         <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{([['overview', '概览', Info], ['configuration', '应用配置', KeyRound], ['runtime', '运行状态', Activity]] as const).map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
         <div role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}><h3>项目信息</h3><p>此项目在独立应用窗口中使用。关闭应用窗口会停止相关服务；再次进入会返回已有窗口。</p><p>应用类型：Node 服务项目</p><p>配置状态：{detail.configuration.canStart ? '配置完整' : '需要配置'}</p><p>保存配置不会自动打开应用，也不会自动重启。</p><button className="refresh-button" disabled={blocked || loading} onClick={() => changeTab('configuration')}>查看应用配置</button><details className="node-source-details"><summary>来源与当前接入范围</summary><p>{detail.installation?.kind === 'managed' ? '当前程序是平台的独立安装副本，运行不依赖原作者目录。数据和配置保留在本应用实例中；更新需要重新准备候选，不会自动启动应用。' : '此入口登记本机应用目录，使用平台内置 Node。运行仍依赖该目录，尚未核实可编辑源码与构建方式。版本能力将采用项目标准 Git；旧备份与未完成现场继续保留。'}</p><code>{detail.sourcePath}</code><code>{detail.id}</code></details><ObjectLayoutPanel layout={detail.objectLayout} />{detail.installation?.kind === 'managed' && <section><h3>应用更新</h3><p>先在“获取项目源码”中准备新的来源副本，再在这里选择更新。配置有草稿时请先保存或处理；应用更新前需关闭窗口并等待服务停止。</p><button className="refresh-button" disabled={blocked || loading || dirty} onClick={() => void prepareUpdate()}>选择更新来源或查看候选</button>{installSources && installInstance === instanceId && <NodeInstallPanel sources={installSources} targetAppId={detail.id} instanceId={instanceId} task={installTask} disabled={!enabled || Boolean(pending) || loading || dirty} onPendingChange={setInstallPending} onTask={value => { setInstallTask(value); onTask?.(value); }} onInstalled={() => void refreshInstalled(detail.id)} />}</section>}</div>
         <div role="tabpanel" id={`${base}-runtime-panel`} aria-labelledby={`${base}-runtime-tab`} hidden={tab !== 'runtime'}><h3>运行状态</h3><p>{stateLabels[detail.state]}。关闭应用窗口会停止本应用；关闭此详情弹窗不会关闭应用窗口。</p><div className="node-runtime-actions"><button className="refresh-button" disabled={blocked || loading || !['running', 'starting', 'failed'].includes(detail.state)} onClick={() => void run('node_app_stop')}><Square size={14} />关闭应用</button><button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart || detail.state !== 'running'} onClick={() => void run('node_app_restart')}><RefreshCw size={14} />重启并应用配置</button><button className="refresh-button" disabled={blocked || loading || dirty} onClick={() => void run('node_app_status')}>刷新运行状态</button></div></div>

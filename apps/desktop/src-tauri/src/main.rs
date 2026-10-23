@@ -1082,6 +1082,28 @@ async fn node_app_configuration(
     state.node_apps.configuration(&app_id).await
 }
 #[tauri::command]
+async fn node_app_declaration_update_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.declaration_update_preview(&app_id).await
+}
+#[tauri::command]
+async fn node_app_declaration_update_apply(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    input: platform_core::node_apps::DeclarationUpdateRequest,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state
+        .node_apps
+        .declaration_update_apply(&app_id, input)
+        .await
+}
+#[tauri::command]
 async fn node_app_configuration_save(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1527,6 +1549,7 @@ fn main() {
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_cancel,
             node_app_inspect,node_app_register,node_app_list,node_app_configuration,node_app_configuration_save,
+            node_app_declaration_update_preview,node_app_declaration_update_apply,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,

@@ -88,6 +88,137 @@ async function submit() { await act(async () => document.querySelector('.node-co
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 function baseMock(value, action) { return async (command, args) => { if (command === 'node_app_list') return [value]; if (command === 'node_app_configuration') return value; return action(command, args); }; }
 
+function declarationFixture(extra = {}) {
+  const value = app({ declarationUpdateAvailable: true, ...extra });
+  const added = [
+    field('TTS_PROVIDER', 'select', { label: '语音服务商', default: 'fish', description: '选择 Fish、豆包或 Gemini。', options: [{ value: 'fish', label: 'Fish Audio' }, { value: 'doubao', label: '豆包语音' }, { value: 'gemini', label: 'Gemini' }] }),
+    field('GEMINI_API_KEY', 'string', { label: 'Gemini API Key', secret: true, description: 'Google AI Studio 的 Gemini API Key，无需 App ID。', howToGet: ['进入 Google AI Studio 创建 API Key。'], helpUrl: 'https://example.invalid/gemini-key' }),
+  ];
+  const updated = { ...value, state: 'stopped', lastError: null, fields: [...fields, ...added], configuration: { ...value.configuration, revision: 2, secretStatus: { ...value.configuration.secretStatus, GEMINI_API_KEY: 'missing' } } };
+  const preview = {
+    appId: value.id, expectedRegisteredDigest: 'a'.repeat(64), expectedManifestDigest: 'b'.repeat(64), registeredManifestDigest: 'c'.repeat(64), configurationRevision: 1,
+    sourcePath: value.sourcePath, app: { id: 'org.example.disposable-node', name: '新版人工测试应用', version: '2.0.0', description: '新增语音服务配置。' },
+    backend: { root: 'backend', entry: 'entry.mjs', nodeMajor: 24, protocolVersion: 1 }, fields: updated.fields, configuration: updated.configuration,
+    requiresRetrust: true, notice: '请重新核对并信任当前来源。',
+  };
+  return { value, updated, preview };
+}
+
+test('External declaration update requires a read-only preview and explicit trust before applying new configuration fields', async () => {
+  const { value, updated, preview } = declarationFixture({ configuration: { ...app().configuration, values: { MODEL: 'saved-model' } } });
+  const calls = [];
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_app_declaration_update_preview') return preview;
+    if (command === 'node_app_declaration_update_apply') return updated;
+    throw new Error(command);
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  assert.deepEqual(calls, []);
+  await click(byText('查看新版应用说明'));
+  assert.deepEqual(calls, [['node_app_declaration_update_preview', { appId: value.id }]]);
+  const content = document.querySelector('.node-declaration-preview').textContent;
+  for (const text of ['/not-a-real-source', '新版人工测试应用', '2.0.0', 'backend/entry.mjs', 'Node 24', '旧版 v1', '无法自动比较', 'GEMINI_API_KEY', '密钥（secret）', '无需 App ID', 'https://example.invalid/gemini-key']) assert.ok(content.includes(text), text);
+  assert.equal(document.querySelectorAll('.node-declaration-preview .node-config-field').length, updated.fields.length);
+  assert.equal(byText('更新应用说明').disabled, true);
+  await click(byText('更新应用说明'));
+  assert.equal(calls.length, 1);
+  await click(document.querySelector('.node-declaration-preview input[type=checkbox]'));
+  await click(byText('更新应用说明'));
+  assert.deepEqual(calls.at(-1), ['node_app_declaration_update_apply', { appId: value.id, input: {
+    expectedRegisteredDigest: preview.expectedRegisteredDigest, expectedManifestDigest: preview.expectedManifestDigest,
+    configurationRevision: preview.configurationRevision, confirmed: true,
+  } }]);
+  assert.equal(document.querySelector('.node-declaration-preview'), null);
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal(input('MODEL').value, 'saved-model');
+  const newSecretLabel = [...document.querySelectorAll('label')].find(label => label.textContent === 'Gemini API Key选填');
+  const newSecret = document.getElementById(newSecretLabel.htmlFor);
+  assert.equal(newSecret.type, 'password'); assert.equal(newSecret.value, '');
+  assert.match(document.body.textContent, /应用说明已更新/);
+  assert.match(document.body.textContent, /已保存的配置和密钥保留/);
+  assert.equal(calls.length, 2);
+});
+
+test('Manifest mismatch failure retains access to declaration preview even when configuration reading fails', async () => {
+  const { value, preview } = declarationFixture({ state: 'failed', lastError: '应用清单摘要与登记时不一致。', fields: [], configuration: { ...app().configuration, canStart: false } });
+  const calls = [];
+  await setup(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_app_configuration') throw { code: 'NODE_MANIFEST_CHANGED', message: '应用清单已修改，请更新应用说明。' };
+    if (command === 'node_app_declaration_update_preview') return preview;
+    throw new Error(command);
+  }, { request: { app: value, intent: 'details', token: 1 } });
+  assert.match(document.body.textContent, /应用清单已修改/);
+  assert.equal(byText('查看新版应用说明').disabled, false);
+  await click(byText('查看新版应用说明'));
+  assert.ok(document.querySelector('.node-declaration-preview'));
+  assert.deepEqual(calls.map(([command]) => command), ['node_app_configuration', 'node_app_declaration_update_preview']);
+});
+
+test('Declaration preview and apply never discard ordinary or secret configuration drafts', async () => {
+  const { value, preview } = declarationFixture(); const calls = [];
+  await setup(baseMock(value, async command => { calls.push(command); if (command === 'node_app_declaration_update_preview') return preview; throw new Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+  await change(input('MODEL'), 'unsaved model'); await change(input('AI_KEY'), 'artificial unsaved declaration key');
+  assert.equal(byText('查看新版应用说明').disabled, true);
+  assert.match(document.body.textContent, /先保存.*重新读取配置/);
+  await click(byText('查看新版应用说明'));
+  assert.equal(input('MODEL').value, 'unsaved model'); assert.equal(input('AI_KEY').value, 'artificial unsaved declaration key');
+  assert.deepEqual(calls, []);
+  await click(byText('重新读取配置')); await click(byText('丢弃草稿并重新读取'));
+  await click(byText('查看新版应用说明')); await click(document.querySelector('.node-declaration-preview input[type=checkbox]'));
+  assert.equal(byText('更新应用说明').disabled, false);
+  await change(input('AI_KEY'), 'another artificial draft');
+  assert.equal(byText('更新应用说明').disabled, true);
+  assert.equal(document.querySelector('.node-declaration-preview input[type=checkbox]').checked, false);
+  assert.equal(input('AI_KEY').value, 'another artificial draft');
+  assert.deepEqual(calls, ['node_app_declaration_update_preview']);
+});
+
+test('Expired declaration apply clears its confirmation and requires a fresh preview without adopting fields', async () => {
+  const { value, preview } = declarationFixture(); let reads = 0; let applies = 0;
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_declaration_update_preview') { reads++; return preview; }
+    if (command === 'node_app_declaration_update_apply') { applies++; throw { code: 'NODE_DECLARATION_UPDATE_CHANGED', message: '应用说明或配置已改变。' }; }
+    throw new Error(command);
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('查看新版应用说明')); await click(document.querySelector('.node-declaration-preview input[type=checkbox]')); await click(byText('更新应用说明'));
+  assert.equal(applies, 1); assert.equal(document.querySelector('.node-declaration-preview'), null);
+  assert.match(document.body.textContent, /应用说明或配置已改变.*重新查看新版应用说明/);
+  assert.equal([...document.querySelectorAll('.node-configuration-form label')].some(label => label.textContent.includes('Gemini API Key')), false);
+  await click(byText('查看新版应用说明'));
+  assert.equal(reads, 2); assert.equal(byText('更新应用说明').disabled, true);
+});
+
+test('Declaration updates are disabled while the app is active and never offered for managed installations', async () => {
+  for (const state of ['starting', 'running', 'stopping']) {
+    const { value } = declarationFixture({ state });
+    await setup(baseMock(value, async command => { throw new Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+    assert.equal(byText('查看新版应用说明').disabled, true);
+    assert.match(document.body.textContent, /等待服务停止后再更新/);
+    await act(async () => root.unmount()); root = null;
+  }
+  const { value } = declarationFixture({ installation: { kind: 'managed', generation: 'gen_test', sourceId: 'src_test', sourceDigest: 'a'.repeat(64) } });
+  await setup(baseMock(value, async command => { throw new Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+  assert.equal(byText('查看新版应用说明'), undefined);
+});
+
+test('Declaration previews from a previous service instance cannot replace the current review or block a fresh read', async () => {
+  const { value, preview } = declarationFixture(); const older = deferred(); let reads = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_declaration_update_preview') return ++reads === 1 ? older.promise : preview;
+    throw new Error(command);
+  }), props);
+  await click(byText('查看新版应用说明'));
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(byText('查看新版应用说明').disabled, false);
+  await click(byText('查看新版应用说明'));
+  await act(async () => older.resolve({ ...preview, app: { ...preview.app, name: 'late old instance preview' } }));
+  assert.equal(reads, 2);
+  assert.doesNotMatch(document.body.textContent, /late old instance preview/);
+  assert.match(document.querySelector('.node-declaration-preview').textContent, /新版人工测试应用/);
+});
+
 test('Managed app update preserves configuration drafts and only reads candidates on explicit request', async () => {
   const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: 'gen_' + 'a'.repeat(32), sourceId: 'src_' + 'b'.repeat(32), sourceDigest: 'c'.repeat(64) } });
   const calls = [];
