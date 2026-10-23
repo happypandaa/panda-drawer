@@ -36,7 +36,7 @@ export function runtime() {
 }
 export function assertDisposable(project) {
   assert.match(project.name, /^M3 可丢弃/);
-  assert.equal(project.projectRoot, join(expectedWorkspace, 'projects', project.id));
+  assert.equal(dirname(project.projectRoot), join(expectedWorkspace, 'projects'));
   return project;
 }
 export function createProject(label) {

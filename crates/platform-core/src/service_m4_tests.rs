@@ -80,7 +80,12 @@ async fn trash_restore_requires_new_session_and_old_document_remains_rejected_wi
     let (old_cookie, old_epoch) = browser(&service, &id).await;
     let deleted = wait(
         &handle,
-        handle.project_delete(&id, json!({})).await.unwrap(),
+        json!(handle
+            .current()
+            .lifecycle
+            .submit_legacy_trash_for_test(&id, json!({}))
+            .await
+            .unwrap()),
     )
     .await;
     assert_eq!(deleted["status"], "succeeded", "{deleted}");
@@ -114,10 +119,100 @@ async fn trash_restore_requires_new_session_and_old_document_remains_rejected_wi
     service.shutdown().await.unwrap();
 }
 #[tokio::test]
+async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archives() {
+    let (_temp, paths, service, id) = fixture().await;
+    let handle = service.handle();
+    let archive = paths
+        .data_root()
+        .join("disposable-before-permanent-delete.zip");
+    let exported = wait(
+        &handle,
+        handle
+            .project_export(&id, json!({"destinationPath":archive}))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(exported["status"], "succeeded");
+    let bytes = std::fs::read(&archive).unwrap();
+    let root = service.store().project(&id).unwrap().root;
+    let expected_epoch = service.store().registered_epoch(&id).unwrap().unwrap();
+    let client = reqwest::Client::new();
+    let token = service.shared.snapshot().token.clone();
+    let old = client
+        .post(format!(
+            "{}/api/v1/projects/{id}/trash",
+            service.info().base_url
+        ))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(!old.status().is_success());
+    let old: Value = old.json().await.unwrap();
+    assert_eq!(old["error"]["code"], "PROJECT_TRASH_RETIRED");
+    assert!(root.is_dir());
+    let missing = client
+        .post(format!(
+            "{}/api/v1/projects/{id}/deletions",
+            service.info().base_url
+        ))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(!missing.status().is_success());
+    let missing: Value = missing.json().await.unwrap();
+    assert_eq!(
+        missing["error"]["code"],
+        "PROJECT_DELETE_CONFIRMATION_REQUIRED"
+    );
+    assert!(root.is_dir());
+    service.store().begin_workspace_migration().unwrap();
+    let blocked = client
+        .post(format!(
+            "{}/api/v1/projects/{id}/deletions",
+            service.info().base_url
+        ))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(!blocked.status().is_success());
+    let blocked: Value = blocked.json().await.unwrap();
+    assert_eq!(blocked["error"]["code"], "WORKSPACE_MIGRATING");
+    assert!(root.is_dir());
+    service.store().resume_workspace();
+    let accepted = client
+        .post(format!(
+            "{}/api/v1/projects/{id}/deletions",
+            service.info().base_url
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"expectedDocumentEpoch":expected_epoch}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let accepted: Value = accepted.json().await.unwrap();
+    let deleted = wait(&handle, accepted["data"].clone()).await;
+    assert_eq!(deleted["status"], "succeeded", "{deleted}");
+    assert_eq!(deleted["result"]["operationOutcome"], "deleted");
+    assert_eq!(deleted["result"]["restoreAvailable"], false);
+    assert!(!root.exists());
+    assert!(!paths.workspace_root().join(".platform/trash").exists());
+    assert_eq!(std::fs::read(&archive).unwrap(), bytes);
+    service.shutdown().await.unwrap();
+}
+#[tokio::test]
 async fn migration_rotates_runtime_credentials_preserves_data_and_rejects_old_cookie_and_epoch() {
     let (temp, paths, service, id) = fixture().await;
     let handle = service.handle();
     let before = service.info();
+    let original_project_root = service.store().project(&id).unwrap().root;
     let old_token = paths.read_control_token().unwrap();
     let (old_cookie, old_epoch) = browser(&service, &id).await;
     let orphan = paths.workspace_root().join("projects/unrecognized orphan");
@@ -135,7 +230,11 @@ async fn migration_rotates_runtime_credentials_preserves_data_and_rejects_old_co
     assert_ne!(after.instance_id, before.instance_id);
     assert_eq!(after.base_url, before.base_url);
     assert_eq!(after.workspace_root, destination);
-    assert!(paths.workspace_root().join("projects").join(&id).exists());
+    assert!(original_project_root.exists());
+    assert!(destination
+        .join("projects")
+        .join(original_project_root.file_name().unwrap())
+        .exists());
     assert_eq!(
         std::fs::read(destination.join("projects/unrecognized orphan/keep")).unwrap(),
         b"unknown files preserved"

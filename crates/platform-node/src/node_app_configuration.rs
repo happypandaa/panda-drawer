@@ -36,7 +36,8 @@ impl fmt::Display for ConfigurationError {
 }
 impl std::error::Error for ConfigurationError {}
 impl ConfigurationError {
-    pub(crate) fn into_api_error(self) -> crate::ApiError {
+    #[doc(hidden)]
+    pub fn into_api_error(self) -> crate::ApiError {
         if self.1 {
             crate::ApiError::new("NODE_CONFIGURATION_COMMIT_UNKNOWN", self.0).outcome("unknown")
         } else {

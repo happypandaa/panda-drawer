@@ -1,5 +1,7 @@
 # 开发环境与数据隔离
 
+2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；已接公开源码获取、本机源码保存、历史列表与新建定制分支；另接显式源码取回及中断处理；私有认证与已有分支切换尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
+
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
 状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。产品名已确认为「熊猫应用小抽屉」，简称「熊猫抽屉」；[名称与图标](branding.md)已接入内部代码，固定开发身份和数据根保持。
@@ -44,7 +46,7 @@ Windows 开发者使用 `npm run env:windows` 查看系统、卷、WebView2、No
 
 MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立 C 静态库与 Rust 的 x64 编译、链接和运行。该命令在唯一的 `.test-artifacts/windows-w1-toolchain-smoke-*` 中保存源码、产物和报告，不清理旧证据、不构建或启动平台；它与只读环境盘点是不同检查。需要纯 JSON 时执行 `node scripts/windows-toolchain-smoke.mjs --json`。成功只证明本机开发工具链小样，不代表 Windows 产品兼容或 bundled SQLite 通过。
 
-平台使用者与平台开发者的要求不同：运行现有静态网页产物不需要用户安装系统 Node/npm、Rust、Visual Studio 或独立 SQLite 服务；修改业务源码后构建才需要系统 Node/npm，Rust/MSVC/Windows SDK 只用于开发平台本身。Windows W1 原环境准备不包含 Node 内置分发；本次另确认的私有运行时方向及尚未实现的状态见第 7 节，已有完整项目 ZIP 和拟议网页应用包的规则不因此改变。
+平台使用者与平台开发者的要求不同：运行现有静态网页产物不需要用户安装系统 Node/npm、Rust、Visual Studio 或独立 SQLite 服务。修改 project-v1 业务源码后，由服务使用受管或显式本机 Node/npm 构建；Rust/MSVC/Windows SDK 只用于开发平台本身。当前受管开发资源仅覆盖 Mac arm64，Windows W1 的工具准备不代表同等产品能力已实现；完整应用包的要求不因此改变。
 
 `npm run test:platform-support` 直接使用所选 Rust 编译、运行 `platform_support.rs` 的无依赖生产策略测试，输出位于新的 `.test-artifacts/w1-platform-support-*`，不启动平台或读取用户工作区。Windows 使用真实 `x86_64-pc-windows-msvc` 目标；Mac 分支的策略断言不是 Mac 实机回归。这个独立检查不编译整个 core、CLI 或 Tauri，不能替代后续完整构建、入口拒绝和现场保护验收。
 
@@ -52,19 +54,29 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 ## 管理界面入口
 
-“我的项目”采用用户确认的 Radio Bob 风格启动台，图标下显示名称，点击进入独立原生窗口；右键、键盘菜单键或图标旁“更多操作”进入详情及删除确认。搜索仍匹配名称、简介或 ID，状态筛选、刷新、添加本地应用及导入集中在“添加”菜单。网页项目删除前仍须核对，移入回收站后可在“空间与工作区 → 回收站”恢复。Node 只显示绿色六边形类型角标，配置、运行和异常状态分别显示；详情与读屏保留完整中文类型。
+“我的项目”采用用户确认的 Radio Bob 风格启动台，图标下显示名称，点击进入独立原生窗口；右键、键盘菜单键或图标旁“更多操作”进入详情及删除确认。搜索仍匹配名称、简介或 ID，状态筛选、刷新、添加本地应用及导入集中在“添加”菜单。当前删除须核对永久删除及保留范围，确认后直接执行，无法从平台或系统回收站撤销；“空间与工作区 → 历史保留项目”仅恢复旧版本留下的回收项。Node 只显示绿色六边形类型角标，配置、运行和异常状态分别显示；详情与读屏保留完整中文类型。
+
+“添加本地应用”的[目录流程](local-directory-onboarding.md)先检查所选目录：空目录确认初始化零第三方依赖的 Node 起始文件，随后再预览确认添加；有效 Node 声明直接预览；其他目录可复制包含目录、规范与独立检查 skill 全文的说明给 AI，或重新检查。复制不自动发起 AI 任务，不向目录写入 skill，不修改项目或执行代码。AI 本轮只读评估，缺声明不等于保证可适配；project-v1 不在此 Node 入口自动收养。
+
+新建、复制和完整 ZIP 导入的用户项目根按[可读目录命名](project-directory-names.md)使用固定 npm `transliteration` 数据转写名称，加完整 ID 派生短码；原生离线命名，不让前端／CLI 传任意目标路径。完整 ID 与显示名称的语义不变，已有目录不改名，Node 私有槽和用户选定的外部目录保持原布局；转写不是语义翻译。
 
 顶部保留“我的项目 / 空间与工作区”两个入口及 DARK / LIGHT 外观开关。主题只保存在管理界面的本机偏好中，不修改项目、工作区或业务网页；设置齿轮内集中运行环境、关于及使用指南，高级 Node 检测配置、程序信息按需展开。管理窗默认为 960×640，最小为 640×480，窄窗采用四列并滚动内容。实际验证见[启动台界面记录](radio-launcher-verification.md)。
 
+管理界面的[操作提示](management-feedback.md)按产生位置显示：普通成功默认5秒后消失，错误在原页面／弹窗可见期间保留到手动关闭，不因刷新、新成功或计时器消失。离开页面、关闭弹窗或改变所属项目／工作区后丢弃旧提示，迟到结果不能跨上下文弹回；AI 交接、构建及详情内操作保留局部反馈。迁移和清理提示跟随任务真实最终状态，需继续核对的未完成收尾不当作普通成功。
+
 业务应用窗口另有可选的清单 `window` 初始尺寸，默认 1080×780；之后默认记住每个项目的上次普通窗口逻辑尺寸。该本机偏好独立保存在固定数据根 `app-window-sizes.json`，不修改业务数据库或工作区设置；声明字段、关闭保存、迁移隔离及已登记 Node 声明摘要门禁见[应用窗口尺寸](app-window-runtime-contract.md#应用窗口尺寸)。管理窗尺寸与此分开，原生拖动缩放等实际验收另记。
 
-“详情”弹窗集中展示概览、空间与文件、备份维护、更多操作；原生窗口进入、构建和 AI 交接也在详情中。未提交的基本信息、备份备注和导出/复制表单在页签间保留，关闭时提示处理；提交或原生文件选择尚未完成时阻止关闭。切换页签会撤销删除、恢复与结束维护的确认，重新操作需要重新核对。
+2026-10-23 起，网页应用“详情”弹窗提供“概览 / 空间与文件 / 更多操作”三个页签。进入应用、打开本地目录、“复制提示词”“在 Codex 打开”和“构建更新”常显，交接长说明按需展开。基本信息和清理选择在页签间保留，关闭时提示处理；提交、原生文件选择和操作核对尚未完成时阻止关闭及切换页签。离开更多操作或空间页会撤销对应的删除／清理确认。
 
-新建成功后直接打开项目详情，点击“复制 AI 接手说明”获取可直接发送给其他 AI 的中文说明，包含熊猫应用小抽屉的用途、当前业务项目目录与 ID、实际 skill/CLI 路径、文档与构建/数据库操作方式。复制仅由点击触发；同时展开全文，剪贴板不可用时可选取手动复制。接收说明的 AI 需要能访问本机目录才能直接修改文件。说明按当前平台生成，不覆盖旧项目文档；项目移出列表或工作区切换后会撤销旧的待复制结果。
+新建成功后直接打开项目详情，点击“复制提示词”获取可直接发送给其他 AI 的中文说明，包含熊猫应用小抽屉的用途、当前业务项目目录与 ID、实际 skill/CLI 路径、文档与构建/数据库操作方式。“在 Codex 打开”复制同一说明并打开本机任务草稿，由用户粘贴并发送。复制仅由点击触发；同时展开全文，剪贴板不可用时可选取手动复制。接收说明的 AI 需要能访问本机目录才能直接修改文件。说明按当前平台生成，不覆盖旧项目文档；项目移出列表或工作区切换后会撤销旧的待复制结果。
 
-“空间与工作区”使用“空间总览 / 工作区位置 / 回收站 / 清理历史”页签。默认只显示三类空间摘要与项目排行，明细按需展开；工作区迁移需先展开表单并明确确认。所有维护、删除、恢复及迁移继续使用已有原生任务与门禁。
+普通详情不再提供“源码版本”、创建独立副本或旧备份中心。Git 检查、保存、分支及取回由 AI 通过现有 CLI／管理接口处理，唯一 Git 历史原样保留。旧维护／恢复、未完成源码取回或无法核实的状态会显示按需处理入口；结束维护和继续／撤回均需明确确认，源码操作绑定重新核对的摘要并要求停止外部修改。正在执行的处理任务保持详情关闭门禁，失败不自动重试。更多操作只保留导出 ZIP 和永久删除；导出先弹窗说明包含业务数据库和用户文件，选择位置后提交，碰到同名文件才另行确认替换。
 
-空间总览常显“为什么删除项目后仍有占用”，解释当前回收站、历史备份、恢复操作现场、共享缓存、迁移保留目录和软件文件；这些数字属于上方范围，不另行重复相加。项目列表清空不等于抹除这些资料；永久删除回收项仍保留历史备份。历史备份仍不提供手动删除入口；迁移旧目录、已完成恢复的原现场和回收项可在“清理历史”中扫描范围、显式选择并确认后处理，未解决现场继续保护。统计是文件逻辑大小，不能直接视为可回收磁盘空间。
+本轮按[已确认的 Figma 设计](https://www.figma.com/design/lUu4diXxz5954rK7PDUG8G?node-id=2-80)实施。界面与交互回归 300 项、Rust 空间模块 14 项、TypeScript／Vite 构建及开发版 `.app` 打包通过。独立可丢弃浏览器样本检查了三页、嵌套导出弹窗、滚动与 800 像素宽窗口；原生调用使用模拟响应，不能据此声称原生保存框、真实导出／删除或设备权限已重新实测。正常清理的 Rust 回归核实不创建维护会话或 ZIP 基线，并保留任务锁及恢复保护。本轮没有对已有开发项目执行清理、导出、删除或迁移；现存源码、数据、备份及恢复现场继续保留。网站构建与 14 页、466 个本地链接／资源／锚点检查通过。
+
+“空间与工作区”使用“空间总览 / 工作区位置 / 历史保留项目 / 清理历史”页签。默认只显示三类空间摘要与项目排行，明细按需展开；工作区迁移需先展开表单并明确确认。所有维护、删除、恢复及迁移继续使用已有原生任务与门禁。
+
+空间总览常显“为什么删除项目后仍有占用”，解释旧回收项、历史备份、恢复操作现场、共享缓存、迁移保留目录和软件文件；这些数字属于上方范围，不另行重复相加。项目列表清空不等于抹除这些资料；永久删除回收项仍保留历史备份。历史备份仍不提供手动删除入口；迁移旧目录、已完成恢复的原现场和回收项可在“清理历史”中扫描范围、显式选择并确认后处理，未解决现场继续保护。统计是文件逻辑大小，不能直接视为可回收磁盘空间。
 
 ## 1 开发身份
 
@@ -91,7 +103,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 在根目录执行 `npm ci` 后使用 `npm run dev`。准备步骤构建 CLI，在临时目录按锁文件构建标准模板，再生成包内 SDK、模板源码、预编译初始网页、skill 和说明资源副本；Tauri 启动管理界面和 Rust 服务。模板构建发生在平台开发／打包时，不发生在用户创建项目时。Vite 开发地址固定为 `127.0.0.1:1420`，端口被占用时不静默选择另一个端口。
 
-Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及系统 Node 构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；现有静态网页不启动 Node 服务，新增应用后端尚未实现。
+Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及服务选定 Node/npm 的构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；现有静态网页不启动 Node 服务，独立本机 Node 槽的应用后端范围见[当前接入](node-native-configuration.md)。
 
 按用户同日最新要求，macOS 平台管理窗口 X 只隐藏管理窗口并保留 Dock，已开的业务窗口、受管 Node 和平台服务继续运行；点击 Dock、Reopen 或重复启动恢复同一个管理窗口及其页面状态，不创建第二套服务。菜单“退出开发版”／Cmd+Q 才走整个平台的正常退出流程；非 macOS 管理窗口 X 维持正常退出。关闭业务窗口只收尾本应用及其受管 Node／普通子进程。全部应用统一“我的项目”，详情／配置采用页内 tabs 弹窗，缺必填时进入先开配置，不禁用整个入口，保存不自动启动。此前“管理窗口 X 退出”的实测保留为旧版本结果，不证明新要求已验收。明确退出先停止接收新工作、取消未发布的上传、结束构建子进程及其普通进程组、记录未完成任务状态，等待已接受的数据库工作与项目创建完成，再关闭服务并仅移除本实例发现与凭据。慢速下载在退出收尾时可能断开，已保存文件不受影响；锁文件本身不递归删除。异常中断留下的发现信息不能作为在线依据；CLI 会进行身份与实例握手。
 
@@ -103,7 +115,7 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 ## 3 工具链与校验
 
-Node 支持 `^22.12.0 || ^24.0.0`，使用系统 npm。可使用系统 Rust，也可安装到工程 `.tools/`；脚本优先使用项目私有 Cargo/Rustup 并只向子进程设置对应环境，不修改 shell 配置。Cargo 与 npm 依赖锁文件随工程保存。
+开发平台仓库本身仍使用开发者的 Node/npm，Node 支持 `^22.12.0 || ^24.0.0`；这与用户项目由服务选择开发工具不同。用户项目的受管开发资源固定为 Node 24.22.0／npm 11.19.1，显式本机选择保持同一 Node 支持范围。可使用系统 Rust，也可安装到工程 `.tools/`；脚本优先使用项目私有 Cargo/Rustup 并只向子进程设置对应环境，不修改 shell 配置。Cargo 与 npm 依赖锁文件随工程保存。
 
 本次验证使用 Rust 1.99.0。没有系统 Rust 时，可在仓库根目录执行以下步骤安装同版本的工程私有工具链；安装脚本来自 Rust 官方，`.tools/` 不进入发行包：
 
@@ -126,7 +138,7 @@ npm run cli -- service status --json
 npm run cli -- env doctor --json
 ```
 
-CLI 的状态命令离线时报告结构化错误，不启动应用、不初始化数据、不仅凭端口可连接就认为服务正确。`env doctor` 在线时返回桌面服务实际选定的 Node/npm 路径、版本与可用性；离线时只报告平台连通性和构建环境尚未读取，不把 CLI 自己的 PATH 当作服务环境。项目 schema 使用 `db schema`。
+CLI 的状态命令离线时报告结构化错误，不启动应用、不初始化数据、不仅凭端口可连接就认为服务正确。`env doctor` 在线时返回桌面服务实际选定的开发 Node/npm 来源、路径、版本与可用性；离线时只报告平台连通性和构建环境尚未读取，不把 CLI 自己的 PATH 当作服务环境。项目 schema 使用 `db schema`。
 
 单元和服务测试重点覆盖目录身份、符号链接、互斥锁、文件权限、退出清理、HTTP 授权与 CLI 目标校验。开发测试和打包测试都要核对 UI 实际显示的资源状态；在只有浏览器页面时显示“需要桌面宿主”，不生成虚假的运行信息。
 
@@ -134,15 +146,15 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 最低打包系统设为 macOS 15，目标为 Apple Silicon。内部包采用 ad-hoc 签名；没有 Developer ID 公证、互联网下载首启或最低系统实机通过记录时，不称作已完成正式分发。正式名称、应用标识、签名资质与设备验收在相应发行阶段完成。
 
-当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式；新内部构建已接入私有 Node 资源准备，实际应用包验证见首次试验记录；不携带 Rust 开发工具链。Node 后端只在隔离实验路径使用，不自动接管现有系统 Node 构建或已安装的旧应用。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
+当前阶段不为用户添加登录启动项、后台守护程序或全局 CLI 快捷方式，不携带 Rust 开发工具链。Mac arm64 内部构建分别准备 `node-runtime` 应用运行资源和 `development-node` 开发资源；本机 Node 槽已接配置与原生窗口运行子集，范围见[当前接入](node-native-configuration.md)。开发工具默认值不替换已有显式选择，也不改变应用运行 Node；首次运行时试验的历史证据不能替代新增开发工具验收。更新或卸载正式软件的规则继续按发行契约执行，本开发标识不读取正式目录。
 
 ## 5 当前项目和工具入口
 
-项目实际目录：`workspace/projects/{id}/`，包括 `project.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.agents/skills/local-projects-app/`、`docs/database.md`、`docs/platform.md`、`meta/`、`app/`、`dist/`、`data/main.sqlite`、`data/attachments/`、`.platform/`。新项目同时复制可构建的标准源码和平台预编译的欢迎应用，校验两者与打包摘要一致，再完成项目登记；不创建业务表或示例数据。新项目立即可在桌面和浏览器打开，创建及打开不调用 Node/npm、不下载依赖。项目登记与文档代次保存在工作区 `.platform/project-state/{id}.json`；登记还验证项目目录和数据库文件身份。数据库缺失、符号链接、硬链接或未经协调替换时拒绝操作，不创建空库蒙混通过。
+项目实际目录：`workspace/projects/{已登记目录}/`，新项目使用可读转写名与短码，旧的 ID 目录原样保留；读取接口返回的实际 `projectRoot`，不从 ID 拼接。目录包括 `project.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.agents/skills/local-projects-app/`、`docs/database.md`、`docs/platform.md`、`meta/`、`app/`、`dist/`、`data/main.sqlite`、`data/attachments/`、`.platform/`。新项目同时复制可构建的标准源码和平台预编译的欢迎应用，校验两者与打包摘要一致，再完成项目登记；不创建业务表或示例数据。新项目立即可在桌面和浏览器打开，创建及打开不调用 Node/npm、不下载依赖。项目登记与文档代次保存在工作区 `.platform/project-state/{id}.json`；登记还验证项目目录和数据库文件身份。数据库缺失、符号链接、硬链接或未经协调替换时拒绝操作，不创建空库蒙混通过。
 
 给 AI 的窗口约束现由 skill 主入口链接到随目录携带的 `references/app-window-runtime.md`；它说明原生单窗口、打开自动启动 Node、关窗停止、禁止额外窗口／业务弹窗，并先区分 project-v1 与独立 Node 源码槽。主规则见[应用窗口契约](app-window-runtime-contract.md)，全部文档分类与阅读顺序见[文档地图](documentation-map.md)。准备资源／新建时沿用整个 skill 目录复制，不为补说明覆盖既有项目文件。
 
-仓库 `skills/local-projects-app/` 是 skill 的维护源，准备步骤复制到包内资源，新建时复制到项目 `.agents/skills/local-projects-app/`。README、AGENTS.md 和 CLAUDE.md 引用它；`project handoff` 和“复制 AI 接手说明”提供实际项目、README、skill 和 CLI 绝对路径。skill 说明业务项目的读取、修改、数据库操作、构建、验证、备份维护、生命周期与迁移后的交接，不要求 AI 修改平台工程。资源更新只用于新建项目和安装包后备说明；旧项目的 skill、SDK、源码和文档不随升级覆盖，调用新能力前核对当前 CLI 帮助。它不是全局安装项，不承诺所有 AI 客户端自动识别；无法自动发现时按交接文本显式读取。
+仓库 `skills/local-projects-app/` 是 skill 的维护源，准备步骤复制到包内资源，新建时复制到项目 `.agents/skills/local-projects-app/`。README、AGENTS.md 和 CLAUDE.md 引用它；`project handoff` 和“复制提示词”提供实际项目、README、skill 和 CLI 绝对路径。skill 说明业务项目的读取、修改、数据库操作、构建、验证、备份维护、生命周期与迁移后的交接，不要求 AI 修改平台工程。资源更新只用于新建项目和安装包后备说明；旧项目的 skill、SDK、源码和文档不随升级覆盖，调用新能力前核对当前 CLI 帮助。它不是全局安装项，不承诺所有 AI 客户端自动识别；无法自动发现时按交接文本显式读取。
 
 项目 ID 由平台生成。下列命令均支持 `--json`，复杂输入使用文件或 `--input -` 从标准输入读取；不要把 SQL、令牌或多行 JSON 拼入 shell 命令。
 
@@ -170,7 +182,11 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `task wait --task ID --timeout 30` | 有界等待；超时返回当前任务，不取消任务 |
 | `task logs --task ID --cursor N` | 读取日志片段；用返回的 `nextCursor` 继续 |
 | `env node set --path /绝对路径/node` | 检查并保存开发版的显式 Node 路径 |
-| `env node clear` | 恢复自动探测 |
+| `env node clear` | 清除显式选择；带资源时恢复受管默认，无资源开发服务恢复检测 |
+| `env git doctor` | 读取服务实际 Git 选择、版本与可用性，分别返回系统 SSH 工具状态和未验证的认证状态；不访问仓库 |
+| `env git set --path /绝对路径/git` | 保存本开发版的显式 Git 可执行文件路径；与 Node 设置分开 |
+| `env git clear` | 明确清除显式 Git 路径，恢复平台受管默认；不改全局 Git 配置 |
+| `env git check --url https://github.com/owner/repository.git` | 明确匿名检查公开 GitHub/Gitee HTTPS 仓库的 HEAD，20 秒预算；不克隆仓库或验证账号认证 |
 | `db schema --project ID` | 实际表、列、索引、外键、视图 |
 | `db execute --project ID --input request.json` | 一条 SQL 与位置参数 |
 | `db transaction --project ID --input request.json` | 有序语句整体提交或回滚 |
@@ -198,9 +214,21 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 `scripts/package-template.mjs` 在临时副本执行 `npm ci` 和模板构建，核对构建未改写源码后，将 `starter/` 网页及 `starter.json` 来源写入包内模板资源。记录模板版本、源码／产物摘要及实际打包工具版本；用户新建时验证并复制这些资源，安装到项目 `dist/` 和不可变初始代，同时记录 `.platform/starter.json`。该来源表示平台提供的模板，不是用户在本机完成过构建；不会创建成功任务、任务日志或冒充本机构建的 Node/npm 环境。
 
-项目构建 Node 先使用显式选择的绝对路径，否则探测 nvm、Volta、常见本机安装路径及可用 PATH。实际 Node/npm 版本经运行检查；npm 由所选 Node 执行，避免 shebang 选择另一个版本。本机选择保存到开发数据根 `toolchain.json`，不写入项目清单。系统构建工具探测不安装或升级 Node；新增私有运行时准备与其独立。缺少系统工具只阻止构建，已发布静态网页和数据库仍可运行。首次依赖安装可能需要联网。已新增的[隔离 Node 实验](node-runtime-trial-verification.md)不由当前构建探测接管，也不使私有运行时自动替代构建工具链。
+2026-10-21 起，project-v1 构建先使用 v1 `toolchain.json` 中已有的显式本机 Node 绝对路径；路径失联、版本不支持或配套 npm 不可用时直接报告错误，不回退受管工具或另一处本机安装。没有显式选择且服务带安装资源时，默认使用单独的 `development-node`（固定 Node 24.22.0／npm 11.19.1）；资源缺失或校验失败同样不回退。只有通过无资源入口创建的开发／测试服务保留 nvm、Volta、常见本机安装位置及 PATH 检测。清除显式选择表示恢复这一服务默认值，不固定表示系统探测。
 
-构建按锁文件执行 `npm ci`，依赖指纹未变化且安装记录有效时可复用项目 `app/node_modules/`。共享 npm 缓存位于 `workspace/.platform/cache/npm/`。任务按项目互斥，并对输入取 SHA-256 基准，在依赖准备后和发布前复核；输入变化、依赖失败、脚本失败、无效产物均不发布新网页。构建只接受 `--outDir` 指定的平台暂存目录，不自动建表或重置数据库。
+受管资源根据源码内固定的发行声明校验元数据、全部文件内容、数量、大小及权限；拒绝符号链接、硬链接、特殊文件及额外空目录。完整校验在阻塞工作线程进行，再探测实际版本；npm 的 JavaScript 入口由选定 Node 执行，受管 PATH 仅含私有工具目录和系统工具目录。本机选择仍只保存在固定开发数据根，不写入项目清单，不修改用户的全局 PATH、shell 或 npm 配置。`env doctor` 的 `selection` 为 `explicit`、`managed` 或 `detected`，`managedNodePath` 提供默认资源位置；位置存在于结果不等于 `ready: true`。
+
+应用运行使用的 `node-runtime` 与开发工具分开，构建选择不影响 Node 应用后端。开发工具不可用只阻止构建，已有静态产物和数据库仍可使用。配备 Node/npm 不代表所有旧项目都能重建，锁文件、依赖、源码及项目要求仍须验证；首次依赖安装可能需要联网。Node/npm 子步不包含独立 Node 源码槽构建、完整安装或跨系统承诺；后续 Git 工具子步见下节。
+
+构建将清单 `sourceDir` 的普通源码文件复制到每任务独立候选，在候选中每次按锁文件执行 `npm ci`，不复用或修改原源码的 `node_modules/` 及旧依赖记录。共享 npm 下载缓存仍位于 `workspace/.platform/cache/npm/`。任务按项目互斥，复核原源码和候选的输入摘要；输入变化、依赖失败、脚本失败、无效产物均不发布新网页。构建脚本须接受 `--outDir` 指定的平台暂存目录，不自动建表或重置数据库。候选不带项目根清单、活库或 Git；只支持源码目录内的 file/workspace 依赖，拒绝外部依赖和源码符号链接。正常退出停止受管进程后清理候选，崩溃现场保留。它不是安全沙箱：可信脚本仍可访问绝对路径，候选所在目录的上级依赖查找也未被系统隔离。
+
+### 公开源码获取
+
+管理页“添加 → 获取项目源码”和 CLI `source acquire --url URL --json` 接受标准 GitHub/Gitee 公开 HTTPS 仓库。任务只获取当前提交的浅克隆并还原普通文件，不安装依赖或执行项目。`source list/get` 查看记录，`source inspect --path /绝对路径 --json` 只读本机声明，`source cancel --task ID --json` 请求取消后仍须等待最终任务。管理接口为 `GET /api/v1/sources`、`GET /api/v1/sources/:id`、`POST /api/v1/sources/acquisitions`（`url`、可选 `name`）、`POST /api/v1/sources/inspect`（`sourcePath`）、`POST /api/v1/sources/tasks/:id/cancel`；仅管理身份可用。
+
+记录和候选位于工作区 `.platform/sources/src_<UUID>/`，随公开工作区迁移；失败／取消／中断保留现场，重试新建目录，不注册业务项目。版本、工具及内容摘要单独记录，后续接入前需重新校验；普通声明、需适配源码和可运行安装不是同一状态。本步没有私有仓库认证、标准成品安装或删除候选入口。
+
+2026-10-22 新增本机源码副本接入和 Node 受管安装。`source capture --path /绝对路径 [--name 名称] --json` 与管理 `POST /api/v1/sources/captures`（`sourcePath`、可选 `name`）创建独立来源副本，不执行代码；排除已知数据、配置、凭据、依赖及 Git 控制路径。Node 安装使用独立原生管理入口，先准备生产依赖，再明确提交，更新前核对窗口已关闭、程序和配置修订未变化；没有绕过原生窗口锁的 HTTP／CLI 安装提交入口。具体范围、位置和限制见[源码副本、安装与更新](node-managed-installation.md)。
 
 构建脚本及 npm 生命周期脚本是具有当前用户权限的普通本机代码，**不是沙盒**。只运行用户信任的项目；脚本不得启动后台服务、脱离进程组的子进程，或写入用户数据。平台在正常结束、超时及退出时清理普通构建进程组；这不构成隔离任意本机代码的保证。
 
@@ -226,6 +254,58 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 本轮初始应用与 skill 的补充验收单独记入[验证记录](starter-skill-verification.md)：应覆盖无可用 Node 时创建及打开、初始来源核对、首次失败保留、成功发布及旧初始页资源、独立 AI 读取交接说明，以及旧项目文件保持不变。历史 M2 结果不作为这些新增场景已通过的证据。
 
+### 7.1 Git 开发工具与系统 SSH 诊断
+
+Mac arm64 内部包新增 `development-git`，固定 Git 2.56.0。源码来自官方发行归档，固定大小、摘要与发布者签名信息见 [`scripts/development-git-release.json`](../scripts/development-git-release.json)。平台开发阶段从完整、未修改的上游源码构建；发布记录中的同一编译器／SDK、两个独立源码目录重建，9 个原生可执行文件逐字节一致。这个结果不承诺任意编译环境或其他系统可重现相同产物。
+
+资源树为 90 个文件、61,133,800 字节，约增加 58.3 MiB 的包内逻辑文件内容；这不是 DMG 下载增量或实际磁盘分配量。资源随附完整上游源码归档、分离签名、公钥、`sources/build-git.sh` 与说明、GPLv2 `COPYING` 及 SHA1DC／reftable 许可证；其他内嵌许可保留在完整源码内。固定元数据与实际树一起核验，不能只因存在 Git 路径就报告可用。
+
+Git 目标仍为 macOS 15.0、arm64。复现构建记录要求 Apple clang 21.0.0、macOS SDK 27.0、Apple linker 27037.1、GNU make 3.81；**编译器和 SDK 只是平台开发／重建工具要求，不是成品用户的运行要求，也不把最低系统提高到 macOS 27**。源码构建目录须避免空格，上游构建完成后的工具资源可迁移到中文／空格路径。原生程序只依赖 macOS 系统库；最低 macOS 15 实机运行仍须单独验收。
+
+当前构建关闭 Perl、Python、Tcl/Tk、gettext、Gitweb 与 Rust 支持，不附这些解释器、外部合并工具、凭据助手或 SSH 私钥。上游保留的不可用命令桩和适配脚本不表示相关功能已支持。HTTPS 辅助程序依赖系统 libcurl 与系统信任；匿名 HEAD 检查、公开源码获取与本机源码版本操作有各自入口，不代表已有账号认证流程。
+
+Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改变 Node 的 `toolchain.json`、应用运行 Node、项目清单或全局 Git 配置。没有显式路径时选择平台受管 Git；已有显式绝对路径优先，失效时报告错误，不回退受管或 PATH 中其他 Git。受管资源失效同样不回退。设置无法读取或解析时返回 `selection: unresolved`，表示尚未确定工具来源，不冒称已经使用默认值；用户可修正并保存本机路径，或明确恢复默认工具。
+
+`env git doctor`、`env git set --path /绝对路径/git`、`env git clear` 均支持 `--json`，在线通过现有管理认证访问 `GET /api/v1/environment/git` 或 `PUT /api/v1/environment/git`。PUT 输入分别为 `{"gitPath":"/绝对路径/git"}` 与 `{"gitPath":null}`。响应包括 `ready`、`git` 的实际路径／版本、`selection`（`managed`／`explicit`／`unresolved`）、`configuredGitPath`、`managedGitPath`、`issues`，并分别提供 `ssh` 与 `authentication`。默认位置仅供定位，不代替 `ready`／问题结果；CLI 离线不自行选用终端 Git。
+
+系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。公开源码获取和 project-v1 本机源码提交、历史列表、新建定制分支及显式源码取回有独立入口；已有分支切换尚未开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
+
+### 本机源码版本保存
+
+Git 版本管理由 AI 先读取范围和改动，再明确初始化或保存，普通应用详情不展示完整 Git 面板。CLI 为 `project git status --project ID --json`、`project git init --project ID --input FILE --json`、`project git save --project ID --input FILE --json`、`project git cancel --project ID --task TASK_ID --json`。初始化输入为 `expectedSnapshot` 与 `initialBranch:"main"`；保存须明确提供 `expectedHead`（无提交时为 JSON null）、`expectedSnapshot`、`message`、`author:{name,email}`。快照和 HEAD 来自最新状态，不默认采用全局作者，不自动重试写请求。
+
+管理 HTTP 为 `GET /api/v1/projects/:id/git`、`POST .../git/initialize`、`POST .../git/saves`、`POST .../git/tasks/:taskId/cancel`。初始化／保存返回持久任务，取消仅请求停止；提交点之后可能最终成功，`committed`／`unknown`／`not_committed` 结果分别保留，不凭连接失败重新提交。
+
+首步只写项目根的普通标准 Git 仓库。已有源码子仓库、父仓库、多个标记、worktree／submodule、分离 HEAD 或不支持的配置保持原状并拒绝写入。预览列出清单、源码、固定 SDK、文档等开发材料；未知文件、已有暂存／冲突或被跟踪的保护路径阻止保存。已知凭据、活库、附件、依赖、本机控制与运行产物按路径排除，不能通用识别任意文件内的秘密。采用原始对象和私有索引，不运行用户 hooks、内容过滤器、签名或 fsmonitor，不推送。此次保存不含数据库快照；旧备份及恢复证据保留。
+
+### 本机版本列表与新建定制分支
+
+`project git versions --project ID --limit 50 --json` 对应 `GET /api/v1/projects/:id/git/versions?limit=50`，只列出当前 HEAD 可达的本机提交，不接受任意 revision、不访问远端。`limit` 默认50、范围1–100；返回 `head`、`versions`（提交号、父提交、说明、作者、时间）、`hasMore` 与实际工具。AI 可通过此接口查询，普通详情不展示版本列表；普通未提交或暂存改动不阻止只读列表，但不安全仓库、恢复现场和已跟踪保护路径仍拒绝。
+
+`project git branch-create --project ID --input FILE --json` 对应 `POST /api/v1/projects/:id/git/branches`。完整输入为 `name`（新分支短名）、`expectedHead`（现存完整提交号）、`expectedBranch`（状态返回的 `refs/heads/...`）和 `expectedSnapshot`。只允许在干净且已保存的当前版本新建分支并将 HEAD 指向它；已有同名分支、过期核对、未知／暂存／冲突内容均拒绝。不会取回其他提交或替换源码、索引、活库、附件及当前产物。仅此操作要求已验证的 Git2.56.0 引用事务；2.54.0 的保存和列表仍可用，分支限制单独放在 `branchCreationIssue` 中，不自动换工具。
+
+新建分支返回 `gitBranchCreate` 持久任务，沿用取消入口和已提交／未提交／未知结果；成功结果含原分支、新分支及当前提交。开始修改前先等待最终结果。现有分支切换、合并／拉取及数据库版本仍未实现，不能用新建分支代替这些操作。旧源码取回是下面的独立显式操作。
+
+### 取回本机已保存源码
+
+取回将选定本机提交的允许开发文件放回当前工作树，形成待保存修改。它不移动HEAD、不替换索引、活库、附件或当前运行产物，也不自动保存版本、构建或重载网页。开始前须停止外部编辑，并保存现有改动；平台只能检查文件身份与摘要，不能撤销已经打开的外部编辑器权限。
+
+先调用 `project git source-restore-preview --project ID --input FILE --json`，输入 `{"targetCommit":"完整40位小写SHA-1本机提交号"}`，对应管理 `POST /api/v1/projects/:id/git/source-restore-preview`。本步取回只接受完整40位小写SHA-1本机提交，拒绝SHA-256、任意revision与联网取对象；历史列表的可读范围不因此缩小。返回当前 `head`、`snapshotDigest`、`planDigest`、目标提交、逐文件增删改和前后摘要／大小／执行位、`canApply` 及问题。无差异不能重复应用。目标整个树须符合当前允许范围，清单原始字节必须一致且实际不替换；保护路径、未知材料、链接／子模块、目录与文件互换、大小写或Unicode碰撞均拒绝，不静默丢弃目标文件。
+
+核对后调用 `project git source-restore --project ID --input FILE --json`，输入完整包含 `targetCommit`、`expectedHead`、`expectedBranch`、`expectedSnapshot`、`expectedPlanDigest`，对应 `POST .../git/source-restores`。必须来自新鲜预览，原索引与当前源码干净；返回 `gitSourceRestoreApply` 持久任务。任务的取消入口仍为 `project git cancel`，中途停止可能已取回部分文件，不能当作自动撤回。
+
+恢复现场在工作区 `.platform/project-state/source-restore/{projectId}/{taskId}/`，与旧备份／维护状态分开。原文件与候选材料用于确认逐文件状态；未完成或损坏现场阻止后续开发写入、交给新编辑器、迁移和相关历史清理，当前网页、业务SQL及附件继续使用。现场不作为缓存删除，不以删除journal、重新登记或清空目录解除保护。
+
+当前事务使用macOS同卷原子文件操作，不以跨卷复制覆盖降级。内部检查限制为源码最多10,000文件、单文件64 MiB、总源码256 MiB、单条恢复记录4 MiB；执行预算120秒，准备文件时保留至少64 MiB可用空间。这些是检查边界，不是磁盘配额或进程硬限。恢复记录扫描另有单项目16 MiB／1000任务、工作区64 MiB／4096项目及任务目录项的累计预算；新操作发布前计入其完整记录与阶段增长，超限拒绝新取回，已有终态证据保留。尚无自动证据清理入口。
+
+先停止本项目的外部编辑与Git操作。平台不会持有可能在崩溃后残留的Git锁来冒充外部写入隔离；每步核对仓库绑定和外部锁，异常时保留双方文件。最终记录已替换但目录同步失败时，若精确读回终态及内容，可报告操作已提交并显示耐久性未确认的警告；不会同时宣称仍有可继续的恢复任务。
+
+`project git source-recovery --project ID --json` 对应 `GET .../git/source-recovery`，只读返回 `clear`／`pending`／`blocked` 及保留任务、计划摘要、journal摘要、每个文件的已知状态与允许动作。显式继续或撤回使用 `project git source-recover --project ID --input FILE --json`／`POST .../git/source-recoveries`，完整输入为 `restoreTaskId`、`expectedPlanDigest`、`expectedJournalDigest`、`action:"continue"` 或 `"undo"`。恢复须绑定唯一未完成现场，取得操作占用后再次核对；第三方改动、未知状态或摘要过期时保留双方内容并拒绝覆盖。成功取回后再自行保存Git版本与构建；成功撤回仅还原该次源码取回，不回滚业务数据。
+
+`env git check --url https://github.com/owner/repository.git --json` 明确发起 `POST /api/v1/environment/git/remote-check`；也支持标准 `https://gitee.com/owner/repository.git`。这一步只检查公开 HTTPS，拒绝凭据、端口、查询参数、片段和仓库内页面；不使用系统 SSH，也不读取用户账号凭据或配置。服务沿用已选择的 Git，失效不回退；此检查当前仅支持 Git 2.54.0 与 2.56.0（包括对应版本的 Apple Git 标识），其他工具即使 `doctor` 可用也会明确拒绝检查，保留选择。
+
+检查在隔离临时目录执行匿名 `ls-remote`，20 秒执行预算内只返回精确的 `HEAD`、其可选符号引用与提交 ID；同名尾部引用不当作 HEAD。返回 `readable-no-head` 仅说明未取得 HEAD，不表示仓库为空。结果另含规范仓库 URL、实际 Git 路径／版本与检查时间，不改变 `doctor` 的 `authentication.state: not-checked`。没有 clone、fetch、push 或项目写入，也不验证账号或写入权限。界面只在点击检查后联网，修改地址或刷新／改变 Git 工具后旧结果作废，等待期间保护设置关闭；没有用户取消接口，服务退出会终止检查。接口字段与失败语义见[本地服务说明](local-service-and-ai-tools.md)。
+
 ## 8 M3 备份、维护与恢复
 
 基础入口为 `backup create/list/info/restore` 与 `maintenance status/begin/end`，均显式指定 `--project ID`。创建备份、进入/结束维护和恢复复用任务提交、`task wait` 和 `task logs`；超时后继续查同一任务，不重发写入请求。维护请求及恢复请求通过 `--input` 传 JSON；`begin` 需要原因，准备失败重试携带原 `maintenanceId`，`end` 需要该 ID，`restore` 必须指定 `backupId`。
@@ -248,27 +328,33 @@ npm run cli -- maintenance end --project prj_实际ID --input end-maintenance.js
 
 持久维护记录在工作区 `.platform/project-state/maintenance/{projectId}.json`，与旧项目登记、构建来源分开保存；升级读取默认 ready 状态，不重写已有项目文件。操作暂存、恢复候选、日志和原现场在 `.platform/operations/{taskId}/`。恢复先验证候选，再停止业务、保留完整原目录并切换；原库损坏时也保留 WAL/SHM。未解决现场不作为缓存清除，重启根据日志和目录身份核对完成、回退或待处理结果。
 
-手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。基础 UI 显示备份列表、详情、任务和维护/恢复状态；历史备份另存、手动删除、迁移旧根清理仍未按讨论稿提供。M5 已实现统一空间扫描和白名单清理；其当前用法见第 10 节。
+现存兼容实现中，手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。2026-10-23 的详情改造移除了常驻备份列表和旧维护中心，只在存在未完成操作时提供核对与处理入口；既有旧 ZIP、维护／恢复现场与记录继续保留，CLI／兼容逻辑未因撤下 UI 而删除。迁移旧根等已确认的范围清理另见“空间与工作区 → 清理历史”。M5 已实现统一空间扫描和白名单清理；其当前用法见第 10 节。
 
 M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建可丢弃项目；`m3-restart-test.mjs prepare|verify` 在真正退出重启前后检查维护保留。`m3-compatibility-test.mjs prepare|verify` 只读核对升级前已有项目持久文件，不因 SQLite checkpoint 改变数据库字节而误判为平台覆盖。执行结果、故障模拟与交互证据见 [M3 验证记录](m3-verification.md)。
 
 ## 9 M4 生命周期与工作区迁移
 
-以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
+2026-10-23 用户确认[直接删除](application-deletion.md)：`project delete` 直接永久删除所选网页项目，不进入平台或系统回收站。调用前核对实例、实际目录和不可撤销范围。Node 受管安装与外部引用采用原生管理窗口的独立确认流程；外部引用只删除平台登记及私有槽中的配置／数据，不删除外部目录，未新增 Node CLI 删除入口。旧备份、旧回收项及恢复证据继续保留。
+
+2026-10-22 用户确认普通下载后安装、完整 ZIP 导入和复制均生成新本机实例 ID，允许重复获取并独立并存。编辑既有实例保留 ID；显式同实例更新、备份／回收站恢复和公开工作区迁移保留原身份。作者 `app.id` 与本机实例 ID 分开；本轮不增加自动去重、派生或合并，不重新分配既有项目 ID、不改动既有用户数据。完整 ZIP 的实际入口与原身份兼容规则如下；该确认不扩展旧备份体系，也不开放尚未实现的安装格式。
+
+早期 `m4-live-test.mjs`、`m4-migration-test.mjs` 与 `workspace-identity-live-test.mjs` 的软删除流程仅对应旧版本，默认在任何服务查询或样本创建前直接拒绝运行。只有明确连接旧版 CLI／服务时才可设置 `LEGACY_SOFT_DELETE_REGRESSION=1`；不能用该开关对当前永久删除版本运行。其历史逻辑与证据保留，不把旧脚本转换为新的破坏性验收；本轮仅检查语法，没有执行这些 live 脚本。
+
+以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。普通应用详情只提供导出与删除，不再提供直接创建独立副本的表单；需要独立副本时，可导出完整项目 ZIP，再按默认新 ID 导入。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
 
 | 命令 | 输入与结果 |
 | --- | --- |
 | `project export --project ID --input export.json` | `destinationPath` 为绝对 ZIP 路径；覆盖须显式 `overwrite: true`；维护时携带 `maintenanceId` |
-| `project import --input import.json` | `archivePath` 为绝对路径，`mode` 必须明确为 `original` 或 `copy`，可选 `name` |
+| `project import --input import.json` | `archivePath` 为绝对路径，`mode` 可省略，默认 `copy`，可选 `name`；显式 `original` 保留归档身份和名称 |
 | `project copy --project ID --input copy.json` | 可选 `name`、`maintenanceId`；创建独立新平台 ID，保留业务主键 |
-| `project delete --project ID` | 移入回收站；维护中通过 `--maintenance ID` 或 `--input` 传本轮 ID |
-| `trash list` / `trash info --trash ID` | 回收项状态、原项目、路径和恢复可用性 |
-| `trash restore --trash ID` | 原 ID 恢复并推进文档身份；坏库保留原字节，转维护待处理 |
-| `trash purge --trash ID` | 永久删除选中回收项的项目文件，保留历史备份、外部导出和受保护现场 |
+| `project delete --project ID` | 直接永久删除，无平台／系统回收站；省略 `expectedDocumentEpoch` 时先读取当前项目身份并绑定提交，显式值不替换；保留历史备份和恢复证据；维护中通过 `--maintenance ID` 或 `--input` 传本轮 ID |
+| `trash list` / `trash info --trash ID` | 仅历史兼容：旧回收项状态、原项目、路径和恢复可用性 |
+| `trash restore --trash ID` | 仅历史兼容：旧回收项原 ID 恢复并推进文档身份；坏库保留原字节，转维护待处理 |
+| `trash purge --trash ID` | 仅历史兼容：永久删除选中旧回收项的项目文件，保留历史备份、外部导出和受保护现场 |
 | `workspace info` | 当前根目录、文件系统、迁移任务及保留旧根；未知统计为 `null` |
 | `workspace migrate --input migration.json` | `destinationPath` 为已存在、空、可写且独立的本机 APFS 目录 |
 
-这些命令均支持 `--json`。请求例子分别为 `{"destinationPath":"/绝对路径/project.zip"}`、`{"archivePath":"/绝对路径/project.zip","mode":"copy","name":"副本名称"}`、`{"destinationPath":"/绝对路径/新的空工作区"}`。导入原 ID 时，活跃项目、回收站和正在登记的操作均占用身份，不能覆盖冲突对象。复制与导入为副本不全局替换用户文字、业务 UUID 或附件名；不升级固定 SDK 或覆盖业务说明。已验证网页直接复用，不要求 Node 或重新构建。
+这些命令均支持 `--json`。请求例子分别为 `{"destinationPath":"/绝对路径/project.zip"}`、`{"archivePath":"/绝对路径/project.zip"}`（默认新 ID；可另给 `name`）、`{"destinationPath":"/绝对路径/新的空工作区"}`。管理界面同样默认“作为新项目导入”；重复导入同一 ZIP 生成不同实例。显式 `{"archivePath":"/绝对路径/project.zip","mode":"original"}` 才保留原 ID，活跃项目、回收站和正在登记的操作均占用身份，不能覆盖冲突对象。复制与默认导入不全局替换用户文字、业务 UUID 或附件名；不升级固定 SDK 或覆盖业务说明。已验证网页直接复用，不要求 Node 或重新构建。
 
 维护快照与来源不明的快照登记为新的本机维护会话，建立对应目标 ID 的完整基线；已知待构建要求继续保留。若登记成功而基线失败，任务会返回 `registered_maintenance_not_ready`，项目已经存在但 `readyForChanges: false`；先查询项目/维护状态，以该会话重试基线，不自动再次导入或复制。回收站恢复遇到坏库也不创建空库；恢复字节保留并阻断业务，修复或再次删除均按当前维护 ID 操作。清除部分失败时为 `purgeIncomplete`，不能承诺仍完整可恢复；按原回收项明确重试。
 

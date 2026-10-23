@@ -1,4 +1,6 @@
-//! System Node discovery is independent of the shell that launched the desktop app.
+//! Development Node selection is independent of application runtime Node selection.
+//! Installed resources default to verified private Node/npm; an explicit local choice
+//! is preserved. Resource-free development/test managers retain system discovery.
 use crate::{projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,6 +25,7 @@ pub struct EnvironmentInfo {
     pub npm: Option<ExecutableInfo>,
     pub selection: String,
     pub configured_node_path: Option<PathBuf>,
+    pub managed_node_path: Option<PathBuf>,
     pub supported_node_range: String,
     pub recommended_node: String,
     pub download_url: String,
@@ -37,6 +40,7 @@ pub struct Toolchain {
 #[derive(Clone)]
 pub struct EnvironmentManager {
     settings_path: PathBuf,
+    managed_root: Option<PathBuf>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,6 +52,13 @@ impl EnvironmentManager {
     pub fn new(data_root: PathBuf) -> Self {
         Self {
             settings_path: data_root.join("toolchain.json"),
+            managed_root: None,
+        }
+    }
+    pub fn with_managed_node(data_root: PathBuf, root: PathBuf) -> Self {
+        Self {
+            settings_path: data_root.join("toolchain.json"),
+            managed_root: Some(root),
         }
     }
     fn configured(&self) -> Result<Option<PathBuf>, ApiError> {
@@ -92,6 +103,7 @@ impl EnvironmentManager {
             npm: None,
             selection: "detected".into(),
             configured_node_path: None,
+            managed_node_path: self.managed_root.as_ref().map(|root| root.join("bin/node")),
             supported_node_range: "^22.12.0 || ^24.0.0".into(),
             recommended_node: "24 LTS".into(),
             download_url: "https://nodejs.org/en/download".into(),
@@ -107,43 +119,46 @@ impl EnvironmentManager {
         info.configured_node_path = configured.clone();
         if configured.is_some() {
             info.selection = "explicit".into();
+        } else if self.managed_root.is_some() {
+            info.selection = "managed".into();
         }
-        let candidates = configured.map_or_else(candidates, |path| vec![path]);
+        match self.selected(configured).await {
+            Ok(toolchain) => {
+                info.ready = true;
+                info.node = Some(toolchain.node);
+                info.npm = Some(toolchain.npm);
+            }
+            Err(error) => info.issues.push(error),
+        }
+        info
+    }
+    pub async fn resolve(&self) -> Result<Toolchain, ApiError> {
+        self.selected(self.configured()?).await
+    }
+    async fn selected(&self, configured: Option<PathBuf>) -> Result<Toolchain, ApiError> {
+        if let Some(node) = configured {
+            // Never silently change an explicit v1 selection when it disappears.
+            return probe(&node).await;
+        }
+        if let Some(root) = &self.managed_root {
+            // A damaged installation must not silently execute a host toolchain.
+            // Verify once per resolution, on a blocking worker, before either probe.
+            let verified = crate::managed_toolchain::verify(root.clone()).await?;
+            return probe_managed(verified).await;
+        }
         let mut last_error = None;
-        for candidate in candidates {
+        for candidate in candidates() {
             match probe(&candidate).await {
-                Ok(toolchain) => {
-                    info.ready = true;
-                    info.node = Some(toolchain.node);
-                    info.npm = Some(toolchain.npm);
-                    return info;
-                }
-                Err(error) => {
-                    last_error = Some(error);
-                }
+                Ok(toolchain) => return Ok(toolchain),
+                Err(error) => last_error = Some(error),
             }
         }
-        info.issues.push(last_error.unwrap_or_else(|| {
+        Err(last_error.unwrap_or_else(|| {
             ApiError::new(
                 "NODE_NOT_FOUND",
                 "Install Node 24 LTS, or select an existing Node executable in platform settings",
             )
-        }));
-        info
-    }
-    pub async fn resolve(&self) -> Result<Toolchain, ApiError> {
-        let report = self.doctor().await;
-        if !report.ready {
-            return Err(report
-                .issues
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| ApiError::new("NODE_NOT_FOUND", "Node is unavailable")));
-        }
-        let node = report.node.unwrap();
-        let npm = report.npm.unwrap();
-        let path = tool_path(&node.path);
-        Ok(Toolchain { node, npm, path })
+        }))
     }
 }
 fn candidates() -> Vec<PathBuf> {
@@ -245,24 +260,29 @@ async fn probe(candidate: &Path) -> Result<Toolchain, ApiError> {
         ));
     }
     // npm must belong to this installation, and is executed by the selected Node, not its shebang.
+    // Prefer the JS entry before npm shims: some installations use ordinary shell files.
     let npm_candidates = [
-        candidate.parent().unwrap().join("npm"),
-        node_path.parent().unwrap().join("npm"),
+        candidate
+            .parent()
+            .unwrap()
+            .join("../lib/node_modules/npm/bin/npm-cli.js"),
         node_path
             .parent()
             .unwrap()
             .join("../lib/node_modules/npm/bin/npm-cli.js"),
+        candidate.parent().unwrap().join("npm"),
+        node_path.parent().unwrap().join("npm"),
     ];
     let npm = npm_candidates
         .into_iter()
+        .filter_map(|path| fs::canonicalize(path).ok())
         .find(|path| path.is_file())
         .ok_or_else(|| {
             ApiError::new(
                 "NPM_NOT_FOUND",
-                "No npm executable was found beside the selected Node",
+                "No npm JavaScript entry was found beside the selected Node",
             )
         })?;
-    let npm = fs::canonicalize(npm)?;
     let path = tool_path(&node_path);
     let mut command = Command::new(&node_path);
     command.arg(&npm).arg("--version").env("PATH", &path);
@@ -281,9 +301,119 @@ async fn probe(candidate: &Path) -> Result<Toolchain, ApiError> {
         path,
     })
 }
+
+async fn probe_managed(
+    verified: crate::managed_toolchain::VerifiedToolchain,
+) -> Result<Toolchain, ApiError> {
+    let path = std::env::join_paths([
+        verified.root.join("bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ])
+    .map_err(|_| {
+        ApiError::new(
+            "MANAGED_NODE_INVALID",
+            "受管开发工具路径不能用于隔离的 PATH。",
+        )
+    })?
+    .into_string()
+    .map_err(|_| ApiError::new("MANAGED_NODE_INVALID", "受管开发工具路径不是有效文本。"))?;
+    let command = || {
+        let mut command = Command::new(&verified.node);
+        command
+            .env_clear()
+            .current_dir(&verified.root)
+            .env("PATH", &path)
+            .env("LC_ALL", "C")
+            .env("HOME", &verified.root)
+            .env(
+                "NPM_CONFIG_USERCONFIG",
+                verified.root.join(".unused-user-npmrc"),
+            )
+            .env(
+                "NPM_CONFIG_GLOBALCONFIG",
+                verified.root.join(".unused-global-npmrc"),
+            );
+        command
+    };
+    let mut node = command();
+    node.arg("--version");
+    let version = output(node).await?;
+    if version != format!("v{}", verified.node_version) {
+        return Err(ApiError::new(
+            "MANAGED_NODE_VERSION_MISMATCH",
+            "受管开发 Node 的实际版本不符合固定发行声明。",
+        ));
+    }
+    let mut npm = command();
+    npm.arg(&verified.npm)
+        .arg("--prefix")
+        .arg(&verified.root)
+        .arg("--version");
+    let npm_version = output(npm).await?;
+    if npm_version != verified.npm_version {
+        return Err(ApiError::new(
+            "MANAGED_NODE_VERSION_MISMATCH",
+            "受管开发 npm 的实际版本不符合固定发行声明。",
+        ));
+    }
+    Ok(Toolchain {
+        node: ExecutableInfo {
+            path: verified.node,
+            version,
+        },
+        npm: ExecutableInfo {
+            path: verified.npm,
+            version: npm_version,
+        },
+        path,
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::{Builder, TempDir};
+
+    fn disposable() -> (TempDir, PathBuf) {
+        let temp = Builder::new()
+            .prefix("disposable-development-environment-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        (temp, root)
+    }
+
+    // A probe stub tests selection routing only, never real Node/npm compatibility.
+    fn probe_stub(root: &Path) -> PathBuf {
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("lib/node_modules/npm/bin")).unwrap();
+        let node = root.join("bin/node");
+        fs::write(&node, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.22.0\\n'; else case \"$1\" in */npm-cli.js) printf '11.19.1\\n';; *) exit 87;; esac; fi\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("bin/npm"), "#!/bin/sh\nexit 87\n").unwrap();
+        fs::write(
+            root.join("lib/node_modules/npm/bin/npm-cli.js"),
+            "synthetic entry, not executed",
+        )
+        .unwrap();
+        node
+    }
+
+    fn save_selection(data: &Path, node: Option<&Path>) {
+        fs::create_dir_all(data).unwrap();
+        fs::write(
+            data.join("toolchain.json"),
+            serde_json::to_vec(&Settings {
+                schema_version: 1,
+                node_path: node.map(Path::to_path_buf),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
     #[test]
     fn supported_versions_are_explicit() {
         for v in ["v22.12.0", "22.22.1", "24.0.0", "v24.14.1"] {
@@ -292,5 +422,137 @@ mod tests {
         for v in ["22.11.9", "20.19.0", "23.0.0", "25.0.0", "24.0.0-rc.1"] {
             assert!(!supported_node(v));
         }
+    }
+
+    #[tokio::test]
+    async fn explicit_v1_selection_is_preserved_over_managed_default() {
+        let (_temp, root) = disposable();
+        let node = probe_stub(&root.join("explicit"));
+        let data = root.join("data");
+        save_selection(&data, Some(&node));
+        let before = fs::read(data.join("toolchain.json")).unwrap();
+        let managed = root.join("missing-managed");
+        let manager = EnvironmentManager::with_managed_node(data.clone(), managed.clone());
+        let report = manager.doctor().await;
+        assert!(report.ready, "{:?}", report.issues);
+        assert_eq!(report.selection, "explicit");
+        assert_eq!(report.configured_node_path, Some(node.clone()));
+        assert_eq!(report.managed_node_path, Some(managed.join("bin/node")));
+        assert_eq!(manager.resolve().await.unwrap().node.path, node);
+        assert_eq!(fs::read(data.join("toolchain.json")).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn missing_explicit_selection_never_falls_back_to_host_or_managed_tools() {
+        let (_temp, root) = disposable();
+        let data = root.join("data");
+        let node = root.join("missing-explicit/bin/node");
+        save_selection(&data, Some(&node));
+        let manager = EnvironmentManager::with_managed_node(data, root.join("missing-managed"));
+        let report = manager.doctor().await;
+        assert!(!report.ready);
+        assert_eq!(report.selection, "explicit");
+        assert_eq!(report.issues[0].code, "NODE_NOT_FOUND");
+        assert_eq!(manager.resolve().await.unwrap_err().code, "NODE_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn missing_managed_resources_fail_closed_without_persisting_auto_selection() {
+        let (_temp, root) = disposable();
+        let data = root.join("data");
+        let managed = root.join("missing-managed");
+        let manager = EnvironmentManager::with_managed_node(data.clone(), managed.clone());
+        let report = manager.doctor().await;
+        assert!(!report.ready);
+        assert_eq!(report.selection, "managed");
+        assert_eq!(report.managed_node_path, Some(managed.join("bin/node")));
+        assert!(report.issues[0].code.starts_with("MANAGED_NODE_"));
+        assert!(manager.resolve().await.is_err());
+        assert!(!data.exists());
+    }
+
+    #[tokio::test]
+    async fn npm_javascript_entry_is_preferred_to_an_ordinary_shell_shim() {
+        let (_temp, root) = disposable();
+        let node = probe_stub(&root);
+        let tools = probe(&node).await.unwrap();
+        assert_eq!(
+            tools.npm.path,
+            root.join("lib/node_modules/npm/bin/npm-cli.js")
+        );
+        fs::remove_file(root.join("lib/node_modules/npm/bin/npm-cli.js")).unwrap();
+        assert_eq!(probe(&node).await.unwrap_err().code, "NPM_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn extensionless_local_npm_is_probed_by_the_selected_node() {
+        let (_temp, root) = disposable();
+        let node = probe_stub(&root);
+        fs::remove_file(root.join("lib/node_modules/npm/bin/npm-cli.js")).unwrap();
+        fs::write(
+            root.join("bin/npm"),
+            "#!/usr/bin/env node\nconsole.log('11.19.1')\n",
+        )
+        .unwrap();
+        // This stub verifies routing, not real npm compatibility. The selected
+        // Node must be asked to execute the fallback entry even without .js.
+        fs::write(&node, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.22.0\\n'; else case \"$1\" in */bin/npm) printf '11.19.1\\n';; *) exit 87;; esac; fi\n").unwrap();
+        let tools = probe(&node).await.unwrap();
+        assert_eq!(tools.npm.path, root.join("bin/npm"));
+        assert_eq!(tools.npm.version, "11.19.1");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires an explicit official development-node sample under .test-artifacts"]
+    async fn official_managed_sample_resolves_without_user_settings_or_host_path() {
+        let sample = PathBuf::from(
+            std::env::var_os("POSTGRESUI_DEVELOPMENT_NODE_TEST_ROOT")
+                .expect("explicit official development-node sample"),
+        );
+        let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let artifacts = repository.join(".test-artifacts");
+        assert!(sample.is_absolute() && sample.canonicalize().unwrap().starts_with(&artifacts));
+        let data = Builder::new()
+            .prefix("disposable-managed-environment-")
+            .tempdir_in(&artifacts)
+            .unwrap();
+        let manager =
+            EnvironmentManager::with_managed_node(data.path().to_path_buf(), sample.clone());
+        let tools = manager.resolve().await.unwrap();
+        assert_eq!(tools.node.path, sample.join("bin/node"));
+        assert_eq!(tools.node.version, "v24.22.0");
+        assert_eq!(tools.npm.version, "11.19.1");
+        assert_eq!(
+            tools.npm.path,
+            sample.join("lib/node_modules/npm/bin/npm-cli.js")
+        );
+        assert_eq!(
+            tools.path,
+            format!(
+                "{}:/usr/bin:/bin:/usr/sbin:/sbin",
+                sample.join("bin").display()
+            )
+        );
+        assert!(!data.path().join("toolchain.json").exists());
+        // A fresh check after the real version probes also detects any cache/log
+        // or other unexpected package mutation performed by those probes.
+        crate::managed_toolchain::verify(sample).await.unwrap();
+
+        // Also exercise an extensionless ordinary JS wrapper with a real Node.
+        // This copy lives only in the disposable test data, never in the package.
+        let local_bin = data.path().join("explicit/bin");
+        fs::create_dir_all(&local_bin).unwrap();
+        fs::copy(&tools.node.path, local_bin.join("node")).unwrap();
+        fs::write(
+            local_bin.join("npm"),
+            "#!/usr/bin/env node\nconsole.log('11.19.1')\n",
+        )
+        .unwrap();
+        let local = probe(&local_bin.join("node")).await.unwrap();
+        assert_eq!(local.npm.path, local_bin.join("npm"));
+        assert_eq!(local.npm.version, "11.19.1");
     }
 }

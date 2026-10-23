@@ -45,9 +45,10 @@ globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpect
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel.tsx');
+const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
 const { default: App } = await component('App.tsx');
 let root;
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; delete navigator.clipboard; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 function field(name, type, extra = {}) { return { name, type, label: `设置 ${name}`, required: false, secret: false, description: `人工说明 ${name}`, howToGet: [`人工步骤 ${name}`], ...extra }; }
@@ -65,7 +66,7 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
   root = createRoot(document.getElementById('root'));
   globalThis.__NODE_FORM_INVOKE__ = mock;
   await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...props })));
-  if (Component === NodeAppsPanel && props.request !== null && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
+  if (Component === NodeAppsPanel && props.request !== null && props.request?.intent !== 'delete' && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
 function input(name) { const metadata = fields.find((field) => field.name === name); const label = [...document.querySelectorAll('label')].find((element) => element.textContent === `${metadata.label}${metadata.required ? '必填' : '选填'}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
@@ -87,6 +88,305 @@ async function openDetails(name) {
 async function submit() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 function baseMock(value, action) { return async (command, args) => { if (command === 'node_app_list') return [value]; if (command === 'node_app_configuration') return value; return action(command, args); }; }
+
+function deletionPreview(value, ownership = 'managed', expectedRevision = 'fresh-disposable-revision') {
+  return { appId: value.id, name: value.name, ownership, expectedRevision, platformRoot: `/disposable/platform/${value.id}`, sourcePath: '/disposable/original-source', deletePaths: [`/disposable/platform/${value.id}/data`, `/disposable/platform/${value.id}/configuration`, ...(ownership === 'managed' ? [`/disposable/platform/${value.id}/generations`] : [])], preservedPaths: ['/disposable/original-source', '/disposable/install-evidence'] };
+}
+
+test('Node deletion reads ownership-specific scope, requires acknowledgment and sends no filesystem paths', async () => {
+  for (const ownership of ['managed', 'external']) {
+    const value = app(); const preview = deletionPreview(value, ownership); const finished = deferred(); const calls = []; const deleted = [];
+    await setup(baseMock(value, async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'node_app_delete_preview') return preview;
+      if (command === 'node_app_delete') return finished.promise;
+      throw new Error(command);
+    }), { instanceId: 'same', request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+    const confirmation = document.querySelector('[aria-label="永久删除 Node 项目确认"]');
+    assert.match(confirmation.textContent, /不会为本次删除保存可恢复副本/);
+    assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本实例的程序、业务数据、应用配置与密钥/ : /原始应用目录及其中的全部文件保持原样/);
+    for (const path of [...preview.deletePaths, ...preview.preservedPaths]) assert.ok(confirmation.textContent.includes(path));
+    assert.equal(byText('确认永久删除项目').disabled, true);
+    assert.deepEqual(calls, [['node_app_delete_preview', { appId: value.id }]]);
+    await click(confirmation.querySelector('input[type=checkbox]'));
+    await click(byText('确认永久删除项目'));
+    assert.equal(byText('正在永久删除…').disabled, true);
+    await click(byText('正在永久删除…'));
+    assert.deepEqual(calls.at(-1), ['node_app_delete', { appId: value.id, input: { expectedRevision: preview.expectedRevision } }]);
+    assert.equal(calls.filter(([command]) => command === 'node_app_delete').length, 1);
+    await act(async () => finished.resolve({ appId: value.id, operationOutcome: 'deleted', ownership, sourcePreserved: true, evidenceRetained: true }));
+    assert.deepEqual(deleted, [value.id]); assert.equal(document.querySelector('[role=dialog]'), null);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Failed Node deletion preserves the scope and error, then requires a new preview and acknowledgment', async () => {
+  const value = app({ state: 'running' }); let previews = 0; const writes = []; const deleted = [];
+  await setup(baseMock(value, async (command, args) => {
+    if (command === 'node_app_delete_preview') return deletionPreview(value, 'external', `revision-${++previews}`);
+    if (command === 'node_app_delete') { writes.push(args); throw { code: 'NODE_APP_WINDOW_OPEN', message: '请先关闭项目窗口，再删除。' }; }
+    throw new Error(command);
+  }), { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+  await click(document.querySelector('.node-delete-confirmation input'));
+  await click(byText('确认永久删除项目'));
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /请先关闭项目窗口/);
+  assert.equal(byText('确认永久删除项目').disabled, true);
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /disposable\/original-source/);
+  await click(byText('重新核对删除范围'));
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+  await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+  assert.deepEqual(writes.map(value => value.input.expectedRevision), ['revision-1', 'revision-2']);
+  assert.deepEqual(deleted, []);
+});
+
+test('Leaving Node deletion discards acknowledgment and configuration drafts block starting deletion', async () => {
+  const value = app(); let previews = 0;
+  await setup(baseMock(value, async command => {
+    assert.equal(command, 'node_app_delete_preview'); previews++; return deletionPreview(value);
+  }), { request: { app: value, intent: 'delete', token: 1 } });
+  await click(document.querySelector('.node-delete-confirmation input'));
+  await click(byText('应用配置'));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null);
+  await change(input('AI_KEY'), 'artificial-private-draft');
+  assert.equal(byText('删除项目').disabled, true);
+  assert.equal(previews, 1);
+  await change(input('AI_KEY'), ''); await click(byText('删除项目'));
+  assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('A previous service instance cannot approve Node deletion with a late preview', async () => {
+  const value = app(); const delayed = deferred(); let previews = 0; const deleted = [];
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppDeleted: id => deleted.push(id), request: { app: value, intent: 'delete', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_delete_preview') { previews++; return previews === 1 ? delayed.promise : deletionPreview(value, 'managed', 'new-revision'); }
+    throw new Error(command);
+  }), props);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  await act(async () => delayed.resolve(deletionPreview(value, 'external', 'old-revision')));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null); assert.deepEqual(deleted, []);
+  await click(byText('删除项目'));
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /平台安装副本/);
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('Instance changes release a pending Node deletion locally and ignore its late result without replay', async () => {
+  const value = app(); const delayed = deferred(); const deleted = []; let writes = 0; let previews = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppDeleted: id => deleted.push(id), request: { app: value, intent: 'delete', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_delete_preview') return deletionPreview(value, 'managed', `revision-${++previews}`);
+    if (command === 'node_app_delete') { writes++; return delayed.promise; }
+    throw new Error(command);
+  }), props);
+  await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+  assert.equal(writes, 1);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null);
+  assert.equal(byText('删除项目').disabled, false);
+  await act(async () => delayed.resolve({ appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true }));
+  assert.deepEqual(deleted, []); assert.equal(writes, 1); assert.ok(document.querySelector('[role=dialog]'));
+  await click(byText('删除项目'));
+  assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('Workspace gates revoke an unfinished Node preview without leaving its local operation locked', async () => {
+  const value = app(); const delayed = deferred(); let previews = 0;
+  const props = { enabled: true, instanceId: 'same', onDraftStateChange() {}, request: { app: value, intent: 'delete', token: 1 } };
+  await setup(baseMock(value, async command => {
+    assert.equal(command, 'node_app_delete_preview');
+    return ++previews === 1 ? delayed.promise : deletionPreview(value);
+  }), props);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, enabled: false })));
+  await act(async () => delayed.resolve(deletionPreview(value)));
+  await act(async () => root.render(h(NodeAppsPanel, props)));
+  assert.equal(document.querySelector('.node-delete-confirmation'), null); assert.equal(byText('删除项目').disabled, false);
+  await click(byText('删除项目'));
+  assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+});
+
+test('A late status observation cannot resurrect a deleted Node app or its cleared detail', async () => {
+  const value = app(); const delayed = deferred(); const changes = []; const deleted = [];
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 0;
+  window.setInterval = callback => { const id = ++timerId; timers.set(id, callback); return id; };
+  window.clearInterval = id => timers.delete(id);
+  try {
+    await setup(baseMock(value, async command => {
+      if (command === 'node_app_status') return delayed.promise;
+      if (command === 'node_app_delete_preview') return deletionPreview(value);
+      if (command === 'node_app_delete') return { appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true };
+      throw new Error(command);
+    }), { instanceId: 'same', request: { app: value, intent: 'details', token: 1 }, onAppChanged: value => changes.push(value), onAppDeleted: id => deleted.push(id) });
+    await act(async () => { for (const callback of timers.values()) callback(); });
+    await click(byText('删除项目')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    const observations = changes.length;
+    await act(async () => delayed.resolve({ ...value, state: 'running' }));
+    assert.deepEqual(deleted, [value.id]); assert.equal(changes.length, observations); assert.equal(document.querySelector('[role=dialog]'), null);
+  } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
+});
+
+test('A mismatched Node deletion preview or unknown deletion result never removes the app', async () => {
+  const value = app(); const deleted = []; let previews = 0;
+  await setup(baseMock(value, async command => {
+    if (command === 'node_app_delete_preview') return { ...deletionPreview(value), appId: ++previews === 1 ? 'another-app' : value.id };
+    if (command === 'node_app_delete') return { appId: value.id, operationOutcome: 'delete_incomplete' };
+    throw new Error(command);
+  }), { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /项目身份不符/);
+  assert.equal(byText('确认永久删除项目').disabled, true);
+  await click(byText('重新核对删除范围')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+  assert.match(document.querySelector('.node-delete-confirmation').textContent, /删除结果尚不能确认/);
+  assert.deepEqual(deleted, []); assert.ok(document.querySelector('[role=dialog]'));
+});
+
+test('Managed app update preserves configuration drafts and only reads candidates on explicit request', async () => {
+  const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: 'gen_' + 'a'.repeat(32), sourceId: 'src_' + 'b'.repeat(32), sourceDigest: 'c'.repeat(64) } });
+  const calls = [];
+  await setup(baseMock(value, async command => {
+    calls.push(command);
+    if (command === 'source_list') return [];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    throw new Error(command);
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await change(input('MODEL'), 'unfinished configuration');
+  await click(byText('概览'));
+  assert.equal(byText('选择更新来源或查看候选').disabled, true);
+  assert.deepEqual(calls, []);
+  assert.match(document.querySelector('[role=dialog]').textContent, /运行不依赖原作者目录/);
+  await click(byText('应用配置')); await change(input('MODEL'), ''); await click(byText('概览'));
+  await click(byText('选择更新来源或查看候选'));
+  assert.deepEqual(calls, ['source_list', 'node_install_list']);
+  assert.ok(document.querySelector('.node-install-panel'));
+});
+
+function managedInstallFixture() {
+  const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: `gen_${'a'.repeat(32)}`, sourceId: `src_${'b'.repeat(32)}`, sourceDigest: 'c'.repeat(64) } });
+  const source = { sourceId: `src_${'d'.repeat(32)}`, name: 'current-source', status: 'ready', contentDigest: 'e'.repeat(64), inspection: { kind: 'node-service-source', issues: [] } };
+  const prepared = { candidateId: `install_${'f'.repeat(32)}`, appId: value.id, generation: `gen_${'1'.repeat(32)}`, manifest: { runtime: 'node-service', app: { id: 'org.example.fixture', name: 'Managed fixture', version: '2.0.0' } }, programDigest: '2'.repeat(64), provenance: { sourceId: source.sourceId, sourceDigest: source.contentDigest, sourceCommit: null, node: { path: '/fixture/node', version: '24.22.0' }, npm: { path: '/fixture/npm', version: '11.19.1' }, preparedAt: 1 } };
+  const installed = { candidateId: prepared.candidateId, appId: value.id, generation: prepared.generation, operationOutcome: 'committed' };
+  const history = { candidateId: prepared.candidateId, appId: value.id, targetAppId: value.id, state: 'committed', prepareTaskId: 'task_prepare', applyTaskId: 'task_apply', prepared, error: null, issues: [] };
+  return { value, source, prepared, installed, history };
+}
+
+test('Managed details distinguish declared, legacy and unreadable data metadata without disabling existing app use', async () => {
+  for (const [extra, expected, legacy] of [
+    [{ dataContract: { id: 'org.example.guestbook-data', version: 2 } }, /org.example.guestbook-data · 版本 2/, false],
+    [{ dataContract: null }, /数据声明：未声明/, true],
+    [{ dataContract: null, state: 'failed', lastError: '人工声明读取失败' }, /数据声明：暂无法核对/, false],
+    [{}, /数据声明：暂无法核对/, false],
+  ]) {
+    const { value: original } = managedInstallFixture();
+    const value = { ...original, ...extra }; const calls = [];
+    await setup(baseMock(value, async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'node_app_start') return { ...value, state: 'running' };
+      throw new Error(command);
+    }), { request: { app: value, intent: 'details', token: 1 } });
+    await click(byText('概览'));
+    const declaration = document.querySelector('[aria-label="数据声明"]');
+    assert.match(declaration.textContent, expected);
+    if (extra.dataContract) assert.match(declaration.textContent, /平台未验证实际数据格式/);
+    if (legacy) {
+      assert.match(declaration.textContent, /后续普通更新无法核对数据契约，将被阻止；现有应用仍可使用/);
+      await click(byText('进入项目'));
+      assert.deepEqual(calls, [['node_app_start', { appId: value.id }]]);
+    } else {
+      assert.doesNotMatch(declaration.textContent, /后续普通更新无法核对数据契约，将被阻止/);
+      assert.deepEqual(calls, []);
+    }
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Managed update rejects an old instance source list and releases its pending gate for a fresh read', async () => {
+  const { value, source } = managedInstallFixture(); const older = deferred(); let reads = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'source_list') return ++reads === 1 ? older.promise : [source];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    throw new Error(command);
+  }), props);
+  await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+  assert.equal(byText('选择更新来源或查看候选').disabled, true);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(byText('选择更新来源或查看候选').disabled, false);
+  await click(byText('选择更新来源或查看候选'));
+  await act(async () => older.resolve([{ ...source, name: 'old-instance-source' }]));
+  assert.equal(reads, 2);
+  assert.match(document.querySelector('.node-install-panel').textContent, /current-source/);
+  assert.doesNotMatch(document.body.textContent, /old-instance-source/);
+});
+
+test('Managed update drops old installation state on instance changes while retaining configuration drafts', async () => {
+  const { value, source } = managedInstallFixture(); const tasks = [];
+  const task = { taskId: 'old-install-task', type: 'nodeInstallPrepare', projectId: null, status: 'running', final: false, phase: 'dependencies' };
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onTask: value => tasks.push(value), request: { app: value, intent: 'details', token: 1 } };
+  await setup(baseMock(value, async command => {
+    if (command === 'source_list') return [source];
+    if (command === 'node_install_list') return { candidates: [], issues: [] };
+    if (command === 'node_install_prepare' || command === 'task_get') return task;
+    throw new Error(command);
+  }), props);
+  await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+  await change(document.querySelector('.node-install-panel select'), source.sourceId);
+  await click(byText('准备安装材料'));
+  assert.ok(byText('取消准备'));
+  await click(byText('应用配置')); await change(input('MODEL'), 'unsaved model'); await change(input('AI_KEY'), 'artificial unsaved key');
+  const taskCount = tasks.length;
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(input('MODEL').value, 'unsaved model'); assert.equal(input('AI_KEY').value, 'artificial unsaved key');
+  assert.equal(document.querySelector('.node-install-panel'), null); assert.equal(tasks.length, taskCount);
+  await change(input('MODEL'), ''); await change(input('AI_KEY'), ''); await click(byText('概览'));
+  await click(byText('选择更新来源或查看候选'));
+  assert.equal(byText('取消准备'), undefined); assert.equal(tasks.length, taskCount);
+});
+
+test('An old status poll cannot replace application metadata after an installation refresh', async () => {
+  const { value, source, installed, history } = managedInstallFixture(); const older = deferred(); const changes = [];
+  const updated = { ...value, sourcePath: '/new-managed-generation', installation: { ...value.installation, generation: installed.generation } };
+  let configurations = 0; let polls = 0;
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 0;
+  window.setInterval = callback => { const id = ++timerId; timers.set(id, callback); return id; };
+  window.clearInterval = id => timers.delete(id);
+  try {
+    await setup(async command => {
+      if (command === 'node_app_configuration') return ++configurations === 1 ? value : updated;
+      if (command === 'source_list') return [source];
+      if (command === 'node_install_list') return { candidates: [history], issues: [] };
+      if (command === 'node_install_candidate') return { state: 'committed', result: installed };
+      assert.equal(command, 'node_app_status'); polls++; return older.promise;
+    }, { instanceId: 'same', onAppChanged: value => changes.push(value), request: { app: value, intent: 'details', token: 1 } });
+    await click(byText('概览')); await click(byText('选择更新来源或查看候选'));
+    await act(async () => { for (const callback of timers.values()) callback(); });
+    assert.equal(polls, 1);
+    await click(byText('核验已安装结果'));
+    assert.equal(changes.at(-1).installation.generation, installed.generation);
+    await act(async () => older.resolve({ ...value, state: 'running' }));
+    assert.equal(changes.at(-1).installation.generation, installed.generation);
+    assert.match(document.body.textContent, /new-managed-generation/);
+    assert.match(document.querySelector('.node-process-state').textContent, /已停止/);
+  } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
+});
+
+test('An installation refresh from a previous service instance cannot overwrite current detail or draft', async () => {
+  const { value, source, installed, history } = managedInstallFixture(); const older = deferred(); const changes = []; let reads = 0;
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppChanged: value => changes.push(value), request: { app: value, intent: 'details', token: 1 } };
+  await setup(async command => {
+    if (command === 'node_app_configuration') return ++reads === 1 ? value : older.promise;
+    if (command === 'source_list') return [source];
+    if (command === 'node_install_list') return { candidates: [history], issues: [] };
+    if (command === 'node_install_candidate') return { state: 'committed', result: installed };
+    throw new Error(command);
+  }, props);
+  await click(byText('概览')); await click(byText('选择更新来源或查看候选')); await click(byText('核验已安装结果'));
+  assert.equal(reads, 2);
+  await click(byText('应用配置')); await change(input('MODEL'), 'draft across restart');
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  const changeCount = changes.length;
+  await act(async () => older.resolve({ ...value, sourcePath: '/old-instance-late-result', installation: { ...value.installation, generation: installed.generation } }));
+  assert.equal(changes.length, changeCount);
+  assert.equal(input('MODEL').value, 'draft across restart');
+  assert.doesNotMatch(document.body.textContent, /old-instance-late-result/);
+});
 
 test('Configuration reads show only secret presence, declarations and defaults without starting an app', async () => {
   const calls = [];
@@ -232,24 +532,221 @@ test('Saving configuration does not reopen a running window; applying it require
   assert.ok(byText('进入项目'));
 });
 
-test('Adding a source folder previews first and registration never starts it', async () => {
+function directoryReview(state = 'ready', extra = {}) {
+  return { sourcePath: '/artificial/node-source', state, expectedRevision: 'directory-revision-1', issues: [], reviewPrompt: state === 'needs-review' ? '完整后端说明\n请先读取 /artificial/node-source 再检查。\n不得直接运行。' : '', ...(state === 'ready' ? { inspection: { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { id: 'org.example.preview', name: 'Artificial preview', version: '0.1.0' }, dataContract: { id: 'org.example.inspected-data', version: 1 }, configuration: { fields, missingRequired: ['AI_KEY'] } } } : {}), ...extra };
+}
+async function setupDirectory(mock, props = {}) {
+  await setup(mock, { instanceId: 'directory-instance', onPendingChange() {}, onAdded() {}, ...props }, LocalDirectoryPanel);
+}
+
+test('Adding a ready local folder previews first and binds registration to the reviewed directory without starting it', async () => {
   const calls = [];
   await setup(async (command, args) => {
     calls.push([command, args]);
     if (command === 'node_app_list') return [];
     if (command === 'choose_path') return '/artificial/node-source';
-    if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { name: 'Artificial preview', version: '0.1.0' }, configuration: { fields, missingRequired: ['AI_KEY'] } };
-    if (command === 'node_app_register') return app();
+    if (command === 'node_app_directory_inspect') return directoryReview();
+    if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
     throw new Error(command);
   }, { request: null, addRequest: 1 });
-  await click(byText('选择应用目录'));
-  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_inspect', { sourcePath: '/artificial/node-source' }]]);
-  assert.ok(byText('登记此应用')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
-  await click(byText('登记此应用'));
-  assert.deepEqual(calls.at(-1), ['node_app_register', { sourcePath: '/artificial/node-source' }]);
+  await click(byText('选择本地项目文件夹'));
+  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_directory_inspect', { sourcePath: '/artificial/node-source' }]]);
+  assert.ok(byText('确认添加此项目')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
+  assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /org.example.inspected-data · 版本 1/);
+  assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /平台未验证实际数据格式/);
+  await click(byText('确认添加此项目'));
+  assert.deepEqual(calls.at(-1), ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'directory-revision-1' }]);
   assert.ok(document.querySelector('[role="dialog"]'));
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
   assert.equal(calls.some(([command]) => command === 'node_app_start'), false);
+});
+
+test('An empty folder requires a name and separate acknowledged initialization before explicit registration', async () => {
+  const calls = []; const added = [];
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview('empty');
+    if (command === 'node_app_directory_initialize') return directoryReview('ready', { expectedRevision: 'initialized-revision' });
+    if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
+    throw new Error(command);
+  }, { onAdded: value => added.push(value) });
+  await click(byText('选择本地项目文件夹'));
+  const name = document.querySelector('.local-directory-empty input');
+  assert.equal(name.value, 'node-source'); assert.match(document.body.textContent, /不会添加项目、安装依赖或启动应用/);
+  await change(name, ''); assert.equal(byText('在空目录生成起始项目…').disabled, true);
+  await change(name, 'My local project'); await click(byText('在空目录生成起始项目…'));
+  assert.equal(byText('确认生成起始项目').disabled, true);
+  await click(byText('取消，保留空目录'));
+  assert.equal(document.querySelector('[aria-label="生成起始项目确认"]'), null); assert.equal(calls.length, 2);
+  await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
+  assert.deepEqual(calls[2], ['node_app_directory_initialize', { sourcePath: '/artificial/node-source', input: { expectedRevision: 'directory-revision-1', name: 'My local project' } }]);
+  assert.deepEqual(added, []); assert.equal(calls.length, 3); assert.ok(byText('确认添加此项目'));
+  assert.match(document.body.textContent, /尚未添加或运行/);
+  await click(byText('确认添加此项目'));
+  assert.deepEqual(calls[3], ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'initialized-revision' }]);
+  assert.equal(added.length, 1); assert.equal(calls.length, 4);
+});
+
+test('Review-needed folders expose the complete backend prompt, copy it only explicitly and retain manual fallback', async () => {
+  const review = directoryReview('needs-review', { issues: ['人工检查问题，平台不据此判定不可适配。'], reviewPrompt: ' 保留首尾空白\n完整说明：请检查本机 /artificial/node-source。\n ' });
+  const calls = []; const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); throw new Error('Artificial clipboard denied'); } } });
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return review.sourcePath;
+    if (command === 'node_app_directory_inspect') return review;
+    throw new Error(command);
+  });
+  await click(byText('选择本地项目文件夹'));
+  assert.match(document.body.textContent, /平台尚未判断这个目录是否适配/);
+  assert.match(document.body.textContent, /能读取本机目录的 AI/);
+  assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('在空目录生成起始项目…'), undefined);
+  const prompt = document.querySelector('[aria-label="给 AI 的检查说明"]'); assert.equal(prompt.readOnly, true); assert.equal(prompt.value, review.reviewPrompt);
+  assert.deepEqual(copied, []);
+  await click(byText('复制给 AI 检查'));
+  assert.deepEqual(copied, [review.reviewPrompt]); assert.match(document.body.textContent, /复制未完成.*手动复制/);
+  assert.equal(prompt.value, review.reviewPrompt); assert.equal(document.querySelector('.local-directory-path input').value, review.sourcePath);
+  await click(byText('选择完整说明')); assert.equal(prompt.selectionStart, 0); assert.equal(prompt.selectionEnd, review.reviewPrompt.length);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); } } });
+  await click(byText('复制给 AI 检查')); assert.match(document.body.textContent, /完整检查说明已复制/);
+  await click(byText('复制目录路径')); assert.equal(copied.at(-1), review.sourcePath);
+  assert.equal(calls.length, 2, 'Copying never initializes, registers or sends anything through native APIs');
+});
+
+test('Rechecking revokes ready previews and initialization confirmation before reading and never reuses them on failure', async () => {
+  for (const state of ['ready', 'empty']) {
+    const deferredRead = deferred(); let reads = 0; const calls = [];
+    await setupDirectory(async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'choose_path') return '/artificial/node-source';
+      if (command === 'node_app_directory_inspect') return ++reads === 1 ? directoryReview(state) : deferredRead.promise;
+      throw new Error(command);
+    });
+    await click(byText('选择本地项目文件夹'));
+    if (state === 'empty') { await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); }
+    await click(byText('重新检查'));
+    assert.equal(document.querySelector('.node-inspection-preview'), null); assert.equal(document.querySelector('[aria-label="生成起始项目确认"]'), null);
+    await act(async () => deferredRead.reject(new Error('Artificial inspection failed')));
+    assert.match(document.body.textContent, /Artificial inspection failed/); assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('确认生成起始项目'), undefined);
+    assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
+    assert.equal(calls.length, 3);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Cancelling a replacement folder chooser preserves the path and prompt but revokes its old actionable preview', async () => {
+  let chooses = 0; let inspections = 0;
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return ++chooses === 1 ? '/artificial/node-source' : null;
+    if (command === 'node_app_directory_inspect') { inspections++; return directoryReview('needs-review'); }
+    throw new Error(command);
+  });
+  await click(byText('选择本地项目文件夹')); const prompt = document.querySelector('textarea').value;
+  await click(byText('重新选择文件夹'));
+  assert.match(document.body.textContent, /已取消选择/); assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
+  assert.equal(document.querySelector('textarea').value, prompt); assert.equal(inspections, 1);
+  await click(byText('重新检查')); assert.equal(inspections, 2);
+});
+
+test('Pending local-folder actions reject duplicates and adding does not reuse a failed revision', async () => {
+  const choosing = deferred(); const registering = deferred(); let registrations = 0; let reads = 0; let choices = 0; const added = [];
+  await setupDirectory(async command => {
+    if (command === 'choose_path') { choices++; return choosing.promise; }
+    if (command === 'node_app_directory_inspect') return directoryReview('ready', { expectedRevision: `review-${++reads}` });
+    if (command === 'node_app_directory_register') { registrations++; return registering.promise; }
+    throw new Error(command);
+  }, { onAdded: value => added.push(value) });
+  await click(byText('选择本地项目文件夹')); await click(byText('正在选择与检查…')); assert.equal(choices, 1);
+  await act(async () => choosing.resolve('/artificial/node-source'));
+  await click(byText('确认添加此项目')); assert.equal(byText('确认添加此项目'), undefined);
+  await act(async () => registering.reject(new Error('Reviewed directory changed')));
+  assert.equal(registrations, 1); assert.equal(byText('确认添加此项目'), undefined); assert.match(document.body.textContent, /Reviewed directory changed/);
+  await click(byText('重新检查')); assert.equal(reads, 2); assert.deepEqual(added, []);
+});
+
+test('Service changes discard late chooser, inspection, initialization and registration responses without replaying writes', async () => {
+  for (const delayedOperation of ['choose', 'inspect', 'initialize', 'register']) {
+    const delayed = deferred(); const calls = []; const added = []; const gates = [];
+    const props = { enabled: true, instanceId: 'old-directory-service', onPendingChange: value => gates.push(value), onAdded: value => added.push(value) };
+    await setupDirectory(async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'choose_path') return delayedOperation === 'choose' ? delayed.promise : '/artificial/node-source';
+      if (command === 'node_app_directory_inspect') return delayedOperation === 'inspect' ? delayed.promise : directoryReview(delayedOperation === 'initialize' ? 'empty' : 'ready');
+      if (command === 'node_app_directory_initialize' || command === 'node_app_directory_register') return delayed.promise;
+      throw new Error(command);
+    }, props);
+    await click(byText('选择本地项目文件夹'));
+    if (delayedOperation === 'initialize') {
+      await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
+    }
+    if (delayedOperation === 'register') await click(byText('确认添加此项目'));
+    const submitted = calls.length;
+    await act(async () => root.render(h(LocalDirectoryPanel, { ...props, instanceId: 'new-directory-service' })));
+    const result = delayedOperation === 'choose' ? '/artificial/late-chooser' : delayedOperation === 'register' ? app({ sourcePath: '/artificial/node-source' }) : directoryReview();
+    await act(async () => delayed.resolve(result));
+    assert.equal(calls.length, submitted); assert.deepEqual(added, []); assert.equal(gates.at(-1), false);
+    assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('确认生成起始项目'), undefined);
+    assert.doesNotMatch(document.body.textContent, /late-chooser/);
+    assert.equal(byText(delayedOperation === 'choose' ? '选择本地项目文件夹' : '重新选择文件夹').disabled, false);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('Disabled local-folder access invalidates its unfinished review and keeps the selected path for an explicit recheck', async () => {
+  const delayed = deferred(); let reads = 0;
+  const props = { enabled: true, instanceId: 'same-service', onPendingChange() {}, onAdded() {} };
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return ++reads === 1 ? delayed.promise : directoryReview();
+    throw new Error(command);
+  }, props);
+  await click(byText('选择本地项目文件夹'));
+  await act(async () => root.render(h(LocalDirectoryPanel, { ...props, enabled: false })));
+  await act(async () => delayed.resolve(directoryReview()));
+  assert.equal(byText('重新检查').disabled, true); assert.equal(byText('确认添加此项目'), undefined);
+  await act(async () => root.render(h(LocalDirectoryPanel, props)));
+  assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
+  assert.equal(byText('确认添加此项目'), undefined);
+  await click(byText('重新检查')); assert.equal(reads, 2); assert.ok(byText('确认添加此项目'));
+});
+
+test('Closing local-folder content prevents a late chooser from inspecting or initializing after unmount', async () => {
+  const delayed = deferred(); const calls = []; const gates = [];
+  await setupDirectory(async (command, args) => { calls.push([command, args]); assert.equal(command, 'choose_path'); return delayed.promise; }, { onPendingChange: value => gates.push(value) });
+  await click(byText('选择本地项目文件夹'));
+  await act(async () => root.unmount()); root = null;
+  await act(async () => delayed.resolve('/artificial/closed-folder'));
+  assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }]]); assert.equal(gates.at(-1), false);
+});
+
+test('An initialization error keeps directory and name, requires reinspection and revokes every prior acknowledgment', async () => {
+  let inspections = 0; let initializations = 0;
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview('empty', { expectedRevision: `empty-${++inspections}` });
+    if (command === 'node_app_directory_initialize') { initializations++; throw new Error('Artificial initialization needs inspection'); }
+    throw new Error(command);
+  });
+  await click(byText('选择本地项目文件夹')); await change(document.querySelector('.local-directory-empty input'), 'Preserved project name');
+  await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
+  assert.equal(initializations, 1); assert.equal(byText('确认生成起始项目'), undefined); assert.match(document.body.textContent, /Artificial initialization needs inspection/);
+  await click(byText('重新检查'));
+  assert.equal(document.querySelector('.local-directory-empty input').value, 'Preserved project name');
+  await click(byText('在空目录生成起始项目…'));
+  assert.equal(document.querySelector('[aria-label="生成起始项目确认"] input').checked, false); assert.equal(initializations, 1);
+});
+
+test('Adding rejects malformed or mismatched directory previews instead of making older material actionable', async () => {
+  for (const result of [directoryReview('ready', { sourcePath: '/artificial/different-folder' }), directoryReview('ready', { inspection: undefined }), directoryReview('needs-review', { reviewPrompt: '' }), directoryReview('empty', { expectedRevision: '' })]) {
+    await setupDirectory(async command => {
+      if (command === 'choose_path') return '/artificial/node-source';
+      assert.equal(command, 'node_app_directory_inspect'); return result;
+    });
+    await click(byText('选择本地项目文件夹'));
+    assert.ok(document.querySelector('[role=alert]')); assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('在空目录生成起始项目…'), undefined);
+    await act(async () => root.unmount()); root = null;
+  }
 });
 
 test('Input conversion refuses unsafe integers and preserves an explicit false value', () => {
@@ -304,6 +801,37 @@ function shellMock(state, action = async (command) => { throw new Error(command)
   };
 }
 
+test('Deleting from a Node launcher action removes the app only after an explicit deleted result', async () => {
+  for (const metadataCleanupPending of [false, true]) {
+    const value = app(); const state = { nodes: [value] }; const writes = [];
+    await setup(shellMock(state, async (command, args) => {
+      if (command === 'node_app_delete_preview') return deletionPreview(value, 'external');
+      if (command === 'node_app_delete') {
+        writes.push(args); state.nodes = [];
+        return { appId: value.id, operationOutcome: 'deleted', ownership: 'external', sourcePreserved: true, evidenceRetained: true, metadataCleanupPending };
+      }
+      throw new Error(command);
+    }), {}, App);
+    const entry = document.querySelector(`[aria-label='进入项目「${value.name}」']`);
+    await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+    await click(document.querySelector(`[aria-label='删除项目「${value.name}」']`));
+    assert.equal(writes.length, 0);
+    assert.equal(document.querySelectorAll('.project-card').length, 1);
+    await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    assert.equal(writes.length, 1); assert.equal(document.querySelectorAll('.project-card').length, 0);
+    assert.equal(document.querySelector('[role=dialog]'), null);
+    const feedback = document.querySelector(metadataCleanupPending ? '.notice-error' : '.notice-success');
+    assert.match(feedback.textContent, /项目已从平台移除.*原目录和文件未改动/);
+    assert.doesNotMatch(feedback.textContent, /文件已永久删除/);
+    if (metadataCleanupPending) {
+      assert.equal(document.querySelector('.notice-success'), null);
+      assert.match(feedback.textContent, /收尾尚未完成.*不要再次提交删除/);
+    } else assert.doesNotMatch(feedback.textContent, /收尾尚未完成/);
+    assert.equal(writes.length, 1);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
 test('All project types share My Projects, counts and search without a separate Node navigation', async () => {
   const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: 'Artificial webpage', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
   await setup(shellMock(state), {}, App);
@@ -349,7 +877,8 @@ test('Node details reopen without a secret and expose only supported tabs and ac
   await openDetails('Disposable Node fixture');
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
   assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
-  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /删除项目|备份维护/.test(value.textContent)), false);
+  assert.ok(byText('删除项目'));
+  assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /备份维护/.test(value.textContent)), false);
   await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-close-draft');
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   await click(byText('丢弃草稿并关闭'));

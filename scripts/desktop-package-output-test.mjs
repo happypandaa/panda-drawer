@@ -190,6 +190,53 @@ test('full build verifies and retains latest app and DMG', async t => {
   await noTransaction(f);
 });
 
+test('upgrade accepts signed older outputs without development tools and requires tools in new app and DMG', async t => {
+  const f = await fixture(t, ['build']);
+  await f.writeLegacyApp();
+  await writeFile(f.legacyDmg, 'old-dmg');
+  let built = false;
+  const checks = [];
+  const verification = kind => async (file, plan, options) => {
+    await f.verifiers[kind](file, plan);
+    assert.deepEqual(options, { requireDevelopmentTools: built });
+    checks.push([kind, built]);
+  };
+  const report = await withDesktopPackageOutput(f.plan, async () => {
+    built = true;
+    await f.writeApp('new');
+    await writeFile(f.dmg, 'new-dmg');
+  }, { ...f.verifiers, verifyApp: verification('verifyApp'), verifyDmg: verification('verifyDmg') });
+  assert.equal(report.removedPrevious, 4);
+  assert.deepEqual(checks, [
+    ['verifyApp', false], ['verifyApp', false], ['verifyDmg', false], ['verifyDmg', false],
+    ['verifyApp', true], ['verifyDmg', true],
+  ]);
+  await noTransaction(f);
+});
+
+test('missing development tools in either new artifact restores the verified older outputs', async t => {
+  for (const rejectedKind of ['verifyApp', 'verifyDmg']) {
+    const f = await fixture(t, ['build']);
+    let built = false;
+    await assert.rejects(withDesktopPackageOutput(f.plan, async () => {
+      built = true;
+      await f.writeApp('new');
+      await writeFile(f.dmg, 'new-dmg');
+    }, {
+      ...f.verifiers,
+      [rejectedKind]: async (file, plan, options) => {
+        await f.verifiers[rejectedKind](file, plan);
+        assert.deepEqual(options, { requireDevelopmentTools: built });
+        if (options.requireDevelopmentTools) throw new Error('development toolchain missing or invalid');
+      },
+    }), /development toolchain missing or invalid/);
+    assert.equal(built, true);
+    assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'old');
+    assert.equal(await readFile(f.dmg, 'utf8'), 'old-dmg');
+    await noTransaction(f);
+  }
+});
+
 test('failed build restores previous packages and removes partial generated outputs', async t => {
   const f = await fixture(t);
   await writeFile(f.oldDmg, 'old-dmg');

@@ -55,6 +55,7 @@ struct ProxyState {
 
 /// A browser endpoint for one already-started, authenticated Node application.
 /// Dropping it revokes the page session and cancels active response streams.
+#[doc(hidden)]
 pub struct NodeAppProxy {
     origin: String,
     authorization: Arc<Mutex<Authorization>>,

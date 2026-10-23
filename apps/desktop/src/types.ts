@@ -1,3 +1,5 @@
+import type { ObjectLayout } from './object-layout-types';
+
 export interface BootstrapInfo {
   displayName: string;
   identifier: string;
@@ -27,6 +29,7 @@ export interface ProjectInfo {
   documentEpoch: string;
   state: 'ready' | 'unbuilt' | 'missing' | 'error' | 'maintenance' | 'recoveryRequired';
   issues: string[];
+  objectLayout?: ObjectLayout | null;
   buildInfo?: BuildInfo;
   iconDataUrl?: string | null;
   iconStatus?: ProjectMetadata['iconStatus'];
@@ -87,8 +90,9 @@ export interface EnvironmentInfo {
   ready: boolean;
   node: { path: string; version: string } | null;
   npm: { path: string; version: string } | null;
-  selection: 'explicit' | 'detected';
+  selection: 'explicit' | 'managed' | 'detected';
   configuredNodePath: string | null;
+  managedNodePath?: string | null;
   supportedNodeRange: string;
   recommendedNode: string;
   downloadUrl: string;

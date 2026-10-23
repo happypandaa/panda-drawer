@@ -14,6 +14,12 @@ export interface ManagerCapabilities {
   readonly readOnlyDetails: boolean;
   /** Source registration, per-app configuration and the isolated Node runtime. */
   readonly nodeApps: boolean;
+  readonly nodeDirectoryOnboarding: boolean;
+  readonly nodeManagedInstall: boolean;
+  readonly nodeDelete: boolean;
+  readonly sourceAcquisition: boolean;
+  readonly projectGit: boolean;
+  readonly codexHandoff: boolean;
 
   readonly metadata: boolean;
   readonly build: boolean;
@@ -40,6 +46,12 @@ export const MAC_MANAGER_CAPABILITIES = Object.freeze({
   openBrowser: true,
   readOnlyDetails: true,
   nodeApps: true,
+  nodeDirectoryOnboarding: true,
+  nodeManagedInstall: true,
+  nodeDelete: true,
+  sourceAcquisition: true,
+  projectGit: true,
+  codexHandoff: true,
   metadata: true,
   build: true,
   handoff: true,
@@ -64,6 +76,12 @@ export const WINDOWS_MANAGER_CAPABILITIES = Object.freeze({
   openBrowser: true,
   readOnlyDetails: true,
   nodeApps: true,
+  nodeDirectoryOnboarding: false,
+  nodeManagedInstall: false,
+  nodeDelete: false,
+  sourceAcquisition: false,
+  projectGit: false,
+  codexHandoff: false,
   metadata: false,
   build: false,
   handoff: false,

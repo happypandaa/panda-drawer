@@ -618,7 +618,8 @@ impl NodeRuntimeTrial {
 
     /// The platform retains any failed-start handle whose group cleanup could
     /// not be confirmed. Ordinary trial callers keep their existing API.
-    pub(crate) async fn launch_retaining_failed(
+    #[doc(hidden)]
+    pub async fn launch_retaining_failed(
         config: RuntimeLaunchConfig,
         data: PathBuf,
         cache: PathBuf,
@@ -888,7 +889,8 @@ impl NodeRuntimeTrial {
 
     /// Internal gateway access only. The capability is never serialized to a
     /// frontend, and cannot be acquired after exit, protocol loss or shutdown.
-    pub(crate) fn proxy_target(&self) -> TrialResult<(u16, String)> {
+    #[doc(hidden)]
+    pub fn proxy_target(&self) -> TrialResult<(u16, String)> {
         if self.status.state != "running"
             || self.child.is_none()
             || self.control_failed.load(Ordering::Acquire)

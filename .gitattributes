@@ -1,0 +1,2 @@
+# These generated reference files are checked byte-for-byte against npm output.
+crates/platform-core/src/project_directory_name_data/* text eol=lf

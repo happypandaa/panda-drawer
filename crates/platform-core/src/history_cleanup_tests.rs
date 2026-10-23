@@ -83,7 +83,7 @@ impl Fixture {
     async fn delete(&self) -> String {
         let task = self
             .lifecycle
-            .submit_project(&self.project, "delete", json!({}))
+            .submit_legacy_trash_for_test(&self.project, json!({}))
             .await
             .unwrap();
         let task = self.wait(task).await;
@@ -222,6 +222,61 @@ fn candidate(root: &Path) -> Candidate {
 }
 fn input(plan: &Value, ids: Vec<String>) -> Value {
     json!({"planId":plan["planId"],"itemIds":ids,"confirmation":CONFIRMATION})
+}
+
+#[tokio::test]
+async fn source_restore_guard_invalidates_cleanup_plan_and_keeps_recovery_out_of_candidates() {
+    let fixture = Fixture::new().await;
+    let trash = fixture.delete().await;
+    let plan = fixture.preview().await;
+    assert_eq!(plan["items"][0]["canClean"], true);
+    let journal = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/project-state/source-restore")
+        .join(&fixture.project)
+        .join("task_restore/journal.json");
+    builds::atomic_json(
+        &journal,
+        &json!({
+            "schemaVersion":1,"operation":"sourceRestore","projectId":fixture.project,
+            "taskId":"task_restore","phase":"applying","planDigest":"a".repeat(64)
+        }),
+    )
+    .unwrap();
+    let retained = journal.parent().unwrap().join("original-source");
+    fs::write(&retained, b"only recovery evidence").unwrap();
+    let task = fixture
+        .wait(
+            fixture
+                .cleanup
+                .submit(input(&plan, vec![format!("trash_{trash}")]))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.error.unwrap().code, "CLEANUP_PLAN_CHANGED");
+    let next = fixture.preview().await;
+    assert_eq!(next["items"].as_array().unwrap().len(), 1);
+    assert_eq!(next["items"][0]["canClean"], false);
+    assert!(next["items"][0]["blockedReasons"]
+        .to_string()
+        .contains("PROJECT_SOURCE_RESTORE_PENDING"));
+    assert!(fixture
+        .paths
+        .workspace_root()
+        .join(".platform/trash")
+        .join(trash)
+        .join("project/data/main.sqlite")
+        .exists());
+    assert_eq!(fs::read(&retained).unwrap(), b"only recovery evidence");
+    fs::write(&journal, b"bad journal stays protected").unwrap();
+    let malformed = fixture.preview().await;
+    assert_eq!(malformed["items"][0]["canClean"], false);
+    assert!(malformed["items"][0]["blockedReasons"]
+        .to_string()
+        .contains("PROJECT_SOURCE_RESTORE_INVALID"));
+    fixture.stop().await;
 }
 
 #[cfg(target_os = "macos")]
@@ -539,14 +594,7 @@ async fn lifecycle_partial_purge_preserves_truthful_state_and_active_same_id_blo
     let record = read_json(&payload.parent().unwrap().join("record.json")).unwrap();
     assert_eq!(record["state"], "purgeIncomplete");
     assert!(payload.exists());
-    fs::create_dir(
-        fixture
-            .paths
-            .workspace_root()
-            .join("projects")
-            .join(&fixture.project),
-    )
-    .unwrap();
+    fs::create_dir(fixture.store.project_root(&fixture.project).unwrap()).unwrap();
     let called = std::cell::Cell::new(false);
     fixture.store.begin_workspace_cleanup().unwrap();
     let failure = fixture

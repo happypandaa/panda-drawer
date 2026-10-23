@@ -73,10 +73,22 @@ impl Fixture {
         }
         panic!("lifecycle task timed out");
     }
-    async fn project(&self, kind: &str, input: Value) -> TaskRecord {
+    async fn project(&self, kind: &str, mut input: Value) -> TaskRecord {
+        if kind == "delete" && input.get("expectedDocumentEpoch").is_none() {
+            input["expectedDocumentEpoch"] =
+                json!(self.store.registered_epoch(&self.id).unwrap().unwrap());
+        }
         let task = self
             .lifecycle
             .submit_project(&self.id, kind, input)
+            .await
+            .unwrap();
+        self.wait(&task).await
+    }
+    async fn legacy_delete(&self, input: Value) -> TaskRecord {
+        let task = self
+            .lifecycle
+            .submit_legacy_trash_for_test(&self.id, input)
             .await
             .unwrap();
         self.wait(&task).await
@@ -137,12 +149,15 @@ fn good(task: &TaskRecord) -> &Value {
     task.result.as_ref().unwrap()
 }
 
+#[path = "direct_delete_tests.rs"]
+mod direct_delete;
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fail_closed() {
     for legacy in [false, true] {
         let fixture = Fixture::new().await;
-        let deleted = fixture.project("delete", json!({})).await;
+        let deleted = fixture.legacy_delete(json!({})).await;
         let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
         let directory = fixture.lifecycle.trash_root(&trash).unwrap();
         let root = directory.join("project");
@@ -167,12 +182,7 @@ async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fai
                 fs::read(root.join("data/attachments/original.txt")).unwrap(),
                 attachment
             );
-            assert!(!fixture
-                .paths
-                .workspace_root()
-                .join("projects")
-                .join(&fixture.id)
-                .exists());
+            assert!(!fixture.store.project_root(&fixture.id).unwrap().exists());
         } else {
             good(&restored);
             assert_eq!(
@@ -195,7 +205,7 @@ async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fai
 #[tokio::test]
 async fn legacy_tuple_trash_record_remains_restorable_on_its_verified_device() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let directory = fixture.lifecycle.trash_root(&trash).unwrap();
     let mut record: Value = read_json(&directory.join("record.json")).unwrap();
@@ -264,7 +274,7 @@ async fn migrate_fixture(fixture: Fixture) -> (Fixture, PathBuf, String) {
 async fn migration_rebinds_verified_trash_and_real_restore_keeps_source_unchanged() {
     let fixture = Fixture::new().await;
     let old_epoch = fixture.store.project(&fixture.id).unwrap().document_epoch;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let trash_root = fixture.lifecycle.trash_root(&trash).unwrap();
     let record_bytes = fs::read(trash_root.join("record.json")).unwrap();
@@ -336,7 +346,7 @@ async fn migration_rebinds_verified_trash_and_real_restore_keeps_source_unchange
 #[tokio::test]
 async fn migration_rebinds_partial_purge_residue_and_only_explicit_retry_deletes_copy() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let trash_root = fixture.lifecycle.trash_root(&trash).unwrap();
     let database_path = trash_root.join("project/data/main.sqlite");
@@ -393,7 +403,7 @@ async fn migration_rebinds_partial_purge_residue_and_only_explicit_retry_deletes
 #[tokio::test]
 async fn migration_preserves_unverified_trash_identity_and_malformed_metadata() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let record_path = fixture
         .lifecycle
@@ -560,6 +570,114 @@ async fn export_copy_import_preserve_data_metadata_and_independent_files_without
 }
 
 #[tokio::test]
+async fn repeated_imports_without_mode_create_independent_copies_and_preserve_business_ids() {
+    let fixture = Fixture::new().await;
+    let original = fixture.store.project(&fixture.id).unwrap();
+    let source_relative = "app/src/disposable-import-evidence.txt";
+    let attachment_relative = "data/attachments/original.txt";
+    fs::write(original.root.join(source_relative), b"original source").unwrap();
+    let original_manifest = fs::read(original.root.join("project.json")).unwrap();
+    let original_database = sha256(&original.root.join("data/main.sqlite")).unwrap();
+    let archive = fixture.export_path("disposable-repeated-import.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let archive_digest = sha256(&archive).unwrap();
+
+    let mut imported_ids = Vec::new();
+    for _ in 0..2 {
+        let submitted = fixture
+            .lifecycle
+            .submit_import(json!({"archivePath":archive}))
+            .await
+            .unwrap();
+        let imported = fixture.wait(&submitted).await;
+        let id = good(&imported)["projectId"].as_str().unwrap().to_owned();
+        assert_ne!(id, fixture.id);
+        assert!(!imported_ids.contains(&id));
+        imported_ids.push(id);
+    }
+    let first = fixture.store.project(&imported_ids[0]).unwrap();
+    let second = fixture.store.project(&imported_ids[1]).unwrap();
+    let evidence = |root: &Path| {
+        let database = rusqlite::Connection::open(root.join("data/main.sqlite")).unwrap();
+        database
+            .query_row("SELECT id,value FROM evidence", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+    };
+    for project in [&original, &first, &second] {
+        assert_eq!(
+            evidence(&project.root),
+            ("business-uuid".into(), "original".into())
+        );
+        assert_eq!(
+            fs::read(project.root.join(source_relative)).unwrap(),
+            b"original source"
+        );
+        assert_eq!(
+            fs::read(project.root.join(attachment_relative)).unwrap(),
+            b"independent attachment"
+        );
+    }
+    for relative in ["data/main.sqlite", attachment_relative, source_relative] {
+        let mut identities = Vec::new();
+        for project in [&original, &first, &second] {
+            let metadata = fs::metadata(project.root.join(relative)).unwrap();
+            assert_eq!(metadata.nlink(), 1);
+            let identity = (metadata.dev(), metadata.ino());
+            assert!(!identities.contains(&identity));
+            identities.push(identity);
+        }
+    }
+
+    rusqlite::Connection::open(first.root.join("data/main.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE evidence SET value='first-copy-only' WHERE id='business-uuid'",
+            [],
+        )
+        .unwrap();
+    fs::write(first.root.join(source_relative), b"first copy source").unwrap();
+    fs::write(
+        first.root.join(attachment_relative),
+        b"first copy attachment",
+    )
+    .unwrap();
+    assert_eq!(
+        evidence(&first.root),
+        ("business-uuid".into(), "first-copy-only".into())
+    );
+    for project in [&original, &second] {
+        assert_eq!(
+            evidence(&project.root),
+            ("business-uuid".into(), "original".into())
+        );
+        assert_eq!(
+            fs::read(project.root.join(source_relative)).unwrap(),
+            b"original source"
+        );
+        assert_eq!(
+            fs::read(project.root.join(attachment_relative)).unwrap(),
+            b"independent attachment"
+        );
+    }
+    assert_eq!(
+        fs::read(original.root.join("project.json")).unwrap(),
+        original_manifest
+    );
+    assert_eq!(
+        sha256(&original.root.join("data/main.sqlite")).unwrap(),
+        original_database
+    );
+    assert_eq!(sha256(&archive).unwrap(), archive_digest);
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn export_collision_and_project_destination_leave_original_files_unchanged() {
     let fixture = Fixture::new().await;
     let archive = fixture.export_path("existing.zip");
@@ -635,7 +753,7 @@ async fn delete_restore_and_purge_preserve_epochs_backups_and_corrupt_database_b
         b"retained external SHM bytes",
     )
     .unwrap();
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     assert_eq!(
         fixture.store.project(&fixture.id).err().unwrap().code,
@@ -680,7 +798,7 @@ async fn delete_restore_and_purge_preserve_epochs_backups_and_corrupt_database_b
         .is_err());
     assert!(original.check().is_err());
     let deleted = fixture
-        .project("delete", json!({"maintenanceId":state.maintenance_id}))
+        .legacy_delete(json!({"maintenanceId":state.maintenance_id}))
         .await;
     let trash = good(&deleted)["trashId"].as_str().unwrap();
     let request = fixture
@@ -806,7 +924,7 @@ async fn installed_copy_restart_recovers_response_without_replaying_registration
 async fn delete_and_restore_restart_reconcile_completed_moves_with_lost_task_response() {
     let fixture = Fixture::new().await;
     let old = fixture.store.project(&fixture.id).unwrap();
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let path = fixture.lifecycle.journal_path(&deleted.task_id);
     let mut journal: Journal = read_json(&path).unwrap();
@@ -847,6 +965,191 @@ async fn delete_and_restore_restart_reconcile_completed_moves_with_lost_task_res
     assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
     assert!(old.check().is_err());
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn install_recovery_preserves_both_copies_when_registration_redirects_the_journal() {
+    let fixture = Fixture::new().await;
+    let archive = fixture.export_path("same-id-recovery-material.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let copied = fixture
+        .project("copy", json!({"name":"Authorized recovery target"}))
+        .await;
+    let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
+    let root = fixture.store.project(&id).unwrap().root;
+    let alternate = fixture
+        .paths
+        .workspace_root()
+        .join("projects/unreviewed-same-id-copy");
+    backups::extract_validated(&archive, &alternate, Some(&fixture.id)).unwrap();
+    let mut manifest: ProjectManifest = read_json(&alternate.join("project.json")).unwrap();
+    manifest.id = id.clone();
+    builds::atomic_json(&alternate.join("project.json"), &manifest).unwrap();
+    let identity_before = identity(&root).unwrap();
+    let alternate_before = identity(&alternate).unwrap();
+    let registration = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/project-state")
+        .join(format!("{id}.json"));
+    let mut state: Value = read_json(&registration).unwrap();
+    state["directoryName"] = json!("unreviewed-same-id-copy");
+    state["projectRoot"] = json!(alternate);
+    state["documentEpoch"] = json!(Uuid::new_v4().to_string());
+    builds::atomic_json(&registration, &state).unwrap();
+    let reservation = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/project-state/reservations")
+        .join(format!("{id}.json"));
+    builds::atomic_json(
+        &reservation,
+        &json!({"projectId":id,"taskId":copied.task_id,"directoryName":"unreviewed-same-id-copy"}),
+    )
+    .unwrap();
+    let registration_before = fs::read(&registration).unwrap();
+    let mut journal: Journal = read_json(&fixture.lifecycle.journal_path(&copied.task_id)).unwrap();
+    journal.resolved = false;
+    journal.committed = false;
+    fixture.lifecycle.save(&journal).unwrap();
+    let fixture = fixture.restart_task(copied.clone()).await;
+    let recovered = fixture.tasks.task(&copied.task_id).unwrap();
+    assert_eq!(
+        recovered.result.as_ref().unwrap()["operationOutcome"],
+        "needs_attention"
+    );
+    assert_eq!(identity(&root).unwrap(), identity_before);
+    assert_eq!(identity(&alternate).unwrap(), alternate_before);
+    assert_eq!(fs::read(&registration).unwrap(), registration_before);
+    assert!(reservation.is_file());
+    assert!(fixture.store.control(&id).unwrap().get().recovery_required);
+    for project in [&root, &alternate] {
+        assert_eq!(
+            fs::read(project.join("data/attachments/original.txt")).unwrap(),
+            b"independent attachment"
+        );
+    }
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn readable_copy_recovery_uses_saved_destination_without_a_candidate_or_registration() {
+    for legacy in [false, true] {
+        let fixture = Fixture::new().await;
+        let copied = fixture
+            .project("copy", json!({"name":"恢复目录测试"}))
+            .await;
+        let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
+        let mut root = fixture.store.project(&id).unwrap().root;
+        assert_ne!(root.file_name().unwrap().to_str().unwrap(), id);
+        let journal_path = fixture.lifecycle.journal_path(&copied.task_id);
+        let mut journal: Journal = read_json(&journal_path).unwrap();
+        assert_eq!(
+            journal.directory_name.as_deref(),
+            root.file_name().and_then(|name| name.to_str())
+        );
+        assert!(!fixture
+            .lifecycle
+            .operation(&copied.task_id)
+            .join("candidate")
+            .exists());
+        let registration = fixture
+            .paths
+            .workspace_root()
+            .join(".platform/project-state")
+            .join(format!("{id}.json"));
+        if legacy {
+            // Represent an actual pre-naming project and journal. No existing
+            // development project or historical record is modified by this fixture.
+            let old_root = fixture.paths.workspace_root().join("projects").join(&id);
+            fs::rename(&root, &old_root).unwrap();
+            root = old_root;
+            let mut state: Value = read_json(&registration).unwrap();
+            state["projectRoot"] = json!(root);
+            state.as_object_mut().unwrap().remove("directoryName");
+            builds::atomic_json(&registration, &state).unwrap();
+            journal.directory_name = None;
+        } else {
+            let handoff = fs::read_to_string(root.join(".platform/handoff.md")).unwrap();
+            assert!(handoff.contains(&format!("Project root: `{}`", root.display())));
+            // A host can stop after the candidate rename but before the final
+            // registration. The reservation and journal remain authoritative.
+            fs::remove_file(&registration).unwrap();
+            let reservation = fixture
+                .paths
+                .workspace_root()
+                .join(".platform/project-state/reservations")
+                .join(format!("{id}.json"));
+            builds::atomic_json(&reservation, &json!({"projectId":id,"taskId":copied.task_id,"directoryName":journal.directory_name})).unwrap();
+        }
+        journal.committed = false;
+        journal.resolved = false;
+        builds::atomic_json(&journal_path, &journal).unwrap();
+        let fixture = fixture.restart_task(copied.clone()).await;
+        let recovered = fixture.tasks.task(&copied.task_id).unwrap();
+        assert_eq!(
+            recovered.result.as_ref().unwrap()["operationOutcome"],
+            "copied"
+        );
+        let current = fixture.store.project(&id).unwrap();
+        assert_eq!(current.root, root);
+        assert_eq!(current.document_epoch, journal.target_epoch);
+        let db = rusqlite::Connection::open(current.root.join("data/main.sqlite")).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT value FROM evidence WHERE id='business-uuid'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "original"
+        );
+        drop(db);
+        assert_eq!(
+            fs::read(current.root.join("data/attachments/original.txt")).unwrap(),
+            b"independent attachment"
+        );
+        assert!(fixture.store.project(&fixture.id).unwrap().root.exists());
+        fixture.stop().await;
+    }
+}
+
+#[test]
+fn lifecycle_journal_directory_binding_rejects_unsafe_names_and_keeps_legacy_fallback() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().canonicalize().unwrap();
+    fs::create_dir(workspace.join("projects")).unwrap();
+    let id = "prj_0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        journal_project_root(&workspace, id, None).unwrap(),
+        workspace.join("projects").join(id)
+    );
+    assert_eq!(
+        journal_project_root(&workspace, id, Some("ji-lu-01234567")).unwrap(),
+        workspace.join("projects/ji-lu-01234567")
+    );
+    for name in [
+        "",
+        ".",
+        "..",
+        "../outside",
+        "/outside",
+        "a/b",
+        "a\\b",
+        "a\nb",
+        "Upper",
+        "名称",
+    ] {
+        assert!(
+            journal_project_root(&workspace, id, Some(name)).is_err(),
+            "{name:?}"
+        );
+    }
+    assert!(journal_project_root(&workspace, id, Some(&"a".repeat(129))).is_err());
 }
 
 #[tokio::test]
@@ -894,7 +1197,7 @@ async fn pending_import_reservation_is_released_when_no_directory_was_committed(
 #[tokio::test]
 async fn interrupted_purge_keeps_retryable_residual_record_and_never_replays_deletion() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let root = fixture
         .lifecycle
@@ -954,7 +1257,7 @@ async fn interrupted_purge_keeps_retryable_residual_record_and_never_replays_del
 #[tokio::test]
 async fn unrelated_unresolved_recovery_reference_blocks_permanent_purge() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let other = format!("task_{}", Uuid::new_v4().simple());
     builds::atomic_json(
@@ -1165,7 +1468,7 @@ impl Drop for ImmutableFile {
 #[tokio::test]
 async fn real_purge_failure_reports_residue_and_explicit_retry_finishes() {
     let fixture = Fixture::new().await;
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let root = fixture
         .lifecycle
@@ -1211,7 +1514,7 @@ async fn committed_purge_response_lost_cannot_retire_a_later_same_id_import() {
             .project("export", json!({"destinationPath":archive}))
             .await,
     );
-    let deleted = fixture.project("delete", json!({})).await;
+    let deleted = fixture.legacy_delete(json!({})).await;
     let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
     let submitted = fixture
         .lifecycle

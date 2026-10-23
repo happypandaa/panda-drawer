@@ -1,3 +1,11 @@
+// Historical soft-delete verification only (before 2026-10-23).
+// Current project delete is irreversible and does not create trash entries.
+// Do not run this workflow against the current CLI/service; preserve its old evidence.
+
+if (process.env.LEGACY_SOFT_DELETE_REGRESSION !== '1') {
+  throw new Error('仅用于旧版软删除回归，不能对当前永久删除版本运行。只有确认连接的是旧版 CLI／服务后，才可显式设置 LEGACY_SOFT_DELETE_REGRESSION=1；历史证据继续保留。');
+}
+
 // Real-service acceptance: prepare one disposable project, restart the desktop
 // separately, then verify it. Never starts an app, migrates, repairs, or purges.
 import assert from 'node:assert/strict';

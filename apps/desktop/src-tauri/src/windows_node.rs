@@ -132,6 +132,7 @@ pub(super) async fn node_app_register(
     app: tauri::AppHandle,
     host: tauri::State<'_, WindowsDesktopState>,
     source_path: String,
+    expected_revision: String,
 ) -> Result<Value, ApiError> {
     require_active_manager(&window, &host)?;
     let _operation = host.operation_gate.lock().await;
@@ -139,7 +140,7 @@ pub(super) async fn node_app_register(
     ensure_nodes(&app, &host).await?;
     app.state::<AppState>()
         .node_apps
-        .register(PathBuf::from(source_path))
+        .register(PathBuf::from(source_path), &expected_revision)
         .await
 }
 

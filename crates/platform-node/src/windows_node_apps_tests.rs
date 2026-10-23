@@ -102,12 +102,25 @@ fn configuration(revision: u64, label: &str) -> SaveConfigurationRequest {
     }
 }
 
+fn expected_revision(apps: &NodeApps, source: &Path) -> String {
+    apps.inspect(source).unwrap()["expectedRevision"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn register_previewed(apps: &NodeApps, source: PathBuf) -> Value {
+    let revision = expected_revision(apps, &source);
+    apps.register(source, &revision).await.unwrap()
+}
+
 #[tokio::test]
 async fn source_aliases_reuse_exact_slot_and_saved_configuration_by_windows_identity() {
     let fixture = Fixture::new();
     let source = fixture.source("SourceOne");
     let apps = fixture.apps(PathBuf::from("not-executed.exe"));
-    let first = apps.register(source.clone()).await.unwrap();
+    let revision = expected_revision(&apps, &source);
+    let first = apps.register(source.clone(), &revision).await.unwrap();
     let id = first["id"].as_str().unwrap();
     apps.save(id, configuration(0, "retained")).await.unwrap();
     for alias in [
@@ -119,7 +132,9 @@ async fn source_aliases_reuse_exact_slot_and_saved_configuration_by_windows_iden
             .to_string_lossy()
             .into_owned(),
     ] {
-        let again = apps.register(PathBuf::from(alias)).await.unwrap();
+        let alias = PathBuf::from(alias);
+        assert_eq!(expected_revision(&apps, &alias), revision);
+        let again = apps.register(alias, &revision).await.unwrap();
         assert_eq!(again["id"], first["id"]);
         assert_eq!(again["configuration"]["revision"], 1);
         assert_eq!(again["configuration"]["values"]["TEST_LABEL"], "retained");
@@ -135,12 +150,132 @@ async fn source_aliases_reuse_exact_slot_and_saved_configuration_by_windows_iden
 }
 
 #[tokio::test]
+async fn changed_manifest_requires_new_preview_before_any_slot_write() {
+    let fixture = Fixture::new();
+    let source = fixture.source("ChangedManifest");
+    let apps = fixture.apps(PathBuf::from("not-executed.exe"));
+    let revision = expected_revision(&apps, &source);
+    assert_eq!(revision.len(), 64);
+    assert!(!fixture.workspace.path().join("node-apps").exists());
+    for rejected in ["", "invalid", &"0".repeat(64)] {
+        let error = apps.register(source.clone(), rejected).await.unwrap_err();
+        assert_eq!(error.code, "NODE_APP_PREVIEW_CHANGED");
+        assert!(!fixture.workspace.path().join("node-apps").exists());
+    }
+    let manifest_path = source.join("local-app.json");
+    let mut changed = fs::read(&manifest_path).unwrap();
+    // Even a semantically identical declaration must use the exact bytes that
+    // were previewed, rather than a reserialization of the parsed manifest.
+    changed.push(b'\n');
+    fs::write(&manifest_path, &changed).unwrap();
+    let evidence = source.join("external-evidence.txt");
+    fs::write(&evidence, b"preserved external source data").unwrap();
+    let error = apps.register(source.clone(), &revision).await.unwrap_err();
+    assert_eq!(error.code, "NODE_APP_PREVIEW_CHANGED");
+    assert!(!fixture.workspace.path().join("node-apps").exists());
+    assert_eq!(fs::read(&manifest_path).unwrap(), changed);
+    assert_eq!(
+        fs::read(&evidence).unwrap(),
+        b"preserved external source data"
+    );
+
+    let refreshed = expected_revision(&apps, &source);
+    assert_ne!(refreshed, revision);
+    let registered = apps.register(source.clone(), &refreshed).await.unwrap();
+    let record = apps
+        .registration(registered["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        record.manifest_digest,
+        format!("{:x}", Sha256::digest(&changed))
+    );
+    assert_eq!(apps.list().await.unwrap().len(), 1);
+    assert_eq!(fs::read(&manifest_path).unwrap(), changed);
+    assert_eq!(
+        fs::read(&evidence).unwrap(),
+        b"preserved external source data"
+    );
+}
+
+#[tokio::test]
+async fn replaced_directory_with_identical_declaration_cannot_use_old_preview() {
+    let fixture = Fixture::new();
+    let source = fixture.source("ReplacedDirectory");
+    let apps = fixture.apps(PathBuf::from("not-executed.exe"));
+    let revision = expected_revision(&apps, &source);
+    let original = fs::read(source.join("local-app.json")).unwrap();
+    let original_identity = WindowsSourceDirectory::open(&source)
+        .unwrap()
+        .identity()
+        .clone();
+    fs::write(
+        source.join("external-evidence.txt"),
+        b"original source data",
+    )
+    .unwrap();
+    let retained = source.with_file_name("ReplacedDirectory-retained-original");
+    fs::rename(&source, &retained).unwrap();
+    let replacement = fixture.source("ReplacedDirectory");
+    assert_eq!(
+        fs::read(replacement.join("local-app.json")).unwrap(),
+        original
+    );
+    assert_ne!(
+        WindowsSourceDirectory::open(&replacement)
+            .unwrap()
+            .identity(),
+        &original_identity
+    );
+    fs::write(
+        replacement.join("external-evidence.txt"),
+        b"replacement source data",
+    )
+    .unwrap();
+
+    let error = apps.register(source.clone(), &revision).await.unwrap_err();
+    assert_eq!(error.code, "NODE_APP_PREVIEW_CHANGED");
+    assert!(!fixture.workspace.path().join("node-apps").exists());
+    assert_eq!(fs::read(retained.join("local-app.json")).unwrap(), original);
+    assert_eq!(
+        fs::read(retained.join("external-evidence.txt")).unwrap(),
+        b"original source data"
+    );
+    assert_eq!(
+        fs::read(replacement.join("local-app.json")).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read(replacement.join("external-evidence.txt")).unwrap(),
+        b"replacement source data"
+    );
+    assert_ne!(expected_revision(&apps, &source), revision);
+    register_previewed(&apps, source).await;
+    assert_eq!(apps.list().await.unwrap().len(), 1);
+}
+
+#[test]
+fn source_snapshot_handles_block_directory_replacement_and_declaration_writes() {
+    let fixture = Fixture::new();
+    let source = fixture.source("PinnedSnapshot");
+    let apps = fixture.apps(PathBuf::from("not-executed.exe"));
+    let original = fs::read(source.join("local-app.json")).unwrap();
+    let snapshot = apps.source_snapshot(&source).unwrap();
+    assert!(fs::rename(&source, source.with_file_name("PinnedSnapshot-replacement")).is_err());
+    assert!(fs::rename(source.join("local-app.json"), source.join("replaced.json")).is_err());
+    assert!(fs::write(source.join("local-app.json"), b"changed").is_err());
+    assert_eq!(fs::read(source.join("local-app.json")).unwrap(), original);
+    assert!(!fixture.workspace.path().join("node-apps").exists());
+    drop(snapshot);
+    fs::write(source.join("local-app.json"), &original).unwrap();
+}
+
+#[tokio::test]
 async fn missing_credentials_and_unknown_slots_are_retained_without_recreation_or_adoption() {
     let fixture = Fixture::new();
     let apps = fixture.apps(PathBuf::from("not-executed.exe"));
     assert!(apps.list().await.unwrap().is_empty());
     assert!(!fixture.workspace.path().join("node-apps").exists());
-    let app = apps.register(fixture.source("SourceTwo")).await.unwrap();
+    let app = register_previewed(&apps, fixture.source("SourceTwo")).await;
     let id = app["id"].as_str().unwrap();
     apps.save(id, configuration(0, "retained")).await.unwrap();
     let credentials = fixture
@@ -209,8 +344,8 @@ async fn connect(apps: &NodeApps, id: &str, client: &reqwest::Client) -> (String
 async fn official_node_registration_private_configuration_proxy_streams_sessions_and_shutdown() {
     let fixture = Fixture::new();
     let apps = fixture.apps(official_node());
-    let first = apps.register(fixture.source("RadioFirst")).await.unwrap();
-    let second = apps.register(fixture.source("RadioSecond")).await.unwrap();
+    let first = register_previewed(&apps, fixture.source("RadioFirst")).await;
+    let second = register_previewed(&apps, fixture.source("RadioSecond")).await;
     let id = first["id"].as_str().unwrap();
     let other = second["id"].as_str().unwrap();
     assert!(apps.start(id).await.is_err());

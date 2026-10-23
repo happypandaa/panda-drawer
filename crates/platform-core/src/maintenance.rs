@@ -13,7 +13,7 @@ use std::{
     collections::HashSet,
     fs::{self, File},
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -35,6 +35,8 @@ pub(crate) struct OperationInput {
 struct RestoreJournal {
     task_id: String,
     project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory_name: Option<String>,
     backup_id: String,
     original_identity: PersistedIdentity,
     candidate_identity: PersistedIdentity,
@@ -43,6 +45,32 @@ struct RestoreJournal {
     final_control: Option<ControlState>,
     previous_control: ControlState,
     previous_provenance: Option<Value>,
+}
+fn restore_project_root(workspace: &Path, journal: &RestoreJournal) -> Result<PathBuf, ApiError> {
+    let name = journal
+        .directory_name
+        .as_deref()
+        .unwrap_or(&journal.project_id);
+    if !valid_id(&journal.project_id)
+        || name.is_empty()
+        || name.len() > 128
+        || !name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+        || Path::new(name).components().count() != 1
+        || !matches!(
+            Path::new(name).components().next(),
+            Some(Component::Normal(_))
+        )
+    {
+        return Err(ApiError::new(
+            "RECOVERY_REQUIRED",
+            "Invalid restore project directory binding",
+        ));
+    }
+    let root = workspace.join("projects").join(name);
+    check_no_symlinks(&root, true)?;
+    Ok(root)
 }
 fn identity(path: &Path) -> Result<(u64, u64), ApiError> {
     let m = fs::symlink_metadata(path)?;
@@ -69,7 +97,7 @@ fn sync_parent(path: &Path) -> Result<(), ApiError> {
 fn move_dir(from: &Path, to: &Path) -> Result<(), ApiError> {
     check_no_symlinks(from, false)?;
     check_no_symlinks(to, true)?;
-    fs::rename(from, to)?;
+    crate::projects::publish_directory_noreplace(from, to)?;
     sync_parent(from)?;
     sync_parent(to)
 }
@@ -217,6 +245,7 @@ impl MaintenanceManager {
         }
         value["busy"] = json!(control.frozen.load(Ordering::Acquire));
         value["activeTask"] = json!(self.store.active_task(id));
+        value["latestBuild"] = json!(self.tasks.latest_build(id));
         value["documentEpoch"] = json!(self.store.project(id).ok().map(|p| p.document_epoch));
         Ok(value)
     }
@@ -727,12 +756,20 @@ impl MaintenanceManager {
         let gate = self.store.gate(id);
         let guard = gate.write().await;
         self.store.close_database(id).await;
-        let root = self.paths.workspace_root().join("projects").join(id);
+        let root = self.store.project_root(id)?;
         let original = op.join("original");
         let journal_path = op.join("journal.json");
         let mut journal = RestoreJournal {
             task_id: task.into(),
             project_id: id.into(),
+            directory_name: Some(
+                root.file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| {
+                        ApiError::new("INVALID_PROJECT_PATH", "Invalid project directory")
+                    })?
+                    .into(),
+            ),
             backup_id: backup.clone(),
             original_identity: persistent_identity(&root)?,
             candidate_identity: persistent_identity(&candidate)?,
@@ -890,15 +927,15 @@ impl MaintenanceManager {
             }
             .into());
         }
-        let root = paths
-            .workspace_root()
-            .join("projects")
-            .join(&journal.project_id);
+        let root = restore_project_root(paths.workspace_root(), &journal)?;
         let op = path.parent().unwrap();
         let candidate = op.join("candidate");
         let original = op.join("original");
         let control = store.control(&journal.project_id)?;
         let result = (|| {
+            if store.project_root(&journal.project_id)? != root {
+                return Err(ApiError::new("RECOVERY_REQUIRED", "Registered project directory differs from the restore journal; all copies were preserved"));
+            }
             if journal.committed {
                 if !matches_identity(&journal.candidate_identity, &root) {
                     return Err(ApiError::new(
@@ -1257,6 +1294,10 @@ mod tests {
             let mut journal = RestoreJournal {
                 task_id: task,
                 project_id: id.clone(),
+                directory_name: root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned),
                 backup_id: backup,
                 original_identity: persistent_identity(&root).unwrap(),
                 candidate_identity: persistent_identity(&candidate).unwrap(),
@@ -1318,10 +1359,102 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn startup_restore_preserves_same_id_copies_when_registered_binding_disagrees() {
+        let (_temp, paths, store, tasks, manager, id) = fixture().await;
+        let root = store.project(&id).unwrap().root;
+        fs::write(
+            root.join("data/attachments/preserve.txt"),
+            b"original attachment",
+        )
+        .unwrap();
+        let backup = perform(&manager, &id, "backup", json!({})).await;
+        let backup_id = good(&backup)["backupId"].as_str().unwrap();
+        let archive = manager.archive(&id, backup_id).unwrap();
+        let alternate = paths
+            .workspace_root()
+            .join("projects/unreviewed-restore-copy");
+        backups::extract_validated(&archive, &alternate, Some(&id)).unwrap();
+        let (task, lease) = tasks.create_operation(&id, "restore").unwrap();
+        let op = paths
+            .workspace_root()
+            .join(".platform/operations")
+            .join(&task.task_id);
+        let candidate = op.join("candidate");
+        backups::extract_validated(&archive, &candidate, Some(&id)).unwrap();
+        let state = store
+            .control(&id)
+            .unwrap()
+            .begin("interrupted restore".into(), None, false)
+            .unwrap();
+        let journal = RestoreJournal {
+            task_id: task.task_id.clone(),
+            project_id: id.clone(),
+            directory_name: root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned),
+            backup_id: backup_id.into(),
+            original_identity: persistent_identity(&root).unwrap(),
+            candidate_identity: persistent_identity(&candidate).unwrap(),
+            committed: false,
+            resolved: false,
+            final_control: None,
+            previous_control: state,
+            previous_provenance: None,
+        };
+        builds::atomic_json(&op.join("journal.json"), &journal).unwrap();
+        let registration = paths
+            .workspace_root()
+            .join(".platform/project-state")
+            .join(format!("{id}.json"));
+        let mut registered: Value =
+            serde_json::from_slice(&fs::read(&registration).unwrap()).unwrap();
+        registered["projectRoot"] = json!(alternate);
+        registered["directoryName"] = json!("unreviewed-restore-copy");
+        builds::atomic_json(&registration, &registered).unwrap();
+        let registration_before = fs::read(&registration).unwrap();
+        let root_before = identity(&root).unwrap();
+        let alternate_before = identity(&alternate).unwrap();
+        drop(lease);
+        stop(manager, tasks, store).await;
+        let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
+        let tasks =
+            BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+        let manager = MaintenanceManager::new(paths, store.clone(), tasks.clone()).unwrap();
+        assert_eq!(
+            tasks.task(&task.task_id).unwrap().result.unwrap()["operationOutcome"],
+            "needs_attention"
+        );
+        assert!(store.control(&id).unwrap().get().recovery_required);
+        assert_eq!(identity(&root).unwrap(), root_before);
+        assert_eq!(identity(&alternate).unwrap(), alternate_before);
+        assert_eq!(fs::read(&registration).unwrap(), registration_before);
+        assert!(candidate.is_dir());
+        assert!(!op.join("original").exists());
+        for project in [&root, &alternate] {
+            assert_eq!(
+                fs::read(project.join("data/attachments/preserve.txt")).unwrap(),
+                b"original attachment"
+            );
+        }
+        stop(manager, tasks, store).await;
+    }
+    #[tokio::test]
     async fn legacy_restore_journal_tuples_recover_only_on_a_verified_device() {
         for renumbered in [false, true] {
             let (_temp, paths, store, tasks, manager, id) = fixture().await;
-            let root = store.project(&id).unwrap().root;
+            let current = store.project(&id).unwrap().root;
+            let root = paths.workspace_root().join("projects").join(&id);
+            fs::rename(current, &root).unwrap();
+            let registration = paths
+                .workspace_root()
+                .join(".platform/project-state")
+                .join(format!("{id}.json"));
+            let mut state: Value =
+                serde_json::from_slice(&fs::read(&registration).unwrap()).unwrap();
+            state["projectRoot"] = json!(root);
+            state.as_object_mut().unwrap().remove("directoryName");
+            builds::atomic_json(&registration, &state).unwrap();
             let before = identity(&root).unwrap();
             let task = format!("task_{}", Uuid::new_v4().simple());
             let operation = paths
@@ -1377,6 +1510,10 @@ mod tests {
         let journal = RestoreJournal {
             task_id: task,
             project_id: id.clone(),
+            directory_name: root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned),
             backup_id: "backup_test".into(),
             original_identity: serde_json::from_value(json!([0, 0])).unwrap(),
             candidate_identity: persistent_identity(&op.join("candidate")).unwrap(),
