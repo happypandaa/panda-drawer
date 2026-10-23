@@ -25,6 +25,7 @@
     "check:host": "node scripts/rust.mjs check --locked -p platform-host -p platform-desktop --all-targets",
     "test:node-runtime": "node --test scripts/package-node-runtime-test.mjs",
     "test:windows:node-runtime": "node --test scripts/package-windows-node-runtime-test.mjs scripts/windows-resources-test.mjs",
+    "test:windows:development-tools": "node --test scripts/windows-development-tools-test.mjs scripts/package-windows-development-node-test.mjs scripts/package-windows-development-git-test.mjs",
     "test:node": "node scripts/rust.mjs test --locked -p platform-node",
     "test:local-directory-starter": "node --test scripts/local-directory-starter-test.mjs",
     "generate:project-directory-names": "node scripts/generate-project-directory-names.mjs",

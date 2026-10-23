@@ -8,6 +8,10 @@ pub mod node_app_proxy;
 #[cfg(windows)]
 pub mod node_apps;
 pub mod node_runtime_trial;
+#[cfg(windows)]
+pub mod development_tools;
+#[cfg(windows)]
+pub mod development_tasks;
 mod paths;
 #[cfg(windows)]
 pub mod windows_fs;

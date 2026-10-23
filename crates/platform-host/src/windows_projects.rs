@@ -649,10 +649,16 @@ impl WindowsProjectStore {
         )?;
         exact_entries(&work.open_directory("backups").map_err(fs_error)?, &[])?;
         let platform = work.open_directory(".platform").map_err(fs_error)?;
-        exact_entries(
-            &platform,
-            &[("windows-stage.json", false), ("project-state", true)],
-        )?;
+        let mut platform_entries = vec![("windows-stage.json", false), ("project-state", true)];
+        for name in ["development-tools", "sources", "tasks"] {
+            if crate::windows_development::area(&root, name, false)
+                .map_err(fs_error)?
+                .is_some()
+            {
+                platform_entries.push((name, true));
+            }
+        }
+        exact_entries(&platform, &platform_entries)?;
         let stage: Stage = read_json(&platform, "windows-stage.json")?;
         if stage.schema_version != 1
             || stage.identifier != APP_IDENTIFIER

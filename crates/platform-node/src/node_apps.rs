@@ -25,6 +25,10 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[path = "node_app_directory.rs"]
+mod directory;
+pub use directory::DirectoryInitializeInput;
+
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_APP_ERROR", message)
@@ -104,6 +108,8 @@ pub struct NodeApps {
     windows_root: platform_host::WorkspaceDirectory,
     #[cfg(windows)]
     markers: std::sync::Mutex<BTreeMap<PathBuf, platform_host::WindowsObjectIdentity>>,
+    directory_changes: Mutex<()>,
+    directory_stopping: std::sync::atomic::AtomicBool,
 }
 
 impl NodeApps {
@@ -155,6 +161,8 @@ impl NodeApps {
             inner: Mutex::new(Inner::default()),
             windows_root: root,
             markers: std::sync::Mutex::new(BTreeMap::new()),
+            directory_changes: Mutex::new(()),
+            directory_stopping: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -378,7 +386,20 @@ impl NodeApps {
     }
 
     pub async fn register(&self, source: PathBuf, expected_revision: &str) -> Result<Value> {
+        self.register_checked(source, expected_revision, || Ok(()))
+            .await
+    }
+
+    async fn register_checked(
+        &self,
+        source: PathBuf,
+        expected_revision: &str,
+        mut check: impl FnMut() -> Result<()> + Send,
+    ) -> Result<Value> {
         let inner = self.inner.lock().await;
+        if inner.shutting_down {
+            return Err(fail("平台正在关闭，不能登记应用。"));
+        }
         #[cfg(windows)]
         let snapshot = {
             if expected_revision.len() != 64
@@ -400,6 +421,7 @@ impl NodeApps {
         let source = snapshot.source.path().to_owned();
         #[cfg(windows)]
         let manifest = snapshot.manifest().map_err(|_| preview_changed())?;
+        check()?;
         #[cfg(not(windows))]
         let manifest = self.load_source(&source)?;
         #[cfg(windows)]
@@ -417,6 +439,7 @@ impl NodeApps {
             #[cfg(not(windows))]
             let same_source = record.source_path == source;
             if same_source {
+                check()?;
                 return self.detail(&record, &self.manifest(&record)?, &inner);
             }
         }
@@ -449,6 +472,7 @@ impl NodeApps {
         };
         // On Windows this is the same pinned byte snapshot whose revision was
         // compared before any write; never reread a newer declaration here.
+        check()?;
         self.write_record(&slot.join("registration.json"), &record)?;
         #[cfg(windows)]
         {
@@ -780,8 +804,15 @@ impl NodeApps {
     }
 
     pub async fn stop_all(&self) -> Result<()> {
+        self.directory_stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        // Reject runtime launches immediately while an accepted initializer
+        // finishes; do not hold the runtime lock while waiting for its gate.
+        self.inner.lock().await.shutting_down = true;
+        // Accepted initializations run on blocking workers. Await their lock
+        // without blocking the async runtime or abandoning partial files.
+        let _directory = self.directory_changes.lock().await;
         let mut inner = self.inner.lock().await;
-        inner.shutting_down = true;
         let ids: Vec<_> = inner.running.keys().cloned().collect();
         let mut error = None;
         for id in ids {

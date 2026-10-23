@@ -2,6 +2,8 @@
 
 #[path = "windows_node.rs"]
 mod windows_node;
+#[path = "windows_development.rs"]
+mod windows_development;
 
 use platform_host::{
     windows_projects::BundledProject,
@@ -301,9 +303,15 @@ pub fn run() {
             project_create,
             project_open,
             project_open_browser,
+            windows_development::development_environment_doctor,
+            windows_development::development_environment_configure,
+            windows_development::development_choose_tool,
             windows_node::node_app_choose_source,
             windows_node::node_app_inspect,
             windows_node::node_app_register,
+            windows_node::node_app_directory_inspect,
+            windows_node::node_app_directory_initialize,
+            windows_node::node_app_directory_register,
             windows_node::node_app_list,
             windows_node::node_app_configuration,
             windows_node::node_app_configuration_save,

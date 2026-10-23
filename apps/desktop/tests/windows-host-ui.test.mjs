@@ -118,7 +118,8 @@ async function setup(value = status(), nodeMock) {
     commands.push(command);
     calls.push({ command, args });
     assert.ok(['project_status', 'project_create', 'project_open', 'project_open_browser', 'host_status',
-      'node_app_choose_source', 'node_app_inspect', 'node_app_register', 'node_app_list', 'node_app_configuration', 'node_app_configuration_save',
+      'development_environment_doctor', 'development_choose_tool', 'development_environment_configure',
+      'node_app_choose_source', 'node_app_inspect', 'node_app_register', 'node_app_directory_inspect', 'node_app_directory_initialize', 'node_app_directory_register', 'node_app_list', 'node_app_configuration', 'node_app_configuration_save',
       'node_app_start', 'node_app_stop', 'node_app_restart', 'node_app_status', 'node_app_open', 'node_app_open_help'].includes(command), 'Windows UI invoked a deferred business command: ' + command);
     return command.startsWith('node_app_') ? nodeResponder(command, args) : responder(command, args);
   };
@@ -638,6 +639,9 @@ async function submitNode() {
   await act(async () => dialog().querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
 }
 async function beginNodeAdd() { await openActions(); await click('添加本地应用'); }
+function directoryReview(node, expectedRevision, state = 'ready') {
+  return { sourcePath: node.sourcePath, state, expectedRevision, issues: [], reviewPrompt: '完整人工只读检查说明', ...(state === 'ready' ? { inspection: { expectedRevision: 'inner-source-revision', runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } } } : {}) };
+}
 
 test('Missing and protected roots never read Node state and explain the initialization requirement', async () => {
   await setup(status('missing'));
@@ -670,7 +674,7 @@ test('Ready Windows roots share Node and web counts, search and filters without 
   assert.deepEqual(nodeCalls().map(call => call.command), ['node_app_list']);
 });
 
-test('Main-only acquisition, install, directory initialization, Git, Codex and Node deletion stay gated on Windows', async () => {
+test('Main-only acquisition, managed install, Git, Codex and Node deletion stay gated on Windows', async () => {
   // Managed metadata can arrive in an observation without granting a host the
   // corresponding business commands. These replies still do not touch disk.
   const node = nodeSample({ installation: { kind: 'managed', generation: 2, sourceId: 'synthetic-source', sourceDigest: 'synthetic-digest' } });
@@ -696,9 +700,9 @@ test('Main-only acquisition, install, directory initialization, Git, Codex and N
   await click('运行状态', dialog());
   await key('Escape');
   await beginNodeAdd();
-  assert.ok(findButton('选择应用目录', dialog()));
-  assert.equal(findButton('生成起始项目', dialog()), undefined);
-  assert.equal(dialog().querySelector('.local-directory-panel'), null);
+  assert.ok(findButton('选择本地项目文件夹', dialog()));
+  assert.equal(findButton('确认生成起始项目', dialog()), undefined);
+  assert.ok(dialog().querySelector('.local-directory-panel'));
   await key('Escape');
   await openSettings();
   for (const selector of ['.radio-git-details', '.git-environment', '.handoff-card', '.source-acquisition-panel', '.node-install-panel']) assert.equal(document.querySelector(selector), null, selector);
@@ -775,29 +779,103 @@ test('Pending Node entry excludes duplicate starts and same-tick web, refresh an
   assert.equal(nodeCalls().filter(call => call.command === 'node_app_start').length, 1);
 });
 
-test('Windows source selection previews first, registers once and opens configuration without starting', async () => {
+test('Windows local-directory selection previews first, registers once and opens configuration without starting', async () => {
   const node = nodeSample();
-  const preview = { expectedRevision: 'synthetic-reviewed-source-revision', runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+  const preview = directoryReview(node, 'synthetic-reviewed-directory-revision');
   await setup(status('ready', [project()]), async command => {
     if (command === 'node_app_list') return [];
     if (command === 'node_app_choose_source') return node.sourcePath;
-    if (command === 'node_app_inspect') return preview;
-    if (command === 'node_app_register') return node;
+    if (command === 'node_app_directory_inspect') return preview;
+    if (command === 'node_app_directory_register') return node;
     throw new Error(command);
   });
   await beginNodeAdd();
-  await click('选择应用目录', dialog());
+  await click(findButton('选择本地项目文件夹', dialog()) ? '选择本地项目文件夹' : '重新选择文件夹', dialog());
   assert.deepEqual(nodeCalls().slice(-2), [
     { command: 'node_app_choose_source', args: undefined },
-    { command: 'node_app_inspect', args: { sourcePath: node.sourcePath } },
+    { command: 'node_app_directory_inspect', args: { sourcePath: node.sourcePath } },
   ]);
-  assert.match(dialog().textContent, /登记不读取旧的 .env，也不会自动运行应用/);
-  assert.equal(nodeCalls().some(call => call.command === 'node_app_register'), false);
-  await click('登记此应用', dialog());
-  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath, expectedRevision: preview.expectedRevision } });
+  assert.match(dialog().textContent, /添加不读取旧的 .env，也不会自动运行应用/);
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_directory_register'), false);
+  await click('确认添加此项目', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_directory_register', args: { sourcePath: node.sourcePath, expectedRevision: preview.expectedRevision } });
   assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
   assert.equal(cards().length, 2);
   assert.equal(nodeCalls().some(call => call.command === 'node_app_start'), false);
+});
+
+test('Windows empty directories require a separate acknowledged initialization and reviewed registration', async () => {
+  const node = nodeSample();
+  await setup(status('ready'), async command => {
+    if (command === 'node_app_list') return [];
+    if (command === 'node_app_choose_source') return node.sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview(node, 'synthetic-empty-review', 'empty');
+    if (command === 'node_app_directory_initialize') return directoryReview(node, 'synthetic-initialized-review');
+    if (command === 'node_app_directory_register') return node;
+    throw new Error(command);
+  });
+  await beginNodeAdd();
+  await click('选择本地项目文件夹', dialog());
+  assert.match(dialog().textContent, /这是一个空目录/);
+  assert.equal(findButton('确认添加此项目', dialog()), undefined);
+  const name = dialog().querySelector('.local-directory-empty input');
+  assert.equal(name.value, 'synthetic-node-source');
+  await fill(`[id="${name.id}"]`, 'Windows disposable starter');
+  await click('在空目录生成起始项目…', dialog());
+  assert.equal(findButton('确认生成起始项目', dialog()).disabled, true);
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_directory_initialize'), false);
+  await clickElement(dialog().querySelector('[aria-label="生成起始项目确认"] input[type="checkbox"]'));
+  await click('确认生成起始项目', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_directory_initialize', args: { sourcePath: node.sourcePath, input: { expectedRevision: 'synthetic-empty-review', name: 'Windows disposable starter' } } });
+  assert.match(dialog().textContent, /尚未添加或运行/);
+  assert.equal(nodeCalls().some(call => call.command === 'node_app_directory_register' || call.command === 'node_app_start'), false);
+  await click('确认添加此项目', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_directory_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-initialized-review' } });
+  assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
+  assert.equal(nodeCalls().some(call => /node_app_start|node_app_restart|node_install|source_acquire/.test(call.command)), false);
+});
+
+test('Windows review-needed folders keep complete AI instructions and canonical case aliases without writing', async () => {
+  const node = nodeSample(); const review = { ...directoryReview(node, 'synthetic-review-only', 'needs-review'), reviewPrompt: 'Complete artificial instructions\nDo not execute this folder.' };
+  const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => copied.push(value) } });
+  await setup(status('ready'), async command => {
+    if (command === 'node_app_list') return [];
+    if (command === 'node_app_choose_source') return node.sourcePath.toLowerCase().replaceAll('\\', '/');
+    if (command === 'node_app_directory_inspect') return review;
+    throw new Error(command);
+  });
+  await beginNodeAdd(); await click('选择本地项目文件夹', dialog());
+  assert.equal(dialog().querySelector('.local-directory-path input').value, node.sourcePath);
+  assert.equal(dialog().querySelector('textarea').value, review.reviewPrompt);
+  assert.deepEqual(copied, []);
+  await click('复制给 AI 检查', dialog()); assert.deepEqual(copied, [review.reviewPrompt]);
+  assert.equal(findButton('确认添加此项目', dialog()), undefined);
+  assert.equal(findButton('确认生成起始项目', dialog()), undefined);
+  assert.deepEqual(nodeCalls().map(call => call.command), ['node_app_list', 'node_app_choose_source', 'node_app_directory_inspect']);
+  delete navigator.clipboard;
+});
+
+test('Unknown Windows initialization preserves the selected folder and requires reconciliation without repeating the write', async () => {
+  const node = nodeSample();
+  await setup(status('ready'), async command => {
+    if (command === 'node_app_list') return [];
+    if (command === 'node_app_choose_source') return node.sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview(node, 'synthetic-unknown-initialization', 'empty');
+    if (command === 'node_app_directory_initialize') throw { message: '合成初始化响应中断，请保留已生成文件', details: { operationOutcome: 'unknown' } };
+    throw new Error(command);
+  });
+  await beginNodeAdd(); await click('选择本地项目文件夹', dialog());
+  await click('在空目录生成起始项目…', dialog());
+  await clickElement(dialog().querySelector('[aria-label="生成起始项目确认"] input[type="checkbox"]'));
+  await click('确认生成起始项目', dialog());
+  assert.match(dialog().querySelector('.local-directory-path input').value, /synthetic-node-source/);
+  assert.equal(findButton('重新检查', dialog()).disabled, true);
+  assert.equal(findButton('确认生成起始项目', dialog()), undefined);
+  await click('重新检查', dialog());
+  await clickElement(closeButton()); await refresh();
+  assert.equal(dialog(), null);
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_directory_initialize').length, 1);
 });
 
 for (const invalidRevision of [undefined, '', '   ', null, 42]) {
@@ -806,15 +884,15 @@ for (const invalidRevision of [undefined, '', '   ', null, 42]) {
     await setup(status('ready'), async command => {
       if (command === 'node_app_list') return [];
       if (command === 'node_app_choose_source') return node.sourcePath;
-      if (command === 'node_app_inspect') return { expectedRevision: invalidRevision, runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
+      if (command === 'node_app_directory_inspect') return directoryReview(node, invalidRevision);
       throw new Error('Unexpected Node command: ' + command);
     });
     await beginNodeAdd();
-    await click('选择应用目录', dialog());
-    assert.match(dialog().textContent, /目录核对未返回有效修订/);
-    assert.match(dialog().textContent, /synthetic-node-source/);
-    assert.equal(findButton('登记此应用', dialog()), undefined);
-    assert.equal(nodeCalls().some(call => call.command === 'node_app_register'), false);
+    await click(findButton('选择本地项目文件夹', dialog()) ? '选择本地项目文件夹' : '重新选择文件夹', dialog());
+    assert.match(dialog().textContent, /目录检查结果不完整或路径不符/);
+    assert.match(dialog().querySelector('.local-directory-path input').value, /synthetic-node-source/);
+    assert.equal(findButton('确认添加此项目', dialog()), undefined);
+    assert.equal(nodeCalls().some(call => call.command === 'node_app_directory_register'), false);
   });
 }
 
@@ -823,26 +901,26 @@ test('Changed Windows source revisions revoke the reviewed preview and require a
   await setup(status('ready'), async command => {
     if (command === 'node_app_list') return [];
     if (command === 'node_app_choose_source') return node.sourcePath;
-    if (command === 'node_app_inspect') return { expectedRevision: `synthetic-review-${++previews}`, runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'sample-manifest', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
-    if (command === 'node_app_register') {
-      if (++registrations === 1) throw { code: 'NODE_APP_PREVIEW_CHANGED', message: '目录身份或声明已变化，请重新检查后登记。', details: { operationOutcome: 'not_started' } };
+    if (command === 'node_app_directory_inspect') return directoryReview(node, `synthetic-review-${++previews}`);
+    if (command === 'node_app_directory_register') {
+      if (++registrations === 1) throw { code: 'NODE_DIRECTORY_CHANGED', message: '目录身份或声明已变化，请重新检查后登记。', details: { operationOutcome: 'not_started' } };
       return node;
     }
     throw new Error('Unexpected Node command: ' + command);
   });
   await beginNodeAdd();
-  await click('选择应用目录', dialog());
-  await click('登记此应用', dialog());
-  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-review-1' } });
+  await click(findButton('选择本地项目文件夹', dialog()) ? '选择本地项目文件夹' : '重新选择文件夹', dialog());
+  await click('确认添加此项目', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_directory_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-review-1' } });
   assert.match(dialog().textContent, /目录身份或声明已变化/);
-  assert.match(dialog().textContent, /synthetic-node-source/);
+  assert.match(dialog().querySelector('.local-directory-path input').value, /synthetic-node-source/);
   assert.equal(dialog().querySelector('.node-inspection-preview'), null);
-  assert.equal(findButton('登记此应用', dialog()), undefined);
+  assert.equal(findButton('确认添加此项目', dialog()), undefined);
   assert.equal(registrations, 1);
-  await click('选择应用目录', dialog());
+  await click(findButton('选择本地项目文件夹', dialog()) ? '选择本地项目文件夹' : '重新选择文件夹', dialog());
   assert.equal(registrations, 1, 'A fresh preview cannot replay a rejected registration');
-  await click('登记此应用', dialog());
-  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-review-2' } });
+  await click('确认添加此项目', dialog());
+  assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_directory_register', args: { sourcePath: node.sourcePath, expectedRevision: 'synthetic-review-2' } });
   assert.equal(registrations, 2);
   assert.equal(dialog().querySelector('[role="tab"][aria-selected="true"]').textContent, '应用配置');
   assert.equal(nodeCalls().some(call => call.command === 'node_app_start'), false);
@@ -877,23 +955,23 @@ test('Unknown registration preserves its source and does not register again when
   await setup(status('ready', [project()]), async command => {
     if (command === 'node_app_list') return registered ? [node] : [];
     if (command === 'node_app_choose_source') return node.sourcePath;
-    if (command === 'node_app_inspect') return { expectedRevision: 'synthetic-unknown-registration-review', runtime: 'node-service', runtimeLabel: 'Node 服务项目', app: { id: 'fixture', name: node.name, version: '1.0.0' }, configuration: { fields: node.fields, missingRequired: [] } };
-    if (command === 'node_app_register') { registered = true; throw { message: '合成登记响应中断', details: { operationOutcome: 'unknown' } }; }
+    if (command === 'node_app_directory_inspect') return directoryReview(node, 'synthetic-unknown-registration-review');
+    if (command === 'node_app_directory_register') { registered = true; throw { message: '合成登记响应中断', details: { operationOutcome: 'unknown' } }; }
     throw new Error(command);
   });
   await beginNodeAdd();
-  await click('选择应用目录', dialog());
-  await click('登记此应用', dialog());
-  assert.match(dialog().textContent, /synthetic-node-source/);
-  assert.ok(dialog().querySelector('.node-inspection-preview'), 'An unknown mutation retains its reviewed evidence for reconciliation');
-  assert.equal(findButton('登记此应用', dialog()).disabled, true);
-  await click('登记此应用', dialog());
-  assert.equal(nodeCalls().filter(call => call.command === 'node_app_register').length, 1);
+  await click('选择本地项目文件夹', dialog());
+  await click('确认添加此项目', dialog());
+  assert.match(dialog().querySelector('.local-directory-path input').value, /synthetic-node-source/);
+  assert.equal(findButton('确认添加此项目', dialog()), undefined);
+  assert.equal(findButton('重新检查', dialog()).disabled, true);
+  await click('重新检查', dialog());
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_directory_register').length, 1);
   await clickElement(closeButton());
   await refresh();
   assert.ok(card(node.name));
   assert.equal(dialog(), null, 'Restoring readiness cannot replay the consumed add request');
-  assert.equal(nodeCalls().filter(call => call.command === 'node_app_register').length, 1);
+  assert.equal(nodeCalls().filter(call => call.command === 'node_app_directory_register').length, 1);
 });
 
 test('Unknown configuration saves retain the secret draft and require list reconciliation without replay', async () => {
@@ -949,3 +1027,120 @@ test('Node runtime actions share Mac command names, keep app IDs and apply saved
   assert.deepEqual(nodeCalls().at(-1), { command: 'node_app_stop', args: { appId: observed.id } });
   assert.match(dialog().textContent, /应用已关闭/);
 });
+
+// Development tool tests also use artificial IPC. They neither probe actual
+// executables nor choose, configure or initialize a native workspace.
+const developmentCalls = () => calls.filter(call => call.command.startsWith('development_'));
+function developmentReport(extra = {}) {
+  return {
+    ready: true,
+    node: { path: 'C:\\synthetic-dev-tools\\node\\node.exe', version: '24.22.0', selection: 'managed' },
+    npm: { path: 'C:\\synthetic-dev-tools\\node\\node_modules\\npm\\bin\\npm-cli.js', version: '11.13.0' },
+    git: { path: 'C:\\synthetic-dev-tools\\git\\cmd\\git.exe', version: '2.54.0', selection: 'managed' },
+    issues: [], ...extra,
+  };
+}
+const developmentPanel = () => document.querySelector('[aria-label="Windows 开发工具"]');
+function deferredReply() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+
+test('Windows development settings remain observational until explicit checks, including missing workspace roots', async () => {
+  await setup(status('missing')); await openSettings();
+  assert.ok(developmentPanel()); assert.equal(findButton('检查开发工具', developmentPanel()).disabled, true);
+  assert.deepEqual(developmentCalls(), []); assert.deepEqual(commands, ['project_status']);
+  await closeSettings(); responder = async () => status('ready'); await refresh();
+  await openSettings(); assert.deepEqual(developmentCalls(), []);
+  responder = async command => { assert.equal(command, 'development_environment_doctor'); return developmentReport(); };
+  await click('检查开发工具', developmentPanel());
+  assert.match(developmentPanel().textContent, /开发工具已就绪/);
+  assert.match(developmentPanel().textContent, /24.22.0/);
+  assert.deepEqual(developmentCalls(), [{ command: 'development_environment_doctor', args: undefined }]);
+});
+
+test('Malformed Windows tool reports revoke old readiness and require a valid reread', async () => {
+  await setup(status('ready')); await openSettings(); let next = developmentReport();
+  responder = async command => { assert.equal(command, 'development_environment_doctor'); return next; };
+  for (const malformed of [developmentReport({ node: null }), developmentReport({ npm: { path: 'relative/npm.js', version: '11' } }), developmentReport({ issues: ['unstructured error'] }), { ready: true }]) {
+    next = developmentReport(); await click('检查开发工具', developmentPanel()); assert.match(developmentPanel().textContent, /开发工具已就绪/);
+    next = malformed; await click('检查开发工具', developmentPanel());
+    assert.doesNotMatch(developmentPanel().textContent, /开发工具已就绪/);
+    assert.match(developmentPanel().textContent, /检查结果|就绪状态/);
+    assert.equal(findButton('使用内置Node', developmentPanel()).disabled, true);
+    assert.equal(findButton('检查开发工具', developmentPanel()).disabled, false);
+  }
+  assert.equal(developmentCalls().some(call => call.command === 'development_environment_configure'), false);
+});
+
+test('Windows tool picking changes only a validated draft and configuration needs its own explicit confirmation', async () => {
+  await setup(status('ready')); await openSettings(); let selected = null;
+  responder = async (command, args) => {
+    if (command === 'development_choose_tool') return selected;
+    if (command === 'development_environment_configure') return developmentReport({ node: { path: args.path, version: '24.22.0', selection: 'configured' } });
+    throw new Error(command);
+  };
+  for (selected of [null, '', 'relative/node.exe', 'C:\\synthetic-tools\\other.exe']) {
+    await click('选择开发 Node', developmentPanel());
+    assert.equal(findButton('确认使用所选工具', developmentPanel()), undefined);
+    assert.equal(developmentCalls().some(call => call.command === 'development_environment_configure'), false);
+  }
+  selected = 'C:\\synthetic-tools\\node.exe'; await click('选择开发 Node', developmentPanel());
+  assert.equal(developmentCalls().at(-1).command, 'development_choose_tool');
+  assert.match(developmentPanel().textContent, /synthetic-tools/);
+  await click('取消选择', developmentPanel()); assert.equal(findButton('确认使用所选工具', developmentPanel()), undefined);
+  assert.equal(developmentCalls().some(call => call.command === 'development_environment_configure'), false);
+  await click('选择开发 Node', developmentPanel()); await click('确认使用所选工具', developmentPanel());
+  assert.deepEqual(developmentCalls().at(-1), { command: 'development_environment_configure', args: { kind: 'node', path: selected } });
+  assert.match(developmentPanel().textContent, /已选择/); assert.equal(findButton('确认使用所选工具', developmentPanel()), undefined);
+});
+
+test('Every pending Windows tool operation blocks all settings close paths, duplicate work and same-tick refresh', async () => {
+  for (const phase of ['doctor', 'choose', 'configure']) {
+    await setup(status('ready')); await openSettings(); const delayed = deferredReply();
+    responder = async command => {
+      if (command === 'development_choose_tool' && phase === 'configure') return 'C:\\synthetic-tools\\git.exe';
+      if (command === `development_${phase === 'doctor' ? 'environment_doctor' : phase === 'choose' ? 'choose_tool' : 'environment_configure'}`) return delayed.promise;
+      throw new Error(command);
+    };
+    if (phase === 'configure') await click('选择Git', developmentPanel());
+    const action = findButton(phase === 'doctor' ? '检查开发工具' : phase === 'choose' ? '选择Git' : '确认使用所选工具', developmentPanel());
+    const complete = findButton('完成', dialog()); const close = closeButton(); const layer = dialog().parentElement;
+    const refresher = document.querySelector('[aria-label="刷新项目和运行状态"]'); const before = developmentCalls().length;
+    await act(async () => { action.click(); action.click(); complete.click(); close.click(); layer.click(); document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); refresher.click(); });
+    assert.ok(dialog()); assert.equal(complete.disabled, true); assert.equal(close.disabled, true);
+    assert.equal(developmentCalls().length, before + 1); assert.equal(commands.filter(command => command === 'project_status').length, 1);
+    await act(async () => delayed.resolve(phase === 'choose' ? null : developmentReport()));
+    assert.equal(findButton('完成', dialog()).disabled, false); await closeSettings(); assert.equal(dialog(), null);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+for (const outcome of ['not_started', 'unknown']) {
+  test(`A ${outcome} Windows tool configuration failure preserves the draft and requires explicit rereading before another save`, async () => {
+    await setup(status('ready')); await openSettings(); const selected = 'C:\\synthetic-tools\\node.exe'; let attempts = 0;
+    responder = async (command, args) => {
+      if (command === 'development_choose_tool') return selected;
+      if (command === 'development_environment_doctor') return developmentReport();
+      if (command === 'development_environment_configure') {
+        if (++attempts === 1) throw { code: 'ARTIFICIAL_TOOL_FAILURE', message: '人工配置失败', details: { operationOutcome: outcome } };
+        return args.path === null ? developmentReport() : developmentReport({ node: { path: selected, version: '24.22.0', selection: 'configured' } });
+      }
+      throw new Error(command);
+    };
+    await click('检查开发工具', developmentPanel()); await click('选择开发 Node', developmentPanel()); await click('确认使用所选工具', developmentPanel());
+    assert.match(developmentPanel().textContent, /人工配置失败/); assert.match(developmentPanel().textContent, /先重新检查开发工具/);
+    assert.match(developmentPanel().textContent, /synthetic-tools/); assert.doesNotMatch(developmentPanel().textContent, /开发工具已就绪/);
+    assert.equal(findButton('确认使用所选工具', developmentPanel()).disabled, true);
+    await click('确认使用所选工具', developmentPanel()); await click('使用内置Git', developmentPanel()); assert.equal(attempts, 1);
+    if (outcome === 'unknown') {
+      await closeSettings(); await openSettings();
+      assert.equal(findButton('选择开发 Node', developmentPanel()).disabled, true, 'Reopening settings must not bypass reconciliation');
+      assert.equal(findButton('使用内置Node', developmentPanel()).disabled, true);
+    }
+    await click('检查开发工具', developmentPanel()); assert.equal(attempts, 1, 'Rereading must not replay the failed save');
+    if (outcome === 'unknown') await click('选择开发 Node', developmentPanel());
+    await click('确认使用所选工具', developmentPanel()); assert.equal(attempts, 2);
+    assert.deepEqual(developmentCalls().at(-1), { command: 'development_environment_configure', args: { kind: 'node', path: selected } });
+    await click('使用内置Node', developmentPanel());
+    assert.deepEqual(developmentCalls().at(-1), { command: 'development_environment_configure', args: { kind: 'node', path: null } });
+    assert.doesNotMatch(developmentPanel().textContent, /已选择/);
+  });
+}

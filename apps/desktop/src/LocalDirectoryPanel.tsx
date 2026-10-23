@@ -6,10 +6,19 @@ import type { NodeAppDetail, NodeDirectoryReview } from './node-app-types';
 import { messageFrom } from './ui-utils';
 
 type Operation = 'choose' | 'inspect' | 'initialize' | 'register' | 'copy' | null;
+type PathStyle = 'posix' | 'windows';
 
-function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDirectoryReview {
-  if (!value || value.sourcePath !== sourcePath || !['empty', 'ready', 'needs-review'].includes(value.state)
-    || typeof value.expectedRevision !== 'string' || !value.expectedRevision
+function absoluteDirectory(path: unknown, style: PathStyle): path is string {
+  return typeof path === 'string' && !path.includes('\0') && (style === 'windows' ? /^[a-z]:[\\/]/i.test(path) : path.startsWith('/'));
+}
+function sameDirectory(left: string, right: string, style: PathStyle): boolean {
+  const normalized = (path: string) => path.replaceAll('\\', '/').replace(/\/+$/, '').toLocaleLowerCase();
+  return style === 'windows' ? normalized(left) === normalized(right) : left === right;
+}
+
+function checkedReview(value: NodeDirectoryReview, sourcePath: string, pathStyle: PathStyle): NodeDirectoryReview {
+  if (!value || !absoluteDirectory(value.sourcePath, pathStyle) || !sameDirectory(value.sourcePath, sourcePath, pathStyle) || !['empty', 'ready', 'needs-review'].includes(value.state)
+    || typeof value.expectedRevision !== 'string' || !value.expectedRevision.trim()
     || !Array.isArray(value.issues) || !value.issues.every(issue => typeof issue === 'string')
     || typeof value.reviewPrompt !== 'string') throw new Error('目录检查结果不完整或路径不符，请重新检查。');
   if (value.state === 'ready' && (!value.inspection || value.inspection.runtime !== 'node-service'
@@ -20,11 +29,16 @@ function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDire
   return value;
 }
 
-export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAdded }: {
+export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAdded,
+  chooseSourceCommand = 'choose_path', pathStyle = 'posix', onMutationError,
+}: {
   enabled: boolean;
   instanceId?: string;
   onPendingChange: (pending: boolean) => void;
   onAdded: (app: NodeAppDetail) => void;
+  chooseSourceCommand?: 'choose_path' | 'node_app_choose_source';
+  pathStyle?: PathStyle;
+  onMutationError?: (cause: unknown) => void;
 }) {
   const [sourcePath, setSourcePath] = useState('');
   const [name, setName] = useState('');
@@ -41,7 +55,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
   const operation = useRef(false);
   const sequence = useRef(0);
   const context = useRef({ enabled, instanceId }); context.current = { enabled, instanceId };
-  const callbacks = useRef({ onPendingChange, onAdded }); callbacks.current = { onPendingChange, onAdded };
+  const callbacks = useRef({ onPendingChange, onAdded, onMutationError }); callbacks.current = { onPendingChange, onAdded, onMutationError };
   const id = useId();
   const blocked = !enabled || pending !== null;
 
@@ -65,24 +79,24 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     const request = ++sequence.current; const service = context.current.instanceId;
     const current = () => alive.current && sequence.current === request && context.current.enabled && context.current.instanceId === service;
     try { await perform(current); }
-    catch (cause) { if (current()) { if (kind !== 'copy') revokeReview(); setError(messageFrom(cause)); } }
+    catch (cause) { if (current()) { if (kind === 'initialize' || kind === 'register') callbacks.current.onMutationError?.(cause); if (kind !== 'copy') revokeReview(); setError(messageFrom(cause)); } }
     finally { if (current()) { operation.current = false; setPending(null); callbacks.current.onPendingChange(false); } }
   }
   async function inspect(source: string, current: () => boolean) {
     const value = await invoke<NodeDirectoryReview>('node_app_directory_inspect', { sourcePath: source });
     if (!current()) return;
-    const checked = checkedReview(value, source);
-    setReview(checked); setReviewPrompt(checked.reviewPrompt);
+    const checked = checkedReview(value, source, pathStyle);
+    setSourcePath(checked.sourcePath); setReview(checked); setReviewPrompt(checked.reviewPrompt);
   }
   function choose() {
     if (blocked || operation.current) return;
     revokeReview();
     void run('choose', async current => {
-      const source = await invoke<string | null>('choose_path', { kind: 'nodeapp' });
+      const source = await invoke<string | null>(chooseSourceCommand, chooseSourceCommand === 'choose_path' ? { kind: 'nodeapp' } : undefined);
       if (!current()) return;
       if (!source) { setNotice('已取消选择。已选目录仍保留，重新检查后才能继续。'); return; }
-      if (!source.startsWith('/')) throw new Error('选择器未返回有效的本地目录，请重新选择。');
-      setSourcePath(source); setName(source.split('/').filter(Boolean).at(-1) ?? '新项目'); setReviewPrompt('');
+      if (!absoluteDirectory(source, pathStyle)) throw new Error('选择器未返回有效的本地目录，请重新选择。');
+      setSourcePath(source); setName(source.split(pathStyle === 'windows' ? /[\\/]/ : '/').filter(Boolean).at(-1) ?? '新项目'); setReviewPrompt('');
       await inspect(source, current);
     });
   }
@@ -97,7 +111,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     void run('initialize', async current => {
       const value = await invoke<NodeDirectoryReview>('node_app_directory_initialize', { sourcePath: selected.sourcePath, input: { expectedRevision: selected.expectedRevision, name: name.trim() } });
       if (!current()) return;
-      const checked = checkedReview(value, selected.sourcePath);
+      const checked = checkedReview(value, selected.sourcePath, pathStyle);
       if (checked.state !== 'ready') throw new Error('生成结果尚不能确认。请重新检查目录，不要重复生成。');
       setReview(checked); setReviewPrompt(checked.reviewPrompt);
       setNotice('起始项目已生成，尚未添加或运行。请核对下方项目预览，再明确确认添加。');
@@ -109,7 +123,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     void run('register', async current => {
       const value = await invoke<NodeAppDetail>('node_app_directory_register', { sourcePath: selected.sourcePath, expectedRevision: selected.expectedRevision });
       if (!current()) return;
-      if (!value || !value.id || value.sourcePath !== selected.sourcePath || value.runtime !== 'node-service' || !Array.isArray(value.fields) || !value.configuration) throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');
+      if (!value || !value.id || !absoluteDirectory(value.sourcePath, pathStyle) || !sameDirectory(value.sourcePath, selected.sourcePath, pathStyle) || value.runtime !== 'node-service' || !Array.isArray(value.fields) || !value.configuration) throw { message: '添加结果尚不能确认。请重新检查登记状态，不要重复添加。', details: { operationOutcome: 'unknown' } };
       callbacks.current.onAdded(value);
     });
   }

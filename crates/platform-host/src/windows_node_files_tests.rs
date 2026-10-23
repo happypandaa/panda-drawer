@@ -2,8 +2,299 @@
 use super::*;
 use std::{fs, os::windows::process::CommandExt};
 use windows_sys::Win32::Security::{
-    Authorization::SetSecurityInfo, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+    Authorization::SetSecurityInfo, GetSecurityDescriptorDacl, GetSecurityDescriptorLength,
+    PROTECTED_DACL_SECURITY_INFORMATION,
 };
+
+fn acl_bytes(directory: &WindowsSourceDirectory) -> Vec<u8> {
+    let mut security = null_mut();
+    assert_eq!(
+        unsafe {
+            GetSecurityInfo(
+                directory.object().raw(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut security,
+            )
+        },
+        0
+    );
+    let allocation = Allocation(security.cast());
+    let length = unsafe { GetSecurityDescriptorLength(security) } as usize;
+    let bytes = unsafe { std::slice::from_raw_parts(security.cast::<u8>(), length) }.to_vec();
+    drop(allocation);
+    bytes
+}
+
+#[test]
+fn external_create_new_uses_inherited_acl_and_preserves_existing_parent_permissions() {
+    let _serial = serial();
+    let root = fixture();
+    let original = root.create_private_directory("ordinary-source").unwrap();
+    let external = WindowsSourceDirectory::open(original.path()).unwrap();
+    let before = acl_bytes(&external);
+    let child = external.create_source_directory("web").unwrap();
+    assert_eq!(before, acl_bytes(&external));
+    assert!(!child.private);
+    assert!(
+        owner_and_acl(child.object().raw(), &user_sid().unwrap(), true).is_err(),
+        "No private protected ACL is imposed on external children"
+    );
+    let (mut file, identity) = child.create_source_file("new.txt").unwrap();
+    file.write_all(b"ordinary inherited source").unwrap();
+    file.sync_all().unwrap();
+    assert!(fs::OpenOptions::new()
+        .write(true)
+        .open(child.path().join("new.txt"))
+        .is_err());
+    assert!(fs::rename(
+        child.path().join("new.txt"),
+        child.path().join("replaced.txt")
+    )
+    .is_err());
+    drop(file);
+    let read = child.read_bounded("new.txt", 100).unwrap();
+    assert_eq!(read.identity, identity);
+    assert_eq!(read.bytes, b"ordinary inherited source");
+    assert_eq!(before, acl_bytes(&external));
+    assert!(external.create_source_directory("web").is_err());
+    assert!(child.create_source_file("new.txt").is_err());
+    assert_eq!(
+        fs::read(child.path().join("new.txt")).unwrap(),
+        b"ordinary inherited source"
+    );
+}
+
+#[test]
+fn external_created_files_are_retained_when_the_caller_cannot_complete_writing() {
+    let _serial = serial();
+    let root = fixture();
+    let external = WindowsSourceDirectory::open(
+        root.create_private_directory("partial-source")
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+    let (mut file, _) = external.create_source_file("partial.txt").unwrap();
+    file.write_all(b"retained partial bytes").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    assert_eq!(
+        fs::read(external.path().join("partial.txt")).unwrap(),
+        b"retained partial bytes"
+    );
+    assert!(external.create_source_file("partial.txt").is_err());
+}
+
+#[test]
+fn create_private_in_never_adopts_existing_children_or_changes_parent_acl() {
+    let _serial = serial();
+    let root = fixture();
+    let external = root.create_private_directory("temporary-parent").unwrap();
+    let before = acl_bytes(&external);
+    let child =
+        WindowsSourceDirectory::create_private_in(external.path(), "disposable-development-new")
+            .unwrap();
+    assert_eq!(before, acl_bytes(&external));
+    owner_and_acl(child.object().raw(), &user_sid().unwrap(), true).unwrap();
+    child
+        .write_new("retained.txt", b"private temporary bytes")
+        .unwrap();
+    assert!(WindowsSourceDirectory::create_private_in(
+        external.path(),
+        "disposable-development-new"
+    )
+    .is_err());
+    assert!(WindowsSourceDirectory::create_private_in(external.path(), "../outside").is_err());
+    assert_eq!(before, acl_bytes(&external));
+    assert_eq!(
+        fs::read(child.path().join("retained.txt")).unwrap(),
+        b"private temporary bytes"
+    );
+}
+
+#[test]
+fn source_metadata_pins_reject_occupied_files_and_prevent_replacement_without_reading_contents() {
+    let _serial = serial();
+    let root = fixture();
+    root.write_new("metadata-only.txt", b"artificial source text")
+        .unwrap();
+    let source = WindowsSourceDirectory::open(root.path()).unwrap();
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .open(root.path().join("metadata-only.txt"))
+        .unwrap();
+    assert!(source.pin_entry("metadata-only.txt").is_err());
+    drop(writer);
+    let (pin, observed) = source.pin_entry("metadata-only.txt").unwrap();
+    assert_eq!(observed.length, 22);
+    assert!(!observed.is_directory);
+    assert!(fs::OpenOptions::new()
+        .write(true)
+        .open(root.path().join("metadata-only.txt"))
+        .is_err());
+    assert!(fs::rename(
+        root.path().join("metadata-only.txt"),
+        root.path().join("changed.txt")
+    )
+    .is_err());
+    pin.verify_binding().unwrap();
+}
+
+#[test]
+fn source_entries_allow_bounded_large_sources_without_changing_legacy_list_limits() {
+    let _serial = serial();
+    let root = fixture();
+    for index in 0..301 {
+        fs::write(
+            root.path().join(format!("source-{index:03}.txt")),
+            b"public source metadata",
+        )
+        .unwrap();
+    }
+    let source = WindowsSourceDirectory::open(root.path()).unwrap();
+    assert_eq!(source.list().unwrap_err().code, "NODE_ENUMERATION_LIMIT");
+    let observed = source.source_entries(512).unwrap();
+    assert_eq!(observed.len(), 301);
+    assert!(source.source_entries(300).is_err());
+    assert!(source.source_entries(0).is_err());
+    assert!(source.source_entries(40_001).is_err());
+    let expected = observed
+        .iter()
+        .find(|entry| entry.name == "source-200.txt")
+        .unwrap();
+    let (pin, actual) = source.pin_source_entry(expected).unwrap();
+    assert_eq!(&actual, expected);
+    assert!(fs::OpenOptions::new()
+        .write(true)
+        .open(root.path().join(&expected.name))
+        .is_err());
+    pin.verify_binding().unwrap();
+}
+
+#[test]
+fn source_enumeration_can_exclude_junctions_but_selected_links_never_pin_or_read_targets() {
+    let _serial = serial();
+    let root = fixture();
+    let outside = root.create_private_directory("retained-outside").unwrap();
+    outside
+        .write_new("secret", b"never enumerate this target")
+        .unwrap();
+    let source = root.create_private_directory("source-filter").unwrap();
+    source.write_new("included.txt", b"allowed source").unwrap();
+    let link = source.path().join(".git");
+    let output = std::process::Command::new("cmd.exe")
+        .creation_flags(0x08000000)
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(outside.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let observed = source.source_entries(512).unwrap();
+    let excluded = observed.iter().find(|entry| entry.name == ".git").unwrap();
+    assert!(excluded.reparse);
+    assert!(source.pin_source_entry(excluded).is_err());
+    assert!(source.list().is_err());
+    let included = observed
+        .iter()
+        .find(|entry| entry.name == "included.txt")
+        .unwrap();
+    source.pin_source_entry(included).unwrap();
+    assert_eq!(
+        outside.read_bounded("secret", 128).unwrap().bytes,
+        b"never enumerate this target"
+    );
+}
+
+#[test]
+fn source_pins_refuse_replaced_identity_changed_metadata_hardlinks_and_new_junctions() {
+    let _serial = serial();
+    let root = fixture();
+    root.write_new("selected.txt", b"same bytes").unwrap();
+    let source = WindowsSourceDirectory::open(root.path()).unwrap();
+    let observed = source.source_entries(64).unwrap();
+    let expected = observed
+        .iter()
+        .find(|entry| entry.name == "selected.txt")
+        .unwrap();
+    fs::rename(
+        root.path().join("selected.txt"),
+        root.path().join("retained-original.txt"),
+    )
+    .unwrap();
+    root.write_new("selected.txt", b"same bytes").unwrap();
+    assert!(source.pin_source_entry(expected).is_err());
+    let observed = source.source_entries(64).unwrap();
+    let expected = observed
+        .iter()
+        .find(|entry| entry.name == "selected.txt")
+        .unwrap();
+    fs::write(root.path().join("selected.txt"), b"changed length").unwrap();
+    assert!(source.pin_source_entry(expected).is_err());
+    let observed = source.source_entries(64).unwrap();
+    let expected = observed
+        .iter()
+        .find(|entry| entry.name == "selected.txt")
+        .unwrap();
+    fs::hard_link(
+        root.path().join("selected.txt"),
+        root.path().join("retained-hardlink.txt"),
+    )
+    .unwrap();
+    assert!(source.pin_source_entry(expected).is_err());
+    let selected = root.create_private_directory("selected-directory").unwrap();
+    let path = selected.path().to_owned();
+    drop(selected);
+    let observed = source.source_entries(64).unwrap();
+    let expected = observed
+        .iter()
+        .find(|entry| entry.name == "selected-directory")
+        .unwrap();
+    fs::rename(&path, root.path().join("retained-directory")).unwrap();
+    let target = root.create_private_directory("target-directory").unwrap();
+    let output = std::process::Command::new("cmd.exe")
+        .creation_flags(0x08000000)
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&path)
+        .arg(target.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(source.pin_source_entry(expected).is_err());
+}
+
+#[test]
+fn successful_native_creation_is_reported_before_any_failing_post_create_verification() {
+    let _serial = serial();
+    let root = fixture();
+    let source = WindowsSourceDirectory::open(root.path()).unwrap();
+    let mut created = false;
+    let result = source.create_source_file_notified("partial.txt", || {
+        created = true;
+        fs::hard_link(
+            root.path().join("partial.txt"),
+            root.path().join("retained-created-hardlink"),
+        )
+        .unwrap();
+    });
+    assert!(result.is_err());
+    assert!(created);
+    assert!(root.path().join("partial.txt").is_file());
+    assert!(root.path().join("retained-created-hardlink").is_file());
+    let mut duplicate_notified = false;
+    assert!(source
+        .create_source_file_notified("partial.txt", || duplicate_notified = true)
+        .is_err());
+    assert!(
+        !duplicate_notified,
+        "EEXIST did not create or adopt an object"
+    );
+}
 
 fn fixture() -> WindowsSourceDirectory {
     let artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
