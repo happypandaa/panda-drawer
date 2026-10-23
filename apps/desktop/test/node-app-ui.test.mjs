@@ -117,6 +117,36 @@ function managedInstallFixture() {
   return { value, source, prepared, installed, history };
 }
 
+test('Managed details distinguish declared, legacy and unreadable data metadata without disabling existing app use', async () => {
+  for (const [extra, expected, legacy] of [
+    [{ dataContract: { id: 'org.example.guestbook-data', version: 2 } }, /org.example.guestbook-data · 版本 2/, false],
+    [{ dataContract: null }, /数据声明：未声明/, true],
+    [{ dataContract: null, state: 'failed', lastError: '人工声明读取失败' }, /数据声明：暂无法核对/, false],
+    [{}, /数据声明：暂无法核对/, false],
+  ]) {
+    const { value: original } = managedInstallFixture();
+    const value = { ...original, ...extra }; const calls = [];
+    await setup(baseMock(value, async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'node_app_start') return { ...value, state: 'running' };
+      throw new Error(command);
+    }), { request: { app: value, intent: 'details', token: 1 } });
+    await click(byText('概览'));
+    const declaration = document.querySelector('[aria-label="数据声明"]');
+    assert.match(declaration.textContent, expected);
+    if (extra.dataContract) assert.match(declaration.textContent, /平台未验证实际数据格式/);
+    if (legacy) {
+      assert.match(declaration.textContent, /后续普通更新无法核对数据契约，将被阻止；现有应用仍可使用/);
+      await click(byText('进入项目'));
+      assert.deepEqual(calls, [['node_app_start', { appId: value.id }]]);
+    } else {
+      assert.doesNotMatch(declaration.textContent, /后续普通更新无法核对数据契约，将被阻止/);
+      assert.deepEqual(calls, []);
+    }
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
 test('Managed update rejects an old instance source list and releases its pending gate for a fresh read', async () => {
   const { value, source } = managedInstallFixture(); const older = deferred(); let reads = 0;
   const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
@@ -358,13 +388,15 @@ test('Adding a source folder previews first and registration never starts it', a
     calls.push([command, args]);
     if (command === 'node_app_list') return [];
     if (command === 'choose_path') return '/artificial/node-source';
-    if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { name: 'Artificial preview', version: '0.1.0' }, configuration: { fields, missingRequired: ['AI_KEY'] } };
+    if (command === 'node_app_inspect') return { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { name: 'Artificial preview', version: '0.1.0' }, dataContract: { id: 'org.example.inspected-data', version: 1 }, configuration: { fields, missingRequired: ['AI_KEY'] } };
     if (command === 'node_app_register') return app();
     throw new Error(command);
   }, { request: null, addRequest: 1 });
   await click(byText('选择应用目录'));
   assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_inspect', { sourcePath: '/artificial/node-source' }]]);
   assert.ok(byText('登记此应用')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
+  assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /org.example.inspected-data · 版本 1/);
+  assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /平台未验证实际数据格式/);
   await click(byText('登记此应用'));
   assert.deepEqual(calls.at(-1), ['node_app_register', { sourcePath: '/artificial/node-source' }]);
   assert.ok(document.querySelector('[role="dialog"]'));

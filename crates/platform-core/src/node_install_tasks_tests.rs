@@ -42,6 +42,7 @@ impl Fixture {
             &json!({
                 "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
                 "app":{"id":"disposable.coordinator","name":"可丢弃任务协调样本","version":"1.0.0"},
+                "dataContract":{"id":"disposable.coordinator.data","version":1},
                 "web":{"root":"public","entry":"index.html","routing":"files"},
                 "backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
             }),

@@ -46,6 +46,7 @@ impl Fixture {
         atomic_json(&source.join("local-app.json"), &json!({
             "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
             "app":{"id":"disposable.managed.node","name":"可丢弃受管安装","version":"1.0.0"},
+            "dataContract":{"id":"disposable.managed.node.data","version":1},
             "web":{"root":"public","entry":"index.html","routing":"files"},
             "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24},
             "configuration":{"version":1,"fields":[
@@ -226,6 +227,10 @@ async fn managed_and_external_registrations_coexist_without_author_directory_dep
         .find(|app| app["id"] == installed.app_id)
         .unwrap();
     assert_eq!(managed["state"], "stopped");
+    assert_eq!(
+        managed["dataContract"],
+        json!({"id":"disposable.managed.node.data","version":1})
+    );
     assert_eq!(managed["sourcePath"], json!(fixture.program(&installed)));
     assert_eq!(managed["installation"]["kind"], "managed");
     assert_eq!(managed["objectLayout"]["runtime"]["external"], false);
@@ -253,14 +258,17 @@ async fn program_bytes_and_executable_mode_are_verified_before_start_or_update()
     let entry = fixture.program(&installed).join("public/index.html");
     let original = fs::read(&entry).unwrap();
     fs::write(&entry, "artificial changed program").unwrap();
-    assert_eq!(
-        fixture
-            .manager
-            .configuration(&installed.app_id)
-            .await
-            .unwrap()["state"],
-        "failed"
-    );
+    let unavailable = fixture
+        .manager
+        .configuration(&installed.app_id)
+        .await
+        .unwrap();
+    assert_eq!(unavailable["state"], "failed");
+    assert!(unavailable
+        .as_object()
+        .unwrap()
+        .contains_key("dataContract"));
+    assert!(unavailable["dataContract"].is_null());
     assert!(fixture.manager.start(&installed.app_id).await.is_err());
     assert!(fixture
         .manager
@@ -335,6 +343,96 @@ async fn compatible_update_preserves_configuration_data_and_never_reads_secret_c
         .committed(&candidate.candidate_id)
         .unwrap()
         .is_some());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_managed_application_keeps_configuration_and_read_access_but_cannot_update() {
+    let fixture = Fixture::new();
+    let manifest_path = fixture.source.join("local-app.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.as_object_mut().unwrap().remove("dataContract");
+    atomic_json(&manifest_path, &manifest).unwrap();
+    let installed = fixture.install().await;
+    let slot = fixture.slot(&installed.app_id);
+    let registration = fs::read(slot.join("registration.json")).unwrap();
+    let program_manifest = fixture.program(&installed).join("local-app.json");
+    let original_manifest = fs::read(&program_manifest).unwrap();
+    let data = slot.join("data/legacy-artificial.sqlite");
+    fs::write(&data, "legacy data must not be inspected or rewritten").unwrap();
+    fixture
+        .manager
+        .save(
+            &installed.app_id,
+            save_request(0, "legacy still configurable", true),
+        )
+        .await
+        .unwrap();
+    let detail = fixture
+        .manager
+        .configuration(&installed.app_id)
+        .await
+        .unwrap();
+    assert_eq!(detail["state"], "stopped");
+    assert_eq!(detail["configuration"]["revision"], 1);
+    assert_eq!(detail["configuration"]["canStart"], true);
+    assert!(detail.as_object().unwrap().contains_key("dataContract"));
+    assert!(detail["dataContract"].is_null());
+    let configuration = fs::read(slot.join("configuration/configuration.json")).unwrap();
+    let target = fixture
+        .manager
+        .install_target_snapshot(Some(&installed.app_id))
+        .await
+        .unwrap();
+    let error = fixture
+        .manager
+        .with_install_commit::<()>(&target, &manifest, |_| {
+            panic!("unknown data compatibility must block before the publication closure")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN");
+    assert_eq!(
+        fs::read(slot.join("registration.json")).unwrap(),
+        registration
+    );
+    assert_eq!(fs::read(&program_manifest).unwrap(), original_manifest);
+    assert_eq!(
+        fs::read(slot.join("configuration/configuration.json")).unwrap(),
+        configuration
+    );
+    assert_eq!(
+        fs::read_to_string(data).unwrap(),
+        "legacy data must not be inspected or rewritten"
+    );
+    assert!(!slot.join("active.json").exists());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_commit_lock_checks_data_declaration_before_publication() {
+    let fixture = Fixture::new();
+    let installed = fixture.install().await;
+    let target = fixture
+        .manager
+        .install_target_snapshot(Some(&installed.app_id))
+        .await
+        .unwrap();
+    let mut changed = target.manifest.clone().unwrap();
+    changed["dataContract"]["version"] = json!(2);
+    let registration = fs::read(fixture.slot(&installed.app_id).join("registration.json")).unwrap();
+    let error = fixture
+        .manager
+        .with_install_commit::<()>(&target, &changed, |_| {
+            panic!("mismatched declaration must block under the native commit lock")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_INSTALL_DATA_INCOMPATIBLE");
+    assert_eq!(
+        fs::read(fixture.slot(&installed.app_id).join("registration.json")).unwrap(),
+        registration
+    );
     fixture.shutdown().await;
 }
 

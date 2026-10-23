@@ -2,6 +2,11 @@ import type { ObjectLayout } from './object-layout-types';
 
 export type NodeConfigurationValue = string | number | boolean;
 
+export interface NodeDataContract {
+  id: string;
+  version: number;
+}
+
 export interface NodeConfigurationField {
   name: string;
   label: string;
@@ -22,6 +27,7 @@ export interface NodeAppDetail {
   name: string;
   sourcePath: string;
   objectLayout?: ObjectLayout | null;
+  dataContract?: NodeDataContract | null;
   installation?: { kind: 'managed'; generation: string; sourceId: string; sourceDigest: string } | null;
   runtime: 'node-service';
   window?: { width: number; height: number; rememberSize?: boolean } | null;
@@ -43,6 +49,7 @@ export interface NodeAppInspection {
   runtime: string;
   runtimeLabel: string;
   app: { id: string; name: string; version: string; description?: string };
+  dataContract?: NodeDataContract | null;
   configuration: { fields: NodeConfigurationField[]; missingRequired: string[] };
 }
 

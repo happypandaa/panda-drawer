@@ -160,6 +160,8 @@ test('A pending prepare blocks duplicate submission and late cancellation acknow
   await click(byText('取消准备')); await tick();
   await act(async () => cancelling.resolve(task()));
   assert.equal(tasks.at(-1).final, true);
+  assert.match(document.body.textContent, /安装材料已准备并核验，尚未安装/);
+  assert.doesNotMatch(document.body.textContent, /正在等待任务停止/);
   assert.equal(byText('取消准备'), undefined);
   assert.deepEqual(commandCalls(calls, 'node_install_cancel'), [['node_install_cancel', { taskId: 'task_prepare' }]]);
   assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
@@ -183,6 +185,8 @@ test('Cancellation stays pending until confirmed, then labels the task and retai
   finished = true; await tick();
   assert.equal(document.querySelector('.build-task-heading strong').textContent, '准备应用安装 · 已取消');
   assert.equal(document.querySelector('.build-task-heading span').textContent, '安装准备已停止');
+  assert.match(document.body.textContent, /安装准备已停止，取消现场已保留/);
+  assert.doesNotMatch(document.body.textContent, /已请求取消准备，正在等待任务停止/);
   assert.match(document.querySelector('.build-task').textContent, /安装准备已取消，当前程序及数据未改变。 \(NODE_INSTALL_CANCELLED\)/);
   assert.match(document.querySelector('[aria-label="保留的安装记录"] article p').textContent, /准备已取消，现场保留/);
   assert.equal(select().value, sourceId);
@@ -214,6 +218,55 @@ test('Unconfirmed cleanup, ordinary failure, shutdown and apply errors keep thei
     assert.equal(document.querySelector('.build-task-heading span').textContent, status);
     assert.ok(document.querySelector('[aria-label="保留的安装记录"] article p').textContent.includes(recordLabel));
     assert.match(document.querySelector('.build-task').textContent, new RegExp(code));
+    if (code === 'NODE_INSTALL_CLEANUP_PENDING') {
+      assert.match(document.body.textContent, /停止情况仍需核对/);
+      assert.doesNotMatch(document.body.textContent, /安装准备已停止，取消现场已保留/);
+    }
+    assert.equal(commandCalls(calls, 'node_install_prepare').length, 0);
+    assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
+    await unmount();
+  }
+});
+
+test('A legacy candidate can be explicitly installed as new with its future update limitation visible', async () => {
+  const { calls } = await setup({ overrides: { node_install_prepare: () => readyTask() } });
+  await choose(); await prepareClick();
+  const confirmation = document.querySelector('[aria-label="安装候选确认"]');
+  assert.match(confirmation.textContent, /数据声明：未声明/);
+  assert.match(confirmation.textContent, /可以安装为新应用；后续普通更新无法核对数据契约，将被阻止/);
+  await confirmAll();
+  assert.equal(byText('确认安装').disabled, false);
+  assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
+});
+
+test('A freshly checked declared update shows declaration matching without claiming verified data format', async () => {
+  const declared = { ...prepared, manifest: { ...prepared.manifest, dataContract: { id: 'org.example.guestbook-data', version: 2 } } };
+  const { calls } = await setup({ props: { targetAppId: appId }, overrides: {
+    node_install_prepare: () => readyTask({ result: { state: 'prepared', candidate: declared, installed: false } }),
+    node_install_candidate: () => ({ state: 'prepared', candidate: declared }),
+  } });
+  await choose(); await prepareClick();
+  const declaration = document.querySelector('[aria-label="安装候选确认"] [aria-label="数据声明"]');
+  assert.match(declaration.textContent, /org.example.guestbook-data · 版本 2 · 数据声明匹配/);
+  assert.match(declaration.textContent, /平台未验证实际数据格式/);
+  assert.match(declaration.textContent, /不转换现有数据/);
+  await confirmAll();
+  assert.equal(byText('确认更新').disabled, false);
+  assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
+});
+
+test('Retained updates rejected for missing or different declarations keep their evidence and cannot apply', async () => {
+  for (const code of ['NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN', 'NODE_INSTALL_DATA_INCOMPATIBLE']) {
+    const error = { code, message: code.endsWith('UNKNOWN') ? '旧候选缺少数据声明，无法核对普通更新。' : '数据声明不同，不能普通更新。', details: { previousDataContract: null, candidateDataContract: { id: 'org.example.data', version: 2 } } };
+    const { calls } = await setup({ props: { targetAppId: appId }, overrides: {
+      node_install_list: () => ({ candidates: [history({ targetAppId: appId })], issues: [] }),
+      node_install_candidate: () => { throw error; },
+    } });
+    await click(byText('核验并继续安装'));
+    assert.match(document.body.textContent, new RegExp(error.message));
+    assert.match(document.querySelector('[aria-label="保留的安装记录"]').textContent, new RegExp(candidateId));
+    assert.equal(byText('确认更新'), undefined);
+    assert.equal(commandCalls(calls, 'node_install_candidate').length, 1);
     assert.equal(commandCalls(calls, 'node_install_prepare').length, 0);
     assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
     await unmount();

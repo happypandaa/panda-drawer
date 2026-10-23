@@ -550,9 +550,13 @@ impl NodeAppInstaller {
         if journal.state != "prepared" {
             return Err(invalid("安装候选尚未准备完成。"));
         }
-        journal
+        let prepared = journal
             .prepared
-            .ok_or_else(|| invalid("安装候选缺少产物记录。"))
+            .ok_or_else(|| invalid("安装候选缺少产物记录。"))?;
+        // Retained preparation records must satisfy today's update policy.
+        // Historical committed records remain readable through committed().
+        compatible(&journal.target, &prepared.manifest)?;
+        Ok(prepared)
     }
 
     pub(crate) fn target(&self, candidate_id: &str) -> Result<InstallTargetSnapshot> {
@@ -934,6 +938,9 @@ fn require_task(tasks: &BuildManager, id: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 pub(crate) fn compatible(target: &InstallTargetSnapshot, manifest: &Value) -> Result<()> {
+    use crate::node_app_manifest::DataContractDecl;
+    let candidate_data = DataContractDecl::from_manifest(manifest)
+        .map_err(|_| invalid("候选的数据契约声明无效。"))?;
     if let Some(previous) = &target.manifest {
         if previous["app"]["id"] != manifest["app"]["id"] {
             return Err(failure(
@@ -946,6 +953,26 @@ pub(crate) fn compatible(target: &InstallTargetSnapshot, manifest: &Value) -> Re
                 "NODE_INSTALL_CONFIGURATION_INCOMPATIBLE",
                 "本次仅支持配置声明不变的程序更新；原配置和当前程序保留。",
             ));
+        }
+        let previous_data = DataContractDecl::from_manifest(previous)
+            .map_err(|_| invalid("当前应用的数据契约声明无效，原程序和数据保留。"))?;
+        let error = if previous_data.is_none() || candidate_data.is_none() {
+            Some(failure(
+                "NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN",
+                "当前应用或候选未声明数据契约，无法核对普通更新；原程序、配置和数据保留。",
+            ))
+        } else if previous_data != candidate_data {
+            Some(failure(
+                "NODE_INSTALL_DATA_INCOMPATIBLE",
+                "候选与当前应用的数据契约标识或版本不同，不能直接更新；原程序、配置和数据保留。",
+            ))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return Err(error
+                .detail("previousDataContract", json!(previous_data))
+                .detail("candidateDataContract", json!(candidate_data)));
         }
     }
     Ok(())

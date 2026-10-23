@@ -28,6 +28,7 @@ impl Fixture {
         atomic_json(&source.join("local-app.json"), &json!({
             "packageFormat":"local-web-app", "formatVersion":2, "runtime":"node-service",
             "app":{"id":"disposable-node-install", "name":"可丢弃安装", "version":"1.0.0"},
+            "dataContract":{"id":"disposable-node-install.data","version":1},
             "web":{"root":"web", "entry":"index.html", "routing":"files"},
             "backend":{"root":"server", "entry":"start.mjs", "protocolVersion":1, "nodeMajor":24}
         })).unwrap();
@@ -253,6 +254,195 @@ async fn install_and_compatible_update_keep_uuid_configuration_data_and_old_prog
     assert_eq!(repeated.generation, updated.generation);
     assert_eq!(fs::read_dir(slot.join("generations")).unwrap().count(), 2);
     fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn incompatible_or_unknown_data_contract_stops_before_npm_and_retains_old_slot() {
+    let fixture = Fixture::new(NPM_OK);
+    let fresh = InstallTargetSnapshot::fresh();
+    let installed = fixture.apply(&fixture.prepare(fresh.clone()).await, &fresh);
+    let target = fixture.update_target(&installed, 7);
+    let slot = fixture.installer.slot(&installed.app_id).unwrap();
+    let files = sentinels(&slot);
+    let registration = fs::read(slot.join("registration.json")).unwrap();
+    let manifest_path = fixture.source.join("local-app.json");
+    let manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    fs::write(
+        &fixture.tools.npm.path,
+        "printf executed > npm-must-not-run\nexit 91\n",
+    )
+    .unwrap();
+    for (declaration, expected) in [
+        (
+            Some(json!({"id":"disposable-node-install.data","version":2})),
+            "NODE_INSTALL_DATA_INCOMPATIBLE",
+        ),
+        (
+            Some(json!({"id":"different-data","version":1})),
+            "NODE_INSTALL_DATA_INCOMPATIBLE",
+        ),
+        (None, "NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN"),
+    ] {
+        let mut next = manifest.clone();
+        if let Some(declaration) = declaration {
+            next["dataContract"] = declaration;
+        } else {
+            next.as_object_mut().unwrap().remove("dataContract");
+        }
+        atomic_json(&manifest_path, &next).unwrap();
+        let task = fixture
+            .tasks
+            .create_workspace_operation("nodeInstallPrepare")
+            .unwrap();
+        let (_stop, _cancel, control) = live_control();
+        let error = fixture
+            .installer
+            .prepare(
+                &task.task_id,
+                fixture.source(),
+                target.clone(),
+                fixture.tools.clone(),
+                control,
+                &fixture.tasks,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, expected);
+        let task = fixture.tasks.task(&task.task_id).unwrap();
+        assert_eq!(task.error.unwrap().code, expected);
+        let result = task.result.unwrap();
+        let candidate = result["candidateId"].as_str().unwrap();
+        let operation = fixture.installer.operation(candidate).unwrap();
+        assert!(operation.join("program/local-app.json").is_file());
+        assert!(!operation.join("program/npm-must-not-run").exists());
+        assert!(!operation.join("program/node_modules").exists());
+        assert_eq!(
+            fixture.installer.journal(candidate).unwrap().state,
+            "failed"
+        );
+        assert_eq!(
+            fs::read(slot.join("registration.json")).unwrap(),
+            registration
+        );
+        assert_preserved(&files);
+        assert_eq!(fs::read_dir(slot.join("generations")).unwrap().count(), 1);
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn retained_prepared_updates_are_rechecked_but_legacy_committed_history_stays_readable() {
+    for legacy in [true, false] {
+        let fixture = Fixture::new(NPM_OK);
+        let source_manifest = fixture.source.join("local-app.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&source_manifest).unwrap()).unwrap();
+        if legacy {
+            manifest.as_object_mut().unwrap().remove("dataContract");
+            atomic_json(&source_manifest, &manifest).unwrap();
+        }
+        let fresh = InstallTargetSnapshot::fresh();
+        let first = fixture.prepare(fresh.clone()).await;
+        let installed = fixture.apply(&first, &fresh);
+        let target = fixture.update_target(&installed, 7);
+        let slot = fixture.installer.slot(&installed.app_id).unwrap();
+        let files = sentinels(&slot);
+        let registration = fs::read(slot.join("registration.json")).unwrap();
+        let old_manifest = fs::read(
+            slot.join("generations")
+                .join(&installed.generation)
+                .join("local-app.json"),
+        )
+        .unwrap();
+        if !legacy {
+            manifest["dataContract"]["version"] = json!(2);
+            atomic_json(&source_manifest, &manifest).unwrap();
+        }
+        // Model a preparation persisted by the earlier, app/config-only policy.
+        // Its actual copied bytes are valid, but today's update policy rejects it.
+        let candidate = fixture.prepare(InstallTargetSnapshot::fresh()).await;
+        let mut journal = fixture.installer.journal(&candidate.candidate_id).unwrap();
+        journal.target = target.clone();
+        journal.prepared.as_mut().unwrap().app_id = installed.app_id.clone();
+        fixture.installer.save(&journal).unwrap();
+        let expected = if legacy {
+            "NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN"
+        } else {
+            "NODE_INSTALL_DATA_INCOMPATIBLE"
+        };
+        assert_eq!(
+            fixture
+                .installer
+                .prepared(&candidate.candidate_id)
+                .unwrap_err()
+                .code,
+            expected
+        );
+        let task = fixture
+            .tasks
+            .create_workspace_operation("nodeInstallApply")
+            .unwrap();
+        let (_stop, _cancel, control) = live_control();
+        assert_eq!(
+            fixture
+                .installer
+                .commit_stopped(
+                    &candidate.candidate_id,
+                    &target,
+                    &task.task_id,
+                    &control,
+                    &fixture.tasks
+                )
+                .unwrap_err()
+                .code,
+            expected
+        );
+        assert_eq!(
+            fixture
+                .installer
+                .journal(&candidate.candidate_id)
+                .unwrap()
+                .state,
+            "prepared"
+        );
+        assert!(fixture
+            .installer
+            .operation(&candidate.candidate_id)
+            .unwrap()
+            .join("program")
+            .is_dir());
+        assert!(fixture
+            .installer
+            .committed(&first.candidate_id)
+            .unwrap()
+            .is_some());
+        assert!(fixture
+            .installer
+            .list()
+            .unwrap()
+            .iter()
+            .any(|item| item["candidateId"] == candidate.candidate_id));
+        assert_eq!(
+            fixture.apply(&first, &fresh).generation,
+            installed.generation
+        );
+        assert_eq!(
+            fs::read(slot.join("registration.json")).unwrap(),
+            registration
+        );
+        assert_eq!(
+            fs::read(
+                slot.join("generations")
+                    .join(&installed.generation)
+                    .join("local-app.json")
+            )
+            .unwrap(),
+            old_manifest
+        );
+        assert_preserved(&files);
+        assert_eq!(fs::read_dir(slot.join("generations")).unwrap().count(), 1);
+        fixture.shutdown().await;
+    }
 }
 
 #[tokio::test]
