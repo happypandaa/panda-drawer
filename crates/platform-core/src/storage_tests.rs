@@ -75,6 +75,30 @@ impl Fixture {
     }
 }
 #[tokio::test]
+async fn workspace_project_rows_keep_internal_ids_and_actual_readable_paths() {
+    let fixture = Fixture::new().await;
+    assert_ne!(
+        fixture.root.file_name().unwrap().to_str().unwrap(),
+        fixture.id
+    );
+    let before = fs::read(fixture.root.join("data/main.sqlite")).unwrap();
+    let result = workspace_scan(&fixture.paths, None, "readable-project-row").unwrap();
+    let rows = result["workspace"]["projects"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["scope"]["projectId"] == fixture.id)
+        .unwrap();
+    assert_eq!(row["name"], "Disposable storage evidence");
+    assert_eq!(row["root"], json!(fixture.root));
+    assert_eq!(row["referenceOnly"], true);
+    assert_eq!(
+        fs::read(fixture.root.join("data/main.sqlite")).unwrap(),
+        before
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn logical_categories_are_disjoint_include_hidden_metadata_and_never_open_bad_sqlite() {
     let f = Fixture::new().await;
     for (path, bytes) in [

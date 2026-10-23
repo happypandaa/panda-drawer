@@ -14,6 +14,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 2026-10-23 已确认[本地目录接入三条路径](docs/local-directory-onboarding.md)：“添加本地应用”遇到空目录时，先确认生成零第三方依赖的 Node 起始项目，再预览添加；已有有效 Node 声明时先预览确认；其他目录提供包含目录、要求和独立 skill 全文的“复制给 AI 检查”，不推断一定兼容、不自动改造或发送。已有目录检查不写入 skill，也不安装、启动或读取密钥／业务数据库；project-v1 仍使用原有完整 ZIP 等入口。
 
+2026-10-23 起，新建、复制和完整 ZIP 导入的用户项目使用[可读目录名](docs/project-directory-names.md)：固定 npm `transliteration` 数据转写名称，原生离线生成安全目录名及完整 ID 派生短码。完整 ID 不变，已有目录、Node 私有槽和用户选定的外部目录不改名；转写为读音，不做语义翻译。操作时读取实际 `projectRoot`，不按 ID 拼接目录。
+
 文档入口见[分类地图与阅读顺序](docs/documentation-map.md)。最新确认的[应用窗口约束](docs/app-window-runtime-contract.md)要求一个应用一个原生窗口：打开时后台启动本应用 Node，关窗就停止，重复打开只聚焦，禁止额外窗口和业务弹窗；浏览器试跑只保留为补充验证。当前独立 Node 源码接入、配置与 本机私有秘密文件边界见[本机配置与运行](docs/node-native-configuration.md)，不等于完整 project-v1 安装与生命周期已交付。
 
 应用作者和 AI 选型先读[应用开发环境与交付要求](docs/app-development-environment.md)：优先前端、平台 SDK 和 SQL，确需后端时尽量一个受管 Node 服务，外部软件与在线服务前提提前说明。作者交付构建好的前端及完整后端运行文件；应用运行使用固定私有 Node，不在登记或启动时安装依赖。本轮 Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建，保留明确选择兼容本机环境的入口；构建选择不影响应用运行 Node。执行摘要随项目 skill 的同一份环境／窗口约束分发。

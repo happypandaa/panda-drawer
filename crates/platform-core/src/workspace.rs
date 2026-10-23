@@ -315,20 +315,15 @@ fn exclusions(root: &Path) -> Result<BTreeSet<PathBuf>> {
         PathBuf::from(RETIRED),
         PathBuf::from(".platform/identity-binding.json"),
     ]);
-    for entry in fs::read_dir(root.join("projects"))? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+    for (id, path) in crate::projects::enumerate_project_roots(root)? {
+        if !path.is_dir() {
             continue;
         }
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if !valid_id(&id) {
-            continue;
-        }
-        if let Ok(m) = read_json::<crate::ProjectManifest>(&entry.path().join("project.json")) {
-            if crate::projects::validate_manifest(&m, &id, &entry.path()).is_ok() {
+        if let Ok(m) = read_json::<crate::ProjectManifest>(&path.join("project.json")) {
+            if crate::projects::validate_manifest(&m, &id, &path).is_ok() {
                 excluded.insert(
-                    PathBuf::from("projects")
-                        .join(&id)
+                    path.strip_prefix(root)?
+                        .to_path_buf()
                         .join(m.source_dir)
                         .join("node_modules"),
                 );
@@ -585,10 +580,8 @@ pub(crate) fn copy_and_commit(
             .into());
         }
         // Epochs are journaled before settings commit, then applied idempotently.
-        for entry in fs::read_dir(j.source_path.join("projects"))? {
-            let entry = entry?;
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if valid_id(&id) && entry.file_type()?.is_dir() && store.is_retired(&id)?.is_none() {
+        for (id, path) in crate::projects::enumerate_project_roots(&j.source_path)? {
+            if path.is_dir() && store.is_retired(&id)?.is_none() {
                 j.epochs.insert(id, Uuid::new_v4().to_string());
             }
         }
@@ -685,6 +678,25 @@ pub(crate) fn initialize_selected(
         store.rebind_migrated(id, epoch)?;
         if let Some(error) = j.blocked_projects.get(id) {
             store.retain_migrated_diagnostic(id, error.clone())?;
+        }
+    }
+    // Retired registrations remain restoration/ownership evidence. Rebase only
+    // their copied absolute root after this explicit migration, without giving
+    // them a new epoch, database identity or active status.
+    for entry in fs::read_dir(paths.workspace_root().join(".platform/project-state"))? {
+        let path = entry?.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let Some(id) = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|id| valid_id(id))
+        else {
+            continue;
+        };
+        if store.is_retired(id)?.is_some() {
+            store.rebase_retired_registration_after_migration(id, &j.source_path)?;
         }
     }
     j.epochs_applied = true;

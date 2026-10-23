@@ -594,14 +594,7 @@ async fn lifecycle_partial_purge_preserves_truthful_state_and_active_same_id_blo
     let record = read_json(&payload.parent().unwrap().join("record.json")).unwrap();
     assert_eq!(record["state"], "purgeIncomplete");
     assert!(payload.exists());
-    fs::create_dir(
-        fixture
-            .paths
-            .workspace_root()
-            .join("projects")
-            .join(&fixture.project),
-    )
-    .unwrap();
+    fs::create_dir(fixture.store.project_root(&fixture.project).unwrap()).unwrap();
     let called = std::cell::Cell::new(false);
     fixture.store.begin_workspace_cleanup().unwrap();
     let failure = fixture

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, cp, writeFile, readFile, lstat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
@@ -32,7 +32,8 @@ for (const [index, word] of ['alpha', 'beta'].entries()) {
   const project = cli(['project', 'create', '--input', '-'], { name: `M1 验证 ${index + 1} · ${run}`, description: '自动创建的可丢弃测试资料；用于本地协议和项目隔离验证。' });
   const id = project.id ?? project.projectId;
   assert.match(id, /^prj_[a-z0-9_-]+$/);
-  const root = join(expectedRoot, 'projects', id);
+  const root = project.projectRoot;
+  assert.equal(dirname(root), join(expectedRoot, 'projects'));
   assert.equal((await lstat(root)).isSymbolicLink(), false);
   const manifest = JSON.parse(await readFile(join(root, 'project.json'), 'utf8'));
   assert.equal(manifest.id, id);

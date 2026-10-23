@@ -164,7 +164,7 @@ async fn migration_preserves_protected_trees_links_database_and_state_excludes_o
     assert_eq!(selected.workspace_root(), dest);
     assert!(!dest
         .join("projects")
-        .join(&id)
+        .join(root.file_name().unwrap())
         .join("app/node_modules")
         .exists());
     assert_eq!(
@@ -204,7 +204,7 @@ async fn migration_preserves_protected_trees_links_database_and_state_excludes_o
     );
     drop(c);
     mark_old_retired(&selected, &journal).unwrap();
-    assert!(paths.workspace_root().join("projects").join(&id).exists());
+    assert!(store.project_root(&id).unwrap().exists());
     assert!(store.project(&id).unwrap().check().is_err());
     new.shutdown().await;
     store.shutdown().await;
@@ -432,9 +432,8 @@ async fn copying_a_blocked_database_does_not_implicitly_repair_its_registration(
     );
     assert!(root.join("data/preserved-old.sqlite").is_file());
     assert!(new
-        .workspace_root()
-        .join("projects")
-        .join(id)
+        .project_root(&id)
+        .unwrap()
         .join("data/preserved-old.sqlite")
         .is_file());
     new.shutdown().await;

@@ -182,12 +182,7 @@ async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fai
                 fs::read(root.join("data/attachments/original.txt")).unwrap(),
                 attachment
             );
-            assert!(!fixture
-                .paths
-                .workspace_root()
-                .join("projects")
-                .join(&fixture.id)
-                .exists());
+            assert!(!fixture.store.project_root(&fixture.id).unwrap().exists());
         } else {
             good(&restored);
             assert_eq!(
@@ -970,6 +965,191 @@ async fn delete_and_restore_restart_reconcile_completed_moves_with_lost_task_res
     assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
     assert!(old.check().is_err());
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn install_recovery_preserves_both_copies_when_registration_redirects_the_journal() {
+    let fixture = Fixture::new().await;
+    let archive = fixture.export_path("same-id-recovery-material.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let copied = fixture
+        .project("copy", json!({"name":"Authorized recovery target"}))
+        .await;
+    let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
+    let root = fixture.store.project(&id).unwrap().root;
+    let alternate = fixture
+        .paths
+        .workspace_root()
+        .join("projects/unreviewed-same-id-copy");
+    backups::extract_validated(&archive, &alternate, Some(&fixture.id)).unwrap();
+    let mut manifest: ProjectManifest = read_json(&alternate.join("project.json")).unwrap();
+    manifest.id = id.clone();
+    builds::atomic_json(&alternate.join("project.json"), &manifest).unwrap();
+    let identity_before = identity(&root).unwrap();
+    let alternate_before = identity(&alternate).unwrap();
+    let registration = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/project-state")
+        .join(format!("{id}.json"));
+    let mut state: Value = read_json(&registration).unwrap();
+    state["directoryName"] = json!("unreviewed-same-id-copy");
+    state["projectRoot"] = json!(alternate);
+    state["documentEpoch"] = json!(Uuid::new_v4().to_string());
+    builds::atomic_json(&registration, &state).unwrap();
+    let reservation = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/project-state/reservations")
+        .join(format!("{id}.json"));
+    builds::atomic_json(
+        &reservation,
+        &json!({"projectId":id,"taskId":copied.task_id,"directoryName":"unreviewed-same-id-copy"}),
+    )
+    .unwrap();
+    let registration_before = fs::read(&registration).unwrap();
+    let mut journal: Journal = read_json(&fixture.lifecycle.journal_path(&copied.task_id)).unwrap();
+    journal.resolved = false;
+    journal.committed = false;
+    fixture.lifecycle.save(&journal).unwrap();
+    let fixture = fixture.restart_task(copied.clone()).await;
+    let recovered = fixture.tasks.task(&copied.task_id).unwrap();
+    assert_eq!(
+        recovered.result.as_ref().unwrap()["operationOutcome"],
+        "needs_attention"
+    );
+    assert_eq!(identity(&root).unwrap(), identity_before);
+    assert_eq!(identity(&alternate).unwrap(), alternate_before);
+    assert_eq!(fs::read(&registration).unwrap(), registration_before);
+    assert!(reservation.is_file());
+    assert!(fixture.store.control(&id).unwrap().get().recovery_required);
+    for project in [&root, &alternate] {
+        assert_eq!(
+            fs::read(project.join("data/attachments/original.txt")).unwrap(),
+            b"independent attachment"
+        );
+    }
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn readable_copy_recovery_uses_saved_destination_without_a_candidate_or_registration() {
+    for legacy in [false, true] {
+        let fixture = Fixture::new().await;
+        let copied = fixture
+            .project("copy", json!({"name":"恢复目录测试"}))
+            .await;
+        let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
+        let mut root = fixture.store.project(&id).unwrap().root;
+        assert_ne!(root.file_name().unwrap().to_str().unwrap(), id);
+        let journal_path = fixture.lifecycle.journal_path(&copied.task_id);
+        let mut journal: Journal = read_json(&journal_path).unwrap();
+        assert_eq!(
+            journal.directory_name.as_deref(),
+            root.file_name().and_then(|name| name.to_str())
+        );
+        assert!(!fixture
+            .lifecycle
+            .operation(&copied.task_id)
+            .join("candidate")
+            .exists());
+        let registration = fixture
+            .paths
+            .workspace_root()
+            .join(".platform/project-state")
+            .join(format!("{id}.json"));
+        if legacy {
+            // Represent an actual pre-naming project and journal. No existing
+            // development project or historical record is modified by this fixture.
+            let old_root = fixture.paths.workspace_root().join("projects").join(&id);
+            fs::rename(&root, &old_root).unwrap();
+            root = old_root;
+            let mut state: Value = read_json(&registration).unwrap();
+            state["projectRoot"] = json!(root);
+            state.as_object_mut().unwrap().remove("directoryName");
+            builds::atomic_json(&registration, &state).unwrap();
+            journal.directory_name = None;
+        } else {
+            let handoff = fs::read_to_string(root.join(".platform/handoff.md")).unwrap();
+            assert!(handoff.contains(&format!("Project root: `{}`", root.display())));
+            // A host can stop after the candidate rename but before the final
+            // registration. The reservation and journal remain authoritative.
+            fs::remove_file(&registration).unwrap();
+            let reservation = fixture
+                .paths
+                .workspace_root()
+                .join(".platform/project-state/reservations")
+                .join(format!("{id}.json"));
+            builds::atomic_json(&reservation, &json!({"projectId":id,"taskId":copied.task_id,"directoryName":journal.directory_name})).unwrap();
+        }
+        journal.committed = false;
+        journal.resolved = false;
+        builds::atomic_json(&journal_path, &journal).unwrap();
+        let fixture = fixture.restart_task(copied.clone()).await;
+        let recovered = fixture.tasks.task(&copied.task_id).unwrap();
+        assert_eq!(
+            recovered.result.as_ref().unwrap()["operationOutcome"],
+            "copied"
+        );
+        let current = fixture.store.project(&id).unwrap();
+        assert_eq!(current.root, root);
+        assert_eq!(current.document_epoch, journal.target_epoch);
+        let db = rusqlite::Connection::open(current.root.join("data/main.sqlite")).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT value FROM evidence WHERE id='business-uuid'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "original"
+        );
+        drop(db);
+        assert_eq!(
+            fs::read(current.root.join("data/attachments/original.txt")).unwrap(),
+            b"independent attachment"
+        );
+        assert!(fixture.store.project(&fixture.id).unwrap().root.exists());
+        fixture.stop().await;
+    }
+}
+
+#[test]
+fn lifecycle_journal_directory_binding_rejects_unsafe_names_and_keeps_legacy_fallback() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().canonicalize().unwrap();
+    fs::create_dir(workspace.join("projects")).unwrap();
+    let id = "prj_0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        journal_project_root(&workspace, id, None).unwrap(),
+        workspace.join("projects").join(id)
+    );
+    assert_eq!(
+        journal_project_root(&workspace, id, Some("ji-lu-01234567")).unwrap(),
+        workspace.join("projects/ji-lu-01234567")
+    );
+    for name in [
+        "",
+        ".",
+        "..",
+        "../outside",
+        "/outside",
+        "a/b",
+        "a\\b",
+        "a\nb",
+        "Upper",
+        "名称",
+    ] {
+        assert!(
+            journal_project_root(&workspace, id, Some(name)).is_err(),
+            "{name:?}"
+        );
+    }
+    assert!(journal_project_root(&workspace, id, Some(&"a".repeat(129))).is_err());
 }
 
 #[tokio::test]

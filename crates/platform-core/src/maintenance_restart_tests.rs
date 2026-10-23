@@ -828,6 +828,7 @@ async fn resolved_rollback_lost_response_is_not_overwritten_by_pre_restore_snaps
         &RestoreJournal {
             task_id: fixture.task_id.clone(),
             project_id: fixture.project_id.clone(),
+            directory_name: Some(root.file_name().unwrap().to_str().unwrap().into()),
             backup_id: fixture.backup_id.clone(),
             original_identity: persistent_identity(&root).unwrap(),
             candidate_identity: persistent_identity(&candidate).unwrap(),
@@ -924,6 +925,7 @@ async fn reconciliation_journal_write_failure_blocks_even_if_control_cannot_pers
         let mut journal = RestoreJournal {
             task_id: fixture.task_id.clone(),
             project_id: fixture.project_id.clone(),
+            directory_name: Some(root.file_name().unwrap().to_str().unwrap().into()),
             backup_id: fixture.backup_id.clone(),
             original_identity: serde_json::from_value(json!([0, 0])).unwrap(),
             candidate_identity: persistent_identity(&root).unwrap(),

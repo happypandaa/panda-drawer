@@ -6,7 +6,7 @@
 
 | 对象 | project-v1 网页项目 | 已登记的本机 Node 应用 |
 | --- | --- | --- |
-| 身份 | 原工作区 `projects/<id>/project.json` 与本机登记 | 固定数据根 `node-apps/<UUID>/registration.json` |
+| 身份 | 工作区 `projects/<已登记目录>/project.json` 中的完整 ID 与本机登记 | 固定数据根 `node-apps/<UUID>/registration.json` |
 | 开发源码 | 清单 `sourceDir`，默认 `app/`；目录存在不证明能重建 | `sourcePath` 仅指外部程序目录；当前清单未声明开发源码，不能据此推断可构建 |
 | 当前运行文件 | 清单 `outputDir`（默认 `dist/`）是产物镜像；正常构建发布使用 `.platform/artifacts/<buildId>/dist`，已打开窗口可能保留旧代；来源由 `buildInfo` 表达 | 外部目录下声明的 `web.root`、`backend.root` 及就绪依赖；尚非脱离作者目录的安装副本 |
 | 活跃业务数据 | 清单 `database`、`attachmentsDir`，受限于 `data/` | 本机槽 `data/`；具体数据库与附件结构由应用负责，平台未声明或接管 SQLite 路径 |
@@ -15,6 +15,8 @@
 | 成品包 | 尚未实现标准外部包安装；格式检查不等于安装成功 | 本机登记不等于自包含安装；标准安装另按第7项交付 |
 
 上述角色允许通过明确声明关联，但不能互相冒充。静态网页的构建使用 Node，不会因此变成 Node 服务；运行目录里存在 JavaScript，不会因此获得开发构建能力。没有源码的成品使用 `不适用／未提供` 状态，不伪造 `sourceState: matched`、构建成功记录或 Git 历史。现有 `project.json` 的必填开发字段不为接收成品而放宽；未来安装对象单独建模。
+
+2026-10-23 起，新分配的用户项目根按[可读目录命名](project-directory-names.md)使用转写名与短码，旧目录保留原样。完整 ID、实际 `projectRoot` 与角色分别核对，不靠目录名推断身份；Node 私有槽仍按实例 ID，用户选定外部目录不改名。
 
 本步新增管理接口 `project info`／桌面项目详情及 Node 详情中的 `objectLayout`。其中 `runtime.webRoot` 对 project-v1 表示清单产物目录，对本机 Node 表示外部网页运行目录；不将静态产物镜像称为所有窗口当前运行的代次。其内容是路径和能力边界的只读报告，不能作为对这些路径执行写入、checkout、清理或迁移的授权。project-v1 必须通过清单、路径及登记校验才生成报告，失败返回 `null`；Node 来源失联或声明变化也返回 `null`，保留原错误及停止流程。私有路径仅随受认证管理接口或原生管理命令返回，不新增网页访问权限。
 

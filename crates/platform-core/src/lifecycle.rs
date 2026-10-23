@@ -52,6 +52,8 @@ struct Journal {
     trash_id: Option<String>,
     target_epoch: String,
     phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory_name: Option<String>,
     directory_identity: Option<PersistedIdentity>,
     control: Option<ControlState>,
     destination: Option<PathBuf>,
@@ -115,6 +117,41 @@ fn matches_identity(expected: &PersistedIdentity, path: &Path) -> Result<bool, A
     expected
         .matches_path(path)
         .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
+}
+/// Journals bind the target before publication. Older journals retain their
+/// original ID directory even if a later project has a different registration.
+fn journal_project_root(
+    workspace: &Path,
+    id: &str,
+    directory: Option<&str>,
+) -> Result<PathBuf, ApiError> {
+    let directory = directory.unwrap_or(id);
+    if !valid_id(id)
+        || directory.is_empty()
+        || directory.len() > 128
+        || !directory.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+        || Path::new(directory).components().count() != 1
+        || !matches!(
+            Path::new(directory).components().next(),
+            Some(Component::Normal(_))
+        )
+    {
+        return Err(ApiError::new(
+            "RECOVERY_REQUIRED",
+            "Invalid journal project directory binding",
+        ));
+    }
+    let root = workspace.join("projects").join(directory);
+    check_no_symlinks(&root, true)?;
+    Ok(root)
+}
+fn root_directory_name(root: &Path) -> Result<String, ApiError> {
+    root.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::new("INVALID_PROJECT_PATH", "Project directory name is invalid"))
 }
 /// Rebind only verified trash directories in an independently verified workspace
 /// copy. The caller persists this evidence before publishing the new workspace.
@@ -230,7 +267,7 @@ fn move_directory(from: &Path, to: &Path) -> Result<(), ApiError> {
                 .detail("path", json!(to)),
         );
     }
-    fs::rename(from, to)?;
+    crate::projects::publish_directory_noreplace(from, to)?;
     sync_parent(from)?;
     sync_parent(to)
 }
@@ -461,6 +498,7 @@ impl LifecycleManager {
             trash_id: None,
             target_epoch: Uuid::new_v4().to_string(),
             phase: "intent".into(),
+            directory_name: None,
             directory_identity: None,
             control: None,
             destination: None,
@@ -529,6 +567,9 @@ impl LifecycleManager {
         let mut journal = Self::journal(&record, kind, &target);
         journal.source_project_id = Some(id.into());
         journal.destination = input.destination_path.clone();
+        if kind != "copy" {
+            journal.directory_name = Some(root_directory_name(&root)?);
+        }
         journal.directory_identity = deletion.map(|(_, expected)| expected);
         let mut leases = vec![source_lease];
         let prepare = (|| {
@@ -586,12 +627,13 @@ impl LifecycleManager {
         value: Value,
     ) -> Result<TaskRecord, ApiError> {
         let input = Self::input(value)?;
-        self.store.metadata_root(id)?;
+        let (root, _) = self.store.metadata_root(id)?;
         self.authorize(id, input.maintenance_id.as_deref())?;
         let (record, lease) = self.tasks.create_operation(id, "delete")?;
         let mut journal = Self::journal(&record, "delete", id);
         journal.source_project_id = Some(id.into());
         journal.trash_id = Some(format!("trash_{}", Uuid::new_v4().simple()));
+        journal.directory_name = Some(root_directory_name(&root)?);
         self.save(&journal)?;
         self.launch(journal, input, vec![lease]);
         Ok(record)
@@ -685,6 +727,11 @@ impl LifecycleManager {
         };
         let (mut record, lease) = self.tasks.create_operation(&trash.project_id, task_kind)?;
         let mut journal = Self::journal(&record, task_kind, &trash.project_id);
+        if kind == "restore" {
+            journal.directory_name = Some(root_directory_name(
+                &self.store.project_root(&trash.project_id)?,
+            )?);
+        }
         journal.trash_id = Some(trash_id.into());
         journal.directory_identity = Some(trash.root_identity.clone());
         journal.control = Some(trash.control.clone());
@@ -954,15 +1001,26 @@ impl LifecycleManager {
         metadata: BackupManifest,
         source_archive: Option<PathBuf>,
     ) -> Result<Value, ApiError> {
+        validate_manifest(&manifest, &journal.project_id, &candidate)?;
+        let target = self.store.reserve_named_identity(
+            &journal.project_id,
+            &journal.task_id,
+            &manifest.name,
+            None,
+        )?;
+        journal.directory_name = Some(root_directory_name(&target)?);
+        self.save(journal)?;
         self.phase(journal, "candidate-initialize")?;
         let workspace = self.paths.workspace_root().to_owned();
         let root = candidate.clone();
         let project = manifest.clone();
         let task = journal.task_id.clone();
+        let final_root = target.clone();
         let (state, baseline_error, diagnostics) = tokio::task::spawn_blocking(move || {
             initialize_candidate(
                 &workspace,
                 &root,
+                &final_root,
                 &project,
                 &metadata,
                 source_archive.as_deref(),
@@ -977,11 +1035,6 @@ impl LifecycleManager {
         self.phase(journal, "install-intent")?;
         self.store.control(&journal.project_id)?.set(state)?;
         clear_project_provenance(self.paths.workspace_root(), &journal.project_id)?;
-        let target = self
-            .paths
-            .workspace_root()
-            .join("projects")
-            .join(&journal.project_id);
         move_directory(&candidate, &target)?;
         self.store.register_lifecycle(
             &journal.project_id,
@@ -1017,6 +1070,18 @@ impl LifecycleManager {
         crate::source_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
         self.check_protection(&id, "", Some(&journal.task_id))?;
         let (root, expected) = self.store.deletion_root(&id)?;
+        if root
+            != journal_project_root(
+                self.paths.workspace_root(),
+                &id,
+                journal.directory_name.as_deref(),
+            )?
+        {
+            return Err(ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "Project directory binding changed after deletion was requested",
+            ));
+        }
         self.store
             .validate_deletion_epoch(&id, input.expected_document_epoch.as_deref())?;
         if !journal
@@ -1035,17 +1100,12 @@ impl LifecycleManager {
             .begin_deletion(&id, &journal.task_id, &journal.target_epoch, &expected)?;
         self.phase(journal, "delete-intent")?;
         if root.try_exists()? {
-            let workspace = self.paths.workspace_root().to_owned();
             let progress = self
                 .operation(&journal.task_id)
                 .join("delete-progress.ndjson");
             tokio::task::spawn_blocking(move || {
-                crate::history_cleanup::remove_owned_directory(
-                    &workspace.join("projects").join(&id),
-                    &expected,
-                    &progress,
-                )
-                .map(|_| ())
+                crate::history_cleanup::remove_owned_directory(&root, &expected, &progress)
+                    .map(|_| ())
             })
             .await
             .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))??;
@@ -1133,7 +1193,7 @@ impl LifecycleManager {
             outcome = "needs_attention";
         }
         journal.result = json!({"projectId":journal.project_id,"operationOutcome":outcome,"restoreAvailable":false,
-            "remainingPath":self.paths.workspace_root().join("projects").join(&journal.project_id),
+            "remainingPath":journal_project_root(self.paths.workspace_root(), &journal.project_id, journal.directory_name.as_deref())?,
             "historicalBackupsRetained":true});
         journal.resolved = true;
         self.save(journal)?;
@@ -1232,11 +1292,11 @@ impl LifecycleManager {
         journal.result = json!({"projectId":record.project_id,"trashId":trash_id,"documentEpoch":journal.target_epoch,"mode":state.mode,"maintenanceId":state.maintenance_id,"readyForChanges":state.ready_for_changes,"issues":inspection.as_ref().err().into_iter().collect::<Vec<_>>(),"operationOutcome":"restored"});
         self.phase(journal, "trash-restore-intent")?;
         self.store.control(&record.project_id)?.set(state)?;
-        let destination = self
-            .paths
-            .workspace_root()
-            .join("projects")
-            .join(&record.project_id);
+        let destination = journal_project_root(
+            self.paths.workspace_root(),
+            &record.project_id,
+            journal.directory_name.as_deref(),
+        )?;
         move_directory(&source, &destination)?;
         self.store.register_lifecycle(
             &record.project_id,
@@ -1532,11 +1592,11 @@ impl LifecycleManager {
         if journal.resolved {
             return Ok(journal.result.clone());
         }
-        let root = self
-            .paths
-            .workspace_root()
-            .join("projects")
-            .join(&journal.project_id);
+        let root = journal_project_root(
+            self.paths.workspace_root(),
+            &journal.project_id,
+            journal.directory_name.as_deref(),
+        )?;
         let expected = journal.directory_identity.clone();
         let matches = |path: &Path| {
             expected
@@ -1561,6 +1621,13 @@ impl LifecycleManager {
             }
             "import" | "copy" => {
                 if matches(&root) {
+                    if !self
+                        .store
+                        .project_root(&journal.project_id)
+                        .is_ok_and(|registered| registered == root)
+                    {
+                        return self.ambiguous(journal, "Registered project directory differs from the install journal; all copies were preserved");
+                    }
                     if self.store.registered_epoch(&journal.project_id)?.as_deref()
                         != Some(&journal.target_epoch)
                     {
@@ -1630,6 +1697,13 @@ impl LifecycleManager {
                 })?;
                 let retained = self.trash_root(trash_id)?.join("project");
                 if matches(&root) && !retained.exists() {
+                    if !self
+                        .store
+                        .project_root(&journal.project_id)
+                        .is_ok_and(|registered| registered == root)
+                    {
+                        return self.ambiguous(journal, "Registered project directory differs from the trash restore journal; all copies were preserved");
+                    }
                     if self.store.registered_epoch(&journal.project_id)?.as_deref()
                         != Some(&journal.target_epoch)
                     {
@@ -1820,6 +1894,7 @@ fn inspect_restored_project(
 fn initialize_candidate(
     workspace: &Path,
     root: &Path,
+    final_root: &Path,
     project: &ProjectManifest,
     metadata: &BackupManifest,
     source_archive: Option<&Path>,
@@ -1852,7 +1927,7 @@ fn initialize_candidate(
         .write(true)
         .mode(0o600)
         .open(&handoff)?;
-    write!(file,"# Platform-managed project handoff\n\nProject ID: `{}`\nProject root: `{}`\nRead the unchanged `README.md`, project skill and bundled documentation before editing.\nSource project: `{}`\n",project.id,workspace.join("projects").join(&project.id).display(),metadata.project_id)?;
+    write!(file,"# Platform-managed project handoff\n\nProject ID: `{}`\nProject root: `{}`\nRead the unchanged `README.md`, project skill and bundled documentation before editing.\nSource project: `{}`\n",project.id,final_root.display(),metadata.project_id)?;
     file.sync_all()?;
     let baseline = (|| -> Result<Option<String>, ApiError> {
         if !maintenance {

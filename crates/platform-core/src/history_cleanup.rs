@@ -1114,6 +1114,29 @@ impl CleanupManager {
         Ok(())
     }
     fn check_retained_owners(&self, item: &Candidate, manifest: &[Value]) -> Result<(), ApiError> {
+        let mut directory_owners = BTreeMap::<String, String>::new();
+        // Resolve ownership from platform registrations, never from the slug or
+        // a manifest found in an unregistered folder. Current bindings remain
+        // available after an accepted partial cleanup removes old registrations.
+        for workspace in [self.paths.workspace_root(), item.path.as_path()] {
+            if !workspace.join("projects").is_dir()
+                || !workspace.join(".platform/project-state").is_dir()
+            {
+                continue;
+            }
+            for (id, path) in crate::projects::enumerate_project_roots(workspace)? {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| error("Unknown historical project directory binding"))?;
+                if directory_owners.get(name).is_some_and(|owner| owner != &id) {
+                    return Err(error(
+                        "Historical and current project directory ownership disagree",
+                    ));
+                }
+                directory_owners.insert(name.into(), id);
+            }
+        }
         let mut projects = BTreeSet::new();
         for entry in manifest {
             let path = Path::new(
@@ -1126,10 +1149,10 @@ impl CleanupManager {
                 .map(|part| part.as_os_str().to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             if components.first().is_some_and(|part| part == "projects") && components.len() > 1 {
-                if !valid_id(&components[1]) {
-                    return Err(error("Unknown historical project identity"));
-                }
-                projects.insert(components[1].clone());
+                let id = directory_owners
+                    .get(&components[1])
+                    .ok_or_else(|| error("Unknown historical project directory owner"))?;
+                projects.insert(id.clone());
             }
             if components.len() == 4
                 && components[0] == ".platform"
@@ -1563,25 +1586,22 @@ fn migration_exclusions(root: &Path) -> Result<BTreeSet<PathBuf>, ApiError> {
         PathBuf::from(SELECTION),
         PathBuf::from(RETIRED),
     ]);
-    let directories = match fs::read_dir(root.join("projects")) {
-        Ok(entries) => entries,
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(excluded),
-        Err(failure) => return Err(failure.into()),
-    };
-    for directory in directories {
-        let directory = directory?;
-        let id = directory.file_name().to_string_lossy().into_owned();
-        if !valid_id(&id) || !directory.file_type()?.is_dir() {
+    if !root.join("projects").try_exists()? {
+        return Ok(excluded);
+    }
+    for (id, path) in crate::projects::enumerate_project_roots(root)? {
+        if !path.is_dir() {
             continue;
         }
-        let manifest_path = directory.path().join("project.json");
+        let manifest_path = path.join("project.json");
         if let Ok(manifest) = read_json(&manifest_path)
             .and_then(|value| serde_json::from_value::<ProjectManifest>(value).map_err(Into::into))
         {
-            if crate::projects::validate_manifest(&manifest, &id, &directory.path()).is_ok() {
+            if crate::projects::validate_manifest(&manifest, &id, &path).is_ok() {
                 excluded.insert(
-                    PathBuf::from("projects")
-                        .join(id)
+                    path.strip_prefix(root)
+                        .map_err(|_| error("Project directory is outside the workspace"))?
+                        .to_path_buf()
                         .join(manifest.source_dir)
                         .join("node_modules"),
                 );
