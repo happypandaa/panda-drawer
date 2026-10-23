@@ -40,6 +40,23 @@ struct ExternalRegistration {
     manifest_digest: String,
 }
 
+/// Explicitly re-trust an external application's current declaration. These
+/// digests are public metadata, never configuration values or credential IDs.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeclarationUpdateRequest {
+    pub expected_registered_digest: String,
+    pub expected_manifest_digest: String,
+    pub configuration_revision: u64,
+    pub confirmed: bool,
+}
+
+struct DeclarationUpdateCandidate {
+    record: Registration,
+    manifest: TrialManifest,
+    preview: Value,
+}
+
 struct Registration {
     id: String,
     source_path: PathBuf,
@@ -105,20 +122,28 @@ impl NodeApps {
     }
 
     fn load_source(&self, source: &Path) -> Result<TrialManifest> {
+        self.load_source_snapshot(source)
+            .map(|(manifest, _)| manifest)
+    }
+
+    /// Parse and hash the same bounded bytes when preparing a declaration
+    /// update, rather than pairing one read's fields with another read's hash.
+    fn load_source_snapshot(&self, source: &Path) -> Result<(TrialManifest, Vec<u8>)> {
         ordinary_path(source, true)?;
         if source.starts_with(&self.data_root) || self.data_root.starts_with(source) {
             return Err(fail(
                 "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
             ));
         }
-        let manifest = TrialManifest::load(source).map_err(|e| fail(e.to_string()))?;
+        let bytes = read_small(&source.join("local-app.json"))?;
+        let manifest = TrialManifest::parse(&bytes).map_err(|e| fail(e.to_string()))?;
         if manifest.runtime != TrialRuntime::NodeService {
             return Err(fail(
                 "此入口只登记带 Node 服务的应用。网页项目请继续使用我的项目。",
             ));
         }
         manifest.inspect(source).map_err(|e| fail(e.to_string()))?;
-        Ok(manifest)
+        Ok((manifest, bytes))
     }
 
     fn registrations(&self) -> Result<Vec<Registration>> {
@@ -196,7 +221,7 @@ impl NodeApps {
         };
         if digest_manifest(&record.source_path)? != record.manifest_digest {
             return Err(fail(
-                "应用说明文件已更改，当前已暂停启动。请保留原配置和源码以便核对；此版本尚未提供声明更新入口。",
+                "应用说明文件已更改，当前已暂停启动。请先关闭应用，再核对并明确重新信任新版应用说明；受管安装请使用应用更新入口。",
             ));
         }
         Ok(manifest)
@@ -260,6 +285,7 @@ impl NodeApps {
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
             "objectLayout":object_layout,
+            "declarationUpdateAvailable":record.managed.is_none(),
             "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
@@ -294,6 +320,142 @@ impl NodeApps {
         // The digest is computed from the explicit source, not a cached declaration.
         write_new_json(&slot.join("registration.json"), &record)?;
         self.detail(&record.into(), &manifest, &inner)
+    }
+
+    fn require_declaration_update_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
+        if inner.shutting_down || inner.running.contains_key(id) {
+            return Err(ApiError::new(
+                "NODE_DECLARATION_UPDATE_BUSY",
+                "请先正常关闭应用，待服务完成收尾后再核对应用说明。",
+            ));
+        }
+        let marker = self.root.join(id).join("active.json");
+        crate::projects::check_no_symlinks(&marker, true)?;
+        if marker.try_exists()? {
+            return Err(ApiError::new(
+                "NODE_DECLARATION_UPDATE_BUSY",
+                "运行记录尚未完成收尾，不能更新应用说明；请保留现场。",
+            ));
+        }
+        Ok(())
+    }
+
+    fn declaration_update_candidate(
+        &self,
+        id: &str,
+        inner: &Inner,
+    ) -> Result<DeclarationUpdateCandidate> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("应用实例标识无效。"));
+        }
+        self.require_declaration_update_stopped(id, inner)?;
+        let bytes = read_small(&self.root.join(id).join("registration.json"))?;
+        let version = serde_json::from_slice::<Value>(&bytes)?["version"].as_u64();
+        if version == Some(2) {
+            return Err(ApiError::new(
+                "NODE_DECLARATION_UPDATE_MANAGED",
+                "受管安装不能重新登记外部应用说明，请使用应用更新入口。",
+            ));
+        }
+        let external: ExternalRegistration = serde_json::from_slice(&bytes)?;
+        if external.version != 1 || external.id != id {
+            return Err(fail("外部应用登记记录无效，请保留现场。"));
+        }
+        let registered_digest = format!("{:x}", Sha256::digest(&bytes));
+        let record = Registration::from(external);
+        let (manifest, manifest_bytes) = self.load_source_snapshot(&record.source_path)?;
+        let manifest_digest = format!("{:x}", Sha256::digest(&manifest_bytes));
+        // view checks saved field types, endpoint bindings and private-file
+        // metadata. It does not retrieve or deserialize any credential value.
+        let view = self
+            .store(id)?
+            .view(&manifest)
+            .map_err(|error| fail(error.to_string()))?;
+        let inspected = serde_json::to_value(
+            manifest
+                .inspect(&record.source_path)
+                .map_err(|error| fail(error.to_string()))?,
+        )?;
+        let preview = json!({
+            "appId":id,
+            "expectedRegisteredDigest":registered_digest,
+            "registeredManifestDigest":record.manifest_digest,
+            "expectedManifestDigest":manifest_digest,
+            "configurationRevision":view.revision,
+            "sourcePath":record.source_path,
+            "app":inspected["app"],
+            "backend":manifest.backend.as_ref().map(|backend| json!({
+                "protocolVersion":backend.protocol_version,"root":backend.root,
+                "entry":backend.entry,"nodeMajor":backend.node_major
+            })),
+            "fields":inspected["configuration"]["fields"],
+            "configuration":{"revision":view.revision,"values":view.saved_values,
+                "secretStatus":view.secrets,"missingRequired":view.missing_required,
+                "canStart":view.can_start},
+            "requiresRetrust":true,
+            "notice":"旧外部登记只保存应用说明摘要，没有可供比较的旧声明。此操作表示你明确重新信任当前源码目录中的新版应用说明，平台不能自动确认它只是新增选填项或证明源码安全。原数据和已保存配置保持；服务地址变化的密钥仍需重新确认绑定。保存后不会启动应用。"
+        });
+        Ok(DeclarationUpdateCandidate {
+            record,
+            manifest,
+            preview,
+        })
+    }
+
+    pub async fn declaration_update_preview(&self, id: &str) -> Result<Value> {
+        let inner = self.inner.lock().await;
+        Ok(self.declaration_update_candidate(id, &inner)?.preview)
+    }
+
+    pub async fn declaration_update_apply(
+        &self,
+        id: &str,
+        input: DeclarationUpdateRequest,
+    ) -> Result<Value> {
+        if !input.confirmed {
+            return Err(ApiError::new(
+                "NODE_DECLARATION_UPDATE_CONFIRMATION_REQUIRED",
+                "请先核对新版应用说明，并明确确认重新信任。",
+            ));
+        }
+        let mut inner = self.inner.lock().await;
+        let candidate = self.declaration_update_candidate(id, &inner)?;
+        let changed = || {
+            ApiError::new(
+                "NODE_DECLARATION_UPDATE_CHANGED",
+                "应用登记、说明文件或配置已变化，请重新预览并核对。",
+            )
+        };
+        if candidate.preview["expectedRegisteredDigest"] != input.expected_registered_digest
+            || candidate.preview["expectedManifestDigest"] != input.expected_manifest_digest
+            || candidate.preview["configurationRevision"] != input.configuration_revision
+        {
+            return Err(changed());
+        }
+        let replacement = ExternalRegistration {
+            version: 1,
+            id: candidate.record.id.clone(),
+            source_path: candidate.record.source_path.clone(),
+            manifest_digest: input.expected_manifest_digest,
+        };
+        let record = Registration::from(replacement);
+        // Prepare the response before publication. A late failure must not be
+        // reported as an uncommitted update after the registration was changed.
+        let mut detail = self.detail(&record, &candidate.manifest, &inner)?;
+        detail["state"] = json!("stopped");
+        detail["lastError"] = Value::Null;
+        self.require_declaration_update_stopped(id, &inner)?;
+        let fresh = self.declaration_update_candidate(id, &inner)?;
+        if fresh.preview["expectedRegisteredDigest"] != input.expected_registered_digest
+            || fresh.preview["expectedManifestDigest"] != record.manifest_digest
+            || fresh.preview["configurationRevision"] != input.configuration_revision
+        {
+            return Err(changed());
+        }
+        let path = self.root.join(id).join("registration.json");
+        replace_external_registration(&path, &record, &input.expected_registered_digest)?;
+        inner.errors.remove(id);
+        Ok(detail)
     }
 
     /// Preparation reads only this public snapshot. It never obtains credential
@@ -426,6 +588,7 @@ impl NodeApps {
             .unwrap_or_else(|error|json!({
                 "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                 "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
+                "declarationUpdateAvailable":record.managed.is_none(),
                 "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
                 "objectLayout":null,
                 "restartRequired":false,"runningRevision":null,"lastError":error.message,
@@ -832,6 +995,42 @@ fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+/// Publish only the external registration. Rename is the commit point; no
+/// configuration, credential or business-data file is rewritten here.
+fn replace_external_registration(
+    path: &Path,
+    record: &Registration,
+    expected_digest: &str,
+) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| fail("登记目录无效。"))?;
+    ordinary_path(parent, true)?;
+    let temporary = parent.join(format!(".registration-{}.tmp", Uuid::new_v4()));
+    let replacement = ExternalRegistration {
+        version: 1,
+        id: record.id.clone(),
+        source_path: record.source_path.clone(),
+        manifest_digest: record.manifest_digest.clone(),
+    };
+    let result = (|| {
+        write_new_json(&temporary, &replacement)?;
+        if format!("{:x}", Sha256::digest(read_small(path)?)) != expected_digest {
+            return Err(ApiError::new(
+                "NODE_DECLARATION_UPDATE_CHANGED",
+                "应用登记已变化，请重新预览并核对。",
+            ));
+        }
+        fs::rename(&temporary, path)?;
+        // Publication succeeded. A directory-sync failure must not invite an
+        // unsafe duplicate apply by reporting that nothing was committed.
+        let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 #[path = "node_apps_lifecycle_tests.rs"]
 mod lifecycle_tests;
@@ -839,3 +1038,7 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "node_apps_install_tests.rs"]
 mod install_tests;
+
+#[cfg(test)]
+#[path = "node_apps_declaration_update_tests.rs"]
+mod declaration_update_tests;
