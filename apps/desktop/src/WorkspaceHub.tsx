@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Archive, ArrowRight, Copy, FolderOpen, HardDrive, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { ProjectSpaceRanking, WorkspaceStorageSummary } from './StoragePanels';
+import { WorkspaceStorageSummary } from './StoragePanels';
 import { WorkspaceCleanupPanel } from './WorkspaceCleanupPanel';
 import { timeText } from './storage-utils';
 import type { ProjectInfo, RetainedWorkspaceRoot, TaskRecord, WorkspaceInfo } from './types';
@@ -63,9 +63,7 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
     {migrating && <p className="workspace-operation-status" role="status">工作区正在迁移，新操作暂时停用。请等待任务最终结果；已有窗口的草稿会保留。</p>}
     {cleanupBusy && <p className="workspace-operation-status" role="status">历史清理正在进行，管理写操作暂时停用。可在“清理历史”查看任务与实际结果。</p>}
     <div className="workspace-hub-panel" id={`${id}-overview-panel`} role="tabpanel" aria-labelledby={`${id}-overview-tab`} hidden={tab !== 'overview'}>
-      <WorkspaceStorageSummary key={root} revision={props.revision} enabled={props.enabled && !migrating && tab === 'overview'} compact />
-      <ProjectSpaceRanking projects={props.projects} onSelect={props.onSelect} />
-      <div className="workspace-quick-actions"><button className="text-button" onClick={() => activateTab('location')}><FolderOpen size={14} />查看工作区位置<ArrowRight size={14} /></button><button className="text-button" onClick={() => activateTab('cleanup')}><Archive size={14} />查看历史清理范围<ArrowRight size={14} /></button></div>
+      <WorkspaceStorageSummary key={root} revision={props.revision} enabled={props.enabled && !migrating && tab === 'overview'} projects={props.projects} onSelect={props.onSelect} onCleanup={() => activateTab('cleanup')} />
     </div>
     <div className="workspace-hub-panel" id={`${id}-location-panel`} role="tabpanel" aria-labelledby={`${id}-location-tab`} hidden={tab !== 'location'}>
       <WorkspaceLocation key={root} workspace={props.workspace} enabled={props.enabled && !cleanupBusy} active={tab === 'location'} migrating={migrating} onTask={props.onTask} onRefresh={props.onRefresh} />

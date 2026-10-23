@@ -1,10 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Download, Eye, RefreshCw, Search, X } from 'lucide-react';
+import { Archive, ArrowRight, ChevronRight, Download, Eye, PanelsTopLeft, RefreshCw, Search, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectTask } from './ProjectTask';
 import type { MaintenanceStatus, ProjectInfo, ProjectStorage, StorageFiles, StoragePart, StoredFile, TaskRecord } from './types';
 import { bytesText, partBytes, timeText, percentOf, exactBytes } from './storage-utils';
 import { messageFrom } from './ui-utils';
+import { spaceOverview } from './workspace-space-model';
+import type { WorkspaceStorageSnapshot } from './workspace-space-model';
 const categoryNames: Record<string, string> = { source: '源码与项目资料', output: '网页产物', attachments: '用户素材', database: '数据库', dependencies: '开发依赖', cache: '缓存与日志', other: '其他文件' };
 function issueText(issue: unknown) { if (typeof issue === 'object' && issue) { const data = issue as Record<string, unknown>; return [data.path, data.message ?? data.reason ?? data.code].filter(Boolean).join(' · '); } return String(issue); }
 function Issues({ items }: { items?: unknown[] }) { return items?.length ? <details className="storage-issues"><summary>{items.length} 项未能完整统计 / 需要检查</summary>{items.map((issue, index) => <p key={index}>{issueText(issue)}</p>)}</details> : null; }
@@ -62,62 +64,38 @@ function AttachmentBrowser({ project, blocked }: { project: ProjectInfo; blocked
     {preview && <div className="attachment-preview"><div><strong>{preview.path}</strong><button className="icon-button" onClick={() => { previewRequest.current++; setPreview(null); }} aria-label="关闭素材预览"><X size={16} /></button></div>{preview.mimeType.startsWith('image/') ? <img src={preview.dataUrl} alt={preview.path} /> : preview.mimeType.startsWith('audio/') ? <audio controls src={preview.dataUrl} /> : <video controls src={preview.dataUrl} />}</div>}{error && <p role="alert" className="environment-issue">{error}</p>}{notice && <p role="status">{notice}</p>}
   </section>;
 }
-interface WorkspaceStorage { platformProgram: StoragePart; workspace: StoragePart; otherLocalLocations: StoragePart[]; knownLocalTotal?: StoragePart; disks?: Record<string, unknown>[] }
-export function WorkspaceStorageSummary({ revision, enabled, compact = true }: { revision: number; enabled: boolean; compact?: boolean }) {
-  const [data, setData] = useState<WorkspaceStorage | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const request = useRef(0);
-  const read = useCallback(async () => { if (!enabled) return; const sequence = ++request.current; setBusy(true); try { const value = await invoke<WorkspaceStorage>('workspace_storage'); if (sequence === request.current) { setData(value); setError(''); } } catch (cause) { if (sequence === request.current) setError(messageFrom(cause)); } finally { if (sequence === request.current) setBusy(false); } }, [enabled]);
+export function WorkspaceStorageSummary({ revision, enabled, projects, onSelect, onCleanup }: { revision: number; enabled: boolean; projects?: ProjectInfo[]; onSelect?: (projectId: string) => void; onCleanup?: () => void }) {
+  const [data, setData] = useState<WorkspaceStorageSnapshot | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const request = useRef(0);
+  const read = useCallback(async () => { if (!enabled) return; const sequence = ++request.current; setBusy(true); try { const value = await invoke<WorkspaceStorageSnapshot>('workspace_storage'); if (sequence === request.current) { setData(value); setError(''); } } catch (cause) { if (sequence === request.current) setError(messageFrom(cause)); } finally { if (sequence === request.current) setBusy(false); } }, [enabled]);
   useEffect(() => { void read(); return () => { request.current++; }; }, [read, revision]);
-  const other = data ? combinedLocations(data.otherLocalLocations) : undefined;
-  return <section className={`lifecycle-card workspace-summary-card${compact ? ' is-compact' : ''}`} aria-labelledby="workspace-summary-title">
-    <div className="storage-heading"><div><h2 id="workspace-summary-title">空间总览</h2><p>查看程序、当前工作区与其他已知位置的文件大小。</p></div><button className="refresh-button" disabled={!enabled || busy} onClick={() => void read()}><RefreshCw size={14} />{busy ? '统计中…' : '重新统计'}</button></div>
-    <div className="workspace-storage-grid workspace-scope-grid">
-      <ScopeCard label="平台程序" part={data?.platformProgram} compact={compact} />
-      <ScopeCard label="当前工作区" part={data?.workspace} compact={compact} />
-      <div className="storage-category workspace-scope-card"><span>其他已知位置</span><strong title={exactBytes(partBytes(other))}>{bytesText(partBytes(other))}</strong><small>{scopeStatus(other)}</small><details className="workspace-disclosure" open={compact ? undefined : true}><summary>查看位置{data ? `（${data.otherLocalLocations.length}）` : ''}</summary><div className="workspace-disclosure-body"><p>迁移保留目录，以及工作区以外的设置、运行记录与统计缓存。</p>{data ? data.otherLocalLocations.length ? data.otherLocalLocations.map((part, index) => <div className="workspace-location-summary" key={String(part.root ?? index)}><h3>{scopeName(String((part.scope as Record<string, unknown> | undefined)?.kind ?? ''))}</h3><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong><ScopeDetails part={part} /></div>) : <p>没有其他已知位置。</p> : <p>尚未统计。</p>}</div></details></div>
-    </div>
-    <StorageRetentionExplanation data={data} />
-    <details className="workspace-disclosure workspace-measurement"><summary>统计口径与磁盘可用空间</summary><div className="workspace-disclosure-body"><p>数字为文件逻辑字节，不等于实际磁盘占块。不同范围各有统计时间；项目已包含在工作区内，不重复相加。外部 ZIP、下载的 DMG 与未登记的个人文件不计入。</p>{data?.knownLocalTotal && <p>已知范围合计：<strong title={exactBytes(partBytes(data.knownLocalTotal))}>{bytesText(partBytes(data.knownLocalTotal))}</strong> · {data.knownLocalTotal.complete ? '统计完整' : '部分统计，仍有未知范围'}</p>}{data?.disks?.map((disk, index) => <div className="workspace-disk-row" key={index}><code>{String(disk.exampleRoot ?? disk.path ?? disk.root ?? disk.mountPoint ?? '所在磁盘')}</code><span>磁盘可用 {bytesText((disk.availableBytes ?? null) as import('./types').ByteCount)}</span></div>)}</div></details>
-    {error && <p role="alert" className="environment-issue">{error}</p>}
-  </section>;
+  const overview = spaceOverview(data);
+  const scannedProjects = Array.isArray(data?.workspace.projects) ? data.workspace.projects as StoragePart[] : [];
+  const rankedProjects = projects?.map((project) => {
+    const scanned = scannedProjects.find((part) => (part.scope as { projectId?: string } | undefined)?.projectId === project.id);
+    return scanned ? { ...project, storage: { ...project.storage, currentProject: scanned } } : project;
+  });
+  return <>
+    <section className="lifecycle-card workspace-summary-card space-summary" aria-labelledby="workspace-summary-title" aria-busy={busy}>
+      <div className="space-summary-top">
+        <div><h2 id="workspace-summary-title">小抽屉占用</h2><div className="space-total"><strong className="space-total-value" title={exactBytes(overview.total)}>{data ? bytesText(overview.total) : busy ? '统计中…' : '尚未统计'}</strong>{overview.total !== null && !overview.complete && <span className="space-status">已统计</span>}{overview.stale && <span className="space-status">需要更新</span>}</div></div>
+        <div className="space-summary-actions"><button className="refresh-button" disabled={!enabled || busy} onClick={() => void read()}><RefreshCw size={14} />{busy ? '统计中…' : '刷新'}</button>{onCleanup && <button className="refresh-button" onClick={onCleanup}><Archive size={14} />检查历史文件<ArrowRight size={14} /></button>}</div>
+      </div>
+      {!error && overview.barReady && <div className="space-usage-bar" role="img" aria-label="各类文件占用比例">{overview.groups.map(({ id, label, part }) => <span key={id} className={`space-color-${id}`} style={{ flexGrow: percentOf(partBytes(part), overview.total) ?? 0 }} title={`${label} ${bytesText(partBytes(part))}`} />)}</div>}
+      {!!overview.groups.length && <dl className="space-legend">{overview.groups.map(({ id, label, part }) => <div key={id}><dt><i className={`space-dot space-color-${id}`} aria-hidden="true" />{label}</dt><dd title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}{(part.complete === false || part.stale === true) && <small>{part.stale ? '需要更新' : '部分统计'}</small>}</dd></div>)}</dl>}
+      {error && <p role="alert" className="environment-issue">{data ? '更新失败，显示上次统计。' : '暂时无法统计。'}<span className="space-error-detail">{error}</span></p>}
+      {data && !overview.complete && <p className="space-summary-footer">部分位置尚未统计完整</p>}
+      <details className="workspace-disclosure space-details"><summary><span>明细与说明</span>{overview.updatedAt && <small>最近统计 {timeText(overview.updatedAt)}</small>}</summary><div className="workspace-disclosure-body">
+        <p>网页项目包含源码、依赖和数据；已安装应用与设置包含 Node 应用。</p>
+        <p>系统废纸篓不计入这里。文件大小不等于可释放的磁盘空间。</p>
+        {data ? [data.platformProgram, data.workspace, ...data.otherLocalLocations].map((part, index) => <div className="workspace-location-summary" key={String(part.root ?? index)}><div className="space-scope-heading"><h3>{scopeName(String((part.scope as Record<string, unknown> | undefined)?.kind ?? (index === 0 ? 'platformProgram' : index === 1 ? 'workspace' : '')))}</h3><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong></div><small>{scopeStatus(part)}</small><ScopeDetails part={part} /></div>) : <p>尚未统计。</p>}
+        {data?.disks?.map((disk, index) => <div className="workspace-disk-row" key={index}><code>{String(disk.exampleRoot ?? disk.path ?? disk.root ?? disk.mountPoint ?? '所在磁盘')}</code><span>磁盘可用 {bytesText((disk.availableBytes ?? null) as import('./types').ByteCount)}</span></div>)}
+      </div></details>
+    </section>
+    {rankedProjects && onSelect && <ProjectSpaceRanking projects={rankedProjects} onSelect={onSelect} />}
+  </>;
 }
-function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }) {
-  const categories = data?.workspace.categories as Record<string, StoragePart> | undefined;
-  const rows: { key: string; label: string; part: StoragePart; parent: StoragePart; explanation: string }[] = [];
-  const add = (key: string, label: string, part: StoragePart | undefined, parent: StoragePart | undefined, explanation: string) => {
-    if (!part || !parent) return;
-    const value = partBytes(part);
-    try { if (value != null && (typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64)) === 0n && parent.complete && !parent.stale) return; } catch { /* Keep an unknown size visible. */ }
-    rows.push({ key, label, part, parent, explanation });
-  };
-  add('trash', '历史删除资料与记录 · 当前工作区', categories?.trash, data?.workspace, '旧版遗留资料与删除核对记录仍计入工作区大小，不提供项目恢复或清理入口。');
-  add('backups', '历史备份 · 当前工作区', categories?.backups, data?.workspace, '删除项目后仍保留历史备份；当前版本尚无历史备份删除入口。');
-  add('operations', '操作现场 · 当前工作区', categories?.operations, data?.workspace, '任务记录与恢复前的原现场，不随删除项目清空。已完成且无保护引用的原现场可在“清理历史”核对后删除，操作记录继续保留。');
-  add('sharedCache', '共享缓存 · 当前工作区', categories?.sharedCache, data?.workspace, '构建工具等共享的缓存，独立于单个项目保存。');
-  const retained = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'retainedWorkspace') ?? [];
-  if (retained.length) {
-    const part = combinedLocations(retained);
-    add('retained', '迁移保留目录 · 其他已知位置', part, part, '迁移前的原目录已停用，为恢复保留；删除项目不会清除这份完整历史副本。可在“清理历史”扫描并确认符合条件的目录。');
-  }
-  add('program', '平台程序', data?.platformProgram, data?.platformProgram, '软件自身的文件，不随项目数量变化。');
-  const applicationData = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'applicationData') ?? [];
-  if (applicationData.length) {
-    const part = combinedLocations(applicationData);
-    add('applicationData', '应用设置与运行记录 · 其他已知位置', part, part, '设置、运行记录与统计缓存，独立于项目保存。');
-  }
-  return <section className="overview-section workspace-retention-explanation" aria-labelledby="workspace-retention-title">
-    <h3 id="workspace-retention-title">为什么删除项目后仍有占用</h3>
-    <p>删除项目会移入 macOS 系统废纸篓，仍占磁盘空间，直到在 Finder 中清空。系统废纸篓不计入当前工作区；历史记录、备份、操作现场、迁移保留目录和程序文件仍可能占用空间。</p>
-    {rows.length > 0 && <><p>以下为上方范围中仍有占用或大小未知的项目，不再与上方数字相加：</p><dl className="workspace-retention-list">{rows.map(({ key, label, part, parent, explanation }) => <div key={key}><dt>{label}</dt><dd><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong>{Boolean(!parent.complete || parent.stale) && <small>{parent.stale ? ' · 已过期' : ' · 部分统计 / 未知'}</small>}<p>{explanation}</p></dd></div>)}</dl></>}
-    <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。旧工作区与已完成的恢复原现场可在“清理历史”核对范围后显式处理。当前历史备份和未解决现场仍保留，不会自动删除。</p>
-  </section>;
-}
-function combinedLocations(parts: StoragePart[]): StoragePart {
-  let bytes = 0n; let unknown = false;
-  for (const part of parts) { const value = partBytes(part); try { if (value == null) unknown = true; else bytes += typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64); } catch { unknown = true; } }
-  return { totalBytes: unknown ? null : { $int64: bytes.toString() }, complete: !unknown && parts.every((part) => part.complete), stale: parts.some((part) => part.stale) };
-}
-function scopeStatus(part?: StoragePart) { return part ? `${part.complete ? '统计完整' : '部分统计 / 未知'}${part.stale ? ' · 已过期' : ''}` : '尚未统计'; }
-function scopeName(name: string) { return ({ applicationData: '应用设置与运行记录', retainedWorkspace: '迁移保留目录', platformProgram: '平台程序', workspace: '当前工作区' } as Record<string, string>)[name] ?? '已知本地位置'; }
+function scopeStatus(part?: StoragePart) { return part ? `${part.complete ? '统计完整' : '部分统计 / 未知'}${part.stale ? ' · 需要更新' : ''}` : '尚未统计'; }
+function scopeName(name: string) { return ({ applicationData: '已安装应用与设置', retainedWorkspace: '迁移保留目录', platformProgram: '软件本体', workspace: '当前工作区' } as Record<string, string>)[name] ?? '其他本地文件'; }
 function ScopeDetails({ part }: { part?: StoragePart }) {
   const categories = part?.categories as Record<string, StoragePart> | undefined;
   return <>
@@ -126,17 +104,13 @@ function ScopeDetails({ part }: { part?: StoragePart }) {
     <Issues items={part?.issues} />
     {categories && <>
       <dl className="workspace-storage-breakdown">{Object.entries(categories).map(([name, item]) => <div key={name}><dt>{({ projects: '网页项目文件', backups: '历史备份', trash: '历史删除资料与记录', operations: '操作现场', sharedCache: '共享缓存', control: '平台控制记录', metadata: '平台元数据', logs: '日志', other: '其他', applicationData: '应用数据', platformProgram: '程序文件', retainedWorkspace: '保留文件' } as Record<string, string>)[name] ?? name}</dt><dd title={exactBytes(partBytes(item))}>{bytesText(partBytes(item))}</dd></div>)}</dl>
-      {categories.projects && <p className="project-help">网页项目文件包含源码、依赖、网页产物和数据。Node 应用计入“其他已知位置”。</p>}
     </>}
   </>;
-}
-function ScopeCard({ label, part, compact }: { label: string; part?: StoragePart; compact: boolean }) {
-  return <div className="storage-category workspace-scope-card"><span>{label}</span><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong><small>{scopeStatus(part)}</small>{Boolean(part?.completedAt) && <small className="storage-timestamp">{timeText(part!.completedAt as string | number)}</small>}<details className="workspace-disclosure" open={compact ? undefined : true}><summary>查看位置与分类</summary><div className="workspace-disclosure-body"><ScopeDetails part={part} /></div></details></div>;
 }
 export function ProjectSpaceRanking({ projects, onSelect }: { projects: ProjectInfo[]; onSelect: (projectId: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const numeric = (project: ProjectInfo) => { const value = project.storage?.currentProject?.totalBytes; try { return value == null ? null : typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64); } catch { return null; } };
   const ordered = [...projects].sort((a, b) => { const left = numeric(a); const right = numeric(b); return left === right ? a.name.localeCompare(b.name) : left === null ? 1 : right === null ? -1 : left > right ? -1 : 1; });
   const visible = expanded ? ordered : ordered.slice(0, 5);
-  return <section className="lifecycle-card workspace-project-ranking"><h2>项目占用排行</h2><p>按最近的扫描结果排列。选择项目可查看分类和素材。</p><div className="project-size-list">{visible.map((project) => <button className="project-size-row" key={project.id} onClick={() => onSelect(project.id)}><span><strong>{project.name}</strong><code>{project.id}</code></span><span title={exactBytes(project.storage?.currentProject?.totalBytes)}><strong>{bytesText(project.storage?.currentProject?.totalBytes)}</strong><small>{project.storage?.currentProject?.stale ? '已过期 · ' : project.storage?.currentProject?.complete === false ? '部分统计 · ' : ''}{project.storage?.currentProject?.completedAt ? timeText(project.storage.currentProject.completedAt) : '尚无扫描结果'}</small></span></button>)}</div>{ordered.length > 5 && <button className="text-button workspace-ranking-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? '收起' : `查看全部 ${ordered.length} 个项目`}</button>}{!projects.length && <p>当前工作区没有项目。</p>}</section>;
+  return <section className="lifecycle-card workspace-project-ranking"><div className="space-ranking-heading"><h2>网页项目占用</h2><span>{projects.length} 个项目</span></div><div className="project-size-list">{visible.map((project) => <button className="project-size-row" key={project.id} onClick={() => onSelect(project.id)}><PanelsTopLeft size={18} aria-hidden="true" /><span className="space-project-name"><strong>{project.name}</strong></span><span className="space-project-size" title={exactBytes(project.storage?.currentProject?.totalBytes)}><strong>{bytesText(project.storage?.currentProject?.totalBytes)}</strong>{project.storage?.currentProject?.stale ? <small>需要更新</small> : project.storage?.currentProject?.complete === false ? <small>部分统计</small> : null}</span><ChevronRight size={16} aria-hidden="true" /></button>)}</div>{ordered.length > 5 && <button className="text-button workspace-ranking-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? '收起' : `查看全部 ${ordered.length} 个项目`}</button>}{!projects.length && <p className="space-empty">还没有网页项目</p>}</section>;
 }
