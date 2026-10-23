@@ -1,5 +1,5 @@
 import { CircleAlert, ExternalLink, Info, Save, Trash2, Undo2 } from 'lucide-react';
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Modal } from './Modal';
 import type { NodeAppDetail, NodeConfigurationField } from './node-app-types';
@@ -15,9 +15,10 @@ function hasHelp(field: NodeConfigurationField) {
   return Boolean(field.description.trim() || field.howToGet.some((step) => step.trim()) || field.helpUrl || field.default !== undefined);
 }
 
-export function NodeConfigurationForm({ app, draft, disabled, dirty, saving, onOrdinaryChange, onSecretChange, onSave, onReload, onOpenHelp }: {
+export function NodeConfigurationForm({ app, draft, active, disabled, dirty, saving, onOrdinaryChange, onSecretChange, onSave, onReload, onOpenHelp }: {
   app: NodeAppDetail;
   draft: NodeConfigurationDraft;
+  active: boolean;
   disabled: boolean;
   dirty: boolean;
   saving: boolean;
@@ -34,6 +35,7 @@ export function NodeConfigurationForm({ app, draft, disabled, dirty, saving, onO
   const [help, setHelp] = useState<{ kind: 'general' } | { kind: 'field'; name: string } | null>(null);
   const issues = validateNodeConfiguration(app, draft);
   const helpField = help?.kind === 'field' ? app.fields.find((field) => field.name === help.name) : undefined;
+  useEffect(() => { if (!active) setHelp(null); }, [active]);
 
   function syncBrowserIssue(name: string, control: HTMLInputElement | HTMLSelectElement) {
     const message = control.validity.badInput ? '请填写有效数值' : undefined;
@@ -119,10 +121,10 @@ export function NodeConfigurationForm({ app, draft, disabled, dirty, saving, onO
       {!app.fields.length && <p className="project-help">此应用无需配置。</p>}
       <div className="node-config-save"><span role="status">{dirty ? '有未保存的修改' : '已保存'}</span><div><button className="refresh-button" type="button" disabled={disabled} onClick={onReload}>重新读取配置</button><button className="primary-button" type="submit" disabled={disabled || !dirty}><Save size={15} />{saving ? '保存中…' : '保存配置'}</button></div></div>
     </form>
-    {help?.kind === 'general' && <Modal title="配置与密钥说明" className="node-field-help-modal" onClose={() => setHelp(null)}>
+    {active && help?.kind === 'general' && <Modal title="配置与密钥说明" className="node-field-help-modal" onClose={() => setHelp(null)}>
       <div className="node-field-help"><p>留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。</p><p>每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。</p><p>保存配置不会自动启动或重启应用。</p></div>
     </Modal>}
-    {helpField && <Modal title={`${helpField.label}说明`} className="node-field-help-modal" onClose={() => setHelp(null)}>
+    {active && helpField && <Modal title={`${helpField.label}说明`} className="node-field-help-modal" onClose={() => setHelp(null)}>
       <div className="node-field-help">
         {helpField.description.trim() && <p>{helpField.description}</p>}
         {helpField.default !== undefined && <p className="node-field-help-default">留空使用默认值：<strong>{valueLabel(helpField, helpField.default)}</strong></p>}

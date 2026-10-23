@@ -21,7 +21,7 @@ for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputEleme
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-const { createElement: h, act, StrictMode, useState } = await import('react');
+const { createElement: h, act, StrictMode, useLayoutEffect, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { Modal } = await import(pathToFileURL(compiledPath).href);
 let root;
@@ -59,11 +59,12 @@ function assertRestored() {
   assert.equal(document.activeElement, document.getElementById('opener'));
 }
 
-function NestedFixture({ initialHelp = false, onParentClose = () => {} }) {
+function NestedFixture({ initialHelp = false, onParentClose = () => {}, onLayout = () => {} }) {
   const [open, setOpen] = useState(true);
   const [help, setHelp] = useState(initialHelp);
   const [more, setMore] = useState(false);
   const [draft, setDraft] = useState('');
+  useLayoutEffect(() => onLayout({ open, help, more }), [open, help, more, onLayout]);
   return open && h(Modal, { title: '应用配置', onClose() { onParentClose(); setOpen(false); } },
     h('input', { 'aria-label': '人工配置', value: draft, onChange: event => setDraft(event.currentTarget.value) }),
     h('button', { id: 'info', type: 'button', onClick: () => setHelp(true) }, '字段说明'),
@@ -79,10 +80,13 @@ test('Nested help owns Escape and returns focus without closing or clearing the 
   const input = document.querySelector('[aria-label="人工配置"]');
   await change(input, 'disposable unsaved configuration');
   await click(document.getElementById('info'));
-  assert.equal(layer('应用配置').hasAttribute('inert'), true);
-  assert.equal(dialog('应用配置').getAttribute('aria-modal'), 'false');
+  assert.equal(layer('应用配置').hasAttribute('inert'), false);
+  assert.equal(dialog('应用配置').getAttribute('aria-modal'), 'true');
+  assert.equal(dialog('应用配置').querySelector('.modal-header').hasAttribute('inert'), true);
+  assert.ok(input.closest('[inert]'));
+  assert.equal(dialog('应用配置').contains(dialog('字段说明')), true);
   assert.equal(layer('字段说明').hasAttribute('inert'), false);
-  assert.equal(dialog('字段说明').getAttribute('aria-modal'), 'true');
+  assert.equal(dialog('字段说明').getAttribute('aria-modal'), null);
   assert.equal(document.activeElement, dialog('字段说明').querySelector('h2'));
   assert.equal((await key('Escape')).defaultPrevented, true);
   assert.equal(parentClosed, 0);
@@ -90,6 +94,8 @@ test('Nested help owns Escape and returns focus without closing or clearing the 
   assert.equal(document.activeElement, document.getElementById('info'));
   assert.equal(input.value, 'disposable unsaved configuration');
   assert.equal(layer('应用配置').hasAttribute('inert'), false);
+  assert.equal(input.closest('[inert]'), null);
+  assert.equal(dialog('应用配置').querySelector('.modal-header').hasAttribute('inert'), false);
   assert.equal(document.body.style.overflow, 'hidden');
   await key('Escape');
   assert.equal(parentClosed, 1);
@@ -129,17 +135,45 @@ test('Three nested dialogs close in order with the correct layer and return focu
   assert.equal(dialog('更多说明'), undefined);
   assert.equal(document.activeElement, document.getElementById('more'));
   assert.equal(layer('字段说明').hasAttribute('inert'), false);
-  assert.equal(layer('应用配置').hasAttribute('inert'), true);
+  assert.equal(layer('应用配置').hasAttribute('inert'), false);
+  assert.ok(document.getElementById('info').closest('[inert]'));
   await key('Escape');
   assert.equal(document.activeElement, document.getElementById('info'));
   await key('Escape');
   assertRestored();
 });
 
+test('Nested dialogs remain inside one unchanged ARIA modal root', async () => {
+  await setup(h(NestedFixture));
+  const parent = dialog('应用配置');
+  const mutations = [];
+  const observer = new window.MutationObserver(records => mutations.push(...records));
+  observer.observe(parent, { attributes: true, attributeFilter: ['aria-modal'] });
+  try {
+    await click(document.getElementById('info'));
+    assert.equal(parent.contains(dialog('字段说明')), true);
+    await click(document.getElementById('more'));
+    assert.equal(dialog('字段说明').contains(dialog('更多说明')), true);
+    assert.equal(parent.getAttribute('aria-modal'), 'true');
+    assert.equal(dialog('字段说明').hasAttribute('aria-modal'), false);
+    assert.equal(dialog('更多说明').hasAttribute('aria-modal'), false);
+    assert.equal(dialog('字段说明').querySelector('.modal-header').hasAttribute('inert'), true);
+    assert.equal(document.getElementById('more').hasAttribute('inert'), true);
+    assert.equal(dialog('更多说明').closest('[inert]'), null);
+    await key('Escape');
+    await key('Escape');
+    assert.equal(parent.getAttribute('aria-modal'), 'true');
+    assert.equal(mutations.length, 0, 'Opening and closing nested dialogs must not switch the WebKit ARIA modal root');
+  } finally {
+    observer.disconnect();
+  }
+});
+
 test('An initially mounted child stays above its parent despite child-first React effects', async () => {
   await setup(h(NestedFixture, { initialHelp: true }));
   assert.equal(document.activeElement, dialog('字段说明').querySelector('h2'));
-  assert.equal(layer('应用配置').hasAttribute('inert'), true);
+  assert.equal(layer('应用配置').hasAttribute('inert'), false);
+  assert.equal(dialog('应用配置').querySelector('.modal-header').hasAttribute('inert'), true);
   assert.equal(layer('字段说明').hasAttribute('inert'), false);
   assert.ok(Number(layer('字段说明').style.zIndex) > Number(layer('应用配置').style.zIndex));
   await key('Escape');
@@ -147,6 +181,59 @@ test('An initially mounted child stays above its parent despite child-first Reac
   assert.equal(dialog('字段说明'), undefined);
   await key('Escape');
   assertRestored();
+});
+
+test('New help is registered during layout before background observers can mark its layer inert', async () => {
+  const layouts = [];
+  await setup(h(NestedFixture, { onLayout({ help }) {
+    const active = help ? dialog('字段说明') : dialog('应用配置');
+    layouts.push({ help, modal: active?.getAttribute('aria-modal'), parentModal: dialog('应用配置')?.getAttribute('aria-modal'), inert: Boolean(active?.closest('[inert]')), focused: document.activeElement === active?.querySelector('h2') });
+  } }));
+  const mutations = [];
+  const observer = new window.MutationObserver(records => mutations.push(...records));
+  observer.observe(document.body, { attributes: true, attributeFilter: ['inert'], subtree: true });
+  try {
+    await click(document.getElementById('info'));
+    const helpLayer = layer('字段说明');
+    assert.deepEqual(layouts, [
+      { help: false, modal: 'true', parentModal: 'true', inert: false, focused: true },
+      { help: true, modal: null, parentModal: 'true', inert: false, focused: true },
+    ]);
+    assert.equal(mutations.filter(record => record.target === helpLayer).length, 0, 'The newly active portal must never be marked inert while observers run');
+    assert.equal(document.querySelectorAll('[aria-modal="true"]').length, 1);
+  } finally {
+    observer.disconnect();
+  }
+});
+
+test('Every inert and ARIA transition leaves at most one modal root and never hides that root', async () => {
+  const prototype = window.Element.prototype;
+  const setAttribute = prototype.setAttribute;
+  const removeAttribute = prototype.removeAttribute;
+  const transitions = [];
+  function record(attribute) {
+    if (attribute !== 'inert' && attribute !== 'aria-modal') return;
+    const active = [...document.querySelectorAll('[aria-modal="true"]')];
+    transitions.push({ roots: active.length, hidden: active.some(element => element.closest('[inert]')) });
+  }
+  prototype.setAttribute = function (name, value) { setAttribute.call(this, name, value); record(name); };
+  prototype.removeAttribute = function (name) { removeAttribute.call(this, name); record(name); };
+  try {
+    await setup(h(NestedFixture));
+    await click(document.getElementById('info'));
+    await click(document.getElementById('more'));
+    await key('Escape');
+    await key('Escape');
+    await click(document.getElementById('info'));
+    await act(async () => root.unmount());
+    root = null;
+    assert.ok(transitions.length > 0);
+    assert.deepEqual(transitions.filter(value => value.roots > 1 || value.hidden), [], 'Do not expose overlapping modal roots or an inert ARIA modal, even during layout cleanup');
+    assertRestored();
+  } finally {
+    prototype.setAttribute = setAttribute;
+    prototype.removeAttribute = removeAttribute;
+  }
 });
 
 test('Removing a lower independent modal preserves the remaining top focus and page lock', async () => {
@@ -180,6 +267,28 @@ test('Dynamically added background stays inert until the final modal closes', as
   await key('Escape');
   assert.equal(background.hasAttribute('inert'), false);
   assert.equal(preserved.hasAttribute('inert'), true);
+  assertRestored();
+});
+
+test('New siblings inside a parent dialog are protected and recover their original inert states', async () => {
+  await setup(h(NestedFixture));
+  const content = dialog('应用配置').querySelector(':scope > .modal-content');
+  const preserved = document.createElement('button');
+  preserved.setAttribute('inert', '');
+  preserved.textContent = '原本不可交互';
+  await act(async () => content.append(preserved));
+  await click(document.getElementById('info'));
+  const background = document.createElement('button');
+  background.textContent = '人工轮询插入内容';
+  await act(async () => content.append(background));
+  assert.equal(background.hasAttribute('inert'), true);
+  assert.equal(preserved.hasAttribute('inert'), true);
+  assert.equal(dialog('字段说明').closest('[inert]'), null);
+  await key('Escape');
+  assert.equal(background.hasAttribute('inert'), false);
+  assert.equal(preserved.hasAttribute('inert'), true);
+  assert.equal(document.activeElement, document.getElementById('info'));
+  await key('Escape');
   assertRestored();
 });
 
