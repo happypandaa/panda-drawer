@@ -524,17 +524,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .handoff-preview { margin-top: 18px; }
 .handoff-preview .section-heading { gap: 12px; align-items: center; padding-bottom: 10px; }
 .handoff-preview label { color: #627153; font-size: 12px; }
-.workspace-retention-explanation { margin: 20px 0; padding: 20px; border: 1px solid #e5e7df; border-radius: 10px; background: #fafbf8; }
-.workspace-retention-explanation h3 { margin: 0 0 10px; color: #4e663e; font-size: 15px; font-weight: 550; }
-.workspace-retention-explanation p { color: #738067; font-size: 12px; line-height: 1.8; margin: 8px 0; }
-.workspace-retention-list { display: grid; gap: 12px; margin: 16px 0; padding: 0; list-style: none; }
-.workspace-retention-list > div { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(0, 2fr); gap: 8px 20px; color: #69765e; font-size: 13px; line-height: 1.8; }
-.workspace-retention-list dt { color: #526343; }
-.workspace-retention-list dd { margin: 0; }
-.workspace-retention-list dd p { margin: 2px 0 0; }
-.workspace-retention-list small { font-size: 11px; }
-.workspace-retention-list strong { color: #526343; font-weight: 550; }
-@media (max-width: 760px) { .handoff-card > .section-heading { flex-direction: column; } .handoff-card > .section-heading .primary-button { width: 100%; justify-content: center; } .workspace-retention-explanation { padding: 16px; } .workspace-retention-list > div { grid-template-columns: 1fr; gap: 2px; } }
+@media (max-width: 760px) { .handoff-card > .section-heading { flex-direction: column; } .handoff-card > .section-heading .primary-button { width: 100%; justify-content: center; } }
 .project-technical-details { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 20px; }
 .project-technical-details > summary { color: #7c8670; font-size: 13px; cursor: pointer; padding: 2px 0 12px; }
 .project-last-task { margin: 0 0 20px; padding: 12px 16px; border: 1px solid #e5e9de; border-radius: 8px; background: #fafbf8; }
@@ -582,14 +572,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .workspace-hub-panel h2 { font-size: 17px; margin: 0; font-weight: 550; }
 .workspace-hub-panel h3 { font-weight: 550; }
 .workspace-summary-card .storage-heading p { margin-bottom: 0; }
-.workspace-scope-grid { grid-template-columns: repeat(3, minmax(0,1fr)); align-items: start; gap: 14px; margin-top: 24px; }
-.workspace-scope-grid > div:last-child { grid-column: auto; }
-.workspace-scope-card { gap: 10px; padding: 20px; background: #f9faf6; }
-.workspace-scope-card > span { color: #7d8c6f; font-size: 13px; }
-.workspace-scope-card > strong { font-size: 27px; line-height: 1.4; color: #4e663e; font-weight: 500; }
-.workspace-scope-card .storage-timestamp { font-size: 11px!important; line-height: 1.8; }
 .workspace-disclosure { border-top: 1px solid #e5eadf; padding-top: 14px; margin-top: 20px; color: #7d8a6f; font-size: 12px; line-height: 1.8; }
-.workspace-scope-card > .workspace-disclosure { margin-top: 6px; }
 .workspace-disclosure > summary { cursor: pointer; color: #6a7f59; font-size: 12px; }
 .workspace-disclosure-body { padding-top: 12px; }
 .workspace-disclosure-body p { font-size: 12px; margin: 0 0 12px; }
@@ -607,7 +590,53 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .workspace-ranking-toggle { margin-top: 18px; }
 .project-size-row small { font-size: 11px; }
 .project-size-row > span:last-child { flex-shrink: 0; }
-.workspace-quick-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 24px; padding: 4px 0 8px; }
+.workspace-hub-panel > .space-summary { padding: 20px 24px; }
+.space-summary-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.space-summary h2 { font-size: 14px; }
+.space-total { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
+.space-total-value { font-size: 38px; font-weight: 550; line-height: 1.2; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+.space-status { padding: 4px 8px; border-radius: 6px; background: var(--radio-subtle); color: var(--radio-secondary); font-size: 11px; }
+.space-summary-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.space-summary-actions button { min-height: 36px; }
+.space-usage-bar { display: flex; height: 12px; gap: 3px; overflow: hidden; border-radius: 4px; margin: 18px 0 0; }
+.space-usage-bar > span { flex-basis: 0; min-width: 2px; }
+.space-color-projects, .space-color-workspace { background: #64899a; }
+.space-color-apps { background: #8d7eac; }
+.space-color-program { background: #6d947e; }
+.space-color-history { background: #c29368; }
+.space-color-cache { background: #aaa0b7; }
+.space-color-other { background: #909398; }
+.space-legend { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px 24px; margin: 16px 0 0; line-height: 1.4; }
+.space-legend > div { min-width: 0; }
+.space-legend dt { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.space-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.space-legend dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; margin: 5px 0 0 15px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.space-legend dd small { font-size: 10px; }
+.space-summary-footer { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; color: var(--radio-muted); font-size: 11px; }
+.space-summary .space-details { margin-top: 16px; padding-top: 10px; }
+.space-details > summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; list-style: none; }
+.space-details > summary::-webkit-details-marker { display: none; }
+.space-details > summary > span::before { content: "▸"; display: inline-block; margin-right: 6px; }
+.space-details[open] > summary > span::before { transform: rotate(90deg); }
+.space-details > summary > small { color: var(--radio-muted); font-size: 10px; }
+.space-error-detail { display: block; font-size: 11px; margin-top: 5px; }
+.space-scope-heading, .space-ranking-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.space-scope-heading h3 { margin-bottom: 4px; }
+.space-ranking-heading > span { font-size: 11px; color: var(--radio-muted); }
+.workspace-project-ranking .project-size-list { margin-top: 12px; border: 0; border-radius: 0; }
+.workspace-project-ranking .project-size-row { padding: 15px 4px; gap: 12px; }
+.project-size-row > .space-project-name { flex: 1; }
+.space-project-name strong { overflow-wrap: anywhere; }
+.project-size-row > .space-project-size { align-items: flex-end; gap: 3px; flex-shrink: 0; }
+.project-size-row > svg { flex-shrink: 0; color: var(--radio-secondary); }
+.project-size-row > svg:last-child { color: var(--radio-muted); }
+.space-empty { font-size: 13px; padding-top: 8px; }
+@media (max-width: 700px) {
+  .space-summary-top { flex-wrap: wrap; gap: 16px; }
+  .space-summary-actions { justify-content: flex-start; }
+  .space-legend { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+  .space-total-value { font-size: 34px; }
+}
 .workspace-current-location { padding: 20px; border: 1px solid #e2e8d9; border-radius: 9px; background: #f8faf4; }
 .workspace-current-location > span { display: block; font-size: 12px; color: #839375; margin-bottom: 12px; }
 .workspace-current-location > code { display: block; font-size: 13px; overflow-wrap: anywhere; line-height: 1.9; color: #536d43; user-select: text; }
@@ -699,8 +728,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 @media (min-width: 1440px) { .project-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
 @media (max-width: 1060px) { main { padding: 28px 24px; } .page-heading { flex-wrap: wrap; } .heading-actions { justify-content: flex-start; } .project-card { padding: 20px; } }
 @media (max-width: 760px) { main { padding: 24px 18px; } .modal-layer { padding: 16px; } .modal-dialog { max-height: calc(100dvh - 32px); border-radius: 12px; } .modal-header, .modal-content { padding: 20px; } .modal-content .overview-tabs { top: -20px; } .project-card { padding: 18px; } .project-toolbar { gap: 8px; } .project-filter select { max-width: 130px; padding-right: 20px; } .project-actions { grid-template-columns: 1fr; } .modal-content .backup-detail-column { padding-left: 0; } }
-@media (max-width: 1060px) { .workspace-scope-card { padding: 16px; } .workspace-scope-card > strong { font-size: 23px; } }
-@media (max-width: 760px) { .workspace-hub-tabs { width: 100%; } .workspace-hub-tabs button { flex: 1; padding: 10px 12px; } .workspace-scope-grid { grid-template-columns: 1fr; } .workspace-hub-panel > .lifecycle-card { padding: 20px; } .workspace-scope-card { padding: 20px; } }
+@media (max-width: 760px) { .workspace-hub-tabs { width: 100%; } .workspace-hub-tabs button { flex: 1; padding: 10px 12px; } .workspace-hub-panel > .lifecycle-card { padding: 20px; } }
 .node-apps-intro { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 10px; background: #f3f5ee; color: #5d6d51; margin-bottom: 20px; }
 .node-apps-intro > div { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 240px; }
 .node-apps-intro p { margin: 0; font-size: 13px; line-height: 1.8; }
@@ -1171,10 +1199,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(h2, h3, h4, dt, label, summary) { color: var(--radio-text); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(p, dd, small, code) { color: var(--radio-secondary); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(section, article, dl, details, form, li) { border-color: var(--radio-line); }
-:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .node-field-variable, .node-field-default, .node-secret-status, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
-:root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-app-heading h2, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
-:root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .history-storage-row, .attachment-row) { border-color: var(--radio-line); }
-:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
+:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .node-field-variable, .node-field-default, .node-secret-status, .workspace-current-location > span) { color: var(--radio-muted); }
+:root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-app-heading h2, .node-field-label, .node-config-save > span) { color: var(--radio-text); }
+:root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .history-storage-row, .attachment-row) { border-color: var(--radio-line); }
+:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .project-last-task, .workspace-current-location, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
 :root[data-theme] :is(.backup-row:hover, .backup-row-selected, .project-size-row:hover, .node-app-list-item.selected) { border-color: var(--radio-focus); color: var(--radio-text); background: var(--radio-selected); box-shadow: none; }
 :root[data-theme] :is(.workspace-hub-tabs) { border-color: var(--radio-line); background: var(--radio-subtle); }
 :root[data-theme] :is(.workspace-hub-tabs button, .overview-tabs button) { color: var(--radio-muted); }

@@ -606,7 +606,7 @@ function hubProps(extra = {}) {
 const workspaceStorage = { platformProgram: { totalBytes: null }, workspace: { totalBytes: null }, otherLocalLocations: [] };
 const hubTab = (name) => [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === name);
 
-test('Workspace opens with read-only summary and quick actions focus the newly selected tab', async () => {
+test('Workspace opens with a read-only overview and one history entry focuses its destination tab', async () => {
   await setup(); const requests = [];
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     requests.push(command);
@@ -618,8 +618,13 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.deepEqual([...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent), ['空间总览', '工作区位置', '清理历史']);
   assert.equal(hubTab('旧版回收记录'), undefined, 'Legacy trash navigation is retired regardless of its contents');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
-  await click(buttonNamed('查看工作区位置'));
-  assert.equal(document.activeElement, hubTab('工作区位置'));
+  assert.equal(document.querySelector('.workspace-quick-actions'), null);
+  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent.trim() === '检查历史文件').length, 1);
+  await click(buttonNamed('检查历史文件'));
+  assert.equal(document.activeElement, hubTab('清理历史'));
+  assert.equal(hubTab('清理历史').getAttribute('aria-selected'), 'true');
+  assert.equal(document.querySelector('.purge-confirmation'), null);
+  await click(hubTab('工作区位置'));
   assert.equal(hubTab('工作区位置').getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
   await click(hubTab('空间总览'));
@@ -628,57 +633,150 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.equal(document.querySelector('.purge-confirmation'), null);
 });
 
-test('Workspace storage identifies webpage project files and counts deletion receipts as platform records', async () => {
+const completeSpacePart = (totalBytes, extra = {}) => ({ totalBytes, complete: true, stale: false, ...extra });
+const completeSpace = (extra = {}) => ({ platformProgram: completeSpacePart(0), workspace: completeSpacePart(0, { categories: {} }), otherLocalLocations: [], ...extra });
+const legendRows = () => [...document.querySelectorAll('.space-legend > div')];
+const legendRow = (name) => legendRows().find((row) => row.querySelector('dt').textContent.includes(name));
+
+test('The space overview has one conserved total, concise purpose groups and closed technical details', async () => {
   await setup();
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     assert.equal(command, 'workspace_storage');
-    return { platformProgram: { totalBytes: 0, complete: true }, workspace: { totalBytes: 1295, complete: true, categories: { projects: { bytes: 1250 }, control: { bytes: 45 } } }, otherLocalLocations: [] };
+    return completeSpace({ workspace: completeSpacePart(1295, { root: '/disposable/workspace', categories: { projects: { bytes: 1250 }, control: { bytes: 45 }, backups: { bytes: 0 } } }), knownLocalTotal: completeSpacePart(1295), disks: [{ exampleRoot: '/disposable/disk', availableBytes: 999999999 }] });
   };
   await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
-  const rows = [...document.querySelectorAll('.workspace-storage-breakdown > div')];
+  assert.equal(document.getElementById('workspace-summary-title').textContent, '小抽屉占用');
+  assert.equal(document.querySelector('.space-total-value').title, '1295 字节');
+  assert.equal(legendRow('网页项目').querySelector('dd').title, '1250 字节');
+  assert.equal(legendRow('缓存与平台记录').querySelector('dd').title, '45 字节');
+  assert.equal(legendRow('备份与历史资料'), undefined, 'A complete fresh zero group is not shown');
+  assert.equal(legendRow('软件本体'), undefined);
+  assert.ok(document.querySelector('.space-usage-bar'));
+  const details = document.querySelector('details.space-details');
+  assert.equal(details.open, false);
+  assert.equal(details.querySelector('summary').textContent.trim(), '明细与说明');
+  assert.equal(document.querySelector('.workspace-scope-path').closest('details'), details);
+  const rows = [...details.querySelectorAll('.workspace-storage-breakdown > div')];
   const projectRow = rows.find((row) => row.querySelector('dt').textContent === '网页项目文件');
   const controlRow = rows.find((row) => row.querySelector('dt').textContent === '平台控制记录');
   assert.equal(projectRow.querySelector('dd').title, '1250 字节');
   assert.equal(controlRow.querySelector('dd').title, '45 字节');
-  assert.match(document.querySelector('.workspace-summary-card').textContent, /包含源码、依赖、网页产物和数据。Node 应用计入“其他已知位置”/);
   assert.equal(rows.some((row) => /当前项目|回收站/.test(row.querySelector('dt').textContent)), false);
+  assert.equal(document.querySelector('.workspace-retention-explanation'), null, 'The old repeated explanation block is removed');
   assert.doesNotMatch(document.querySelector('.workspace-summary-card').textContent, /历史删除资料与记录|回收站/);
 });
 
-test('Storage explains retained sizes within their scopes, aggregates old roots, and preserves unknown measurements', async () => {
+test('Purpose groups include Node application data and historical copies without repeating scope totals', async () => {
   await setup();
   let data = {
-    platformProgram: { totalBytes: 100, complete: true },
-    workspace: { totalBytes: 2000, complete: true, categories: {
-      trash: { totalBytes: 0 }, backups: { totalBytes: null }, operations: { totalBytes: 1500 }, sharedCache: { totalBytes: 500 },
-    } },
+    platformProgram: completeSpacePart(100),
+    workspace: completeSpacePart(2000, { categories: { operations: { bytes: 1500 }, sharedCache: { bytes: 500 } } }),
     otherLocalLocations: [
-      { scope: { kind: 'retainedWorkspace' }, totalBytes: 1000, complete: true },
-      { scope: { kind: 'retainedWorkspace' }, totalBytes: { $int64: '2000' }, complete: true },
-      { scope: { kind: 'applicationData' }, totalBytes: 321, complete: true },
+      completeSpacePart(1000, { scope: { kind: 'retainedWorkspace' } }),
+      completeSpacePart({ $int64: '2000' }, { scope: { kind: 'retainedWorkspace' } }),
+      completeSpacePart(321, { scope: { kind: 'applicationData' } }),
     ],
   };
   globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_storage'); return data; };
   await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
-  const rows = () => [...document.querySelectorAll('.workspace-retention-list > div')];
-  const row = (prefix) => rows().find((element) => element.querySelector('dt').textContent.startsWith(prefix));
-  assert.equal(row('历史删除资料与记录'), undefined, 'A known complete zero category should not imply retained content');
-  assert.match(row('历史备份').textContent, /尚未统计/);
-  assert.equal(row('操作现场').querySelector('strong').title, '1500 字节');
-  assert.equal(row('共享缓存').querySelector('strong').title, '500 字节');
-  assert.equal(row('迁移保留目录').querySelector('strong').title, '3000 字节');
-  assert.equal(row('应用设置').querySelector('strong').title, '321 字节');
-  assert.equal(rows().filter((element) => element.querySelector('dt').textContent.startsWith('迁移保留目录')).length, 1);
-  assert.match(document.querySelector('.workspace-retention-explanation').textContent, /不再与上方数字相加|不等于可以释放/);
-  data = { ...data, workspace: { ...data.workspace, complete: false, stale: true }, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
+  assert.equal(document.querySelector('.space-total-value').title, '5421 字节');
+  assert.equal(legendRow('备份与历史资料').querySelector('dd').title, '4500 字节');
+  assert.equal(legendRow('已安装应用与设置').querySelector('dd').title, '321 字节');
+  assert.equal(legendRow('缓存与平台记录').querySelector('dd').title, '500 字节');
+  assert.ok(document.querySelector('.space-usage-bar'));
+  data = { ...data, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
   await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
-  assert.match(row('历史删除资料与记录').textContent, /0 B.*已过期/);
-  assert.match(row('迁移保留目录').textContent, /尚未统计.*部分统计/);
-  data = { ...data, workspace: { ...data.workspace, totalBytes: 2042, complete: true, stale: false, categories: { ...data.workspace.categories, trash: { totalBytes: 42 } } } };
-  await render(h(WorkspaceStorageSummary, { revision: 3, enabled: true }));
-  assert.equal(row('历史删除资料与记录').querySelector('strong').title, '42 字节');
-  assert.match(row('历史删除资料与记录').textContent, /不提供项目恢复或清理入口/);
-  assert.doesNotMatch(document.querySelector('.workspace-summary-card').textContent, /旧版回收记录|回收站/);
+  assert.equal(document.querySelector('.space-total-value').title, '5421 字节');
+  assert.match(document.querySelector('.workspace-summary-card').textContent, /已统计/);
+  assert.match(legendRow('备份与历史资料').textContent, /部分统计/);
+  assert.equal(document.querySelector('.space-usage-bar'), null);
+});
+
+test('Unknown measurements and partial or stale zeros do not appear as complete empty storage', async () => {
+  await setup();
+  let data = completeSpace({ platformProgram: { totalBytes: null, complete: false }, workspace: completeSpacePart(0, { categories: { projects: { bytes: 0 } }, complete: false, stale: true }) });
+  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_storage'); return data; };
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
+  assert.match(legendRow('网页项目').textContent, /0 B.*需要更新/);
+  assert.match(legendRow('软件本体').textContent, /尚未统计/);
+  assert.match(document.querySelector('.workspace-summary-card').textContent, /已统计/);
+  assert.equal(document.querySelector('.space-usage-bar'), null);
+  data = { ...workspaceStorage, knownLocalTotal: { totalBytes: 0, complete: false } };
+  await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
+  assert.match(document.querySelector('.space-total-value').textContent, /尚未统计/);
+  assert.equal(document.querySelector('.space-total .space-status'), null);
+  assert.equal(document.querySelector('.space-usage-bar'), null);
+});
+
+test('A failed space refresh retains the last values with a visible stale warning and no distribution', async () => {
+  await setup(); let calls = 0;
+  globalThis.__UI_TEST_INVOKE__ = async (command) => {
+    assert.equal(command, 'workspace_storage'); calls++;
+    if (calls > 1) throw new Error('Disposable scan is unavailable');
+    return completeSpace({ workspace: completeSpacePart(1234, { categories: { projects: { bytes: 1234 } } }) });
+  };
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
+  assert.ok(document.querySelector('.space-usage-bar'));
+  await click(buttonNamed('刷新'));
+  assert.equal(document.querySelector('.space-total-value').title, '1234 字节');
+  assert.match(document.querySelector('.workspace-summary-card [role="alert"]').textContent, /更新失败，显示上次统计.*Disposable scan is unavailable/);
+  assert.equal(document.querySelector('.space-usage-bar'), null);
+});
+
+test('Space refresh blocks duplicate clicks and an older pending scan cannot overwrite a newer revision', async () => {
+  await setup(); const older = deferred(); const newer = deferred(); let calls = 0;
+  globalThis.__UI_TEST_INVOKE__ = async (command) => {
+    assert.equal(command, 'workspace_storage'); calls++;
+    if (calls === 1) return completeSpace({ workspace: completeSpacePart(100) });
+    return calls === 2 ? older.promise : newer.promise;
+  };
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
+  await click(buttonNamed('刷新'));
+  await click(buttonNamed('统计中…'));
+  assert.equal(calls, 2);
+  await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
+  assert.equal(calls, 3);
+  await act(async () => newer.resolve(completeSpace({ workspace: completeSpacePart(700) })));
+  assert.equal(document.querySelector('.space-total-value').title, '700 字节');
+  await act(async () => older.resolve(completeSpace({ workspace: completeSpacePart(200) })));
+  assert.equal(document.querySelector('.space-total-value').title, '700 字节');
+});
+
+test('Web project ranking uses the latest matching scan, keeps unknown values and opens the selected project', async () => {
+  await setup(); const selected = [];
+  const cached = (id, name, bytes) => ({ ...appProject(id, name), storage: { currentProject: completeSpacePart(bytes, { completedAt: '2020-01-01T00:00:00Z' }) } });
+  const projects = [cached('prj_alpha', 'Alpha fixture', 1), cached('prj_beta', 'Beta fixture', 9000), cached('prj_unknown', 'Unknown fixture', 7000)];
+  globalThis.__UI_TEST_INVOKE__ = async (command) => {
+    assert.equal(command, 'workspace_storage');
+    return completeSpace({ workspace: completeSpacePart(1010, { projects: [
+      completeSpacePart(1000, { scope: { kind: 'project', projectId: 'prj_alpha' }, referenceOnly: true }),
+      completeSpacePart(10, { scope: { kind: 'project', projectId: 'prj_beta' }, referenceOnly: true, stale: true }),
+      { totalBytes: null, complete: false, scope: { kind: 'project', projectId: 'prj_unknown' }, referenceOnly: true },
+    ] }) });
+  };
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true, projects, onSelect: (id) => selected.push(id) }));
+  const ranking = document.querySelector('.workspace-project-ranking');
+  assert.match(ranking.querySelector('h2, h3').textContent, /网页项目占用/);
+  const rows = [...ranking.querySelectorAll('.project-size-row')];
+  assert.deepEqual(rows.map((row) => row.querySelector('strong').textContent), ['Alpha fixture', 'Beta fixture', 'Unknown fixture']);
+  assert.match(rows[0].textContent, /1\.0 KB/);
+  assert.match(rows[1].textContent, /10 B.*需要更新/);
+  assert.match(rows[2].textContent, /尚未统计/);
+  assert.doesNotMatch(ranking.textContent, /prj_alpha|prj_beta|prj_unknown|2020/);
+  await click(rows[0]);
+  assert.deepEqual(selected, ['prj_alpha']);
+});
+
+test('Web project ranking initially shows five entries and explicitly expands the remaining projects', async () => {
+  await setup();
+  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_storage'); return completeSpace(); };
+  const projects = Array.from({ length: 6 }, (_, index) => ({ ...appProject(`prj_ranking_${index}`, `Disposable ranking ${index}`), storage: { currentProject: completeSpacePart(100 - index) } }));
+  await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true, projects, onSelect() {} }));
+  assert.equal(document.querySelectorAll('.project-size-row').length, 5);
+  await click(buttonNamed('查看全部 6 个项目'));
+  assert.equal(document.querySelectorAll('.project-size-row').length, 6);
+  await click(buttonNamed('收起'));
+  assert.equal(document.querySelectorAll('.project-size-row').length, 5);
 });
 
 function cleanupPlan(extra = {}) {
@@ -887,7 +985,7 @@ test('A cleaned retired workspace remains an explicit historical record instead 
   await setup();
   globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_storage'); return workspaceStorage; };
   await render(h(WorkspaceHub, hubProps({ workspace: { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [{ path: '/disposable/old-workspace', available: false, cleaned: true, cleanup: { completed: true, receiptPath: '/disposable/development/cleanup/receipt' } }] } })));
-  await click(buttonNamed('查看工作区位置'));
+  await click(hubTab('工作区位置'));
   const record = document.querySelector('.retained-roots');
   assert.match(record.textContent, /已清理/);
   assert.match(record.textContent, /不表示该目录仍存在或仍占用空间/);
