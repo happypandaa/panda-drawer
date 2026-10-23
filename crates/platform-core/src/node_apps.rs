@@ -259,6 +259,7 @@ impl NodeApps {
         }
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
+            "dataContract":manifest.data_contract,
             "objectLayout":object_layout,
             "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
@@ -427,6 +428,7 @@ impl NodeApps {
                 "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                 "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
                 "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
+                "dataContract":null,
                 "objectLayout":null,
                 "restartRequired":false,"runningRevision":null,"lastError":error.message,
                 "configuration":{"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]

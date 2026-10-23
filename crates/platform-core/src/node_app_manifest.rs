@@ -67,6 +67,8 @@ pub struct TrialManifest {
     #[serde(default, deserialize_with = "present")]
     pub configuration: Option<ConfigurationDecl>,
     #[serde(default, deserialize_with = "present")]
+    pub data_contract: Option<DataContractDecl>,
+    #[serde(default, deserialize_with = "present")]
     pub documentation: Option<DocumentationDecl>,
 }
 
@@ -102,6 +104,44 @@ pub struct BackendDecl {
 pub struct DocumentationDecl {
     pub readme: String,
     pub development: String,
+}
+
+/// Author-declared compatibility of the application's APP_DATA_DIR contents.
+/// Matching declarations are not a platform inspection of business data.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DataContractDecl {
+    pub id: String,
+    pub version: u32,
+}
+
+impl DataContractDecl {
+    fn validate(&self) -> Result<()> {
+        let bytes = self.id.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 128
+            || !bytes[0].is_ascii_alphanumeric()
+            || !bytes
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            || !(1..=i32::MAX as u32).contains(&self.version)
+        {
+            return Err(invalid("应用数据契约标识或版本无效。"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn from_manifest(manifest: &Value) -> Result<Option<Self>> {
+        manifest
+            .get("dataContract")
+            .map(|value| {
+                let declaration: Self = serde_json::from_value(value.clone())
+                    .map_err(|_| invalid("应用数据契约声明无效。"))?;
+                declaration.validate()?;
+                Ok(declaration)
+            })
+            .transpose()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +202,7 @@ pub struct TrialManifestInspection<'a> {
     checked_files: Vec<InspectedFile>,
     documentation_declared: bool,
     configuration: InspectedConfiguration<'a>,
+    data_contract: Option<&'a DataContractDecl>,
     limitations: [&'static str; 3],
 }
 
@@ -345,8 +386,11 @@ impl TrialManifest {
                 if self.format_version != 1
                     || self.backend.is_some()
                     || self.configuration.is_some()
+                    || self.data_contract.is_some()
                 {
-                    return Err(invalid("网页项目不能声明 Node 后端或启动配置。"));
+                    return Err(invalid(
+                        "网页项目不能声明 Node 后端、启动配置或 Node 数据契约。",
+                    ));
                 }
             }
             TrialRuntime::NodeService => {
@@ -374,6 +418,9 @@ impl TrialManifest {
         }
         if let Some(config) = &self.configuration {
             config.validate()?;
+        }
+        if let Some(data_contract) = &self.data_contract {
+            data_contract.validate()?;
         }
         Ok(())
     }
@@ -480,6 +527,7 @@ impl TrialManifest {
             },
             checked_files,
             documentation_declared: self.documentation.is_some(),
+            data_contract: self.data_contract.as_ref(),
             configuration: InspectedConfiguration {
                 declaration_version: self.configuration.as_ref().map(|config| config.version),
                 value_source: "author-defaults-only-no-user-values-read",
@@ -666,6 +714,56 @@ mod tests {
             value["window"] = invalid;
             assert!(parse(value.clone()).is_err());
         }
+    }
+
+    #[test]
+    fn data_contract_is_optional_strict_and_exposed_as_an_author_declaration() {
+        let (app, mut value) = inspect_fixture();
+        let legacy = parse(value.clone()).unwrap();
+        assert!(legacy.data_contract.is_none());
+        assert!(
+            serde_json::to_value(legacy.inspect(app.path()).unwrap()).unwrap()["dataContract"]
+                .is_null()
+        );
+        value["dataContract"] = json!({"id":"org.example.notes-data","version":1});
+        let declared = parse(value.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(declared.inspect(app.path()).unwrap()).unwrap()["dataContract"],
+            value["dataContract"]
+        );
+        for invalid in [
+            json!(null),
+            json!({}),
+            json!({"id":"data"}),
+            json!({"id":"data","version":"1"}),
+            json!({"id":"data","version":1.5}),
+            json!({"id":"data","version":0}),
+            json!({"id":"data","version":-1}),
+            json!({"id":"data","version":2147483648_u64}),
+            json!({"id":"data","version":1,"migrate":true}),
+            json!({"id":"","version":1}),
+            json!({"id":".hidden","version":1}),
+            json!({"id":"data/schema","version":1}),
+            json!({"id":"人工数据","version":1}),
+            json!({"id":"a".repeat(129),"version":1}),
+        ] {
+            value["dataContract"] = invalid;
+            assert!(parse(value.clone()).is_err(), "{}", value["dataContract"]);
+        }
+        value["dataContract"] = json!({"id":"A_1.data-contract","version":2147483647});
+        assert!(parse(value.clone()).is_ok());
+        let bytes = serde_json::to_string(&value).unwrap().replace(
+            "\"id\":\"A_1.data-contract\"",
+            "\"id\":\"A_1.data-contract\",\"id\":\"duplicate\"",
+        );
+        assert!(TrialManifest::parse(bytes.as_bytes()).is_err());
+        value["runtime"] = json!("static-web");
+        value["formatVersion"] = json!(1);
+        value.as_object_mut().unwrap().remove("backend");
+        assert!(
+            parse(value).is_err(),
+            "static v1 does not acquire a Node data contract"
+        );
     }
 
     fn inspect_fixture() -> (tempfile::TempDir, Value) {

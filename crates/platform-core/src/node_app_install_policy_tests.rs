@@ -310,6 +310,7 @@ fn program_digest_rejects_native_modules_and_platform_executables() {
 fn configured_manifest() -> Value {
     json!({
         "app": {"id": "disposable-policy-app", "name": "Policy fixture", "version": "1.0.0"},
+        "dataContract": {"id": "disposable-policy-app.data", "version": 1},
         "web": {"root": "web", "entry": "index.html", "routing": "hash"},
         "backend": {"root": "backend", "entry": "server.cjs", "nodeMajor": 22, "protocolVersion": 1},
         "configuration": {"version": 1, "fields": [{
@@ -374,6 +375,58 @@ fn compatible_rejects_any_configuration_declaration_change() {
         "NODE_INSTALL_CONFIGURATION_INCOMPATIBLE"
     );
     assert_eq!(target, original);
+}
+
+#[test]
+fn data_declarations_must_both_exist_and_match_for_an_update() {
+    let declared = configured_manifest();
+    let mut legacy = declared.clone();
+    legacy.as_object_mut().unwrap().remove("dataContract");
+    compatible(&InstallTargetSnapshot::fresh(), &legacy).unwrap();
+    for (old, new) in [
+        (&legacy, &legacy),
+        (&legacy, &declared),
+        (&declared, &legacy),
+    ] {
+        let error = compatible(&installed_target(old.clone()), new).unwrap_err();
+        assert_eq!(error.code, "NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN");
+        assert_eq!(error.details["previousDataContract"], old["dataContract"]);
+        assert_eq!(error.details["candidateDataContract"], new["dataContract"]);
+    }
+    for changed in [
+        json!({"id":"other","version":1}),
+        json!({"id":"disposable-policy-app.data","version":2}),
+    ] {
+        let mut new = declared.clone();
+        new["dataContract"] = changed;
+        assert_eq!(
+            compatible(&installed_target(declared.clone()), &new)
+                .unwrap_err()
+                .code,
+            "NODE_INSTALL_DATA_INCOMPATIBLE"
+        );
+    }
+    // Invalid retained declarations must not be downgraded to an absent one.
+    for invalid in [
+        Value::Null,
+        json!({"id":"data","version":0}),
+        json!({"id":"data","version":1,"extra":true}),
+    ] {
+        let mut new = declared.clone();
+        new["dataContract"] = invalid;
+        assert_eq!(
+            compatible(&installed_target(declared.clone()), &new)
+                .unwrap_err()
+                .code,
+            "NODE_INSTALL_INVALID"
+        );
+        assert_eq!(
+            compatible(&installed_target(new), &declared)
+                .unwrap_err()
+                .code,
+            "NODE_INSTALL_INVALID"
+        );
+    }
 }
 
 #[test]

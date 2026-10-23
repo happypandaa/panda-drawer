@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProjectTask } from './ProjectTask';
+import { isNodeDataContract, NodeDataContractInfo } from './NodeDataContractInfo';
+import type { NodeDataContract } from './node-app-types';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
@@ -15,7 +17,7 @@ export interface PreparedNodeInstall {
   candidateId: string;
   appId: string;
   generation: string;
-  manifest: { runtime: string; app: { id: string; name: string; version: string }; [key: string]: unknown };
+  manifest: { runtime: string; app: { id: string; name: string; version: string }; dataContract?: NodeDataContract; [key: string]: unknown };
   programDigest: string;
   provenance: {
     sourceId: string; sourceDigest: string; sourceCommit: string | null;
@@ -64,7 +66,8 @@ function preparedResult(value: unknown): PreparedNodeInstall | null {
     || typeof value.generation !== 'string' || !generationPattern.test(value.generation)
     || typeof value.programDigest !== 'string' || !digestPattern.test(value.programDigest)
     || !record(value.manifest) || value.manifest.runtime !== 'node-service' || !record(value.manifest.app)
-    || !['id', 'name', 'version'].every(key => typeof value.manifest === 'object' && record(value.manifest) && record(value.manifest.app) && typeof value.manifest.app[key] === 'string' && value.manifest.app[key])) return null;
+    || !['id', 'name', 'version'].every(key => typeof value.manifest === 'object' && record(value.manifest) && record(value.manifest.app) && typeof value.manifest.app[key] === 'string' && value.manifest.app[key])
+    || value.manifest.dataContract !== undefined && !isNodeDataContract(value.manifest.dataContract)) return null;
   const source = value.provenance;
   if (!record(source) || typeof source.sourceId !== 'string' || !sourcePattern.test(source.sourceId)
     || typeof source.sourceDigest !== 'string' || !digestPattern.test(source.sourceDigest)
@@ -197,6 +200,12 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
       if (!prepared) throw new Error('准备任务未返回完整安装候选；不能将任务成功视为已安装。');
       matchPrepared(prepared); currentCandidate.current = prepared; setCandidate(prepared); setKnownCandidateId(prepared.candidateId);
       await lookup(prepared.candidateId, prepared);
+    } else if (value.type === 'nodeInstallPrepare') {
+      setNotice(value.status === 'failed' && value.error?.code === 'NODE_INSTALL_CANCELLED'
+        ? '安装准备已停止，取消现场已保留。'
+        : value.error?.code === 'NODE_INSTALL_CLEANUP_PENDING'
+          ? '安装子进程的停止情况仍需核对；请保留现场，不能视为取消完成。'
+          : '');
     } else if (value.type === 'nodeInstallApply') {
       const outcome = value.result?.operationOutcome ?? value.error?.details?.operationOutcome;
       if (outcome === 'committed') {
@@ -287,7 +296,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
       if (!current(generation) || currentTask.current?.taskId !== selectedTask.taskId) return;
       if (value.taskId !== selectedTask.taskId || value.type !== selectedTask.type) throw new Error('取消结果任务身份不符，请核对状态。');
       await acceptTask(value);
-      setNotice(currentTask.current?.final ? '准备任务已结束，请核对最终结果。' : '已请求取消准备，正在等待任务停止。准备现场会保留。');
+      if (!currentTask.current?.final) setNotice('已请求取消准备，正在等待任务停止。准备现场会保留。');
     } catch (cause) { if (current(generation)) setError(messageFrom(cause)); }
     finally { pending.current = false; if (current(generation)) setBusy(false); }
   }
@@ -323,7 +332,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     <h3 id={`${id}-title`}>{targetAppId ? '准备应用更新' : '安装本地服务应用'}</h3>
     <p>选择已检查的源码候选，先准备安装材料，再确认安装。准备会使用平台选定的 Node/npm 下载生产依赖，并跳过项目与依赖的安装脚本；不会启动应用。</p>
     <p>需要安装脚本或额外构建的项目可能仍需适配。安装完成后需明确打开应用。</p>
-    {targetAppId && <><p>更新保留现有数据和配置，不自动转换数据，也不保证不兼容版本可升级。请先正常关闭目标应用窗口；平台会在提交前再次核对，不会替你停止或启动应用。</p><p>更新目标：<code>{targetAppId}</code></p></>}
+    {targetAppId && <><p>更新保留现有数据和配置，不自动转换数据。当前应用和候选均须声明相同的数据标识与版本；缺少或不同会阻止普通更新，声明匹配不代表实际数据格式已经验证。请先正常关闭目标应用窗口；平台会在提交前再次核对，不会替你停止或启动应用。</p><p>更新目标：<code>{targetAppId}</code></p></>}
     {!targetValid && <p role="alert">更新目标标识无效，请从受管应用详情重新进入。</p>}
     {error && <p className="task-error" role="alert">{error}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
@@ -341,6 +350,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     {candidate && <section className="operation-confirmation" aria-label="安装候选确认">
       <h4>{candidate.manifest.app.name} · {candidate.manifest.app.version}</h4>
       <p>应用标识：<code>{candidate.manifest.app.id}</code></p>
+      <NodeDataContractInfo value={candidate.manifest.dataContract ?? null} matched={Boolean(targetAppId && checked)} legacyNotice={targetAppId ? '后续普通更新无法核对数据契约，将被阻止。' : '可以安装为新应用；后续普通更新无法核对数据契约，将被阻止。'} />
       <p>来源候选：<code>{candidate.provenance.sourceId}</code></p>
       {candidate.provenance.sourceCommit && <p>源码提交：<code>{candidate.provenance.sourceCommit}</code></p>}
       <p>准备环境：Node {candidate.provenance.node.version} / npm {candidate.provenance.npm.version}</p>
