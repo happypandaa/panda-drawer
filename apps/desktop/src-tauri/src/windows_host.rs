@@ -1,9 +1,9 @@
 //! Bounded Windows static host and manager-only, independently owned Node apps.
 
-#[path = "windows_node.rs"]
-mod windows_node;
 #[path = "windows_development.rs"]
 mod windows_development;
+#[path = "windows_node.rs"]
+mod windows_node;
 
 use platform_host::{
     windows_projects::BundledProject,
@@ -65,6 +65,7 @@ async fn host_status(
 ) -> Result<HostReport, ApiError> {
     require_active_manager(&window, &state)?;
     let _diagnostic = state.operation_gate.lock().await;
+    require_active_manager(&window, &state)?;
     if state.runtime.status().await.root_status == "ready" {
         return Err(ApiError::new(
             "HOST_DIAGNOSTIC_BUSY",
@@ -121,6 +122,7 @@ async fn project_create(
 ) -> Result<ProjectInfo, ApiError> {
     require_active_manager(&window, &state)?;
     let _creation = state.operation_gate.lock().await;
+    require_active_manager(&window, &state)?;
     state.runtime.create(input).await
 }
 
@@ -165,6 +167,7 @@ async fn project_open(
 ) -> Result<OpenProjectResult, ApiError> {
     require_active_manager(&window, &state)?;
     let _creation = state.operation_gate.lock().await;
+    require_active_manager(&window, &state)?;
     let status = state.runtime.status().await;
     if status.root_status != "ready" {
         return Err(ApiError::new("WORKSPACE_UNAVAILABLE", status.message));
@@ -229,6 +232,8 @@ async fn project_open_browser(
     state: tauri::State<'_, WindowsDesktopState>,
     project_id: String,
 ) -> Result<OpenProjectResult, ApiError> {
+    require_active_manager(&window, &state)?;
+    let _operation = state.operation_gate.lock().await;
     require_active_manager(&window, &state)?;
     let launch = state.runtime.launch(&project_id).await?;
     let url = validated_launch_url(state.runtime.base_url(), &launch.launch_url, &project_id)?;
@@ -306,6 +311,16 @@ pub fn run() {
             windows_development::development_environment_doctor,
             windows_development::development_environment_configure,
             windows_development::development_choose_tool,
+            windows_development::source_choose_directory,
+            windows_development::source_list,
+            windows_development::source_inspect,
+            windows_development::source_capture,
+            windows_development::source_acquire,
+            windows_development::source_cancel,
+            windows_development::task_get,
+            windows_development::task_logs,
+            windows_development::source_build_prepare,
+            windows_development::source_build_list,
             windows_node::node_app_choose_source,
             windows_node::node_app_inspect,
             windows_node::node_app_register,
@@ -355,6 +370,7 @@ pub fn run() {
                             tauri::async_runtime::spawn(async move {
                                 let state = app.state::<WindowsDesktopState>();
                                 let _operation = state.operation_gate.lock().await;
+                                windows_development::shutdown(&app).await;
                                 if let Err(error) = windows_node::shutdown(&app).await {
                                     state.closing.store(false, Ordering::Release);
                                     show_manager(&app);

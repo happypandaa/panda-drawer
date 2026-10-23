@@ -8,9 +8,10 @@ type Props = {
   onAcquire?: () => void;
   addUnavailableReason?: string;
   importUnavailableReason?: string;
+  acquireUnavailableReason?: string;
 };
 
-export function ProjectAddMenu({ disabled, onAdd, onImport, onAcquire, addUnavailableReason, importUnavailableReason }: Props) {
+export function ProjectAddMenu({ disabled, onAdd, onImport, onAcquire, addUnavailableReason, importUnavailableReason, acquireUnavailableReason }: Props) {
   const disclosure = useRef<HTMLDetailsElement>(null);
   const trigger = useRef<HTMLElement>(null);
   const close = () => { disclosure.current?.removeAttribute('open'); };
@@ -36,7 +37,7 @@ export function ProjectAddMenu({ disabled, onAdd, onImport, onAcquire, addUnavai
   }}>
     <summary ref={trigger} aria-disabled={disabled} onClick={(event) => { if (disabled) event.preventDefault(); }}><ChevronDown size={16} />添加</summary>
     <div className="radio-add-menu-content" aria-label="项目操作">
-      {onAcquire && <button disabled={disabled} onClick={() => run(onAcquire)}><FolderOpen size={15} />获取项目源码</button>}
+      {onAcquire && <button disabled={disabled || Boolean(acquireUnavailableReason)} title={acquireUnavailableReason} onClick={() => { if (!acquireUnavailableReason) run(onAcquire); }}><FolderOpen size={15} />获取项目源码</button>}
       <button disabled={disabled || !onAdd || Boolean(addUnavailableReason)} title={addUnavailableReason} onClick={() => { if (onAdd && !addUnavailableReason) run(onAdd); }}><FolderOpen size={15} />添加本地应用</button>
       <button disabled={disabled || !onImport || Boolean(importUnavailableReason)} title={importUnavailableReason} onClick={() => { if (onImport && !importUnavailableReason) run(onImport); }}><Upload size={15} />导入项目</button>
     </div>

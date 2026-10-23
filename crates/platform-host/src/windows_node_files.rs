@@ -12,6 +12,9 @@ pub struct WindowsSourceEntry {
     pub name: String,
     pub is_directory: bool,
     pub identity: WindowsObjectIdentity,
+    /// Directory size and timestamps are normalized to zero: NTFS directory
+    /// enumeration caches can disagree with current handle metadata. Directory
+    /// identity/type/attributes bind traversal; full snapshots bind membership.
     pub length: u64,
     pub last_write_time: i64,
     pub change_time: i64,
@@ -368,16 +371,17 @@ impl WindowsSourceDirectory {
                     if item.EndOfFile < 0 {
                         return Err(error("NODE_SOURCE_METADATA_INVALID", "来源条目长度无效。"));
                     }
+                    let directory = item.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
                     entries.push(WindowsSourceEntry {
                         name,
-                        is_directory: item.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+                        is_directory: directory,
                         identity: WindowsObjectIdentity {
                             volume_serial: self.identity().volume_serial,
                             file_id128: item.FileId.Identifier,
                         },
-                        length: item.EndOfFile as u64,
-                        last_write_time: item.LastWriteTime,
-                        change_time: item.ChangeTime,
+                        length: if directory { 0 } else { item.EndOfFile as u64 },
+                        last_write_time: if directory { 0 } else { item.LastWriteTime },
+                        change_time: if directory { 0 } else { item.ChangeTime },
                         attributes: item.FileAttributes,
                         reparse: item.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
                     });
@@ -451,9 +455,21 @@ impl WindowsSourceDirectory {
             name: expected.name.clone(),
             is_directory: expected.is_directory,
             identity: object.identity.clone(),
-            length: standard.EndOfFile as u64,
-            last_write_time: basic.LastWriteTime,
-            change_time: basic.ChangeTime,
+            length: if expected.is_directory {
+                0
+            } else {
+                standard.EndOfFile as u64
+            },
+            last_write_time: if expected.is_directory {
+                0
+            } else {
+                basic.LastWriteTime
+            },
+            change_time: if expected.is_directory {
+                0
+            } else {
+                basic.ChangeTime
+            },
             attributes: basic.FileAttributes,
             reparse: false,
         };

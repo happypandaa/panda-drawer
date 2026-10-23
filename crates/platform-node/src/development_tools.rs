@@ -546,7 +546,7 @@ impl DevelopmentTools {
             environment: BTreeMap<OsString, OsString>,
         ) -> Result<String> {
             let (_send, receive) = watch::channel(false);
-            let output = platform_host::windows_command::run(
+            let result = platform_host::windows_command::run(
                 platform_host::windows_command::CommandSpec {
                     executable: tool.executable.clone(),
                     args,
@@ -559,7 +559,16 @@ impl DevelopmentTools {
                 },
                 receive,
             )
-            .await?;
+            .await;
+            let output = match result {
+                Ok(output) => output,
+                Err(issue) => {
+                    // A failed observation may leave native Job cleanup active.
+                    // The caller still owns the complete ToolLease and config.
+                    platform_host::windows_command::wait_for_idle().await;
+                    return Err(issue);
+                }
+            };
             if !output.success() {
                 return Err(error("开发工具执行检查失败，未改用其他工具。"));
             }
@@ -706,7 +715,7 @@ impl DevelopmentTools {
             let windows = platform_host::windows_command::windows_directory()?;
             let environment = BTreeMap::from([("SYSTEMROOT".into(), windows.into_os_string())]);
             let (_send, receive) = watch::channel(false);
-            let output = platform_host::windows_command::run(
+            let result = platform_host::windows_command::run(
                 platform_host::windows_command::CommandSpec {
                     executable: path,
                     args: vec!["--version".into()],
@@ -719,7 +728,16 @@ impl DevelopmentTools {
                 },
                 receive,
             )
-            .await?;
+            .await;
+            let output = match result {
+                Ok(output) => output,
+                Err(issue) => {
+                    // `guards` pin the complete selected tree until even an
+                    // uncertain process exit has finished its native cleanup.
+                    platform_host::windows_command::wait_for_idle().await;
+                    return Err(issue);
+                }
+            };
             if !output.success() {
                 return Err(error("所选开发工具版本检查未成功。"));
             }

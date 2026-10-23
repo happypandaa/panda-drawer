@@ -25,9 +25,40 @@ Windows 现在复用本机目录三态流程：检查普通目录、明确确认
 | 追加任务记录 | 4 项真实 NTFS 测试通过；覆盖无写入观察、取消幂等、最终状态、日志、未完成记录与启动分类 |
 | 界面 | 第一组 Windows 合成 IPC 回归 45 项通过，共享 UI 301 项通过，TypeScript／Vite 通过。它们不证明原生选择器或 WebView2 行为 |
 | 资源集成 | 9 项通过；开发载荷及其准备证据不转换为嵌入 JSON 字节数组，业务 Node 与两套开发载荷分别映射到 Tauri 资源目录 |
-| Windows debug 构建 | `npm run build -- --debug -- --locked` 通过，生成 `target/debug/local-projects-desktop-dev.exe`，包含独立开发载荷；没有生成安装器 |
+| Windows debug 构建 | `npm run build -- --debug -- --locked` 通过，生成 `target/debug/local-projects-desktop-dev.exe` 及独立开发载荷资源目录；没有生成安装器，不能只拷贝单个 exe 代替完整资源 |
 | 严格静态检查 | 第一组确定提交的 host／node／desktop 模块 `clippy --all-targets -- -D warnings` 通过；未将并行第二组源码模块混入本步提交 |
 
 本轮没有绕过既有系统父目录 ACL 准入阻断，也没有重测真实 GUI。Win10、普通用户干净机器、只读程序位置、安装器、Mac 原生回归和真实媒体仍待独立验收。旧 Mac `.app`／DMG 专项在 Windows 上的失败记录仍见[兼容审查](windows-new-features-compatibility.md)，本步没有将其改称通过。
 
-第二组的源码获取和候选构建在独立后续提交实现；本节结果不提前证明它们已完成。
+第二组的源码获取和候选构建见下节独立实施记录；本节结果只说明第一组。
+
+## 2026-10-24：独立源码获取与候选构建
+
+用户确认先实施前两组，本步增加 Windows 独立本机源码副本、公开 GitHub/Gitee HTTPS 获取与网页候选构建。复用共用管理组件及主线 SourceRecord／TaskRecord 字段、`src_`／`task_` 标识和毫秒时间；不接管旧项目或跨机器复制控制目录。源码、任务和完成证明在已准入固定数据根下绑定 Windows 卷与 ID128，读取空列表不初始化业务根，未知或中断现场保留且不自动执行。
+
+本机捕获只复制经确认的普通文件，按主线路径政策排除数据、附件、已知凭据、Git、依赖、缓存及已发布产物；不修改原目录。目录枚举后按 ID／类型／属性绑定，文件同时核对大小、时间和内容摘要。NTFS 目录索引可能缓存旧时间或报告与 HANDLE 不同的长度，目录长度和时间不作为内容证据；完整条目清单及叶文件检查继续检测增删与变化。排除的链接不打开，选中的链接、硬链接和可写占用拒绝。声明中的 sourceDir 必须逐段与实际名称大小写一致。
+
+Git 在独立任务内执行 bare 对象获取、fsck、树检查及原始 blob 物化，不做 checkout、submodule、过滤器、hook 或项目脚本执行。URL 仅允许规范的 GitHub/Gitee 公开 HTTPS，无凭据、重定向或环境代理；显式使用固定 MinGit 的 OpenSSL 后端及 CA，证书校验保持开启。Git 的 100755 位作为逻辑来源记录保留，不伪装为 NTFS POSIX 权限。实际线上获取覆盖 GitHub，Gitee 只完成 URL／策略验证，未实测线上获取；私有仓库和 SSH 未开放。
+
+候选构建只接受已获取、摘要一致且识别为 `project-v1-source` 的来源。界面要求对该 sourceId／摘要再次确认运行脚本；后台只将 sourceDir 复制到新任务目录，使用独立 HOME、临时目录、空 npm 配置和缓存，直接调用已核验 Node 的 npm-cli 执行 `npm ci` 及声明的构建脚本，产物写到单独目录。脚本具有当前用户权限，只应执行可信源码；独立目录不是代码沙箱。
+
+执行前核对 npm v2/v3 锁文件、根依赖一致性、脚本名和本机依赖路径，拒绝根 shrinkwrap 覆盖、sourceDir 外材料、Windows 路径别名及本机 `git+file:` 依赖。`~1.2.12` 等合法版本范围保留，`~/` 仍不能用于外部材料。安装／构建后重核输入和原来源；产物使用主线树摘要排序与字节规则，核对 HTML 入口、UTF-8、base 标签和 HTML/CSS/JS 本机资源引用。源、开发工具及产物叶 HANDLE 保留到最终任务回执持久化；ready 证明写入是候选接受点，后到的取消不被描述成回滚。
+
+候选支持取消、失败日志、保留路径、关闭面板后重读及平台退出等待。命令进程在执行前加入独立 Job，取消／超时等待完整树停止；异常清理还持有活动记录，平台退出等待其清空。成功响应明确为 `candidate-ready`、`installed:false`、`published:false`。这里的 succeeded 只表示独立来源候选已生成，不是正式项目 build 命令或网页发布成功；正式项目构建发布、Git 写入／源码取回、Node 受管安装更新和永久删除继续关闭，W2／NR 未因此整体验收。
+
+| 本步实际验证 | 结果 |
+| --- | --- |
+| 来源策略与真实 NTFS | 11 项默认回归通过；包含原始材料不变、排除范围、同／跨目录边界、中文名称、大小写、硬链接、取消、中断、重开、未知槽位、输入增删与版本范围 |
+| 官方 MinGit | 2 项显式实测通过：bare Git 对象读取含 NUL／0xff 二进制、中文空格和 100755 的持久化／重读／复制；真实 GitHub HTTPS 获取并检查对象、物化独立候选 |
+| 候选基础与产物 | 9 项默认回归通过，覆盖无确认不建任务、v2/v3 锁文件、各包相对依赖、shrinkwrap、本机 git+file 拒绝、产物引用、与主线摘要一致、叶 HANDLE 拒写、64／65 层真实目录边界及重启不重放 |
+| 官方 Node/npm 候选 | 最终 2 项离线链路通过（46.29 秒），覆盖成功 ci／build、摘要过期、失败脚本、输入被修改、取消父子进程、后续构建及持久结果重读 |
+| 实际 React 模板 | 全新副本和空 npm cache 执行 npm ci、tsc --noEmit、Vite build 通过（14.38 秒），包括源码内固定 SDK tarball、实际 index.html／assets 和原始来源摘要不变；未复用旧 node_modules |
+| 原生文件与进程 | 来源文件原语 15 项通过；通用 Job 执行器 13 项（含显式真实进程用例）通过，含 future 中止、后代及宿主异常退出，退出增加完整活动收敛 |
+| 共用界面 | Windows 52 项及共享 UI 314 项通过；使用生产 capability，覆盖实际原生命令白名单、来源→确认构建→读取→取消／日志、关闭重开不重放、未知回执重读，TypeScript／Vite 通过 |
+| 最终原生默认回归 | desktop 9、host 119、node 90、共享格式 14 项通过，共 232 项；37 项显式测试保持 ignored，相关真实载荷用例按上表另行运行，没有将忽略项算作通过 |
+| 静态与格式检查 | host／node／desktop 的全部目标 Clippy `-D warnings` 通过；本步改动 Rust 文件按 workspace 的 edition 2021 单独 rustfmt 检查通过。全 workspace 格式检查仍存在主线既有文件的样式差异，未为此重写无关代码 |
+| 最终 Windows debug 构建 | `npm run build -- --debug -- --locked` 通过，Rust 阶段 29.29 秒；生成 `target/debug/local-projects-desktop-dev.exe` 及匹配资源，没有生成安装器或声称原生 GUI 已通过 |
+
+当前受限预算为源／产物各 10,000 普通文件、256MiB，单文件 8,000,000 字节；任务证据 512MiB，剩余空间至少 64MiB。构建仅并行一个候选，安装和构建命令共享 600 秒时限，输出有界，截断不算完整成功；容量扫描不是阻止可信脚本写盘的系统配额。依赖中出现重解析点／目录联接会拒绝，npm workspaces 暂不支持；普通 registry 包及已包含的本机 tarball已由 React 模板覆盖。构建目录深度上限 64；Windows Git 初始化还要求绝对 bare 路径不超过 220 UTF-8 字节且少于 248 UTF-16 单元，超限明确报错并保留现场，不改固定根或全局长路径设置。
+
+本轮全部原生操作使用新命名的 `.test-artifacts/windows-node-disposable-*` 夹具，工具资源只读核验，旧失败和恢复证据保留。仍未绕过系统父目录 ACL 阻断或取得新 GUI 验收；Win10、普通用户干净机、原生选择器／WebView2、安装器、Mac 原生和物理媒体继续未验证。合成 IPC 测试不证明这些系统行为，推送兼容分支也不代表可以直接合入主线或正式发行。

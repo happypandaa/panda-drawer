@@ -79,7 +79,7 @@ export const WINDOWS_MANAGER_CAPABILITIES = Object.freeze({
   nodeDirectoryOnboarding: true,
   nodeManagedInstall: false,
   nodeDelete: false,
-  sourceAcquisition: false,
+  sourceAcquisition: true,
   projectGit: false,
   codexHandoff: false,
   metadata: false,

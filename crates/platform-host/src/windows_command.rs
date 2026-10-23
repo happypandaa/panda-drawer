@@ -7,17 +7,64 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, OnceLock,
+    },
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::watch,
+    sync::{watch, Notify},
 };
 
 const MAX_STREAM_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_STDIN_BYTES: usize = 16 * 1024 * 1024;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct Activity {
+    count: AtomicUsize,
+    idle: Notify,
+}
+fn activity() -> &'static Activity {
+    static ACTIVITY: OnceLock<Activity> = OnceLock::new();
+    ACTIVITY.get_or_init(|| Activity {
+        count: AtomicUsize::new(0),
+        idle: Notify::new(),
+    })
+}
+struct ActiveExecution;
+impl ActiveExecution {
+    fn new() -> Self {
+        activity().count.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+impl Drop for ActiveExecution {
+    fn drop(&mut self) {
+        if activity().count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            activity().idle.notify_waiters();
+        }
+    }
+}
+
+/// Wait until command Jobs and their retained cleanup guards have drained.
+/// For a shutdown barrier, first close admission and drain submitters so new
+/// commands cannot follow this idle observation. An error handler may also wait
+/// here while retaining its tool lease. Failed queries never establish idleness.
+pub async fn wait_for_idle() {
+    let activity = activity();
+    loop {
+        let notified = activity.idle.notified();
+        tokio::pin!(notified);
+        // Register before checking, including when completion races this poll.
+        notified.as_mut().enable();
+        if activity.count.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        notified.await;
+    }
+}
 
 pub struct CommandSpec {
     /// Invoke this exact executable directly, with no shell or PATH search.
@@ -116,6 +163,7 @@ fn binding(path: &Path, directory: bool) -> Result<WindowsSourceDirectory, ApiEr
 struct Execution {
     child: Option<JobChild>,
     bindings: Vec<WindowsSourceDirectory>,
+    active: Option<ActiveExecution>,
 }
 impl Execution {
     fn child(&self) -> &JobChild {
@@ -130,13 +178,19 @@ impl Drop for Execution {
         let Some(child) = self.child.take() else {
             return;
         };
+        let active = self.active.take();
         if child.ownership().active_processes().ok() == Some(0) {
+            drop(child);
+            self.bindings.clear();
+            drop(active);
             return;
         }
         // Cancellation of the run future must kill immediately, without waiting
         // for an async destructor or relying on the Tokio runtime staying alive.
         let _ = child.ownership().terminate();
-        let cleanup = Arc::new((child, std::mem::take(&mut self.bindings)));
+        // The activity guard moves with the exact Job and path bindings. Even
+        // after an aborted future, native exit must wait for this cleanup owner.
+        let cleanup = Arc::new((child, std::mem::take(&mut self.bindings), active));
         let retained = cleanup.clone();
         if std::thread::Builder::new()
             .name("windows-command-cleanup".into())
@@ -214,11 +268,14 @@ pub async fn run(
     let executable = binding(&spec.executable, false)?;
     let cwd = binding(&spec.working_directory, true)?;
     let application = executable.path().join(spec.executable.file_name().unwrap());
+    // No await may separate admission/spawn from the owning Execution guard.
+    let active = ActiveExecution::new();
     let child = JobChild::spawn(&application, &spec.args, cwd.path(), &spec.environment)
         .map_err(|value| native_error(value).outcome("not_started"))?;
     let mut execution = Execution {
         child: Some(child),
         bindings: vec![executable, cwd],
+        active: Some(active),
     };
     let stdout = tokio::spawn(capture(
         execution.child_mut().stdout.take().unwrap(),

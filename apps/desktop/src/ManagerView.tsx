@@ -52,7 +52,7 @@ export function ManagerShell({ page, onPageChange, onSettings, navigationDisable
 }
 
 export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, loading, checkedAt,
-  menuDisabled, refreshDisabled, createDisabled, addUnavailableReason, importUnavailableReason,
+  menuDisabled, refreshDisabled, createDisabled, addUnavailableReason, importUnavailableReason, acquireUnavailableReason,
   onRefresh, onCreate, onAdd, onImport, onAcquire,
 }: {
   query: string;
@@ -66,6 +66,7 @@ export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, l
   createDisabled: boolean;
   addUnavailableReason?: string;
   importUnavailableReason?: string;
+  acquireUnavailableReason?: string;
   onRefresh: () => void | Promise<void>;
   onCreate: () => void;
   onAdd?: () => void;
@@ -79,6 +80,7 @@ export function ManagerToolbar({ query, onQueryChange, filter, onFilterChange, l
     <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || refreshDisabled} onClick={() => void onRefresh()}><RefreshCw size={16} className={loading ? 'rotating' : undefined} /></button>
     <ProjectAddMenu disabled={menuDisabled}
       addUnavailableReason={addUnavailableReason} importUnavailableReason={importUnavailableReason}
+      acquireUnavailableReason={acquireUnavailableReason}
       onAdd={onAdd} onImport={onImport} onAcquire={onAcquire} />
     <button className="primary-button" onClick={onCreate} disabled={createDisabled}>新建项目</button>
   </div>;
