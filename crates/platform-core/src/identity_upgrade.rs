@@ -432,7 +432,7 @@ mod tests {
         _temporary: tempfile::TempDir,
         paths: RuntimePaths,
         migration: String,
-        project: String,
+        project_directory: String,
         legacy_device: u64,
     }
 
@@ -494,7 +494,13 @@ mod tests {
                 _temporary: temporary,
                 paths: selected,
                 migration: task.task_id,
-                project: project.id,
+                project_directory: project
+                    .project_root
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .into(),
                 legacy_device,
             }
         }
@@ -508,7 +514,7 @@ mod tests {
             self.paths
                 .workspace_root()
                 .join("projects")
-                .join(&self.project)
+                .join(&self.project_directory)
         }
         fn receipt_dir(&self, plan: &Value) -> PathBuf {
             self.paths
@@ -675,7 +681,7 @@ mod tests {
             fs::read(
                 retained
                     .join("projects")
-                    .join(&fixture.project)
+                    .join(&fixture.project_directory)
                     .join("data/attachments/keep.txt")
             )
             .unwrap(),

@@ -2,7 +2,7 @@
 // Database/WAL bytes are omitted because opening SQLite may checkpoint them.
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { cli, info, readReport, runtime, saveReport, sha256 } from './m3-test-utils.mjs';
 
 const phase = process.argv[2];
@@ -25,7 +25,7 @@ if (phase === 'prepare') {
   const projects = cli(['project', 'list']);
   const original = [];
   for (const project of projects) {
-    assert.equal(project.projectRoot, join(current.workspaceRoot, 'projects', project.id));
+    assert.equal(dirname(project.projectRoot), join(current.workspaceRoot, 'projects'));
     original.push({ id: project.id, name: project.name, projectRoot: project.projectRoot, files: await inventory(project.projectRoot, project.manifest) });
   }
   await saveReport('m3-original-projects.json', { instanceId: current.instanceId, capturedAt: new Date().toISOString(), projects: original });

@@ -767,12 +767,20 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(error.code, "INVALID_TEMPLATE");
-            assert_eq!(
-                fs::read_dir(paths.workspace_root().join("projects"))
-                    .unwrap()
-                    .count(),
-                0
-            );
+            assert!(store.list().await.unwrap().is_empty());
+            let retained = fs::read_dir(paths.workspace_root().join("projects"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(retained.len(), 1);
+            assert!(retained[0]
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(".creating-prj_"));
+            assert_eq!(error.details["candidatePath"], json!(retained[0]));
+            assert!(!Path::new(error.details["projectRoot"].as_str().unwrap()).exists());
             store.shutdown().await;
         }
     }

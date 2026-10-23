@@ -135,7 +135,7 @@ async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archive
     .await;
     assert_eq!(exported["status"], "succeeded");
     let bytes = std::fs::read(&archive).unwrap();
-    let root = paths.workspace_root().join("projects").join(&id);
+    let root = service.store().project(&id).unwrap().root;
     let expected_epoch = service.store().registered_epoch(&id).unwrap().unwrap();
     let client = reqwest::Client::new();
     let token = service.shared.snapshot().token.clone();
@@ -212,6 +212,7 @@ async fn migration_rotates_runtime_credentials_preserves_data_and_rejects_old_co
     let (temp, paths, service, id) = fixture().await;
     let handle = service.handle();
     let before = service.info();
+    let original_project_root = service.store().project(&id).unwrap().root;
     let old_token = paths.read_control_token().unwrap();
     let (old_cookie, old_epoch) = browser(&service, &id).await;
     let orphan = paths.workspace_root().join("projects/unrecognized orphan");
@@ -229,7 +230,11 @@ async fn migration_rotates_runtime_credentials_preserves_data_and_rejects_old_co
     assert_ne!(after.instance_id, before.instance_id);
     assert_eq!(after.base_url, before.base_url);
     assert_eq!(after.workspace_root, destination);
-    assert!(paths.workspace_root().join("projects").join(&id).exists());
+    assert!(original_project_root.exists());
+    assert!(destination
+        .join("projects")
+        .join(original_project_root.file_name().unwrap())
+        .exists());
     assert_eq!(
         std::fs::read(destination.join("projects/unrecognized orphan/keep")).unwrap(),
         b"unknown files preserved"

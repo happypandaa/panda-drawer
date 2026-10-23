@@ -34,6 +34,8 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 “添加本地应用”的[目录流程](local-directory-onboarding.md)先检查所选目录：空目录确认初始化零第三方依赖的 Node 起始文件，随后再预览确认添加；有效 Node 声明直接预览；其他目录可复制包含目录、规范与独立检查 skill 全文的说明给 AI，或重新检查。复制不自动发起 AI 任务，不向目录写入 skill，不修改项目或执行代码。AI 本轮只读评估，缺声明不等于保证可适配；project-v1 不在此 Node 入口自动收养。
 
+新建、复制和完整 ZIP 导入的用户项目根按[可读目录命名](project-directory-names.md)使用固定 npm `transliteration` 数据转写名称，加完整 ID 派生短码；原生离线命名，不让前端／CLI 传任意目标路径。完整 ID 与显示名称的语义不变，已有目录不改名，Node 私有槽和用户选定的外部目录保持原布局；转写不是语义翻译。
+
 顶部保留“我的项目 / 空间与工作区”两个入口及 DARK / LIGHT 外观开关。主题只保存在管理界面的本机偏好中，不修改项目、工作区或业务网页；设置齿轮内集中运行环境、关于及使用指南，高级 Node 检测配置、程序信息按需展开。管理窗默认为 960×640，最小为 640×480，窄窗采用四列并滚动内容。实际验证见[启动台界面记录](radio-launcher-verification.md)。
 
 管理界面的[操作提示](management-feedback.md)按产生位置显示：普通成功默认5秒后消失，错误在原页面／弹窗可见期间保留到手动关闭，不因刷新、新成功或计时器消失。离开页面、关闭弹窗或改变所属项目／工作区后丢弃旧提示，迟到结果不能跨上下文弹回；AI 交接、构建及详情内操作保留局部反馈。迁移和清理提示跟随任务真实最终状态，需继续核对的未完成收尾不当作普通成功。
@@ -120,7 +122,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 ## 5 当前项目和工具入口
 
-项目实际目录：`workspace/projects/{id}/`，包括 `project.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.agents/skills/local-projects-app/`、`docs/database.md`、`docs/platform.md`、`meta/`、`app/`、`dist/`、`data/main.sqlite`、`data/attachments/`、`.platform/`。新项目同时复制可构建的标准源码和平台预编译的欢迎应用，校验两者与打包摘要一致，再完成项目登记；不创建业务表或示例数据。新项目立即可在桌面和浏览器打开，创建及打开不调用 Node/npm、不下载依赖。项目登记与文档代次保存在工作区 `.platform/project-state/{id}.json`；登记还验证项目目录和数据库文件身份。数据库缺失、符号链接、硬链接或未经协调替换时拒绝操作，不创建空库蒙混通过。
+项目实际目录：`workspace/projects/{已登记目录}/`，新项目使用可读转写名与短码，旧的 ID 目录原样保留；读取接口返回的实际 `projectRoot`，不从 ID 拼接。目录包括 `project.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.agents/skills/local-projects-app/`、`docs/database.md`、`docs/platform.md`、`meta/`、`app/`、`dist/`、`data/main.sqlite`、`data/attachments/`、`.platform/`。新项目同时复制可构建的标准源码和平台预编译的欢迎应用，校验两者与打包摘要一致，再完成项目登记；不创建业务表或示例数据。新项目立即可在桌面和浏览器打开，创建及打开不调用 Node/npm、不下载依赖。项目登记与文档代次保存在工作区 `.platform/project-state/{id}.json`；登记还验证项目目录和数据库文件身份。数据库缺失、符号链接、硬链接或未经协调替换时拒绝操作，不创建空库蒙混通过。
 
 给 AI 的窗口约束现由 skill 主入口链接到随目录携带的 `references/app-window-runtime.md`；它说明原生单窗口、打开自动启动 Node、关窗停止、禁止额外窗口／业务弹窗，并先区分 project-v1 与独立 Node 源码槽。主规则见[应用窗口契约](app-window-runtime-contract.md)，全部文档分类与阅读顺序见[文档地图](documentation-map.md)。准备资源／新建时沿用整个 skill 目录复制，不为补说明覆盖既有项目文件。
 

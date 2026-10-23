@@ -227,6 +227,7 @@ async fn interrupted_direct_delete_quarantines_residue_without_replaying_removal
     let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
     let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    journal.directory_name = Some(root_directory_name(&root).unwrap());
     journal.directory_identity = Some(expected.clone());
     journal.control = Some(fixture.store.control(&fixture.id).unwrap().get());
     fixture
@@ -284,6 +285,7 @@ async fn unstarted_direct_delete_recovery_preserves_the_active_project() {
     let before = fs::read(project.root.join("data/attachments/original.txt")).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
     let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    journal.directory_name = Some(root_directory_name(&project.root).unwrap());
     journal.directory_identity = Some(persistent_identity(&project.root).unwrap());
     fixture.lifecycle.save(&journal).unwrap();
     drop(lease);
@@ -317,6 +319,7 @@ async fn removed_payload_checkpoint_finishes_bookkeeping_and_never_retires_a_lat
     let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
     let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    journal.directory_name = Some(root_directory_name(&root).unwrap());
     journal.directory_identity = Some(expected.clone());
     journal.control = Some(fixture.store.control(&fixture.id).unwrap().get());
     fixture

@@ -1019,11 +1019,13 @@ async function openDetails(name) {
 
 test('Project details offer one native window action and send only the desktop open target', async () => {
   await setup(); const opened = deferred(); const calls = [];
-  const state = { projects: [appProject('prj_native_window', 'Native window fixture')] };
+  const projectRoot = '/disposable/workspace/projects/ke-du-xiang-mu-a7c92e10';
+  const state = { projects: [{ ...appProject('prj_native_window', 'Native window fixture'), projectRoot }] };
   mockApp(state, async (command, args) => {
     assert.equal(command, 'project_open'); calls.push(args); return opened.promise;
   });
   await render(h(App)); await openDetails('Native window fixture');
+  assert.ok(dialog().textContent.includes(projectRoot), 'Show the actual registered directory rather than reconstructing it from the ID');
   const actions = dialog().querySelector('.project-dialog-actions');
   assert.ok(actions);
   assert.equal([...actions.querySelectorAll('button')].filter((button) => button.textContent === '进入项目').length, 1);
