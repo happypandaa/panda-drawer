@@ -1,4 +1,5 @@
 import { Copy, FolderOpen } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 export interface ProjectHandoff {
   text: string;
@@ -7,12 +8,13 @@ export interface ProjectHandoff {
 }
 export type HandoffAction = 'copy' | 'codex';
 
-export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear }: {
+export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, feedback }: {
   handoff: ProjectHandoff | null;
   action: HandoffAction | null;
   disabled: boolean;
   onPrepare: (action: HandoffAction) => void;
   onClear: () => void;
+  feedback?: ReactNode;
 }) {
   return <section className="handoff-card" aria-labelledby="handoff-title">
     <div className="section-heading"><div><h3 id="handoff-title">让 AI 继续开发</h3><p>一键复制软件介绍、当前项目目录和开发操作说明。粘贴给 AI 后，再告诉它你的需求。</p></div></div>
@@ -20,6 +22,7 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
       <button className="primary-button" disabled={disabled || action !== null} onClick={() => onPrepare('codex')}><FolderOpen size={16} />{action === 'codex' ? '正在准备并打开…' : '复制说明并在 Codex 打开'}</button>
       <button className="refresh-button" disabled={disabled || action !== null} onClick={() => onPrepare('copy')}><Copy size={16} />{action === 'copy' ? '正在准备说明…' : '复制 AI 接手说明'}</button>
     </div>
+    {feedback}
     <p className="project-help">Codex 需已安装在这台电脑上。此操作只在 Codex 新任务草稿中打开项目目录；请粘贴说明、补充需求后自行发送，不会自动提交任务。</p>
     <p className="project-help">接收说明的 AI 需要能访问这台电脑上的项目目录。仅聊天的 AI 也能了解背景，但不能直接修改本机文件。</p>
     {handoff && <div className="handoff-preview">

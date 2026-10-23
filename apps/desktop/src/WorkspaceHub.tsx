@@ -7,12 +7,14 @@ import { WorkspaceCleanupPanel } from './WorkspaceCleanupPanel';
 import { bytesText, exactBytes, timeText } from './storage-utils';
 import type { ProjectInfo, RetainedWorkspaceRoot, TaskRecord, TrashEntry, WorkspaceInfo } from './types';
 import { messageFrom } from './ui-utils';
+import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 
 interface WorkspaceHubProps {
   workspace: WorkspaceInfo | null;
   revision: number;
   enabled: boolean;
   migrating?: boolean;
+  paused?: boolean;
   cleanupTask?: TaskRecord | null;
   projects: ProjectInfo[];
   onTask: (task: TaskRecord) => void;
@@ -29,21 +31,31 @@ const hubTabs = [
 
 export function WorkspaceHub(props: WorkspaceHubProps) {
   const [tab, setTab] = useState<HubTab>('overview');
-  const [localCleanupTask, setLocalCleanupTask] = useState<TaskRecord | null>(props.cleanupTask ?? props.workspace?.cleanupTask ?? null);
+  const [knownCleanupTasks, setKnownCleanupTasks] = useState<Record<string, TaskRecord>>(() => {
+    const task = props.cleanupTask ?? props.workspace?.cleanupTask;
+    return task ? { [task.taskId]: task } : {};
+  });
   const [cleanupPending, setCleanupPending] = useState(false);
   const alive = useRef(true);
   const taskCallback = useRef(props.onTask); taskCallback.current = props.onTask;
   const taskFromWorkspace = props.cleanupTask ?? props.workspace?.cleanupTask;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useEffect(() => { if (taskFromWorkspace) setLocalCleanupTask(taskFromWorkspace); }, [taskFromWorkspace]);
+  useEffect(() => { if (taskFromWorkspace) {
+    setKnownCleanupTasks((current) => mergeLifecycleTask(current, taskFromWorkspace));
+  } }, [taskFromWorkspace]);
   const trackCleanupTask = useCallback((task: TaskRecord) => {
-    if (alive.current && task.type === 'workspaceCleanup') setLocalCleanupTask(task);
+    if (alive.current && task.type === 'workspaceCleanup') {
+      setKnownCleanupTasks((current) => mergeLifecycleTask(current, task));
+    }
     taskCallback.current(task);
   }, []);
   const id = useId();
-  const migrating = props.migrating || Boolean(props.workspace?.activeTask) || ['running', 'paused', 'migrating'].includes(props.workspace?.migrationState ?? '');
+  const taskState = deriveWorkspaceTaskState(props.workspace && taskFromWorkspace ? { ...props.workspace, cleanupTask: taskFromWorkspace } : props.workspace, knownCleanupTasks);
+  const migrating = props.migrating ?? taskState.migrating;
+  const paused = props.paused ?? (props.migrating === undefined ? taskState.paused : false);
+  const workspaceBlocked = migrating || paused;
   const root = props.workspace?.workspaceRoot ?? 'disconnected';
-  const cleanupBusy = cleanupPending || Boolean(localCleanupTask && !localCleanupTask.final) || Boolean(taskFromWorkspace && !taskFromWorkspace.final);
+  const cleanupBusy = cleanupPending || taskState.cleanupBusy;
   function activateTab(value: HubTab) {
     setTab(value);
     document.getElementById(`${id}-${value}-tab`)?.focus();
@@ -61,20 +73,21 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
       {hubTabs.map(({ id: value, label, icon: Icon }, index) => <button key={value} id={`${id}-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`${id}-${value}-panel`} tabIndex={tab === value ? 0 : -1} className={tab === value ? 'selected' : ''} onClick={() => setTab(value)} onKeyDown={(event) => navigateTabs(event, index)}><Icon size={16} />{label}</button>)}
     </div>
     {migrating && <p className="workspace-operation-status" role="status">工作区正在迁移，新操作暂时停用。请等待任务最终结果；已有窗口的草稿会保留。</p>}
+    {paused && <p className="workspace-operation-status" role="status">工作区已暂停，请查看迁移任务结果并刷新状态；已有窗口的草稿会保留。</p>}
     {cleanupBusy && <p className="workspace-operation-status" role="status">历史清理正在进行，管理写操作暂时停用。可在“清理历史”查看任务与实际结果。</p>}
     <div className="workspace-hub-panel" id={`${id}-overview-panel`} role="tabpanel" aria-labelledby={`${id}-overview-tab`} hidden={tab !== 'overview'}>
-      <WorkspaceStorageSummary key={root} revision={props.revision} enabled={props.enabled && !migrating && tab === 'overview'} compact />
+      <WorkspaceStorageSummary key={root} revision={props.revision} enabled={props.enabled && !workspaceBlocked && tab === 'overview'} compact />
       <ProjectSpaceRanking projects={props.projects} onSelect={props.onSelect} />
       <div className="workspace-quick-actions"><button className="text-button" onClick={() => activateTab('location')}><FolderOpen size={14} />查看工作区位置<ArrowRight size={14} /></button><button className="text-button" onClick={() => activateTab('trash')}><Trash2 size={14} />查看历史保留项目<ArrowRight size={14} /></button><button className="text-button" onClick={() => activateTab('cleanup')}><Archive size={14} />查看历史清理范围<ArrowRight size={14} /></button></div>
     </div>
     <div className="workspace-hub-panel" id={`${id}-location-panel`} role="tabpanel" aria-labelledby={`${id}-location-tab`} hidden={tab !== 'location'}>
-      <WorkspaceLocation key={root} workspace={props.workspace} enabled={props.enabled && !cleanupBusy} active={tab === 'location'} migrating={migrating} onTask={props.onTask} onRefresh={props.onRefresh} />
+      <WorkspaceLocation key={root} workspace={props.workspace} enabled={props.enabled && !cleanupBusy} active={tab === 'location'} migrating={workspaceBlocked} onTask={props.onTask} onRefresh={props.onRefresh} />
     </div>
     <div className="workspace-hub-panel" id={`${id}-trash-panel`} role="tabpanel" aria-labelledby={`${id}-trash-tab`} hidden={tab !== 'trash'}>
-      <WorkspaceTrash key={root} revision={props.revision} enabled={props.enabled && !cleanupBusy} active={tab === 'trash'} migrating={migrating} onTask={props.onTask} onRefresh={props.onRefresh} />
+      <WorkspaceTrash key={root} revision={props.revision} enabled={props.enabled && !cleanupBusy} active={tab === 'trash'} migrating={workspaceBlocked} onTask={props.onTask} onRefresh={props.onRefresh} />
     </div>
     <div className="workspace-hub-panel" id={`${id}-cleanup-panel`} role="tabpanel" aria-labelledby={`${id}-cleanup-tab`} hidden={tab !== 'cleanup'}>
-      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'cleanup'} migrating={migrating} cleanupTask={localCleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
+      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'cleanup'} migrating={workspaceBlocked} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
     </div>
   </div>;
 }
