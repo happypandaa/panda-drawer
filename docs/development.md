@@ -190,7 +190,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 ### 公开源码获取
 
-管理页“添加 → 获取项目源码”和 CLI `source acquire --url URL --json` 接受标准 GitHub/Gitee 公开 HTTPS 仓库。任务只获取当前提交的浅克隆并还原普通文件，不安装依赖或执行项目。`source list/get` 查看记录，`source inspect --path /绝对路径 --json` 只读本机声明，`source cancel --task ID --json` 请求取消后仍须等待最终任务。管理接口为 `GET /api/v1/sources`、`GET /api/v1/sources/:id`、`POST /api/v1/sources/acquisitions`（`url`、可选 `name`）、`POST /api/v1/sources/inspect`（`sourcePath`）、`POST /api/v1/sources/tasks/:id/cancel`；仅管理身份可用。
+管理页“添加 → 获取项目源码”和 CLI `source acquire --url URL [--branch 分支] --json` 接受标准 GitHub/Gitee 公开 HTTPS 仓库。任务获取默认分支或明确指定分支的当前提交浅克隆并还原普通文件，不安装依赖或执行项目。指定分支不存在时失败，不回退到默认分支，也不把同名标签当分支。`source list/get` 查看记录，`source inspect --path /绝对路径 --json` 只读本机声明，`source cancel --task ID --json` 请求取消后仍须等待最终任务。管理接口为 `GET /api/v1/sources`、`GET /api/v1/sources/:id`、`POST /api/v1/sources/acquisitions`（`url`、可选 `branch` 和 `name`）、`POST /api/v1/sources/inspect`（`sourcePath`）、`POST /api/v1/sources/tasks/:id/cancel`；仅管理身份可用。
 
 记录和候选位于工作区 `.platform/sources/src_<UUID>/`，随公开工作区迁移；失败／取消／中断保留现场，重试新建目录，不注册业务项目。版本、工具及内容摘要单独记录，后续接入前需重新校验；普通声明、需适配源码和可运行安装不是同一状态。本步没有私有仓库认证、标准成品安装或删除候选入口。
 

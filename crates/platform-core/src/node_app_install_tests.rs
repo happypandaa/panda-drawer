@@ -129,6 +129,8 @@ impl Fixture {
                     .unwrap(),
             ),
             configuration_revision: revision,
+            external_registration: None,
+            development_source: None,
         }
     }
     async fn shutdown(self) {
@@ -625,6 +627,7 @@ fn journal_for_commit(
         manifest_digest: digest_bytes(&manifest),
         program_digest: prepared.program_digest.clone(),
         provenance: prepared.provenance.clone(),
+        development_source: None,
     });
     journal.apply_task_id = Some(apply_task.into());
     journal

@@ -67,6 +67,11 @@ impl RuntimePaths {
     }
 
     #[cfg(test)]
+    pub(crate) fn for_test_at(root: PathBuf) -> Result<Self> {
+        Self::initialize_at(root)
+    }
+
+    #[cfg(test)]
     pub(crate) fn reinitialize_for_test(&self) -> Result<Self> {
         Self::initialize_at(self.data_root.clone())
     }

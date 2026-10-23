@@ -112,6 +112,7 @@ struct HttpState {
     git_remote: crate::git_remote::GitRemoteChecker,
     project_git: std::result::Result<Arc<crate::project_git::ProjectGitManager>, ApiError>,
     node_install: Arc<crate::node_install_tasks::NodeInstallTasks>,
+    node_development: Arc<crate::node_development_tasks::NodeDevelopmentTasks>,
     source_acquisition:
         std::result::Result<Arc<crate::source_acquisition::SourceAcquisitionManager>, ApiError>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
@@ -977,6 +978,7 @@ impl RuntimeHandle {
                 "Platform is shutting down",
             ));
         }
+        state.node_development.require_idle()?;
         state.node_install.require_idle()
     }
     pub async fn node_install_prepare(
@@ -1299,6 +1301,7 @@ impl RuntimeService {
         state.history_cleanup.shutdown().await;
         state.lifecycle.shutdown().await;
         state.maintenance.shutdown().await;
+        state.node_development.shutdown().await;
         state.node_install.shutdown().await;
         if let Ok(sources) = &state.source_acquisition {
             sources.shutdown().await;
@@ -1457,6 +1460,13 @@ fn make_state(
         builds.clone(),
         source_acquisition.clone(),
     );
+    let node_development = crate::node_development_tasks::NodeDevelopmentTasks::new(
+        paths.clone(),
+        store.clone(),
+        builds.clone(),
+        git_environment.clone(),
+        source_acquisition.clone(),
+    );
     let state = Arc::new(HttpState {
         paths,
         shared,
@@ -1472,6 +1482,7 @@ fn make_state(
         git_remote: crate::git_remote::GitRemoteChecker::new(),
         project_git,
         node_install,
+        node_development,
         source_acquisition,
         maintenance,
         lifecycle,
@@ -1659,6 +1670,7 @@ async fn submit_migration(
             state.history_cleanup.shutdown().await;
             state.lifecycle.shutdown().await;
             state.maintenance.shutdown().await;
+            state.node_development.shutdown().await;
             state.node_install.shutdown().await;
             if let Ok(sources) = &state.source_acquisition {
                 sources.shutdown().await;
@@ -3941,3 +3953,11 @@ mod project_git_tests;
 #[cfg(test)]
 #[path = "service_node_install_tests.rs"]
 mod node_install_tests;
+
+#[path = "service_node_development.rs"]
+mod node_development;
+pub use node_development::{NodeDevelopmentLease, NodeGitAction};
+
+#[cfg(test)]
+#[path = "service_node_development_tests.rs"]
+mod node_development_tests;

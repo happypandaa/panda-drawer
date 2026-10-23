@@ -244,20 +244,28 @@ impl NodeInstallTasks {
     ) -> Result<()> {
         let control = InstallControl::new(stop, cancel);
         control.check()?;
-        let check_source = input.source_id.clone();
-        let check_digest = input.expected_source_digest.clone();
-        let check_task = task_id.to_owned();
-        let verifier: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-            sources
-                .verify_ready_leased(&check_source, &check_digest, &check_task)
-                .and_then(|source| require_node_source(&source))
-        });
         let source = self
             .sources
             .as_ref()
             .map_err(Clone::clone)?
             .verify_ready_leased(&input.source_id, &input.expected_source_digest, task_id)?;
         require_node_source(&source)?;
+        let check_source = input.source_id.clone();
+        let check_digest = input.expected_source_digest.clone();
+        let check_task = task_id.to_owned();
+        let check_build_digest = source.build_source_digest.clone();
+        let check_commit = source.commit.clone();
+        let verifier: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+            let current = sources.verify_ready_leased(&check_source, &check_digest, &check_task)?;
+            require_node_source(&current)?;
+            if current.build_source_digest != check_build_digest || current.commit != check_commit {
+                return Err(ApiError::new(
+                    "SOURCE_CHANGED",
+                    "构建来源记录已变化，请重新准备。",
+                ));
+            }
+            Ok(())
+        });
         let verified = VerifiedNodeSource::new(
             source.source_id,
             source
@@ -266,6 +274,7 @@ impl NodeInstallTasks {
             input.expected_source_digest,
             source.commit,
         )?
+        .with_build_source_digest(source.build_source_digest)?
         .with_revalidation(verifier);
         self.tasks.phase(task_id, "environment")?;
         let tools = self.tasks.environment().resolve().await?;

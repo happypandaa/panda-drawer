@@ -22,7 +22,7 @@ export interface ObjectLayout {
     reason: string;
   };
   versioning: {
-    state: 'not-integrated';
+    state: 'not-integrated' | 'source-git';
     reason: string;
     markers: {
       path: string;

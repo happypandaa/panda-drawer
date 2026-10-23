@@ -326,6 +326,8 @@ fn installed_target(manifest: Value) -> InstallTargetSnapshot {
         generation: Some(format!("gen_{}", "1".repeat(32))),
         manifest: Some(manifest),
         configuration_revision: 7,
+        external_registration: None,
+        development_source: None,
     }
 }
 

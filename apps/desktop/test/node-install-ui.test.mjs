@@ -138,7 +138,7 @@ test('Updating keeps its fixed target and requires the closed-window acknowledge
   await click(checks[1]); assert.equal(byText('确认更新').disabled, true);
   await click(checks[0]); await click(byText('确认更新'));
   assert.match(document.body.textContent, /NODE_INSTALL_BUSY/);
-  assert.match(document.body.textContent, /更新保留现有数据和配置/);
+  assert.match(document.body.textContent, /更新保留数据和配置/);
   assert.equal(byText('确认更新').disabled, true);
   assert.equal(commandCalls(calls, 'node_install_apply').length, 1);
   await click(byText('核验准备结果'));
@@ -353,4 +353,33 @@ test('Disabled state and StrictMode reject writes and stale initial history with
   assert.match(document.body.textContent, /人工安装环境诊断/);
   await choose(); await render({ disabled: true }); await submit();
   assert.equal(commandCalls(calls, 'node_install_prepare').length, 0);
+});
+
+function exposedText(element) {
+  if (!element) return '';
+  if (element.nodeType === window.Node.TEXT_NODE) return element.textContent;
+  if (!(element instanceof HTMLElement) || element.hidden) return '';
+  if (element.tagName === 'DETAILS' && !element.open) return exposedText(element.querySelector(':scope > summary'));
+  return [...element.childNodes].map(exposedText).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+test('Installation leads with the application and explicit confirmation while technical records stay folded', async () => {
+  await setup({ props: { targetAppId: appId }, overrides: { node_install_prepare: () => readyTask() } });
+  const method = document.querySelector('.node-install-method');
+  assert.equal(method.open, false);
+  assert.match(exposedText(document.querySelector('.node-install-panel')), /更新保留数据和配置.*确认新版兼容现有数据/);
+  assert.doesNotMatch(exposedText(document.querySelector('.node-install-panel')), /npm|ignore-scripts|下载生产依赖/);
+  assert.equal(select().options[1].textContent, 'Disposable App');
+  await choose(); await prepareClick();
+  const candidate = document.querySelector('[aria-label="安装候选确认"]');
+  const verification = candidate.querySelector('.node-install-verification');
+  assert.equal(verification.open, false);
+  assert.match(exposedText(candidate), /Disposable App.*1\.2\.0.*我已正常关闭目标应用窗口.*确认\s*更新此应用/);
+  assert.doesNotMatch(exposedText(candidate), /org\.example|src_|install_|gen_|准备环境|源码基线提交/);
+  await click(verification.querySelector('summary'));
+  assert.match(exposedText(candidate), /org\.example\.disposable/);
+  assert.ok(exposedText(candidate).includes(prepared.provenance.sourceDigest));
+  assert.ok(exposedText(candidate).includes(prepared.programDigest));
+  assert.ok(exposedText(candidate).includes(prepared.provenance.sourceCommit));
+  assert.match(exposedText(candidate), /Node 24\.22\.0/);
 });

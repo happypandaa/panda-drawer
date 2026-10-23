@@ -135,6 +135,9 @@ impl NodeApps {
         if inner.shutting_down {
             reasons.push("平台正在退出，暂时不能删除应用。".into());
         }
+        if let Err(error) = self.require_no_development_operation(id) {
+            reasons.push(error.message);
+        }
         if inner.running.contains_key(id) {
             reasons.push("请先处理草稿并正常关闭应用，等待后台服务完成收尾后再删除。".into());
         }
