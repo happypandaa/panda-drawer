@@ -820,9 +820,13 @@ test('Deleting from a Node launcher action removes the app only after an explici
     await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
     assert.equal(writes.length, 1); assert.equal(document.querySelectorAll('.project-card').length, 0);
     assert.equal(document.querySelector('[role=dialog]'), null);
-    assert.match(document.querySelector('.notice-success').textContent, /项目.*已永久删除/);
-    if (metadataCleanupPending) assert.match(document.querySelector('.notice-success').textContent, /收尾尚未完成.*不要再次提交删除/);
-    else assert.doesNotMatch(document.querySelector('.notice-success').textContent, /收尾尚未完成/);
+    const feedback = document.querySelector(metadataCleanupPending ? '.notice-error' : '.notice-success');
+    assert.match(feedback.textContent, /项目已从平台移除.*原目录和文件未改动/);
+    assert.doesNotMatch(feedback.textContent, /文件已永久删除/);
+    if (metadataCleanupPending) {
+      assert.equal(document.querySelector('.notice-success'), null);
+      assert.match(feedback.textContent, /收尾尚未完成.*不要再次提交删除/);
+    } else assert.doesNotMatch(feedback.textContent, /收尾尚未完成/);
     assert.equal(writes.length, 1);
     await act(async () => root.unmount()); root = null;
   }

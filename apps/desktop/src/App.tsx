@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, Check, CircleAlert,
   Database, Folder, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, X, Hammer, Trash2, Search, Settings,
+  RefreshCw, ShieldCheck, Terminal, Hammer, Trash2, Search, Settings,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -16,13 +16,15 @@ import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { NodeProjectCard, ProjectCard } from './ProjectCard';
 import { NodeAppsPanel } from './NodeAppsPanel';
 import type { NodeAppRequest } from './NodeAppsPanel';
-import type { NodeAppDetail } from './node-app-types';
+import type { NodeAppDeleteResult, NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { ProjectAddMenu } from './ProjectAddMenu';
 import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
 import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
+import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
+import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
@@ -47,13 +49,10 @@ function App() {
   const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
   const [nodeAddRequest, setNodeAddRequest] = useState(0);
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
-  const [nodeReadError, setNodeReadError] = useState('');
   const nodeRequestToken = useRef(0);
   const nodeListRevision = useRef(0);
   const nodeInteraction = useRef({ pending: false, modal: false });
   nodeInteraction.current = { pending: nodeDraft.pending, modal: nodeModalOpen };
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
@@ -74,7 +73,7 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [showSources, setShowSources] = useState(false);
   const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
-  const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; taskId: string } | null>(null);
+  const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; taskId: string; origin: { scope: string; version: number } } | null>(null);
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
   const [building, setBuilding] = useState<string[]>([]);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
@@ -85,12 +84,15 @@ function App() {
   const openPending = useRef(false);
   const inDesktop = isTauri();
   const instanceId = useRef<string | null>(null);
+  const serviceWorkspaceRoot = useRef<string | null>(null);
   const handoffRequest = useRef(0);
   const handoffInFlight = useRef<number | null>(null);
   const clipboardQueue = useRef<Promise<void>>(Promise.resolve());
   const selectedOverviewId = useRef<string | null>(null);
   const selectedOverviewRoot = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
+  const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : showImport ? 'import' : overview ? `project:${overview.project.id}` : 'page'}`;
+  const { capture, isCurrent, error: showError, success: showSuccess, recover, reset, dismiss, messages } = useManagementFeedback(feedbackScope);
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
   function navigatePage(value: AppPage) {
@@ -101,12 +103,15 @@ function App() {
     nodeListRevision.current++;
     setNodeApps((current) => current.some((value) => value.id === app.id) ? current.map((value) => value.id === app.id ? app : value) : [...current, app]);
   }, []);
-  const acceptNodeDeletion = useCallback((appId: string, result: { metadataCleanupPending?: boolean }) => {
+  const acceptNodeDeletion = useCallback((appId: string, result: NodeAppDeleteResult) => {
     nodeListRevision.current++;
     setNodeApps((current) => current.filter((value) => value.id !== appId));
     setNodeRequest(null);
-    setNotice(result.metadataCleanupPending ? '项目文件已永久删除，但登记文件的收尾尚未完成。原始来源目录和证据继续保留，请核对记录；不要再次提交删除。' : '项目已永久删除。原始来源目录和保留证据未删除。');
-  }, []);
+    const origin = capture();
+    const outcome = result.ownership === 'external' ? '项目已从平台移除。原目录和文件未改动。' : '项目文件已永久删除。原始来源目录未删除。';
+    if (result.metadataCleanupPending) showError(origin, `${outcome} 但登记文件的收尾尚未完成。证据继续保留，请核对记录；不要再次提交删除。`, 'main', { nextScope: 'projects:page' });
+    else showSuccess(origin, `${outcome} 保留证据未删除。`, 'main', 'projects:page');
+  }, [capture, showError, showSuccess]);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'details' | 'delete') {
     if (nodeDraft.pending || nodeModalOpen) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
@@ -127,22 +132,20 @@ function App() {
     clearHandoff();
     selectedOverviewId.current = project.id;
     selectedOverviewRoot.current = project.projectRoot;
-    setReloadProjectId(null); setNotice(null);
+    setReloadProjectId(null);
     setOverview({ project, tab });
   }
-  const migrating = Boolean(workspace?.activeTask) || ['running', 'paused', 'migrating'].includes(workspace?.migrationState ?? '') || Object.values(lifecycleTasks).some((task) => task.type === 'workspaceMigration' && !task.final);
-  const cleanupTask = Object.values(lifecycleTasks).filter((task) => task.type === 'workspaceCleanup').at(-1) ?? workspace?.cleanupTask ?? null;
-  const cleanupBusy = Boolean(cleanupTask && !cleanupTask.final);
-  const workspaceBusy = migrating || cleanupBusy;
+  const { migrating, paused, cleanupTask, cleanupBusy } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
+  const workspaceBusy = migrating || paused || cleanupBusy;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
-    setLifecycleTasks((current) => ({ ...current, [task.taskId]: task }));
+    setLifecycleTasks((current) => mergeLifecycleTask(current, task));
   }, []);
 
   const refresh = useCallback(async () => {
     const current = ++requestId.current;
+    let origin = capture();
     setLoading(true);
-    setError(null);
     if (!isTauri()) {
       setLoading(false);
       return;
@@ -157,15 +160,18 @@ function App() {
       ]);
       if (currentWorkspace.workspaceRoot !== runtime.workspaceRoot) runtime = await invoke<BootstrapInfo>('bootstrap_info');
       if (current !== requestId.current) return;
-      if (instanceId.current && instanceId.current !== runtime.instanceId) {
+      recover('workspace-read');
+      if (instanceId.current && (instanceId.current !== runtime.instanceId || serviceWorkspaceRoot.current !== runtime.workspaceRoot)) {
+        origin = reset();
         clearHandoff();
         setBuildResults({});
-        setNotice('工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
+        showError(origin, '工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
       const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
       if (selectedOverviewId.current && (!selectedProject || selectedProject.projectRoot !== selectedOverviewRoot.current)) clearHandoff();
       selectedOverviewRoot.current = selectedProject?.projectRoot ?? null;
       instanceId.current = runtime.instanceId;
+      serviceWorkspaceRoot.current = runtime.workspaceRoot;
       setWorkspace(currentWorkspace);
       if (currentWorkspace.cleanupTask) acceptLifecycleTask(currentWorkspace.cleanupTask);
       const workspaceTaskId = (typeof currentWorkspace.activeTask === 'string' ? currentWorkspace.activeTask : currentWorkspace.activeTask?.taskId) ?? currentWorkspace.lastTaskId;
@@ -175,7 +181,8 @@ function App() {
       setProjects(list);
       if (nodeResult.value) setNodeApps(nodeResult.value);
       nodeListRevision.current++;
-      setNodeReadError(nodeResult.error);
+      if (nodeResult.error) showError(origin, nodeResult.error, 'node-list', { backgroundKey: 'node-list' });
+      else recover('node-list');
       const statuses = await Promise.allSettled(list.map(async (project) => {
         const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
         const activeId = (typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId) ?? status.lastTaskId;
@@ -186,11 +193,13 @@ function App() {
       const next: Record<string, MaintenanceStatus> = {};
       const activeTasks: Record<string, TaskRecord> = {};
       for (const project of list) { const scanning = project.storage?.activeTask; if (scanning && typeof scanning === 'object' && 'status' in scanning) activeTasks[project.id] = scanning as TaskRecord; }
-      for (const result of statuses) {
+      for (const [index, result] of statuses.entries()) {
+        const projectId = list[index].id;
         if (result.status === 'fulfilled') {
+          recover(`maintenance:${projectId}`);
           next[result.value.projectId] = result.value.status;
           if (result.value.task) activeTasks[result.value.projectId] = result.value.task;
-        } else { setError(`维护状态读取失败：${messageFrom(result.reason)}。请刷新状态后再操作。`); }
+        } else { showError(origin, `维护状态读取失败：${messageFrom(result.reason)}。请刷新状态后再操作。`, `task:${projectId}`, { backgroundKey: `maintenance:${projectId}` }); }
       }
       setMaintenance(next);
       setBuildResults((previous) => ({ ...previous, ...Object.fromEntries(Object.entries(activeTasks).filter(([, task]) => task.type === 'build')) }));
@@ -198,11 +207,11 @@ function App() {
       setRefreshVersion((version) => version + 1);
       setCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
     } catch (cause) {
-      if (current === requestId.current) setError(messageFrom(cause));
+      if (current === requestId.current) showError(origin, messageFrom(cause), 'main', { backgroundKey: 'workspace-read' });
     } finally {
       if (current === requestId.current) setLoading(false);
     }
-  }, [acceptLifecycleTask, clearHandoff]);
+  }, [acceptLifecycleTask, clearHandoff, capture, showError, recover, reset]);
 
   useEffect(() => {
     void refresh();
@@ -217,33 +226,35 @@ function App() {
       polling = true;
       const revision = nodeListRevision.current;
       const generation = requestId.current;
+      const origin = capture();
       void invoke<NodeAppDetail[]>('node_app_list').then((values) => {
-        if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) { setNodeApps(values); setNodeReadError(''); }
-      }).catch(() => { if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) setNodeReadError('带本地服务的项目状态暂未更新，请刷新后核对。'); }).finally(() => { polling = false; });
+        if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) { setNodeApps(values); recover('node-list'); }
+      }).catch(() => { if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) showError(origin, '带本地服务的项目状态暂未更新，请刷新后核对。', 'node-list', { backgroundKey: 'node-list' }); }).finally(() => { polling = false; });
     }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [Boolean(info), page, workspaceBusy, nodeApps.length]);
+  }, [Boolean(info), page, workspaceBusy, nodeApps.length, capture, showError, recover]);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (createPending.current || workspaceBusy || !name.trim()) return;
     createPending.current = true;
     setCreating(true);
-    setError(null);
-    setNotice(null);
+    const origin = capture();
     try {
       const project = await invoke<ProjectInfo>('project_create', {
         input: { name: name.trim(), description: description.trim() || null },
       });
       setProjects((previous) => [...previous.filter((item) => item.id !== project.id), project]);
-      setName('');
-      setDescription('');
-      setShowCreate(false);
-      openOverview(project, 'overview');
-      setNotice(`已创建「${project.name}」。可以直接进入项目；点击“复制 AI 接手说明”，粘贴给其他 AI 并补充你的需求。`);
+      if (isCurrent(origin)) {
+        setName('');
+        setDescription('');
+        setShowCreate(false);
+        openOverview(project, 'overview');
+        showSuccess(origin, `已创建「${project.name}」。可以直接进入项目；点击“复制 AI 接手说明”，粘贴给其他 AI 并补充你的需求。`, 'main', `${page}:project:${project.id}`);
+      }
       await refresh();
     } catch (cause) {
-      setError(messageFrom(cause));
+      showError(origin, messageFrom(cause));
     } finally {
       createPending.current = false;
       setCreating(false);
@@ -254,15 +265,14 @@ function App() {
     if (openPending.current) return;
     openPending.current = true;
     setOpening(`${project.id}:${target}`);
-    setError(null);
-    setNotice(null);
+    const origin = capture();
     try {
       const result = await invoke<OpenProjectResult>('project_open', { projectId: project.id, target, reload });
-      setNotice(target === 'browser'
+      showSuccess(origin, target === 'browser'
         ? `已将「${project.name}」交给默认浏览器打开。`
         : reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
     } catch (cause) {
-      setError(messageFrom(cause));
+      showError(origin, messageFrom(cause));
     } finally {
       openPending.current = false;
       setOpening(null);
@@ -278,9 +288,11 @@ function App() {
       if (polling) return;
       polling = true;
       void Promise.all(pending.map(async (previous) => {
+        const origin = capture();
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
           if (cancelled) return;
+          recover(`task:${previous.taskId}`);
           if (task.projectId) setTasks((current) => ({ ...current, [task.projectId!]: task }));
           if (task.projectId && task.type === 'build') setBuildResults((current) => ({ ...current, [task.projectId!]: task }));
           if (task.final) {
@@ -289,12 +301,12 @@ function App() {
             void refresh();
           }
         } catch (cause) {
-          if (!cancelled) setError(`任务状态暂时无法读取：${messageFrom(cause)}。任务不会因此取消。`);
+          if (!cancelled) showError(origin, `任务状态暂时无法读取：${messageFrom(cause)}。读取失败本身不会取消任务，请以最终记录为准。`, `task:${previous.projectId}`, { backgroundKey: `task:${previous.taskId}` });
         }
       })).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [tasks, refresh]);
+  }, [tasks, refresh, capture, showError, recover]);
 
   useEffect(() => {
     const pending = Object.values(lifecycleTasks).filter((task) => !task.final);
@@ -304,23 +316,24 @@ function App() {
       if (polling) return;
       polling = true;
       void Promise.all(pending.map(async (previous) => {
+        const origin = capture();
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
           if (cancelled) return;
+          recover(`lifecycle:${previous.taskId}`);
           acceptLifecycleTask(task);
           if (task.final) void refresh();
-        } catch (cause) { if (!cancelled) setError(`任务状态暂时无法读取：${messageFrom(cause)}。任务仍在继续，请刷新状态；不要重复提交操作。`); }
+        } catch (cause) { if (!cancelled) showError(origin, `任务状态暂时无法读取：${messageFrom(cause)}。读取失败本身不会取消任务，请以最终记录为准；不要重复提交操作。`, 'main', { backgroundKey: `lifecycle:${previous.taskId}` }); }
       })).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [lifecycleTasks, acceptLifecycleTask, refresh]);
+  }, [lifecycleTasks, acceptLifecycleTask, refresh, capture, showError, recover]);
 
   async function buildProject(project: ProjectInfo) {
     if (buildPending.current.has(project.id)) return;
     buildPending.current.add(project.id);
     setBuilding((current) => [...current, project.id]);
-    setError(null);
-    setNotice(null);
+    const origin = capture();
     try {
       const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
       const task = await invoke<TaskRecord>('project_build', { projectId: project.id, input: status.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {} });
@@ -330,7 +343,7 @@ function App() {
     } catch (cause) {
       buildPending.current.delete(project.id);
       setBuilding((current) => current.filter((id) => id !== project.id));
-      setError(messageFrom(cause));
+      showError(origin, messageFrom(cause), `task:${project.id}`);
     }
   }
 
@@ -340,14 +353,15 @@ function App() {
     handoffInFlight.current = sequence;
     const initialInstance = instanceId.current;
     const initialRoot = project.projectRoot;
-    const current = () => sequence === handoffRequest.current && selectedOverviewId.current === project.id && initialInstance === instanceId.current && initialRoot === selectedOverviewRoot.current;
-    setError(null); setNotice(null); setHandoff(null); setHandoffAction(action);
+    const origin = capture();
+    const current = () => isCurrent(origin) && sequence === handoffRequest.current && selectedOverviewId.current === project.id && initialInstance === instanceId.current && initialRoot === selectedOverviewRoot.current;
+    setHandoff(null); setHandoffAction(action);
     try {
       const data = await invoke<ProjectHandoff>('project_handoff', { projectId: project.id });
       if (!current()) return;
       setHandoff(data);
       if (action === 'codex' && (!data.projectRoot || !data.instanceId || data.projectRoot !== initialRoot || data.instanceId !== initialInstance)) {
-        setError('项目目录或服务信息已变化，请刷新项目列表后重新准备 Codex 说明。');
+        showError(origin, '项目目录或服务信息已变化，请刷新项目列表后重新准备 Codex 说明。', 'handoff');
         return;
       }
       let copied = false;
@@ -363,21 +377,21 @@ function App() {
       } catch { /* The complete handoff remains available for manual copying. */ }
       if (!current()) return;
       if (action === 'copy') {
-        setNotice(copied ? `已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。` : '说明已准备好，可以选中下面的文字并复制给 AI。');
+        showSuccess(origin, copied ? `已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。` : '说明已准备好，可以选中下面的文字并复制给 AI。', 'handoff');
         return;
       }
       try {
         const result = await invoke<{ projectRoot: string; requested: boolean }>('project_open_codex', { projectId: project.id, expectedProjectRoot: data.projectRoot, expectedInstanceId: data.instanceId });
         if (!current()) return;
         if (!result.requested || result.projectRoot !== data.projectRoot) throw new Error('未能确认 Codex 的项目打开请求。');
-        setNotice(copied ? '说明已复制，已请求 Codex 打开此项目的新任务草稿。请粘贴说明、补充需求后自行发送。' : '已请求 Codex 打开此项目的新任务草稿，但剪贴板未能写入。请手动复制下方完整说明，在 Codex 中粘贴、补充需求后自行发送。');
+        showSuccess(origin, copied ? '说明已复制，已请求 Codex 打开此项目的新任务草稿。请粘贴说明、补充需求后自行发送。' : '已请求 Codex 打开此项目的新任务草稿，但剪贴板未能写入。请手动复制下方完整说明，在 Codex 中粘贴、补充需求后自行发送。', 'handoff');
       } catch (cause) {
         if (current()) {
-          setError(messageFrom(cause));
-          setNotice(copied ? '说明已复制。请手动打开 Codex，选择下方项目目录，再粘贴说明并补充需求。' : '说明已准备好，但剪贴板未能写入。请手动复制下方全文，在 Codex 中选择项目目录并粘贴。');
+          showError(origin, messageFrom(cause), 'handoff');
+          showSuccess(origin, copied ? '说明已复制。请手动打开 Codex，选择下方项目目录，再粘贴说明并补充需求。' : '说明已准备好，但剪贴板未能写入。请手动复制下方全文，在 Codex 中选择项目目录并粘贴。', 'handoff');
         }
       }
-    } catch (cause) { if (current()) setError(messageFrom(cause)); }
+    } catch (cause) { if (current()) showError(origin, messageFrom(cause), 'handoff'); }
     finally {
       if (handoffInFlight.current === sequence) handoffInFlight.current = null;
       if (current()) setHandoffAction(null);
@@ -386,7 +400,7 @@ function App() {
 
   function acceptTask(task: TaskRecord) {
     if (!task.projectId) { acceptLifecycleTask(task); return; }
-    if (task.type === 'delete') setRequestedDelete({ projectId: task.projectId, taskId: task.taskId });
+    if (task.type === 'delete') setRequestedDelete({ projectId: task.projectId, taskId: task.taskId, origin: capture() });
     setTasks((current) => ({ ...current, [task.projectId!]: task }));
   }
 
@@ -397,13 +411,13 @@ function App() {
     if (task.result?.operationOutcome === 'deleted') {
       setProjects((current) => current.filter((project) => project.id !== requestedDelete.projectId));
       void refresh();
-      if (selectedOverviewId.current === requestedDelete.projectId) {
+      if (selectedOverviewId.current === requestedDelete.projectId && isCurrent(requestedDelete.origin)) {
         dismissOverview();
-        setNotice('项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；已有旧备份、操作证据和外部导出文件另行保留。');
+        showSuccess(requestedDelete.origin, '项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；已有旧备份、操作证据和外部导出文件另行保留。', 'main', `${page}:page`);
       }
     }
     setRequestedDelete(null);
-  }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh]);
+  }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh, isCurrent, showSuccess, page]);
 
   function projectBlocked(project: ProjectInfo) {
     const status = maintenance[project.id];
@@ -428,12 +442,9 @@ function App() {
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
   const failedLifecycleTasks = completedLifecycleTasks.filter((task) => task.status === 'failed' || task.status === 'interrupted');
-  const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen || settingsOpen;
+  const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen || settingsOpen || showSources;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
-  const feedback = <>
-    {error && <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>操作未完成</strong><p>{error}</p></div><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError(null)}><X size={16} /></button></div>}
-    {notice && <div className="notice notice-success" role="status"><Check size={18} /><p>{notice}</p><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice(null)}><X size={16} /></button></div>}
-  </>;
+  const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
   const openSettings = () => { if (!nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
 
@@ -462,21 +473,23 @@ function App() {
         <div className="radio-toolbar-spacer" />
         <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={16} className={loading ? 'rotating' : undefined} /></button>
         <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} onAcquire={() => setShowSources(true)} />
-        <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); setNotice(null); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}>新建项目</button>
+        <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}>新建项目</button>
       </div>}
       <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
         <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间与工作区'}</h1>
         <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
-          {page === 'projects' && nodeReadError && <p className="task-error" role="alert">{nodeReadError}</p>}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
+          {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>工作区已暂停，需要查看处理</strong><p>请查看迁移任务结果并刷新状态；已有窗口的草稿保留。</p></div></div>}
           {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" disabled={nodeDraft.pending || nodeModalOpen} onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowManagementTasks(true); setSettingsOpen(true); }}>查看任务</button></div>}
         </div>
           {page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
             {showSources && <SourceAcquisitionPanel instanceId={info?.instanceId} onInstalled={() => void refresh()} onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
+            {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
+            {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
             {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
               {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
@@ -485,7 +498,7 @@ function App() {
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
             </section>}
-          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} />}
+          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} />}
       </main>
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects}` : totalProjects} APPS</span><span title={info?.workspaceRoot}>LOCAL FIRST</span></footer>
       {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={settingsBusy} onClose={() => setSettingsOpen(false)}>
@@ -539,7 +552,8 @@ function App() {
             <button className="primary-button" disabled={overviewUnavailable || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Monitor size={16} />进入项目</button>
             <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={16} />{building.includes(overviewProject.id) ? '构建中…' : '构建项目'}</button>
           </div>
-          <CodexHandoffPanel handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy} onPrepare={action => void copyHandoff(overviewProject, action)} onClear={clearHandoff} />
+          <CodexHandoffPanel handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy} onPrepare={action => void copyHandoff(overviewProject, action)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} />
+          <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
           <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' && buildResults[overviewProject.id] ? buildResults[overviewProject.id] : tasks[overviewProject.id]} />
           <ProjectOverview key={overviewProject.id} project={overviewProject} instanceId={info?.instanceId} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={tasks[overviewProject.id]} onTask={(task) => { acceptTask(task); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
           <details className="project-technical-details"><summary>运行信息与项目路径</summary><BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />

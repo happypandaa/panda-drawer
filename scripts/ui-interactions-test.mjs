@@ -1097,7 +1097,7 @@ test('Creating a project opens its details and offers AI handoff without copying
   await act(async () => prepared.resolve({ text: `Platform description and project root: ${created.projectRoot}` }));
   assert.deepEqual(copied, [`Platform description and project root: ${created.projectRoot}`]);
   assert.equal(buttonNamed('复制 AI 接手说明').disabled, false);
-  assert.match(dialog().querySelector('[role="status"]').textContent, /已复制/);
+  assert.match(document.querySelector('.handoff-card [role="status"]').textContent, /已复制/);
 });
 
 test('AI handoff remains selectable when the clipboard rejects access', async () => {

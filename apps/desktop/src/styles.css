@@ -1048,6 +1048,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .radio-notices { flex-shrink: 0; padding: 16px 32px 0; }
 .radio-notices:empty { display: none; }
 .radio-notices > :last-child { margin-bottom: 0; }
+.project-list-feedback { margin: 16px 32px 0; }
+.project-list-feedback:empty { display: none; }
+.project-list-feedback > strong { display: block; margin-bottom: 8px; font-size: 13px; }
+.project-list-feedback .notice { margin-bottom: 0; }
 .radio-task-indicator { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--radio-line); border-radius: 9px; color: var(--radio-secondary); background: var(--radio-surface); font-size: 12px; }
 .radio-task-indicator .text-button { padding: 2px 0; font-size: 12px; color: var(--radio-text); }
 .radio-settings-modal .radio-settings-tasks { margin: 12px 0; }
@@ -1268,6 +1272,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-footer { min-height: 32px; padding: 7px 20px; font-size: 9px; }
   .radio-workspace-view { padding: 22px 20px; }
   .radio-notices { padding: 12px 20px 0; }
+  .project-list-feedback { margin-inline: 20px; }
   .radio-main > .guide-disclosure, .radio-main > .recent-tasks { margin-inline: 20px; }
   .radio-main > .project-search-empty, .radio-main > .workspace-card { margin: 20px; }
   .radio-main > .workspace-location { padding-inline: 20px; }
