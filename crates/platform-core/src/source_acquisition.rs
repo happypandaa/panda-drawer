@@ -81,6 +81,8 @@ pub struct SourceInspection {
     pub name: Option<String>,
     pub next_step: String,
     pub execution_state: String,
+    #[serde(default)]
+    pub requires_build: bool,
     pub issues: Vec<ApiError>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -121,6 +123,8 @@ struct SourceRecord {
     content_digest: Option<String>,
     inspection: Option<SourceInspection>,
     error: Option<ApiError>,
+    #[serde(skip)]
+    legacy_build_inspection: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,9 +205,13 @@ impl SourceAcquisitionManager {
         Ok(path)
     }
     fn read_record(&self, id: &str) -> Result<SourceRecord, ApiError> {
-        let record: SourceRecord =
+        let value: serde_json::Value =
             serde_json::from_slice(&read_small(&self.slot(id)?.join("source.json"))?)
                 .map_err(|_| invalid("源码候选记录无效，请保留现场。"))?;
+        let legacy_build_inspection = value["inspection"].get("requiresBuild").is_none();
+        let mut record: SourceRecord =
+            serde_json::from_value(value).map_err(|_| invalid("源码候选记录无效，请保留现场。"))?;
+        record.legacy_build_inspection = legacy_build_inspection;
         if record.schema_version != 1
             || record.source_id != id
             || !valid_id(&record.task_id)
@@ -242,6 +250,39 @@ impl SourceAcquisitionManager {
         } else {
             None
         };
+        let mut inspection = record.inspection;
+        if record.build_source_digest.is_some() {
+            if let Some(inspection) = &mut inspection {
+                inspection.requires_build = false;
+            }
+        } else if record.legacy_build_inspection {
+            if let (Some(inspection), Some(root)) = (&mut inspection, &source_path) {
+                if inspection.kind == "node-service-source" {
+                    // Old metadata did not describe build authorization. Derive
+                    // it from a verified immutable public manifest, read-only.
+                    // New records avoid this additional full tree verification.
+                    let path = root.join("local-app.json");
+                    let bytes = read_small(&path)?;
+                    if record.content_digest.as_deref() != Some(directory_digest(root)?.as_str())
+                        || read_small(&path)? != bytes
+                    {
+                        return Err(error(
+                            "SOURCE_CHANGED",
+                            "候选源码已经改变，请重新获取后核对构建方式。",
+                        ));
+                    }
+                    let manifest = TrialManifest::parse(&bytes)
+                        .map_err(|_| invalid("应用声明无效，无法核对旧来源的构建方式。"))?;
+                    inspection.requires_build =
+                        manifest.development.as_ref().is_some_and(|declaration| {
+                            matches!(
+                                declaration.build,
+                                crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
+                            )
+                        });
+                }
+            }
+        }
         Ok(SourceCandidate {
             source_id: record.source_id,
             task_id: record.task_id,
@@ -270,7 +311,7 @@ impl SourceAcquisitionManager {
             file_count: record.file_count,
             total_bytes: record.total_bytes,
             content_digest: record.content_digest,
-            inspection: record.inspection,
+            inspection,
             error: record.error,
             execution_state: if built { "build-prepared-program-not-started" } else { "not-executed" }.into(),
             registration_available: false,
@@ -278,6 +319,9 @@ impl SourceAcquisitionManager {
     }
     pub fn info(&self, id: &str) -> Result<SourceCandidate, ApiError> {
         self.view(self.read_record(id)?)
+    }
+    pub(crate) fn git_environment(&self) -> GitEnvironmentManager {
+        self.git.clone()
     }
     /// Recheck downloaded bytes before any later operation. Inspection alone is
     /// deliberately not an authorization to execute a mutable source directory.
@@ -512,6 +556,7 @@ impl SourceAcquisitionManager {
             }
         };
         let record = SourceRecord {
+            legacy_build_inspection: false,
             schema_version: 1,
             source_id: id.clone(),
             task_id: task.task_id.clone(),
@@ -1654,6 +1699,7 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         name: None,
         next_step: "review-and-adapt-source".into(),
         execution_state: "not-executed".into(),
+        requires_build: false,
         issues: Vec::new(),
     };
     let project = path.join("project.json");
@@ -1700,6 +1746,12 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         });
         match parsed {
             Ok(manifest) if manifest.runtime == TrialRuntime::NodeService => {
+                result.requires_build = manifest.development.as_ref().is_some_and(|declaration| {
+                    matches!(
+                        declaration.build,
+                        crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
+                    )
+                });
                 result.kind = "node-service-source".into();
                 result.name = Some(manifest.app.name);
                 result.next_step = "prepare-node-runtime-before-registration".into();

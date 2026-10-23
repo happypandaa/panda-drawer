@@ -517,6 +517,7 @@ async fn restart_marks_unfinished_source_and_retains_evidence_without_project_re
     )
     .unwrap();
     let record = SourceRecord {
+        legacy_build_inspection: false,
         branch: None,
         schema_version: 1,
         source_id: id.clone(),

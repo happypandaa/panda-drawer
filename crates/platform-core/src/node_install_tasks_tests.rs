@@ -159,10 +159,19 @@ impl Fixture {
         self.sources.info(&id).unwrap()
     }
     async fn submit(&self, source: &SourceCandidate, target: Option<String>) -> TaskRecord {
+        self.submit_build(source, target, false).await
+    }
+    async fn submit_build(
+        &self,
+        source: &SourceCandidate,
+        target: Option<String>,
+        build_source: bool,
+    ) -> TaskRecord {
         self.installs
             .prepare(
                 self.nodes.clone(),
                 PrepareNodeInstallInput {
+                    build_source,
                     source_id: source.source_id.clone(),
                     expected_source_digest: source.content_digest.clone().unwrap(),
                     target_app_id: target,
@@ -227,6 +236,319 @@ fn script(body: &str) -> String {
     format!("set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\nmkdir -p node_modules\nprintf '{{}}' > node_modules/.package-lock.json\n{body}\n")
 }
 const SLOW_NPM: &str = "printf '%s' \"$$\" > node_modules/disposable-pid; /bin/sleep 60 & wait";
+
+fn declare_build(fixture: &Fixture) {
+    let path = fixture.source.join("local-app.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["development"] =
+        json!({"sourceDir":".","build":{"kind":"npm","script":"build"},"outputDir":"release"});
+    atomic_json(&path, &manifest).unwrap();
+    atomic_json(&fixture.source.join("package.json"),&json!({"name":"disposable-coordinator","version":"1.0.0","scripts":{"build":"node build.mjs"}})).unwrap();
+    fs::write(fixture.source.join("build.mjs"),"import fs from 'node:fs';\nfs.mkdirSync('release');\nfor(const path of ['local-app.json','package.json','package-lock.json'])fs.copyFileSync(path,'release/'+path);\nfor(const path of ['public','server'])fs.cpSync(path,'release/'+path,{recursive:true});\nfs.writeFileSync('release/public/disposable-build-proof.txt','explicit build completed');\n").unwrap();
+}
+
+const COPY_BUILD:&str="if [ \"$1\" = run ]; then mkdir release; cp local-app.json package.json package-lock.json release/; cp -R public server release/; printf 'explicit build completed' > release/public/disposable-build-proof.txt; fi";
+
+#[tokio::test]
+async fn source_build_requires_explicit_authority_before_creating_any_build_or_install_candidate() {
+    let fixture = Fixture::new("exit 77");
+    declare_build(&fixture);
+    let source = fixture.capture().await;
+    assert!(source.inspection.as_ref().unwrap().requires_build);
+    let task = fixture.submit(&source, None).await;
+    let done = fixture.wait_task(&task.task_id).await;
+    assert_eq!(done.error.unwrap().code, "NODE_INSTALL_BUILD_REQUIRED");
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-development-builds")
+        .exists());
+    assert!(fixture.installs.list().unwrap()["candidates"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(fixture.nodes.list().await.unwrap().is_empty());
+    assert_eq!(
+        fixture
+            .sources
+            .verify_ready(&source.source_id, source.content_digest.as_ref().unwrap())
+            .unwrap()
+            .content_digest,
+        source.content_digest
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn old_source_inspection_derives_build_requirement_without_rewriting_records_or_running_code()
+{
+    let fixture = Fixture::new("exit 77");
+    declare_build(&fixture);
+    let source = fixture.capture().await;
+    let path = source.evidence_path.join("source.json");
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["inspection"]
+        .as_object_mut()
+        .unwrap()
+        .remove("requiresBuild");
+    atomic_json(&path, &record).unwrap();
+    let unchanged = fs::read(&path).unwrap();
+    let refreshed = fixture.sources.info(&source.source_id).unwrap();
+    assert!(refreshed.inspection.unwrap().requires_build);
+    assert_eq!(fs::read(&path).unwrap(), unchanged);
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-development-builds")
+        .exists());
+    let verified = fixture
+        .sources
+        .verify_ready(&source.source_id, source.content_digest.as_ref().unwrap())
+        .unwrap();
+    assert!(verified.inspection.unwrap().requires_build);
+    fs::write(source.source_path.unwrap().join("local-app.json"), b"{}").unwrap();
+    assert!(
+        fixture.sources.info(&source.source_id).is_err(),
+        "an edited legacy payload must not supply build authority"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_source_build_prepares_output_but_keeps_selected_source_identity_and_digest() {
+    let fixture = Fixture::new(COPY_BUILD);
+    declare_build(&fixture);
+    let source = fixture.capture().await;
+    let task = fixture.submit_build(&source, None, true).await;
+    let done = fixture.wait_task(&task.task_id).await;
+    assert!(done.error.is_none(), "{done:?}");
+    let result = done.result.unwrap();
+    let candidate = &result["candidate"];
+    assert_eq!(candidate["provenance"]["sourceId"], source.source_id);
+    assert_eq!(
+        candidate["provenance"]["sourceDigest"],
+        source.content_digest.as_deref().unwrap()
+    );
+    assert!(candidate["provenance"]["buildSourceDigest"]
+        .as_str()
+        .is_some_and(|value| value.len() == 64));
+    let program = fixture
+        .paths
+        .data_root()
+        .join("node-apps/.installations")
+        .join(candidate["candidateId"].as_str().unwrap())
+        .join("program");
+    assert_eq!(
+        fs::read_to_string(program.join("public/disposable-build-proof.txt")).unwrap(),
+        "explicit build completed"
+    );
+    assert!(!fixture.source.join("release").exists());
+    assert!(!source
+        .source_path
+        .as_ref()
+        .unwrap()
+        .join("release")
+        .exists());
+    assert!(fixture.nodes.list().await.unwrap().is_empty());
+    assert_eq!(
+        fixture.sources.list().unwrap().len(),
+        1,
+        "build must not create a second source identity"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_explicit_source_build_retains_its_operation_and_never_prepares_an_installed_generation(
+) {
+    let fixture=Fixture::new("if [ \"$1\" = run ]; then printf 'failure evidence' > disposable-failed-build.txt; exit 17; fi");
+    declare_build(&fixture);
+    let app = fixture
+        .nodes
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let app_id = app["id"].as_str().unwrap().to_owned();
+    let registration = slot(&fixture, &app_id).join("registration.json");
+    let previous = fs::read(&registration).unwrap();
+    let data = slot(&fixture, &app_id).join("data/disposable-existing-data.txt");
+    fs::write(&data, "preserved existing application data").unwrap();
+    let source = fixture.capture().await;
+    let task = fixture
+        .submit_build(&source, Some(app_id.clone()), true)
+        .await;
+    let done = fixture.wait_task(&task.task_id).await;
+    assert!(done.error.is_some());
+    let operation = fixture
+        .paths
+        .data_root()
+        .join("node-development-builds")
+        .join(&task.task_id);
+    assert_eq!(
+        fs::read_to_string(operation.join("repository/disposable-failed-build.txt")).unwrap(),
+        "failure evidence"
+    );
+    assert!(fixture.installs.list().unwrap()["candidates"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(fixture.nodes.list().await.unwrap()[0]["id"], app_id);
+    assert_eq!(fs::read(&registration).unwrap(), previous);
+    assert_eq!(
+        fs::read_to_string(data).unwrap(),
+        "preserved existing application data"
+    );
+    assert!(!fixture.store.has_active_tasks());
+    fixture
+        .sources
+        .verify_ready(&source.source_id, source.content_digest.as_ref().unwrap())
+        .unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_explicit_source_build_cleans_the_process_and_preserves_source_lease_until_settled(
+) {
+    let fixture = Fixture::new(":");
+    declare_build(&fixture);
+    let marker = fixture.paths.data_root().join("disposable-build-pid");
+    fs::write(
+        &fixture.npm,
+        script(&format!(
+            "if [ \"$1\" = run ]; then printf '%s' \"$$\" > '{}'; exec /bin/sleep 60; fi",
+            marker.display()
+        )),
+    )
+    .unwrap();
+    let source = fixture.capture().await;
+    let task = fixture.submit_build(&source, None, true).await;
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(pid) = fs::read_to_string(&marker)
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(fixture.store.has_active_tasks());
+    fixture.installs.cancel(&task.task_id).unwrap();
+    let done = fixture.wait_task(&task.task_id).await;
+    assert_eq!(done.error.unwrap().code, "NODE_INSTALL_CANCELLED");
+    assert_ne!(unsafe { libc::kill(-pid, 0) }, 0);
+    assert!(fixture
+        .paths
+        .data_root()
+        .join("node-development-builds")
+        .join(&task.task_id)
+        .exists());
+    assert!(fixture.installs.list().unwrap()["candidates"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(!fixture.store.has_active_tasks());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_trusted_prebuilt_source_never_runs_its_development_script_again_even_with_build_flag() {
+    let fixture = Fixture::new(COPY_BUILD);
+    declare_build(&fixture);
+    let tools = fixture.builds.environment().resolve().await.unwrap();
+    let operation = fixture
+        .source
+        .parent()
+        .unwrap()
+        .join("disposable-prebuilt-operation");
+    let (cancel, _) = watch::channel(false);
+    let output = crate::node_development_build::build_repository(
+        &fixture.source,
+        &operation,
+        &tools,
+        fixture.stop.subscribe(),
+        cancel.subscribe(),
+    )
+    .await
+    .unwrap();
+    let task = fixture
+        .sources
+        .capture_built_output(
+            output,
+            Some("disposable trusted prebuilt source".into()),
+            None,
+            fixture.stop.subscribe(),
+        )
+        .await
+        .unwrap();
+    let done = fixture.wait_task(&task.task_id).await;
+    let source = fixture
+        .sources
+        .info(done.result.unwrap()["sourceId"].as_str().unwrap())
+        .unwrap();
+    assert!(source.build_source_digest.is_some());
+    assert!(!source.inspection.as_ref().unwrap().requires_build);
+    fs::write(
+        &fixture.npm,
+        script("if [ \"$1\" = run ]; then exit 99; fi"),
+    )
+    .unwrap();
+    let task = fixture.submit_build(&source, None, true).await;
+    let done = fixture.wait_task(&task.task_id).await;
+    assert!(done.error.is_none(), "{done:?}");
+    assert_eq!(
+        done.result.unwrap()["candidate"]["provenance"]["sourceId"],
+        source.source_id
+    );
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-development-builds")
+        .exists());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "explicit bundled Node/npm offline source-build integration; requires desktop resources"]
+async fn real_node_source_build_prepares_without_network_and_preserves_authoritative_source_identity(
+) {
+    let fixture = Fixture::new(":");
+    declare_build(&fixture);
+    let node = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/src-tauri/resources/development-node/bin/node")
+        .canonicalize()
+        .unwrap();
+    fixture
+        .builds
+        .environment()
+        .configure_node(Some(node))
+        .await
+        .unwrap();
+    let source = fixture.capture().await;
+    let task = fixture.submit_build(&source, None, true).await;
+    let done = fixture.wait_task(&task.task_id).await;
+    assert!(done.error.is_none(), "{done:?}");
+    let result = done.result.unwrap();
+    assert_eq!(
+        result["candidate"]["provenance"]["sourceId"],
+        source.source_id
+    );
+    let program = fixture
+        .paths
+        .data_root()
+        .join("node-apps/.installations")
+        .join(result["candidate"]["candidateId"].as_str().unwrap())
+        .join("program");
+    assert_eq!(
+        fs::read_to_string(program.join("public/disposable-build-proof.txt")).unwrap(),
+        "explicit build completed"
+    );
+    assert_eq!(fixture.sources.list().unwrap().len(), 1);
+    fixture.shutdown().await;
+}
 fn candidate_id(task: &TaskRecord) -> String {
     task.result.as_ref().unwrap()["candidateId"]
         .as_str()
@@ -380,6 +702,7 @@ async fn shutdown_drains_prepare_and_rejects_subsequent_tasks() {
         .prepare(
             fixture.nodes.clone(),
             PrepareNodeInstallInput {
+                build_source: false,
                 source_id: source.source_id,
                 expected_source_digest: source.content_digest.unwrap(),
                 target_app_id: None
@@ -601,6 +924,7 @@ async fn capture_marked_for_adaptation_cannot_be_silently_installed() {
         .prepare(
             fixture.nodes.clone(),
             PrepareNodeInstallInput {
+                build_source: false,
                 source_id: source.source_id,
                 expected_source_digest: source.content_digest.unwrap(),
                 target_app_id: None,

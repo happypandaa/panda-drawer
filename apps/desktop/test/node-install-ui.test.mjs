@@ -383,3 +383,26 @@ test('Installation leads with the application and explicit confirmation while te
   assert.ok(exposedText(candidate).includes(prepared.provenance.sourceCommit));
   assert.match(exposedText(candidate), /Node 24\.22\.0/);
 });
+
+test('A downloaded source that declares a build runs scripts only after the explicit build-and-prepare action', async () => {
+  const buildSource = { ...source, inspection: { ...source.inspection, requiresBuild: true } };
+  const { calls } = await setup({ props: { sources: [buildSource] }, overrides: { node_install_prepare: () => readyTask({ result: { state: 'prepared', candidate: { ...prepared, provenance: { ...prepared.provenance, buildSourceDigest: 'f'.repeat(64) } }, installed: false } }) } });
+  assert.equal(commandCalls(calls, 'node_install_prepare').length, 0);
+  await choose();
+  assert.match(exposedText(document.querySelector('.node-install-panel')), /将执行声明的构建脚本/);
+  assert.equal(commandCalls(calls, 'node_install_prepare').length, 0);
+  await click(byText('构建并准备安装材料'));
+  assert.deepEqual(commandCalls(calls, 'node_install_prepare')[0][1], { input: { sourceId, expectedSourceDigest: digest, targetAppId: null, buildSource: true } });
+  assert.equal(commandCalls(calls, 'node_install_apply').length, 0);
+  assert.equal(byText('确认安装').disabled, true);
+});
+
+test('A verified program candidate never asks to run its author build a second time', async () => {
+  const builtSource = { ...source, buildSourceDigest: 'f'.repeat(64), inspection: { ...source.inspection, requiresBuild: true } };
+  const { calls } = await setup({ props: { sources: [builtSource] }, overrides: { node_install_prepare: () => readyTask() } });
+  await choose();
+  assert.doesNotMatch(exposedText(document.querySelector('.node-install-panel')), /将执行声明的构建脚本/);
+  assert.equal(byText('构建并准备安装材料'), undefined);
+  await prepareClick();
+  assert.deepEqual(commandCalls(calls, 'node_install_prepare')[0][1], { input: { sourceId, expectedSourceDigest: digest, targetAppId: null } });
+});
