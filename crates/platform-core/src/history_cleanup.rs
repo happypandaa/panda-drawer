@@ -768,7 +768,12 @@ impl CleanupManager {
             self.inspect(&mut item, |item| self.validate_original(item, &id));
             items.push(item);
         }
-        for directory in fs::read_dir(self.paths.workspace_root().join(".platform/trash"))? {
+        let legacy_trash = match fs::read_dir(self.paths.workspace_root().join(".platform/trash")) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        for directory in legacy_trash.into_iter().flatten() {
             let directory = directory?;
             let id = directory.file_name().to_string_lossy().into_owned();
             if !id.starts_with("trash_") || !valid_id(&id) {
@@ -785,7 +790,7 @@ impl CleanupManager {
             let mut item = Candidate::new(
                 format!("trash_{id}"),
                 "trash",
-                "回收站项目文件（保留历史备份）",
+                "旧版保留项目文件（保留历史备份）",
                 directory.path().join("project"),
             );
             self.inspect(&mut item, |item| {
@@ -1841,6 +1846,30 @@ fn relative_parent(
 }
 fn remove_tree(item: &Candidate, progress_path: &Path) -> Result<Value, ApiError> {
     remove_tree_with_hook(item, progress_path, |_, _| Ok(()))
+}
+
+/// Explicit permanent deletion shares the descriptor-relative removal boundary
+/// with historical cleanup, without enrolling content in any recycle facility.
+pub(crate) fn remove_owned_directory(
+    path: &Path,
+    expected: &PersistedIdentity,
+    progress_path: &Path,
+) -> Result<Value, ApiError> {
+    if !expected.matches_path(path).map_err(error)? {
+        return Err(error("Permanent deletion target identity changed"));
+    }
+    let mut item = Candidate::new(
+        "permanent-delete".into(),
+        "ownedDirectory",
+        "平台项目目录",
+        path.into(),
+    );
+    item.root_identity = Some(directory_identity(path)?);
+    item.persistent_root_identity = Some(expected.clone());
+    item.parents = parent_identities(path)?;
+    item.entries = scan(path)?;
+    item.can_clean = true;
+    remove_tree(&item, progress_path)
 }
 fn remove_tree_with_hook(
     item: &Candidate,

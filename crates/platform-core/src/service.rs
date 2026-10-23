@@ -1493,6 +1493,7 @@ async fn submit_migration(
             while state.store.has_active_tasks() {
                 tokio::time::sleep(Duration::from_millis(40)).await;
             }
+            crate::projects::check_pending_deletions(state.paths.workspace_root())?;
             // Reject unresolved recovery before any filesystem copying.
             for project in state.store.list().await? {
                 if crate::projects::valid_id(&project.id)
@@ -1830,6 +1831,9 @@ fn status(error: &ApiError) -> StatusCode {
         | "PROJECT_RELOAD_REQUIRED"
         | "PROJECT_ID_CONFLICT"
         | "PROJECT_TRASHED"
+        | "PROJECT_DELETED"
+        | "PROJECT_DELETE_INCOMPLETE"
+        | "PROJECT_DELETE_CONFIRMATION_CHANGED"
         | "PROJECT_REGISTRATION_PENDING"
         | "WORKSPACE_MIGRATING"
         | "SERVICE_INSTANCE_CHANGED"
@@ -1999,7 +2003,14 @@ async fn management(
             [
                 "projects",
                 _,
-                "builds" | "backups" | "restore" | "maintenance" | "exports" | "copies" | "trash"
+                "builds"
+                    | "backups"
+                    | "restore"
+                    | "maintenance"
+                    | "exports"
+                    | "copies"
+                    | "trash"
+                    | "deletions"
             ] | ["projects", _, "maintenance", "end"]
                 | ["projects", "imports"]
                 | ["trash", _, "restore" | "purge"]
@@ -2232,7 +2243,11 @@ async fn management(
             (Method::POST, ["projects", id, "copies"]) => {
                 handle.project_copy(id, optional_json(request).await?).await
             }
-            (Method::POST, ["projects", id, "trash"]) => {
+            (Method::POST, ["projects", _, "trash"]) => Err(ApiError::new(
+                "PROJECT_TRASH_RETIRED",
+                "Creating recycle-bin entries is retired. Permanent deletion requires the explicit projects/{id}/deletions endpoint; existing recycle-bin contents remain available.",
+            )),
+            (Method::POST, ["projects", id, "deletions"]) => {
                 handle
                     .project_delete(id, optional_json(request).await?)
                     .await
@@ -2393,8 +2408,8 @@ fn session(
                 "Project session has expired; reopen from the platform",
             )
         })?;
-    if state.store.is_retired(id)?.is_some() {
-        return Err(ApiError::new("PROJECT_TRASHED","Project has been moved to the recycle bin; reopen it through the platform after restoring"));
+    if let Some(retired) = state.store.is_retired(id)? {
+        return Err(crate::projects::project_removed_error(&retired));
     }
     if _session.lifecycle_generation != state.store.session_generation(id)? {
         return Err(ApiError::new(

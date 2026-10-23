@@ -7,6 +7,26 @@ export interface NodeDataContract {
   version: number;
 }
 
+export interface NodeAppDeletePreview {
+  appId: string;
+  name: string;
+  ownership: 'managed' | 'external';
+  platformRoot: string;
+  sourcePath: string;
+  deletePaths: string[];
+  preservedPaths: string[];
+  expectedRevision: string;
+}
+
+export interface NodeAppDeleteResult {
+  appId: string;
+  operationOutcome: 'deleted';
+  ownership: 'managed' | 'external';
+  sourcePreserved: true;
+  evidenceRetained: true;
+  metadataCleanupPending?: boolean;
+}
+
 export interface NodeConfigurationField {
   name: string;
   label: string;

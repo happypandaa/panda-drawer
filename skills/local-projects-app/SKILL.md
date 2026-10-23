@@ -111,7 +111,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 网页附件通过 SDK `files` 接口保存和读取。数据库保存相对 `data/attachments/` 的逻辑路径，不保存临时访问 URL。用户素材不放进 `app/public/` 或 `dist/`。SQL 与附件上传不是一个事务，业务流程需处理部分成功；SDK 的具体调用及限制见项目 `docs/platform.md`。
 
-## 导入导出、复制和回收站
+## 导入导出、复制、直接删除与旧回收站
 
 仅在用户任务涉及这些操作时使用；正常编辑项目不需要先复制或删除。先核对当前 CLI 帮助，旧安装包可能不支持 M4。所有变更返回任务 ID，等待原任务最终状态；写入响应丢失时查询任务和项目，不自动再次复制、导入或删除。
 
@@ -125,13 +125,19 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 "$PROJECT_CLI" trash restore --trash "$TRASH_ID" --json
 ```
 
-导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，已有文件只有显式 `overwrite: true` 才覆盖；导入为 `{"archivePath":"/绝对路径/project.zip","mode":"original"}` 或 `mode: "copy"`，可选 `name`。`copy.json` 可指定副本名称。维护中的导出、复制、删除须传本轮 `maintenanceId` 或 `--maintenance`。暂停外部直接文件写入后再做完整快照。
+导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，已有文件只有显式 `overwrite: true` 才覆盖；普通导入为 `{"archivePath":"/绝对路径/project.zip"}`，省略 `mode` 默认 `copy`，每次生成独立新 ID，允许重复获取；只有明确恢复归档身份才传 `mode: "original"`，可选 `name`。`copy.json` 可指定副本名称。维护中的导出、复制、删除须传本轮 `maintenanceId` 或 `--maintenance`。暂停外部直接文件写入后再做完整快照。
 
 原 ID 导入不能覆盖活跃项目、回收站或登记中的同 ID；副本得到新平台 ID，但业务主键、业务 UUID 和附件名保持。完成后使用返回的新 ID 和 `project handoff` 核对项目根，不依赖复制过来的业务 README 内旧路径或旧 ID。平台不会全局重写用户文字，也不因复制升级 SDK。已有可复用网页无需 Node 即可打开。
 
 维护/未知快照导入或复制后有独立的维护 ID 和新项目基线，原有待构建要求继续保留。任务返回 `registered_maintenance_not_ready` 时，项目已登记但基线未成功；查询该项目的维护状态，以同一维护 ID 重试基线，不重新导入制造另一个副本。确认 `readyForChanges` 后才修改。
 
-`project delete` 先完整移入回收站；恢复保留原 ID 并推进页面代次。坏库恢复保留字节，保持维护阻断而不创建空数据库。用户明确要求永久清除选定回收项时使用 `trash purge --trash "$TRASH_ID" --json`；它不删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 表示部分清除，不能再承诺完整恢复；检查原任务和回收项后再处理。
+2026-10-23 当前删除规则：`project delete` 直接永久删除选中实例的源码、网页、数据库、附件等项目目录内容，不进入平台或系统回收站，无法撤销。执行前核对项目 ID、实际目录和永久删除范围，并确认用户要求删除该实例；不要将其作为编辑、导入冲突或验证的例行收尾。历史备份、外部 ZIP、旧回收项及受保护恢复证据继续保留。部分失败或结果未知时查看原任务与残留，不承诺可以恢复、不自动重放删除。
+
+删除 JSON 可显式给出已核对的 `expectedDocumentEpoch`，CLI 不替换该值；省略时先只读查询当前 `project info.documentEpoch` 再绑定提交。读取失败或身份缺失时不会删除；过期身份由服务拒绝，不重新读取身份来自动重试永久删除。HTTP 直接调用必须自行提供该字段，不允许无绑定删除。
+
+`trash list/info/restore/purge` 仅兼容旧版本留下的回收项，不表示新删除可恢复。旧项恢复保留原 ID 并推进页面代次；坏库恢复保留字节并阻断业务，不创建空库。只有用户明确要求永久清除选定旧回收项才使用 `trash purge --trash "$TRASH_ID" --json`；它不连带删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 需核对原任务和残留，不能承诺完整恢复。
+
+Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 Node CLI 删除入口。受管安装删除其登记、程序代次、私有配置／秘密、数据和缓存；外部目录引用只删除平台登记与私有配置／数据／缓存，整个外部目录保留。独立来源、安装证据、旧运行恢复记录及删除回执保留，不手工递归清空 Node 槽。
 
 ## 工作区迁移后的继续工作
 

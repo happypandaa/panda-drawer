@@ -22,6 +22,10 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[path = "node_app_delete.rs"]
+mod deletion;
+pub use deletion::DeleteNodeAppInput;
+
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_APP_ERROR", message)
@@ -136,6 +140,9 @@ impl NodeApps {
                 continue;
             }
             ordinary_path(&entry.path(), true)?;
+            if deletion::completed(&self.root, &name)? {
+                continue;
+            }
             let path = entry.path().join("registration.json");
             // An interrupted registration remains preserved, never executed.
             if !path.try_exists()? {
@@ -203,6 +210,7 @@ impl NodeApps {
     }
 
     fn store(&self, id: &str) -> Result<NodeConfigurationStore> {
+        deletion::require_available(&self.root, id)?;
         let directory = self.root.join(id).join("configuration");
         let instance = Uuid::parse_str(id).map_err(|_| fail("应用标识无效。"))?;
         let vault = LocalFileVault::new(directory.join("credentials"), instance)

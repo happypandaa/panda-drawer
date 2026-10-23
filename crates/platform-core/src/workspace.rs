@@ -520,6 +520,7 @@ pub(crate) fn save_journal(paths: &RuntimePaths, j: &MigrationJournal) -> Result
     builds::atomic_json(&journal_path(paths.data_root(), &j.task_id), j)
 }
 pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
+    crate::projects::check_pending_deletions(paths.workspace_root())?;
     crate::source_restore_guard::check_workspace_available(paths.workspace_root())?;
     let directory = paths.workspace_root().join(".platform/operations");
     check_no_symlinks(&directory, true)?;

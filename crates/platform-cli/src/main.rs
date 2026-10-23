@@ -20,7 +20,7 @@ const MAX_BUSINESS_RESPONSE_BYTES: u64 = 8_200_000;
     name = "local-projects-dev",
     version,
     about = "Manage projects in the isolated development platform",
-    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, restore or purge trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, permanently delete selected projects, restore or purge legacy trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -64,7 +64,7 @@ enum Command {
         #[command(subcommand)]
         command: MaintenanceCommand,
     },
-    /// Inspect and explicitly restore or permanently purge deleted projects.
+    /// Inspect and explicitly restore or purge legacy trash entries.
     Trash {
         #[command(subcommand)]
         command: TrashCommand,
@@ -243,7 +243,10 @@ enum ProjectCommand {
     Import(InputOptions),
     /// Create an independent project copy, optionally choosing a name in JSON.
     Copy(ProjectMutationOptions),
-    /// Move the complete project to trash. This is reversible.
+    /// Permanently delete this project's files without using platform or system trash.
+    ///
+    /// This cannot be undone. Historical backups and recovery evidence are retained.
+    /// Omitted expectedDocumentEpoch is read from current project info before submission.
     Delete(ProjectMutationOptions),
 }
 
@@ -534,7 +537,7 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
             (options.output.json, mutation_request(options, "/copies"))
         }
         ProjectCommand::Delete(options) => {
-            (options.output.json, mutation_request(options, "/trash"))
+            (options.output.json, mutation_request(options, "/deletions"))
         }
         ProjectCommand::Info(options) => (
             options.output.json,
@@ -896,7 +899,47 @@ fn mutation_request(options: ProjectMutationOptions, route: &str) -> Result<Valu
         .transpose()?
         .unwrap_or_else(|| json!({}));
     let input = merge_maintenance(input, options.maintenance.as_deref())?;
+    if route == "/deletions" {
+        return submit_project_deletion(input, |method, suffix, body| {
+            project_request(&options.project, method, suffix, body)
+        });
+    }
     project_request(&options.project, "POST", route, Some(input))
+}
+
+fn submit_project_deletion(
+    mut input: Value,
+    mut request: impl FnMut(&str, &str, Option<Value>) -> Result<Value>,
+) -> Result<Value> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| CliError::new("INPUT_INVALID", "JSON input must be an object."))?;
+    if let Some(value) = object.get("expectedDocumentEpoch") {
+        if !value.as_str().is_some_and(|epoch| !epoch.is_empty()) {
+            return Err(CliError::new(
+                "INPUT_INVALID",
+                "expectedDocumentEpoch must be a nonempty string. No deletion was submitted.",
+            ));
+        }
+    } else {
+        let info = request("GET", "", None)?;
+        if info["ok"] != true {
+            return Ok(info);
+        }
+        let epoch = info["data"]["documentEpoch"]
+            .as_str()
+            .filter(|epoch| !epoch.is_empty())
+            .ok_or_else(|| {
+                CliError::new(
+                    "SERVICE_PROTOCOL_ERROR",
+                    "Project info did not provide a current documentEpoch. No deletion was submitted.",
+                )
+            })?;
+        input["expectedDocumentEpoch"] = json!(epoch);
+    }
+    // Preserve an explicit reviewed epoch. A changed target must be rejected by
+    // the service, never rebound and retried after an unsuccessful write.
+    request("POST", "/deletions", Some(input))
 }
 
 fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
@@ -1914,6 +1957,128 @@ mod tests {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         assert!(Cli::try_parse_from(["cli", "backup", "restore", "--project", "p_test"]).is_err());
+    }
+
+    #[test]
+    fn permanent_delete_binds_current_epoch_and_preserves_other_input_fields() {
+        let mut calls = Vec::new();
+        let accepted = json!({"ok":true,"data":{"taskId":"task_disposable"}});
+        let result = submit_project_deletion(
+            json!({"maintenanceId":"maintenance_disposable"}),
+            |method, suffix, body| {
+                calls.push((method.to_owned(), suffix.to_owned(), body));
+                if method == "GET" {
+                    Ok(json!({"ok":true,"data":{"documentEpoch":"current-disposable-epoch"}}))
+                } else {
+                    Ok(accepted.clone())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(result, accepted);
+        assert_eq!(
+            calls,
+            vec![
+                ("GET".into(), "".into(), None),
+                (
+                    "POST".into(),
+                    "/deletions".into(),
+                    Some(
+                        json!({"maintenanceId":"maintenance_disposable","expectedDocumentEpoch":"current-disposable-epoch"})
+                    ),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn permanent_delete_preserves_explicit_stale_epoch_without_read_or_write_retry() {
+        let input = json!({"expectedDocumentEpoch":"previous-reviewed-epoch"});
+        let rejected = json!({"ok":false,"error":{"code":"PROJECT_RELOAD_REQUIRED"}});
+        let mut writes = 0;
+        let result = submit_project_deletion(input.clone(), |method, suffix, body| {
+            assert_eq!(method, "POST");
+            assert_eq!(suffix, "/deletions");
+            assert_eq!(body, Some(input.clone()));
+            writes += 1;
+            Ok(rejected.clone())
+        })
+        .unwrap();
+        assert_eq!(result, rejected);
+        assert_eq!(writes, 1);
+
+        let mut calls = 0;
+        let error = submit_project_deletion(input, |method, _, _| {
+            assert_eq!(method, "POST");
+            calls += 1;
+            Err(CliError::unknown(
+                "Disposable response loss; query the original task.",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.code, "REQUEST_OUTCOME_UNKNOWN");
+    }
+
+    #[test]
+    fn permanent_delete_never_writes_when_current_identity_cannot_be_read() {
+        for info in [
+            json!({"ok":true,"data":{}}),
+            json!({"ok":true,"data":{"documentEpoch":null}}),
+            json!({"ok":true,"data":{"documentEpoch":""}}),
+            json!({"ok":true,"data":{"documentEpoch":42}}),
+        ] {
+            let mut calls = 0;
+            assert_eq!(
+                submit_project_deletion(json!({}), |method, _, _| {
+                    assert_eq!(method, "GET");
+                    calls += 1;
+                    Ok(info.clone())
+                })
+                .unwrap_err()
+                .code,
+                "SERVICE_PROTOCOL_ERROR"
+            );
+            assert_eq!(calls, 1);
+        }
+        let rejected = json!({"ok":false,"error":{"code":"PROJECT_NOT_FOUND"}});
+        assert_eq!(
+            submit_project_deletion(json!({}), |method, _, _| {
+                assert_eq!(method, "GET");
+                Ok(rejected.clone())
+            })
+            .unwrap(),
+            rejected
+        );
+        assert_eq!(
+            submit_project_deletion(json!({}), |method, _, _| {
+                assert_eq!(method, "GET");
+                Err(CliError::new(
+                    "SERVICE_UNREACHABLE",
+                    "Disposable read failure",
+                ))
+            })
+            .unwrap_err()
+            .code,
+            "SERVICE_UNREACHABLE"
+        );
+        for epoch in [
+            json!(null),
+            json!(false),
+            json!(42),
+            json!({}),
+            json!([]),
+            json!(""),
+        ] {
+            assert_eq!(
+                submit_project_deletion(json!({"expectedDocumentEpoch":epoch}), |_, _, _| {
+                    panic!("Invalid explicit identity must not trigger any request")
+                })
+                .unwrap_err()
+                .code,
+                "INPUT_INVALID"
+            );
+        }
     }
 
     #[test]

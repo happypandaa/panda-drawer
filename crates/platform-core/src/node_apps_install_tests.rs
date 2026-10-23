@@ -186,6 +186,285 @@ fn save_request(revision: u64, label: &str, replace_secret: bool) -> SaveConfigu
     serde_json::from_value(json!({"revision":revision,"values":{"LABEL":label},"secrets":{"API_KEY":if replace_secret { json!({"action":"replace","value":"artificial-secret-not-used"}) } else { json!({"action":"keep"}) }}})).unwrap()
 }
 
+async fn delete_input(manager: &NodeApps, id: &str) -> DeleteNodeAppInput {
+    let preview = manager.delete_preview(id).await.unwrap();
+    serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap()
+}
+
+#[tokio::test]
+async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_and_evidence() {
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let installed = fixture.install().await;
+    let other_registration =
+        fs::read(fixture.slot(&installed.app_id).join("registration.json")).unwrap();
+    let source = fs::read(fixture.source.join("local-app.json")).unwrap();
+    let slot = fixture.slot(id);
+    fs::write(
+        slot.join("data/private.sqlite"),
+        b"disposable private database",
+    )
+    .unwrap();
+    fs::write(
+        slot.join("runs/retained-recovery.txt"),
+        b"keep recovery evidence",
+    )
+    .unwrap();
+    fixture
+        .manager
+        .save(id, save_request(0, "disposable-private-config", true))
+        .await
+        .unwrap();
+    let preview = fixture.manager.delete_preview(id).await.unwrap();
+    assert_eq!(preview["ownership"], "external");
+    let result = fixture
+        .manager
+        .delete(id, delete_input(&fixture.manager, id).await)
+        .await
+        .unwrap();
+    assert_eq!(result["operationOutcome"], "deleted");
+    for relative in ["data", "configuration", "cache", "registration.json"] {
+        assert!(!slot.join(relative).exists(), "{relative} was retained");
+    }
+    assert_eq!(
+        fs::read(slot.join("runs/retained-recovery.txt")).unwrap(),
+        b"keep recovery evidence"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("local-app.json")).unwrap(),
+        source
+    );
+    assert_eq!(
+        fs::read(fixture.slot(&installed.app_id).join("registration.json")).unwrap(),
+        other_registration
+    );
+    let list = fixture.manager.list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], installed.app_id);
+    let replacement = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    assert_ne!(replacement["id"], id);
+    assert_eq!(
+        replacement["configuration"]["secretStatus"]["API_KEY"],
+        "missing"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn managed_delete_removes_program_data_and_config_but_preserves_installation_history() {
+    let fixture = Fixture::new();
+    let installed = fixture.install().await;
+    let id = &installed.app_id;
+    let slot = fixture.slot(id);
+    let history = fixture.paths.data_root().join("node-apps/.installations");
+    fs::write(
+        history.join("retained-recovery.txt"),
+        b"old installation evidence",
+    )
+    .unwrap();
+    fs::write(
+        slot.join("data/private.sqlite"),
+        b"disposable installed database",
+    )
+    .unwrap();
+    let source = fs::read(fixture.source.join("local-app.json")).unwrap();
+    assert_eq!(
+        fixture.manager.delete_preview(id).await.unwrap()["ownership"],
+        "managed"
+    );
+    fixture
+        .manager
+        .delete(id, delete_input(&fixture.manager, id).await)
+        .await
+        .unwrap();
+    assert!(!slot.join("generations").exists());
+    assert!(!slot.join("data").exists());
+    assert!(!slot.join("configuration").exists());
+    assert_eq!(
+        fs::read(history.join("retained-recovery.txt")).unwrap(),
+        b"old installation evidence"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("local-app.json")).unwrap(),
+        source
+    );
+    assert!(fixture.manager.list().await.unwrap().is_empty());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn delete_refuses_replaced_reviewed_directory_and_changed_registration() {
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let slot = fixture.slot(id);
+    let input = delete_input(&fixture.manager, id).await;
+    let registration = fs::read(slot.join("registration.json")).unwrap();
+    let mut changed = registration.clone();
+    changed.push(b' ');
+    fs::write(slot.join("registration.json"), changed).unwrap();
+    assert_eq!(
+        fixture.manager.delete(id, input).await.unwrap_err().code,
+        "NODE_APP_DELETE_CHANGED"
+    );
+    let input = delete_input(&fixture.manager, id).await;
+    let displaced = fixture.paths.data_root().join("disposable-displaced-app");
+    fs::rename(&slot, &displaced).unwrap();
+    fs::create_dir(&slot).unwrap();
+    fs::copy(
+        displaced.join("registration.json"),
+        slot.join("registration.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.manager.delete(id, input).await.unwrap_err().code,
+        "NODE_APP_DELETE_CHANGED"
+    );
+    assert!(displaced.join("data").is_dir());
+    assert!(slot.join("registration.json").is_file());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn partial_delete_blocks_config_recreation_and_restart_never_replays_removal() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let slot = fixture.slot(id);
+    let protected = fixture.source.join("original-data");
+    fs::create_dir(&protected).unwrap();
+    fs::write(
+        protected.join("original.sqlite"),
+        b"external original database",
+    )
+    .unwrap();
+    fs::remove_dir(slot.join("data")).unwrap();
+    symlink(&protected, slot.join("data")).unwrap();
+    let failure = fixture
+        .manager
+        .delete(id, delete_input(&fixture.manager, id).await)
+        .await
+        .unwrap_err();
+    assert_eq!(failure.details["operationOutcome"], "delete_incomplete");
+    assert!(failure.message.contains("部分文件可能已永久删除"));
+    assert_eq!(failure.details["platformRoot"], json!(slot));
+    assert!(failure.details["deletionRecord"].as_str().is_some());
+    assert!(!slot.join("configuration").exists());
+    let restarted = NodeApps::new(
+        fixture.paths.data_root().into(),
+        "/disposable-missing-node".into(),
+    )
+    .unwrap();
+    let state = restarted.configuration(id).await.unwrap();
+    assert_eq!(state["configuration"]["canStart"], false);
+    assert!(!slot.join("configuration").exists());
+    assert!(restarted.start(id).await.is_err());
+    assert_eq!(
+        fs::read(protected.join("original.sqlite")).unwrap(),
+        b"external original database"
+    );
+    // Stable volume identities must permit a reviewed retry after reboot even
+    // when the saved device number no longer matches the current mount number.
+    #[cfg(target_os = "macos")]
+    {
+        let receipt_path = fixture
+            .paths
+            .data_root()
+            .join("node-apps/.deletions")
+            .join(format!("{id}.json"));
+        let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        assert!(receipt["rootIdentity"]["volumeUuid"].is_string());
+        receipt["rootIdentity"]["device"] =
+            json!(receipt["rootIdentity"]["device"].as_u64().unwrap() + 100);
+        atomic_json(&receipt_path, &receipt).unwrap();
+    }
+    fs::remove_file(slot.join("data")).unwrap();
+    fs::create_dir(slot.join("data")).unwrap();
+    restarted
+        .delete(id, delete_input(&restarted, id).await)
+        .await
+        .unwrap();
+    assert!(restarted.list().await.unwrap().is_empty());
+    assert_eq!(
+        fs::read(protected.join("original.sqlite")).unwrap(),
+        b"external original database"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn unconfirmed_runtime_marker_prevents_permanent_deletion_without_touching_data() {
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let slot = fixture.slot(id);
+    fs::write(slot.join("active.json"), b"retained ownership evidence").unwrap();
+    fs::write(slot.join("data/private.sqlite"), b"keep data").unwrap();
+    assert!(fixture
+        .manager
+        .delete(id, delete_input(&fixture.manager, id).await)
+        .await
+        .is_err());
+    assert_eq!(
+        fs::read(slot.join("data/private.sqlite")).unwrap(),
+        b"keep data"
+    );
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-apps/.deletions")
+        .exists());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn unavailable_external_source_still_allows_removing_only_platform_data() {
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let hidden = fixture
+        .source
+        .with_file_name("disposable-source-moved-by-user");
+    fs::rename(&fixture.source, &hidden).unwrap();
+    let original = fs::read(hidden.join("local-app.json")).unwrap();
+    fixture
+        .manager
+        .delete(id, delete_input(&fixture.manager, id).await)
+        .await
+        .unwrap();
+    assert!(!fixture.slot(id).join("configuration").exists());
+    assert!(!fixture.slot(id).join("data").exists());
+    assert_eq!(fs::read(hidden.join("local-app.json")).unwrap(), original);
+    assert!(fixture.manager.list().await.unwrap().is_empty());
+    fixture.shutdown().await;
+}
+
 #[tokio::test]
 async fn managed_and_external_registrations_coexist_without_author_directory_dependency() {
     let fixture = Fixture::new();

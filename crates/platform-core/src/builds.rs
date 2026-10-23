@@ -383,6 +383,19 @@ impl BuildManager {
         let lease = self.store.reserve_development_task(project_id, &task_id)?;
         self.record_operation(project_id, kind, task_id, lease)
     }
+    /// Permanent deletion may explicitly retry its own quarantine, but never
+    /// bypasses pending source-restore protection or the project operation gate.
+    pub(crate) fn create_delete_operation(
+        &self,
+        project_id: &str,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        let task_id = format!("task_{}", Uuid::new_v4().simple());
+        let lease = self.store.reserve_delete_task(project_id, &task_id)?;
+        self.record_operation(project_id, "delete", task_id, lease)
+    }
     pub(crate) fn create_source_restore_recovery_operation(
         &self,
         project_id: &str,

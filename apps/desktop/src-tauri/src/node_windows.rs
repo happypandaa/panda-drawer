@@ -117,6 +117,23 @@ pub(super) async fn apply_install(
         .await
 }
 
+pub(super) async fn delete(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+    input: platform_core::node_apps::DeleteNodeAppInput,
+) -> Result<Value, ApiError> {
+    let _operation = state.node_windows.operations.lock().await;
+    alive(state)?;
+    if session(state, id).is_some() || app.get_webview_window(&label(id)?).is_some() {
+        return Err(ApiError::new(
+            "NODE_DELETE_WINDOW_OPEN",
+            "请先保存未完成内容并关闭此应用窗口，等待服务停止后再确认永久删除。",
+        ));
+    }
+    state.node_apps.delete(id, input).await
+}
+
 pub(super) async fn open(
     app: &tauri::AppHandle,
     state: &AppState,

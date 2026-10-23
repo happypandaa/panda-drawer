@@ -1309,3 +1309,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .radio-settings-modal :is(.path-row dd, .runtime-details > div) { min-width: 0; }
 .radio-settings-modal :is(code, .path-row dd, .runtime-details code) { white-space: normal; overflow-wrap: anywhere; }
+
+.node-delete-confirmation { margin: 18px 0; }
+.node-delete-confirmation h3 { color: var(--danger, #ba3c3c); }
+.node-delete-paths { display: grid; gap: 6px; padding-left: 20px; }
+.node-delete-paths code { overflow-wrap: anywhere; word-break: break-word; }
