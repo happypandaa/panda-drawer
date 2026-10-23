@@ -1,6 +1,6 @@
 // Synthetic DOM checks. These do not launch WebView2 or inspect a real workspace.
 import assert from 'node:assert/strict';
-import { after, afterEach, test } from 'node:test';
+import { after, afterEach, describe, test } from 'node:test';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -53,6 +53,16 @@ async function compile(file) {
   return target;
 }
 const modulePath = await compile(path.join(sourceRoot, 'WindowsHost.tsx'));
+const { WINDOWS_MANAGER_CAPABILITIES: capabilities } = await import(pathToFileURL(await compile(path.join(sourceRoot, 'manager-capabilities.ts'))).href);
+const allowedCommands = new Set(['project_status', 'project_create', 'project_open', 'project_open_browser', 'host_status',
+  'development_environment_doctor', 'development_choose_tool', 'development_environment_configure',
+  'source_list', 'source_inspect', 'source_capture', 'source_acquire', 'source_cancel', 'source_choose_directory', 'source_build_prepare', 'source_build_list', 'task_get', 'task_logs',
+  'node_app_choose_source', 'node_app_inspect', 'node_app_register', 'node_app_directory_inspect', 'node_app_directory_initialize', 'node_app_directory_register', 'node_app_list', 'node_app_configuration', 'node_app_configuration_save',
+  'node_app_start', 'node_app_stop', 'node_app_restart', 'node_app_status', 'node_app_open', 'node_app_open_help']);
+const nativeHost = await readFile(path.join(repo, 'apps/desktop/src-tauri/src/windows_host.rs'), 'utf8');
+const handler = nativeHost.match(/tauri::generate_handler!\[([\s\S]*?)\]/);
+assert.ok(handler, 'Windows Tauri handler registration must be present');
+const nativeCommands = new Set(handler[1].split(',').map(value => value.trim().split('::').at(-1)).filter(Boolean));
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://tauri.localhost/windows.html', pretendToBeVisual: true });
 for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLSelectElement', 'Event', 'MouseEvent', 'KeyboardEvent', 'FocusEvent', 'CustomEvent', 'MutationObserver']) {
@@ -72,6 +82,7 @@ let commands;
 let responder;
 let calls;
 let nodeResponder;
+let restoreSourceClock;
 const hostCommands = () => commands.filter(command => !command.startsWith('node_app_'));
 const hostCalls = () => calls.filter(call => !call.command.startsWith('node_app_'));
 
@@ -117,10 +128,8 @@ async function setup(value = status(), nodeMock) {
   globalThis.__HOST_INVOKE__ = async (command, args) => {
     commands.push(command);
     calls.push({ command, args });
-    assert.ok(['project_status', 'project_create', 'project_open', 'project_open_browser', 'host_status',
-      'development_environment_doctor', 'development_choose_tool', 'development_environment_configure',
-      'node_app_choose_source', 'node_app_inspect', 'node_app_register', 'node_app_directory_inspect', 'node_app_directory_initialize', 'node_app_directory_register', 'node_app_list', 'node_app_configuration', 'node_app_configuration_save',
-      'node_app_start', 'node_app_stop', 'node_app_restart', 'node_app_status', 'node_app_open', 'node_app_open_help'].includes(command), 'Windows UI invoked a deferred business command: ' + command);
+    assert.ok(allowedCommands.has(command), 'Windows UI invoked a deferred business command: ' + command);
+    assert.ok(nativeCommands.has(command), 'Windows UI invoked an unregistered native command: ' + command);
     return command.startsWith('node_app_') ? nodeResponder(command, args) : responder(command, args);
   };
   document.body.innerHTML = '<div id="root"></div>';
@@ -182,10 +191,19 @@ async function submit() {
 afterEach(async () => {
   if (root) await act(async () => { root.unmount(); });
   root = null;
+  restoreSourceClock?.(); restoreSourceClock = null;
 });
 after(async () => {
   await writeFile(path.join(output, 'scope.txt'), 'Synthetic React DOM tests only. No real native host, WebView2 or workspace inspection was executed.\n');
   dom.window.close();
+});
+
+test('Production Windows capabilities and the actual native whitelist admit sources while excluding deferred project lifecycle operations', () => {
+  assert.deepEqual([...nativeCommands].sort(), [...allowedCommands].sort());
+  assert.equal(capabilities.sourceAcquisition, true);
+  assert.equal(capabilities.nodeDirectoryOnboarding, true);
+  for (const capability of ['build', 'projectGit', 'nodeManagedInstall', 'nodeDelete', 'deleteProject', 'metadata', 'maintenance', 'storage', 'importProject', 'exportProject', 'copyProject', 'trash', 'workspaceMigration', 'historyCleanup', 'codexHandoff', 'handoff']) assert.equal(capabilities[capability], false, capability);
+  for (const command of ['choose_path', 'project_build', 'project_import', 'project_delete', 'node_install_prepare', 'node_install_apply', 'node_app_delete', 'git_initialize', 'git_save', 'project_open_codex']) assert.equal(nativeCommands.has(command), false, command);
 });
 
 test('Windows loads the actual shared Radio shell, project cards and create modal', async () => {
@@ -674,7 +692,7 @@ test('Ready Windows roots share Node and web counts, search and filters without 
   assert.deepEqual(nodeCalls().map(call => call.command), ['node_app_list']);
 });
 
-test('Main-only acquisition, managed install, Git, Codex and Node deletion stay gated on Windows', async () => {
+test('Managed install, project Git, Codex and Node deletion stay gated while source acquisition is explicitly available', async () => {
   // Managed metadata can arrive in an observation without granting a host the
   // corresponding business commands. These replies still do not touch disk.
   const node = nodeSample({ installation: { kind: 'managed', generation: 2, sourceId: 'synthetic-source', sourceDigest: 'synthetic-digest' } });
@@ -684,7 +702,7 @@ test('Main-only acquisition, managed install, Git, Codex and Node deletion stay 
     throw new Error('Unexpected Node command: ' + command);
   });
   await openActions();
-  assert.equal(findButton('获取项目源码'), undefined);
+  assert.equal(findButton('获取项目源码').disabled, false);
   await projectMenu(node.name);
   const deletion = document.querySelector('[role="menuitem"][aria-label^="删除项目"]');
   assert.equal(deletion.disabled, true);
@@ -1144,3 +1162,110 @@ for (const outcome of ['not_started', 'unknown']) {
     assert.doesNotMatch(developmentPanel().textContent, /已选择/);
   });
 }
+
+// These synthetic IPC fixtures exercise the complete WindowsHost path using
+// the real production capability map without replacing or overriding it.
+describe('Windows source workflow integration with the production capability map', () => {
+  const sourceId = `src_${'2'.repeat(32)}`; const digest = 'd'.repeat(64);
+  const sourcePath = 'C:\\synthetic-external-source';
+  const sourceInspection = { kind: 'project-v1-source', name: '可丢弃源码候选', nextStep: 'review-project-source-before-integration', executionState: 'not-executed', issues: [] };
+  const source = { sourceId, taskId: 'capture-fixture', name: '可丢弃源码候选', status: 'ready', provider: 'local', url: '', localSourcePath: sourcePath, sourcePath: 'C:\\synthetic-source-copy', evidencePath: 'C:\\synthetic-source-evidence', contentDigest: digest, inspection: sourceInspection };
+  const build = extra => ({ taskId: 'candidate-fixture', projectId: null, type: 'sourceBuild', status: 'running', final: false, phase: 'installing-dependencies', result: null, error: null, ...extra });
+  const sourceCalls = () => calls.filter(call => call.command.startsWith('source_') || ['task_get', 'task_logs'].includes(call.command));
+  async function openSources() { await openActions(); await click('获取项目源码'); assert.equal(dialog()?.querySelector('h2').textContent, '获取项目源码'); }
+  function controlSourceClock() {
+    const set = dom.window.setInterval; const clear = dom.window.clearInterval; const timers = new Map(); let id = 0;
+    dom.window.setInterval = callback => { timers.set(++id, callback); return id; };
+    dom.window.clearInterval = id => timers.delete(id);
+    restoreSourceClock = () => { dom.window.setInterval = set; dom.window.clearInterval = clear; };
+    return async () => { await act(async () => { for (const callback of [...timers.values()]) callback(); }); };
+  }
+  async function selectSource() {
+    const select = document.querySelector('.source-build-panel select'); assert.ok(select);
+    await act(async () => { select.value = sourceId; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  }
+
+  test('Opening explicitly loads only source history and excludes Mac, installation, publication and competing host actions', async () => {
+    await setup(status('ready', [project()]));
+    assert.equal(sourceCalls().length, 0);
+    responder = async command => { if (['source_list', 'source_build_list'].includes(command)) return []; throw new Error(command); };
+    await openActions(); const acquire = findButton('获取项目源码'); const refresher = document.querySelector('[aria-label="刷新项目和运行状态"]');
+    await act(async () => { acquire.click(); refresher.click(); enterButton().click(); document.querySelector('[aria-label="设置"]').click(); });
+    assert.equal(dialog().querySelector('h2').textContent, '获取项目源码');
+    assert.deepEqual(sourceCalls(), [{ command: 'source_build_list', args: undefined }, { command: 'source_list', args: undefined }]);
+    assert.equal(findButton('查看安装候选与准备安装'), undefined); assert.equal(document.querySelector('.node-install-panel'), null);
+    assert.equal(commands.filter(command => command === 'project_status').length, 1);
+    assert.equal(commands.some(command => /choose_path|node_install|project_build|project_import|project_open|development_environment/.test(command)), false);
+    await clickElement(closeButton()); assert.equal(dialog(), null);
+  });
+
+  for (const rootStatus of ['missing', 'blocked']) {
+    test(`A ${rootStatus} root cannot inspect, acquire, capture or build with the production source capability enabled`, async () => {
+      await setup(status(rootStatus)); await openActions();
+      const acquire = findButton('获取项目源码'); assert.ok(acquire); assert.equal(acquire.disabled, true); assert.ok(acquire.title.trim());
+      if (rootStatus === 'missing') assert.match(acquire.title, /先创建一个可丢弃网页项目/);
+      await clickElement(acquire); assert.equal(dialog(), null); assert.equal(sourceCalls().length, 0);
+      assert.equal(commands.some(command => /project_create|node_app_directory_initialize/.test(command)), false);
+    });
+  }
+
+  test('A failed root refresh revokes source admission while preserving displayed projects', async () => {
+    await setup(status('ready', [project()]));
+    responder = async command => { if (command === 'project_status') throw new Error('Artificial stale root'); throw new Error(command); };
+    await refresh(); assert.ok(card()); await openActions();
+    assert.equal(findButton('获取项目源码').disabled, true); await click('获取项目源码');
+    assert.equal(dialog(), null); assert.equal(sourceCalls().length, 0);
+  });
+
+  test('Explicit local capture, digest-bound build, polling, cancellation and logs keep durable candidates on reopening without replay', async () => {
+    await setup(status('ready')); const tick = controlSourceClock();
+    let sources = []; let recorded = []; let current; let cancelRequested = false;
+    responder = async (command, args) => {
+      if (command === 'source_list') return sources;
+      if (command === 'source_build_list') return recorded;
+      if (command === 'source_choose_directory') { assert.equal(args, undefined); return sourcePath; }
+      if (command === 'source_inspect') return { sourcePath, inspection: sourceInspection };
+      if (command === 'source_capture') { sources = [source]; return { ...build(), taskId: 'capture-fixture', type: 'sourceCapture', status: 'succeeded', final: true, phase: 'completed', result: { sourceId, sourcePath: source.sourcePath } }; }
+      if (command === 'source_build_prepare') { current = build(); recorded = [current]; return current; }
+      if (command === 'source_cancel') { cancelRequested = true; return current; }
+      if (command === 'task_get') {
+        current = cancelRequested ? build({ status: 'failed', final: true, phase: 'building-candidate', error: { code: 'SOURCE_BUILD_CANCELLED', message: '合成候选已取消', details: { operationOutcome: 'not_committed', evidencePath: 'C:\\synthetic-retained-candidate' } } }) : build({ phase: 'building-candidate' });
+        recorded = [current]; return current;
+      }
+      if (command === 'task_logs') return { taskId: args.taskId, text: '合成候选构建日志', nextCursor: 16, truncated: false, gaps: [], eof: true };
+      throw new Error(command);
+    };
+    await openSources(); await click('检查本机源码目录');
+    assert.equal(sourceCalls().some(call => call.command === 'source_capture'), false);
+    await click('接入此目录的源码副本'); assert.deepEqual(sourceCalls().find(call => call.command === 'source_capture').args, { input: { sourcePath } });
+    await selectSource(); assert.equal(findButton('准备独立构建候选').disabled, true);
+    await clickElement(document.querySelector('.source-build-panel input[type="checkbox"]')); await click('准备独立构建候选');
+    assert.deepEqual(sourceCalls().find(call => call.command === 'source_build_prepare').args, { input: { sourceId, expectedDigest: digest, acknowledgeScripts: true } });
+    await tick(); assert.match(dialog().textContent, /构建独立候选网页/);
+    await click('取消候选构建'); assert.deepEqual(sourceCalls().find(call => call.command === 'source_cancel').args, { taskId: 'candidate-fixture' });
+    assert.match(dialog().textContent, /正在等待最终状态/); await tick(); assert.match(dialog().textContent, /synthetic-retained-candidate/);
+    const buildTask = document.querySelector('[aria-label="准备独立源码候选任务"]'); await click('查看任务日志', buildTask);
+    assert.deepEqual(sourceCalls().at(-1), { command: 'task_logs', args: { taskId: 'candidate-fixture', cursor: 0 } }); assert.match(buildTask.textContent, /合成候选构建日志/);
+    const mutations = sourceCalls().filter(call => ['source_capture', 'source_build_prepare', 'source_cancel'].includes(call.command));
+    await clickElement(closeButton()); await openSources(); assert.match(dialog().textContent, /synthetic-retained-candidate/);
+    assert.deepEqual(sourceCalls().filter(call => ['source_capture', 'source_build_prepare', 'source_cancel'].includes(call.command)), mutations);
+    assert.equal(sourceCalls().filter(call => call.command === 'task_logs').length, 1);
+    assert.equal(commands.some(command => /node_install|project_build|project_import|choose_path/.test(command)), false);
+  });
+
+  test('An unknown build acknowledgment recovers from task history after reopening without submitting the source twice', async () => {
+    await setup(status('ready')); controlSourceClock(); let accepted = false;
+    responder = async command => {
+      if (command === 'source_list') return [source];
+      if (command === 'source_build_list') return accepted ? [build()] : [];
+      if (command === 'source_build_prepare') { accepted = true; throw { code: 'ARTIFICIAL_REPLY_LOST', message: '合成回执丢失', details: { operationOutcome: 'unknown' } }; }
+      throw new Error(command);
+    };
+    await openSources(); await selectSource(); await clickElement(document.querySelector('.source-build-panel input[type="checkbox"]')); await click('准备独立构建候选');
+    assert.match(dialog().textContent, /先刷新候选构建任务/); await clickElement(closeButton()); await openSources();
+    assert.match(dialog().textContent, /准备独立源码候选 · 正在执行/);
+    assert.equal(sourceCalls().filter(call => call.command === 'source_build_prepare').length, 1);
+    assert.equal(sourceCalls().some(call => call.command === 'source_capture'), false);
+    assert.equal(document.querySelector('.source-build-panel select').disabled, true);
+  });
+});

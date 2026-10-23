@@ -146,6 +146,55 @@ fn source_metadata_pins_reject_occupied_files_and_prevent_replacement_without_re
 }
 
 #[test]
+fn source_directory_pins_ignore_cached_size_and_times_but_files_keep_strict_metadata() {
+    let _serial = serial();
+    let root = fixture();
+    let child = root.create_private_directory("changing-directory").unwrap();
+    child.write_new("selected.txt", b"original bytes").unwrap();
+    let source = WindowsSourceDirectory::open(root.path()).unwrap();
+    let expected = source
+        .source_entries(512)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.name == "changing-directory")
+        .unwrap();
+    for index in 0..301 {
+        child
+            .write_new(
+                &format!("entry-{index:03}.txt"),
+                b"directory stream expansion",
+            )
+            .unwrap();
+    }
+    let (pinned, observed) = source.pin_source_entry(&expected).unwrap();
+    assert_eq!(observed.identity, expected.identity);
+    assert_eq!(
+        (
+            observed.length,
+            observed.last_write_time,
+            observed.change_time
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(pinned.source_entries(512).unwrap().len(), 302);
+    let file = pinned
+        .source_entries(512)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.name == "selected.txt")
+        .unwrap();
+    fs::write(child.path().join("selected.txt"), b"same byte size").unwrap();
+    assert_eq!(
+        pinned.pin_source_entry(&file).err().unwrap().code,
+        "NODE_SOURCE_CHANGED"
+    );
+    assert_eq!(
+        fs::read(child.path().join("selected.txt")).unwrap(),
+        b"same byte size"
+    );
+}
+
+#[test]
 fn source_entries_allow_bounded_large_sources_without_changing_legacy_list_limits() {
     let _serial = serial();
     let root = fixture();

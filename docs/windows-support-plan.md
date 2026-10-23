@@ -1,14 +1,14 @@
 # Windows 支持方案与验收工作线
 
-状态：v0.15，Windows 保留 W2.1 本机 release 创建、只读打开及旧包正常重启证据，W2.2a/b1 与 b2 私有 WAL 连接检查保留，公开 SQL、附件和用户构建仍关闭；2026-10-21 已实现 Windows 私有 Node、私有文件 ACL、Job 进程树、代理及原生窗口接入，自动化与完整编译已有记录，真实 GUI 因系统父目录 ACL 准入受阻，不能记为通过。W1/W2/NR 均未整体通过，Win10 和安装验收仍待完成；2026-10-23 同步新主线不将进度退回 W1，也不开放新开发工具、来源、Git、安装或永久删除能力。
+状态：v0.16，Windows 保留 W2.1 本机 release 创建、只读打开及旧包正常重启证据，W2.2a/b1 与 b2 私有 WAL 连接检查保留，公开 SQL、附件及正式项目构建发布仍关闭；2026-10-21 的独立业务 Node、私有 ACL、Job、代理和原生窗口接入记录保留。2026-10-23／24 已实施独立开发 Node/npm、Git、本机目录流程、源码获取及需确认脚本执行的独立网页候选，实际验证见[开发工具与源码候选记录](windows-development-verification.md)。Git 写入／源码取回、Node 受管安装更新及永久删除继续关闭。真实 GUI 因系统父目录 ACL 准入受阻，W1/W2/NR 均未整体通过，Win10 和安装验收仍待完成。
 
 2026-10-23 共用规则更新：[直接删除契约](application-deletion.md)要求新删除确认后永久执行，不进入平台或系统回收站；外部目录引用保留外部目录，旧回收及恢复资料继续兼容。Windows 仍须单独实现和验收删除、文件身份与中断保护；当前 Mac 改动不开放 Windows 门禁或证明系统行为。
 
 2026-10-21 范围调整：用户已确认仅保留 Git 版本管理，退出独立本地备份体系，当前依赖与验收以[技术实施计划](technical-implementation-plan.md)为准。下列 W 编号与实际完成状态保留，W3 的独立备份/恢复建设和其衍生的安装前置取消；旧资料兼容、普通文件/数据操作、固定身份和公开迁移约束继续有效。Windows 运行门禁仍须依据实际能力验收，不能由取消备份推导为已经可用。
 
-既有实现和证据见 [W2 记录](windows-w2-verification.md)与 [Windows Node 实现与验收](windows-node-verification.md)。新增主线 `f0b83ef` 的平台缺口与建议顺序见 [2026-10-23 新功能兼容审查](windows-new-features-compatibility.md)，本轮同步与审查不等于这些功能已在 Windows 实现或验收。
+既有实现和证据见 [W2 记录](windows-w2-verification.md)与 [Windows Node 实现与验收](windows-node-verification.md)。新增主线 `f0b83ef` 的平台缺口与建议顺序见 [2026-10-23 新功能兼容审查](windows-new-features-compatibility.md)；该文保留同步时状态，前两组后续实现见[开发工具与源码候选记录](windows-development-verification.md)，不据此开放其余功能或改称整体已验收。
 
-更新日期：2026-10-23
+更新日期：2026-10-24
 
 用户于 2026-10-18 确认两个 Windows 系统均作为产品支持目标，最初要求先整理方案与里程碑、暂时不写代码。当时只更新规划文档，没有新增程序实现、安装包、CI 配置或测试样本。本文中的“建议”“待定”不因支持目标已确认而自动成为正式契约。
 

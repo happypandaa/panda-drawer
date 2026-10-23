@@ -355,7 +355,12 @@ async fn leader_exit_reclaims_detached_descendants_and_is_not_success() {
     );
     assert!(output.tree_exited);
     assert!(!output.success());
-    all_gone(&handles).await;
+    tokio::time::timeout(Duration::from_secs(15), wait_for_idle())
+        .await
+        .expect("native exit must observe a drained command executor");
+    assert!(handles
+        .iter()
+        .all(|handle| unsafe { WaitForSingleObject(raw(handle), 0) } == WAIT_OBJECT_0));
 }
 
 #[tokio::test]
@@ -365,9 +370,25 @@ async fn dropping_execution_future_stops_its_owned_tree() {
     let (_cancel, receiver) = watch::channel(false);
     let execution = tokio::spawn(run(tree(&path, false), receiver));
     let handles = ready(&path).await;
+    let idle = wait_for_idle();
+    tokio::pin!(idle);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut idle)
+            .await
+            .is_err(),
+        "a live command must prevent native shutdown from reporting idle"
+    );
     execution.abort();
     assert!(execution.await.unwrap_err().is_cancelled());
-    all_gone(&handles).await;
+    tokio::time::timeout(Duration::from_secs(15), idle)
+        .await
+        .expect("the aborted command's cleanup owner must eventually drain");
+    assert!(handles
+        .iter()
+        .all(|handle| unsafe { WaitForSingleObject(raw(handle), 0) } == WAIT_OBJECT_0));
+    // The cleanup thread releases its directory guards before idle is visible.
+    let renamed = path.with_file_name(format!("Windows command drained {}", uuid::Uuid::new_v4()));
+    fs::rename(&path, &renamed).unwrap();
 }
 
 #[test]

@@ -1,6 +1,10 @@
 //! Shared native Node application management, independent of project-v1 recovery.
 pub use platform_project_format::ApiError;
 pub mod app_windows;
+#[cfg(windows)]
+pub mod development_tasks;
+#[cfg(windows)]
+pub mod development_tools;
 pub mod node_app_configuration;
 pub mod node_app_manifest;
 #[doc(hidden)]
@@ -8,10 +12,10 @@ pub mod node_app_proxy;
 #[cfg(windows)]
 pub mod node_apps;
 pub mod node_runtime_trial;
-#[cfg(windows)]
-pub mod development_tools;
-#[cfg(windows)]
-pub mod development_tasks;
 mod paths;
 #[cfg(windows)]
 pub mod windows_fs;
+#[cfg(windows)]
+pub mod windows_source_builds;
+#[cfg(windows)]
+pub mod windows_sources;

@@ -17,6 +17,8 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+unicode-normalization = "0.1"
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 libc = "0.2"
 

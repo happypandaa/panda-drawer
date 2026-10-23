@@ -11,6 +11,7 @@ import type { NodeAppRequest } from './NodeAppsPanel';
 import type { NodeAppDetail } from './node-app-types';
 import { Modal } from './Modal';
 import { WindowsDevelopmentTools } from './WindowsDevelopmentTools';
+import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
 import { WINDOWS_MANAGER_CAPABILITIES as capabilities } from './manager-capabilities';
 
 interface ProjectStatus {
@@ -63,6 +64,8 @@ export function WindowsHost() {
   const [diagnostic, setDiagnostic] = useState<HostReport | null>(null);
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const sourceInteraction = useRef(false);
   const [developmentPending, setDevelopmentPending] = useState(false);
   const [developmentRequiresRecheck, setDevelopmentRequiresRecheck] = useState(false);
   const developmentInteraction = useRef(false);
@@ -130,7 +133,7 @@ export function WindowsHost() {
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capabilities.create || !isTauri() || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || refreshPending.current || diagnosticPending.current || !status || status.rootStatus === 'blocked' || statusStale || !name.trim()) return;
+    if (!capabilities.create || !isTauri() || sourceInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || refreshPending.current || diagnosticPending.current || !status || status.rootStatus === 'blocked' || statusStale || !name.trim()) return;
     createPending.current = true;
     setCreating(true);
     setError(null);
@@ -158,7 +161,7 @@ export function WindowsHost() {
 
   async function openProject(project: ProjectInfo, target: 'desktop' | 'browser') {
     const currentProject = status?.projects.find(value => value.id === project.id);
-    if (!(target === 'desktop' ? capabilities.openDesktop : capabilities.openBrowser) || !isTauri() || nodeInteraction.current.pending || nodeInteraction.current.modal || openPending.current || createPending.current || refreshPending.current || diagnosticPending.current || !status || status.rootStatus !== 'ready' || statusStale || currentProject?.state !== 'ready') return;
+    if (!(target === 'desktop' ? capabilities.openDesktop : capabilities.openBrowser) || !isTauri() || sourceInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || openPending.current || createPending.current || refreshPending.current || diagnosticPending.current || !status || status.rootStatus !== 'ready' || statusStale || currentProject?.state !== 'ready') return;
     openPending.current = true;
     setOpening(project.id + ':' + target);
     setError(null);
@@ -178,7 +181,7 @@ export function WindowsHost() {
   }
 
   async function readDiagnostic() {
-    if (!isTauri() || nodeInteraction.current.pending || nodeInteraction.current.modal || diagnosticPending.current || createPending.current || openPending.current || refreshPending.current || status?.rootStatus === 'ready') return;
+    if (!isTauri() || sourceInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || diagnosticPending.current || createPending.current || openPending.current || refreshPending.current || status?.rootStatus === 'ready') return;
     diagnosticPending.current = true;
     setDiagnosticLoading(true);
     setError(null);
@@ -197,15 +200,19 @@ export function WindowsHost() {
   const hostBusy = loading || creating || Boolean(opening) || diagnosticLoading;
   const busy = hostBusy || nodeDraft.pending;
   const nodeAllowed = capabilities.nodeApps && isTauri() && status?.rootStatus === 'ready' && !statusStale && !nodeListStale;
+  const sourceAllowed = capabilities.sourceAcquisition && isTauri() && status?.rootStatus === 'ready' && !statusStale;
   nodeAccess.current = nodeAllowed;
   const nodeUnavailableReason = status?.rootStatus === 'missing'
     ? '请先创建一个可丢弃网页项目，初始化固定工作区后再添加 Node 应用。'
     : '工作区或 Node 状态尚未确认。请关闭此窗口，刷新项目状态后再操作。';
+  const sourceUnavailableReason = status?.rootStatus === 'missing'
+    ? '请先创建一个可丢弃网页项目，初始化固定工作区后再获取源码。'
+    : '固定工作区状态尚未确认。请关闭此窗口，刷新项目状态后再获取源码。';
   const deferredReason = '当前 Windows 版本尚未开放此功能。';
   const projects = status?.projects ?? [];
   const currentProject = projects.find(project => project.id === selected?.id);
   const detailsProject = currentProject ?? selected;
-  const modalOpen = showCreate || Boolean(selected) || settingsOpen || nodeModalOpen;
+  const modalOpen = showCreate || Boolean(selected) || settingsOpen || nodeModalOpen || sourcesOpen;
   const filteredProjects = projects.filter(project => {
     const matches = `${project.name} ${project.description ?? ''} ${project.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
     const ready = !blocked && project.state === 'ready';
@@ -255,27 +262,31 @@ export function WindowsHost() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [nodeAllowed, hostBusy, nodeApps.length]);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'details') {
-    if (!nodeAccess.current || hostBusy || showCreate || selected || settingsOpen || nodeInteraction.current.pending || nodeInteraction.current.modal || refreshPending.current || createPending.current || openPending.current || diagnosticPending.current) return;
+    if (!nodeAccess.current || sourceInteraction.current || hostBusy || showCreate || selected || settingsOpen || nodeInteraction.current.pending || nodeInteraction.current.modal || refreshPending.current || createPending.current || openPending.current || diagnosticPending.current) return;
     nodeInteraction.current.pending = true;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
   function requestAddNode() {
-    if (!nodeAccess.current || busy || showCreate || selected || settingsOpen || nodeInteraction.current.pending || nodeInteraction.current.modal || refreshPending.current || createPending.current || openPending.current || diagnosticPending.current) return;
+    if (!nodeAccess.current || sourceInteraction.current || busy || showCreate || selected || settingsOpen || nodeInteraction.current.pending || nodeInteraction.current.modal || refreshPending.current || createPending.current || openPending.current || diagnosticPending.current) return;
     nodeInteraction.current.modal = true;
     setNodeAddRequest(value => value + 1);
   }
   function requestRefresh() {
     // User actions share one synchronous admission gate. Creation's accepted
     // operation still uses refresh() internally after its real acknowledgement.
-    if (developmentInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || diagnosticPending.current || refreshPending.current) return;
+    if (sourceInteraction.current || developmentInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || diagnosticPending.current || refreshPending.current) return;
     return refresh();
   }
   function requestCreate() {
-    if (!capabilities.create || blocked || busy || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || diagnosticPending.current || refreshPending.current) return;
+    if (!capabilities.create || sourceInteraction.current || blocked || busy || nodeInteraction.current.pending || nodeInteraction.current.modal || createPending.current || openPending.current || diagnosticPending.current || refreshPending.current) return;
     setShowCreate(true); setNotice(null);
   }
+  function requestSources() {
+    if (!sourceAllowed || busy || sourceInteraction.current || developmentInteraction.current || nodeInteraction.current.pending || nodeInteraction.current.modal || showCreate || selected || settingsOpen || refreshPending.current || createPending.current || openPending.current || diagnosticPending.current) return;
+    sourceInteraction.current = true; setSourcesOpen(true);
+  }
   function showDetails(project: ProjectInfo) {
-    if (!capabilities.readOnlyDetails || busy || nodeInteraction.current.pending || nodeInteraction.current.modal) return;
+    if (!capabilities.readOnlyDetails || sourceInteraction.current || busy || nodeInteraction.current.pending || nodeInteraction.current.modal) return;
     setSelected(project);
   }
   const feedback = <>
@@ -284,14 +295,16 @@ export function WindowsHost() {
     </div><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError(null)}><X size={16} /></button></div>}
     {notice && <div className="notice notice-success" role="status"><Check size={18} /><p>{notice}</p><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice(null)}><X size={16} /></button></div>}
   </>;
-  const protection = <div className="notice" role="status"><ShieldCheck size={20} /><div><strong>Windows 内部样本：网页只读打开与 Node 服务应用</strong><p>仅使用可丢弃验证项目。Node 应用从本机源码目录登记，使用包内 Node；完整备份、恢复、回收、迁移与外部分发尚未接入。网页项目的 SQL 写入、附件、构建与资料修改仍未开放。已有目录和未解决现场继续保留。</p>{status?.rootStatus === 'missing' && <p>{nodeUnavailableReason}</p>}</div></div>;
-  return <ManagerShell page="projects" onPageChange={() => {}} onSettings={() => { if (!busy && !nodeInteraction.current.pending && !nodeInteraction.current.modal) setSettingsOpen(true); }}
+  const protection = <div className="notice" role="status"><ShieldCheck size={20} /><div><strong>Windows 内部样本：网页只读、Node 与独立源码候选</strong><p>仅使用可丢弃验证项目。Node 应用从本机源码目录登记，使用包内 Node；完整备份、恢复、回收、迁移与外部分发尚未接入。网页项目内的 SQL 写入、附件、正式构建发布与资料修改仍未开放。已有目录和未解决现场继续保留。</p><p>可从“添加 → 获取项目源码”准备独立源码副本，经明确确认后运行候选构建；候选不会自动安装或发布。脚本以当前用户权限运行，只执行可信源码。</p>{status?.rootStatus === 'missing' && <p>{nodeUnavailableReason}</p>}</div></div>;
+  return <ManagerShell page="projects" onPageChange={() => {}} onSettings={() => { if (!busy && !sourceInteraction.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) setSettingsOpen(true); }}
     storageUnavailableReason={deferredReason} settingsDisabled={busy || nodeModalOpen}
     footerCount={hasFilter ? `${filteredCount} / ${totalCount}` : totalCount}
     workspaceRoot={status?.rootStatus === 'ready' ? status.dataRoot + '\\workspace' : undefined}
     toolbar={<ManagerToolbar query={query} onQueryChange={setQuery} filter={filter} onFilterChange={setFilter}
       loading={loading} checkedAt={checkedAt} menuDisabled={busy || nodeModalOpen} refreshDisabled={!isTauri() || busy || nodeModalOpen} createDisabled={!capabilities.create || blocked || busy || showCreate || nodeModalOpen}
-      addUnavailableReason={nodeAllowed ? undefined : nodeUnavailableReason} importUnavailableReason={deferredReason} onRefresh={requestRefresh} onCreate={requestCreate} onAdd={requestAddNode} />}
+      addUnavailableReason={nodeAllowed ? undefined : nodeUnavailableReason} importUnavailableReason={deferredReason}
+      acquireUnavailableReason={sourceAllowed ? undefined : sourceUnavailableReason} onAcquire={capabilities.sourceAcquisition ? requestSources : undefined}
+      onRefresh={requestRefresh} onCreate={requestCreate} onAdd={requestAddNode} />}
   >
     <div className="radio-notices">
     {!isTauri() && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>请从 Windows 桌面应用打开此页面，以读取本机项目状态。</p></div></div>}
@@ -345,6 +358,10 @@ export function WindowsHost() {
       chooseSourceCommand="node_app_choose_source" unavailableReason={nodeUnavailableReason} onMutationError={nodeMutationError}
       directoryOnboarding={capabilities.nodeDirectoryOnboarding} managedInstallation={capabilities.nodeManagedInstall} deletion={capabilities.nodeDelete}
       onAppChanged={acceptNodeApp} onModalStateChange={reportNodeModal} onDraftStateChange={reportNodeDraft} />
+    {capabilities.sourceAcquisition && sourcesOpen && <SourceAcquisitionPanel disabled={!sourceAllowed || hostBusy || nodeDraft.pending}
+      chooseSourceCommand="source_choose_directory" managedInstallation={false} candidateBuild
+      onTask={() => { /* Durable source/build tasks are restored by their shared panels. */ }}
+      onClose={() => { sourceInteraction.current = false; setSourcesOpen(false); }} />}
     {showCreate && <CreateProjectForm name={name} description={description} onNameChange={setName} onDescriptionChange={setDescription}
       onSubmit={createProject} onClose={() => { if (!createPending.current) setShowCreate(false); }} creating={creating} disabled={blocked || busy}
       feedback={feedback} subtitle="仅创建可丢弃验证项目，创建后可只读打开。" footerNote="保存在固定开发工作区，不执行项目脚本" />}
