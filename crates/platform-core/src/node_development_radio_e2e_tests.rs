@@ -3,12 +3,49 @@
 //! Trash. It never reads credentials or mutates the author's original source.
 use super::*;
 use crate::{
+    node_app_configuration::SaveConfigurationRequest,
     node_apps::{DeleteNodeAppInput, NodeApps},
     node_install_tasks::PrepareNodeInstallInput,
     service::NodeGitAction,
-    source_acquisition::AcquireSourceInput,
+    source_acquisition::{AcquireSourceInput, CaptureLocalSourceInput},
     RuntimeHandle, RuntimeService,
 };
+
+const SDK_PAYLOADS: &[&str] = &[
+    "node_modules/node-windows/bin/winsw/winsw.exe",
+    "node_modules/node-windows/bin/sudowin/sudo.exe",
+    "node_modules/node-windows/bin/sudowin/Sudowin.Common.dll",
+    "node_modules/@neteasecloudmusicapienhanced/api/module/song_url_v1.js",
+    "node_modules/@unblockneteasemusic/server/nw.js",
+];
+
+async fn start_disposable_radio(apps: &NodeApps, id: &str, evidence: &Path, label: &str) {
+    let detail = apps.configuration(id).await.unwrap();
+    assert_eq!(detail["configuration"]["canStart"], false);
+    // Synthetic credential and a reserved invalid domain: startup/health only.
+    // No real account key, song request, AI or speech request is used.
+    let input: SaveConfigurationRequest = serde_json::from_value(json!({
+        "revision":detail["configuration"]["revision"],
+        "values":{"ANTHROPIC_BASE_URL":"https://example.invalid/anthropic", "TTS_PROVIDER":"none"},
+        "secrets":{"ANTHROPIC_API_KEY":{"action":"replace", "value":"disposable-test-only-not-a-real-key"}}
+    })).unwrap();
+    apps.save(id, input).await.unwrap();
+    let running = apps.start(id).await.unwrap();
+    assert_eq!(running["state"], "running", "{running}");
+    apps.stop(id).await.unwrap();
+    assert_eq!(apps.configuration(id).await.unwrap()["state"], "stopped");
+    let reopened = apps.start(id).await.unwrap();
+    assert_eq!(reopened["state"], "running", "{reopened}");
+    apps.stop(id).await.unwrap();
+    atomic_json(
+        &evidence.join(format!("{label}-startup.json")),
+        &json!({
+            "appId":id,"startedHealthy":true,"stopped":true,"reopenedHealthy":true,
+            "syntheticCredentialOnly":true,"aiAndVoiceRequests":false
+        }),
+    )
+    .unwrap();
+}
 
 fn required_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("explicit {name} is required"))
@@ -49,6 +86,10 @@ async fn install(
         .node_install_prepare(
             apps.clone(),
             PrepareNodeInstallInput {
+                build_source: source["inspection"]["requiresBuild"]
+                    .as_bool()
+                    .unwrap_or(false)
+                    && source["buildSourceDigest"].is_null(),
                 source_id: source["sourceId"].as_str().expect("ready source ID").into(),
                 expected_source_digest: source["contentDigest"]
                     .as_str()
@@ -63,7 +104,7 @@ async fn install(
     let task = handle
         .node_install_apply(
             apps,
-            candidate["candidateId"]
+            candidate["candidate"]["candidateId"]
                 .as_str()
                 .expect("prepared candidate ID"),
         )
@@ -79,6 +120,10 @@ async fn install(
 /// PLATFORM_RADIO_SOURCE=<clean disposable Git checkout below .test-artifacts>
 /// PLATFORM_RADIO_SYSTEM_TRASH=1
 /// Optional PLATFORM_RADIO_EVIDENCE_ROOT must also be below .test-artifacts.
+/// For a private Radio repository, PLATFORM_RADIO_AUTHENTICATED_GIT may explicitly
+/// select /usr/bin/git to use this machine's existing Git login, then exercise
+/// the public local-source capture flow. This is not platform Git authentication
+/// and is never an automatic fallback from anonymous source acquisition.
 /// All app/runtime/evidence files are retained. The Trash result is never purged.
 #[tokio::test]
 #[ignore = "explicit real Radio network/npm/macOS Trash acceptance; see required PLATFORM_RADIO_* variables"]
@@ -150,10 +195,7 @@ async fn radio_source_git_build_update_system_trash_and_remote_reinstall() {
     .unwrap();
     let source_manifest = read_file(&source.join("local-app.json"), MAX_METADATA).unwrap();
     let source_manifest: Value = serde_json::from_slice(&source_manifest).unwrap();
-    assert!(
-        source_manifest["development"].is_object(),
-        "reviewed Radio commit must declare its development build"
-    );
+    // Legacy direct-JavaScript manifests use the implicit no-build declaration.
     let service = RuntimeService::start_with_resources(
         paths.clone(),
         paths.acquire_lock().unwrap(),
@@ -202,6 +244,14 @@ async fn radio_source_git_build_update_system_trash_and_remote_reinstall() {
     let program = PathBuf::from(details["sourcePath"].as_str().unwrap());
     assert_ne!(program, source);
     assert!(!program.join(".git").exists());
+    let payloads: Vec<_> = SDK_PAYLOADS
+        .iter()
+        .map(|path| {
+            let bytes = read_file(&program.join(path), MAX_BLOB).unwrap();
+            assert!(!bytes.is_empty(), "complete SDK payload: {path}");
+            (path, bytes)
+        })
+        .collect();
     let runtime_entry = program.join("server/managed.mjs");
     let before = read_file(&runtime_entry, MAX_BLOB).unwrap();
     let source_entry = source.join("server/managed.mjs");
@@ -215,10 +265,8 @@ async fn radio_source_git_build_update_system_trash_and_remote_reinstall() {
         apps.configuration(&app_id).await.unwrap()["installation"]["generation"],
         details["installation"]["generation"]
     );
-    // No real key is supplied or read back. Required AI credentials make Radio
-    // intentionally unstartable; this test does not claim a live AI/voice test.
-    assert_eq!(details["configuration"]["canStart"], false);
-    atomic_json(&evidence.join("runtime-isolation.json"),&json!({"appId":app_id,"sourceRoot":source,"runtimeRoot":program,"sourceEditPreserved":true,"runtimeUnchanged":true,"started":false,"reason":"required AI key intentionally absent"})).unwrap();
+    start_disposable_radio(&apps, &app_id, &evidence, "updated").await;
+    atomic_json(&evidence.join("runtime-isolation.json"),&json!({"appId":app_id,"sourceRoot":source,"runtimeRoot":program,"sourceEditPreserved":true,"runtimeUnchanged":true,"started":true,"syntheticCredentialOnly":true})).unwrap();
     let marker = paths
         .data_root()
         .join("node-apps")
@@ -250,20 +298,83 @@ async fn radio_source_git_build_update_system_trash_and_remote_reinstall() {
     assert!(source_entry.exists());
     assert!(!paths.data_root().join("node-apps").join(&app_id).exists());
     assert!(apps.list().await.unwrap().is_empty());
-    let acquired = handle
-        .source_acquire(AcquireSourceInput {
-            url: remote.clone(),
-            branch: Some(branch.clone()),
-            name: Some("Disposable Radio reviewed remote re-download".into()),
-        })
-        .await
-        .unwrap();
+    let download_mode;
+    let acquired =
+        if let Some(authenticated_git) = std::env::var_os("PLATFORM_RADIO_AUTHENTICATED_GIT") {
+            assert_eq!(PathBuf::from(&authenticated_git), Path::new("/usr/bin/git"));
+            download_mode = "existing-local-git-login-then-platform-source-capture";
+            let downloaded = evidence.join("disposable-authenticated-radio-redownload");
+            let hooks = evidence.join("empty-download-hooks");
+            fs::create_dir(&hooks).unwrap();
+            let mut command = tokio::process::Command::new(authenticated_git);
+            command
+                .arg("-c")
+                .arg(format!("core.hooksPath={}", hooks.display()))
+                .args([
+                    "-c",
+                    "core.fsmonitor=false",
+                    "clone",
+                    "--depth=1",
+                    "--single-branch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--branch",
+                ])
+                .arg(&branch)
+                .arg("--")
+                .arg(&remote)
+                .arg(&downloaded)
+                .current_dir(&evidence)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(180), command.status())
+                    .await
+                    .expect("bounded authenticated Git download")
+                    .unwrap()
+                    .success(),
+                "existing local Git login must support the reviewed private repository"
+            );
+            let downloaded_status = git.status(&downloaded).await.unwrap();
+            assert_eq!(head_oid(&downloaded_status), Some(commit.as_str()));
+            assert!(downloaded_status.changes.is_empty());
+            atomic_json(
+                &evidence.join("authenticated-download.json"),
+                &json!({
+                    "mode":download_mode,"branch":branch,"commit":commit,
+                    "platformPrivateAuthenticationImplemented":false
+                }),
+            )
+            .unwrap();
+            handle
+                .source_capture(CaptureLocalSourceInput {
+                    source_path: downloaded,
+                    name: Some("Disposable Radio fresh Git download".into()),
+                })
+                .await
+                .unwrap()
+        } else {
+            download_mode = "platform-anonymous-public-git-download";
+            handle
+                .source_acquire(AcquireSourceInput {
+                    url: remote.clone(),
+                    branch: Some(branch.clone()),
+                    name: Some("Disposable Radio reviewed remote re-download".into()),
+                })
+                .await
+                .unwrap()
+        };
     let remote_source = completed(&handle, acquired, &evidence, "remote-acquire").await;
-    assert_eq!(remote_source["branch"], branch);
-    assert_eq!(
-        remote_source["commit"], commit,
-        "remote moved; review a new commit before repeating"
-    );
+    if download_mode == "platform-anonymous-public-git-download" {
+        assert_eq!(remote_source["branch"], branch);
+        assert_eq!(
+            remote_source["commit"], commit,
+            "remote moved; review a new commit before repeating"
+        );
+    }
     let reinstalled = install(
         &handle,
         apps.clone(),
@@ -292,9 +403,23 @@ async fn radio_source_git_build_update_system_trash_and_remote_reinstall() {
         before
     );
     assert!(!fresh.join(".git").exists());
+    for (path, bytes) in payloads {
+        assert_eq!(
+            read_file(&fresh.join(path), MAX_BLOB).unwrap(),
+            bytes,
+            "complete SDK resource must survive Git reinstallation: {path}"
+        );
+    }
+    start_disposable_radio(
+        &apps,
+        listed[0]["id"].as_str().unwrap(),
+        &evidence,
+        "reinstalled",
+    )
+    .await;
     apps.stop_all().await.unwrap();
     service.shutdown().await.unwrap();
-    atomic_json(&evidence.join("completed.json"),&json!({"remote":remote,"branch":branch,"reviewedCommit":commit,"evidenceRoot":evidence,"sourceRoot":source,"systemTrashPath":trashed,"originalAppId":app_id,"reinstalledAppId":listed[0]["id"],"networkAcquisitionVerified":true,"physicalSystemTrashVerified":true,"aiAndVoiceTested":false})).unwrap();
+    atomic_json(&evidence.join("completed.json"),&json!({"remote":remote,"branch":branch,"reviewedCommit":commit,"downloadMode":download_mode,"evidenceRoot":evidence,"sourceRoot":source,"systemTrashPath":trashed,"originalAppId":app_id,"reinstalledAppId":listed[0]["id"],"networkAcquisitionVerified":true,"physicalSystemTrashVerified":true,"completeSdkPayloadsVerified":SDK_PAYLOADS,"startupAndRestartVerified":true,"aiAndVoiceTested":false,"windowsRuntimeTested":false})).unwrap();
     eprintln!(
         "Radio disposable acceptance evidence retained: {}",
         evidence.display()
