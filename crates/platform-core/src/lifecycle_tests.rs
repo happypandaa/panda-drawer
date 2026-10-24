@@ -1059,7 +1059,7 @@ async fn delete_restore_and_purge_preserve_epochs_backups_and_corrupt_database_b
 }
 
 #[tokio::test]
-async fn maintenance_copy_establishes_new_identity_baseline_without_clearing_pending_build() {
+async fn maintenance_copy_is_rejected_before_install_and_preserves_pending_source() {
     let fixture = Fixture::new().await;
     let project = fixture.store.project(&fixture.id).unwrap();
     let control = fixture.store.control(&fixture.id).unwrap();
@@ -1073,33 +1073,33 @@ async fn maintenance_copy_establishes_new_identity_baseline_without_clearing_pen
     state.pending_build = true;
     state.pending_build_reason = Some("Known source work".into());
     let maintenance_id = state.maintenance_id.clone().unwrap();
-    control.set(state).unwrap();
-    let copied = fixture
-        .project("copy", json!({"maintenanceId":maintenance_id}))
-        .await;
-    let result = good(&copied);
-    assert_eq!(result["mode"], "maintenance");
-    assert_eq!(result["readyForChanges"], true);
-    assert_eq!(result["pendingBuild"]["required"], true);
-    assert_ne!(result["maintenanceId"], maintenance_id);
-    let id = result["projectId"].as_str().unwrap();
-    let baseline = result["baselineBackupId"].as_str().unwrap();
-    let archive = fixture
-        .paths
-        .workspace_root()
-        .join("backups")
-        .join(id)
-        .join(format!("{baseline}.zip"));
+    control.set(state.clone()).unwrap();
+    let submitted = fixture
+        .lifecycle
+        .submit_project(&fixture.id, "copy", json!({"maintenanceId":maintenance_id}))
+        .await
+        .unwrap();
+    let target = submitted.result.as_ref().unwrap()["targetProjectId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let failed = fixture.wait(&submitted).await;
+    let error = failed.error.unwrap();
+    assert_eq!(error.code, "LEGACY_ARCHIVE_REQUIRES_REVIEW");
+    assert_eq!(error.details["operationOutcome"], "not_registered");
+    assert_eq!(error.details["pendingBuild"]["required"], true);
+    let candidate = PathBuf::from(error.details["candidatePath"].as_str().unwrap());
+    assert!(candidate.join("data/main.sqlite").is_file());
     assert_eq!(
-        backups::read_info(&archive).unwrap().manifest.project_id,
-        id
+        fs::read_dir(fixture.paths.workspace_root().join("backups"))
+            .unwrap()
+            .count(),
+        0
     );
-    let candidate = fixture.paths.data_root().join("baseline-restore-candidate");
-    backups::extract_validated(&archive, &candidate, Some(id)).unwrap();
-    assert!(control.get().pending_build);
+    assert!(fixture.store.project(&target).is_err());
     assert_eq!(
-        control.get().maintenance_id.as_deref(),
-        Some(maintenance_id.as_str())
+        serde_json::to_value(control.get()).unwrap(),
+        serde_json::to_value(state).unwrap()
     );
     fixture.stop().await;
 }
@@ -1555,7 +1555,7 @@ async fn copied_bundled_artifact_keeps_portable_provenance_and_matching_inputs()
 }
 
 #[tokio::test]
-async fn unknown_and_foreign_key_archives_import_into_new_local_maintenance() {
+async fn unknown_and_foreign_key_archives_are_retained_without_registering_new_instances() {
     for foreign_key in [false, true] {
         let fixture = Fixture::new().await;
         let source = fixture.store.project(&fixture.id).unwrap();
@@ -1582,21 +1582,33 @@ async fn unknown_and_foreign_key_archives_import_into_new_local_maintenance() {
         .unwrap();
         let archive = fixture.export_path("unknown-or-fk.zip");
         backups::publish_snapshot(&snapshot, &archive).unwrap();
-        let task = fixture
+        let before = fs::read(&archive).unwrap();
+        let submitted = fixture
             .lifecycle
             .submit_import(json!({"archivePath":archive,"mode":"copy"}))
             .await
             .unwrap();
-        let task = fixture.wait(&task).await;
-        let result = good(&task);
-        assert_eq!(result["mode"], "maintenance");
-        assert_eq!(result["readyForChanges"], true);
-        assert!(result["maintenanceId"]
+        let target = submitted.result.as_ref().unwrap()["targetProjectId"]
             .as_str()
             .unwrap()
-            .starts_with("maintenance_"));
+            .to_owned();
+        let failed = fixture.wait(&submitted).await;
+        let error = failed.error.unwrap();
+        assert_eq!(error.code, "LEGACY_ARCHIVE_REQUIRES_REVIEW");
+        assert_eq!(error.details["operationOutcome"], "not_registered");
+        assert_eq!(fs::read(&archive).unwrap(), before);
+        let candidate = PathBuf::from(error.details["candidatePath"].as_str().unwrap());
+        assert!(candidate.join("data/main.sqlite").is_file());
+        assert!(candidate.parent().unwrap().join("source.zip").is_file());
+        assert!(fixture.store.project(&target).is_err());
         assert_eq!(
-            !result["diagnostics"]["foreignKeyViolations"]
+            fs::read_dir(fixture.paths.workspace_root().join("backups"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            !error.details["diagnostics"]["foreignKeyViolations"]
                 .as_array()
                 .unwrap()
                 .is_empty(),
@@ -1607,63 +1619,39 @@ async fn unknown_and_foreign_key_archives_import_into_new_local_maintenance() {
 }
 
 #[tokio::test]
-async fn baseline_publication_failure_registers_blocked_maintenance_and_can_retry() {
+async fn ready_snapshot_with_pending_build_is_rejected_without_clearing_requirement() {
     let fixture = Fixture::new().await;
     let control = fixture.store.control(&fixture.id).unwrap();
-    let mut state = control
-        .begin("Unfinished maintenance".into(), None, false)
-        .unwrap();
+    let mut state = control.get();
     state.pending_build = true;
-    let maintenance_id = state.maintenance_id.clone().unwrap();
-    control.set(state).unwrap();
-    let submitted = fixture
-        .lifecycle
-        .submit_project(&fixture.id, "copy", json!({"maintenanceId":maintenance_id}))
-        .await
-        .unwrap();
-    let id = submitted.result.as_ref().unwrap()["targetProjectId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let obstruction = fixture.paths.workspace_root().join("backups").join(&id);
-    fs::create_dir_all(obstruction.parent().unwrap()).unwrap();
-    fs::write(&obstruction, b"owned test file blocks baseline directory").unwrap();
-    let task = fixture.wait(&submitted).await;
-    assert_eq!(task.status, TaskStatus::Failed);
+    state.pending_build_reason = Some("Still waiting for a successful build".into());
+    control.set(state.clone()).unwrap();
+    let copied = fixture.project("copy", json!({})).await;
+    let error = copied.error.unwrap();
+    assert_eq!(error.code, "LEGACY_ARCHIVE_REQUIRES_REVIEW");
+    assert_eq!(error.details["snapshotState"], "ready");
+    assert_eq!(error.details["pendingBuild"]["required"], true);
     assert_eq!(
-        task.error.unwrap().details["operationOutcome"],
-        "registered_maintenance_not_ready"
+        error.details["pendingBuild"]["reason"],
+        "Still waiting for a successful build"
     );
-    assert!(fixture.store.project(&id).is_ok());
-    let state = fixture.store.control(&id).unwrap().get();
-    assert_eq!(state.mode, "maintenance");
-    assert!(!state.ready_for_changes);
-    assert!(state.pending_build);
-    assert!(fixture
-        .store
-        .control(&id)
-        .unwrap()
-        .check(false, state.maintenance_id.as_deref(), false)
-        .is_err());
-    fs::remove_file(obstruction).unwrap();
-    let request = fixture
-        .maintenance
-        .submit(
-            &id,
-            "maintenanceBegin",
-            crate::maintenance::OperationInput {
-                maintenance_id: state.maintenance_id.clone(),
-                reason: Some("Retry baseline preparation".into()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    let task = fixture.wait(&request).await;
-    good(&task);
-    let final_state = fixture.store.control(&id).unwrap().get();
-    assert!(final_state.ready_for_changes && final_state.pending_build);
-    assert_eq!(final_state.maintenance_id, state.maintenance_id);
+    assert_eq!(error.details["operationOutcome"], "not_registered");
+    assert!(
+        PathBuf::from(error.details["candidatePath"].as_str().unwrap())
+            .join("data/main.sqlite")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read_dir(fixture.paths.workspace_root().join("backups"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        serde_json::to_value(control.get()).unwrap(),
+        serde_json::to_value(state).unwrap()
+    );
+    assert_eq!(fixture.store.list().await.unwrap().len(), 1);
     fixture.stop().await;
 }
 

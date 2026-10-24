@@ -136,7 +136,7 @@ async function changeState(next) {
 assert.equal(host.hidden, true);
 assert.equal(style.nonce, 'test-nonce');
 await changeState({ mode: 'normal', busy: true, reloadRequired: false });
-assert.match(heading.textContent, /正在备份/);
+assert.match(heading.textContent, /正在准备项目操作/);
 assert.match(detail.textContent, /不会自动重试/);
 assertDraftPreserved();
 await changeState({ mode: 'maintenance', busy: false, reloadRequired: false });

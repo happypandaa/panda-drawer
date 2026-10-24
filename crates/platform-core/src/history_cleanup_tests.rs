@@ -91,14 +91,13 @@ impl Fixture {
         task.result.unwrap()["trashId"].as_str().unwrap().into()
     }
     async fn restore_original(&self) -> String {
-        let backup = self
-            .wait(
-                self.maintenance
-                    .submit(&self.project, "backup", OperationInput::default())
-                    .await
-                    .unwrap(),
-            )
-            .await;
+        let backup = crate::maintenance::legacy_test_fixtures::historical_operation(
+            &self.maintenance,
+            &self.project,
+            "backup",
+            OperationInput::default(),
+        )
+        .await;
         assert_eq!(backup.status, TaskStatus::Succeeded, "{:?}", backup.error);
         let backup_id = backup.result.unwrap()["backupId"]
             .as_str()
@@ -415,15 +414,13 @@ fn special_files_and_root_symlinks_are_never_cleanup_candidates() {
 #[tokio::test]
 async fn real_trash_cleanup_keeps_backups_and_record_and_consumes_plan_once() {
     let fixture = Fixture::new().await;
-    let backup = fixture
-        .wait(
-            fixture
-                .maintenance
-                .submit(&fixture.project, "backup", OperationInput::default())
-                .await
-                .unwrap(),
-        )
-        .await;
+    let backup = crate::maintenance::legacy_test_fixtures::historical_operation(
+        &fixture.maintenance,
+        &fixture.project,
+        "backup",
+        OperationInput::default(),
+    )
+    .await;
     assert_eq!(backup.status, TaskStatus::Succeeded);
     let backups = fixture
         .paths

@@ -566,12 +566,21 @@ async fn source_restore_guard_pending_keeps_webpage_sql_attachments_and_metadata
             .project_delete(&project.id, json!({}))
             .await
             .unwrap_err(),
+    ] {
+        assert_eq!(error.code, "PROJECT_SOURCE_RESTORE_PENDING");
+    }
+    for error in [
         handle
             .backup_create(&project.id, json!({}))
             .await
             .unwrap_err(),
+        handle
+            .maintenance_begin(&project.id, json!({"reason":"retired before source guard"}))
+            .await
+            .unwrap_err(),
     ] {
-        assert_eq!(error.code, "PROJECT_SOURCE_RESTORE_PENDING");
+        assert_eq!(error.code, "BACKUP_WORKFLOW_RETIRED");
+        assert_eq!(error.details["operationOutcome"], "not_started");
     }
     let store = service.store();
     let pending = inspect(paths.workspace_root(), &project.id)

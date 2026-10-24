@@ -439,66 +439,37 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test('Embedded backup tab preserves both drafts while hidden, reports dirty state, and never scrolls the background', async () => {
-  await setup();
-  let scrolls = 0; const states = [];
-  const previousScroll = dom.window.HTMLElement.prototype.scrollIntoView;
-  dom.window.HTMLElement.prototype.scrollIntoView = () => { scrolls++; };
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'backup_list'); return []; };
-  const view = (active) => h('div', { hidden: !active }, h(BackupMaintenancePanel, backupProps({ active, onDraftStateChange: (state) => states.push(state) })));
-  try {
-    await render(view(true));
-    assert.equal(document.querySelector('[aria-label="关闭备份与维护"]'), null);
-    await inputValue(document.getElementById('maintenance-reason'), 'Preserve maintenance reason');
-    await inputValue(document.getElementById('backup-note'), 'Preserve backup note');
-    assert.deepEqual(states.at(-1), { dirty: true, pending: false });
-    await render(view(false));
-    assert.equal(document.getElementById('backup-note').disabled, true);
-    await render(view(true));
-    assert.equal(document.getElementById('maintenance-reason').value, 'Preserve maintenance reason');
-    assert.equal(document.getElementById('backup-note').value, 'Preserve backup note');
-    assert.equal(scrolls, 0);
-    await render(null);
-    assert.deepEqual(states.at(-1), { dirty: false, pending: false });
-  } finally { dom.window.HTMLElement.prototype.scrollIntoView = previousScroll; }
+test('Legacy backup compatibility exposes no new backup or maintenance creation', async () => {
+  await setup(); const states = []; const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async command => { calls.push(command); assert.equal(command, 'backup_list'); return []; };
+  const view = active => h('div', { hidden: !active }, h(BackupMaintenancePanel, backupProps({ active, onDraftStateChange: state => states.push(state) })));
+  await render(view(true));
+  assert.equal(document.getElementById('backup-note'), null);
+  assert.equal(document.getElementById('maintenance-reason'), null);
+  assert.equal(document.querySelector('.backup-create-form'), null);
+  assert.equal(document.querySelector('.maintenance-form'), null);
+  assert.match(document.body.textContent, /新建备份与新维护基线已退役/);
+  assert.deepEqual(states.at(-1), { dirty: false, pending: false });
+  await render(view(false)); await render(view(true));
+  assert.ok(calls.every(command => command === 'backup_list'));
 });
 
-test('Backup submission reports pending, rejects duplicate submits, and clears only the accepted draft', async () => {
-  await setup();
-  const accepted = deferred(); const states = []; const tasks = []; let submissions = 0;
+test('Legacy maintenance end reports pending and rejects duplicate confirmation', async () => {
+  await setup(); const accepted = deferred(); const states = []; const tasks = []; let submissions = 0;
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     if (command === 'backup_list') return [];
-    assert.equal(command, 'backup_create'); assert.equal(args.input.note, 'Snapshot note'); submissions++;
+    assert.equal(command, 'maintenance_end'); assert.equal(args.input.maintenanceId, 'maintenance_fixture'); submissions++;
     return accepted.promise;
   };
-  await render(h(BackupMaintenancePanel, backupProps({ onDraftStateChange: (state) => states.push(state), onTask: (task) => tasks.push(task) })));
-  await inputValue(document.getElementById('maintenance-reason'), 'Unsubmitted maintenance reason');
-  await inputValue(document.getElementById('backup-note'), 'Snapshot note');
-  const form = document.querySelector('.backup-create-form');
-  await submit(form); await submit(form);
-  assert.equal(submissions, 1); assert.deepEqual(states.at(-1), { dirty: true, pending: true });
+  await render(h(BackupMaintenancePanel, backupProps({ status: { mode: 'maintenance', readyForChanges: false, maintenanceId: 'maintenance_fixture' }, onDraftStateChange: state => states.push(state), onTask: task => tasks.push(task) })));
+  assert.doesNotMatch(document.body.textContent, /重试准备基线|进入维护并备份/);
+  await click([...document.querySelectorAll('button')].find(button => button.textContent.trim() === '检查并结束维护'));
+  const confirm = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '检查并结束');
+  await click(confirm); await click(confirm);
+  assert.equal(submissions, 1); assert.deepEqual(states.at(-1), { dirty: false, pending: true });
   await act(async () => accepted.resolve({ taskId: 'task_fixture', projectId: project.id, final: false }));
   assert.equal(tasks.length, 1);
-  assert.equal(document.getElementById('backup-note').value, '');
-  assert.equal(document.getElementById('maintenance-reason').value, 'Unsubmitted maintenance reason');
-  assert.deepEqual(states.at(-1), { dirty: true, pending: false });
-});
-
-test('Failed backup submission preserves its note and reports the error without replaying the request', async () => {
-  await setup(); let submissions = 0;
-  globalThis.__UI_TEST_INVOKE__ = async (command) => {
-    if (command === 'backup_list') return [];
-    assert.equal(command, 'backup_create'); submissions++; throw new Error('Fixture response uncertain');
-  };
-  await render(h(BackupMaintenancePanel, backupProps()));
-  await inputValue(document.getElementById('backup-note'), 'Do not lose this note');
-  await submit(document.querySelector('.backup-create-form'));
-  assert.equal(submissions, 1);
-  assert.equal(document.getElementById('backup-note').value, 'Do not lose this note');
-  assert.match(document.querySelector('[role="alert"]').textContent, /Fixture response uncertain/);
-  await click([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '刷新状态'));
-  assert.match(document.querySelector('[role="alert"]').textContent, /Fixture response uncertain/, 'A successful list refresh must not erase an unresolved submission error');
-  assert.equal(submissions, 1);
+  assert.deepEqual(states.at(-1), { dirty: false, pending: false });
 });
 
 test('Leaving the backup tab revokes restore/end confirmations while keeping the selected snapshot', async () => {

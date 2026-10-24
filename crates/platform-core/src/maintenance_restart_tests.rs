@@ -2,6 +2,7 @@
 //! Persisted task files model a process ending between durable checkpoints; no
 //! production/development application data or Node installation is involved.
 use super::*;
+use crate::backups::{PendingBuild, SnapshotOptions};
 use crate::{CreateProjectInput, TaskStatus};
 
 struct InterruptedFixture {
@@ -579,44 +580,36 @@ async fn missing_published_baseline_is_not_reported_ready_and_rejects_management
         1
     );
     drop(connection);
-    let repair = restarted
+    let before = restarted
+        .store
+        .control(&restarted.project_id)
+        .unwrap()
+        .get();
+    let error = restarted
         .manager
         .submit(
             &restarted.project_id,
             "maintenanceBegin",
             OperationInput {
                 maintenance_id: Some(maintenance_id.clone()),
-                reason: Some("Recreate missing baseline without ending maintenance".into()),
+                reason: Some("Retired baseline retry must preserve old evidence".into()),
                 ..OperationInput::default()
             },
         )
         .await
-        .unwrap();
-    let mut repaired = None;
-    for _ in 0..1000 {
-        let current = restarted.tasks.task(&repair.task_id).unwrap();
-        if current.status.is_final() {
-            repaired = Some(current);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    let repaired = repaired.expect("baseline retry did not complete");
-    assert_eq!(repaired.status, TaskStatus::Succeeded, "{repaired:?}");
-    let repaired_state = restarted
-        .store
-        .control(&restarted.project_id)
-        .unwrap()
-        .get();
+        .unwrap_err();
+    assert_eq!(error.code, "BACKUP_WORKFLOW_RETIRED");
+    assert_eq!(error.details["operationOutcome"], "not_started");
     assert_eq!(
-        repaired_state.maintenance_id.as_deref(),
-        Some(maintenance_id.as_str())
-    );
-    assert!(repaired_state.ready_for_changes);
-    assert!(repaired_state.pending_build);
-    assert_ne!(
-        repaired_state.baseline_backup_id.as_deref(),
-        Some(restarted.backup_id.as_str())
+        serde_json::to_value(
+            restarted
+                .store
+                .control(&restarted.project_id)
+                .unwrap()
+                .get()
+        )
+        .unwrap(),
+        serde_json::to_value(before).unwrap(),
     );
     assert_eq!(
         restarted.tasks.task(&restarted.task_id).unwrap().status,
@@ -713,9 +706,10 @@ async fn resolved_restore_lost_response_keeps_restored_outcome_without_replaying
     let journal: RestoreJournal =
         serde_json::from_slice(&fs::read(operation.join("journal.json")).unwrap()).unwrap();
     assert!(journal.committed && journal.resolved);
-    let snapshot: Value =
-        serde_json::from_slice(&fs::read(operation.join("snapshot.json")).unwrap()).unwrap();
-    assert_ne!(snapshot["backupId"], fixture.backup_id);
+    assert!(
+        !operation.join("snapshot.json").exists(),
+        "new legacy restore must not create a preRestore ZIP checkpoint"
+    );
     let original = operation.join("original");
     assert_eq!(
         rusqlite::Connection::open(original.join("data/main.sqlite"))

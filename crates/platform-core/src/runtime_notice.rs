@@ -67,13 +67,13 @@ pub(crate) fn script() -> &'static str {
       explanation = '维护或恢复已完成，当前页面不能继续保存。请先复制未保存内容或保存到别处，再决定是否重新加载。';
     } else if (state?.recoveryRequired) {
       heading = '项目恢复结果需要处理';
-      explanation = '项目暂时不能保存数据。请在平台的备份与维护中查看状态；当前页面和未提交内容会保留。';
+      explanation = '项目暂时不能保存数据。请在平台查看原任务与保留现场；当前页面和未提交内容会保留。';
     } else if (state?.mode === 'maintenance') {
       heading = '项目正在维护，暂时无法保存';
       explanation = '当前页面和未提交内容会保留。维护不会在重启后自动结束，请等待平台完成检查；失败的保存不会自动重试。';
     } else if (state?.busy) {
-      heading = '正在备份，暂时无法保存';
-      explanation = '当前页面和未提交内容会保留。请等待备份完成后自行检查并重新提交；平台不会自动重试失败的保存。';
+      heading = '正在准备项目操作，暂时无法保存';
+      explanation = '当前页面和未提交内容会保留。请等待当前操作完成后自行检查并重新提交；平台不会自动重试失败的保存。';
     } else if (offline) {
       heading = '暂时无法连接本地平台';
       explanation = '请确认桌面平台仍在运行。未提交内容仍在当前页面中，平台不会自动重试保存。';

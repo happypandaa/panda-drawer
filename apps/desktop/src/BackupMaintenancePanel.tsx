@@ -45,8 +45,6 @@ const protectionLabels: Record<string, string> = {
 export function BackupMaintenancePanel({ project, disabled = false, status, task, onTask, onChanged, onClose, embedded = false, active = true, onDraftStateChange }: Props) {
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [selected, setSelected] = useState<BackupDetails | null>(null);
-  const [note, setNote] = useState('');
-  const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -64,11 +62,10 @@ export function BackupMaintenancePanel({ project, disabled = false, status, task
   const inMaintenance = status?.mode === 'maintenance';
   const activeTask = Boolean(task && !task.final) || Boolean(status?.activeTask);
   const blocked = !active || disabled || submitting || activeTask || !status || Boolean(status.recoveryRequired);
-  const canChange = !blocked && (!inMaintenance || status.readyForChanges);
 
   useEffect(() => {
-    draftCallback.current?.({ dirty: Boolean(note || reason), pending: submitting });
-  }, [note, reason, submitting]);
+    draftCallback.current?.({ dirty: false, pending: submitting });
+  }, [submitting]);
   useEffect(() => () => { draftCallback.current?.({ dirty: false, pending: false }); }, []);
   useEffect(() => {
     if (!active) {
@@ -114,7 +111,7 @@ export function BackupMaintenancePanel({ project, disabled = false, status, task
   }
 
   async function submit(command: string, input: Record<string, unknown>) {
-    if (pending.current || blocked || (command === 'backup_create' && !canChange)) return;
+    if (pending.current || blocked || !['backup_restore', 'maintenance_end'].includes(command)) return;
     pending.current = true;
     setSubmitting(true);
     setError(null);
@@ -130,8 +127,6 @@ export function BackupMaintenancePanel({ project, disabled = false, status, task
       } else {
         setMessage('检查已完成。旧页面需要重新加载，请先处理未保存内容。');
       }
-      if (command === 'backup_create') setNote('');
-      if (command === 'maintenance_begin') setReason('');
       setConfirmRestore(false);
       setRestoreAcknowledged(false);
       setConfirmEnd(false);
@@ -146,13 +141,13 @@ export function BackupMaintenancePanel({ project, disabled = false, status, task
 
   const lastError = typeof status?.lastError === 'string' ? status.lastError : status?.lastError?.message;
   return <section className="backup-panel" ref={panel} aria-labelledby={embedded ? undefined : 'backup-panel-title'} aria-label={embedded ? '备份与维护' : undefined}>
-    {embedded ? <p className="project-help">整项目快照包含源码、网页、数据库和附件。手动备份不会自动清理。</p> : <div className="section-heading"><div><h2 id="backup-panel-title"><Archive size={17} />备份与维护 · {project.name}</h2><p>整项目快照包含源码、网页、数据库和附件。手动备份不会自动清理。</p></div><button className="icon-button" aria-label="关闭备份与维护" onClick={onClose} disabled={submitting}><X size={18} /></button></div>}
+    {embedded ? <p className="project-help">这里仅兼容读取旧归档和处理旧维护。新建备份与新维护基线已退役，旧资料不会自动裁剪。</p> : <div className="section-heading"><div><h2 id="backup-panel-title"><Archive size={17} />备份与维护 · {project.name}</h2><p>这里仅兼容读取旧归档和处理旧维护。新建备份与新维护基线已退役，旧资料不会自动裁剪。</p></div><button className="icon-button" aria-label="关闭备份与维护" onClick={onClose} disabled={submitting}><X size={18} /></button></div>}
     <div className={`maintenance-summary ${inMaintenance ? 'maintenance-active' : ''}`}>
-      <div className="maintenance-heading"><ShieldCheck size={18} /><strong>{status?.recoveryRequired ? '恢复结果需要处理' : inMaintenance ? status.readyForChanges ? '维护中 · 可以管理修改' : '维护中 · 基线尚未准备好' : status ? '正常运行' : '正在读取维护状态'}</strong><button className="text-button" disabled={!active || reading || submitting} onClick={() => { void onChanged(); void load(); }}><RefreshCw size={13} />刷新状态</button></div>
-      {status?.recoveryRequired ? <p role="alert">恢复尚未得到明确结果，项目保持停用。请查看任务日志及恢复记录，处理完成前不能结束维护。</p> : inMaintenance ? <><p>业务网页暂停操作。退出 AI 或重启平台不会结束维护；结束维护保留当前修改，撤销需要恢复备份。</p><dl className="maintenance-facts"><div><dt>维护原因</dt><dd>{status.reason || '未填写'}</dd></div><div><dt>开始时间</dt><dd>{timestamp(status.startedAt)}</dd></div><div><dt>维护 ID</dt><dd><code>{status.maintenanceId}</code></dd></div><div><dt>基线备份</dt><dd><code>{status.baselineBackupId || '尚未成功生成，请勿修改项目'}</code></dd></div></dl></> : <p>普通备份会短暂暂停数据操作。创建期间请让外部 AI 和其他工具停止修改项目文件。</p>}
+      <div className="maintenance-heading"><ShieldCheck size={18} /><strong>{status?.recoveryRequired ? '恢复结果需要处理' : inMaintenance ? status.readyForChanges ? '维护中 · 可以管理修改' : '旧维护待检查 · 不能创建新基线' : status ? '正常运行' : '正在读取维护状态'}</strong><button className="text-button" disabled={!active || reading || submitting} onClick={() => { void onChanged(); void load(); }}><RefreshCw size={13} />刷新状态</button></div>
+      {status?.recoveryRequired ? <p role="alert">恢复尚未得到明确结果，项目保持停用。请查看任务日志及恢复记录，处理完成前不能结束维护。</p> : inMaintenance ? <><p>业务网页暂停操作。退出 AI 或重启平台不会结束维护；结束维护保留当前修改，撤销需要恢复备份。</p><dl className="maintenance-facts"><div><dt>维护原因</dt><dd>{status.reason || '未填写'}</dd></div><div><dt>开始时间</dt><dd>{timestamp(status.startedAt)}</dd></div><div><dt>维护 ID</dt><dd><code>{status.maintenanceId}</code></dd></div><div><dt>基线备份</dt><dd><code>{status.baselineBackupId || '尚未成功生成，请勿修改项目'}</code></dd></div></dl></> : <p>日常修改使用 Git 版本和平台构建，无需创建 ZIP 或进入新维护。</p>}
       {status?.pendingBuild && <p className="maintenance-warning">需要构建或检查：{status.pendingBuildReason || '维护中的构建输入发生了变化。'}</p>}
       {lastError && <p className="maintenance-warning">上次检查：{lastError}</p>}
-      {inMaintenance ? <div className="maintenance-actions">{!status.readyForChanges && <button className="refresh-button" disabled={blocked} onClick={() => void submit('maintenance_begin', { reason: status.reason || '重试维护基线准备' })}>重试准备基线</button>}<button className="refresh-button" disabled={blocked} onClick={() => setConfirmEnd(true)}>检查并结束维护</button></div> : <form className="maintenance-form" onSubmit={(event) => { event.preventDefault(); void submit('maintenance_begin', { reason: reason.trim() }); }}><label htmlFor="maintenance-reason">维护原因</label><div className="inline-form"><input id="maintenance-reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="例如：调整数据表并更新页面" disabled={blocked} required /><button className="refresh-button" type="submit" disabled={blocked || !reason.trim()}>进入维护并备份</button></div></form>}
+      {inMaintenance && <div className="maintenance-actions"><button className="refresh-button" disabled={blocked} onClick={() => setConfirmEnd(true)}>检查并结束维护</button></div>}
       {confirmEnd && <div className="operation-confirmation" role="group" aria-label="结束维护确认"><strong>检查通过后恢复项目使用</strong><p>此操作保留所有当前修改，不会回滚数据。已有页面必须明确重新加载；请先复制、保存到别处或决定放弃其中尚未提交的内容。</p><div className="confirmation-actions"><button className="primary-button" disabled={blocked} onClick={() => void submit('maintenance_end', {})}>检查并结束</button><button className="refresh-button" disabled={submitting} onClick={() => setConfirmEnd(false)}>继续维护</button></div></div>}
     </div>
     {error && <div className="panel-message panel-error" role="alert"><CircleAlert size={16} /><span>{error}。请先查看当前状态和日志，勿重复提交结果不明的操作。</span></div>}
@@ -161,10 +156,10 @@ export function BackupMaintenancePanel({ project, disabled = false, status, task
     {task && !embedded && <ProjectTask key={task.taskId} task={task} />}
     <div className="backup-content">
       <div className="backup-list-column">
-        <form className="backup-create-form" onSubmit={(event) => { event.preventDefault(); void submit('backup_create', { note: note.trim() }); }}><label htmlFor="backup-note">创建手动备份<span className="optional-label">备注选填</span></label><div className="inline-form"><input id="backup-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：调整之前" disabled={!canChange} /><button className="primary-button" type="submit" disabled={!canChange}><Archive size={14} />创建备份</button></div></form>
+
         <div className="backup-list-heading"><strong>{reading ? '正在读取备份…' : `${backups.length} 份备份`}</strong><span>点击查看内容与恢复入口</span></div>
-        {backups.length ? <ul className="backup-list">{backups.map((backup) => <li key={backup.backupId}><button className={`backup-row ${selected?.backupId === backup.backupId ? 'backup-row-selected' : ''}`} disabled={!active || submitting} onClick={() => void selectBackup(backup)}><span className="backup-row-top"><strong>{kindLabels[backup.kind] ?? backup.kind}</strong><time>{timestamp(backup.createdAt)}</time></span><span>{backup.note || backup.backupId}</span><span className="backup-row-meta">{fileSize(backup.sizeBytes)} · {backup.verified ? '校验通过' : '需要检查'}{backup.protectionReasons?.length ? ` · ${backup.protectionReasons.map((item) => protectionLabels[item] ?? item).join('、')}` : ''}</span></button></li>)}</ul> : !reading && <p className="backup-empty">还没有完整备份。创建后可以恢复到这个时间点。</p>}
-        <p className="backup-retention">普通自动备份保留最近 10 份；手动备份、使用中的基线和受保护备份单独保留。</p>
+        {backups.length ? <ul className="backup-list">{backups.map((backup) => <li key={backup.backupId}><button className={`backup-row ${selected?.backupId === backup.backupId ? 'backup-row-selected' : ''}`} disabled={!active || submitting} onClick={() => void selectBackup(backup)}><span className="backup-row-top"><strong>{kindLabels[backup.kind] ?? backup.kind}</strong><time>{timestamp(backup.createdAt)}</time></span><span>{backup.note || backup.backupId}</span><span className="backup-row-meta">{fileSize(backup.sizeBytes)} · {backup.verified ? '校验通过' : '需要检查'}{backup.protectionReasons?.length ? ` · ${backup.protectionReasons.map((item) => protectionLabels[item] ?? item).join('、')}` : ''}</span></button></li>)}</ul> : !reading && <p className="backup-empty">没有可读取的历史归档。新的独立备份入口已经退役。</p>}
+        <p className="backup-retention">历史归档与受保护现场继续保留，不自动按份数删除。</p>
       </div>
       <div className="backup-detail-column">{selected ? <>
         <h3>备份详情</h3><dl className="backup-facts"><div><dt>备份时间</dt><dd>{timestamp(selected.createdAt)}</dd></div><div><dt>备份 ID</dt><dd><code>{selected.backupId}</code></dd></div><div><dt>类型与体积</dt><dd>{kindLabels[selected.kind] ?? selected.kind} · {fileSize(selected.sizeBytes)}</dd></div><div><dt>快照状态</dt><dd>{selected.snapshotState === 'ready' ? '正常运行' : selected.snapshotState === 'maintenance' ? '维护中' : '来源状态未知'}{selected.pendingBuild?.required ? ' · 带有待构建要求' : ''}</dd></div><div><dt>网页产物</dt><dd>{selected.hasArtifact === true ? '归档包含可复用网页，恢复本身无需 Node' : selected.hasArtifact === false ? '尚未构建，恢复后仍等待构建' : '未能读取归档内容'}</dd></div><div><dt>版本</dt><dd>归档 v{selected.formatVersion ?? '未知'} · 平台 {selected.platformVersion ?? '未知'} · SQLite {selected.sqliteVersion ?? '未知'} · API v{selected.sdkApiVersion ?? '未知'}</dd></div><div><dt>完整性</dt><dd>{selected.verified ? '已验证文件清单与数据库' : '需要查看诊断，无法保证可恢复'}</dd></div>{selected.note && <div><dt>备注</dt><dd>{selected.note}</dd></div>}</dl>
