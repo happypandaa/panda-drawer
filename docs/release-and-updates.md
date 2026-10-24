@@ -24,6 +24,8 @@
 
 当前源码仓库 `happypandaa/panda-drawer` 为私有仓库。用户明确授权另建公开的 **`happypandaa/panda-drawer-releases`**，只放发行安装文件、版本说明和自动更新清单；源码仓库继续私有。公开发行仓库的实际创建及文件发布分别记录，不把确认地址当作已经有可下载正式包。
 
+同日已创建并核验[公开发行仓库](https://github.com/happypandaa/panda-drawer-releases)，默认分支为 `main`，仅含说明当前暂无正式包的 README（提交 `59d77ee09775ff017f98b7b36f5fd20d3a97767e`）；创建后 Releases 数量为 0。创建前后均核验源码仓库保持私有，未上传源码、安装包或密钥。本记录不代表正式下载或自动更新已经可用。
+
 用户有 Apple 开发者账号，但本机暂未发现 Developer ID Application 签名身份；站外正式发行仍按 [Apple Developer ID 与公证流程](https://developer.apple.com/developer-id/)准备该证书与公证，不将现有 Apple Development／Apple Distribution 当作替代。证书、公证与更新签名私钥不写入工程或聊天。
 
 ## 1 已确定的首版范围
