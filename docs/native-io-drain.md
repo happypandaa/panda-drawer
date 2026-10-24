@@ -33,6 +33,6 @@ WebKit 请求下载时，私有暂存与登记一起创建。收到 `Finished` �
 
 ## 自动安装前仍必须闭合
 
-`RuntimeService::shutdown(self)` 当前仍消费服务，部分失败会提前返回，管理器/数据库的 Join 错误仍未统一汇总。桌面 `request_safe_shutdown` 仍可能记录错误后设置 `exit_ready`。本步没有将这些行为称为成功排空。
+第一步交付时，`RuntimeService::shutdown(self)` 仍消费服务，部分失败会提前返回，管理器/数据库的 Join 错误未统一汇总。后续核心协调器见 [可排空关闭第二步](phased-shutdown.md)；该步骤也不授予自动安装许可。桌面 `request_safe_shutdown` 仍可能记录错误后设置 `exit_ready`，尚需独立接入。
 
-下一步需要可重试、明确 Result 的关闭协调器，先关闭所有接纳并发出所有管理器/Node 停止信号，再等待全部拥有工作的 runner/连接/数据库线程，保留失败阶段和实例锁；重复退出、更新与调用方丢失共用同一个关闭任务。Node 的进程组、后代与代理连接需要保留明确关闭证据，WebView 也需要完成关闭。仅后端证明成功关闭后才可调用 updater 原有签名/版本校验与安装流程；不能用 `runtime=None`、日志、超时或父任务 abort 代替证明。
+第二步实现了登记资源的可重试核心协调器、runner/连接/数据库线程等待及失败实例保留；其 Complete/resourceClosed 范围详见独立文档。后续仍需 Git/npm 后代与 reader、Node 进程树和代理连接的明确关闭证据、WebView 完成关闭，以及桌面退出接入。所有安装前条件闭合后才可调用 updater 原有签名/版本校验与安装流程；不能用 `runtime=None`、日志、超时或父任务 abort 代替证明。

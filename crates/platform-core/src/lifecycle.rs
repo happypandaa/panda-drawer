@@ -92,6 +92,13 @@ pub(crate) struct LifecycleManager {
     tasks: Arc<BuildManager>,
     maintenance: Arc<MaintenanceManager>,
     running: Mutex<Vec<JoinHandle<()>>>,
+    #[cfg(test)]
+    import_inspection_pause: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
     stopping: AtomicBool,
     events: broadcast::Sender<String>,
 }
@@ -355,6 +362,8 @@ impl LifecycleManager {
             tasks,
             maintenance,
             running: Mutex::new(vec![]),
+            #[cfg(test)]
+            import_inspection_pause: Mutex::new(None),
             stopping: AtomicBool::new(false),
             events,
         });
@@ -523,6 +532,7 @@ impl LifecycleManager {
         kind: &str,
         value: Value,
     ) -> Result<TaskRecord, ApiError> {
+        let mut running = self.running.lock().unwrap();
         self.check_running()?;
         let input = Self::input(value)?;
         if !matches!(kind, "export" | "copy" | "delete") {
@@ -603,7 +613,7 @@ impl LifecycleManager {
             self.tasks.finish(&record.task_id, Err(error.clone()))?;
             return Err(error);
         }
-        self.launch(journal, input, leases);
+        self.launch(&mut running, journal, input, leases);
         Ok(record)
     }
     fn authorize_delete(
@@ -635,6 +645,8 @@ impl LifecycleManager {
         id: &str,
         value: Value,
     ) -> Result<TaskRecord, ApiError> {
+        let mut running = self.running.lock().unwrap();
+        self.check_running()?;
         let input = Self::input(value)?;
         let (root, _) = self.store.metadata_root(id)?;
         self.authorize(id, input.maintenance_id.as_deref())?;
@@ -644,8 +656,40 @@ impl LifecycleManager {
         journal.trash_id = Some(format!("trash_{}", Uuid::new_v4().simple()));
         journal.directory_name = Some(root_directory_name(&root)?);
         self.save(&journal)?;
-        self.launch(journal, input, vec![lease]);
+        self.launch(&mut running, journal, input, vec![lease]);
         Ok(record)
+    }
+    async fn owned_operation<T, F, W>(self: &Arc<Self>, work: W) -> Result<T, ApiError>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
+        W: FnOnce(Arc<Self>) -> F + Send + 'static,
+    {
+        let receive = {
+            let mut running = self.running.lock().unwrap();
+            self.check_running()?;
+            let manager = self.clone();
+            let (send, receive) = tokio::sync::oneshot::channel();
+            running.push(tokio::spawn(async move {
+                let result = work(manager).await;
+                let _ = send.send(result);
+            }));
+            receive
+        };
+        receive.await.map_err(|_| {
+            ApiError::new(
+                "LIFECYCLE_WORKER_FAILED",
+                "Lifecycle worker did not return a result; shutdown retains its JoinError",
+            )
+        })?
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_import_inspection_pause(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self.import_inspection_pause.lock().unwrap() = Some((entered, release));
     }
     pub async fn submit_import(self: &Arc<Self>, value: Value) -> Result<TaskRecord, ApiError> {
         self.check_running()?;
@@ -681,9 +725,26 @@ impl LifecycleManager {
                 "archivePath must be absolute",
             ));
         }
-        let metadata = tokio::task::spawn_blocking(move || backups::inspect_manifest(&archive))
+        self.owned_operation(move |manager| async move { manager.prepare_import(input).await })
             .await
-            .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
+    }
+    async fn prepare_import(self: &Arc<Self>, input: Input) -> Result<TaskRecord, ApiError> {
+        let archive = input.archive_path.clone().expect("validated archive path");
+        #[cfg(test)]
+        let pause = self.import_inspection_pause.lock().unwrap().take();
+        let metadata = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some((entered, release)) = pause {
+                let _ = entered.send(());
+                let _ = release.recv();
+            }
+            backups::inspect_manifest(&archive)
+        })
+        .await
+        .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
+        let mut running = self.running.lock().unwrap();
+        self.check_running()?;
+        let mode = input.mode.as_deref().unwrap_or("copy");
         let target = if mode == "copy" {
             format!("prj_{}", Uuid::new_v4().simple())
         } else {
@@ -701,7 +762,7 @@ impl LifecycleManager {
             return Err(error);
         }
         record.result = Some(json!({"targetProjectId":target}));
-        self.launch(journal, input, vec![lease]);
+        self.launch(&mut running, journal, input, vec![lease]);
         Ok(record)
     }
     pub async fn submit_trash(
@@ -709,6 +770,7 @@ impl LifecycleManager {
         trash_id: &str,
         kind: &str,
     ) -> Result<TaskRecord, ApiError> {
+        let mut running = self.running.lock().unwrap();
         self.check_running()?;
         let mut trash = self.read_trash(trash_id)?;
         if !matches!(kind, "restore" | "purge") {
@@ -758,10 +820,16 @@ impl LifecycleManager {
             return Err(error);
         }
         record.result = Some(json!({"targetProjectId":trash.project_id,"trashId":trash_id}));
-        self.launch(journal, Input::default(), vec![lease]);
+        self.launch(&mut running, journal, Input::default(), vec![lease]);
         Ok(record)
     }
-    fn launch(self: &Arc<Self>, mut journal: Journal, input: Input, leases: Vec<ProjectTaskLease>) {
+    fn launch(
+        self: &Arc<Self>,
+        running: &mut Vec<JoinHandle<()>>,
+        mut journal: Journal,
+        input: Input,
+        leases: Vec<ProjectTaskLease>,
+    ) {
         let manager = self.clone();
         let runner = tokio::spawn(async move {
             let mut result = manager.run(&mut journal, input).await;
@@ -802,7 +870,7 @@ impl LifecycleManager {
             }
             drop(leases);
         });
-        self.running.lock().unwrap().push(runner);
+        running.push(runner);
     }
     async fn run(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
         match journal.kind.as_str() {
@@ -1059,7 +1127,7 @@ impl LifecycleManager {
         self.notify(&id);
         let gate = self.store.gate(&id);
         let _guard = gate.write().await;
-        self.store.close_database(&id).await;
+        self.store.close_database(&id).await?;
         crate::source_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
         crate::data_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
         self.check_protection(&id, "", Some(&journal.task_id))?;
@@ -1201,7 +1269,7 @@ impl LifecycleManager {
         self.notify(&id);
         let gate = self.store.gate(&id);
         let guard = gate.write().await;
-        self.store.close_database(&id).await;
+        self.store.close_database(&id).await?;
         let (root, manifest) = self.store.metadata_root(&id)?;
         let trash_id = journal.trash_id.clone().unwrap();
         let mut state = control.get();
@@ -1494,7 +1562,11 @@ impl LifecycleManager {
         }
         result.map_err(|error| error.detail("childTaskId", task.task_id))
     }
-    pub async fn trash_list(&self) -> Result<Value, ApiError> {
+    pub async fn trash_list(self: &Arc<Self>) -> Result<Value, ApiError> {
+        self.owned_operation(|manager| async move { manager.trash_list_work().await })
+            .await
+    }
+    async fn trash_list_work(self: &Arc<Self>) -> Result<Value, ApiError> {
         let mut result = vec![];
         let root = self.paths.workspace_root().join(".platform/trash");
         check_no_symlinks(&root, true)?;
@@ -1510,7 +1582,7 @@ impl LifecycleManager {
                 continue;
             }
             match self.read_trash(&id) {
-                Ok(record) if active_trash(&record.state) => result.push(self.trash_info(&id).await?),
+                Ok(record) if active_trash(&record.state) => result.push(self.trash_info_work(&id).await?),
                 Ok(_) => {},
                 Err(error) => result.push(json!({"trashId":id,"state":"needsAttention","sizeBytes":null,"issues":[error]})),
             }
@@ -1518,7 +1590,12 @@ impl LifecycleManager {
         result.sort_by_key(|value| std::cmp::Reverse(value["deletedAt"].as_u64().unwrap_or(0)));
         Ok(json!(result))
     }
-    pub async fn trash_info(&self, id: &str) -> Result<Value, ApiError> {
+    pub async fn trash_info(self: &Arc<Self>, id: &str) -> Result<Value, ApiError> {
+        let id = id.to_owned();
+        self.owned_operation(move |manager| async move { manager.trash_info_work(&id).await })
+            .await
+    }
+    async fn trash_info_work(&self, id: &str) -> Result<Value, ApiError> {
         let record = self.read_trash(id)?;
         let project = self.trash_root(id)?.join("project");
         let root = project.clone();
@@ -1801,12 +1878,14 @@ impl LifecycleManager {
             json!({"projectId":journal.project_id,"trashId":journal.trash_id,"operationOutcome":"needs_attention","error":error}),
         )
     }
-    pub async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
+        let _submission = self.running.lock().unwrap();
         self.stopping.store(true, Ordering::Release);
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.running.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        crate::shutdown::join_all("lifecycle", runners).await
     }
 }
 

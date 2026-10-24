@@ -534,6 +534,7 @@ impl CleanupManager {
         }
     }
     pub(crate) fn preview(self: &Arc<Self>) -> Result<TaskRecord, ApiError> {
+        let mut running = self.running.lock().unwrap();
         self.ensure_running()?;
         self.store.check_workspace_available()?;
         let task = self
@@ -572,10 +573,11 @@ impl CleanupManager {
             .and_then(|result| result);
             let _ = manager.tasks.finish(&id, result);
         });
-        self.running.lock().unwrap().push(runner);
+        running.push(runner);
         Ok(task)
     }
     pub(crate) fn submit(self: &Arc<Self>, input: Value) -> Result<TaskRecord, ApiError> {
+        let mut running = self.running.lock().unwrap();
         self.ensure_running()?;
         let input: SubmitInput = serde_json::from_value(input)?;
         if !input.plan_id.starts_with("cleanup_plan_")
@@ -691,7 +693,7 @@ impl CleanupManager {
                 let _ = builds::atomic_json(&manager.receipt(&id).join("task.json"), &record);
             }
         });
-        self.running.lock().unwrap().push(runner);
+        running.push(runner);
         Ok(task)
     }
     pub(crate) fn latest_task(&self) -> Result<Option<TaskRecord>, ApiError> {
@@ -715,12 +717,14 @@ impl CleanupManager {
         records.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
         Ok(records.into_iter().next().map(|(_, _, task)| task))
     }
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
+        let _submission = self.running.lock().unwrap();
         self.stopping.store(true, Ordering::Release);
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.running.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        crate::shutdown::join_all("historyCleanup", runners).await
     }
     fn candidates(&self) -> Result<Vec<Candidate>, ApiError> {
         let mut items = vec![];

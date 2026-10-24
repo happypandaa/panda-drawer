@@ -430,6 +430,7 @@ pub struct ProjectStore {
     registration_lock: Mutex<()>,
     gates: Mutex<HashMap<String, Arc<RwLock<()>>>>,
     workers: Mutex<HashMap<String, Arc<DatabaseWorker>>>,
+    shutdown_issues: Mutex<Vec<crate::shutdown::ShutdownIssue>>,
     queue: Arc<QueueBudget>,
     stopping: AtomicBool,
     lifecycle_gate: RwLock<()>,
@@ -461,6 +462,7 @@ impl ProjectStore {
             registration_lock: Mutex::new(()),
             gates: Mutex::new(HashMap::new()),
             workers: Mutex::new(HashMap::new()),
+            shutdown_issues: Mutex::new(Vec::new()),
             queue: Arc::new(QueueBudget::default()),
             stopping: AtomicBool::new(false),
             lifecycle_gate: RwLock::new(()),
@@ -814,7 +816,7 @@ impl ProjectStore {
         project.diagnostic = epoch.is_none() && matches!(work, Work::Schema);
         project.validate_epoch(epoch)?;
         for attempt in 0..2 {
-            let worker = {
+            let (worker, retired) = {
                 let mut workers = self.workers.lock().unwrap();
                 self.accepting()?;
                 if self.workspace_paused() {
@@ -823,11 +825,20 @@ impl ProjectStore {
                             .outcome("not_started"),
                     );
                 }
-                if workers.get(id).is_none_or(|worker| worker.is_finished()) {
-                    workers.insert(id.into(), Arc::new(DatabaseWorker::spawn()?));
-                }
-                workers[id].clone()
+                let retired = if workers.get(id).is_none_or(|worker| worker.is_finished()) {
+                    workers.insert(id.into(), Arc::new(DatabaseWorker::spawn()?))
+                } else {
+                    None
+                };
+                (workers[id].clone(), retired)
             };
+            if let Some(worker) = retired {
+                let issues = self.join_database_workers(vec![worker]).await;
+                if issues.iter().any(|issue| !issue.resource_closed) {
+                    self.request_stop();
+                    return Err(database_close_error(&issues));
+                }
+            }
             let result = worker
                 .submit(
                     project.clone(),
@@ -843,12 +854,23 @@ impl ProjectStore {
                         && error.details["operationOutcome"] == "not_started"
                 })
             {
-                let mut workers = self.workers.lock().unwrap();
-                if workers
-                    .get(id)
-                    .is_some_and(|cached| Arc::ptr_eq(cached, &worker))
-                {
-                    workers.remove(id);
+                let retired = {
+                    let mut workers = self.workers.lock().unwrap();
+                    if workers
+                        .get(id)
+                        .is_some_and(|cached| Arc::ptr_eq(cached, &worker))
+                    {
+                        workers.remove(id)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(worker) = retired {
+                    let issues = self.join_database_workers(vec![worker]).await;
+                    if issues.iter().any(|issue| !issue.resource_closed) {
+                        self.request_stop();
+                        return Err(database_close_error(&issues));
+                    }
                 }
                 continue;
             }
@@ -1071,12 +1093,74 @@ impl ProjectStore {
             id: id.into(),
         })
     }
-    pub(crate) async fn close_database(&self, id: &str) {
+    #[cfg(test)]
+    pub(crate) fn fixture_panicked_database_worker(&self, id: &str) {
+        let project = self.project(id).unwrap();
+        let worker =
+            DatabaseWorker::fixture_panicked(project.root.join(&project.manifest.database));
+        assert!(self
+            .workers
+            .lock()
+            .unwrap()
+            .insert(id.into(), Arc::new(worker))
+            .is_none());
+    }
+    /// Inject a genuine failed SQLite join without opening a recovery-protected
+    /// live slot. The caller owns the separate disposable database fixture.
+    #[cfg(test)]
+    pub(crate) fn fixture_panicked_recovery_database_worker(&self, id: &str, database: PathBuf) {
+        assert!(!crate::data_restore_guard::inspect(&self.workspace, id)
+            .pending
+            .is_empty());
+        let worker = DatabaseWorker::fixture_panicked(database);
+        assert!(self
+            .workers
+            .lock()
+            .unwrap()
+            .insert(id.into(), Arc::new(worker))
+            .is_none());
+    }
+    pub(crate) async fn close_database(&self, id: &str) -> Result<(), ApiError> {
         let worker = self.workers.lock().unwrap().remove(id);
         if let Some(worker) = worker {
             worker.stop();
-            let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+            let issues = self.join_database_workers(vec![worker]).await;
+            if !issues.is_empty() {
+                return Err(database_close_error(&issues));
+            }
         }
+        Ok(())
+    }
+    async fn join_database_workers(
+        &self,
+        workers: Vec<Arc<DatabaseWorker>>,
+    ) -> Vec<crate::shutdown::ShutdownIssue> {
+        let issues = match tokio::task::spawn_blocking(move || {
+            workers
+                .into_iter()
+                .filter_map(|worker| {
+                    worker.join().err().map(|error| {
+                        crate::shutdown::ShutdownIssue::new(
+                            "database",
+                            "DATABASE_THREAD_JOIN_FAILED",
+                            error,
+                            true,
+                            false,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(issues) => issues,
+            Err(error) => vec![crate::shutdown::ShutdownIssue::join(
+                "databaseJoinWorker",
+                error,
+            )],
+        };
+        self.shutdown_issues.lock().unwrap().extend(issues.clone());
+        issues
     }
     /// Only maintenance orchestration calls this while holding the exclusive project gate.
     pub(crate) fn rebind(&self, id: &str, advance: bool) -> Result<String, ApiError> {
@@ -1148,7 +1232,7 @@ impl ProjectStore {
         self.workspace_cleaning.store(true, Ordering::Release);
         Ok(())
     }
-    pub(crate) async fn pause_workspace(&self) {
+    pub(crate) async fn pause_workspace(&self) -> Result<(), ApiError> {
         let _lifecycle = self.lifecycle_gate.write().await;
         self.workspace_paused.store(true, Ordering::Release);
         let workers = self
@@ -1161,12 +1245,12 @@ impl ProjectStore {
         for worker in &workers {
             worker.stop();
         }
-        let _ = tokio::task::spawn_blocking(move || {
-            for worker in workers {
-                worker.join();
-            }
-        })
-        .await;
+        let issues = self.join_database_workers(workers).await;
+        if !issues.is_empty() {
+            self.stopping.store(true, Ordering::Release);
+            return Err(database_close_error(&issues));
+        }
+        Ok(())
     }
     pub(crate) fn resume_workspace(&self) {
         self.workspace_paused.store(false, Ordering::Release);
@@ -2092,8 +2176,11 @@ impl ProjectStore {
         }
         self.write_lifecycle_registration_at(id, epoch, true, root)
     }
-    pub async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let _lifecycle = self.lifecycle_gate.write().await;
         let workers = self
             .workers
@@ -2105,13 +2192,17 @@ impl ProjectStore {
         for worker in &workers {
             worker.stop();
         }
-        let _ = tokio::task::spawn_blocking(move || {
-            for worker in workers {
-                worker.join();
-            }
-        })
-        .await;
+        self.join_database_workers(workers).await;
+        self.shutdown_issues.lock().unwrap().clone()
     }
+}
+
+fn database_close_error(issues: &[crate::shutdown::ShutdownIssue]) -> ApiError {
+    ApiError::new(
+        "DATABASE_CLOSE_FAILED",
+        "数据库线程未能确认正常关闭；保留实例与恢复现场",
+    )
+    .detail("shutdownIssues", serde_json::json!(issues))
 }
 
 enum ProjectOperation {

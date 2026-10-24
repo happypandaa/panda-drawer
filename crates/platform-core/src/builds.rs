@@ -641,12 +641,18 @@ impl BuildManager {
             .await
             .map_err(|error| ApiError::new("BUILD_CHECK_FAILED", error.to_string()))?
     }
-    pub async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
         self.git_stop.send_replace(true);
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
+        let mut issues = Vec::new();
         let runner = self.runner.lock().unwrap().take();
         if let Some(runner) = runner {
-            let _ = runner.await;
+            if let Err(error) = runner.await {
+                issues.push(crate::shutdown::ShutdownIssue::join("builds", error));
+            }
         }
         let ids = self
             .registry
@@ -658,14 +664,23 @@ impl BuildManager {
             .map(|record| record.task_id.clone())
             .collect::<Vec<_>>();
         for id in ids {
-            let _ = self.finish(
+            if let Err(error) = self.finish(
                 &id,
                 Err(ApiError::new(
                     "BUILD_INTERRUPTED",
                     "Platform shut down before this task finished",
                 )),
-            );
+            ) {
+                issues.push(crate::shutdown::ShutdownIssue::new(
+                    "builds",
+                    "SHUTDOWN_TASK_RECORD_FAILED",
+                    error.to_string(),
+                    true,
+                    false,
+                ));
+            }
         }
+        issues
     }
     pub(crate) fn append(&self, id: &str, bytes: &[u8]) -> Result<(), ApiError> {
         let _guard = self.log_lock.lock().unwrap();

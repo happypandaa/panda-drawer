@@ -230,7 +230,7 @@ impl NodeInstallTasks {
             }
         });
         let mut runners = self.runners.lock().unwrap();
-        runners.retain(|runner| !runner.is_finished());
+        // Preserve completed outcomes for the shutdown join; panic is not success.
         runners.push(runner);
         Ok(task)
     }
@@ -460,7 +460,7 @@ impl NodeInstallTasks {
         }
         Ok(task)
     }
-    pub async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
         {
             let _submission = self.submission.lock().unwrap();
             self.stopping.store(true, Ordering::Release);
@@ -468,10 +468,11 @@ impl NodeInstallTasks {
                 let _ = cancel.send(true);
             }
         }
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        let issues = crate::shutdown::join_all("nodeInstall", runners).await;
         loop {
             let drained = self.drained.notified();
             if self.active.lock().unwrap().is_empty() {
@@ -479,6 +480,7 @@ impl NodeInstallTasks {
             }
             drained.await;
         }
+        issues
     }
 }
 struct ActiveTask {

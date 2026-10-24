@@ -129,10 +129,16 @@ struct HttpState {
     stop: watch::Sender<bool>,
 }
 struct RuntimeSwitch {
+    shutdown_issues: Mutex<Vec<crate::shutdown::ShutdownIssue>>,
     io_lifetime: crate::io_lifetime::IoLifetime,
     current: StdRwLock<Option<Arc<HttpState>>>,
     router: StdRwLock<Router>,
     migration_runner: Mutex<Option<JoinHandle<()>>>,
+    migration_previous: Mutex<Vec<JoinHandle<()>>>,
+    migration_submission: Mutex<()>,
+    #[cfg(test)]
+    migration_registration_pause:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     closing: AtomicBool,
     migration_active: AtomicBool,
 }
@@ -1265,12 +1271,13 @@ impl RuntimeHandle {
             .map(|task| json!(task))
     }
 }
+#[path = "service_shutdown.rs"]
+mod shutdown_coordinator;
 pub struct RuntimeService {
     shared: Arc<RuntimeSwitch>,
-    shutdown: Option<oneshot::Sender<()>>,
-    task: Option<JoinHandle<std::io::Result<()>>>,
-    _lock: InstanceLock,
+    shutdown: Arc<shutdown_coordinator::RuntimeShutdown>,
 }
+
 impl RuntimeService {
     pub async fn start(paths: RuntimePaths, lock: InstanceLock) -> Result<Self> {
         Self::start_inner(paths, lock, None).await
@@ -1296,10 +1303,15 @@ impl RuntimeService {
         let listener = bind_loopback(paths.last_port()?).await?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(RuntimeSwitch {
+            shutdown_issues: Mutex::new(Vec::new()),
             io_lifetime: crate::io_lifetime::IoLifetime::default(),
             current: StdRwLock::new(None),
             router: StdRwLock::new(Router::new()),
             migration_runner: Mutex::new(None),
+            migration_previous: Mutex::new(Vec::new()),
+            migration_submission: Mutex::new(()),
+            #[cfg(test)]
+            migration_registration_pause: Mutex::new(None),
             closing: AtomicBool::new(false),
             migration_active: AtomicBool::new(false),
         });
@@ -1335,12 +1347,9 @@ impl RuntimeService {
                 })
                 .await
         });
-        Ok(Self {
-            shared,
-            shutdown: Some(shutdown),
-            task: Some(task),
-            _lock: lock,
-        })
+        let shutdown =
+            shutdown_coordinator::RuntimeShutdown::new(shared.clone(), shutdown, task, lock);
+        Ok(Self { shared, shutdown })
     }
     pub fn info(&self) -> BootstrapInfo {
         self.shared.snapshot().info.clone()
@@ -1357,85 +1366,25 @@ impl RuntimeService {
     pub async fn launch(&self, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
         launch(&self.shared.snapshot(), id)
     }
-    pub async fn shutdown(mut self) -> Result<()> {
-        self.shared.io_lifetime.seal();
-        self.shared.closing.store(true, Ordering::Release);
-        // Migration waits for source/project leases held by long-running work.
-        // Signal that work before awaiting migration, then let migration finish
-        // its durable commit/recovery path instead of aborting its runner.
-        let before_migration = self.shared.snapshot();
-        before_migration.stopping.store(true, Ordering::SeqCst);
-        let _ = before_migration.stop.send(true);
-        let migration = self.shared.migration_runner.lock().unwrap().take();
-        if let Some(task) = migration {
-            task.await.context("Workspace migration runner panicked")?;
-        }
-        // A committed migration may have installed a new state while we waited.
-        let state = self.shared.snapshot();
-        state.stopping.store(true, Ordering::SeqCst);
-        let _ = state.stop.send(true);
-        if let Some(signal) = self.shutdown.take() {
-            let _ = signal.send(());
-        }
-        loop {
-            let notified = state.drained.notified();
-            if state.active.load(Ordering::SeqCst) == 0 {
-                break;
-            }
-            notified.await;
-        }
-        self.shared.io_lifetime.drain().await;
-        state.storage.shutdown().await;
-        state.history_cleanup.shutdown().await;
-        state.lifecycle.shutdown().await;
-        state.maintenance.shutdown().await;
-        state.node_development.shutdown().await;
-        state.node_install.shutdown().await;
-        if let Ok(sources) = &state.source_acquisition {
-            sources.shutdown().await;
-        }
-        if let Ok(git) = &state.project_git {
-            git.shutdown().await;
-        }
-        state.builds.shutdown().await;
-        state.store.shutdown().await;
-        if let Some(mut task) = self.task.take() {
-            match tokio::time::timeout(Duration::from_secs(3), &mut task).await {
-                Ok(result) => result
-                    .context("Local HTTP service panicked")?
-                    .context("Local HTTP service failed")?,
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                }
-            }
-        }
-        state
-            .paths
-            .remove_runtime_if_owned(&state.info.instance_id, &state.token)
+    pub fn shutdown_status(&self) -> crate::shutdown::ShutdownReport {
+        self.shutdown.status()
+    }
+    pub fn begin_quiesce(&self) -> crate::shutdown::ShutdownReport {
+        self.shutdown.request()
+    }
+    pub async fn quiesce(&self) -> crate::shutdown::ShutdownReport {
+        self.shutdown.wait().await
+    }
+    pub async fn shutdown(self) -> Result<()> {
+        self.quiesce().await.into_result()
     }
 }
 impl Drop for RuntimeService {
     fn drop(&mut self) {
-        self.shared.io_lifetime.seal();
-        self.shared.closing.store(true, Ordering::Release);
-        let state = self.shared.snapshot();
-        state.stopping.store(true, Ordering::SeqCst);
-        let _ = state.stop.send(true);
-        if let Some(signal) = self.shutdown.take() {
-            let _ = signal.send(());
-        }
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-        if let Err(error) = state
-            .paths
-            .remove_runtime_if_owned(&state.info.instance_id, &state.token)
-        {
-            eprintln!("Development runtime cleanup failed: {error}");
-        }
+        self.shutdown.on_service_drop();
     }
 }
+
 fn runtime_router(state: Arc<HttpState>) -> Router {
     Router::new()
         .route("/healthz", get(health))
@@ -1641,6 +1590,9 @@ async fn submit_migration(
     state: Arc<HttpState>,
     input: crate::workspace::MigrationInput,
 ) -> std::result::Result<TaskRecord, ApiError> {
+    // Stop/seal and full admission-to-registration share one critical section.
+    // The outer submit has no await while this guard is held.
+    let _submission = shared.migration_submission.lock().unwrap();
     if shared.closing.load(Ordering::Acquire) {
         return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
     }
@@ -1698,8 +1650,12 @@ async fn submit_migration(
             crate::source_restore_guard::check_workspace_available(state.paths.workspace_root())?;
             crate::data_restore_guard::check_workspace_available(state.paths.workspace_root())?;
             crate::project_git::check_data_workspace_available(state.paths.workspace_root())?;
-            state.storage.quiesce().await;
-            state.store.pause_workspace().await;
+            let issues = state.storage.quiesce().await;
+            if !issues.is_empty() {
+                if let Some(shared) = state.shared.upgrade() { shared.shutdown_issues.lock().unwrap().extend(issues); }
+                return Err(ApiError::new("WORKSPACE_DRAIN_FAILED", "Storage did not close cleanly; migration is stopped"));
+            }
+            state.store.pause_workspace().await?;
             let mut guards = vec![];
             for project in state.store.list().await? {
                 if crate::projects::valid_id(&project.id) {
@@ -1763,19 +1719,11 @@ async fn submit_migration(
                 .map_err(|e| ApiError::new("WORKSPACE_REOPEN_FAILED", e.to_string()))?;
             shared.install(new.clone());
             let _ = state.stop.send(true);
-            state.storage.shutdown().await;
-            state.history_cleanup.shutdown().await;
-            state.lifecycle.shutdown().await;
-            state.maintenance.shutdown().await;
-            state.node_development.shutdown().await;
-            state.node_install.shutdown().await;
-            if let Ok(sources) = &state.source_acquisition {
-                sources.shutdown().await;
+            let issues = shutdown_coordinator::drain_managers(&state).await;
+            if !issues.is_empty() {
+                shared.shutdown_issues.lock().unwrap().extend(issues);
+                return Err(ApiError::new("WORKSPACE_DRAIN_FAILED", "Old workspace managers did not close cleanly; retained evidence requires attention"));
             }
-            if let Ok(git) = &state.project_git {
-                git.shutdown().await;
-            }
-            state.builds.shutdown().await;
             crate::workspace::mark_old_retired(&selected, &journal)?;
             for project in new.store.list().await? {
                 if let Some(resources) = &new.resources {
@@ -1840,7 +1788,19 @@ async fn submit_migration(
                     }
                 }
             } else {
-                state.store.pause_workspace().await;
+                if let Err(close_error) = state.store.pause_workspace().await {
+                    if let Some(shared) = state.shared.upgrade() {
+                        shared.shutdown_issues.lock().unwrap().push(
+                            crate::shutdown::ShutdownIssue::new(
+                                "migrationDatabase",
+                                "DATABASE_CLOSE_FAILED",
+                                close_error.to_string(),
+                                false,
+                                false,
+                            ),
+                        );
+                    }
+                }
             }
             let error = error
                 .clone()
@@ -1857,7 +1817,15 @@ async fn submit_migration(
             let _ = crate::workspace::finish(&state.paths, &id, outcome);
         }
     });
-    *shared.migration_runner.lock().unwrap() = Some(runner);
+    #[cfg(test)]
+    if let Some((entered, release)) = shared.migration_registration_pause.lock().unwrap().take() {
+        let _ = entered.send(());
+        let _ = release.recv();
+    }
+    if let Some(previous) = shared.migration_runner.lock().unwrap().replace(runner) {
+        // Completion is not success proof. Keep every earlier outcome joinable.
+        shared.migration_previous.lock().unwrap().push(previous);
+    }
     Ok(submitted)
 }
 

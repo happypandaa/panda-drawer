@@ -181,7 +181,7 @@ impl ProjectGitManager {
             let _ = sender.send(result);
         });
         let mut runners = self.runners.lock().unwrap();
-        runners.retain(|runner| !runner.is_finished());
+        // Preserve completed outcomes for the shutdown join; panic is not success.
         runners.push(runner);
         Ok(receiver)
     }

@@ -10,6 +10,10 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::sync::Notify;
+tokio::task_local! { static TRACKED_OPERATION: (); }
+pub(crate) fn in_tracked_operation() -> bool {
+    TRACKED_OPERATION.try_with(|_| ()).is_ok()
+}
 
 #[derive(Clone, Default)]
 pub struct IoLifetime(Arc<Inner>);
@@ -23,6 +27,7 @@ struct State {
     closing: bool,
     sealed: bool,
     active: usize,
+    panicked: bool,
     deferred: Vec<Weak<dyn Revoke>>,
 }
 trait Revoke: Send + Sync {
@@ -53,7 +58,7 @@ impl<T: FnOnce() -> R, R> TrackedIo<T> {
 impl<T: Future + Unpin> Future for TrackedIo<T> {
     type Output = T::Output;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.get_mut().resource).poll(cx)
+        TRACKED_OPERATION.sync_scope((), || Pin::new(&mut self.get_mut().resource).poll(cx))
     }
 }
 impl IoLease {
@@ -77,6 +82,9 @@ impl IoLease {
 impl Drop for IoLease {
     fn drop(&mut self) {
         let mut state = self.inner.state.lock().unwrap();
+        // The resource may have spawned nested work before unwinding. Its
+        // lease disappearing is not proof that all such resources are closed.
+        state.panicked |= std::thread::panicking();
         state.active -= 1;
         if state.active == 0 {
             self.inner.drained.notify_waiters();
@@ -129,6 +137,17 @@ impl IoLifetime {
         // destroying resources or waiting for their owners.
         for resource in deferred.into_iter().filter_map(|value| value.upgrade()) {
             resource.revoke();
+        }
+    }
+    pub(crate) fn shutdown_issues(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        if self.0.state.lock().unwrap().panicked {
+            vec![crate::shutdown::ShutdownIssue::new(
+                "nativeIo", "SHUTDOWN_IO_PANICKED",
+                "An owned native or response I/O task panicked; nested resource shutdown remains unconfirmed",
+                false, false,
+            )]
+        } else {
+            Vec::new()
         }
     }
     pub async fn drain(&self) {
