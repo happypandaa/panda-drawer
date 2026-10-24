@@ -808,7 +808,8 @@ impl NodeGit {
                 "目标源码与当前相同，未创建空操作。",
             ));
         }
-        let _lock = lock(root)?;
+        let operation_lock = Arc::new(lock(root)?);
+        context.retain(operation_lock);
         require_clear(root)?;
         verify_binding(root, &plan.binding)?;
         if raw_snapshot(root)? != plan.before {
@@ -962,7 +963,8 @@ impl NodeGit {
         mut checkpoint: impl FnMut(usize, bool) -> Result<(), ApiError>,
     ) -> Result<Value, ApiError> {
         let (mut context, _senders) = self.context()?;
-        let _lock = lock(root)?;
+        let operation_lock = Arc::new(lock(root)?);
+        context.retain(operation_lock);
         let state = guard_state(root);
         if !state.issues.is_empty()
             || state.pending.len() != 1

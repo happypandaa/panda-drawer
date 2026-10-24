@@ -16,10 +16,15 @@ pub struct NodeDevelopmentLease<'a> {
     _source_lease: crate::node_apps::NodeDevelopmentSourceLease<'a>,
     pub source: NodeDevelopmentSource,
     pub instance_id: String,
-    _task: crate::projects::ProjectTaskLease,
+    _task: Arc<crate::projects::ProjectTaskLease>,
     active: Active,
 }
 impl NodeDevelopmentLease<'_> {
+    // Retain only actual per-operation admission. Active/global I/O belong to
+    // the earlier service drain and must never be captured by a process G.
+    fn keep_alive(&self) -> Arc<dyn Send + Sync> {
+        Arc::new((self._task.clone(), self._source_lease.keep_alive()))
+    }
     pub fn validate(&self) -> std::result::Result<(), ApiError> {
         if self.active.0.stopping.load(Ordering::Acquire) {
             return Err(ApiError::new("SERVICE_STOPPING", "平台正在退出。"));
@@ -29,6 +34,23 @@ impl NodeDevelopmentLease<'_> {
         self.source.validate()
     }
 }
+// Post-action admission may change after the Git/filesystem commit point.
+// Preserve that actual receipt while retaining the validation error itself.
+fn finalize_node_git_result(
+    lease: &NodeDevelopmentLease<'_>,
+    result: Value,
+) -> std::result::Result<Value, ApiError> {
+    if let Err(issue) = lease.validate() {
+        let issue = if result["operationOutcome"] == "committed" {
+            issue.outcome("committed")
+        } else {
+            issue
+        };
+        return Err(issue.detail("result", result));
+    }
+    Ok(result)
+}
+
 impl RuntimeHandle {
     pub async fn node_development_lease<'a>(
         &self,
@@ -65,7 +87,7 @@ impl RuntimeHandle {
             _source_lease: source_lease,
             source,
             instance_id: state.info.instance_id.clone(),
-            _task: task,
+            _task: Arc::new(task),
             active,
         };
         lease.validate()?;
@@ -94,7 +116,7 @@ impl RuntimeHandle {
             _source_lease: source_lease,
             source,
             instance_id: state.info.instance_id.clone(),
-            _task: task,
+            _task: Arc::new(task),
             active,
         };
         lease.validate()?;
@@ -131,7 +153,8 @@ impl RuntimeHandle {
             self.node_development_lease(apps, app_id, editable).await?
         };
         let git = crate::node_development_git::NodeGit::new(lease.active.0.git_environment.clone())
-            .with_stop(lease.active.0.stop.subscribe());
+            .with_stop(lease.active.0.stop.subscribe())
+            .with_process_scope(lease.active.0.store.processes(), lease.keep_alive());
         let root = &lease.source.source_root;
         let scope = crate::node_development_git::NodeRestoreScope {
             app_id: app_id.into(),
@@ -177,8 +200,7 @@ impl RuntimeHandle {
                 Box::pin(git.restore_recover(root, &scope, input)).await?
             }
         };
-        lease.validate()?;
-        Ok(result)
+        finalize_node_git_result(&lease, result)
     }
     pub async fn node_development_handoff(
         &self,
@@ -214,3 +236,7 @@ impl RuntimeHandle {
         Ok(json!(self.current().node_development.cancel(task_id)?))
     }
 }
+
+#[cfg(test)]
+#[path = "service_node_git_owner_tests.rs"]
+mod owned_tests;

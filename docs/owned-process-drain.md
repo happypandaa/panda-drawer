@@ -76,3 +76,21 @@ registry 位于 `RuntimeSwitch`，实际工作区迁移前后共享同一 `Arc`�
 此独立增量的 Trial 专项 **21 通过、2 opt-in 忽略**（7.14 秒），NodeApps 既有/探针集合 **55 通过**（10.62 秒），新增 reader 失败产品接点精确回归 **1 通过**；两项配套 Node opt-in **2 通过**（12.25 秒），全工作区全目标严格 Clippy、格式和差异检查通过。人工 reader 暂停后进行实际文件写入，核对 Pending/丢等待者保留句柄再完成；人工 panic 核对不可丢弃的失败回执。该故障注入不代表真实操作系统阻塞 I/O、断电或逃逸后代控制验收。裸 Trial Drop 仍是原有 best-effort，尚未改写为通用进程 registry owner；产品不得用丢 Trial 代替 stop 的实际成功。
 
 Node/npm 开发工具探针另统一携带真实 `processResourceClosed`：回复错误时保留 ProcessRun，读取实际 phase/leader/group/I/O 状态；未闭合同时标 `operationOutcome=unknown`，供外层禁止清理或推进。新增实际输出 pipe 保持回归在停止后获得 Pending/false，确认真实 G 未释放，释放测试自建 pipe holder 后才完成 join。该 holder 自行结束，不向已脱组数字 PID 发信号，也不证明追踪脱组后代。环境命名选集 30 通过、2 忽略（3.06 秒，包含 Git 等子串匹配项），全工作区全目标严格 Clippy、格式及差异检查通过；没有改成新的全库结果。
+
+## Node 制作、安装与源码版本的当期归属
+
+Node 制作的两段 npm（ci、显式 build）和安装材料的 npm ci 使用 store 的同一 registry。`NodeProcessScope` 把当前 source/task owner 与经过身份核验、实际打开的候选 operation 目录 FD 交给每一个进程；目录是持久现场，未增加删除现场的 Drop。制作 G 实际保留 `Arc<ProjectTaskLease>`、实例源码 active token 和已有的 `Arc<NodeApps>`，安装 G 保留来源任务租约与 SourceAcquisitionManager。安装 stdout/stderr 各自完成日志写入后才结束，未保留旧的 reader 超时 abort 或数值 PGID Drop。
+
+`NodeDevelopmentSourceLease::keep_alive()` 是 core 内部可用的 `Arc<dyn Send + Sync>`，其实际对象拥有共享 `development_active` 集合和当前实例 ID；只有最后一个 owner 释放后才撤销此实例的 busy 状态，不延长借用生命周期或伪造 Arc。它不包含全局服务 I/O lease。源码绑定和内容校验仍沿用原有 lease；该令牌只延续本次操作的准入保护。
+
+两条 npm pipeline 只消费一次 ProcessRun 回复。Pending 后保留完整制作/prepare future，观察实际 Closed；此时 task 不提前结束，也不生成可安装结果。真实资源关闭后仍返回原失败，原程序、数据、配置及操作现场保持。Unknown/panic 保留 `processResourceClosed=false` 与 unknown 结果，禁止准备/发布，registry 持续持有实际 owner。工具解析先 await 实际 managed-tool 校验再检查停止，不通过 outer select 丢弃尚在执行的 blocking 校验。
+
+`NodeGit::with_process_scope(registry, owner)` 只绑定当前调用，所有 status、初始化、保存、版本列表、分支、源码取回预览/应用/恢复都从同一个 context 工厂继承。status 不把 PROCESS 错误或 `processResourceClosed=false` 降成“Git 不可用”后继续制作。IndexLock 的真实保留 FD、Arc RefLock 与取回 operation.guard FD 也进入 context owner；发送提交前保留锁，只有 safeAbort 或完整成功才能释放，收到提交确认但清理未确认时仍保留 committed 语义。服务入口须传同一 store registry、真实 task lease 和源码 token；本步给出窄接点，服务接线由主线单独整合检查。
+
+本步仅证明受管的普通同组进程及登记 I/O，未授予更新安装或桌面退出许可。受控 reader 暂停/故障在真实候选、日志和租约上验证保留，不作为系统挂死、断电、GUI、恶意换组逃逸或真实业务应用验收。精确执行结果及忽略项记入本步 ledger，完整产品退出仍以主线整合测试为准。
+
+本步独立副本实际检查：新增保护命名选集 **7 通过**；制作默认 **12 通过、1 忽略**，安装默认 **29 通过、2 忽略**，源码租约 **7 通过**，安装协调器 **18 通过、1 忽略**，Node Git 默认 **9 通过、3 忽略**。选集包含重复测试，不合计为独立总数。显式运行的真实 Git 版本/初始化/分支 **3 项**、真实源码取回 **1 项**，官方复制 Node/npm 的开发构建 **1 项**、安装 **2 项**、来源构建安装协调器 **1 项**均通过。严格 core 全目标 Clippy、格式检查通过；未在独立副本重复全核心或冷编译整个桌面工作区。
+
+原失败日志保留：新增夹具最初把临时平台根仅交给进程，Closed 后平台根随之销毁，已让测试本身另持有 fixture；随后 Node Git 夹具误把源码建在平台 data root、使用未 canonicalize 的 `/var` 测试路径，以及将已知 not_started 的 SERVICE_STOPPING 误当 PROCESS 错误，均修正为独立源码和真实无 I/O reactor 的 spawn 前失败回归。源码取回 opt-in 的第一次因独立副本尚未复制其硬编码的 Git SDK 目录而未进入操作；只补齐官方资源副本后同一测试通过。没有为让测试通过放松生产路径、来源锚、源码范围或恢复校验。
+
+主线于 2026-10-25 合入本步及[Node Git 服务接线](node-git-service-ownership.md)。主线新增保护选集 7 通过，制作 12 通过/1 忽略，安装 29 通过/2 忽略，Node Git 9 通过/3 忽略，安装协调器 18 通过/1 忽略；选集有重叠，不合计。另显式执行真实 Git 3 项、真实 npm 构建 1 项、服务接线全部 4 项（含两项真实 Git opt-in）均通过。服务用例实测公开迁移等待及完成、丢回复后原生 I/O 可先排空而进程继续保留源码和任务，以及已确认提交结果不被最后的停止校验吞掉。全工作区全目标严格 Clippy、格式与空白检查通过。本轮真实 npm 首次误用了另一套测试的环境变量，因缺少所需变量而在夹具选择处失败；按该测试声明改用 PLATFORM_TEST_NODE/NPM 后实际执行通过，原失败日志保留。仍无 GUI、正式签名包或更新安装结果。

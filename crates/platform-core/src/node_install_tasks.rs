@@ -210,14 +210,23 @@ impl NodeInstallTasks {
         let manager = self.clone();
         let task_id = task.task_id.clone();
         let runner = tokio::spawn(async move {
-            let _lease = lease;
+            let lease = Arc::new(lease);
             let _active = ActiveTask {
                 manager: manager.clone(),
                 task_id: task_id.clone(),
             };
-            let result = AssertUnwindSafe(
-                manager.run_prepare(&task_id, sources, input, target, stop, cancel),
-            )
+            let result = AssertUnwindSafe(manager.run_prepare(
+                &task_id,
+                sources.clone(),
+                input,
+                target,
+                stop,
+                cancel,
+                crate::node_development_build::NodeProcessScope::new(
+                    manager.store.processes(),
+                    Arc::new((lease, sources)),
+                ),
+            ))
             .catch_unwind()
             .await;
             let error = match result {
@@ -234,6 +243,7 @@ impl NodeInstallTasks {
         runners.push(runner);
         Ok(task)
     }
+    #[allow(clippy::too_many_arguments)]
     async fn run_prepare(
         &self,
         task_id: &str,
@@ -242,6 +252,7 @@ impl NodeInstallTasks {
         target: InstallTargetSnapshot,
         stop: watch::Receiver<bool>,
         cancel: watch::Receiver<bool>,
+        processes: crate::node_development_build::NodeProcessScope,
     ) -> Result<()> {
         let control = InstallControl::new(stop.clone(), cancel.clone());
         control.check()?;
@@ -277,11 +288,19 @@ impl NodeInstallTasks {
             ));
         }
         self.tasks.phase(task_id, "environment")?;
-        let tools = self.tasks.environment().resolve().await?;
+        // This includes managed-node blocking verification. Keep its owner and
+        // await actual completion before honoring cancellation/deadline.
+        let tools = self
+            .tasks
+            .environment()
+            .resolve_with_keepalive(processes.owner.clone())
+            .await
+            .map_err(crate::node_development_build::NodeProcessScope::resolution_error)?;
         control.check()?;
         let output = if requires_build {
             let git = crate::node_development_git::NodeGit::new(sources.git_environment())
-                .with_stop(stop.clone());
+                .with_stop(stop.clone())
+                .with_process_scope(processes.processes.clone(), processes.owner.clone());
             let before = git.status(&source_root).await?;
             if !before.scope.complete
                 || !before.scope.protected_tracked_paths.is_empty()
@@ -308,9 +327,16 @@ impl NodeInstallTasks {
                 stop,
                 cancel,
                 &before.scope.included_paths,
+                processes.clone(),
             )
             .await
-            .map_err(|issue| control.check().err().unwrap_or(issue))?;
+            .map_err(|issue| {
+                if issue.details["processResourceClosed"] == false {
+                    issue
+                } else {
+                    control.check().err().unwrap_or(issue)
+                }
+            })?;
             let after = git.status(&source_root).await?;
             if before.snapshot_digest != after.snapshot_digest
                 || serde_json::to_value(&before.repository.head)?
@@ -363,7 +389,15 @@ impl NodeInstallTasks {
         .with_revalidation(verifier);
         control.check()?;
         self.installer()?
-            .prepare(task_id, verified, target, tools, control, &self.tasks)
+            .prepare_with_scope(
+                task_id,
+                verified,
+                target,
+                tools,
+                control,
+                &self.tasks,
+                processes,
+            )
             .await?;
         Ok(())
     }
