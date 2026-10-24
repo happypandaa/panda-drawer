@@ -16,6 +16,12 @@
 
 2026-10-20 用户确认 Node 应用的可视化配置与作者说明需求，目标后端所需秘密凭据的管理纳入路线，见[配置草案](node-app-configuration.md)。系统凭据库、进程环境注入、归档绑定和保存后待重启等方案尚未逐项确认或实现；真实带 Key 运行前须先验收这些保护，不能仅凭 Node 已打包或表单可显示就开放。
 
+## 2026-10-24 发行信息确认
+
+用户确认首个正式发行版本为 **0.1.0**，下载文件和更新清单使用本项目的 GitHub Releases。继续按先核心流程／数据版本，再 Mac 发行与自动升级的顺序推进。当前版本号仍是开发版 0.0.0；不得只改一个界面便宣称 0.1.0 已发布。
+
+生产 Bundle ID 尚未确定；建议 `com.happypandaa.pandadrawer` 待用户确认。现有固定开发标识和数据根保持不变。用户有 Apple 开发者账号，但本机暂未发现 Developer ID Application 签名身份；站外正式发行仍按 [Apple Developer ID 与公证流程](https://developer.apple.com/developer-id/)准备该证书与公证，不将现有 Apple Development／Apple Distribution 当作替代。证书、公证与更新签名私钥不写入工程或聊天。
+
 ## 1 已确定的首版范围
 
 | 事项 | 确定方案与后续范围 | 理由 |
