@@ -88,7 +88,7 @@ impl ProjectResources {
 
 - Project ID: `{id}`. Do not change it or the storage paths in `project.json`.
 - Purpose and audience: describe the user's actual requirements here.
-- This is a development project. Use disposable test data in this isolated development environment. Full ZIP backup, maintenance and recovery are available via the CLI.
+- This is a development project. Use disposable test data in this isolated development environment. Source and explicitly selected data versions use the supported Git workflow. New ZIP backups and maintenance entry are retired; existing archives and maintenance retain their compatibility and recovery protections.
 
 ## Start here (for an external AI)
 
@@ -146,7 +146,7 @@ SQL input examples (save the JSON to the `--input` file):
 
 ## Metadata and storage
 
-Use `project metadata get --project {id} --json` to read the current `metadataRevision`, then `project metadata set --project {id} --input metadata.json --json` with that value as `expectedRevision`. Change only name, description or icon; resolve a revision conflict by reading the current values again. Pass the current maintenance ID when applicable. Metadata updates do not require a build. Custom PNG icons live in persistent `meta/`, never in generated `dist/`; keep them in full project backups.
+Use `project metadata get --project {id} --json` to read the current `metadataRevision`, then `project metadata set --project {id} --input metadata.json --json` with that value as `expectedRevision`. Change only name, description or icon; resolve a revision conflict by reading the current values again. Pass the current maintenance ID when applicable. Metadata updates do not require a build. Custom PNG icons live in persistent `meta/`, never in generated `dist/`; include them when explicitly exporting a complete project archive.
 
 Use `storage info/scan/files/cleanup --project {id}` and `workspace storage` for platform accounting. `scan` and `cleanup` return tasks; wait for the final result. `files` and `cleanup` accept `--input` JSON according to CLI help. Measurements are logical file sizes with timestamps, completeness and stale indicators; a missing or unreadable category is unknown, not zero. Cleanup accepts only the platform's explicitly supported regenerable cache categories. Do not use it to remove databases, attachments, meta, backups, recycle-bin contents or retained operation evidence. Inspect the candidate and result before reporting reclaimed bytes.
 
