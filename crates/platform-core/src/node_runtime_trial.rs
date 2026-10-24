@@ -164,16 +164,30 @@ impl ProcessOwnership {
         {
             // The unreaped leader pins this PID/PGID until disarm_before_reap.
             let result = unsafe { libc::kill(-(state.pid as i32), signal) };
-            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            let error = std::io::Error::last_os_error().raw_os_error();
+            if result != 0
+                && error != Some(libc::ESRCH)
+                && !(Self::check_owned(&mut state)?.is_some()
+                    && !group_has_other_members(state.pid)?)
+            {
                 return Err(fail(
                     "TRIAL_SIGNAL_FAILED",
                     "Could not signal the owned trial group",
-                ));
+                )
+                .detail("errno", serde_json::json!(error)));
             }
             #[cfg(test)]
             self.signals_sent.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
+    }
+
+    async fn signal_with_reobserve(&self, signal: i32) -> TrialResult<()> {
+        // signal() releases its std MutexGuard before the async retry yields.
+        // Drop retains the synchronous best-effort path; real stop owns this
+        // bounded future and keeps the original unreaped Child throughout.
+        crate::owned_process::retry_owned_signal("TRIAL_SIGNAL_FAILED", || self.signal(signal))
+            .await
     }
 
     fn has_descendants(&self) -> TrialResult<bool> {
@@ -953,9 +967,9 @@ impl NodeRuntimeTrial {
         }
         if self.ownership.observe()?.is_none() {
             self.status.forced = true;
-            self.ownership.signal(SIGNAL_TERM)?;
+            self.ownership.signal_with_reobserve(SIGNAL_TERM).await?;
             if !wait_for_owned_exit(&self.ownership, Duration::from_millis(250)).await? {
-                self.ownership.signal(SIGNAL_KILL)?;
+                self.ownership.signal_with_reobserve(SIGNAL_KILL).await?;
                 if !wait_for_owned_exit(&self.ownership, Duration::from_secs(2)).await? {
                     return Err(fail(
                         "TRIAL_STOP_FAILED",
@@ -977,10 +991,10 @@ impl NodeRuntimeTrial {
         // A clean main-process exit alone does not prove its ordinary children exited.
         let descendants_exited = if self.ownership.has_descendants()? {
             self.status.forced = true;
-            self.ownership.signal(SIGNAL_TERM)?;
+            self.ownership.signal_with_reobserve(SIGNAL_TERM).await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
             if self.ownership.has_descendants()? {
-                self.ownership.signal(SIGNAL_KILL)?;
+                self.ownership.signal_with_reobserve(SIGNAL_KILL).await?;
             }
             let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
             while self.ownership.has_descendants()? && tokio::time::Instant::now() < deadline {
@@ -1096,10 +1110,10 @@ async fn wait_for_owned_exit(ownership: &ProcessOwnership, timeout: Duration) ->
 
 async fn terminate_unexpected(ownership: &ProcessOwnership, stopping: &AtomicBool) {
     if !stopping.load(Ordering::Acquire) {
-        let _ = ownership.signal(SIGNAL_TERM);
+        let _ = ownership.signal_with_reobserve(SIGNAL_TERM).await;
         tokio::time::sleep(Duration::from_millis(250)).await;
         if !stopping.load(Ordering::Acquire) {
-            let _ = ownership.signal(SIGNAL_KILL);
+            let _ = ownership.signal_with_reobserve(SIGNAL_KILL).await;
         }
     }
 }
@@ -1125,6 +1139,10 @@ impl Drop for NodeRuntimeTrial {
         self.token.clear();
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "node_runtime_signal_tests.rs"]
+mod signal_reobserve_tests;
 
 #[cfg(test)]
 mod tests {

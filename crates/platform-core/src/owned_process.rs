@@ -26,6 +26,42 @@ use tokio::{
 mod group;
 use group::ProcessGroup;
 
+/// Re-observe a signal failure only while the caller keeps its original Child
+/// identity. Sleeping never proves closure; every attempt must independently
+/// enforce WNOWAIT/PGID ownership and fresh empty-group checks.
+pub(crate) async fn retry_owned_signal(
+    retry_code: &str,
+    mut attempt: impl FnMut() -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    const MAX_ATTEMPTS: u32 = 4;
+    let mut initial_errno = None;
+    for index in 1..=MAX_ATTEMPTS {
+        match attempt() {
+            Ok(()) => {
+                if index > 1 {
+                    eprintln!("Owned signal re-observed: code={retry_code}, initialErrno={initial_errno:?}, attempts={index}; resource closure still requires its own receipts");
+                }
+                return Ok(());
+            }
+            Err(error) if error.code == retry_code && index < MAX_ATTEMPTS => {
+                if initial_errno.is_none() {
+                    initial_errno = error.details["errno"].as_i64();
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            Err(error) => {
+                if initial_errno.is_none() {
+                    initial_errno = error.details["errno"].as_i64();
+                }
+                return Err(error
+                    .detail("signalObservationAttempts", index)
+                    .detail("initialSignalErrno", serde_json::json!(initial_errno)));
+            }
+        }
+    }
+    unreachable!("a bounded final attempt always returns")
+}
+
 /// The caller must independently retain unreaped-leader ownership throughout
 /// this inspection. This function alone never authorizes numeric signals.
 pub(crate) fn group_has_other_members(pid: u32) -> Result<bool, ApiError> {
@@ -639,13 +675,19 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                 cleanup_start = Some(Instant::now());
                 self.update(|m| m.phase = ProcessPhase::Stopping);
                 if resources.exit.is_none() {
-                    resources.group.signal(group::TERMINATE)?;
+                    retry_owned_signal("PROCESS_SIGNAL_FAILED", || {
+                        resources.group.signal(group::TERMINATE)
+                    })
+                    .await?;
                 }
             }
             if let Some(cleanup) = cleanup_start {
                 if resources.exit.is_none() {
                     if !killed && cleanup.elapsed() >= self.options.terminate_grace {
-                        resources.group.signal(group::KILL)?;
+                        retry_owned_signal("PROCESS_SIGNAL_FAILED", || {
+                            resources.group.signal(group::KILL)
+                        })
+                        .await?;
                         killed = true;
                     }
                     if let Some(observed) = resources.group.observe()? {
@@ -774,3 +816,7 @@ impl<T: Send + 'static, G: Send + 'static> ErasedRecord for Record<T, G> {
 #[cfg(test)]
 #[path = "owned_process_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "owned_process_signal_tests.rs"]
+mod signal_tests;
