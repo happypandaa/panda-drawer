@@ -69,7 +69,8 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
   if (Component === NodeAppsPanel && props.request !== null && props.request?.intent !== 'delete' && document.querySelector('[role=dialog]')) await click(byText('应用配置'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
-function input(name) { const metadata = fields.find((field) => field.name === name); const label = [...document.querySelectorAll('label')].find((element) => element.textContent === `${metadata.label}${metadata.required ? '必填' : '选填'}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
+function input(name) { const label = [...document.querySelectorAll('.node-field-label')].find((element) => element.textContent === `设置 ${name}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
+function byLabel(label) { return [...document.querySelectorAll('[aria-label]')].find((element) => element.getAttribute('aria-label') === label); }
 async function change(element, value) {
   assert.ok(element);
   await act(async () => {
@@ -393,17 +394,345 @@ test('Configuration reads show only secret presence, declarations and defaults w
   await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); }));
   assert.equal(input('AI_KEY').type, 'password');
   assert.equal(input('AI_KEY').value, '');
-  assert.match(document.body.textContent, /已设置 · 保存值不会显示/);
-  assert.match(document.body.textContent, /每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写/);
+  assert.equal(input('AI_KEY').placeholder, '已设置，留空保留');
+  assert.doesNotMatch(document.querySelector('.node-configuration-form').textContent, /必填|选填|人工说明|人工步骤/);
+  await click(byLabel('配置与密钥说明'));
+  assert.match(document.querySelector('.node-field-help-modal').textContent, /每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写/);
+  await click(byLabel('关闭配置与密钥说明'));
   assert.doesNotMatch(document.body.textContent, /系统凭据库|钥匙串|加密保存/);
   assert.equal(input('MODEL').value, '');
   assert.equal(input('MODEL').placeholder, 'test-model');
-  assert.match(document.body.textContent, /留空使用作者默认值/);
+  await click(byLabel('设置 MODEL说明'));
+  assert.match(document.querySelector('.node-field-help-modal').textContent, /留空使用默认值：test-model/);
+  await click(byLabel('关闭设置 MODEL说明'));
   assert.equal(input('ENABLED').tagName, 'SELECT');
   assert.equal(input('LIMIT').type, 'number');
   assert.deepEqual(calls, []);
+  await click(byLabel('设置 AI_KEY说明'));
   await click(byText('打开官方说明'));
   assert.deepEqual(calls, [['node_app_open_help', { appId: 'node_fixture', fieldName: 'AI_KEY' }]]);
+});
+
+test('Every declared field has one labelled control and help is offered only when available', async () => {
+  const value = app({ fields: [...fields, field('PLAIN', 'string', { description: '', howToGet: [] })] });
+  await setup(baseMock(value, async (command) => { throw new Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+  const rows = [...document.querySelectorAll('.node-config-row')];
+  assert.equal(rows.length, value.fields.length);
+  for (const declaration of value.fields) {
+    const control = input(declaration.name);
+    const row = control.closest('.node-config-row');
+    assert.equal(row.querySelectorAll('.node-field-label').length, 1);
+    assert.equal(row.querySelectorAll('input, select').length, 1);
+    assert.equal(row.querySelector('.node-field-label').htmlFor, control.id);
+    assert.equal(control.getAttribute('aria-required'), String(declaration.required));
+  }
+  assert.equal(byLabel('设置 PLAIN说明'), undefined);
+  assert.equal(byLabel('设置 AI_KEY说明').getAttribute('aria-haspopup'), 'dialog');
+  assert.equal(byLabel('移除此应用的密钥').textContent, '');
+  assert.doesNotMatch(document.querySelector('.node-configuration-form').textContent, /必填|选填|人工说明|人工步骤/);
+});
+
+test('Field explanations open on request and closing them preserves both ordinary and secret drafts', async () => {
+  const calls = [];
+  await setup(baseMock(app(), async (command) => { calls.push(command); throw new Error(command); }));
+  await change(input('MODEL'), 'unsaved model for explanation');
+  await change(input('AI_KEY'), 'artificial-help-draft-key');
+  assert.doesNotMatch(document.body.textContent, /人工说明 AI_KEY|人工步骤 AI_KEY/);
+  await click(byLabel('设置 AI_KEY说明'));
+  const explanation = document.querySelector('.node-field-help-modal');
+  assert.match(explanation.textContent, /人工说明 AI_KEY/);
+  assert.match(explanation.textContent, /人工步骤 AI_KEY/);
+  assert.doesNotMatch(explanation.textContent, /artificial-help-draft-key/);
+  assert.equal(explanation.getAttribute('role'), 'dialog');
+  await click(byLabel('关闭设置 AI_KEY说明'));
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  assert.equal(input('MODEL').value, 'unsaved model for explanation');
+  assert.equal(input('AI_KEY').value, 'artificial-help-draft-key');
+  assert.deepEqual(calls, []);
+});
+
+test('Escape closes only the explanation and returns keyboard focus to its information button', async () => {
+  await setup(baseMock(app(), async (command) => { throw new Error(command); }));
+  await change(input('MODEL'), 'keep this draft after Escape');
+  const trigger = byLabel('设置 MODEL说明');
+  await act(async () => trigger.focus());
+  await click(trigger);
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 2);
+  assert.ok(document.querySelector('.node-field-help-modal').contains(document.activeElement));
+  await act(async () => document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  assert.equal(document.querySelector('[aria-label="关闭配置确认"]'), null);
+  assert.equal(document.activeElement, trigger);
+  assert.equal(input('MODEL').value, 'keep this draft after Escape');
+});
+
+test('A changed service instance closes its explanation and resets touched errors while preserving the configuration draft', async () => {
+  const value = app();
+  const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
+  await setup(baseMock(value, async command => { throw new Error(command); }), props);
+  await change(input('AI_URL'), 'http://artificial.invalid');
+  await act(async () => { input('AI_URL').focus(); input('AI_URL').blur(); });
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), 'true');
+  await change(input('AI_KEY'), 'artificial-instance-draft');
+  await click(byLabel('设置 AI_KEY说明'));
+  assert.ok(document.querySelector('.node-field-help-modal'));
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(input('AI_URL').value, 'http://artificial.invalid');
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), null);
+  assert.equal(input('AI_KEY').value, 'artificial-instance-draft');
+  assert.equal(document.activeElement.closest('[hidden], [inert]'), null);
+});
+
+test('Selecting another app never carries its explanation or invalid required fields into the next configuration', async () => {
+  const first = app({ configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false } });
+  const second = app({ id: 'node_second', name: 'Second artificial fixture' });
+  const props = { enabled: true, instanceId: 'same', onDraftStateChange() {}, request: { app: first, intent: 'details', token: 1 } };
+  await setup(async (command, args) => {
+    if (command === 'node_app_configuration') return args.appId === first.id ? first : second;
+    throw new Error(command);
+  }, props);
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
+  await click(byLabel('设置 AI_KEY说明'));
+  assert.ok(document.querySelector('.node-field-help-modal'));
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, request: { app: second, intent: 'details', token: 2 } })));
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
+  await click(byText('应用配置'));
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), null);
+  assert.equal(input('AI_KEY').value, '');
+  assert.equal(input('MODEL').value, '');
+});
+
+test('An entry failure switches away from configuration and unmounts its explanation without losing the draft or parent close guard', async () => {
+  const entered = deferred(); const calls = [];
+  const value = app({ state: 'running', runningRevision: 1 });
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_open');
+    return entered.promise;
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await change(input('MODEL'), 'draft retained after entry failure');
+  assert.equal(byText('进入项目').disabled, false, 'Returning to an already running app does not need to apply this draft');
+  await click(byText('进入项目'));
+  assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
+  assert.equal(input('MODEL').disabled, true);
+  await click(byLabel('设置 MODEL说明'));
+  const explanation = document.querySelector('.node-field-help-modal');
+  assert.ok(explanation);
+  assert.equal(explanation.closest('[hidden]'), null);
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 2);
+  assert.ok(explanation.contains(document.activeElement));
+
+  await act(async () => entered.reject(new Error('Artificial entry focus failure')));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  assert.equal(document.querySelector('.node-field-help-modal'), null, 'A hidden configuration panel cannot retain a child modal on the stack');
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.match(document.querySelector('[role=alert]').textContent, /Artificial entry focus failure/);
+  assert.equal(document.activeElement.closest('[hidden], [inert]'), null);
+  await click(byText('应用配置'));
+  assert.equal(document.querySelector('.node-field-help-modal'), null, 'Returning to configuration does not reopen the previous explanation');
+  assert.equal(input('MODEL').value, 'draft retained after entry failure');
+  assert.equal(input('MODEL').disabled, false);
+  await act(async () => document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  assert.ok(byLabel('关闭配置确认'));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  assert.equal(input('MODEL').value, 'draft retained after entry failure');
+  assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
+});
+
+test('Missing required fields use invalid controls while an incomplete configuration remains saveable', async () => {
+  const calls = [];
+  const configuration = { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY', 'REQUIRED'], canStart: false };
+  const value = app({ fields: [...fields, field('REQUIRED', 'string', { required: true })], configuration });
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_configuration_save');
+    return { ...value, configuration: { ...configuration, revision: 2, values: { MODEL: 'partial draft' } } };
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
+  assert.equal(input('REQUIRED').getAttribute('aria-invalid'), 'true');
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), null);
+  assert.equal(input('ENABLED').getAttribute('aria-invalid'), null);
+  assert.equal(input('AI_KEY').checkValidity(), true, 'Missing values do not use a blocking native constraint');
+  await change(input('MODEL'), 'partial draft');
+  await submit();
+  assert.deepEqual(calls, [['node_app_configuration_save', { appId: value.id, input: { revision: 1, values: { MODEL: 'partial draft' }, secrets: { AI_KEY: { action: 'keep' } } } }]]);
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
+  assert.equal(input('REQUIRED').getAttribute('aria-invalid'), 'true');
+  assert.doesNotMatch(document.querySelector('.node-configuration-form').textContent, /必填|选填/);
+});
+
+test('A malformed URL is highlighted on blur, blocks native save and focuses its field until corrected', async () => {
+  const calls = [];
+  const configuration = { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false };
+  const value = app({ configuration });
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    return { ...value, configuration: { ...configuration, revision: 2, values: { AI_URL: args.input.values.AI_URL } } };
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await change(input('AI_URL'), 'https://user:password@example.invalid/api');
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), null, 'Untouched draft errors are quiet until interaction');
+  await act(async () => { input('AI_URL').focus(); input('AI_URL').blur(); });
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), 'true');
+  assert.match(document.getElementById(input('AI_URL').getAttribute('aria-describedby')).textContent, /HTTPS 地址/);
+  await submit();
+  assert.deepEqual(calls, []);
+  assert.equal(document.activeElement, input('AI_URL'));
+  let invalidUrlValid;
+  await act(async () => { invalidUrlValid = input('AI_URL').checkValidity(); });
+  assert.equal(invalidUrlValid, false);
+  await change(input('AI_URL'), 'https://corrected.example.invalid/api');
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), null);
+  assert.equal(input('AI_URL').checkValidity(), true);
+  await submit();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'node_app_configuration_save');
+  assert.deepEqual(calls[0][1].input.values, { AI_URL: 'https://corrected.example.invalid/api' });
+});
+
+test('Unsafe or fractional integers are rejected before save and correcting to zero clears the field error', async () => {
+  const calls = [];
+  await setup(baseMock(app(), async (command, args) => {
+    calls.push([command, args]);
+    return app({ configuration: { revision: 2, values: { LIMIT: 0 }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } });
+  }));
+  for (const invalid of ['9007199254740993', '1.5']) {
+    await change(input('LIMIT'), invalid);
+    await submit();
+    assert.deepEqual(calls, []);
+    assert.equal(document.activeElement, input('LIMIT'));
+    assert.equal(input('LIMIT').getAttribute('aria-invalid'), 'true');
+    assert.match(document.getElementById(input('LIMIT').getAttribute('aria-describedby')).textContent, /整数/);
+  }
+  await change(input('LIMIT'), '0');
+  assert.equal(input('LIMIT').getAttribute('aria-invalid'), null);
+  assert.equal(input('LIMIT').checkValidity(), true);
+  await submit();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0][1].input.values, { LIMIT: 0 });
+});
+
+// jsdom sanitizes unfinished numeric text immediately and cannot reproduce a
+// browser's native badInput flag. Override that one observation while preserving
+// its real ValidityState, including customError set by the form.
+for (const clearEvent of ['input', 'submit']) {
+  test(`An unfinished numeric entry can be cleared with unchanged empty value and saved using its default (${clearEvent})`, async () => {
+    const calls = [];
+    await setup(baseMock(app(), async (command, args) => {
+      calls.push([command, args]);
+      assert.equal(command, 'node_app_configuration_save');
+      return app({ configuration: { revision: 2, values: { MODEL: 'draft for native numeric validation' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } });
+    }));
+    await change(input('MODEL'), 'draft for native numeric validation');
+    const number = input('LIMIT');
+    const nativeValidity = number.validity;
+    let badInput = true;
+    Object.defineProperty(number, 'validity', {
+      configurable: true,
+      get: () => new Proxy(nativeValidity, {
+        get: (target, key) => key === 'badInput' ? badInput : Reflect.get(target, key, target),
+      }),
+    });
+    assert.equal(number.value, '');
+    await act(async () => number.dispatchEvent(new window.Event('input', { bubbles: true })));
+    await submit();
+    assert.deepEqual(calls, []);
+    assert.equal(number.getAttribute('aria-invalid'), 'true');
+    assert.equal(document.activeElement, number);
+    assert.equal(number.validity.customError, true);
+    const invalid = new window.Event('invalid', { cancelable: true });
+    await act(async () => number.dispatchEvent(invalid));
+    assert.equal(invalid.defaultPrevented, true, 'The field uses one accessible inline error without an extra native bubble');
+
+    badInput = false;
+    // The DOM value stays empty when an unfinished sign/exponent is erased, so
+    // React onChange may be skipped. Neither recovery path may trust that cache.
+    assert.equal(number.value, '');
+    if (clearEvent === 'input') {
+      await act(async () => number.dispatchEvent(new window.Event('input', { bubbles: true })));
+      assert.equal(number.getAttribute('aria-invalid'), null);
+      assert.equal(number.validity.customError, false);
+    }
+    await submit();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0][1].input.values, { MODEL: 'draft for native numeric validation' });
+    assert.equal(Object.hasOwn(calls[0][1].input.values, 'LIMIT'), false, 'Clearing uses the declared default instead of saving an unfinished number');
+    assert.equal(input('LIMIT').getAttribute('aria-invalid'), null);
+    assert.equal(input('LIMIT').validity.customError, false);
+  });
+}
+
+test('Explicitly rereading an unchanged revision replaces invalid browser input without starting or saving the app', async () => {
+  const value = app(); const calls = [];
+  await setup(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_app_list') return [value];
+    if (command === 'node_app_configuration') return value;
+    throw new Error(command);
+  });
+  const number = input('LIMIT');
+  const nativeValidity = number.validity;
+  Object.defineProperty(number, 'validity', {
+    configurable: true,
+    get: () => new Proxy(nativeValidity, {
+      get: (target, key) => key === 'badInput' ? true : Reflect.get(target, key, target),
+    }),
+  });
+  await act(async () => {
+    number.dispatchEvent(new window.Event('input', { bubbles: true }));
+    number.focus();
+    number.blur();
+  });
+  assert.equal(number.value, '', 'An unfinished numeric entry can expose the same empty semantic value');
+  assert.equal(number.getAttribute('aria-invalid'), 'true');
+  assert.equal(number.validity.customError, true);
+  assert.equal(byText('保存配置').disabled, true, 'Native invalid text alone is not an ordinary draft change');
+  await click(byText('重新读取配置'));
+  assert.equal(document.querySelector('[aria-label="重新读取配置确认"]'), null);
+  const reloaded = input('LIMIT');
+  assert.notEqual(reloaded, number);
+  assert.equal(number.isConnected, false);
+  assert.equal(reloaded.value, '');
+  assert.equal(reloaded.getAttribute('aria-invalid'), null);
+  assert.equal(reloaded.validity.badInput, false);
+  assert.equal(reloaded.validity.customError, false);
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 2);
+  assert.equal(calls.some(([command]) => ['node_app_start', 'node_app_open', 'node_app_restart', 'node_app_configuration_save'].includes(command)), false);
+});
+
+test('Read-only explanations remain available and close normally while an official help request is pending', async () => {
+  const opened = deferred(); const calls = [];
+  await setup(baseMock(app(), async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_open_help');
+    return opened.promise;
+  }));
+  await change(input('MODEL'), 'draft retained while reading');
+  await click(byLabel('设置 AI_KEY说明'));
+  await click(byText('打开官方说明'));
+  assert.equal(input('MODEL').disabled, true);
+  assert.equal(byLabel('关闭Disposable Node fixture').disabled, true);
+  assert.equal(byText('打开官方说明').disabled, true, 'A help read cannot start a competing native operation');
+  assert.equal(byLabel('关闭设置 AI_KEY说明').disabled, false);
+  await click(byLabel('关闭设置 AI_KEY说明'));
+  assert.equal(document.querySelector('.node-field-help-modal'), null);
+  await click(byLabel('配置与密钥说明'));
+  assert.equal(byLabel('关闭配置与密钥说明').disabled, false);
+  await act(async () => document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(byLabel('关闭Disposable Node fixture').disabled, true);
+  assert.equal(input('MODEL').value, 'draft retained while reading');
+  assert.deepEqual(calls, [['node_app_open_help', { appId: 'node_fixture', fieldName: 'AI_KEY' }]]);
+  await act(async () => opened.resolve());
+  assert.equal(input('MODEL').disabled, false);
+  assert.equal(input('MODEL').value, 'draft retained while reading');
 });
 
 test('Machine values and credentials disable capitalization, autocorrection and spellcheck', async () => {
@@ -431,13 +760,22 @@ test('Save keeps false and zero, omits empty ordinary values, clears accepted se
 
 test('Removing a saved key requires an explicit action; a blank password keeps it', async () => {
   const calls = [];
-  await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); return app({ configuration: { revision: 2, values: { MODEL: 'manual-model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } }); }));
+  await setup(baseMock(app(), async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_configuration_save');
+    const removed = args.input.secrets.AI_KEY.action === 'unbind';
+    return app({ configuration: { revision: calls.length + 1, values: { MODEL: 'manual-model' }, secretStatus: { AI_KEY: removed ? 'missing' : 'set' }, missingRequired: removed ? ['AI_KEY'] : [], canStart: !removed } });
+  }));
   await change(input('MODEL'), 'manual-model'); await submit();
   assert.deepEqual(calls[0][1].input.secrets, { AI_KEY: { action: 'keep' } });
-  await click(byText('移除此应用的密钥'));
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), null, 'A stored required key does not need to be typed again');
+  await click(byLabel('移除此应用的密钥'));
   assert.equal(input('AI_KEY').disabled, true);
   await submit();
   assert.deepEqual(calls[1][1].input.secrets, { AI_KEY: { action: 'unbind' } });
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
+  assert.equal(input('AI_KEY').disabled, false, 'A required key can be supplied again after removal is saved');
+  assert.equal(input('AI_KEY').value, '');
 });
 
 test('A changed endpoint needs an explicit rebind, and editing the target again clears that confirmation', async () => {
@@ -447,9 +785,13 @@ test('A changed endpoint needs an explicit rebind, and editing the target again 
   const checkbox = () => document.querySelector('.node-endpoint-confirmation input[type="checkbox"]');
   assert.ok(checkbox()); assert.equal(checkbox().checked, false);
   await submit();
-  assert.deepEqual(calls[0][1].input.secrets, { AI_KEY: { action: 'keep' } });
-  await click(checkbox()); await submit();
-  assert.deepEqual(calls[1][1].input.secrets, { AI_KEY: { action: 'rebind' } });
+  assert.equal(calls.length, 0, 'An unconfirmed credential target is rejected before any native save');
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
+  assert.equal(document.activeElement, input('AI_KEY'));
+  await click(checkbox());
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), null);
+  await submit();
+  assert.deepEqual(calls[0][1].input.secrets, { AI_KEY: { action: 'rebind' } });
   await change(input('AI_URL'), 'https://third.example.invalid/api');
   assert.equal(checkbox().checked, false);
   assert.equal(input('AI_URL').value, 'https://third.example.invalid/api');
@@ -508,7 +850,10 @@ test('Closing an app sends one stop request and returns the manager to its unope
 test('Incomplete required configuration blocks opening an application and identifies the field to finish', async () => {
   await setup(baseMock(app({ configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false } }), async (command) => { throw new Error(command); }));
   assert.equal(byText('进入项目').disabled, false);
-  assert.match(document.querySelector('.node-config-warning').textContent, /请先配置：设置 AI_KEY/);
+  assert.equal(document.querySelector('.node-config-warning'), null);
+  assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
+  assert.match(document.getElementById(input('AI_KEY').getAttribute('aria-describedby')).textContent, /请填写此项/);
+  assert.equal(input('AI_URL').getAttribute('aria-invalid'), null, 'A required default address is already complete');
   await click(byText('进入项目'));
 });
 
@@ -753,6 +1098,105 @@ test('Input conversion refuses unsafe integers and preserves an explicit false v
   const value = app();
   assert.throws(() => nodeConfigurationInput(value, { ordinary: { LIMIT: '9007199254740993' }, secrets: {} }), /精确保存的整数/);
   assert.deepEqual(nodeConfigurationInput(value, { ordinary: { LIMIT: '0', ENABLED: 'false', MODEL: ' ' }, secrets: {} }), { revision: 1, values: { LIMIT: 0, ENABLED: false }, secrets: { AI_KEY: { action: 'keep' } } });
+});
+
+test('A late configuration read from an old service instance cannot replace the same app draft or leak its error', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const value = app(); const delayed = deferred(); const changes = []; let reads = 0;
+    const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, onAppChanged: item => changes.push(item), request: { app: value, intent: 'details', token: 1 } };
+    await setup(async (command) => {
+      assert.equal(command, 'node_app_configuration');
+      return ++reads === 1 ? delayed.promise : value;
+    }, props);
+    assert.equal(document.querySelector('.node-app-detail').getAttribute('aria-busy'), 'true');
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+    assert.equal(document.querySelector('.node-app-detail').getAttribute('aria-busy'), 'false');
+    await click(byText('应用配置'));
+    await change(input('MODEL'), 'current instance model');
+    await change(input('AI_KEY'), 'artificial-current-instance-key');
+    const count = changes.length;
+    await act(async () => outcome === 'resolve'
+      ? delayed.resolve(app({ name: 'Old service result', configuration: { revision: 99, values: { MODEL: 'old-service-model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } }))
+      : delayed.reject(new Error('Artificial old read error')));
+    assert.equal(changes.length, count);
+    assert.equal(input('MODEL').value, 'current instance model');
+    assert.equal(input('AI_KEY').value, 'artificial-current-instance-key');
+    assert.doesNotMatch(document.body.textContent, /Old service result|old-service-model|Artificial old read error/);
+    assert.equal(reads, 1, 'An instance change never replays a configuration read');
+    await click(byText('重新读取配置')); await click(byText('丢弃草稿并重新读取'));
+    assert.equal(reads, 2);
+    assert.equal(input('MODEL').value, ''); assert.equal(input('AI_KEY').value, '');
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('A save crossing a service-instance change remains single-flight and ignores its late result without discarding the draft', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const value = app(); const delayed = deferred(); const changes = []; const writes = []; const states = [];
+    const props = { enabled: true, instanceId: 'old', onDraftStateChange: item => states.push(item), onAppChanged: item => changes.push(item), request: { app: value, intent: 'details', token: 1 } };
+    await setup(baseMock(value, async (command, args) => {
+      assert.equal(command, 'node_app_configuration_save'); writes.push(args);
+      if (writes.length === 1) return delayed.promise;
+      throw new Error('Artificial explicit retry conflict');
+    }), props);
+    await change(input('MODEL'), 'draft across instance change');
+    await change(input('AI_KEY'), 'artificial-cross-instance-key');
+    await submit();
+    assert.equal(writes.length, 1);
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
+    assert.equal(input('MODEL').disabled, true);
+    assert.equal(byText('保存中…').disabled, true);
+    assert.deepEqual(states.at(-1), { dirty: true, pending: true });
+    await submit();
+    assert.equal(writes.length, 1, 'Pending native writes remain single-flight across an instance change');
+    const count = changes.length;
+    await act(async () => outcome === 'resolve'
+      ? delayed.resolve(app({ configuration: { revision: 99, values: { MODEL: 'late-saved-value' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } }))
+      : delayed.reject(new Error('Artificial old save error')));
+    assert.equal(changes.length, count);
+    assert.equal(input('MODEL').disabled, false);
+    assert.equal(input('MODEL').value, 'draft across instance change');
+    assert.equal(input('AI_KEY').value, 'artificial-cross-instance-key');
+    assert.deepEqual(states.at(-1), { dirty: true, pending: false });
+    assert.doesNotMatch(document.body.textContent, /late-saved-value|Artificial old save error|配置已保存/);
+    assert.equal(writes.length, 1, 'No write is replayed automatically');
+    await submit();
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].input.revision, 1);
+    assert.equal(writes[1].input.values.MODEL, 'draft across instance change');
+    assert.deepEqual(writes[1].input.secrets.AI_KEY, { action: 'replace', value: 'artificial-cross-instance-key' });
+    assert.match(document.querySelector('[role=alert]').textContent, /Artificial explicit retry conflict/);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('A configuration read with another application identity never replaces metadata or publishes that result', async () => {
+  const value = app(); const changes = [];
+  await setup(async command => {
+    assert.equal(command, 'node_app_configuration');
+    return app({ id: 'another-app', name: 'Unrelated app returned by fixture' });
+  }, { request: { app: value, intent: 'details', token: 1 }, onAppChanged: item => changes.push(item) });
+  assert.match(document.querySelector('[role=alert]').textContent, /应用身份不符/);
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, value.name);
+  assert.doesNotMatch(document.body.textContent, /Unrelated app returned by fixture/);
+  assert.deepEqual(changes, []);
+});
+
+test('A mismatched save result preserves ordinary and secret drafts and never claims the configuration was saved', async () => {
+  const changes = [];
+  await setup(baseMock(app(), async command => {
+    assert.equal(command, 'node_app_configuration_save');
+    return app({ id: 'another-app', configuration: { revision: 99, values: { MODEL: 'unrelated saved model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } });
+  }), { onAppChanged: item => changes.push(item) });
+  const count = changes.length;
+  await change(input('MODEL'), 'my model after mismatched save');
+  await change(input('AI_KEY'), 'artificial-mismatched-save-key');
+  await submit();
+  assert.equal(changes.length, count);
+  assert.match(document.querySelector('[role=alert]').textContent, /应用身份不符/);
+  assert.equal(input('MODEL').value, 'my model after mismatched save');
+  assert.equal(input('AI_KEY').value, 'artificial-mismatched-save-key');
+  assert.doesNotMatch(document.body.textContent, /unrelated saved model|配置已保存/);
 });
 
 test('Status observations never replace a configuration draft or its original revision', async () => {
