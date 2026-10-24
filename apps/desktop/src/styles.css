@@ -1434,3 +1434,33 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-create-group { margin-left: auto; }
   .radio-project-grid, .radio-main > .project-grid { padding-inline: 14px; }
 }
+
+/* Monogram default icons on a soft, coherent palette (slot stays tied to project id). */
+.launcher-tile .launcher-monogram { font-size: 26px; font-weight: 600; line-height: 1; letter-spacing: -.5px; user-select: none; }
+.launcher-tile .launcher-color-0 { --tile-bg: #e7e1f5; --tile-fg: #5b4a8b; }
+.launcher-tile .launcher-color-1 { --tile-bg: #dbe8f4; --tile-fg: #3b6286; }
+.launcher-tile .launcher-color-2 { --tile-bg: #d9eee3; --tile-fg: #3b7058; }
+.launcher-tile .launcher-color-3 { --tile-bg: #f7e2d4; --tile-fg: #985733; }
+.launcher-tile .launcher-color-4 { --tile-bg: #f5dce3; --tile-fg: #944d61; }
+.launcher-tile .launcher-color-5 { --tile-bg: #f0e7cf; --tile-fg: #7b6330; }
+.launcher-tile .launcher-color-6 { --tile-bg: #e1e9d5; --tile-fg: #596a3c; }
+.launcher-tile .launcher-color-7 { --tile-bg: #e0e4ec; --tile-fg: #4b556f; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-0 { --tile-bg: #3a3352; --tile-fg: #d3c8f2; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-1 { --tile-bg: #2b3d4f; --tile-fg: #bcd6ef; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-2 { --tile-bg: #2a4238; --tile-fg: #b8e2cc; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-3 { --tile-bg: #4a3528; --tile-fg: #f1c8ad; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-4 { --tile-bg: #4a2f38; --tile-fg: #efc0cd; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-5 { --tile-bg: #463d27; --tile-fg: #e8d6a6; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-6 { --tile-bg: #37412c; --tile-fg: #cfdcb8; }
+:root[data-theme='dark'] .launcher-tile .launcher-color-7 { --tile-bg: #343a48; --tile-fg: #c9d0e0; }
+.launcher-tile .launcher-icon[class*='launcher-color-'] { background: var(--tile-bg); color: var(--tile-fg); box-shadow: inset 0 0 0 1px #0000000a; }
+.launcher-tile .launcher-icon:has(> img) { background: transparent; box-shadow: none; }
+
+/* Collapsible group for disposable test projects, spanning the whole grid row. */
+.project-group-divider { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.project-group-divider::after { content: ''; flex: 1; height: 1px; background: var(--radio-line); }
+.project-group-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px; border: 0; border-radius: 6px; color: var(--radio-secondary); background: transparent; font-size: 12px; cursor: pointer; }
+.project-group-toggle:hover { color: var(--radio-text); background: var(--radio-selected); }
+.project-group-toggle > svg { transition: transform .15s; }
+.project-group-toggle[aria-expanded='true'] > svg { transform: rotate(90deg); }
+.project-group-toggle > span { min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--radio-subtle); color: var(--radio-muted); font-size: 11px; line-height: 18px; text-align: center; }

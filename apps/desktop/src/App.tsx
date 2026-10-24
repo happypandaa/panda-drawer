@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, BookOpen, Check, CircleAlert, Play,
   Database, Folder, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, Hammer, Trash2, Search, Settings, Sun, Moon,
+  RefreshCw, ShieldCheck, Terminal, Hammer, Trash2, Search, Settings, Sun, Moon, ChevronRight,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -40,6 +40,8 @@ function App() {
   const [page, setPage] = useState<AppPage>('projects');
   const { theme, setTheme } = useAppearance();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showDisposable, setShowDisposable] = useState(() => { try { return window.localStorage.getItem('panda-drawer:show-disposable:v1') === '1'; } catch { return false; } });
+  useEffect(() => { try { window.localStorage.setItem('panda-drawer:show-disposable:v1', showDisposable ? '1' : '0'); } catch { /* Grouping still works without storage. */ } }, [showDisposable]);
   const [showManagementTasks, setShowManagementTasks] = useState(false);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [gitEnvironmentBusy, setGitEnvironmentBusy] = useState(false);
@@ -442,6 +444,14 @@ function App() {
   const attentionCount = projects.filter((project) => !projectReady(project)).length + nodeApps.filter((app) => !nodeReady(app)).length;
   const runningCount = nodeApps.filter((app) => app.state === 'running').length;
   const filterChoices = [['all', '全部'], ['ready', '可使用'], ['attention', '需要处理']] as const;
+  // Disposable validation projects follow the "可丢弃" naming convention; keep them out of the way unless searched for.
+  const isDisposable = (name: string) => name.includes('可丢弃');
+  const groupDisposable = !query.trim();
+  const mainProjects = groupDisposable ? filteredProjects.filter((project) => !isDisposable(project.name)) : filteredProjects;
+  const mainNodeApps = groupDisposable ? filteredNodeApps.filter((app) => !isDisposable(app.name)) : filteredNodeApps;
+  const disposableProjects = groupDisposable ? filteredProjects.filter((project) => isDisposable(project.name)) : [];
+  const disposableNodeApps = groupDisposable ? filteredNodeApps.filter((app) => isDisposable(app.name)) : [];
+  const disposableCount = disposableProjects.length + disposableNodeApps.length;
   const totalProjects = projects.length + nodeApps.length;
   const filteredCount = filteredProjects.length + filteredNodeApps.length;
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
@@ -452,6 +462,8 @@ function App() {
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
   const openSettings = () => { if (!nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
+  const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />;
+  const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
   return (
     <div className="radio-shell" data-theme={theme}>
@@ -499,8 +511,10 @@ function App() {
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
             {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
-              {filteredProjects.map((project) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />)}
-              {filteredNodeApps.map((app) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />)}
+              {mainProjects.map(renderProjectCard)}
+              {mainNodeApps.map(renderNodeCard)}
+              {disposableCount > 0 && <div className="project-group-divider"><button type="button" className="project-group-toggle" aria-expanded={showDisposable} onClick={() => setShowDisposable((value) => !value)}><ChevronRight size={14} aria-hidden="true" />测试项目<span>{disposableCount}</span></button></div>}
+              {disposableCount > 0 && showDisposable && <>{disposableProjects.map(renderProjectCard)}{disposableNodeApps.map(renderNodeCard)}</>}
             </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
