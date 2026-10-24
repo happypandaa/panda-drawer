@@ -1616,6 +1616,7 @@ async fn submit_migration(
             // Source-only recovery does not stop runtime use. Reject a retained
             // operation before migration would pause that still-usable runtime.
             crate::source_restore_guard::check_workspace_available(state.paths.workspace_root())?;
+            crate::data_restore_guard::check_workspace_available(state.paths.workspace_root())?;
             crate::project_git::check_data_workspace_available(state.paths.workspace_root())?;
             state.storage.quiesce().await;
             state.store.pause_workspace().await;
