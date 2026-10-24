@@ -93,6 +93,9 @@ pub struct NodeApps {
 
 impl NodeApps {
     pub fn new(data_root: PathBuf, node_path: PathBuf) -> Result<Self> {
+        if crate::build_profile::PRODUCTION_PROFILE {
+            crate::platform_support::require_runtime()?;
+        }
         ordinary_path(&data_root, true)?;
         let root = data_root.join("node-apps");
         let release: Value =

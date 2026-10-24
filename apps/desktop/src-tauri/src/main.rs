@@ -9,7 +9,7 @@ mod window_sizes;
 
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
-    APP_IDENTIFIER, DISPLAY_NAME,
+    DISPLAY_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1768,11 +1768,11 @@ fn main() {
             _ => {}
         })
         .setup(|app| {
-            if app.config().identifier != APP_IDENTIFIER {
-                return Err(
-                    "Desktop identifier and development runtime identity do not match".into(),
-                );
-            }
+            platform_core::build_profile::validate_desktop_identity(
+                &app.config().identifier,
+                &app.package_info().version.to_string(),
+            )?;
+            platform_core::platform_support::require_runtime()?;
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
                 let window_sizes = window_sizes::WindowSizes::new(paths.data_root());

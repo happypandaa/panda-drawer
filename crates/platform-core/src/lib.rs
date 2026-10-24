@@ -2,6 +2,7 @@
 
 pub mod app_windows;
 pub mod backups;
+pub mod build_profile;
 pub mod builds;
 mod control;
 mod data_restore_guard;
@@ -51,9 +52,7 @@ pub use paths::{Discovery, InstanceLock, RuntimePaths};
 pub use platform_preflight as startup_preflight;
 pub use service::{BootstrapInfo, HealthInfo, LaunchInfo, RuntimeHandle, RuntimeService};
 
-pub const APP_IDENTIFIER: &str = "dev.localprojects.platform.m0";
-pub const DISPLAY_NAME: &str = "熊猫小抽屉 · 开发版";
-pub const ENVIRONMENT: &str = "development";
+pub use build_profile::{APP_IDENTIFIER, APP_VERSION, DISPLAY_NAME, ENVIRONMENT};
 pub const API_VERSION: u32 = 1;
 
 pub use database::{

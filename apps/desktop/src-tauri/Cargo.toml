@@ -9,6 +9,10 @@ default-run = "local-projects-desktop-dev"
 name = "local-projects-desktop-dev"
 path = "src/main.rs"
 
+[features]
+default = []
+production-profile = ["platform-core/production-profile"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
