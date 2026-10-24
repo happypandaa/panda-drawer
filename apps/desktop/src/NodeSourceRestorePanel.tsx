@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useId, useRef, useState } from 'react';
 import { messageFrom } from './ui-utils';
+import { nodeGitFailureMessage } from './node-git-error';
 
 interface Preview { targetCommit: string; head: string; branch: string; snapshotDigest: string; planDigest: string; canApply: boolean; changes: { path: string; kind: string }[] }
 interface Recovery { operationId: string; phase: string; targetCommit: string; planDigest: string; journalDigest: string; canContinue: boolean; canUndo: boolean; changes: { path: string; state: string }[] }
@@ -38,7 +39,7 @@ export function NodeSourceRestorePanel({ appId, instanceId, sourceRoot, disabled
     if (previousApp.current !== appId) { setTarget(''); previousApp.current = appId; }
     choice.current++;
     pending.current = false; setBusy(false); setPreview(null); setRecovery(null); setAccepted(false); setError(''); setNotice('');
-    if (!runtimeIsSource && !running) void status(sequence).catch(cause => { if (current(sequence)) setError(messageFrom(cause)); });
+    if (!runtimeIsSource && !running) void status(sequence).catch(cause => { if (current(sequence)) setError(nodeGitFailureMessage(cause, { operation: 'restore-status' })); });
     return () => { mounted.current = false; generation.current++; callbacks.current.onDraftStateChange({ dirty: false, pending: false }); };
   }, [appId, instanceId, sourceRoot, runtimeIsSource, running]);
   useEffect(() => { callbacks.current.onDraftStateChange({ dirty: Boolean(target), pending: busy }); }, [target, busy, appId, instanceId, sourceRoot]);
@@ -48,6 +49,7 @@ export function NodeSourceRestorePanel({ appId, instanceId, sourceRoot, disabled
     if (operation === 'restore-apply' && (!preview?.canApply || !accepted)) return;
     if (operation === 'restore-recover' && (!record || (action === 'continue' ? !record.canContinue : !record.canUndo))) return;
     const sequence = generation.current; const selected = choice.current;
+    let failureOperation = operation;
     pending.current = true; setBusy(true); setError(''); setNotice('');
     try {
       if (operation === 'restore-status') await status(sequence);
@@ -67,11 +69,12 @@ export function NodeSourceRestorePanel({ appId, instanceId, sourceRoot, disabled
         setPreview(null); setAccepted(false); setTarget('');
         const message = result.state === 'undone' ? '本次源码取回已撤回，当前程序和业务数据保留。' : '源码已取回为未保存修改。请检查差异，再保存版本并构建更新。当前程序和业务数据保留。';
         setNotice(result.controlUpdateWarning ? `${message} 恢复状态标记尚待核对，请保留本次现场。` : message);
+        failureOperation = 'restore-status';
         await status(sequence); if (current(sequence)) callbacks.current.onChanged();
       }
     } catch (cause) {
       if (current(sequence)) {
-        setError(messageFrom(cause)); setPreview(null); setAccepted(false);
+        setError(nodeGitFailureMessage(cause, { operation: failureOperation, operationId: record?.operationId })); setPreview(null); setAccepted(false);
         if (operation === 'restore-apply' || operation === 'restore-recover') await status(sequence).catch(() => {});
       }
     } finally { if (current(sequence)) { pending.current = false; setBusy(false); } }
