@@ -20,7 +20,11 @@
 
 用户确认首个正式发行版本为 **0.1.0**，下载文件和更新清单使用本项目的 GitHub Releases。继续按先核心流程／数据版本，再 Mac 发行与自动升级的顺序推进。当前版本号仍是开发版 0.0.0；不得只改一个界面便宣称 0.1.0 已发布。
 
-生产 Bundle ID 尚未确定；建议 `com.happypandaa.pandadrawer` 待用户确认。现有固定开发标识和数据根保持不变。用户有 Apple 开发者账号，但本机暂未发现 Developer ID Application 签名身份；站外正式发行仍按 [Apple Developer ID 与公证流程](https://developer.apple.com/developer-id/)准备该证书与公证，不将现有 Apple Development／Apple Distribution 当作替代。证书、公证与更新签名私钥不写入工程或聊天。
+用户随后确认生产 Bundle ID 为 **`com.happypandaa.pandadrawer`**。现有固定开发标识 `dev.localprojects.platform.m0`、开发数据根及开发版本 0.0.0 保持不变；正式版使用独立身份及数据根，不自动收养开发工作区，工作区变化仍走公开迁移流程。
+
+当前源码仓库 `happypandaa/panda-drawer` 为私有仓库。用户明确授权另建公开的 **`happypandaa/panda-drawer-releases`**，只放发行安装文件、版本说明和自动更新清单；源码仓库继续私有。公开发行仓库的实际创建及文件发布分别记录，不把确认地址当作已经有可下载正式包。
+
+用户有 Apple 开发者账号，但本机暂未发现 Developer ID Application 签名身份；站外正式发行仍按 [Apple Developer ID 与公证流程](https://developer.apple.com/developer-id/)准备该证书与公证，不将现有 Apple Development／Apple Distribution 当作替代。证书、公证与更新签名私钥不写入工程或聊天。
 
 ## 1 已确定的首版范围
 
