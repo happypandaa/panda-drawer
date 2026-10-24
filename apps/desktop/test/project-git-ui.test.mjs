@@ -71,6 +71,7 @@ async function setup({ overrides = {}, props = {}, strict = false } = {}) {
     if (overrides[command]) return overrides[command](args);
     if (command === 'project_git_status') return status();
     if (command === 'project_git_source_restore_status') return recoveryStatus();
+    if (command === 'project_git_data_save_status') return { state: 'clear', operations: [], issues: [] };
     throw new Error(`Unexpected disposable command: ${command}`);
   };
   let currentProps = { projectId: 'prj_a', instanceId: 'instance_a', onTask: value => tasks.push(value), onDraftStateChange: value => drafts.push(value), ...props };
@@ -98,7 +99,7 @@ const commandCalls = (calls, command) => calls.filter(([name]) => name === comma
 
 test('Opening the panel only previews local status and shows scope, exclusions and the confirmed HEAD', async () => {
   const { calls, drafts } = await setup();
-  assert.deepEqual(calls, [['project_git_source_restore_status', { id: 'prj_a' }], ['project_git_status', { id: 'prj_a' }]]);
+  assert.deepEqual(calls, [['project_git_source_restore_status', { id: 'prj_a' }], ['project_git_data_save_status', { id: 'prj_a' }], ['project_git_status', { id: 'prj_a' }]]);
   assert.ok(document.body.textContent.includes(oid));
   assert.match(document.body.textContent, /分支：main/);
   assert.doesNotMatch(document.body.textContent, /refs\/heads\/main/);
@@ -500,7 +501,7 @@ test('Branch creation sends the checked HEAD, full branch and snapshot once, the
   assert.match(document.body.textContent, /业务数据和运行产物保持不变/);
   assert.equal(commandCalls(calls, 'project_git_versions').length, 2);
   const commands = calls.map(([command]) => command);
-  assert.deepEqual(commands, ['project_git_source_restore_status', 'project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_source_restore_status', 'project_git_status', 'project_git_versions']);
+  assert.deepEqual(commands, ['project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status', 'project_git_versions']);
 });
 
 test('A rejected branch keeps its name and author draft, requires rechecking and never retries itself', async () => {
@@ -593,7 +594,7 @@ test('Recovery status remains readable when ordinary Git inspection fails and ne
   assert.match(document.body.textContent, /内容尚不能确认/);
   assert.match(document.body.textContent, /当前程序和业务数据仍可使用/);
   assert.equal(byText('确认继续取回'), undefined); assert.equal(byText('确认撤回这次取回'), undefined);
-  assert.deepEqual(calls.map(([command]) => command), ['project_git_source_restore_status', 'project_git_status']);
+  assert.deepEqual(calls.map(([command]) => command), ['project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status']);
 });
 
 test('Selecting a listed source version does not preview or apply until explicit review and confirmation', async () => {
@@ -817,4 +818,61 @@ test('A verified not-applied failure also shows its terminal durability warning 
   assert.match(rendered.textContent, /磁盘同步未确认/);
   assert.ok([...rendered.querySelectorAll('[role="alert"]')].some(element => element.textContent.includes('SOURCE_RESTORE_DURABILITY_WARNING')));
   assert.doesNotMatch(rendered.textContent, /源码已取回为待保存修改|源码版本已保存/);
+});
+
+test('Saving business data requires a fresh capability and explicit confirmation even without source changes', async () => {
+  const { calls } = await setup({ overrides: {
+    project_git_status: async () => status({ changes: [], database: { state: 'available', canSave: true, reason: '可保存一致性数据库与附件。' } }),
+    project_git_data_save: async () => task({ type: 'gitDataSave' }),
+  } });
+  await fill();
+  const dataSave = byText('保存源码和数据版本');
+  assert.equal(save().disabled, true);
+  assert.equal(dataSave.disabled, true);
+  await click(document.querySelector('section[aria-label="保存业务数据版本"] input[type="checkbox"]'));
+  assert.equal(dataSave.disabled, false);
+  await click(dataSave);
+  assert.deepEqual(commandCalls(calls, 'project_git_data_save'), [['project_git_data_save', {
+    id: 'prj_a', input: { expectedHead: oid, expectedSnapshot: digest, message: '保存本机源码修改', author: { name: 'Disposable Author', email: 'disposable@example.invalid' } },
+  }]]);
+  assert.equal(dataSave.disabled, true);
+  assert.match(document.querySelector('.build-task').textContent, /保存源码和数据版本/);
+  assert.equal(commandCalls(calls, 'project_git_save').length, 0);
+});
+
+test('Refreshing revokes the data confirmation and a source-only repository cannot save business data', async () => {
+  let allowed = true;
+  const { calls } = await setup({ overrides: {
+    project_git_status: async () => status({ database: { state: allowed ? 'available' : 'source-only', canSave: allowed, reason: allowed ? '可以保存数据。' : '已有源码仓库未纳管业务数据。' } }),
+  } });
+  await fill();
+  await click(document.querySelector('section[aria-label="保存业务数据版本"] input[type="checkbox"]'));
+  await click(refresh());
+  assert.equal(byText('保存源码和数据版本').disabled, true);
+  allowed = false;
+  await click(refresh());
+  assert.equal(byText('保存源码和数据版本'), undefined);
+  assert.match(document.body.textContent, /已有源码仓库未纳管业务数据/);
+  assert.equal(commandCalls(calls, 'project_git_data_save').length, 0);
+});
+
+test('Committed data-save finalization remains available when ordinary Git inspection fails', async () => {
+  const operation = { saveTaskId: 'task_saved_data', phase: 'committed', journalDigest: digest, canFinalize: true, targetCommit: nextOid, issues: [] };
+  const { calls } = await setup({ overrides: {
+    project_git_data_save_status: async () => ({ state: 'pending', operations: [operation], issues: [] }),
+    project_git_status: async () => { throw new Error('普通仓库状态暂不可读取'); },
+    project_git_data_save_finalize: async () => task({ taskId: 'task_finalize_data', type: 'gitDataSaveFinalize' }),
+  } });
+  assert.match(document.body.textContent, /普通仓库状态暂不可读取/);
+  await click(byText('核对并完成数据版本保存'));
+  assert.deepEqual(commandCalls(calls, 'project_git_data_save_finalize'), [['project_git_data_save_finalize', { id: 'prj_a', input: { saveTaskId: 'task_saved_data', expectedJournalDigest: digest } }]]);
+  assert.equal(commandCalls(calls, 'project_git_data_save').length, 0);
+  assert.doesNotMatch(document.body.textContent, /备份任务已完成/);
+});
+
+test('Finalizing an interrupted save never claims a data version was saved when its ref did not commit', async () => {
+  await setup({ props: { task: task({ type: 'gitDataSaveFinalize', final: true, status: 'succeeded', result: { operation: 'save-data-finalize', operationOutcome: 'not_committed' } }) } });
+  const result = document.querySelector('.build-task').textContent;
+  assert.match(result, /已确认此前保存没有提交/);
+  assert.doesNotMatch(result, /数据版本已保存|数据版本的保存收尾|备份任务已完成/);
 });

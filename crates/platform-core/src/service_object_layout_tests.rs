@@ -45,7 +45,7 @@ async fn object_layout_is_management_only_and_preserves_runtime_and_identity() {
     );
     assert_eq!(layout["build"]["state"], "unavailable");
     assert_eq!(layout["versioning"]["state"], "not-integrated");
-    assert_eq!(layout["versioning"]["database"]["state"], "not-supported");
+    assert_eq!(layout["versioning"]["database"]["state"], "not-inspected");
     assert!(layout["versioning"]["markers"]
         .as_array()
         .unwrap()

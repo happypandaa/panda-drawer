@@ -934,6 +934,7 @@ impl ProjectStore {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
         self.check_not_deleting(id)?;
+        crate::project_git::check_data_operations_available(&self.workspace, id)?;
         crate::source_restore_guard::check_development_available(&self.workspace, id)
     }
     pub(crate) fn reserve_development_task(
@@ -955,6 +956,7 @@ impl ProjectStore {
     ) -> Result<ProjectTaskLease, ApiError> {
         let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
         crate::source_restore_guard::check_development_available(&self.workspace, id)?;
+        crate::project_git::check_data_operations_available(&self.workspace, id)?;
         self.deletion_root(id)?;
         Ok(lease)
     }
@@ -968,6 +970,7 @@ impl ProjectStore {
         let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
         // Revalidate after admission: a previously displayed recovery summary is
         // not permission to bypass a newer journal or another pending operation.
+        crate::project_git::check_data_operations_available(&self.workspace, id)?;
         permit.revalidate(&self.workspace, id)?;
         Ok(lease)
     }
@@ -977,6 +980,18 @@ impl ProjectStore {
         label: &str,
     ) -> Result<ProjectTaskLease, ApiError> {
         self.reserve_operation(id, ProjectOperation::Transient(label.into()))
+    }
+    pub(crate) fn reserve_data_save_finalization_task(
+        &self,
+        id: &str,
+        task: &str,
+        input: &crate::project_git::GitDataSaveFinalizeInput,
+    ) -> Result<ProjectTaskLease, ApiError> {
+        self.check_not_deleting(id)?;
+        let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
+        crate::source_restore_guard::check_development_available(&self.workspace, id)?;
+        crate::project_git::check_data_recovery_record(&self.workspace, id, input)?;
+        Ok(lease)
     }
     fn reserve_operation(
         &self,

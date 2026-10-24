@@ -882,6 +882,15 @@ impl CleanupManager {
         except: Option<&str>,
     ) -> Result<(), ApiError> {
         match project_id {
+            Some(id) => crate::project_git::check_data_operations_available(
+                self.paths.workspace_root(),
+                id,
+            )?,
+            None => {
+                crate::project_git::check_data_workspace_available(self.paths.workspace_root())?
+            }
+        }
+        match project_id {
             Some(id) => crate::source_restore_guard::check_development_available(
                 self.paths.workspace_root(),
                 id,
@@ -1069,6 +1078,7 @@ impl CleanupManager {
         }
         self.check_references(None, None)?;
         crate::source_restore_guard::check_workspace_available(&item.path)?;
+        crate::project_git::check_data_workspace_available(&item.path)?;
         let manifest_path = path.parent().unwrap().join("manifest.json");
         let target_manifest_path = path.parent().unwrap().join("target-manifest.json");
         let manifest = Self::guard_file(item, &manifest_path)?;
@@ -1463,6 +1473,7 @@ impl CleanupManager {
     }
     fn check_current_protection(&self) -> Result<(), ApiError> {
         crate::source_restore_guard::check_workspace_available(self.paths.workspace_root())?;
+        crate::project_git::check_data_workspace_available(self.paths.workspace_root())?;
         let directory = self
             .paths
             .workspace_root()

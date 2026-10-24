@@ -388,6 +388,17 @@ fn ensure_space(parent: &Path, bytes: u64) -> Result<(), ApiError> {
 
 /// Creates a closed, standalone SQLite file. No live WAL/SHM bytes are copied.
 pub fn sqlite_snapshot(source: &Path, destination: &Path) -> Result<(), ApiError> {
+    sqlite_snapshot_cancellable(source, destination, || Ok(()))
+}
+
+/// The same consistent SQLite copy with bounded-step cancellation for explicit
+/// Git data capture. Existing archive callers retain their original behavior.
+pub(crate) fn sqlite_snapshot_cancellable(
+    source: &Path,
+    destination: &Path,
+    mut checkpoint: impl FnMut() -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    checkpoint()?;
     for suffix in ["-wal", "-shm", "-journal"] {
         check_no_symlinks(
             &PathBuf::from(format!("{}{suffix}", source.display())),
@@ -419,6 +430,7 @@ pub fn sqlite_snapshot(source: &Path, destination: &Path) -> Result<(), ApiError
             Backup::new(&source_connection, &mut destination_connection).map_err(db_error)?;
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
+            checkpoint()?;
             match backup.step(256).map_err(db_error)? {
                 rusqlite::backup::StepResult::Done => break,
                 rusqlite::backup::StepResult::More => (),

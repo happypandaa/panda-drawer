@@ -49,8 +49,16 @@ pub mod node_development_git;
 mod build_guard;
 pub(crate) use build_guard::BuildGitGuard;
 
+#[path = "project_git_data.rs"]
+mod data_versions;
 #[path = "project_git_restore.rs"]
 mod source_restore;
+#[path = "project_version_data.rs"]
+mod version_data;
+pub(crate) use data_versions::{
+    check_data_operations_available, check_data_recovery_record, check_data_workspace_available,
+};
+pub use data_versions::{GitDataSaveFinalizeInput, GitDataSaveInput};
 pub use source_restore::{
     GitSourceRestoreApplyInput, GitSourceRestorePreview, GitSourceRestorePreviewInput,
     GitSourceRestoreRecoverInput, GitSourceRestoreRecoveryStatus, RecoveryChange,
@@ -187,6 +195,8 @@ struct Journal {
     previous_branch: Option<String>,
     snapshot_digest: String,
     paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_publication: Option<data_versions::DataPublication>,
 }
 
 pub struct ProjectGitManager {
@@ -198,6 +208,8 @@ pub struct ProjectGitManager {
     runners: Mutex<Vec<JoinHandle<()>>>,
     submission: Mutex<()>,
     stopping: AtomicBool,
+    #[cfg(test)]
+    data_save_fault: std::sync::atomic::AtomicU8,
 }
 impl ProjectGitManager {
     pub fn new(
@@ -216,6 +228,8 @@ impl ProjectGitManager {
             runners: Mutex::new(Vec::new()),
             submission: Mutex::new(()),
             stopping: AtomicBool::new(false),
+            #[cfg(test)]
+            data_save_fault: std::sync::atomic::AtomicU8::new(0),
         }))
     }
     pub async fn status(
@@ -414,11 +428,16 @@ impl ProjectGitManager {
         let kind = match operation {
             Operation::Initialize(_) => "gitInitialize",
             Operation::Save(_) => "gitSave",
+            Operation::SaveData(_) => "gitDataSave",
+            Operation::DataFinalize(_) => "gitDataSaveFinalize",
             Operation::CreateBranch(_) => "gitBranchCreate",
             Operation::RestoreApply(_) => "gitSourceRestoreApply",
             Operation::RestoreRecover(ref input) => input.task_kind(),
         };
-        let (task, lease) = if let Operation::RestoreRecover(input) = &operation {
+        let (task, lease) = if let Operation::DataFinalize(input) = &operation {
+            self.tasks
+                .create_data_save_finalization_operation(project_id, input)?
+        } else if let Operation::RestoreRecover(input) = &operation {
             let permit = crate::source_restore_guard::validate_recovery(
                 self.paths.workspace_root(),
                 project_id,
@@ -505,6 +524,8 @@ impl ProjectGitManager {
             task.task_type.as_str(),
             "gitInitialize"
                 | "gitSave"
+                | "gitDataSave"
+                | "gitDataSaveFinalize"
                 | "gitBranchCreate"
                 | "gitSourceRestoreApply"
                 | "gitSourceRestoreContinue"
@@ -586,7 +607,15 @@ impl ProjectGitManager {
         let project = self.store.project(project_id)?;
         let mut context = Context::new(stop, cancel)?;
         context.checkpoint()?;
-        let _gate = tokio::select! {
+        let operation = match operation {
+            Operation::DataFinalize(input) => {
+                return self
+                    .finalize_data_save_inner(&project, task_id, input, &mut context)
+                    .await
+            }
+            other => other,
+        };
+        let gate = tokio::select! {
             biased;
             _ = watch_stop(&mut context.stop) => return Err(interrupted()),
             _ = watch_stop(&mut context.cancel) => return Err(interrupted()),
@@ -619,14 +648,78 @@ impl ProjectGitManager {
                     .await
             }
             Operation::Save(input) => {
-                self.save_inner(&project, task_id, input, snapshot, &tools, &mut context)
-                    .await
+                self.save_inner(
+                    &project,
+                    task_id,
+                    input,
+                    SaveCandidate {
+                        snapshot,
+                        data: None,
+                    },
+                    &tools,
+                    &mut context,
+                )
+                .await
+            }
+            Operation::SaveData(input) => {
+                if snapshot.view.snapshot_digest != input.expected_snapshot
+                    || head_oid(&snapshot.view) != input.expected_head.as_deref()
+                {
+                    return Err(stale());
+                }
+                if !snapshot.view.can_save {
+                    return Err(blocked(&snapshot.view));
+                }
+                drop(gate);
+                self.tasks.phase(task_id, "git-data-snapshot")?;
+                let root = self
+                    .journal_path(project_id, task_id)
+                    .with_extension("files");
+                private_dir(&root)?;
+                let destination = root.join("data");
+                let lease = version_data::SnapshotLease::acquire(
+                    project.clone(),
+                    context.stop.clone(),
+                    context.cancel.clone(),
+                )
+                .await?;
+                let stop = context.stop.clone();
+                let cancel = context.cancel.clone();
+                let candidate = tokio::task::spawn_blocking(move || {
+                    version_data::prepare_snapshot(
+                        lease,
+                        &destination,
+                        version_data::SnapshotLimits::default(),
+                        &stop,
+                        &cancel,
+                    )
+                })
+                .await
+                .map_err(|_| recovery())??;
+                let _gate = data_versions::read_gate_for_data(&project, &mut context).await?;
+                let mut fresh = inspect(&project, Some(&tools), &mut context, None).await?;
+                self.add_recovery_issue(project_id, &mut fresh.view)?;
+                finalize_capabilities(&mut fresh.view);
+                self.save_inner(
+                    &project,
+                    task_id,
+                    input.into(),
+                    SaveCandidate {
+                        snapshot: fresh,
+                        data: Some(candidate),
+                    },
+                    &tools,
+                    &mut context,
+                )
+                .await
             }
             Operation::CreateBranch(input) => {
                 self.create_branch_inner(&project, task_id, input, snapshot, &tools, &mut context)
                     .await
             }
-            Operation::RestoreApply(_) | Operation::RestoreRecover(_) => {
+            Operation::RestoreApply(_)
+            | Operation::RestoreRecover(_)
+            | Operation::DataFinalize(_) => {
                 unreachable!("restore operations are dispatched before Git resolution")
             }
         }
@@ -701,6 +794,7 @@ impl ProjectGitManager {
             new_head: None,
             branch: Some("refs/heads/main".into()),
             previous_branch: None,
+            data_publication: None,
             snapshot_digest: input.expected_snapshot,
             paths: snapshot.view.scope.included_paths.clone(),
         };
@@ -734,10 +828,14 @@ impl ProjectGitManager {
         project: &ProjectHandle,
         task_id: &str,
         input: GitSaveInput,
-        snapshot: Snapshot,
+        candidate: SaveCandidate,
         tools: &GitToolchain,
         context: &mut Context,
     ) -> Result<Value, ApiError> {
+        let SaveCandidate {
+            snapshot,
+            data: data_candidate,
+        } = candidate;
         if snapshot.view.snapshot_digest != input.expected_snapshot
             || head_oid(&snapshot.view) != input.expected_head.as_deref()
         {
@@ -746,7 +844,7 @@ impl ProjectGitManager {
         if !snapshot.view.can_save {
             return Err(blocked(&snapshot.view));
         }
-        if snapshot.view.changes.is_empty() {
+        if snapshot.view.changes.is_empty() && data_candidate.is_none() {
             return Err(error(
                 "PROJECT_GIT_NO_CHANGES",
                 "当前纳入范围没有可保存的改动；未创建空版本。",
@@ -765,6 +863,7 @@ impl ProjectGitManager {
                 )
             })?;
         let git_dir = project.root.join(".git");
+        let repository_identity = identity(&git_dir)?;
         let mut lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
         let verify = inspect(project, Some(tools), context, Some(&lock)).await?;
         if verify.view.snapshot_digest != input.expected_snapshot {
@@ -775,11 +874,78 @@ impl ProjectGitManager {
             .journal_path(&project.manifest.id, task_id)
             .with_extension("files");
         private_dir(&operation_root)?;
+        let operation_identity = identity(&operation_root)?;
         let source = operation_root.join("source");
         private_dir(&source)?;
-        for (path, entry) in &snapshot.files {
+        let mut commit_files = snapshot.files.clone();
+        let data_snapshot = data_candidate.as_ref().or(snapshot.data.as_ref());
+        if let Some(data) = data_snapshot {
+            commit_files.extend(version_data::tracked_files(data).into_iter().map(
+                |(path, file)| {
+                    (
+                        path,
+                        SourceFile {
+                            mode: "100644".into(),
+                            digest: file.sha256,
+                            size: file.bytes,
+                        },
+                    )
+                },
+            ));
+        }
+        data_versions::check_combined_entry_budget(commit_files.len())?;
+        if commit_files.keys().try_fold(0usize, |bytes, path| {
+            bytes.checked_add(path.len() + 96).ok_or_else(limit)
+        })? > MAX_OUTPUT
+        {
+            return Err(error(
+                "PROJECT_GIT_COMBINED_LIMIT",
+                "源码和数据快照的路径元数据超过当前Git读取预算；未提交无法再次读取的版本。",
+            ));
+        }
+        let required_space = commit_files
+            .values()
+            .try_fold(0u64, |total, file| {
+                total.checked_add(file.size).ok_or_else(limit)
+            })?
+            .saturating_mul(2)
+            .saturating_add(64 * 1024 * 1024);
+        if fs2::available_space(&operation_root)? < required_space {
+            return Err(error(
+                "PROJECT_DATA_SNAPSHOT_SPACE",
+                "生成提交候选与Git对象所需空间不足；原数据和当前版本保留。",
+            ));
+        }
+        let mut data_attribute_issues = Vec::new();
+        check_attributes(
+            project,
+            tools,
+            context,
+            commit_files.keys(),
+            &mut data_attribute_issues,
+        )
+        .await?;
+        if let Some(issue) = data_attribute_issues.into_iter().next() {
+            return Err(issue);
+        }
+        for (path, entry) in &commit_files {
             context.checkpoint()?;
-            let bytes = read_file(&checked_relative(&project.root, path, false)?, MAX_BLOB)?;
+            let absolute = if data_versions::is_data_path(path) {
+                data_snapshot
+                    .ok_or_else(recovery)?
+                    .root
+                    .join(path.strip_prefix("version-data/").ok_or_else(unsafe_path)?)
+            } else {
+                checked_relative(&project.root, path, false)?
+            };
+            let bytes = read_file(
+                &absolute,
+                if data_versions::is_data_path(path) {
+                    version_data::SnapshotLimits::default().max_file_bytes
+                } else {
+                    MAX_BLOB
+                },
+            )?;
             if sha256(&bytes) != entry.digest {
                 return Err(stale());
             }
@@ -805,12 +971,12 @@ impl ProjectGitManager {
             context,
             Some(project),
             &source,
-            snapshot.files.keys(),
+            commit_files.keys(),
             true,
         )
         .await?;
         let mut index_input = Vec::new();
-        for (path, entry) in &snapshot.files {
+        for (path, entry) in &commit_files {
             let oid = hashes.get(path).ok_or_else(output_invalid)?;
             index_input.extend_from_slice(format!("{} {}\t", entry.mode, oid).as_bytes());
             index_input.extend_from_slice(path.as_bytes());
@@ -824,6 +990,48 @@ impl ProjectGitManager {
         let mut command = git_command(tools, context.root(), Some(project));
         command.env("GIT_INDEX_FILE", &index).arg("write-tree");
         let tree = one_oid(&context.run(command, Vec::new()).await?.success()?)?;
+        if data_candidate.is_some() {
+            if let Some(head) = &input.expected_head {
+                let mut command = git_command(tools, context.root(), Some(project));
+                command.args(["rev-parse", &format!("{head}^{{tree}}")]);
+                if one_oid(&context.run(command, Vec::new()).await?.success()?)? == tree {
+                    let index_bytes = read_file(&index, MAX_METADATA)?;
+                    let no_op = Journal {
+                        schema_version: 1,
+                        project_id: project.manifest.id.clone(),
+                        task_id: task_id.into(),
+                        operation: "save-data".into(),
+                        phase: "not-committed".into(),
+                        old_head: input.expected_head.clone(),
+                        new_head: None,
+                        branch: Some(branch.clone()),
+                        previous_branch: None,
+                        snapshot_digest: input.expected_snapshot.clone(),
+                        paths: commit_files.keys().cloned().collect(),
+                        data_publication: Some(data_versions::DataPublication {
+                            manifest_digest: data_candidate
+                                .as_ref()
+                                .ok_or_else(recovery)?
+                                .manifest_digest
+                                .clone(),
+                            previous_manifest_digest: None,
+                            previous_index: lock.original_index.clone(),
+                            prepared_index: sha256(&index_bytes),
+                            lock_identity: (lock.dev, lock.ino),
+                            repository_identity: repository_identity.clone(),
+                            operation_identity: operation_identity.clone(),
+                            files: commit_files.clone(),
+                        }),
+                    };
+                    let cleanup = self.cleanup_data_save(project, task_id, &no_op).err();
+                    return Err(error(
+                        "PROJECT_GIT_NO_CHANGES",
+                        "当前源码及数据与已保存版本一致；未创建空版本。",
+                    )
+                    .detail("cleanupWarning", json!(cleanup)));
+                }
+            }
+        }
         let mut command = git_command(tools, context.root(), Some(project));
         command
             .env("GIT_INDEX_FILE", &index)
@@ -851,17 +1059,53 @@ impl ProjectGitManager {
             schema_version: 1,
             project_id: project.manifest.id.clone(),
             task_id: task_id.into(),
-            operation: "save".into(),
+            operation: if data_candidate.is_some() {
+                "save-data"
+            } else {
+                "save"
+            }
+            .into(),
             phase: "prepared".into(),
             old_head: input.expected_head.clone(),
             new_head: Some(new_head.clone()),
             branch: Some(branch.clone()),
             previous_branch: None,
+            data_publication: if let Some(candidate) = &data_candidate {
+                Some(data_versions::DataPublication {
+                    manifest_digest: candidate.manifest_digest.clone(),
+                    previous_manifest_digest: snapshot
+                        .data
+                        .as_ref()
+                        .map(|data| data.manifest_digest.clone()),
+                    previous_index: lock.original_index.clone(),
+                    prepared_index: sha256(&index_bytes),
+                    lock_identity: (lock.dev, lock.ino),
+                    repository_identity: repository_identity.clone(),
+                    operation_identity: operation_identity.clone(),
+                    files: commit_files.clone(),
+                })
+            } else {
+                None
+            },
             snapshot_digest: input.expected_snapshot.clone(),
-            paths: snapshot.files.keys().cloned().collect(),
+            paths: commit_files.keys().cloned().collect(),
         };
+        let mut longest_journal = journal.clone();
+        longest_journal.phase = "not-committed-release".into();
+        if serde_json::to_vec_pretty(&longest_journal)?.len() as u64 > MAX_METADATA {
+            return Err(error(
+                "PROJECT_GIT_COMBINED_LIMIT",
+                "保存日志超过可恢复读取预算；没有提交无法核对的版本。",
+            ));
+        }
         atomic_json(&journal_path, &journal)?;
         self.tasks.phase(task_id, "git-commit")?;
+        #[cfg(test)]
+        if data_candidate.is_some() && self.data_save_fault.load(Ordering::Acquire) == 4 {
+            self.data_save_fault.store(0, Ordering::Release);
+            lock.preserve = true;
+            return Err(recovery().outcome("not_committed"));
+        }
         // Git adds HEAD reflog updates itself, so an explicit symref-verify HEAD
         // alongside a branch update is rejected as a duplicate reference. Prepare
         // an update through HEAD instead, then inspect its symbolic target while
@@ -889,6 +1133,7 @@ impl ProjectGitManager {
                 {
                     return Err(stale());
                 }
+                data_versions::recheck_current_data(project, snapshot.data.as_ref())?;
                 project.check()
             })
             .await;
@@ -905,12 +1150,27 @@ impl ProjectGitManager {
                 .detail("candidateCommit", new_head));
         }
         journal.phase = "ref-committed".into();
-        let result = json!({"operation":"save","operationOutcome":"committed","commit":new_head,"parent":input.expected_head,"branch":branch.strip_prefix("refs/heads/").unwrap_or(&branch),"message":input.message,"author":input.author,"scope":snapshot.view.scope,"paths":journal.paths,"changes":snapshot.view.changes,"snapshotDigest":input.expected_snapshot,"database":database_boundary(),"git":tools.git,"completedAt":now()});
+        let result = json!({"operation":journal.operation,"operationOutcome":"committed","commit":new_head,"parent":input.expected_head,"branch":branch.strip_prefix("refs/heads/").unwrap_or(&branch),"message":input.message,"author":input.author,"scope":snapshot.view.scope,"paths":journal.paths,"changes":snapshot.view.changes,"snapshotDigest":input.expected_snapshot,"database":data_versions::data_result(data_snapshot),"git":tools.git,"completedAt":now()});
         // After the ref commit point, cancellation must not skip index publication.
+        #[cfg(test)]
+        if data_candidate.is_some() && self.data_save_fault.load(Ordering::Acquire) == 1 {
+            self.data_save_fault.store(0, Ordering::Release);
+            atomic_json(&journal_path, &journal)?;
+            return Err(recovery().outcome("committed").detail("result", result));
+        }
         if atomic_json(&journal_path, &journal).is_err()
             || lock.publish(&git_dir.join("index")).is_err()
         {
             return Err(recovery().outcome("committed").detail("result", result));
+        }
+        #[cfg(test)]
+        if data_candidate.is_some() && self.data_save_fault.load(Ordering::Acquire) == 2 {
+            self.data_save_fault.store(0, Ordering::Release);
+            return Err(recovery().outcome("committed").detail("result", result));
+        }
+        if let Some(candidate) = &data_candidate {
+            self.publish_data_snapshot(project, task_id, &journal, candidate)
+                .map_err(|error| error.outcome("committed").detail("result", result.clone()))?;
         }
         journal.phase = "completed".into();
         atomic_json(&journal_path, &journal).map_err(|_| {
@@ -918,7 +1178,25 @@ impl ProjectGitManager {
                 .outcome("committed")
                 .detail("result", result.clone())
         })?;
-        let _ = fs::remove_dir_all(operation_root);
+        let mut result = result;
+        let mut cleanup_journal = journal.clone();
+        if cleanup_journal.data_publication.is_none() {
+            cleanup_journal.data_publication = Some(data_versions::DataPublication {
+                manifest_digest: data_snapshot
+                    .map(|data| data.manifest_digest.clone())
+                    .unwrap_or_else(|| sha256(&[])),
+                previous_manifest_digest: None,
+                previous_index: lock.original_index.clone(),
+                prepared_index: sha256(&index_bytes),
+                lock_identity: (lock.dev, lock.ino),
+                repository_identity: repository_identity.clone(),
+                operation_identity: operation_identity.clone(),
+                files: commit_files.clone(),
+            });
+        }
+        if let Err(warning) = self.cleanup_data_save(project, task_id, &cleanup_journal) {
+            result["cleanupWarning"] = json!(warning);
+        }
         Ok(result)
     }
     async fn create_branch_inner(
@@ -988,6 +1266,7 @@ impl ProjectGitManager {
             new_head: Some(input.expected_head.clone()),
             branch: Some(new_branch.clone()),
             previous_branch: Some(input.expected_branch.clone()),
+            data_publication: None,
             snapshot_digest: input.expected_snapshot.clone(),
             paths: vec![],
         };
@@ -1090,12 +1369,14 @@ impl ProjectGitManager {
 enum Operation {
     Initialize(GitInitInput),
     Save(GitSaveInput),
+    SaveData(GitDataSaveInput),
+    DataFinalize(GitDataSaveFinalizeInput),
     CreateBranch(GitCreateBranchInput),
     RestoreApply(GitSourceRestoreApplyInput),
     RestoreRecover(GitSourceRestoreRecoverInput),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SourceFile {
     mode: String,
     digest: String,
@@ -1106,6 +1387,11 @@ struct Snapshot {
     files: BTreeMap<String, SourceFile>,
     source_digest: String,
     repository_digest: String,
+    data: Option<version_data::PreparedDataSnapshot>,
+}
+struct SaveCandidate {
+    snapshot: Snapshot,
+    data: Option<version_data::PreparedDataSnapshot>,
 }
 fn database_boundary() -> Value {
     json!({"state":"not-supported","reason":"本次只保存列出的开发文件；活跃数据库、附件及数据快照均未纳入版本。"})
@@ -1153,6 +1439,7 @@ fn finalize_capabilities(view: &mut ProjectGitStatus) {
         view.can_save = false;
         view.can_create_branch = false;
     }
+    view.database["canSave"] = json!(view.can_save);
 }
 async fn inspect(
     project: &ProjectHandle,
@@ -1177,6 +1464,7 @@ async fn inspect(
     }
     let roots = included_roots(&manifest);
     let mut scan = scan_source(&project.root, &manifest, &roots)?;
+    let data = data_versions::inspect_current_data(project, context)?;
     let initial_source = source_fingerprint(&scan)?;
     let mut markers = Vec::new();
     marker(&project.root.join(".git"), "project", &mut markers)?;
@@ -1234,7 +1522,7 @@ async fn inspect(
         can_create_branch: false,
         branch_creation_issue: None,
         source_restore: Default::default(),
-        database: database_boundary(),
+        database: data_versions::data_status(data.as_ref(), state),
         issues: std::mem::take(&mut scan.issues),
     };
     if !matches!(state, "none" | "project-root") {
@@ -1329,7 +1617,9 @@ async fn inspect(
             for path in head_entries.keys().chain(index_entries.keys()) {
                 if protected(path, &manifest).is_some() {
                     view.scope.protected_tracked_paths.push(path.clone());
-                } else if !included(path, &view.scope.included_roots) {
+                } else if !included(path, &view.scope.included_roots)
+                    && !data_versions::is_data_path(path)
+                {
                     view.scope.unclassified_paths.push(path.clone());
                 }
             }
@@ -1341,6 +1631,16 @@ async fn inspect(
                 view.issues.push(error("PROJECT_GIT_PROTECTED_TRACKED", "HEAD 或索引已跟踪受保护的数据、凭据、依赖或产物；本步不会删除跟踪项或改写历史。"));
             }
             check_repository_options(project, tools, context, &mut view.issues).await?;
+            data_versions::check_data_tracking(
+                data.as_ref(),
+                &head_entries,
+                &index_entries,
+                &mut view.issues,
+                project,
+                tools,
+                context,
+            )
+            .await?;
             // Ignore rules never exempt tracked protected files from the checks above.
             let untracked: Vec<String> = scan
                 .files
@@ -1419,6 +1719,7 @@ async fn inspect(
         for path in head_entries
             .keys()
             .filter(|path| !scan.files.contains_key(*path))
+            .filter(|path| !data_versions::is_data_path(path))
         {
             view.changes.push(GitChange {
                 path: path.clone(),
@@ -1460,7 +1761,7 @@ async fn inspect(
     }
     view.changes.sort_by(|a, b| a.path.cmp(&b.path));
     view.snapshot_digest = sha256(&serde_json::to_vec(
-        &json!({"policy":POLICY,"root":project.root,"rootIdentity":identity(&project.root)?,"manifest":manifest,"repository":view.repository,"repositoryDigest":repo_digest,"index":index_entries,"head":head_entries,"files":scan.files,"scope":view.scope,"sourceFingerprint":source_fingerprint(&after)?}),
+        &json!({"policy":POLICY,"root":project.root,"rootIdentity":identity(&project.root)?,"manifest":manifest,"repository":view.repository,"repositoryDigest":repo_digest,"index":index_entries,"head":head_entries,"files":scan.files,"scope":view.scope,"sourceFingerprint":source_fingerprint(&after)?,"dataManifest":data.as_ref().map(|data| &data.manifest_digest)}),
     )?);
     finalize_capabilities(&mut view);
     Ok(Snapshot {
@@ -1468,6 +1769,7 @@ async fn inspect(
         files: scan.files,
         source_digest: initial_source,
         repository_digest: repo_digest,
+        data,
     })
 }
 
@@ -1594,6 +1896,17 @@ fn scan_source(
                 if !relative.as_os_str().is_empty() {
                     marker(&entry.path(), "source", &mut scan.markers)?;
                 }
+                continue;
+            }
+            if relative.as_os_str().is_empty() && name.eq_ignore_ascii_case(version_data::DIRECTORY)
+            {
+                if name != version_data::DIRECTORY {
+                    return Err(unsafe_path());
+                }
+                scan.excluded.push(GitExcludedPath {
+                    path: label,
+                    reason: "数据版本快照单独核验，源码取回不修改此目录".into(),
+                });
                 continue;
             }
             if let Some(reason) = protected(&label, manifest) {
