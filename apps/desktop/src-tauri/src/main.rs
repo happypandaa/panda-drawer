@@ -2,6 +2,8 @@
 
 mod browser_download;
 mod codex_handoff;
+mod local_directory;
+mod node_development;
 mod node_windows;
 mod window_sizes;
 
@@ -1705,7 +1707,15 @@ fn main() {
             environment_git_set,
             environment_git_remote_check,
             project_handoff,
-            project_open_codex
+            project_open_codex,
+            node_development::node_development_info,
+            node_development::node_development_bind,
+            node_development::node_development_reveal,
+            node_development::node_development_git,
+            node_development::node_development_handoff,
+            node_development::node_development_open_codex,
+            node_development::node_development_build,
+            node_development::node_development_cancel
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),

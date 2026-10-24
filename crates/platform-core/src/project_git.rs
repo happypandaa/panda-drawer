@@ -42,6 +42,9 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_METADATA: u64 = 8 * 1024 * 1024;
 
+#[path = "node_development_git.rs"]
+pub mod node_development_git;
+
 #[path = "project_git_build_guard.rs"]
 mod build_guard;
 pub(crate) use build_guard::BuildGitGuard;

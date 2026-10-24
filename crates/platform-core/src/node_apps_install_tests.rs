@@ -485,7 +485,7 @@ async fn managed_and_external_registrations_coexist_without_author_directory_dep
         .manager
         .install_target_snapshot(Some(external_id))
         .await
-        .is_err());
+        .is_ok());
     assert!(
         fixture
             .manager
@@ -784,5 +784,132 @@ async fn managed_registration_cannot_supply_escape_generation_or_source_path() {
     atomic_json(&path, &absolute).unwrap();
     assert!(fixture.manager.list().await.is_err());
     assert!(!fixture.slot(&installed.app_id).join("active.json").exists());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn external_source_promotes_to_managed_generation_without_moving_author_git_or_data() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.source.join(".git")).unwrap();
+    fs::write(
+        fixture.source.join(".git/author-history-evidence"),
+        b"one original repository",
+    )
+    .unwrap();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    // Explicitly establish the original source declaration before editing it.
+    drop(fixture.manager.development_source_lease(id).await.unwrap());
+    fixture
+        .manager
+        .save(id, save_request(0, "retained local label", true))
+        .await
+        .unwrap();
+    let registration = fs::read(fixture.slot(id).join("registration.json")).unwrap();
+    fs::write(
+        fixture.slot(id).join("data/disposable.sqlite"),
+        b"retained business data",
+    )
+    .unwrap();
+    let configuration =
+        fs::read(fixture.slot(id).join("configuration/configuration.json")).unwrap();
+    let mut changed: Value =
+        serde_json::from_slice(&fs::read(fixture.source.join("local-app.json")).unwrap()).unwrap();
+    changed["app"]["version"] = json!("1.1.0");
+    atomic_json(&fixture.source.join("local-app.json"), &changed).unwrap();
+    let edited_source = fixture.manager.configuration(id).await.unwrap();
+    assert_eq!(edited_source["state"], "failed");
+    assert_eq!(
+        edited_source["configuration"]["values"]["LABEL"],
+        "retained local label"
+    );
+    assert_eq!(edited_source["fields"].as_array().unwrap().len(), 2);
+    assert_eq!(edited_source["configuration"]["canStart"], false);
+    assert!(edited_source["lastError"]
+        .as_str()
+        .unwrap()
+        .contains("构建并更新"));
+    let (target, prepared) = fixture.prepare(Some(id)).await;
+    assert_eq!(
+        target.external_registration,
+        Some(serde_json::from_slice(&registration).unwrap())
+    );
+    let installed = fixture.apply(&target, &prepared).await.unwrap();
+    assert_eq!(installed.app_id, id);
+    assert_eq!(
+        fs::read(fixture.slot(id).join("data/disposable.sqlite")).unwrap(),
+        b"retained business data"
+    );
+    assert_eq!(
+        fs::read(fixture.slot(id).join("configuration/configuration.json")).unwrap(),
+        configuration
+    );
+    assert_eq!(
+        fs::read(fixture.source.join(".git/author-history-evidence")).unwrap(),
+        b"one original repository"
+    );
+    assert!(!fixture.program(&installed).join(".git").exists());
+    let detail = fixture.manager.configuration(id).await.unwrap();
+    assert_eq!(detail["installation"]["kind"], "managed");
+    assert_eq!(
+        detail["configuration"]["values"]["LABEL"],
+        "retained local label"
+    );
+    assert_eq!(detail["development"]["sourcePath"], json!(fixture.source));
+    assert_eq!(detail["objectLayout"]["source"]["state"], "available");
+    assert_eq!(detail["objectLayout"]["build"]["state"], "platform-build");
+    assert_eq!(detail["objectLayout"]["versioning"]["state"], "source-git");
+    let lease = fixture.manager.development_source_lease(id).await.unwrap();
+    assert_eq!(lease.source_root(), fixture.source);
+    assert!(!lease.source().runtime_is_source);
+    drop(lease);
+    fs::rename(
+        &fixture.source,
+        fixture.source.with_extension("retained-away"),
+    )
+    .unwrap();
+    let missing_source = fixture.manager.configuration(id).await.unwrap();
+    assert_eq!(missing_source["state"], "stopped");
+    assert_eq!(missing_source["objectLayout"]["source"]["state"], "missing");
+    assert_eq!(
+        missing_source["objectLayout"]["build"]["state"],
+        "unavailable"
+    );
+    assert!(fixture.manager.development_source_lease(id).await.is_err());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn managed_install_binds_an_explicit_matching_author_tree_and_rejects_runtime_copy() {
+    let fixture = Fixture::new();
+    let installed = fixture.install().await;
+    let id = &installed.app_id;
+    let registration = fs::read(fixture.slot(id).join("registration.json")).unwrap();
+    assert!(fixture.manager.development_source_lease(id).await.is_err());
+    assert!(fixture
+        .manager
+        .bind_development_source(id, fixture.program(&installed))
+        .await
+        .is_err());
+    let detail = fixture
+        .manager
+        .bind_development_source(id, fixture.source.clone())
+        .await
+        .unwrap();
+    assert_eq!(detail["state"], "stopped");
+    assert_eq!(detail["development"]["sourcePath"], json!(fixture.source));
+    assert_eq!(detail["objectLayout"]["build"]["state"], "platform-build");
+    assert_eq!(
+        fs::read(fixture.slot(id).join("registration.json")).unwrap(),
+        registration
+    );
+    let lease = fixture.manager.development_source_lease(id).await.unwrap();
+    assert_eq!(lease.source_root(), fixture.source);
+    assert!(!lease.source().runtime_is_source);
+    drop(lease);
     fixture.shutdown().await;
 }

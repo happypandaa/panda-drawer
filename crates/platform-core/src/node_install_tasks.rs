@@ -34,9 +34,12 @@ pub struct PrepareNodeInstallInput {
     pub source_id: String,
     pub expected_source_digest: String,
     pub target_app_id: Option<String>,
+    #[serde(default)]
+    pub build_source: bool,
 }
 
 pub struct NodeInstallTasks {
+    paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
     sources: Result<Arc<SourceAcquisitionManager>>,
@@ -78,6 +81,7 @@ impl NodeInstallTasks {
             issues.push(error.clone());
         }
         Arc::new(Self {
+            paths,
             store,
             tasks,
             sources,
@@ -92,6 +96,19 @@ impl NodeInstallTasks {
     }
     pub fn issues(&self) -> &[ApiError] {
         &self.issues
+    }
+    pub fn require_idle(&self) -> Result<()> {
+        self.store.check_workspace_available()?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(interrupted());
+        }
+        if !self.active.lock().unwrap().is_empty() {
+            return Err(ApiError::new(
+                "NODE_INSTALL_BUSY",
+                "安装任务尚未结束，请等待完成或取消准备。",
+            ));
+        }
+        Ok(())
     }
     pub fn list(&self) -> Result<Value> {
         self.store.check_workspace_available()?;
@@ -226,33 +243,124 @@ impl NodeInstallTasks {
         stop: watch::Receiver<bool>,
         cancel: watch::Receiver<bool>,
     ) -> Result<()> {
-        let control = InstallControl::new(stop, cancel);
+        let control = InstallControl::new(stop.clone(), cancel.clone());
         control.check()?;
-        let check_source = input.source_id.clone();
-        let check_digest = input.expected_source_digest.clone();
-        let check_task = task_id.to_owned();
-        let verifier: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
-            sources
-                .verify_ready_leased(&check_source, &check_digest, &check_task)
-                .and_then(|source| require_node_source(&source))
-        });
         let source = self
             .sources
             .as_ref()
             .map_err(Clone::clone)?
             .verify_ready_leased(&input.source_id, &input.expected_source_digest, task_id)?;
         require_node_source(&source)?;
+        let source_root = source
+            .source_path
+            .clone()
+            .ok_or_else(|| ApiError::new("SOURCE_CHANGED", "源码候选没有可用的已核验目录。"))?;
+        let manifest_bytes = crate::node_app_manifest::TrialManifest::read_bytes(&source_root)
+            .map_err(|_| ApiError::new("SOURCE_CHANGED", "源码候选的应用声明已变化。"))?;
+        let manifest = crate::node_app_manifest::TrialManifest::parse(&manifest_bytes)
+            .map_err(|_| ApiError::new("SOURCE_CHANGED", "源码候选的应用声明已变化。"))?;
+        // Preserve the current update contract before any declared npm script
+        // executes. The verified output is checked again by the installer.
+        let source_manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+        crate::node_app_install::compatible(&target, &source_manifest)?;
+        let requires_build = source.build_source_digest.is_none()
+            && manifest.development.as_ref().is_some_and(|declaration| {
+                matches!(
+                    declaration.build,
+                    crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
+                )
+            });
+        if requires_build && !input.build_source {
+            return Err(ApiError::new(
+                "NODE_INSTALL_BUILD_REQUIRED",
+                "此来源需要先构建，请选择“构建并准备安装材料”。",
+            ));
+        }
+        self.tasks.phase(task_id, "environment")?;
+        let tools = self.tasks.environment().resolve().await?;
+        control.check()?;
+        let output = if requires_build {
+            let git = crate::node_development_git::NodeGit::new(sources.git_environment())
+                .with_stop(stop.clone());
+            let before = git.status(&source_root).await?;
+            if !before.scope.complete
+                || !before.scope.protected_tracked_paths.is_empty()
+                || !matches!(before.repository.state.as_str(), "none" | "project-root")
+                || (before.repository.state == "project-root" && before.repository.git.is_none())
+            {
+                return Err(ApiError::new(
+                    "NODE_DEVELOPMENT_SCOPE_INVALID",
+                    "请先核对并处理此来源的源码范围。",
+                ));
+            }
+            let build_root = self.paths.data_root().join("node-development-builds");
+            crate::projects::check_no_symlinks(&build_root, true)?;
+            if !build_root.try_exists()? {
+                std::fs::create_dir(&build_root)?;
+            }
+            crate::projects::check_no_symlinks(&build_root, false)?;
+            self.tasks.phase(task_id, "building-source")?;
+            self.tasks.append(task_id,b"Explicit source build authorized. The declared npm build runs in a fresh isolated directory; the selected source and current app are not replaced.\n")?;
+            let output = crate::node_development_build::build_repository_scoped(
+                &source_root,
+                &build_root.join(task_id),
+                &tools,
+                stop,
+                cancel,
+                &before.scope.included_paths,
+            )
+            .await
+            .map_err(|issue| control.check().err().unwrap_or(issue))?;
+            let after = git.status(&source_root).await?;
+            if before.snapshot_digest != after.snapshot_digest
+                || serde_json::to_value(&before.repository.head)?
+                    != serde_json::to_value(&after.repository.head)?
+            {
+                return Err(ApiError::new(
+                    "NODE_DEVELOPMENT_CHANGED",
+                    "构建时来源源码或 Git 版本已变化，请重新准备。",
+                ));
+            }
+            control.check()?;
+            Some(Arc::new(output))
+        } else {
+            None
+        };
+        let check_source = input.source_id.clone();
+        let check_digest = input.expected_source_digest.clone();
+        let check_task = task_id.to_owned();
+        let check_build_digest = source.build_source_digest.clone();
+        let check_commit = source.commit.clone();
+        let check_output = output.clone();
+        let verifier: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+            let current = sources.verify_ready_leased(&check_source, &check_digest, &check_task)?;
+            require_node_source(&current)?;
+            if current.build_source_digest != check_build_digest || current.commit != check_commit {
+                return Err(ApiError::new(
+                    "SOURCE_CHANGED",
+                    "构建来源记录已变化，请重新准备。",
+                ));
+            }
+            if let Some(output) = &check_output {
+                output.verify()?;
+            }
+            Ok(())
+        });
+        let program_root = output
+            .as_ref()
+            .map_or(source_root, |output| output.program_root.clone());
+        let build_source_digest = output
+            .as_ref()
+            .map(|output| output.source_digest.clone())
+            .or(source.build_source_digest);
         let verified = VerifiedNodeSource::new(
             source.source_id,
-            source
-                .source_path
-                .ok_or_else(|| ApiError::new("SOURCE_CHANGED", "源码候选没有可用的已核验目录。"))?,
+            program_root,
             input.expected_source_digest,
             source.commit,
         )?
+        .with_build_source_digest(build_source_digest)?
         .with_revalidation(verifier);
-        self.tasks.phase(task_id, "environment")?;
-        let tools = self.tasks.environment().resolve().await?;
         control.check()?;
         self.installer()?
             .prepare(task_id, verified, target, tools, control, &self.tasks)

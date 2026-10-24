@@ -105,6 +105,7 @@ impl NodeApps {
     /// unavailable external source or broken business database remains removable.
     pub async fn delete_preview(&self, id: &str) -> Result<Value> {
         let _inner = self.inner.lock().await;
+        self.require_no_development_operation(id)?;
         let record = self.registration(id)?;
         let slot = self.root.join(id);
         ordinary_path(&slot, true)?;
@@ -152,6 +153,7 @@ impl NodeApps {
     /// continues on startup; a retained intent blocks execution until reviewed.
     pub async fn delete(&self, id: &str, input: DeleteNodeAppInput) -> Result<Value> {
         let mut inner = self.inner.lock().await;
+        self.require_no_development_operation(id)?;
         if inner.shutting_down {
             return Err(fail("平台正在退出，不能删除项目。"));
         }

@@ -29,6 +29,9 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, ApiError>;
 const MAX_METADATA: u64 = 256 * 1024;
+// A journal can retain both original declaration bytes and a prepared manifest
+// in target and publication records. Application manifests remain capped at 64 KiB.
+const MAX_INSTALL_JOURNAL: u64 = 1024 * 1024;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_TREE: u64 = 512 * 1024 * 1024;
 const MAX_FILES: usize = 50_000;
@@ -77,6 +80,7 @@ pub(crate) struct VerifiedNodeSource {
     root: PathBuf,
     content_digest: String,
     commit: Option<String>,
+    build_source_digest: Option<String>,
     revalidate: Option<Arc<dyn Fn() -> Result<()> + Send + Sync>>,
 }
 impl VerifiedNodeSource {
@@ -100,8 +104,16 @@ impl VerifiedNodeSource {
             root,
             content_digest,
             commit,
+            build_source_digest: None,
             revalidate: None,
         })
+    }
+    pub(crate) fn with_build_source_digest(mut self, digest: Option<String>) -> Result<Self> {
+        if digest.as_deref().is_some_and(|value| !hex(value, 64)) {
+            return Err(invalid("构建源码摘要无效。"));
+        }
+        self.build_source_digest = digest;
+        Ok(self)
     }
     pub(crate) fn with_revalidation(
         mut self,
@@ -122,6 +134,10 @@ pub(crate) struct InstallTargetSnapshot {
     pub generation: Option<String>,
     pub manifest: Option<Value>,
     pub configuration_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_registration: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development_source: Option<crate::node_apps::development::NodeDevelopmentBinding>,
 }
 impl InstallTargetSnapshot {
     pub(crate) fn fresh() -> Self {
@@ -131,6 +147,8 @@ impl InstallTargetSnapshot {
             generation: None,
             manifest: None,
             configuration_revision: 0,
+            external_registration: None,
+            development_source: None,
         }
     }
     pub(crate) fn validate(&self) -> Result<()> {
@@ -143,11 +161,41 @@ impl InstallTargetSnapshot {
                 .generation
                 .as_deref()
                 .is_some_and(|s| !identifier(s, "gen_"))
-            || self.registration_digest.is_some() != self.generation.is_some()
+            || (self.registration_digest.is_none()
+                && (self.generation.is_some()
+                    || self.external_registration.is_some()
+                    || self.development_source.is_some()))
+            || (self.registration_digest.is_some()
+                && (self.generation.is_some() == self.external_registration.is_some()))
             || self.registration_digest.is_some() != self.manifest.is_some()
             || (self.registration_digest.is_none() && self.configuration_revision != 0)
         {
-            return Err(invalid("安装目标须为新实例或受管安装实例。"));
+            return Err(invalid("安装目标身份无效。"));
+        }
+        if let Some(binding) = &self.development_source {
+            binding.validate_record()?;
+            if self
+                .manifest
+                .as_ref()
+                .is_none_or(|manifest| manifest["app"]["id"] != binding.manifest_id)
+            {
+                return Err(invalid("开发来源与安装目标不一致。"));
+            }
+        }
+        if let Some(previous) = &self.external_registration {
+            if previous["version"] != 1
+                || previous["id"] != self.app_id
+                || !previous["sourcePath"].is_string()
+                || !previous["manifestDigest"].is_string()
+                || self.development_source.as_ref().is_none_or(|binding| {
+                    previous["sourcePath"]
+                        != serde_json::to_value(&binding.source_root).unwrap_or(Value::Null)
+                        || previous["manifestDigest"] != binding.registered_manifest_digest
+                        || binding.registered_manifest().ok().as_ref() != self.manifest.as_ref()
+                })
+            {
+                return Err(invalid("外部应用来源记录无效。"));
+            }
         }
         Ok(())
     }
@@ -198,6 +246,8 @@ pub(crate) struct NodeInstallProvenance {
     pub source_id: String,
     pub source_digest: String,
     pub source_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_source_digest: Option<String>,
     pub node: ExecutableInfo,
     pub npm: ExecutableInfo,
     pub prepared_at: u64,
@@ -216,6 +266,8 @@ pub(crate) struct ManagedNodeRegistration {
     pub manifest_digest: String,
     pub program_digest: String,
     pub provenance: NodeInstallProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development_source: Option<crate::node_apps::development::NodeDevelopmentBinding>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -283,8 +335,10 @@ impl NodeAppInstaller {
         Ok(path)
     }
     fn journal(&self, id: &str) -> Result<Journal> {
-        let journal: Journal =
-            serde_json::from_slice(&read_small(&self.operation(id)?.join("install.json"))?)?;
+        let journal: Journal = serde_json::from_slice(&read_file(
+            &self.operation(id)?.join("install.json"),
+            MAX_INSTALL_JOURNAL,
+        )?)?;
         if journal.version != 1
             || journal.candidate_id != id
             || !identifier(&journal.prepare_task_id, "task_")
@@ -311,6 +365,11 @@ impl NodeAppInstaller {
                 || prepared.app_id != journal.target.app_id
                 || !identifier(&prepared.generation, "gen_")
                 || !hex(&prepared.program_digest, 64)
+                || prepared
+                    .provenance
+                    .build_source_digest
+                    .as_deref()
+                    .is_some_and(|value| !hex(value, 64))
             {
                 return Err(invalid("安装产物记录身份无效。"));
             }
@@ -340,6 +399,10 @@ impl NodeAppInstaller {
                 || !hex(&registration.manifest_digest, 64)
                 || registration.provenance.source_id != prepared.provenance.source_id
                 || registration.provenance.source_digest != prepared.provenance.source_digest
+                || registration.provenance.source_commit != prepared.provenance.source_commit
+                || registration.provenance.build_source_digest
+                    != prepared.provenance.build_source_digest
+                || registration.development_source != journal.target.development_source
             {
                 return Err(invalid("安装登记与候选产物身份不一致。"));
             }
@@ -347,6 +410,9 @@ impl NodeAppInstaller {
         Ok(journal)
     }
     fn save(&self, journal: &Journal) -> Result<()> {
+        if serde_json::to_vec_pretty(journal)?.len() as u64 > MAX_INSTALL_JOURNAL {
+            return Err(invalid("安装记录超出大小限制，现场保留。"));
+        }
         atomic_json(
             &self.operation(&journal.candidate_id)?.join("install.json"),
             journal,
@@ -538,6 +604,7 @@ impl NodeAppInstaller {
                 source_id: source.source_id.clone(),
                 source_digest: source.content_digest.clone(),
                 source_commit: source.commit.clone(),
+                build_source_digest: source.build_source_digest.clone(),
                 node: tools.node.clone(),
                 npm: tools.npm.clone(),
                 prepared_at: now(),
@@ -686,6 +753,7 @@ impl NodeAppInstaller {
             manifest_digest: digest_bytes(&read_small(&program.join("local-app.json"))?),
             program_digest: prepared.program_digest.clone(),
             provenance: prepared.provenance.clone(),
+            development_source: fresh.development_source.clone(),
         });
         journal.apply_task_id = Some(task_id.into());
         tasks.phase(task_id, "committing")?;
@@ -752,6 +820,20 @@ impl NodeAppInstaller {
         }
         if registration_digest(&slot)? != target.registration_digest {
             return Err(changed());
+        }
+        if let Some(previous) = &target.external_registration {
+            let actual: Value =
+                serde_json::from_slice(&read_small(&slot.join("registration.json"))?)?;
+            if actual != *previous {
+                return Err(changed());
+            }
+            let binding = target.development_source.as_ref().ok_or_else(changed)?;
+            binding.source(&target.app_id, true).validate()?;
+            if previous["sourcePath"] != serde_json::to_value(&binding.source_root)?
+                || previous["manifestDigest"] != binding.registered_manifest_digest
+            {
+                return Err(changed());
+            }
         }
         if let Some(expected) = &target.generation {
             let record: ManagedNodeRegistration =
@@ -987,7 +1069,7 @@ fn load_manifest(root: &Path) -> Result<TrialManifest> {
         .map_err(|_| invalid("安装候选缺少声明的网页、后端或说明文件。"))?;
     Ok(manifest)
 }
-fn npm_root(root: &Path, manifest: &TrialManifest) -> Result<PathBuf> {
+pub(crate) fn npm_root(root: &Path, manifest: &TrialManifest) -> Result<PathBuf> {
     let backend = root.join(
         &manifest
             .backend
@@ -1006,7 +1088,7 @@ fn npm_root(root: &Path, manifest: &TrialManifest) -> Result<PathBuf> {
     }
     Ok(candidates.into_iter().next().unwrap())
 }
-fn validate_npm_input(root: &Path) -> Result<()> {
+pub(crate) fn validate_npm_input(root: &Path) -> Result<()> {
     let package: Value = serde_json::from_slice(&read_small(&root.join("package.json"))?)?;
     let lock: Value = serde_json::from_slice(&read_small(&root.join("package-lock.json"))?)?;
     if root.join("npm-shrinkwrap.json").try_exists()?
@@ -1596,10 +1678,14 @@ fn tree_digest(root: &Path, source: bool, control: &InstallControl) -> Result<St
                     && path
                         .extension()
                         .and_then(|v| v.to_str())
-                        .is_some_and(|s| matches!(s, "node" | "dylib" | "so" | "dll" | "exe"))
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("node"))
                 {
-                    return Err(invalid("首批安装不支持本机扩展或额外平台可执行程序。"));
+                    return Err(invalid("当前安装不支持第三方 Node 原生扩展（.node）。"));
                 }
+                // Keep dependency payloads intact, including other platforms'
+                // executables and libraries. Their presence is not execution or
+                // evidence of runtime compatibility. npm lifecycle scripts stay
+                // disabled; the installer never launches these bundled tools.
                 let content = read_file(&entry.path(), MAX_FILE)?;
                 budget.1 += content.len() as u64;
                 if budget.1 > MAX_TREE {
@@ -1727,6 +1813,11 @@ pub(crate) fn managed_program_path(
         || !hex(&record.program_digest, 64)
         || !identifier(&record.provenance.source_id, "src_")
         || !hex(&record.provenance.source_digest, 64)
+        || record
+            .provenance
+            .build_source_digest
+            .as_deref()
+            .is_some_and(|value| !hex(value, 64))
         || record
             .provenance
             .source_commit

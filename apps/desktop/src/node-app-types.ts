@@ -56,6 +56,7 @@ export interface NodeAppDetail {
   runningRevision: number | null;
   lastError: string | null;
   configuration: {
+    unavailable?: boolean;
     revision: number;
     values: Record<string, NodeConfigurationValue>;
     secretStatus: Record<string, 'set' | 'missing' | 'endpoint-changed'>;

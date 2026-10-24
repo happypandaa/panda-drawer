@@ -118,7 +118,9 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
     assert_eq!(detail["state"], "stopped");
     let layout = &detail["objectLayout"];
     assert_eq!(layout["kind"], "local-node-source");
-    assert_eq!(layout["source"]["state"], "unverified");
+    assert_eq!(layout["source"]["state"], "available");
+    assert_eq!(layout["source"]["path"], json!(fixture.source));
+    assert_eq!(layout["versioning"]["state"], "source-git");
     assert_eq!(layout["build"]["state"], "unavailable");
     assert_eq!(layout["runtime"]["external"], true);
     assert_eq!(
