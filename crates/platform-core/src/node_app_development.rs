@@ -96,6 +96,15 @@ impl NodeDevelopmentSourceLease<'_> {
     pub fn source(&self) -> &NodeDevelopmentSource {
         &self.source
     }
+    pub fn registration_digest(&self) -> &str {
+        &self.registration_digest
+    }
+    pub fn source_restore_control_path(&self) -> PathBuf {
+        self.apps
+            .root
+            .join(&self.source.app_id)
+            .join("source-restore.json")
+    }
     pub fn validate(&self) -> Result<()> {
         self.apps.require_no_pending_delete(&self.source.app_id)?;
         if node_app_install::registration_digest(&self.apps.root.join(&self.source.app_id))?
@@ -135,6 +144,54 @@ impl NodeApps {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn require_no_source_restore(&self, id: &str) -> Result<()> {
+        crate::node_development_git::require_source_restore_control_clear(
+            &self.root.join(id).join("source-restore.json"),
+        )?;
+        let registration = self.root.join(id).join("registration.json");
+        crate::projects::check_no_symlinks(&registration, true)?;
+        if !registration.try_exists()? {
+            return Ok(());
+        }
+        let record = self.registration(id)?;
+        let binding = self.read_development_binding(id)?.or_else(|| {
+            record
+                .managed
+                .as_ref()
+                .and_then(|managed| managed.development_source.clone())
+        });
+        let source = binding
+            .map(|binding| binding.source_root)
+            .or_else(|| record.managed.is_none().then_some(record.source_path));
+        if let Some(source) = source {
+            crate::node_development_git::require_source_restore_clear(&source)?;
+        }
+        Ok(())
+    }
+
+    /// Recovery owns the same instance token, while bypassing only the durable
+    /// pending-restore gate. Runtime and deletion protections remain enforced.
+    pub async fn development_restore_source_lease(
+        &self,
+        id: &str,
+    ) -> Result<NodeDevelopmentSourceLease<'_>> {
+        let lease = self.source_lease(id, false).await?;
+        let inner = self.inner.lock().await;
+        let marker = self.root.join(id).join("active.json");
+        crate::projects::check_no_symlinks(&marker, true)?;
+        if lease.source.runtime_is_source
+            || inner.shutting_down
+            || inner.running.contains_key(id)
+            || marker.try_exists()?
+        {
+            return Err(ApiError::new(
+                "NODE_SOURCE_RESTORE_RUNTIME_ACTIVE",
+                "请先分离运行副本并关闭应用，确认服务完成收尾后再取回源码。",
+            ));
+        }
+        Ok(lease)
     }
 
     pub(super) fn read_development_binding(
@@ -276,6 +333,7 @@ impl NodeApps {
         }
         let runtime_manifest = self.manifest(&record)?;
         let source_manifest = self.load_source(&source)?;
+        crate::node_development_git::require_source_restore_clear(&source)?;
         if runtime_manifest.app.id != source_manifest.app.id {
             return Err(fail("所选源码不属于此应用。"));
         }

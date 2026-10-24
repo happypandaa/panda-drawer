@@ -6,6 +6,16 @@ use super::*;
 
 const NODE_POLICY: &str = "node-source-v1";
 
+#[path = "node_development_restore.rs"]
+mod restore;
+pub(crate) use restore::{
+    require_clear as require_source_restore_clear,
+    require_control_clear as require_source_restore_control_clear,
+};
+pub use restore::{
+    NodeRestoreApplyInput, NodeRestorePreviewInput, NodeRestoreRecoverInput, NodeRestoreScope,
+};
+
 pub struct NodeGit {
     environment: GitEnvironmentManager,
     stop: Option<watch::Receiver<bool>>,
@@ -523,6 +533,7 @@ fn validate_save(input: &GitSaveInput) -> Result<(), ApiError> {
 
 struct NodeScan {
     files: BTreeMap<String, SourceFile>,
+    entries: BTreeSet<String>,
     excluded: Vec<GitExcludedPath>,
     unclassified: Vec<String>,
     markers: Vec<GitMarker>,
@@ -709,6 +720,7 @@ fn scan_node(root: &Path) -> Result<NodeScan, ApiError> {
     };
     let mut scan = NodeScan {
         files: BTreeMap::new(),
+        entries: BTreeSet::new(),
         excluded: vec![],
         unclassified: vec![],
         markers: vec![],
@@ -740,6 +752,7 @@ fn scan_node(root: &Path) -> Result<NodeScan, ApiError> {
                 .ok_or_else(unsafe_path)?
                 .to_owned();
             valid_relative(&relative)?;
+            scan.entries.insert(relative.clone());
             let metadata = fs::symlink_metadata(&path)?;
             if path.file_name().is_some_and(|name| name == ".git") {
                 if depth > 0 {
@@ -897,6 +910,10 @@ async fn inspect_node(
         let git_dir = root.join(".git");
         inspect_repository_files(&git_dir, lock, &mut view.issues)?;
         pending_node_operations(&git_dir, &mut view.issues)?;
+        view.source_restore = restore::guard_state(root);
+        if let Err(issue) = restore::require_clear(root) {
+            view.issues.push(issue);
+        }
         repository = repository_digest(&git_dir)?;
         if let Some(tools) = tools.filter(|_| view.issues.is_empty()) {
             check_config_path(&git_dir, tools, context, &mut view.issues).await?;

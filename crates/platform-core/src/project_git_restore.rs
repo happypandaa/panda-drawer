@@ -778,7 +778,9 @@ async fn validate_target_policy(
     }
     Ok(())
 }
-fn validate_collisions<'a>(paths: impl Iterator<Item = &'a str>) -> Result<(), ApiError> {
+pub(super) fn validate_collisions<'a>(
+    paths: impl Iterator<Item = &'a str>,
+) -> Result<(), ApiError> {
     let mut ancestors = BTreeMap::<String, String>::new();
     let mut files = BTreeSet::new();
     for path in paths {
@@ -1108,7 +1110,7 @@ fn open_directory(path: &Path) -> Result<File, ApiError> {
 /// Both modes preserve whichever object was present at the syscall boundary.
 /// Never unlink a displaced file, including after a failed verification.
 #[cfg(target_os = "macos")]
-fn move_preserving(from: &Path, to: &Path, exchange: bool) -> Result<(), ApiError> {
+pub(super) fn move_preserving(from: &Path, to: &Path, exchange: bool) -> Result<(), ApiError> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let from_parent = open_directory(from.parent().ok_or_else(unsafe_path)?)?;
     let to_parent = open_directory(to.parent().ok_or_else(unsafe_path)?)?;
@@ -1146,13 +1148,13 @@ fn move_preserving(from: &Path, to: &Path, exchange: bool) -> Result<(), ApiErro
     Ok(())
 }
 #[cfg(not(target_os = "macos"))]
-fn move_preserving(_from: &Path, _to: &Path, _exchange: bool) -> Result<(), ApiError> {
+pub(super) fn move_preserving(_from: &Path, _to: &Path, _exchange: bool) -> Result<(), ApiError> {
     Err(restore_error(
         "UNSUPPORTED_PLATFORM",
         "源码取回事务目前仅验证 macOS。",
     ))
 }
-fn ensure_live_parent(root: &Path, path: &str) -> Result<(), ApiError> {
+pub(super) fn ensure_live_parent(root: &Path, path: &str) -> Result<(), ApiError> {
     valid_relative(path)?;
     let parent = Path::new(path).parent().ok_or_else(unsafe_path)?;
     let mut current = root.to_path_buf();
