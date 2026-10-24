@@ -149,6 +149,230 @@ fn good(task: &TaskRecord) -> &Value {
     task.result.as_ref().unwrap()
 }
 
+fn lifecycle_evidence(paths: &[PathBuf]) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(path: &Path, evidence: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        if metadata.is_dir() {
+            evidence.insert(path.into(), vec![]);
+            for entry in fs::read_dir(path).unwrap() {
+                collect(&entry.unwrap().path(), evidence);
+            }
+        } else {
+            assert!(metadata.is_file());
+            evidence.insert(path.into(), fs::read(path).unwrap());
+        }
+    }
+    let mut evidence = std::collections::BTreeMap::new();
+    for path in paths {
+        collect(path, &mut evidence);
+    }
+    evidence
+}
+
+async fn retained_delete_journal() -> (Fixture, TaskRecord, Journal, Vec<PathBuf>) {
+    let fixture = Fixture::new().await;
+    let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
+    let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
+    let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    journal.directory_name = Some(root_directory_name(&root).unwrap());
+    journal.directory_identity = Some(expected.clone());
+    let control = fixture.store.control(&fixture.id).unwrap();
+    let mut state = control.get();
+    state.pending_build = true;
+    state.pending_build_reason = Some("Retain later control and every payload".into());
+    control.set(state.clone()).unwrap();
+    journal.control = Some(state);
+    fixture
+        .store
+        .begin_deletion(&fixture.id, &task.task_id, &journal.target_epoch, &expected)
+        .unwrap();
+    let evidence = vec![
+        root,
+        fixture.lifecycle.operation(&task.task_id),
+        fixture
+            .paths
+            .workspace_root()
+            .join(".platform/project-state"),
+    ];
+    fs::create_dir_all(&evidence[1]).unwrap();
+    fs::write(evidence[1].join("keep.txt"), b"retained operation evidence").unwrap();
+    drop(lease);
+    (fixture, task, journal, evidence)
+}
+
+#[tokio::test]
+async fn resolved_system_trash_journal_restarts_without_reading_markers_or_rewriting_evidence() {
+    for opaque_marker in [false, true] {
+        let (fixture, task, mut journal, mut evidence) = retained_delete_journal().await;
+        let retained = fixture.paths.data_root().join("disposable-system-trash");
+        fs::create_dir(&retained).unwrap();
+        fs::write(
+            retained.join("keep.txt"),
+            b"operating-system trash evidence",
+        )
+        .unwrap();
+        evidence.push(retained.clone());
+        journal.system_trash = true;
+        journal.system_trash_path = Some(retained.clone());
+        journal.phase = "system-trash-moved".into();
+        journal.committed = true;
+        journal.resolved = true;
+        journal.result = json!({"projectId":fixture.id,"operationOutcome":"system_trashed","systemTrashPath":retained,"restoreAvailable":true});
+        let path = fixture.lifecycle.journal_path(&task.task_id);
+        // Preserve arbitrary original formatting too, rather than reserializing
+        // an already completed old-worktree record during startup.
+        fs::write(&path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+        if opaque_marker {
+            fs::write(
+                fixture
+                    .paths
+                    .workspace_root()
+                    .join(".platform/project-state/deleting")
+                    .join(format!("{}.json", fixture.id)),
+                b"opaque later marker must not be read by this historical journal",
+            )
+            .unwrap();
+        }
+        let before = lifecycle_evidence(&evidence);
+        let original_result = journal.result.clone();
+        assert_eq!(
+            fixture.lifecycle.reconcile(&mut journal).unwrap(),
+            original_result
+        );
+        let fixture = fixture.restart_task(task.clone()).await;
+        let mut recovered_result = original_result;
+        recovered_result["recovered"] = true.into();
+        assert_eq!(
+            fixture.tasks.task(&task.task_id).unwrap().result,
+            Some(recovered_result)
+        );
+        assert_eq!(lifecycle_evidence(&evidence), before);
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn unresolved_system_trash_intent_never_enters_direct_delete_recovery() {
+    for (system_trash, path_present, phase_only) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let (fixture, _task, mut journal, mut evidence) = retained_delete_journal().await;
+        let retained = fixture.paths.data_root().join("disposable-system-trash");
+        fs::create_dir(&retained).unwrap();
+        fs::write(
+            retained.join("keep.txt"),
+            b"preserve possible trash payload",
+        )
+        .unwrap();
+        evidence.push(retained.clone());
+        journal.system_trash = system_trash;
+        journal.system_trash_path = path_present.then_some(retained);
+        journal.phase = if phase_only {
+            "system-trash-intent"
+        } else {
+            "delete-intent"
+        }
+        .into();
+        fixture.lifecycle.save(&journal).unwrap();
+        let before = lifecycle_evidence(&evidence);
+        assert_eq!(
+            fixture.lifecycle.reconcile(&mut journal).unwrap_err().code,
+            "RECOVERY_REQUIRED"
+        );
+        let error = LifecycleManager::new(
+            fixture.paths.clone(),
+            fixture.store.clone(),
+            fixture.tasks.clone(),
+            fixture.maintenance.clone(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, "RECOVERY_REQUIRED");
+        assert_eq!(lifecycle_evidence(&evidence), before);
+        assert!(fixture
+            .store
+            .pending_deletion(&fixture.id)
+            .unwrap()
+            .is_some());
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn ordinary_delete_recovery_keeps_false_null_compatibility_and_defaults_missing_fields() {
+    for omit_fields in [false, true] {
+        let (fixture, task, journal, evidence) = retained_delete_journal().await;
+        let path = fixture.lifecycle.journal_path(&task.task_id);
+        let mut value = json!(journal);
+        if omit_fields {
+            value.as_object_mut().unwrap().remove("systemTrash");
+            value.as_object_mut().unwrap().remove("systemTrashPath");
+        }
+        builds::atomic_json(&path, &value).unwrap();
+        let parsed: Journal = read_json(&path).unwrap();
+        assert!(!parsed.system_trash);
+        assert!(parsed.system_trash_path.is_none());
+        let root_before = lifecycle_evidence(&evidence[..1]);
+        let fixture = fixture.restart_task(task.clone()).await;
+        assert_eq!(
+            fixture.tasks.task(&task.task_id).unwrap().result.unwrap()["operationOutcome"],
+            "delete_incomplete"
+        );
+        assert_eq!(lifecycle_evidence(&evidence[..1]), root_before);
+        let saved: Value = read_json(&path).unwrap();
+        assert_eq!(saved["systemTrash"], false);
+        assert_eq!(saved["systemTrashPath"], Value::Null);
+        assert_eq!(saved["resolved"], true);
+        assert!(fixture
+            .store
+            .pending_deletion(&fixture.id)
+            .unwrap()
+            .is_some());
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn compatible_journal_fields_do_not_relax_schema_identity_or_type_validation() {
+    for (field, value, expected_code) in [
+        ("schemaVersion", json!(2), "RECOVERY_REQUIRED"),
+        ("unexpectedField", json!(true), "INVALID_JSON"),
+        ("systemTrash", json!("false"), "INVALID_JSON"),
+        ("systemTrash", Value::Null, "INVALID_JSON"),
+        ("systemTrashPath", json!(false), "INVALID_JSON"),
+        (
+            "systemTrashPath",
+            json!({"path":"untrusted"}),
+            "INVALID_JSON",
+        ),
+        ("projectId", json!("../unsafe"), "RECOVERY_REQUIRED"),
+        ("taskId", json!("task_other"), "RECOVERY_REQUIRED"),
+        ("targetEpoch", json!("invalid-epoch"), "RECOVERY_REQUIRED"),
+    ] {
+        let (fixture, task, mut journal, evidence) = retained_delete_journal().await;
+        journal.system_trash = true;
+        journal.resolved = true;
+        journal.phase = "system-trash-moved".into();
+        let mut record = json!(journal);
+        record[field] = value;
+        builds::atomic_json(&fixture.lifecycle.journal_path(&task.task_id), &record).unwrap();
+        let before = lifecycle_evidence(&evidence);
+        let error = LifecycleManager::new(
+            fixture.paths.clone(),
+            fixture.store.clone(),
+            fixture.tasks.clone(),
+            fixture.maintenance.clone(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, expected_code, "{field}");
+        assert_eq!(lifecycle_evidence(&evidence), before, "{field}");
+        fixture.stop().await;
+    }
+}
+
 #[path = "direct_delete_tests.rs"]
 mod direct_delete;
 

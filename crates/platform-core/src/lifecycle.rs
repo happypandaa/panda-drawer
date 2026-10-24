@@ -50,6 +50,12 @@ struct Journal {
     project_id: String,
     source_project_id: Option<String>,
     trash_id: Option<String>,
+    // Compatibility evidence from a former schema-v1 worktree. This manager
+    // never executes operating-system trash operations or adopts their intent.
+    #[serde(default)]
+    system_trash: bool,
+    #[serde(default)]
+    system_trash_path: Option<PathBuf>,
     target_epoch: String,
     phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -496,6 +502,8 @@ impl LifecycleManager {
             project_id: project.into(),
             source_project_id: None,
             trash_id: None,
+            system_trash: false,
+            system_trash_path: None,
             target_epoch: Uuid::new_v4().to_string(),
             phase: "intent".into(),
             directory_name: None,
@@ -1586,6 +1594,22 @@ impl LifecycleManager {
         Ok(())
     }
     fn reconcile(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+        // These records have different deletion semantics. In particular, even
+        // resolved records must not inspect or retire a direct-delete marker.
+        if journal.system_trash
+            || journal.system_trash_path.is_some()
+            || journal.phase.starts_with("system-trash")
+        {
+            return if journal.resolved {
+                Ok(journal.result.clone())
+            } else {
+                Err(ApiError::new(
+                    "RECOVERY_REQUIRED",
+                    "A retained operating-system trash operation needs compatible recovery; all files and records were preserved",
+                )
+                .detail("taskId", journal.task_id.clone()))
+            };
+        }
         if journal.kind == "delete" && journal.trash_id.is_none() {
             return self.reconcile_direct_delete(journal);
         }
