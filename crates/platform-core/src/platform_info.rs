@@ -13,11 +13,12 @@ pub(crate) fn info() -> Value {
     json!({
         "name": crate::DISPLAY_NAME,
         "identifier": crate::APP_IDENTIFIER,
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::APP_VERSION,
         "architecture": std::env::consts::ARCH,
         "installationPath": installation_root(),
         "executablePath": std::env::current_exe().ok(),
-        "distribution": "internal-development",
-        "updates": {"available":false,"reason":"正式发行源尚未配置；内部开发包由项目交付"}
+        "distribution": crate::build_profile::DISTRIBUTION,
+        "build": crate::build_profile::info(),
+        "updates": {"available":false,"reason": if crate::build_profile::PRODUCTION_PROFILE { "正式版资源签名、公证和升级流程尚未完成" } else { "正式发行源尚未配置；内部开发包由项目交付" }}
     })
 }

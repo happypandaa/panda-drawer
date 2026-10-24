@@ -8,6 +8,10 @@ publish = false
 name = "local-projects-dev"
 path = "src/main.rs"
 
+[features]
+default = []
+production-profile = ["platform-core/production-profile"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 platform-core = { path = "../platform-core" }

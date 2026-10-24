@@ -1692,7 +1692,7 @@ fn workspace_scan(
             );
         builds::atomic_json(
             &cache,
-            &json!({"schemaVersion":SCHEMA,"scope":{"kind":"platformProgram"},"installationRootIdentity":root_identity(root).ok(),"installedBuild":executable,"version":env!("CARGO_PKG_VERSION"),"result":program}),
+            &json!({"schemaVersion":SCHEMA,"scope":{"kind":"platformProgram"},"installationRootIdentity":root_identity(root).ok(),"installedBuild":executable,"version":crate::APP_VERSION,"result":program}),
         )?;
     }
     Ok(

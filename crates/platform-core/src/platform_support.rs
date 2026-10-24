@@ -84,15 +84,32 @@ pub const fn support_for(platform: HostPlatform) -> RuntimeSupport {
 }
 
 pub const fn runtime_support() -> RuntimeSupport {
+    if crate::build_profile::PRODUCTION_PROFILE {
+        return RuntimeSupport {
+            platform: HostPlatform::current(),
+            runtime_available: false,
+            error_code: Some(crate::build_profile::PRODUCTION_RESOURCE_ERROR),
+            message: crate::build_profile::PRODUCTION_RESOURCE_MESSAGE,
+        };
+    }
     support_for(HostPlatform::current())
 }
 
 /// Check the compiled target. There is deliberately no caller-selected host,
 /// feature flag, environment variable or command-line override for admission.
 pub fn require_runtime() -> Result<(), RuntimeSupportError> {
-    require_for(HostPlatform::current())
+    let support = runtime_support();
+    match support.error_code {
+        Some(code) => Err(RuntimeSupportError {
+            platform: support.platform,
+            code,
+            message: support.message,
+        }),
+        None => Ok(()),
+    }
 }
 
+#[cfg(test)]
 fn require_for(platform: HostPlatform) -> Result<(), RuntimeSupportError> {
     let support = support_for(platform);
     match support.error_code {
@@ -172,9 +189,17 @@ mod tests {
             HostPlatform::Unsupported
         };
         assert_eq!(HostPlatform::current(), expected);
-        assert_eq!(runtime_support(), support_for(expected));
-        assert_eq!(require_runtime(), require_for(expected));
-        #[cfg(target_os = "windows")]
+        if crate::build_profile::PRODUCTION_PROFILE {
+            assert_eq!(
+                require_runtime().unwrap_err().code,
+                crate::build_profile::PRODUCTION_RESOURCE_ERROR
+            );
+            assert!(!runtime_support().runtime_available);
+        } else {
+            assert_eq!(runtime_support(), support_for(expected));
+            assert_eq!(require_runtime(), require_for(expected));
+        }
+        #[cfg(all(target_os = "windows", not(feature = "production-profile")))]
         assert_eq!(
             require_runtime().unwrap_err().code,
             "PLATFORM_STAGE_UNAVAILABLE"

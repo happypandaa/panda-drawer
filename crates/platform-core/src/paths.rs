@@ -126,6 +126,9 @@ impl RuntimePaths {
     }
 
     fn default_root() -> Result<PathBuf> {
+        if crate::build_profile::PRODUCTION_PROFILE {
+            crate::platform_support::require_runtime()?;
+        }
         let base = dirs::data_local_dir()
             .context("Cannot locate this user's application data directory")?;
         Ok(base.join(APP_IDENTIFIER))
@@ -240,6 +243,9 @@ impl RuntimePaths {
     }
 
     fn validate_existing(&self) -> Result<()> {
+        if crate::build_profile::PRODUCTION_PROFILE {
+            crate::platform_support::require_runtime()?;
+        }
         self.validate_marker()?;
         for dir in [
             self.runtime_dir(),
@@ -394,6 +400,88 @@ impl Discovery {
             bail!("Invalid runtime port");
         }
         Ok(port)
+    }
+}
+
+#[cfg(all(test, feature = "production-profile"))]
+mod production_profile_tests {
+    use super::*;
+
+    fn rejected<T>(result: anyhow::Result<T>) {
+        let error = match result {
+            Ok(_) => panic!("metadata-only production runtime was admitted"),
+            Err(error) => error,
+        };
+        let gate = error
+            .downcast_ref::<crate::platform_support::RuntimeSupportError>()
+            .expect("admission must run before filesystem/resource validation");
+        assert_eq!(gate.code, crate::build_profile::PRODUCTION_RESOURCE_ERROR);
+        let api_error = crate::ApiError::from(*gate);
+        assert_eq!(api_error.details["operationOutcome"], "not_started");
+    }
+
+    #[test]
+    fn production_profile_public_paths_refuse_before_root_resolution() {
+        rejected(RuntimePaths::default_root());
+        rejected(RuntimePaths::initialize());
+        rejected(RuntimePaths::discover());
+        rejected(RuntimePaths::identity_repair_preview());
+        rejected(RuntimePaths::identity_repair(serde_json::json!({})));
+    }
+
+    #[tokio::test]
+    async fn production_profile_existing_and_new_paths_resources_and_credentials_are_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("production-must-not-be-created");
+        rejected(RuntimePaths::initialize_at(missing.clone()));
+        rejected(RuntimePaths::identity_repair_paths(missing.clone()));
+        rejected(RuntimePaths::identity_repair_at(
+            missing.clone(),
+            serde_json::json!({}),
+        ));
+        let node_error = crate::node_apps::NodeApps::new(missing.clone(), missing.join("node"))
+            .err()
+            .expect("production Node manager must not initialize");
+        assert_eq!(
+            node_error.code,
+            crate::build_profile::PRODUCTION_RESOURCE_ERROR
+        );
+        assert_eq!(node_error.details["operationOutcome"], "not_started");
+        assert!(!missing.exists());
+
+        let root = temp.path().join("existing-production-sentinel");
+        fs::create_dir(&root).unwrap();
+        let sentinel = root.join(MARKER);
+        fs::write(
+            &sentinel,
+            b"retained evidence; intentionally not valid JSON",
+        )
+        .unwrap();
+        let paths = RuntimePaths::at(root.clone());
+        rejected(paths.acquire_lock());
+        rejected(paths.read_discovery());
+        rejected(paths.read_control_token());
+        assert!(!root.join("instance.lock").exists());
+        let owned_file = tempfile::tempfile().unwrap();
+        let lock = InstanceLock {
+            _file: owned_file,
+            root: root.clone(),
+        };
+        rejected(
+            Box::pin(crate::RuntimeService::start_with_resources(
+                paths,
+                lock,
+                missing.join("resources"),
+                missing.join("cli"),
+            ))
+            .await,
+        );
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            b"retained evidence; intentionally not valid JSON"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        assert!(!missing.exists());
     }
 }
 

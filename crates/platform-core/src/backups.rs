@@ -594,7 +594,7 @@ pub fn prepare_snapshot(
                 .map_err(|e| invalid(e.to_string()))?,
             kind: options.kind,
             note: options.note,
-            platform_version: env!("CARGO_PKG_VERSION").into(),
+            platform_version: crate::APP_VERSION.into(),
             sqlite_version: rusqlite::version().into(),
             sdk_api_version: project_manifest.sdk_api_version,
             has_artifact,

@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use platform_core::{
     platform_support::RuntimeSupportError, Discovery, RuntimePaths, API_VERSION, APP_IDENTIFIER,
-    DISPLAY_NAME, ENVIRONMENT,
+    APP_VERSION, DISPLAY_NAME, ENVIRONMENT,
 };
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::Serialize;
@@ -11,6 +11,17 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+const CLI_ABOUT: &str = if platform_core::build_profile::PRODUCTION_PROFILE {
+    "Inspect production candidate metadata (runtime unavailable)"
+} else {
+    "Manage projects in the isolated development platform"
+};
+const CLI_LONG_ABOUT: &str = if platform_core::build_profile::PRODUCTION_PROFILE {
+    "Inspect the fixed production candidate with build-info. Signed resource anchors are not configured, so every runtime command is rejected before reading inputs, data roots, discovery or credentials. This metadata foundation is not a released, signed or notarized application."
+} else {
+    "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, permanently delete selected projects, restore or purge legacy trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+};
+
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 const MAX_INPUT_BYTES: u64 = 2_000_000;
 const MAX_BUSINESS_RESPONSE_BYTES: u64 = 8_200_000;
@@ -18,9 +29,9 @@ const MAX_BUSINESS_RESPONSE_BYTES: u64 = 8_200_000;
 #[derive(Parser)]
 #[command(
     name = "local-projects-dev",
-    version,
-    about = "Manage projects in the isolated development platform",
-    long_about = "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, permanently delete selected projects, restore or purge legacy trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    version = APP_VERSION,
+    about = CLI_ABOUT,
+    long_about = CLI_LONG_ABOUT
 )]
 struct Cli {
     #[command(subcommand)]
@@ -29,6 +40,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read compiled identity/version metadata offline, without runtime or data access.
+    BuildInfo(OutputOptions),
     /// Acquire public source without executing it, or inspect local declarations.
     Source {
         #[command(subcommand)]
@@ -453,7 +466,21 @@ fn success(data: Value) -> Value {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if platform_core::build_profile::PRODUCTION_PROFILE
+        && !matches!(&cli.command, Command::BuildInfo(_))
+    {
+        if let Err(gate) = platform_core::platform_support::require_runtime() {
+            // Parsing is side-effect free; reject before any command-specific
+            // input file, discovery record, data directory or credential read.
+            let json_output = std::env::args_os().any(|argument| argument == "--json");
+            return write_result(json_output, Err(runtime_gate_error(gate)));
+        }
+    }
     let (json_output, result) = match cli.command {
+        Command::BuildInfo(options) => (
+            options.json,
+            Ok(success(platform_core::build_profile::info())),
+        ),
         Command::Service {
             command: ServiceCommand::Status(options),
         } => (options.json, service_status().map(success)),
@@ -476,6 +503,10 @@ fn main() -> ExitCode {
         Command::Storage { command } => storage_command(command),
         Command::Source { command } => source_command(command),
     };
+    write_result(json_output, result)
+}
+
+fn write_result(json_output: bool, result: Result<Value>) -> ExitCode {
     let (output, code) = match result {
         Ok(value) => {
             let code = if value["ok"] == true { 0 } else { 1 };
@@ -1508,7 +1539,7 @@ fn environment_doctor() -> Result<Value> {
         "identifier": APP_IDENTIFIER,
         "environment": ENVIRONMENT,
         "apiVersion": API_VERSION,
-        "cliVersion": env!("CARGO_PKG_VERSION"),
+        "cliVersion": APP_VERSION,
         "service": { "status": "offline" },
         "candidatePaths": null,
         "runtime": null,
