@@ -747,8 +747,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .node-app-empty h2 { font-size: 15px; color: #626e57; }
 .node-app-empty p { font-size: 12px; line-height: 1.9; }
 .node-app-detail { min-width: 0; padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
-.node-app-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
-.node-app-heading h2 { margin: 0 0 10px; font-size: 21px; color: #34412b; overflow-wrap: anywhere; }
+.node-app-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .node-runtime-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #7b876e; }
 .node-process-state { border: 1px solid #e2e4da; border-radius: 6px; color: #7c8273; background: #f5f5ef; padding: 6px 9px; font-size: 12px; white-space: nowrap; }
 .node-process-running { color: #557345; background: #f0f7e9; border-color: #d9e6cf; }
@@ -758,29 +757,37 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .node-app-detail > .node-inline-message { margin-top: 16px; }
 .node-config-warning { display: flex; align-items: flex-start; gap: 9px; padding: 13px 14px; margin: 16px 0 0; border-radius: 8px; border: 1px solid #e9dfc6; color: #8b7548; background: #fffdf6; font-size: 12px; line-height: 1.8; }
 .node-config-warning > svg { margin-top: 3px; }
-.node-configuration-heading { margin: 24px 0; }
-.node-configuration-heading h3 { font-size: 15px; margin: 0 0 8px; color: #46563a; }
-.node-configuration-heading p { margin: 0; font-size: 12px; line-height: 1.8; color: #888f7c; }
-.node-config-field { border-top: 1px solid #eef0e7; padding: 22px 0; }
-.node-config-field:first-child { padding-top: 0; border-top: 0; }
-.node-field-label { display: flex; align-items: center; gap: 7px; font-size: 14px; color: #46533b; font-weight: 500; }
-.node-field-label .required-label, .node-field-label .optional-label { margin-left: auto; font-weight: 400; }
-.node-field-description { font-size: 12px; line-height: 1.9; color: #7d8573; margin: 9px 0 13px; overflow-wrap: anywhere; }
-.node-config-field > input, .node-config-field > select { display: block; width: 100%; min-width: 0; min-height: 42px; border: 1px solid #dce2d3; border-radius: 7px; padding: 10px 12px; background: #fff; color: #3f4c34; font: inherit; font-size: 13px; }
-.node-config-field > input:focus-visible, .node-config-field > select:focus-visible { outline: 2px solid #adc19a; outline-offset: 2px; }
-.node-config-field > input::placeholder { color: #9fa690; }
-.node-field-default { font-size: 11px; line-height: 1.8; color: #939b85; margin: 9px 0 0; overflow-wrap: anywhere; }
-.node-field-default strong { font-weight: 400; color: #79866b; }
-.node-secret-status { display: block; color: #8a927d; font-size: 12px; margin: 0 0 9px; }
-.node-secret-controls { margin-top: 8px; display: flex; gap: 12px; }
-.node-secret-controls .text-button { font-size: 12px; }
-.node-field-guide { margin-top: 13px; font-size: 12px; }
-.node-field-guide > summary { cursor: pointer; color: #71815f; padding: 4px 0; }
-.node-field-guide ol { padding-left: 22px; margin: 12px 0; color: #848d76; line-height: 1.9; }
-.node-field-guide li { padding-left: 3px; margin: 0 0 8px; overflow-wrap: anywhere; }
-.node-field-guide .text-button { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
-.node-field-variable { color: #a0a68f; font-size: 11px; line-height: 1.9; overflow-wrap: anywhere; }
-.node-field-variable code { font-size: 10px; }
+/* Configuration keeps labels and controls aligned; explanations live in a dialog. */
+.node-configuration-intro { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; color: var(--radio-muted, #888f7c); }
+.node-configuration-intro p { margin: 0; font-size: 12px; }
+.node-config-field { border-top: 1px solid var(--radio-line, #eef0e7); padding: 12px 0; }
+.node-config-field:first-child { border-top: 0; }
+.node-config-row { display: grid; grid-template-columns: minmax(110px, 160px) minmax(0, 1fr) 32px; align-items: center; gap: 12px; }
+.node-field-label { min-width: 0; font-size: 13px; line-height: 1.6; color: var(--radio-text, #46533b); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node-field-control { display: flex; align-items: center; gap: 8px; position: relative; min-width: 0; }
+.node-field-control > input, .node-field-control > select { display: block; width: 100%; min-width: 0; min-height: 38px; border: 1px solid var(--radio-line, #dce2d3); border-radius: 7px; padding: 8px 11px; background: var(--radio-background, #fff); color: var(--radio-text, #3f4c34); font: inherit; font-size: 13px; }
+.node-field-control > :is(input, select):focus-visible { outline: 2px solid var(--radio-focus, #adc19a); outline-offset: 2px; }
+.node-field-control > input::placeholder { color: var(--radio-muted, #9fa690); }
+.node-field-info.icon-button, .node-secret-action.icon-button { flex-shrink: 0; width: 32px; height: 32px; min-height: 32px; border: 0; background: transparent; color: var(--radio-muted, #8a927d); border-radius: 6px; }
+.node-field-info.icon-button:hover, .node-secret-action.icon-button:hover { color: var(--radio-text, #46533b); background: var(--radio-subtle, #f6f7f3); }
+.node-field-validation { display: flex; flex-shrink: 0; color: var(--radio-danger, #b64a40); }
+.node-field-error-message { position: absolute; z-index: 2; left: 0; top: calc(100% + 6px); max-width: 100%; width: max-content; padding: 7px 10px; border: 1px solid var(--radio-danger-line, #e4bdb9); border-radius: 6px; background: var(--radio-danger-surface, #fff5f4); color: var(--radio-danger, #b64a40); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; opacity: 0; pointer-events: none; }
+.node-field-control:focus-within .node-field-error-message, .node-field-validation:hover .node-field-error-message { opacity: 1; }
+:root[data-theme] .node-configuration-form .node-config-field-invalid .node-field-control > :is(input, select)[aria-invalid='true'] { border-color: var(--radio-danger); }
+:root[data-theme] .node-configuration-form .node-config-field-invalid .node-field-control > :is(input, select)[aria-invalid='true']:focus-visible { outline-color: var(--radio-danger); }
+.node-field-help-modal { width: min(520px, 100%); }
+.node-field-help { color: var(--radio-secondary, #7d8573); font-size: 13px; line-height: 1.9; }
+.node-field-help p { margin: 0 0 16px; overflow-wrap: anywhere; }
+.node-field-help h3 { margin: 20px 0 8px; font-size: 13px; color: var(--radio-text, #46533b); }
+.node-field-help ol { margin: 0 0 20px; padding-left: 22px; }
+.node-field-help li { margin-bottom: 7px; overflow-wrap: anywhere; }
+.node-field-help-default strong { color: var(--radio-text, #46533b); font-weight: 500; }
+.node-field-help-technical { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--radio-line, #eef0e7); font-size: 12px; }
+.node-field-help-technical summary { cursor: pointer; color: var(--radio-muted, #8a927d); }
+.node-field-help-technical p { margin: 12px 0 0; }
+@media (max-width: 700px) {
+  .node-config-row { grid-template-columns: minmax(85px, 110px) minmax(0, 1fr) 32px; gap: 8px; }
+}
 .node-endpoint-confirmation { padding: 13px; margin: 12px 0 0; background: #fffcf3; border: 1px solid #eee2c7; border-radius: 7px; color: #8c794e; }
 .node-endpoint-confirmation p { font-size: 12px; line-height: 1.8; margin: 0 0 10px; }
 .node-endpoint-confirmation code { display: block; overflow-wrap: anywhere; margin: 0 0 10px; }
@@ -812,8 +819,9 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 @media (max-width: 1050px) { .node-apps-layout { grid-template-columns: 1fr; } .node-app-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .node-app-detail { padding: 20px; } }
 @media (max-width: 760px) { .node-app-list { grid-template-columns: 1fr; } .node-config-save { flex-direction: column; align-items: stretch; } .node-app-heading { flex-wrap: wrap; } .node-runtime-actions > button { flex: 1; } }
 .node-app-modal-detail { border: 0; padding: 0; border-radius: 0; }
+.node-app-modal-detail > .node-runtime-actions { padding: 12px 0 16px; }
 .node-app-modal-detail > .overview-tabs { position: sticky; top: -24px; z-index: 2; background: #fff; padding-top: 8px; gap: 8px; }
-.node-app-modal-detail > [role=tabpanel] { padding-top: 24px; }
+.node-app-modal-detail > [role=tabpanel] { padding-top: 16px; }
 .node-app-modal-detail > [role=tabpanel] > h3 { color: #46563a; font-size: 15px; margin: 0 0 14px; }
 .node-app-modal-detail > [role=tabpanel] > p { color: #808a73; font-size: 13px; line-height: 1.9; }
 .node-app-modal-detail .overview-tabs > button { display: inline-flex; align-items: center; gap: 7px; }
@@ -1206,8 +1214,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(h2, h3, h4, dt, label, summary) { color: var(--radio-text); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(p, dd, small, code) { color: var(--radio-secondary); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(section, article, dl, details, form, li) { border-color: var(--radio-line); }
-:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .node-field-variable, .node-field-default, .node-secret-status, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
-:root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-app-heading h2, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
+:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
+:root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
 :root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .trash-details, .history-storage-row, .attachment-row, .workspace-trash-summary) { border-color: var(--radio-line); }
 :root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .workspace-trash-details, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
 :root[data-theme] :is(.backup-row:hover, .backup-row-selected, .trash-row.selected, .project-size-row:hover, .node-app-list-item.selected) { border-color: var(--radio-focus); color: var(--radio-text); background: var(--radio-selected); box-shadow: none; }
