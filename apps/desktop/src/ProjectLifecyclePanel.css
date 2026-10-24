@@ -96,7 +96,6 @@
   line-height: 20px;
 }
 .project-more-footnote > svg { flex-shrink: 0; }
-.project-more-panel .project-delete-confirmation { margin-top: 16px; }
 .project-more-panel .project-delete-section > .project-help,
 .project-more-panel .project-delete-section > .task-error { margin: 12px 0 0; }
 

@@ -94,15 +94,30 @@ function deletionPreview(value, ownership = 'managed', expectedRevision = 'fresh
   return { appId: value.id, name: value.name, ownership, expectedRevision, platformRoot: `/disposable/platform/${value.id}`, sourcePath: '/disposable/original-source', deletePaths: [`/disposable/platform/${value.id}/data`, `/disposable/platform/${value.id}/configuration`, ...(ownership === 'managed' ? [`/disposable/platform/${value.id}/generations`] : [])], preservedPaths: ['/disposable/original-source', '/disposable/install-evidence'] };
 }
 
+function deleteDialog() {
+  const confirmation = document.querySelector('.node-delete-confirmation');
+  assert.ok(confirmation, 'Deletion needs its own confirmation');
+  const dialog = confirmation.closest('[role=dialog]');
+  assert.ok(dialog, 'Deletion confirmation must be inside a dialog');
+  assert.equal(dialog.querySelector('[role=tablist]'), null);
+  assert.equal(dialog.querySelector('.node-configuration-form'), null);
+  assert.equal(dialog.querySelector('.node-runtime-actions'), null);
+  assert.equal(dialog.querySelector('.node-install-panel'), null);
+  return dialog;
+}
+
 test('Node deletion reads ownership-specific scope, requires acknowledgment and sends no filesystem paths', async () => {
   for (const ownership of ['managed', 'external']) {
     const value = app(); const preview = deletionPreview(value, ownership); const finished = deferred(); const calls = []; const deleted = [];
-    await setup(baseMock(value, async (command, args) => {
+    await setup(async (command, args) => {
       calls.push([command, args]);
       if (command === 'node_app_delete_preview') return preview;
       if (command === 'node_app_delete') return finished.promise;
       throw new Error(command);
-    }), { instanceId: 'same', request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+    }, { instanceId: 'same', request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+    assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+    assert.equal(document.querySelector('.node-detail-modal'), null, 'Launcher deletion must not open project details');
+    const dialog = deleteDialog();
     const confirmation = document.querySelector('[aria-label="永久删除 Node 项目确认"]');
     assert.match(confirmation.textContent, /不会为本次删除保存可恢复副本/);
     assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本实例的程序、业务数据、应用配置与密钥/ : /原始应用目录及其中的全部文件保持原样/);
@@ -112,6 +127,11 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     await click(confirmation.querySelector('input[type=checkbox]'));
     await click(byText('确认永久删除项目'));
     assert.equal(byText('正在永久删除…').disabled, true);
+    assert.equal(dialog.querySelector('.modal-close').disabled, true);
+    assert.equal(byText('取消，保留项目').disabled, true);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    await click(dialog.closest('.modal-layer'));
+    assert.equal(deleteDialog(), dialog, 'Escape and the backdrop cannot close a pending deletion');
     await click(byText('正在永久删除…'));
     assert.deepEqual(calls.at(-1), ['node_app_delete', { appId: value.id, input: { expectedRevision: preview.expectedRevision } }]);
     assert.equal(calls.filter(([command]) => command === 'node_app_delete').length, 1);
@@ -119,6 +139,26 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     assert.deepEqual(deleted, [value.id]); assert.equal(document.querySelector('[role=dialog]'), null);
     await act(async () => root.unmount()); root = null;
   }
+});
+
+test('A standalone Node deletion preview blocks dismissal and has no stale scope to approve', async () => {
+  const value = app(); const pending = deferred(); const calls = [];
+  await setup(async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'node_app_delete_preview'); return pending.promise;
+  }, { request: { app: value, intent: 'delete', token: 1 } });
+  const dialog = deleteDialog();
+  assert.match(dialog.textContent, /正在核对本项目的删除范围/);
+  assert.equal(dialog.querySelector('.modal-close').disabled, true);
+  assert.equal(byText('取消，保留项目').disabled, true);
+  assert.equal(byText('确认永久删除项目').disabled, true);
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  await click(dialog.closest('.modal-layer'));
+  assert.equal(deleteDialog(), dialog);
+  assert.deepEqual(calls, [['node_app_delete_preview', { appId: value.id }]]);
+  await act(async () => pending.resolve(deletionPreview(value)));
+  assert.equal(dialog.querySelector('.modal-close').disabled, false);
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+  assert.equal(byText('确认永久删除项目').disabled, true);
 });
 
 test('Failed Node deletion preserves the scope and error, then requires a new preview and acknowledgment', async () => {
@@ -141,14 +181,40 @@ test('Failed Node deletion preserves the scope and error, then requires a new pr
   assert.deepEqual(deleted, []);
 });
 
-test('Leaving Node deletion discards acknowledgment and configuration drafts block starting deletion', async () => {
+test('Cancelling standalone Node deletion leaves no detail dialog and reopening reads a fresh unacknowledged scope', async () => {
   const value = app(); let previews = 0;
+  const props = { enabled: true, onDraftStateChange() {}, request: { app: value, intent: 'delete', token: 1 } };
   await setup(baseMock(value, async command => {
-    assert.equal(command, 'node_app_delete_preview'); previews++; return deletionPreview(value);
-  }), { request: { app: value, intent: 'delete', token: 1 } });
+    assert.equal(command, 'node_app_delete_preview'); return deletionPreview(value, 'managed', `revision-${++previews}`);
+  }), props);
   await click(document.querySelector('.node-delete-confirmation input'));
-  await click(byText('应用配置'));
-  assert.equal(document.querySelector('.node-delete-confirmation'), null);
+  await click(byText('取消，保留项目'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, request: { app: value, intent: 'delete', token: 2 } })));
+  assert.equal(previews, 2);
+  assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+  assert.equal(byText('确认永久删除项目').disabled, true);
+  assert.equal(document.querySelector('.node-detail-modal'), null);
+});
+
+test('Cancelling deletion from Node details preserves the selected tab and form while drafts still prevent deletion', async () => {
+  const value = app(); let previews = 0; let configurationReads = 0;
+  await setup(async command => {
+    if (command === 'node_app_configuration') { configurationReads++; return value; }
+    assert.equal(command, 'node_app_delete_preview'); previews++; return deletionPreview(value);
+  });
+  const form = document.querySelector('.node-configuration-form');
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  const trigger = byText('删除项目'); trigger.focus();
+  await click(trigger);
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 2);
+  deleteDialog();
+  await click(byText('取消，保留项目'));
+  assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal(document.querySelector('.node-configuration-form'), form, 'Cancelling deletion must not recreate the configuration form');
+  assert.equal(document.querySelector('.node-detail-modal').contains(document.activeElement), true, 'Cancelling the nested deletion keeps focus in the original details');
+  assert.equal(configurationReads, 1);
   await change(input('AI_KEY'), 'artificial-private-draft');
   assert.equal(byText('删除项目').disabled, true);
   assert.equal(previews, 1);
@@ -166,7 +232,8 @@ test('A previous service instance cannot approve Node deletion with a late previ
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
   await act(async () => delayed.resolve(deletionPreview(value, 'external', 'old-revision')));
   assert.equal(document.querySelector('.node-delete-confirmation'), null); assert.deepEqual(deleted, []);
-  await click(byText('删除项目'));
+  assert.equal(document.querySelector('[role=dialog]'), null, 'A stale standalone preview must not reveal project details');
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new', request: { ...props.request, token: 2 } })));
   assert.match(document.querySelector('.node-delete-confirmation').textContent, /平台安装副本/);
   assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
 });
@@ -183,10 +250,10 @@ test('Instance changes release a pending Node deletion locally and ignore its la
   assert.equal(writes, 1);
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
   assert.equal(document.querySelector('.node-delete-confirmation'), null);
-  assert.equal(byText('删除项目').disabled, false);
+  assert.equal(document.querySelector('[role=dialog]'), null);
   await act(async () => delayed.resolve({ appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true }));
-  assert.deepEqual(deleted, []); assert.equal(writes, 1); assert.ok(document.querySelector('[role=dialog]'));
-  await click(byText('删除项目'));
+  assert.deepEqual(deleted, []); assert.equal(writes, 1); assert.equal(document.querySelector('[role=dialog]'), null);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new', request: { ...props.request, token: 2 } })));
   assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
 });
 
@@ -200,8 +267,8 @@ test('Workspace gates revoke an unfinished Node preview without leaving its loca
   await act(async () => root.render(h(NodeAppsPanel, { ...props, enabled: false })));
   await act(async () => delayed.resolve(deletionPreview(value)));
   await act(async () => root.render(h(NodeAppsPanel, props)));
-  assert.equal(document.querySelector('.node-delete-confirmation'), null); assert.equal(byText('删除项目').disabled, false);
-  await click(byText('删除项目'));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+  await act(async () => root.render(h(NodeAppsPanel, { ...props, request: { ...props.request, token: 2 } })));
   assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
 });
 
@@ -237,6 +304,26 @@ test('A mismatched Node deletion preview or unknown deletion result never remove
   await click(byText('重新核对删除范围')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
   assert.match(document.querySelector('.node-delete-confirmation').textContent, /删除结果尚不能确认/);
   assert.deepEqual(deleted, []); assert.ok(document.querySelector('[role=dialog]'));
+});
+
+test('Standalone Node deletion never publishes incomplete or mismatched success claims', async () => {
+  const value = app();
+  const confirmed = { appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true };
+  const invalid = [null, { ...confirmed, appId: 'unrelated-app' }, { ...confirmed, operationOutcome: 'delete_incomplete' }, { ...confirmed, ownership: 'external' }, { ...confirmed, sourcePreserved: false }, { ...confirmed, evidenceRetained: false }];
+  for (const result of invalid) {
+    const deleted = []; let writes = 0;
+    await setup(async command => {
+      if (command === 'node_app_delete_preview') return deletionPreview(value);
+      assert.equal(command, 'node_app_delete'); writes++; return result;
+    }, { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
+    await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    assert.deepEqual(deleted, []);
+    assert.equal(writes, 1);
+    assert.match(deleteDialog().textContent, /删除结果尚不能确认/);
+    assert.equal(byText('确认永久删除项目').disabled, true);
+    assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+    await act(async () => root.unmount()); root = null;
+  }
 });
 
 test('Managed app update preserves configuration drafts and only reads candidates on explicit request', async () => {
@@ -1363,21 +1450,29 @@ test('One generate-and-add click puts an empty local folder in the App list and 
 
 test('Deleting from a Node launcher action removes the app only after an explicit deleted result', async () => {
   for (const metadataCleanupPending of [false, true]) {
-    const value = app(); const state = { nodes: [value] }; const writes = [];
-    await setup(shellMock(state, async (command, args) => {
+    const value = app(); const state = { nodes: [value] }; const writes = []; const calls = []; const completed = deferred();
+    const mock = shellMock(state, async (command, args) => {
       if (command === 'node_app_delete_preview') return deletionPreview(value, 'external');
       if (command === 'node_app_delete') {
-        writes.push(args); state.nodes = [];
-        return { appId: value.id, operationOutcome: 'deleted', ownership: 'external', sourcePreserved: true, evidenceRetained: true, metadataCleanupPending };
+        writes.push(args); return completed.promise;
       }
       throw new Error(command);
-    }), {}, App);
+    });
+    await setup((command, args) => { calls.push([command, args]); return mock(command, args); }, {}, App);
     const entry = document.querySelector(`[aria-label='进入项目「${value.name}」']`);
     await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
     await click(document.querySelector(`[aria-label='删除项目「${value.name}」']`));
     assert.equal(writes.length, 0);
     assert.equal(document.querySelectorAll('.project-card').length, 1);
+    assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
+    assert.equal(deleteDialog().querySelector('h2').textContent, '删除项目');
+    assert.ok(deleteDialog().textContent.includes(value.name));
+    assert.equal(document.querySelector('.node-detail-modal'), null);
+    assert.equal(calls.some(([command]) => ['node_app_configuration', 'node_app_status', 'source_list'].includes(command)), false, 'Launcher deletion reads only its dedicated deletion preview');
     await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    assert.equal(writes.length, 1); assert.equal(document.querySelectorAll('.project-card').length, 1, 'A submitted deletion must keep its card until the result confirms deletion');
+    state.nodes = [];
+    await act(async () => completed.resolve({ appId: value.id, operationOutcome: 'deleted', ownership: 'external', sourcePreserved: true, evidenceRetained: true, metadataCleanupPending }));
     assert.equal(writes.length, 1); assert.equal(document.querySelectorAll('.project-card').length, 0);
     assert.equal(document.querySelector('[role=dialog]'), null);
     const feedback = document.querySelector(metadataCleanupPending ? '.notice-error' : '.notice-success');
