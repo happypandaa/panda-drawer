@@ -1,11 +1,11 @@
 ---
 title: Wiki
-description: 熊猫应用小抽屉的入门指南、AI 文件夹关联、应用类型与常见问题。
+description: 熊猫小抽屉的入门指南、AI 文件夹关联、应用类型与常见问题。
 ---
 
 # Wiki
 
-熊猫应用小抽屉，简称「熊猫抽屉」，把你制作或获取的小应用集中放在自己的电脑里使用。你在外部 AI 工具中制作和修改，回到抽屉里打开、配置和管理。
+熊猫小抽屉把你制作或获取的小应用集中放在自己的电脑里使用。你在外部 AI 工具中制作和修改，回到抽屉里打开、配置和管理。
 
 ## 开始使用
 
@@ -24,6 +24,6 @@ description: 熊猫应用小抽屉的入门指南、AI 文件夹关联、应用�
 
 当前是内部开发版，面向 macOS 15+、Apple Silicon；实际验证来自本机开发环境，最低支持系统与正式发行仍待验收。公开安装包尚未发布；Windows 的安装与运行仍在适配验收中。
 
-源码与技术说明：[GitHub 项目仓库](https://github.com/happypandaa/postgresUI)。网站内容按照已实现的功能编写，后续计划见仓库文档，不将计划当成已交付能力。
+源码与技术说明：[GitHub 项目仓库](https://github.com/happypandaa/panda-drawer)。网站内容按照已实现的功能编写，后续计划见仓库文档，不将计划当成已交付能力。
 
 网站采用 [Cactus](https://github.com/probberechts/hexo-theme-cactus) 原主题，沿用其 CSS、字体与文章排版。主题使用 MIT 许可证，完整版权与字体许可见 [第三方许可](/licenses/)。

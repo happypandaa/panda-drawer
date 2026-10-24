@@ -27,7 +27,7 @@ No phase starts the desktop, migrates/repairs a workspace, or purges data.
 This HTTP/CLI check does not prove GUI behavior or an actual OS device remount.
 
 IDENTITY_TEST_CLI (or M1_TEST_CLI): absolute path to the actual package CLI.
-Default: target/release/bundle/macos/熊猫应用小抽屉.app/Contents/MacOS/local-projects-dev
+Default: target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev
 IDENTITY_TEST_ARTIFACT_DIR: evidence directory inside this repo's .test-artifacts.
 Default: .test-artifacts/workspace-identity-live-2026-10-19
 
@@ -48,7 +48,7 @@ const evidence = resolve(process.env.IDENTITY_TEST_ARTIFACT_DIR || join(artifact
 const evidenceRelative = relative(artifactBase, evidence);
 assert.ok(evidenceRelative && !isAbsolute(evidenceRelative) && !evidenceRelative.startsWith('..'), 'Evidence must be inside .test-artifacts');
 const cliPath = process.env.IDENTITY_TEST_CLI || process.env.M1_TEST_CLI
-  || join(repository, 'target/release/bundle/macos/熊猫应用小抽屉.app/Contents/MacOS/local-projects-dev');
+  || join(repository, 'target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
 assert.ok(isAbsolute(cliPath), 'Choose an absolute CLI path');
 const dataRoot = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0');
 const identifier = 'dev.localprojects.platform.m0';

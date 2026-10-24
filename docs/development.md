@@ -4,7 +4,7 @@
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
-状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。产品名已确认为「熊猫应用小抽屉」，简称「熊猫抽屉」；[名称与图标](branding.md)已接入内部代码，固定开发身份和数据根保持。
+状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。产品名已确认为「熊猫小抽屉」；[名称与图标](branding.md)已接入内部代码，固定开发身份和数据根保持。
 
 2026-10-19 新增方向：平台内置 Node，运行用户应用自己的 Node 后端，统一启动、停止及展示运行状态；总体方案见[受管 Node 运行时](node-app-runtime.md)，说明文件与协议见[启动规范草案](node-app-startup-spec.md)，小步安排见[实施计划](node-app-implementation-plan.md)。共享运行时资源，各应用独立受管进程；AI、TTS、音乐和业务 SDK 由应用实现，Claude Code 不是平台必需依赖。该方向取代固定 Claude Code／网易云连接器设想，本轮仅整理方案，未写运行代码；当前程序仍是静态网页与 Rust 核心，未内置 Node 或实现应用后端。现有静态 v1 格式、SDK/CLI/HTTP 和系统 Node 构建流程保持原语义，新类型及协议仍为草案。受管进程不是沙箱，平台密钥管理没有因此实现。
 
@@ -44,7 +44,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 2026-10-23 起，网页应用“详情”弹窗提供“概览 / 空间与文件 / 更多操作”三个页签。进入应用、打开本地目录、“复制提示词”“在 Codex 打开”和“构建更新”常显，交接长说明按需展开。基本信息和清理选择在页签间保留，关闭时提示处理；提交、原生文件选择和操作核对尚未完成时阻止关闭及切换页签。离开更多操作或空间页会撤销对应的删除／清理确认。
 
-新建成功后直接打开项目详情，点击“复制提示词”获取可直接发送给其他 AI 的中文说明，包含熊猫应用小抽屉的用途、当前业务项目目录与 ID、实际 skill/CLI 路径、文档与构建/数据库操作方式。“在 Codex 打开”复制同一说明并打开本机任务草稿，由用户粘贴并发送。复制仅由点击触发；同时展开全文，剪贴板不可用时可选取手动复制。接收说明的 AI 需要能访问本机目录才能直接修改文件。说明按当前平台生成，不覆盖旧项目文档；项目移出列表或工作区切换后会撤销旧的待复制结果。
+新建成功后直接打开项目详情，点击“复制提示词”获取可直接发送给其他 AI 的中文说明，包含熊猫小抽屉的用途、当前业务项目目录与 ID、实际 skill/CLI 路径、文档与构建/数据库操作方式。“在 Codex 打开”复制同一说明并打开本机任务草稿，由用户粘贴并发送。复制仅由点击触发；同时展开全文，剪贴板不可用时可选取手动复制。接收说明的 AI 需要能访问本机目录才能直接修改文件。说明按当前平台生成，不覆盖旧项目文档；项目移出列表或工作区切换后会撤销旧的待复制结果。
 
 普通详情不再提供“源码版本”、创建独立副本或旧备份中心。Git 检查、保存、分支及取回由 AI 通过现有 CLI／管理接口处理，唯一 Git 历史原样保留。旧维护／恢复、未完成源码取回或无法核实的状态会显示按需处理入口；结束维护和继续／撤回均需明确确认，源码操作绑定重新核对的摘要并要求停止外部修改。正在执行的处理任务保持详情关闭门禁，失败不自动重试。更多操作只保留导出 ZIP 和永久删除；导出先弹窗说明包含业务数据库和用户文件，选择位置后提交，碰到同名文件才另行确认替换。
 
@@ -62,7 +62,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 | 项目 | 值 |
 | --- | --- |
-| 显示名称 | 熊猫应用小抽屉 / 熊猫应用小抽屉 · 开发版 |
+| 显示名称 | 熊猫小抽屉 / 熊猫小抽屉 · 开发版 |
 | 应用标识 | `dev.localprojects.platform.m0` |
 | 环境 | `development` |
 | CLI | `local-projects-dev` |
@@ -89,9 +89,9 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 `npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.4` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
 
-2026-10-20 起，标准 Mac 打包先检查运行状态；生成目录中的新旧任一名称的 `.app` 正在运行时明确拒绝打包，须先从菜单退出。新品牌「熊猫应用小抽屉」及历史「Local Projects Dev」两个确切名字的旧生成应用与 arm64 DMG，分别在核对固定身份、各自包名、签名及镜像后暂存；新构建和验包全部成功才删除旧生成副本，`build:app` 成功后也删除失效的旧 DMG。构建或验包失败恢复上次可用生成包。范围仅 `target/<release|debug>/bundle/`，不扫描或清理安装目录、项目、数据、备份及 `.test-artifacts/`。自定义输出／身份参数不进入自动清理，`dev`、`--no-bundle` 和非 Mac 构建不清理包。中断后若留下 `target/.desktop-package-build.lock` 或 `.desktop-package-previous-*`，保留恢复现场，核查后处理，不自动删除。保护性回归：`node --test scripts/desktop-package-output-test.mjs`。
+2026-10-20 起，标准 Mac 打包先检查运行状态；生成目录中的新旧任一名称的 `.app` 正在运行时明确拒绝打包，须先从菜单退出。当前名称「熊猫小抽屉」及历史「熊猫应用小抽屉」「Local Projects Dev」三个确切名字的旧生成应用与 arm64 DMG，分别在核对固定身份、各自包名、签名及镜像后暂存；新构建和验包全部成功才删除旧生成副本，`build:app` 成功后也删除失效的旧 DMG。构建或验包失败恢复上次可用生成包。范围仅 `target/<release|debug>/bundle/`，不扫描或清理安装目录、项目、数据、备份及 `.test-artifacts/`。自定义输出／身份参数不进入自动清理，`dev`、`--no-bundle` 和非 Mac 构建不清理包。中断后若留下 `target/.desktop-package-build.lock` 或 `.desktop-package-previous-*`，保留恢复现场，核查后处理，不自动删除。保护性回归：`node --test scripts/desktop-package-output-test.mjs`。
 
-多个 Git 工作目录生成的开发应用具有相同名称和固定应用身份。核对新版时，先从菜单退出正在运行的应用，再从本次构建目录的 `target/release/bundle/macos/熊猫应用小抽屉.app` 打开，并核对进程的实际路径；仅根据 Dock 图标或窗口标题无法区分不同工作目录的产物。2026-10-24 的真实窗口排查确认，旧工作目录产物仍带折叠开发工具及旧详情页签，不能作为主目录 Figma 改造包的运行结果。
+多个 Git 工作目录生成的开发应用具有相同名称和固定应用身份。核对新版时，先从菜单退出正在运行的应用，再从本次构建目录的 `target/release/bundle/macos/熊猫小抽屉.app` 打开，并核对进程的实际路径；仅根据 Dock 图标或窗口标题无法区分不同工作目录的产物。2026-10-24 的真实窗口排查确认，旧工作目录产物仍带折叠开发工具及旧详情页签，不能作为主目录 Figma 改造包的运行结果。
 
 同日补充旧开发分支生命周期记录读取兼容：仍严格检查 schema-v1、任务／项目身份及已知字段，显式接受 `systemTrash` 与 `systemTrashPath`。已完成的系统废纸篓记录只返回历史结果，不处理永久删除标记或重写原记录；未完成的此类记录继续阻止启动并保留现场，需要兼容的恢复流程处理。普通 `false/null` 记录维持现有恢复规则。此兼容不改变当前新删除流程，也不代表已兼容其他分支的全部 Node 开发或删除恢复能力。
 

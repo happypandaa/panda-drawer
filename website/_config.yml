@@ -1,14 +1,14 @@
-title: 熊猫应用小抽屉
+title: 熊猫小抽屉
 subtitle: 给自己的小应用，一个家。
 description: |
   把自己的小应用，收进一个抽屉。
 
   借助 **Codex** 或 **WorkBuddy**，把想法做成日常用得上的小工具；也可以从别人的应用开始，慢慢改成自己喜欢的样子。
 
-  熊猫抽屉负责集中打开和管理应用，AI 帮你制作和修改。先读 [入门指南](/wiki/getting-started/)，或者直接开始下面的教程。
+  熊猫小抽屉负责集中打开和管理应用，AI 帮你制作和修改。先读 [入门指南](/wiki/getting-started/)，或者直接开始下面的教程。
 
   当前为 macOS 内部开发版。公开安装包尚未发布，Windows 仍在适配中。
-author: 熊猫抽屉
+author: 熊猫小抽屉
 language: zh-CN
 timezone: Asia/Shanghai
 url: https://panda-app-drawer.ethan8899.chatgpt.site
@@ -69,7 +69,7 @@ theme_config:
   social_links:
     - icon: github
       label: 查看项目源码
-      link: https://github.com/happypandaa/postgresUI
+      link: https://github.com/happypandaa/panda-drawer
   logo:
     enabled: true
     width: 50

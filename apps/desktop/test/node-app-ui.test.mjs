@@ -1299,7 +1299,7 @@ test('Node detail tabs retain secret drafts and closing asks before discarding t
 
 function shellMock(state, action = async (command) => { throw new Error(command); }) {
   return async (command, args) => {
-    if (command === 'bootstrap_info') return { displayName: 'Local Projects Dev', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
+    if (command === 'bootstrap_info') return { displayName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
     if (command === 'project_list') return state.projects ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false };

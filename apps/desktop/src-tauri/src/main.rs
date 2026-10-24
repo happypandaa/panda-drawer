@@ -440,7 +440,7 @@ fn project_label(id: &str) -> String {
 }
 
 fn project_title(name: &str) -> String {
-    format!("{name} · 熊猫应用小抽屉（开发版）")
+    format!("{name} · 熊猫小抽屉（开发版）")
 }
 
 fn is_project_url(url: &Url, base: &Url, id: &str) -> bool {
@@ -1788,15 +1788,15 @@ fn main() {
                 .on_new_window(|_, _| NewWindowResponse::Deny)
                 .build()?;
             if let Some(failure) = app.try_state::<StartupFailure>() {
-                app.dialog().message(&failure.0).title("熊猫应用小抽屉 · 工作区无法启动").kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
+                app.dialog().message(&failure.0).title("熊猫小抽屉 · 工作区无法启动").kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
             }
             install_application_menu(app)?;
             let show =
-                MenuItem::with_id(app, "show", "打开熊猫应用小抽屉（开发版）", true, None::<&str>)?;
+                MenuItem::with_id(app, "show", "打开熊猫小抽屉（开发版）", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出开发版", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let mut tray = TrayIconBuilder::new()
-                .tooltip("熊猫应用小抽屉 · 开发版")
+                .tooltip("熊猫小抽屉 · 开发版")
                 .menu(&menu);
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());

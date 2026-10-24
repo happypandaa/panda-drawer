@@ -4,29 +4,29 @@ date: 2026-10-22 08:00:00 +0800
 updated: 2026-10-23 08:00:00 +0800
 permalink: tutorials/remix-an-app/
 description: 分清完整项目 ZIP、已有项目和公开仓库，以独立副本开始，关联正确目录，再用 Codex 或 WorkBuddy 修改应用。
-author: 熊猫抽屉
+author: 熊猫小抽屉
 ---
 
 看到一个接近自己需求的应用，可以先取得一份独立副本，再让 AI 修改页面和功能。这样容易保留一个可用的起点，也方便比较改动。
 
-这篇教程的主线是熊猫抽屉的网页项目：导入完整项目 ZIP，或先导出自己的已有项目，再作为新副本导入。公开仓库和带本地服务的 Node 应用另有获取、适配和安装流程，不能混为一步。
+这篇教程的主线是熊猫小抽屉的网页项目：导入完整项目 ZIP，或先导出自己的已有项目，再作为新副本导入。公开仓库和带本地服务的 Node 应用另有获取、适配和安装流程，不能混为一步。
 
 ## 1. 先看你拿到的是什么
 
 | 你手上的内容 | 从哪里开始 |
 | --- | --- |
-| 作者通过熊猫抽屉导出的完整项目 ZIP | “添加 → 导入项目” |
+| 作者通过熊猫小抽屉导出的完整项目 ZIP | “添加 → 导入项目” |
 | 已经在自己抽屉里的网页项目 | 详情“更多操作 → 导出 ZIP”，再作为新副本导入 |
 | GitHub 或 Gitee 公开仓库链接 | “添加 → 获取项目源码” |
 | 已下载到本机的源码文件夹 | “获取项目源码 → 检查本机源码目录” |
 
-普通仓库下载得到的 ZIP，不一定是熊猫抽屉的完整项目归档。不要直接把它当成“导入完整项目”需要的文件。
+普通仓库下载得到的 ZIP，不一定是熊猫小抽屉的完整项目归档。不要直接把它当成“导入完整项目”需要的文件。
 
 取得他人的代码时，先查看作者的说明和许可，确认可以按自己的用途修改。如果只是想先体验一个应用，可以先看 [Radio 的介绍与安装方法](/apps/radio/)。
 
 ## 2. 从完整项目 ZIP 建立副本
 
-打开熊猫抽屉，在“我的项目”点击“添加 → 导入项目”，选择完整项目 ZIP。
+打开熊猫小抽屉，在“我的项目”点击“添加 → 导入项目”，选择完整项目 ZIP。
 
 导入方式默认 **“作为新副本导入”**，可以填写自己的副本名称，再点击“校验并导入”。等待任务最终完成，在项目列表找到新副本。
 
@@ -137,4 +137,4 @@ AI 应关联接手说明中的**完整项目根目录**，不能只选 `app/`、
 
 ## 参考与适用范围
 
-本文依据当前代码的 [完整项目导入与导出界面](https://github.com/happypandaa/postgresUI/blob/main/apps/desktop/src/LifecyclePanels.tsx)、[源码获取界面](https://github.com/happypandaa/postgresUI/blob/main/apps/desktop/src/SourceAcquisitionPanel.tsx)、[Node 安装与更新说明](https://github.com/happypandaa/postgresUI/blob/main/docs/node-managed-installation.md) 和 [项目目录与版本边界](https://github.com/happypandaa/postgresUI/blob/main/docs/project-object-boundaries.md)。适用于当前 macOS 内部开发版；分享路线和任意仓库的一键安装尚未交付。WorkBuddy 全流程及 Codex 桌面草稿粘贴、发送尚未完成端到端验证。第一次从空白项目开始，可以先读 [创建自己的应用](/tutorials/create-your-app/)。
+本文依据当前代码的 [完整项目导入与导出界面](https://github.com/happypandaa/panda-drawer/blob/main/apps/desktop/src/LifecyclePanels.tsx)、[源码获取界面](https://github.com/happypandaa/panda-drawer/blob/main/apps/desktop/src/SourceAcquisitionPanel.tsx)、[Node 安装与更新说明](https://github.com/happypandaa/panda-drawer/blob/main/docs/node-managed-installation.md) 和 [项目目录与版本边界](https://github.com/happypandaa/panda-drawer/blob/main/docs/project-object-boundaries.md)。适用于当前 macOS 内部开发版；分享路线和任意仓库的一键安装尚未交付。WorkBuddy 全流程及 Codex 桌面草稿粘贴、发送尚未完成端到端验证。第一次从空白项目开始，可以先读 [创建自己的应用](/tutorials/create-your-app/)。

@@ -1,6 +1,6 @@
 ---
 title: 安装与配置 Radio Bob
-description: 已有可信源码时，通过熊猫抽屉准备独立副本、安装并配置 Radio Bob。
+description: 已有可信源码时，通过熊猫小抽屉准备独立副本、安装并配置 Radio Bob。
 ---
 
 # 安装与配置 Radio Bob
@@ -10,11 +10,11 @@ Radio Bob 的公开源码地址和下载包尚未提供。下面介绍**已有�
 
 ## 开始之前
 
-- 使用当前 macOS 15+、Apple Silicon 的熊猫抽屉内部版。正式发行与其他系统尚未验收。
+- 使用当前 macOS 15+、Apple Silicon 的熊猫小抽屉内部版。正式发行与其他系统尚未验收。
 - 准备作者适配好的源码目录，包含有效的 `local-app.json`、前端页面、可直接运行的 Node 后端，以及 `package.json` 和 npm 锁文件。
 - 准备自己的 AI 服务 API 密钥与可用额度。安装依赖、生成节目和获取音乐都需要网络；语音服务另行配置。
 
-当前安装入口接受受支持的 Node 服务源码。任意 GitHub 项目都不保证能直接安装；遇到“需要适配”时，先让 AI 按[应用开发要求](https://github.com/happypandaa/postgresUI/blob/main/docs/app-development-environment.md)检查和修改源码。
+当前安装入口接受受支持的 Node 服务源码。任意 GitHub 项目都不保证能直接安装；遇到“需要适配”时，先让 AI 按[应用开发要求](https://github.com/happypandaa/panda-drawer/blob/main/docs/app-development-environment.md)检查和修改源码。
 
 ## 1. 获取一个独立源码副本
 
@@ -63,12 +63,12 @@ AI 地址、模型和密钥要对应同一服务商。当前使用 [DeepSeek 的
 
 音乐推荐仍需匹配曲库；搜索到歌曲也不保证有完整播放权限。当前受管版为游客模式，不开放音乐账号登录。若只有试听，按界面标记理解即可。
 
-关闭 Radio 窗口会停止它的后端；以后重新打开使用已保存配置和本机数据。运行中修改配置后，需要明确“重启并应用配置”，或关窗后再打开。在 macOS 上，关闭熊猫抽屉管理窗口只会隐藏窗口，使用菜单退出或 `Cmd+Q` 才退出整个平台。
+关闭 Radio 窗口会停止它的后端；以后重新打开使用已保存配置和本机数据。运行中修改配置后，需要明确“重启并应用配置”，或关窗后再打开。在 macOS 上，关闭熊猫小抽屉管理窗口只会隐藏窗口，使用菜单退出或 `Cmd+Q` 才退出整个平台。
 
 ## 目前的范围
 
 这套源码副本安装流程已用独立样本验收，Radio 的新副本安装链路尚未单独完成验收。Radio 既有实例已验证真实 AI 点歌、原生窗口试听及关窗停止；Fish 语音和完整新电脑交接仍未验收。
 
-Radio 的普通更新与数据兼容性尚未单独完成验收。更新前先核对当前版本的支持范围，不要手工修改已安装程序或登记文件来绕过检查。完整规则见[当前安装与更新说明](https://github.com/happypandaa/postgresUI/blob/main/docs/node-managed-installation.md)。
+Radio 的普通更新与数据兼容性尚未单独完成验收。更新前先核对当前版本的支持范围，不要手工修改已安装程序或登记文件来绕过检查。完整规则见[当前安装与更新说明](https://github.com/happypandaa/panda-drawer/blob/main/docs/node-managed-installation.md)。
 
 [返回 Radio Bob](/apps/radio/) · [了解如何获取和修改应用](/tutorials/remix-an-app/)

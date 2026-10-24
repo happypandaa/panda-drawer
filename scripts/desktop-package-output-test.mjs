@@ -6,7 +6,7 @@ import test from 'node:test';
 import { desktopPackagePlan, withDesktopPackageOutput } from './desktop-package-output.mjs';
 
 const configuration = {
-  productName: '熊猫应用小抽屉', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', bundle: { targets: ['app', 'dmg'] },
+  productName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', bundle: { targets: ['app', 'dmg'] },
 };
 const planFor = (root, args = ['build', '--bundles', 'app']) => desktopPackagePlan({ root, args, configuration, environment: {}, platform: 'darwin', arch: 'arm64' });
 const appFile = app => path.join(app, 'Contents', 'identity.json');
@@ -15,16 +15,21 @@ async function fixture(t, args) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const plan = planFor(root, args);
   const bundle = path.join(root, 'target', 'release', 'bundle');
-  const app = path.join(bundle, 'macos', '熊猫应用小抽屉.app');
-  const dmg = path.join(bundle, 'dmg', '熊猫应用小抽屉_0.0.0_aarch64.dmg');
-  const oldDmg = path.join(bundle, 'dmg', '熊猫应用小抽屉_0.0.0-old_aarch64.dmg');
+  const app = path.join(bundle, 'macos', '熊猫小抽屉.app');
+  const dmg = path.join(bundle, 'dmg', '熊猫小抽屉_0.0.0_aarch64.dmg');
+  const oldDmg = path.join(bundle, 'dmg', '熊猫小抽屉_0.0.0-old_aarch64.dmg');
+  const formerApp = path.join(bundle, 'macos', '熊猫应用小抽屉.app');
+  const formerDmg = path.join(bundle, 'dmg', '熊猫应用小抽屉_0.0.0_aarch64.dmg');
   const legacyApp = path.join(bundle, 'macos', 'Local Projects Dev.app');
   const legacyDmg = path.join(bundle, 'dmg', 'Local Projects Dev_0.0.0_aarch64.dmg');
   const writeNamedApp = async (file, name, value = 'old') => {
-    await mkdir(path.join(file, 'Contents'), { recursive: true });
+    await mkdir(path.join(file, 'Contents', 'MacOS'), { recursive: true });
     await writeFile(appFile(file), JSON.stringify({ identifier: plan.identifier, bundleName: name, executable: 'local-projects-desktop-dev', value }));
+    await writeFile(path.join(file, 'Contents', 'MacOS', 'local-projects-desktop-dev'), 'disposable desktop executable fixture');
+    await writeFile(path.join(file, 'Contents', 'MacOS', 'local-projects-dev'), 'disposable CLI executable fixture');
   };
   const writeApp = (value = 'old') => writeNamedApp(app, plan.productName, value);
+  const writeFormerApp = (value = 'former') => writeNamedApp(formerApp, '熊猫应用小抽屉', value);
   const writeLegacyApp = (value = 'legacy') => writeNamedApp(legacyApp, 'Local Projects Dev', value);
   await writeApp();
   await mkdir(path.dirname(dmg), { recursive: true });
@@ -45,7 +50,7 @@ async function fixture(t, args) {
       assert.match(await readFile(file, 'utf8'), /^(old|new)-dmg$/);
     },
   };
-  return { root, plan, bundle, app, dmg, oldDmg, legacyApp, legacyDmg, writeApp, writeLegacyApp, writeNamedApp, verifiers };
+  return { root, plan, bundle, app, dmg, oldDmg, formerApp, formerDmg, legacyApp, legacyDmg, writeApp, writeFormerApp, writeLegacyApp, writeNamedApp, verifiers };
 }
 async function noTransaction(f) {
   assert.deepEqual((await readdir(path.join(f.root, 'target'))).sort(), ['release']);
@@ -70,19 +75,23 @@ test('rejects custom output or identity overrides and unknown bundle types befor
     assert.throws(() => desktopPackagePlan({ root: '/x', args: ['build'], configuration, platform: 'darwin', arch: 'arm64', environment: { [key]: 'override' } }));
   }
   assert.throws(() => desktopPackagePlan({ root: '/x', args: ['build'], configuration: { ...configuration, identifier: 'other' }, platform: 'darwin', arch: 'arm64', environment: {} }));
-  for (const productName of ['Local Projects Dev', '熊猫应用小抽屉 Copy', '../熊猫应用小抽屉']) {
+  for (const productName of ['Local Projects Dev', '熊猫应用小抽屉', '熊猫小抽屉 Copy', '../熊猫小抽屉']) {
     assert.throws(() => desktopPackagePlan({ root: '/x', args: ['build'], configuration: { ...configuration, productName }, platform: 'darwin', arch: 'arm64', environment: {} }));
   }
 });
 
-test('brand migration removes only both exact verified generated product names', async t => {
+test('brand migration removes only the three exact verified generated product names', async t => {
   const f = await fixture(t);
+  await f.writeFormerApp();
+  await writeFile(f.formerDmg, 'old-dmg');
   await f.writeLegacyApp();
   await writeFile(f.legacyDmg, 'old-dmg');
   const unrelatedApp = path.join(path.dirname(f.app), 'Local Projects Developer.app');
   const unrelatedDmg = path.join(path.dirname(f.dmg), 'Local Projects Dev Copy_0.0.0_aarch64.dmg');
+  const unrelatedFormerDmg = path.join(path.dirname(f.dmg), '熊猫应用小抽屉 Copy_0.0.0_aarch64.dmg');
   await f.writeNamedApp(unrelatedApp, 'Local Projects Developer', 'preserved');
   await writeFile(unrelatedDmg, 'preserved');
+  await writeFile(unrelatedFormerDmg, 'preserved');
   const checkedApps = [];
   const checkedDmgs = [];
   const report = await withDesktopPackageOutput(f.plan, async () => f.writeApp('new'), {
@@ -90,18 +99,21 @@ test('brand migration removes only both exact verified generated product names',
     verifyApp: async (file, plan) => { checkedApps.push([file, plan.productName]); await f.verifiers.verifyApp(file, plan); },
     verifyDmg: async (file, plan) => { checkedDmgs.push([file, plan.productName]); await f.verifiers.verifyDmg(file, plan); },
   });
-  assert.equal(report.removedPrevious, 4);
-  assert.deepEqual(checkedApps, [[f.app, '熊猫应用小抽屉'], [f.legacyApp, 'Local Projects Dev'], [f.app, '熊猫应用小抽屉']]);
-  assert.deepEqual(new Map(checkedDmgs), new Map([[f.dmg, '熊猫应用小抽屉'], [f.legacyDmg, 'Local Projects Dev']]));
+  assert.equal(report.removedPrevious, 6);
+  assert.deepEqual(checkedApps, [[f.app, '熊猫小抽屉'], [f.formerApp, '熊猫应用小抽屉'], [f.legacyApp, 'Local Projects Dev'], [f.app, '熊猫小抽屉']]);
+  assert.deepEqual(new Map(checkedDmgs), new Map([[f.dmg, '熊猫小抽屉'], [f.formerDmg, '熊猫应用小抽屉'], [f.legacyDmg, 'Local Projects Dev']]));
   assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'new');
-  for (const file of [f.legacyApp, f.dmg, f.legacyDmg]) await assert.rejects(lstat(file), { code: 'ENOENT' });
+  for (const file of [f.formerApp, f.formerDmg, f.legacyApp, f.dmg, f.legacyDmg]) await assert.rejects(lstat(file), { code: 'ENOENT' });
   assert.equal(JSON.parse(await readFile(appFile(unrelatedApp))).value, 'preserved');
   assert.equal(await readFile(unrelatedDmg, 'utf8'), 'preserved');
+  assert.equal(await readFile(unrelatedFormerDmg, 'utf8'), 'preserved');
   await noTransaction(f);
 });
 
-test('failed renamed build restores both original brands at their exact previous paths', async t => {
+test('failed renamed build restores all three brands at their exact previous paths', async t => {
   const f = await fixture(t, ['build']);
+  await f.writeFormerApp();
+  await writeFile(f.formerDmg, 'old-dmg');
   await f.writeLegacyApp();
   await writeFile(f.legacyDmg, 'old-dmg');
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => {
@@ -110,8 +122,10 @@ test('failed renamed build restores both original brands at their exact previous
     throw new Error('intentional renamed build failure');
   }, f.verifiers), /intentional renamed build failure/);
   assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'old');
+  assert.equal(JSON.parse(await readFile(appFile(f.formerApp))).value, 'former');
   assert.equal(JSON.parse(await readFile(appFile(f.legacyApp))).value, 'legacy');
   assert.equal(await readFile(f.dmg, 'utf8'), 'old-dmg');
+  assert.equal(await readFile(f.formerDmg, 'utf8'), 'old-dmg');
   assert.equal(await readFile(f.legacyDmg, 'utf8'), 'old-dmg');
   await noTransaction(f);
 });
@@ -120,6 +134,8 @@ test('first renamed build failure restores legacy packages without retaining the
   const f = await fixture(t, ['build']);
   await rm(f.app, { recursive: true });
   await rm(f.dmg);
+  await f.writeFormerApp();
+  await writeFile(f.formerDmg, 'old-dmg');
   await f.writeLegacyApp();
   await writeFile(f.legacyDmg, 'old-dmg');
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => {
@@ -127,29 +143,80 @@ test('first renamed build failure restores legacy packages without retaining the
     await writeFile(f.dmg, 'partial-dmg');
     throw new Error('intentional first renamed build failure');
   }, f.verifiers), /intentional first renamed build failure/);
+  assert.equal(JSON.parse(await readFile(appFile(f.formerApp))).value, 'former');
+  assert.equal(await readFile(f.formerDmg, 'utf8'), 'old-dmg');
   assert.equal(JSON.parse(await readFile(appFile(f.legacyApp))).value, 'legacy');
   assert.equal(await readFile(f.legacyDmg, 'utf8'), 'old-dmg');
   for (const file of [f.app, f.dmg]) await assert.rejects(lstat(file), { code: 'ENOENT' });
   await noTransaction(f);
 });
 
-test('legacy app running under its historical path blocks a renamed build before mutation', async t => {
+test('either legacy app running under its historical path blocks a renamed build before mutation', async t => {
   const f = await fixture(t);
+  await f.writeFormerApp();
+  await writeFile(f.formerDmg, 'old-dmg');
   await f.writeLegacyApp();
   await writeFile(f.legacyDmg, 'old-dmg');
-  await assert.rejects(withDesktopPackageOutput(f.plan, async () => assert.fail('must not build'), {
-    ...f.verifiers,
-    processes: async () => [`${f.legacyApp}/Contents/MacOS/local-projects-desktop-dev`],
-  }), /请先从菜单退出正在运行的 Local Projects Dev/);
+  for (const runningApp of [f.formerApp, f.legacyApp]) {
+    await assert.rejects(withDesktopPackageOutput(f.plan, async () => assert.fail('must not build'), {
+      ...f.verifiers,
+      processes: async () => [`${runningApp}/Contents/MacOS/local-projects-desktop-dev`],
+    }), /请先从菜单退出正在运行的/);
+  }
+  assert.equal(JSON.parse(await readFile(appFile(f.formerApp))).value, 'former');
+  assert.equal(await readFile(f.formerDmg, 'utf8'), 'old-dmg');
   assert.equal(JSON.parse(await readFile(appFile(f.legacyApp))).value, 'legacy');
   assert.equal(await readFile(f.legacyDmg, 'utf8'), 'old-dmg');
   assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'old');
   await noTransaction(f);
 });
 
+test('source-directory symlink aliases preserve running protection for all exact generated app names and binaries', async t => {
+  const f = await fixture(t);
+  await f.writeFormerApp();
+  await f.writeLegacyApp();
+  const alias = path.join(f.root, 'previous-source-name');
+  await symlink(f.root, alias);
+  for (const app of [f.app, f.formerApp, f.legacyApp]) {
+    for (const executable of ['local-projects-desktop-dev', 'local-projects-dev']) {
+      const command = path.join(alias, path.relative(f.root, app), 'Contents', 'MacOS', executable);
+      await assert.rejects(withDesktopPackageOutput(f.plan, async () => assert.fail('must not build'), {
+        ...f.verifiers,
+        verifyApp: async () => assert.fail('must reject before checking or moving existing outputs'),
+        processes: async () => [command],
+      }), /请先从菜单退出正在运行的/);
+      assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'old');
+      assert.equal(JSON.parse(await readFile(appFile(f.formerApp))).value, 'former');
+      assert.equal(JSON.parse(await readFile(appFile(f.legacyApp))).value, 'legacy');
+      assert.equal(await readFile(f.dmg, 'utf8'), 'old-dmg');
+      await noTransaction(f);
+    }
+  }
+});
+
+test('symlink comparison does not match nearby app names or unknown executable names', async t => {
+  const f = await fixture(t);
+  const alias = path.join(f.root, 'previous-source-name');
+  await symlink(f.root, alias);
+  const unrelatedApp = path.join(path.dirname(f.app), '熊猫小抽屉 Copy.app');
+  await f.writeNamedApp(unrelatedApp, '熊猫小抽屉 Copy', 'preserved');
+  await writeFile(path.join(f.app, 'Contents', 'MacOS', 'local-projects-desktop-dev-copy'), 'unrelated executable');
+  const report = await withDesktopPackageOutput(f.plan, async () => f.writeApp('new'), {
+    ...f.verifiers,
+    processes: async () => [
+      path.join(alias, path.relative(f.root, unrelatedApp), 'Contents', 'MacOS', 'local-projects-desktop-dev'),
+      path.join(alias, path.relative(f.root, f.app), 'Contents', 'MacOS', 'local-projects-desktop-dev-copy'),
+    ],
+  });
+  assert.equal(report.removedPrevious, 2);
+  assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'new');
+  assert.equal(JSON.parse(await readFile(appFile(unrelatedApp))).value, 'preserved');
+  await noTransaction(f);
+});
+
 test('a legacy filename with a different bundle name or identity is preserved and blocks cleanup', async t => {
   for (const identity of [
-    { identifier: 'dev.localprojects.platform.m0', bundleName: '熊猫应用小抽屉' },
+    { identifier: 'dev.localprojects.platform.m0', bundleName: '熊猫小抽屉' },
     { identifier: 'foreign', bundleName: 'Local Projects Dev' },
   ]) {
     const f = await fixture(t);
@@ -342,6 +409,27 @@ test('an old app launched from staging is retained with recovery record instead 
       const profile = path.join(f.root, 'target', 'release');
       const staging = (await readdir(profile)).find(name => name.startsWith('.desktop-package-previous-'));
       return [`${path.join(profile, staging, 'artifact-0')}/Contents/MacOS/local-projects-desktop-dev`];
+    },
+  }), /旧生成包正在运行/);
+  assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'new');
+  const profile = path.join(f.root, 'target', 'release');
+  const staging = (await readdir(profile)).find(name => name.startsWith('.desktop-package-previous-'));
+  assert.equal(JSON.parse(await readFile(appFile(path.join(profile, staging, 'artifact-0')))).value, 'old');
+  assert.ok((await lstat(path.join(f.root, 'target', '.desktop-package-build.lock'))).isDirectory());
+});
+
+test('an old app launched through a source-directory alias from staging retains its recovery record', async t => {
+  const f = await fixture(t);
+  const alias = path.join(f.root, 'previous-source-name');
+  await symlink(f.root, alias);
+  let samples = 0;
+  await assert.rejects(withDesktopPackageOutput(f.plan, async () => f.writeApp('new'), {
+    ...f.verifiers,
+    processes: async () => {
+      if (++samples === 1) return [];
+      const profile = path.join(f.root, 'target', 'release');
+      const staging = (await readdir(profile)).find(name => name.startsWith('.desktop-package-previous-'));
+      return [path.join(alias, 'target', 'release', staging, 'artifact-0', 'Contents', 'MacOS', 'local-projects-desktop-dev')];
     },
   }), /旧生成包正在运行/);
   assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'new');
