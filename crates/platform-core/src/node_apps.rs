@@ -462,6 +462,7 @@ impl NodeApps {
     }
 
     fn require_install_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
+        self.require_no_source_restore(id)?;
         self.require_no_pending_delete(id)?;
         self.require_no_development_operation(id)?;
         if inner.shutting_down || inner.running.contains_key(id) {

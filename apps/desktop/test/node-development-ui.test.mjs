@@ -235,3 +235,67 @@ test('Source acquisition preserves an explicit branch draft across connection ch
   await change(document.getElementById('source-branch'),' '); await click('获取源码');
   assert.equal(calls[2].input.branch,null);
 });
+
+const { NodeSourceRestorePanel } = await component('NodeSourceRestorePanel.tsx');
+const restoreProps = extra => ({ appId: 'app_one', instanceId: 'instance_one', sourceRoot: '/disposable/source', disabled: false, runtimeIsSource: false, running: false, onDraftStateChange() {}, onChanged() {}, ...extra });
+const restorePreview = extra => ({ targetCommit: 'a'.repeat(40), head: 'b'.repeat(40), branch: 'refs/heads/main', snapshotDigest: 'c'.repeat(64), planDigest: 'd'.repeat(64), canApply: true, changes: [{ path: 'src/example.mjs', kind: 'modify' }], ...extra });
+const clearRestore = () => ({ state: 'clear', operations: [], issues: [] });
+const restoreOperation = extra => ({ operationId: 'restore_11111111-1111-4111-8111-111111111111', phase: 'applying', targetCommit: 'a'.repeat(40), planDigest: 'd'.repeat(64), journalDigest: 'e'.repeat(64), canContinue: true, canUndo: true, changes: [{ path: 'src/example.mjs', state: 'after' }], ...extra });
+async function previewRestore() { await change(document.querySelector('.node-source-restore-panel input'), 'a'.repeat(40)); await click('预览源码取回'); }
+
+test('Node source restore previews before acknowledgement, submits once and never saves or builds automatically', async () => {
+  const calls = []; const applied = deferred(); let changed = 0;
+  await mount(NodeSourceRestorePanel, restoreProps({ onChanged: () => changed++ }), async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'node_development_git');
+    if (args.operation === 'restore-status') return clearRestore();
+    if (args.operation === 'restore-preview') return restorePreview();
+    if (args.operation === 'restore-apply') return applied.promise;
+    throw Error(args.operation);
+  });
+  assert.deepEqual(calls.map(([, args]) => args.operation), ['restore-status']);
+  await previewRestore(); assert.equal(button('确认取回源码').disabled, true);
+  await act(async () => document.querySelector('input[type=checkbox]').click());
+  await click('确认取回源码'); await click('确认取回源码');
+  assert.equal(calls.filter(([, args]) => args.operation === 'restore-apply').length, 1);
+  assert.deepEqual(calls.find(([, args]) => args.operation === 'restore-apply')[1].input, { targetCommit: 'a'.repeat(40), expectedSnapshot: 'c'.repeat(64), expectedPlanDigest: 'd'.repeat(64) });
+  await act(async () => applied.resolve({ operationOutcome: 'committed', state: 'completed' }));
+  assert.equal(changed, 1); assert.match(document.body.textContent, /源码已取回为未保存修改/);
+  assert.deepEqual(calls.map(([, args]) => args.operation), ['restore-status', 'restore-preview', 'restore-apply', 'restore-status']);
+});
+
+test('A Node source-restore preview from an older connection never becomes actionable', async () => {
+  const pending = deferred(); const props = restoreProps();
+  await mount(NodeSourceRestorePanel, props, async (_command, args) => args.operation === 'restore-status' ? clearRestore() : pending.promise);
+  await previewRestore();
+  await act(async () => root.render(h(NodeSourceRestorePanel, { ...props, instanceId: 'instance_two' })));
+  await act(async () => pending.resolve(restorePreview()));
+  assert.equal(document.querySelector('[aria-label="Node 源码取回预览"]'), null);
+});
+
+test('Interrupted Node source restoration exposes fresh recovery tokens and requires an explicit continue action', async () => {
+  const calls = []; let failed = false;
+  await mount(NodeSourceRestorePanel, restoreProps(), async (_command, args) => {
+    calls.push(args);
+    if (args.operation === 'restore-status') return failed ? { state: 'needs-attention', operations: [restoreOperation()], issues: [] } : clearRestore();
+    if (args.operation === 'restore-preview') return restorePreview();
+    if (args.operation === 'restore-apply') { failed = true; throw Error('artificial interrupted file operation'); }
+    if (args.operation === 'restore-recover') { failed = false; return { operationOutcome: 'committed', state: 'completed' }; }
+    throw Error(args.operation);
+  });
+  await previewRestore(); await act(async () => document.querySelector('input[type=checkbox]').click()); await click('确认取回源码');
+  assert.match(document.body.textContent, /有未完成的源码取回/);
+  assert.equal(calls.filter(args => args.operation === 'restore-recover').length, 0);
+  await click('继续本次取回');
+  assert.deepEqual(calls.find(args => args.operation === 'restore-recover').input, { operationId: restoreOperation().operationId, expectedPlanDigest: 'd'.repeat(64), expectedJournalDigest: 'e'.repeat(64), action: 'continue' });
+});
+
+test('Unknown Node restore evidence disables recovery and runtime/source prerequisites block every write', async () => {
+  const calls = [];
+  await mount(NodeSourceRestorePanel, restoreProps(), async (_command, args) => { calls.push(args); return { state: 'needs-attention', operations: [restoreOperation({ canContinue: false, canUndo: false, changes: [] })], issues: [{ message: 'unknown third party file' }] }; });
+  assert.equal(button('继续本次取回').disabled, true); assert.equal(button('撤回本次取回').disabled, true); assert.equal(button('预览源码取回').disabled, true);
+  await click('继续本次取回'); assert.deepEqual(calls.map(args => args.operation), ['restore-status']);
+  await act(async () => root.render(h(NodeSourceRestorePanel, restoreProps({ running: true }))));
+  assert.equal(button('核对取回状态').disabled, true);
+  await act(async () => root.render(h(NodeSourceRestorePanel, restoreProps({ runtimeIsSource: true }))));
+  assert.equal(button('预览源码取回').disabled, true); assert.match(document.body.textContent, /将运行副本与作者源码分开/);
+});

@@ -7,6 +7,10 @@ pub enum NodeGitAction {
     Initialize(crate::project_git::GitInitInput),
     Save(crate::project_git::GitSaveInput),
     Branch(crate::project_git::GitCreateBranchInput),
+    RestorePreview(crate::node_development_git::NodeRestorePreviewInput),
+    RestoreApply(crate::node_development_git::NodeRestoreApplyInput),
+    RestoreStatus,
+    RestoreRecover(crate::node_development_git::NodeRestoreRecoverInput),
 }
 pub struct NodeDevelopmentLease<'a> {
     _source_lease: crate::node_apps::NodeDevelopmentSourceLease<'a>,
@@ -47,6 +51,10 @@ impl RuntimeHandle {
         let source_lease = apps.development_source_lease(app_id).await?;
         source_lease.validate()?;
         let source = source_lease.source().clone();
+        if editable {
+            apps.require_no_source_restore(app_id)?;
+            crate::node_development_git::require_source_restore_clear(&source.source_root)?;
+        }
         if editable && source.runtime_is_source {
             return Err(ApiError::new(
                 "NODE_DEVELOPMENT_RUNTIME_IS_SOURCE",
@@ -63,6 +71,36 @@ impl RuntimeHandle {
         lease.validate()?;
         Ok(lease)
     }
+    async fn node_source_restore_lease<'a>(
+        &self,
+        apps: &'a NodeApps,
+        app_id: &str,
+    ) -> std::result::Result<NodeDevelopmentLease<'a>, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "平台正在退出。"));
+        }
+        state.node_development.require_idle()?;
+        state.node_install.require_idle()?;
+        let task = state.store.reserve_transient_operation(
+            &format!("node-development:{app_id}"),
+            "node-source-restore",
+        )?;
+        let source_lease = apps.development_restore_source_lease(app_id).await?;
+        let source = source_lease.source().clone();
+        let lease = NodeDevelopmentLease {
+            _source_lease: source_lease,
+            source,
+            instance_id: state.info.instance_id.clone(),
+            _task: task,
+            active,
+        };
+        lease.validate()?;
+        Ok(lease)
+    }
+
     pub async fn node_development_info(
         &self,
         apps: &NodeApps,
@@ -79,17 +117,65 @@ impl RuntimeHandle {
         app_id: &str,
         action: NodeGitAction,
     ) -> std::result::Result<Value, ApiError> {
+        let restore = matches!(
+            action,
+            NodeGitAction::RestorePreview(_)
+                | NodeGitAction::RestoreApply(_)
+                | NodeGitAction::RestoreStatus
+                | NodeGitAction::RestoreRecover(_)
+        );
         let editable = matches!(action, NodeGitAction::Branch(_));
-        let lease = self.node_development_lease(apps, app_id, editable).await?;
+        let lease = if restore {
+            self.node_source_restore_lease(apps, app_id).await?
+        } else {
+            self.node_development_lease(apps, app_id, editable).await?
+        };
         let git = crate::node_development_git::NodeGit::new(lease.active.0.git_environment.clone())
             .with_stop(lease.active.0.stop.subscribe());
         let root = &lease.source.source_root;
+        let scope = crate::node_development_git::NodeRestoreScope {
+            app_id: app_id.into(),
+            registration_digest: lease._source_lease.registration_digest().into(),
+            control_path: lease._source_lease.source_restore_control_path(),
+        };
+        if matches!(
+            action,
+            NodeGitAction::Versions(_)
+                | NodeGitAction::Initialize(_)
+                | NodeGitAction::Save(_)
+                | NodeGitAction::Branch(_)
+        ) {
+            apps.require_no_source_restore(app_id)?;
+        }
+        // Keep native requests bounded even when a source transaction is
+        // reached through several service/operation futures on the default stack.
         let result = match action {
-            NodeGitAction::Status => json!(git.status(root).await?),
-            NodeGitAction::Versions(limit) => json!(git.versions(root, limit).await?),
-            NodeGitAction::Initialize(input) => git.initialize(root, input).await?,
-            NodeGitAction::Save(input) => git.save(root, input).await?,
-            NodeGitAction::Branch(input) => git.create_branch(root, input).await?,
+            NodeGitAction::Status => {
+                let mut status = Box::pin(git.status(root)).await?;
+                if let Err(issue) = apps.require_no_source_restore(app_id) {
+                    status.source_restore.issues.push(issue.clone());
+                    status.issues.push(issue);
+                    status.can_initialize = false;
+                    status.can_save = false;
+                    status.can_create_branch = false;
+                    status.can_list_versions = false;
+                }
+                json!(status)
+            }
+            NodeGitAction::Versions(limit) => json!(Box::pin(git.versions(root, limit)).await?),
+            NodeGitAction::Initialize(input) => Box::pin(git.initialize(root, input)).await?,
+            NodeGitAction::Save(input) => Box::pin(git.save(root, input)).await?,
+            NodeGitAction::Branch(input) => Box::pin(git.create_branch(root, input)).await?,
+            NodeGitAction::RestorePreview(input) => {
+                Box::pin(git.restore_preview(root, &scope, input)).await?
+            }
+            NodeGitAction::RestoreApply(input) => {
+                Box::pin(git.restore_apply(root, &scope, input)).await?
+            }
+            NodeGitAction::RestoreStatus => git.restore_status(root, &scope)?,
+            NodeGitAction::RestoreRecover(input) => {
+                Box::pin(git.restore_recover(root, &scope, input)).await?
+            }
         };
         lease.validate()?;
         Ok(result)
@@ -101,6 +187,7 @@ impl RuntimeHandle {
     ) -> std::result::Result<Value, ApiError> {
         let lease = self.node_development_lease(apps, app_id, true).await?;
         let root = &lease.source.source_root;
+        crate::node_development_git::require_source_restore_clear(root)?;
         let text = format!("请继续开发这个 Node 应用。\n源码仓库：{}\n\n以仓库 local-app.json 的 development 声明为准。一个应用只使用这个 Git 仓库。不要修改已安装的运行副本、平台登记、真实数据库、附件、配置或密钥。\n在源码中修改并测试后，通过平台的“构建并更新”准备新版本，用户确认后才发布。Git 只保存源码，不能代替数据库或密钥备份。请先阅读仓库中的 AGENTS.md、README 和开发文档，再按用户需求开发。", root.display());
         Ok(json!({"text":text,"projectRoot":root,"instanceId":lease.instance_id}))
     }

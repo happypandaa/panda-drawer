@@ -66,6 +66,16 @@ pub(super) async fn node_development_git(
         "initialize" => NodeGitAction::Initialize(serde_json::from_value(value).map_err(parse)?),
         "save" => NodeGitAction::Save(serde_json::from_value(value).map_err(parse)?),
         "branch" => NodeGitAction::Branch(serde_json::from_value(value).map_err(parse)?),
+        "restore-preview" => {
+            NodeGitAction::RestorePreview(serde_json::from_value(value).map_err(parse)?)
+        }
+        "restore-apply" => {
+            NodeGitAction::RestoreApply(serde_json::from_value(value).map_err(parse)?)
+        }
+        "restore-status" => NodeGitAction::RestoreStatus,
+        "restore-recover" => {
+            NodeGitAction::RestoreRecover(serde_json::from_value(value).map_err(parse)?)
+        }
         _ => return Err(ApiError::new("INVALID_INPUT", "未知源码版本操作。")),
     };
     state

@@ -286,8 +286,124 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
         .await
         .unwrap();
     assert_eq!(versions["versions"].as_array().unwrap().len(), 2);
+    Box::pin(verify_source_restore_roundtrip(
+        &handle,
+        &apps,
+        id,
+        &source,
+        &slot,
+        initial_head,
+        &next,
+    ))
+    .await;
     apps.stop_all().await.unwrap();
     service.shutdown().await.unwrap();
+}
+
+async fn verify_source_restore_roundtrip(
+    handle: &RuntimeHandle,
+    apps: &NodeApps,
+    id: &str,
+    source: &Path,
+    slot: &Path,
+    initial_head: &str,
+    next: &Value,
+) {
+    let before_restore = Box::pin(save(
+        handle,
+        apps,
+        id,
+        "Save disposable source before explicit restore",
+    ))
+    .await;
+    assert_eq!(apps.start(id).await.unwrap()["state"], "running");
+    assert_eq!(
+        handle
+            .node_development_git(
+                apps,
+                id,
+                NodeGitAction::RestorePreview(
+                    crate::node_development_git::NodeRestorePreviewInput {
+                        target_commit: initial_head.into()
+                    }
+                )
+            )
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_RESTORE_RUNTIME_ACTIVE"
+    );
+    assert_eq!(apps.stop(id).await.unwrap()["state"], "stopped");
+    let retained_registration = fs::read(slot.join("registration.json")).unwrap();
+    let retained_configuration = fs::read(slot.join("configuration/configuration.json")).unwrap();
+    let retained_index = fs::read(source.join(".git/index")).unwrap();
+    let retained_head = fs::read(source.join(".git/HEAD")).unwrap();
+    let retained_branch = fs::read(source.join(".git/refs/heads/main")).unwrap();
+    let running_program = PathBuf::from(next["sourcePath"].as_str().unwrap());
+    let preview = handle
+        .node_development_git(
+            apps,
+            id,
+            NodeGitAction::RestorePreview(crate::node_development_git::NodeRestorePreviewInput {
+                target_commit: initial_head.into(),
+            }),
+        )
+        .await
+        .unwrap();
+    let applied = handle
+        .node_development_git(
+            apps,
+            id,
+            NodeGitAction::RestoreApply(crate::node_development_git::NodeRestoreApplyInput {
+                target_commit: initial_head.into(),
+                expected_snapshot: preview["snapshotDigest"].as_str().unwrap().into(),
+                expected_plan_digest: preview["planDigest"].as_str().unwrap().into(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied["state"], "completed");
+    assert_eq!(
+        fs::read(source.join("public/index.html")).unwrap(),
+        b"disposable installed version one"
+    );
+    assert_eq!(
+        fs::read(running_program.join("public/index.html")).unwrap(),
+        b"disposable uncommitted source update"
+    );
+    assert_eq!(
+        fs::read(slot.join("registration.json")).unwrap(),
+        retained_registration
+    );
+    assert_eq!(
+        fs::read(slot.join("configuration/configuration.json")).unwrap(),
+        retained_configuration
+    );
+    assert_eq!(
+        fs::read(slot.join("data/disposable-business.txt")).unwrap(),
+        b"retained business file"
+    );
+    assert_eq!(fs::read(source.join(".git/index")).unwrap(), retained_index);
+    assert_eq!(fs::read(source.join(".git/HEAD")).unwrap(), retained_head);
+    assert_eq!(
+        fs::read(source.join(".git/refs/heads/main")).unwrap(),
+        retained_branch
+    );
+    let after_restore = handle
+        .node_development_git(apps, id, NodeGitAction::Status)
+        .await
+        .unwrap();
+    assert_eq!(
+        after_restore["repository"]["head"],
+        before_restore["status"]["repository"]["head"]
+    );
+    assert_eq!(after_restore["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(after_restore["canSave"], true);
+    let final_detail = apps.configuration(id).await.unwrap();
+    assert_eq!(
+        final_detail["installation"]["generation"],
+        next["installation"]["generation"]
+    );
 }
 
 async fn final_record(handle: &RuntimeHandle, task: &Value) -> Value {

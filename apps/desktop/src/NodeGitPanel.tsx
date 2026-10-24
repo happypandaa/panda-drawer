@@ -3,14 +3,17 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { ProjectGitStatus } from './ProjectGitPanel';
 import type { ProjectGitVersionsResult } from './ProjectGitVersions';
 import { messageFrom } from './ui-utils';
+import { NodeSourceRestorePanel } from './NodeSourceRestorePanel';
 
-interface NodeGitPanelProps { appId: string; instanceId?: string; sourceRoot?: string; disabled: boolean; runtimeIsSource?: boolean; onDraftStateChange: (value: { dirty: boolean; pending: boolean }) => void }
+interface NodeGitPanelProps { appId: string; instanceId?: string; sourceRoot?: string; disabled: boolean; runtimeIsSource?: boolean; running?: boolean; onDraftStateChange: (value: { dirty: boolean; pending: boolean }) => void }
 export function NodeGitPanel(props: NodeGitPanelProps) {
   return <NodeGitPanelInstance key={props.appId} {...props} />;
 }
-function NodeGitPanelInstance({ appId, instanceId, sourceRoot, disabled, runtimeIsSource, onDraftStateChange }: NodeGitPanelProps) {
+function NodeGitPanelInstance({ appId, instanceId, sourceRoot, disabled, runtimeIsSource, running, onDraftStateChange }: NodeGitPanelProps) {
   const id = useId();
   const [status, setStatus] = useState<ProjectGitStatus | null>(null);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreDraft, setRestoreDraft] = useState({ dirty: false, pending: false });
   const [versions, setVersions] = useState<ProjectGitVersionsResult | null>(null);
   const [message, setMessage] = useState('');
   const [name, setName] = useState('');
@@ -26,8 +29,8 @@ function NodeGitPanelInstance({ appId, instanceId, sourceRoot, disabled, runtime
   const callback = useRef(onDraftStateChange); callback.current = onDraftStateChange;
   const current = (sequence: number) => mounted.current && sequence === generation.current;
   const read = async (sequence: number) => {
-    const value = await invoke<ProjectGitStatus>('node_development_git', { appId, operation: 'status' });
-    if (current(sequence)) setStatus(value);
+    const value = await invoke<ProjectGitStatus & { sourceRestore?: { pending: unknown[]; issues: unknown[] } }>('node_development_git', { appId, operation: 'status' });
+    if (current(sequence)) { setStatus(value); if (value.sourceRestore?.pending.length || value.sourceRestore?.issues.length) setRestoreOpen(true); }
     return value;
   };
   useEffect(() => {
@@ -37,9 +40,9 @@ function NodeGitPanelInstance({ appId, instanceId, sourceRoot, disabled, runtime
     void read(sequence).catch(cause => { if (current(sequence)) setError(messageFrom(cause)); }).finally(() => { if (current(sequence)) { pending.current = false; setBusy(false); } });
     return () => { mounted.current = false; generation.current++; callback.current({ dirty: false, pending: false }); };
   }, [appId, instanceId, sourceRoot]);
-  useEffect(() => { callback.current({ dirty: Boolean(message || branch || name !== acceptedAuthor.name || email !== acceptedAuthor.email), pending: busy }); }, [message, branch, name, email, acceptedAuthor, busy, instanceId, sourceRoot]);
+  useEffect(() => { callback.current({ dirty: Boolean(message || branch || name !== acceptedAuthor.name || email !== acceptedAuthor.email || restoreDraft.dirty), pending: busy || restoreDraft.pending }); }, [message, branch, name, email, acceptedAuthor, busy, restoreDraft, instanceId, sourceRoot]);
   async function run(operation: 'status' | 'initialize' | 'save' | 'versions' | 'branch') {
-    if (disabled || pending.current || !mounted.current) return;
+    if (disabled || pending.current || restoreDraft.pending || !mounted.current) return;
     if (operation === 'initialize' && !status?.canInitialize) return;
     if (operation === 'save' && (!status?.canSave || !message.trim() || !name.trim() || !email.trim())) return;
     if (operation === 'branch' && (!status?.canCreateBranch || runtimeIsSource || !branch.trim())) return;
@@ -67,7 +70,7 @@ function NodeGitPanelInstance({ appId, instanceId, sourceRoot, disabled, runtime
     } catch (cause) { if (current(sequence)) { setError(messageFrom(cause)); setStatus(null); } }
     finally { if (current(sequence)) { pending.current = false; setBusy(false); } }
   }
-  const locked = disabled || busy;
+  const locked = disabled || busy || restoreDraft.pending;
   return <section className="node-git-panel" aria-label="Node 源码版本" aria-busy={busy}>
     <div className="section-heading"><h3>源码版本</h3><button className="refresh-button" disabled={locked} onClick={() => void run('status')}>刷新状态</button></div>
     <p className="project-help">保存到源码仓库。数据和密钥不包含在内，远端备份需另行同步。</p>
@@ -83,8 +86,9 @@ function NodeGitPanelInstance({ appId, instanceId, sourceRoot, disabled, runtime
         <button className="primary-button" disabled={locked || !status.canSave || !message.trim() || !name.trim() || !email.trim()}>保存源码版本</button>
       </form>
       <div className="project-dialog-actions"><button className="refresh-button" disabled={locked || !status.canListVersions} onClick={() => void run('versions')}>查看版本记录</button></div>
-      {versions && <ol className="node-git-history">{versions.versions.map(version => <li key={version.oid}><span>{version.subject || '无版本说明'}</span><code>{version.oid.slice(0, 10)}</code><small>{version.author.name} · {version.authoredAt}</small></li>)}</ol>}
+      {versions && <ol className="node-git-history">{versions.versions.map(version => <li key={version.oid}><span>{version.subject || '无版本说明'}</span><code>{version.oid}</code><small>{version.author.name} · {version.authoredAt}</small></li>)}</ol>}
       <details><summary>创建分支</summary><form onSubmit={event => { event.preventDefault(); void run('branch'); }}><label htmlFor={`${id}-branch`}>分支名称</label><input id={`${id}-branch`} value={branch} disabled={locked} onChange={event => setBranch(event.target.value)} required /><button className="refresh-button" disabled={locked || !status.canCreateBranch || runtimeIsSource || !branch.trim()}>创建并切换</button>{runtimeIsSource && <p className="project-help">先构建并更新应用，再切换源码分支。</p>}</form></details>
     </>}
+    <details open={restoreOpen || restoreDraft.dirty || restoreDraft.pending} onToggle={event => { if ((restoreDraft.dirty || restoreDraft.pending) && !event.currentTarget.open) event.currentTarget.open = true; else setRestoreOpen(event.currentTarget.open); }}><summary>取回已保存源码</summary>{restoreOpen && <NodeSourceRestorePanel appId={appId} instanceId={instanceId} sourceRoot={sourceRoot ?? status?.repository.root ?? undefined} disabled={disabled || busy} runtimeIsSource={runtimeIsSource} running={running} onDraftStateChange={setRestoreDraft} onChanged={() => { setVersions(null); const sequence = generation.current; void read(sequence).catch(cause => { if (current(sequence)) { setError(messageFrom(cause)); setStatus(null); } }); }} />}</details>
   </section>;
 }

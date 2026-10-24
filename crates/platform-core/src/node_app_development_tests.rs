@@ -202,3 +202,21 @@ async fn ordinary_detail_and_configuration_reads_never_create_a_development_bind
     drop(fixture.apps.development_source_lease(id).await.unwrap());
     assert!(path.is_file());
 }
+
+#[tokio::test]
+async fn source_restore_requires_a_separate_runtime_and_releases_its_failed_lease() {
+    let fixture = Fixture::new();
+    let registered = fixture.apps.register(fixture.source.clone()).await.unwrap();
+    let id = registered["id"].as_str().unwrap();
+    assert_eq!(
+        fixture
+            .apps
+            .development_restore_source_lease(id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "NODE_SOURCE_RESTORE_RUNTIME_ACTIVE"
+    );
+    drop(fixture.apps.development_source_lease(id).await.unwrap());
+}

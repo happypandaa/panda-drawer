@@ -913,3 +913,85 @@ async fn managed_install_binds_an_explicit_matching_author_tree_and_rejects_runt
     drop(lease);
     fixture.shutdown().await;
 }
+
+#[tokio::test]
+async fn retained_node_source_restore_blocks_new_build_binding_installation_and_deletion_after_reload(
+) {
+    let fixture = Fixture::new();
+    let installed = fixture.install().await;
+    let id = &installed.app_id;
+    fixture
+        .manager
+        .bind_development_source(id, fixture.source.clone())
+        .await
+        .unwrap();
+    let registration = fs::read(fixture.slot(id).join("registration.json")).unwrap();
+    let active = fixture.slot(id).join("active.json");
+    fs::write(&active, b"retained artificial interrupted runtime").unwrap();
+    assert_eq!(
+        fixture
+            .manager
+            .development_restore_source_lease(id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "NODE_SOURCE_RESTORE_RUNTIME_ACTIVE"
+    );
+    fs::remove_file(active).unwrap();
+    let lease = fixture
+        .manager
+        .development_restore_source_lease(id)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.manager.start(id).await.unwrap_err().code,
+        "NODE_DEVELOPMENT_BUSY"
+    );
+    drop(lease);
+    let interrupted = fixture
+        .source
+        .join(".git/local-projects-node-restores")
+        .join(format!("restore_{}", Uuid::new_v4()));
+    fs::create_dir_all(&interrupted).unwrap();
+    fs::write(
+        interrupted.join("journal.json"),
+        b"retained artificial unreadable source-restore evidence",
+    )
+    .unwrap();
+    let reloaded = NodeApps::new(
+        fixture.paths.data_root().into(),
+        fixture.manager.node_path.clone(),
+    )
+    .unwrap();
+    assert!(reloaded.development_build_source_lease(id).await.is_err());
+    assert!(reloaded
+        .bind_development_source(id, fixture.source.clone())
+        .await
+        .is_err());
+    assert!(reloaded.install_target_snapshot(Some(id)).await.is_err());
+    assert!(reloaded.delete_preview(id).await.is_err());
+    let control = fixture.slot(id).join("source-restore.json");
+    fs::write(&control, b"retained artificial unreadable instance control").unwrap();
+    let held_git = fixture.source.with_extension("retained-git-evidence");
+    fs::rename(fixture.source.join(".git"), &held_git).unwrap();
+    assert!(reloaded.development_build_source_lease(id).await.is_err());
+    assert!(reloaded
+        .bind_development_source(id, fixture.source.clone())
+        .await
+        .is_err());
+    assert!(reloaded.install_target_snapshot(Some(id)).await.is_err());
+    assert!(reloaded.delete_preview(id).await.is_err());
+    assert!(control.is_file());
+    fs::rename(held_git, fixture.source.join(".git")).unwrap();
+    // Recovery keeps its own guarded entry; ordinary read-only source information
+    // and stopping remain available without clearing or guessing the bad journal.
+    drop(reloaded.development_restore_source_lease(id).await.unwrap());
+    reloaded.stop_runtime(id).await.unwrap();
+    assert_eq!(
+        fs::read(fixture.slot(id).join("registration.json")).unwrap(),
+        registration
+    );
+    assert!(interrupted.join("journal.json").is_file());
+    fixture.shutdown().await;
+}
