@@ -66,3 +66,11 @@ registry 位于 `RuntimeSwitch`，实际工作区迁移前后共享同一 `Arc`�
 定向验证：Trial 19 通过、2 opt-in 忽略；NodeApps 55 通过；两项配套 Node opt-in 实际通过（13.48 秒）；全工作区全目标严格 Clippy、格式及差异检查通过。新测试核对静默子孙停止、读取时拒绝无限版本输出、丢版本等待者仍完成真实组/reader join，以及两个产品启动探针出现在服务的同一登记。首次新增 NodeApps fixture 以不允许的空字符串默认配置启动失败，修正为既有 normal 行为后通过，原失败日志保留。此步骤没有重写 Trial 长运行协议、reader 的原停止语义或 Drop，也不提供安装许可。
 
 并行验证曾耗尽磁盘：完整核心回归和一个 compile check 因 ENOSPC 中断，失败日志保留，不计为通过。确认相关命令退出后，只删除本次根构建和两个 disposable 副本的 `target/debug/incremental` 可重建缓存；源码、SDK、生成应用、测试证据、资料、备份和恢复现场均保留。后续关闭 incremental 重新验证，完整结果在完成后另行记录。
+
+缓存清理后，截至 `66fb69f` 的整合代码完整串行核心回归 **734 通过、0 失败、54 忽略**（248.14 秒），Node 登记集成另 **10 通过**。该轮覆盖 Git 探针、网页构建、代理、源码获取与运行 Node 探针；不覆盖下述随后加入的 reader 收尾改动，也不覆盖尚在独立副本实施的 ProjectGit、Node 制作/安装和桌面退出步骤。
+
+## Trial 输出任务的实际收尾
+
+原 `stop` 在进程组退出后 abort 两条 reader 并忽略 join 结果。现在关闭 control 消息接收端以解除队列发送等待，实际 await 每条 reader；未观察到 join 的句柄始终保存在 Trial owner 中。两秒软预算到期返回 `TRIAL_READER_CLEANUP_PENDING`，保留句柄供后续显式停止重试；丢失该重试 future 不移走句柄。发生 reader JoinError 则保留 sticky `TRIAL_READER_JOIN_FAILED`，即使 child 和 reader 槽都已空也不能再次返回成功。`NodeApps` 沿既有失败路径保留 Running、active marker 并拒绝第二次启动。
+
+此独立增量的 Trial 专项 **21 通过、2 opt-in 忽略**（7.14 秒），NodeApps 既有/探针集合 **55 通过**（10.62 秒），新增 reader 失败产品接点精确回归 **1 通过**；两项配套 Node opt-in **2 通过**（12.25 秒），全工作区全目标严格 Clippy、格式和差异检查通过。人工 reader 暂停后进行实际文件写入，核对 Pending/丢等待者保留句柄再完成；人工 panic 核对不可丢弃的失败回执。该故障注入不代表真实操作系统阻塞 I/O、断电或逃逸后代控制验收。裸 Trial Drop 仍是原有 best-effort，尚未改写为通用进程 registry owner；产品不得用丢 Trial 代替 stop 的实际成功。

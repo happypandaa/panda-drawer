@@ -100,6 +100,7 @@ pub struct NodeRuntimeTrial {
     stdin: Option<ChildStdin>,
     messages: mpsc::Receiver<TrialResult<ControlMessage>>,
     readers: Vec<JoinHandle<()>>,
+    reader_failure: Option<ApiError>,
     token: String,
     status: TrialStatus,
     stderr_count: Arc<AtomicU64>,
@@ -751,6 +752,7 @@ impl NodeRuntimeTrial {
             stdin,
             messages,
             readers: vec![control_reader, diagnostic_reader],
+            reader_failure: None,
             token,
             stderr_count,
             stopping,
@@ -919,6 +921,7 @@ impl NodeRuntimeTrial {
 
     pub async fn stop(&mut self) -> TrialResult<TrialStatus> {
         if self.child.is_none() {
+            self.finish_readers().await?;
             return self.status();
         }
         self.status.state = "stopping".into();
@@ -1019,12 +1022,48 @@ impl NodeRuntimeTrial {
         .into();
         self.child.take();
         self.status.process_group_exited = true;
-        for reader in self.readers.drain(..) {
-            reader.abort();
-            let _ = reader.await;
-        }
         self.token.clear();
+        self.finish_readers().await?;
         self.status()
+    }
+
+    async fn finish_readers(&mut self) -> TrialResult<()> {
+        // Queued control delivery cannot prevent an accepted reader from ending.
+        // Keep every unobserved handle in Self, including a lost stop waiter.
+        self.messages.close();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while let Some(reader) = self.readers.first_mut() {
+            match tokio::time::timeout_at(deadline, reader).await {
+                Ok(result) => {
+                    self.readers.remove(0);
+                    if result.is_err() && self.reader_failure.is_none() {
+                        self.status.state = "failed".into();
+                        self.reader_failure = Some(fail(
+                            "TRIAL_READER_JOIN_FAILED",
+                            "Runtime output work did not join normally; its failure is retained",
+                        ).detail("processGroupExited", self.status.process_group_exited).detail("ioClosed", false));
+                    }
+                }
+                Err(_) => {
+                    return Err(fail(
+                        "TRIAL_READER_CLEANUP_PENDING",
+                        "Runtime output work has not finished; its actual handles are retained",
+                    )
+                    .detail("processGroupExited", self.status.process_group_exited)
+                    .detail("ioClosed", false))
+                }
+            }
+        }
+        match &self.reader_failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_reader_failure(&mut self) {
+        self.readers.push(tokio::spawn(async {
+            panic!("controlled disposable runtime reader failure");
+        }));
     }
 }
 
@@ -1612,6 +1651,59 @@ server.shutdown(); server.server_close()
             .snapshot()
             .iter()
             .all(|record| record.resource_closed()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn pending_reader_retains_its_actual_handle_across_stop_retry_and_waiter_loss() {
+        let (_fixture, config) = protocol_fixture("");
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        let marker = runtime.status.run_directory.join("actual-reader-finished");
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let written = marker.clone();
+        runtime.readers.push(tokio::spawn(async move {
+            let _ = wait.await;
+            fs::write(written, b"actual registered work finished").unwrap();
+        }));
+        let error = runtime.stop().await.unwrap_err();
+        assert_eq!(error.code, "TRIAL_READER_CLEANUP_PENDING");
+        assert!(runtime.child.is_none());
+        assert!(runtime.status.process_group_exited);
+        assert_eq!(runtime.readers.len(), 1);
+        assert!(!marker.exists());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), runtime.stop())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            runtime.readers.len(),
+            1,
+            "losing the retry waiter lost its actual JoinHandle"
+        );
+        release.send(()).unwrap();
+        runtime.stop().await.unwrap();
+        assert!(runtime.readers.is_empty());
+        assert_eq!(
+            fs::read(marker).unwrap(),
+            b"actual registered work finished"
+        );
+        runtime.stop().await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reader_join_failure_remains_blocked_after_child_and_handle_slots_are_empty() {
+        let (_fixture, config) = protocol_fixture("");
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        runtime.readers.push(tokio::spawn(async {
+            panic!("controlled disposable runtime reader failure");
+        }));
+        let first = runtime.stop().await.unwrap_err();
+        assert_eq!(first.code, "TRIAL_READER_JOIN_FAILED");
+        assert!(runtime.child.is_none());
+        assert!(runtime.readers.is_empty());
+        assert_eq!(runtime.stop().await.unwrap_err().code, first.code);
     }
 
     #[cfg(target_os = "macos")]
