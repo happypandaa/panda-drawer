@@ -6,15 +6,17 @@ import { ProjectOperationRecovery } from './ProjectOperationRecovery';
 import { ProjectLifecyclePanel } from './LifecyclePanels';
 import { ProjectStoragePanel } from './StoragePanels';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
+import { ProjectGitPanel } from './ProjectGitPanel';
 import type { MaintenanceStatus, ProjectInfo, ProjectMetadata, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { bytesText, timeText } from './storage-utils';
 export type OverviewTab = 'overview' | 'storage' | 'manage';
-export function ProjectOverview({ project, instanceId, initialTab, status, task, disabled, onTask, onChanged, onClose, onDismissGuardChange, technicalDetails }: {
+export function ProjectOverview({ project, instanceId, initialTab, status, task, disabled, onTask, onChanged, onClose, onDismissGuardChange, onDevelopmentStateChange, technicalDetails }: {
   project: ProjectInfo; instanceId?: string; initialTab: OverviewTab; status?: MaintenanceStatus; task?: TaskRecord; disabled: boolean;
   onTask: (task: TaskRecord) => void; onChanged: () => Promise<void>; onClose: () => void;
   technicalDetails?: ReactNode;
   onDismissGuardChange?: (guard: (() => boolean) | null) => void;
+  onDevelopmentStateChange?: (state: { dirty: boolean; pending: boolean }) => void;
 }) {
   const [tab, setTab] = useState(initialTab);
   const [visited, setVisited] = useState<OverviewTab[]>([initialTab]);
@@ -28,6 +30,9 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
   const [storageDraft, setStorageDraft] = useState({ dirty: false, pending: false });
   const [recoveryPending, setRecoveryPending] = useState(false);
   const [lifecycleDraft, setLifecycleDraft] = useState({ dirty: false, pending: false });
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versionDraft, setVersionDraft] = useState({ dirty: false, pending: false });
+  const developmentCallback = useRef(onDevelopmentStateChange); developmentCallback.current = onDevelopmentStateChange;
   const [dismissConfirm, setDismissConfirm] = useState(false);
   const [dismissMessage, setDismissMessage] = useState('');
   const pending = useRef(false);
@@ -36,12 +41,14 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
   const discardApproved = useRef(false);
   const dismissNotice = useRef<HTMLDivElement>(null);
   const tabPrefix = useId();
-  const editingBlocked = disabled || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
+  const editingBlocked = disabled || versionDraft.pending || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
   const maintenanceInput = status?.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {};
   const dirty = Boolean(metadata && (draft.name !== metadata.name || draft.description !== metadata.description));
-  const operationPending = busy || storageDraft.pending || recoveryPending || lifecycleDraft.pending;
+  const operationPending = busy || storageDraft.pending || recoveryPending || lifecycleDraft.pending || versionDraft.pending;
   const guardState = useRef({ dirty: false, pending: false });
-  guardState.current = { dirty: dirty || storageDraft.dirty || lifecycleDraft.dirty, pending: operationPending };
+  guardState.current = { dirty: dirty || storageDraft.dirty || lifecycleDraft.dirty || versionDraft.dirty, pending: operationPending };
+  useEffect(() => { developmentCallback.current?.(versionDraft); }, [versionDraft]);
+  useEffect(() => () => { developmentCallback.current?.({ dirty: false, pending: false }); }, []);
   useEffect(() => {
     setTab(initialTab); setVisited((previous) => previous.includes(initialTab) ? previous : [...previous, initialTab]);
   }, [initialTab]);
@@ -136,10 +143,13 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
         <div className="detail-data-row"><HardDrive size={24} /><span><strong>数据保存在本机</strong><small>业务记录和用户文件独立保存，构建更新不会替换当前业务数据。</small></span></div>
       </section>
       <section className="detail-location-section"><h3>应用位置</h3><div className="detail-location-row"><FolderOpen size={22} /><span><strong>本机项目目录</strong><code>{project.projectRoot}</code></span><button className="icon-button" aria-label="复制项目目录" onClick={() => void copy(project.projectRoot)}><Copy size={20} /></button></div></section>
+      <details className="detail-technical-information" open={versionsOpen || versionDraft.dirty || versionDraft.pending} onToggle={event => { if ((versionDraft.dirty || versionDraft.pending) && !event.currentTarget.open) event.currentTarget.open = true; else setVersionsOpen(event.currentTarget.open); }}><summary>源码与数据版本</summary>
+        {versionsOpen && <ProjectGitPanel projectId={project.id} instanceId={instanceId} task={task} disabled={disabled || busy || storageDraft.pending || recoveryPending || lifecycleDraft.pending} onTask={onTask} onDraftStateChange={setVersionDraft} />}
+      </details>
       <details className="detail-requirements"><summary>联网与设备要求<span>{!devices.length && !networks.some(([, items]) => items.length) ? '未声明额外需求' : '查看用途声明'}<ChevronRight size={16} /></span></summary><p>这些是应用声明的用途；使用摄像头或麦克风时仍需系统授权。</p>{networks.map(([kind, origins]) => <div key={kind}><h4>{({ connect: '网络连接', images: '外部图片', media: '外部音视频' } as Record<string, string>)[kind] ?? kind}</h4>{origins.map((item, index) => <p key={`${item.origin}:${index}`}><code>{item.origin}</code> · {item.purpose || '未说明用途'}{item.dataSent ? ` · 发送数据：${item.dataSent}` : ''}</p>)}</div>)}{devices.map(([device, value]) => <p key={device}>{device === 'camera' ? '摄像头' : device === 'microphone' ? '麦克风' : device} · {value.purpose || '未说明用途'}</p>)}{!devices.length && !networks.some(([, items]) => items.length) && <p>未声明外部连接或设备用途。</p>}</details>
       <details className="detail-technical-information"><summary>详细运行信息</summary><code className="overview-project-id">{project.id}</code><ObjectLayoutPanel layout={project.objectLayout} />{technicalDetails}</details>
     </div>
-    {visited.includes('storage') && <div role="tabpanel" id={`${tabPrefix}-storage-panel`} aria-labelledby={`${tabPrefix}-storage`} hidden={tab !== 'storage'}><ProjectStoragePanel project={project} status={status} task={task} disabled={disabled} onTask={onTask} onChanged={onChanged} showTask={false} active={tab === 'storage'} onDraftStateChange={setStorageDraft} /></div>}
-    {visited.includes('manage') && <div role="tabpanel" id={`${tabPrefix}-manage-panel`} aria-labelledby={`${tabPrefix}-manage`} hidden={tab !== 'manage'}>{dirty && <p className="overview-unsaved-note">概览中有未保存的基本信息。删除应用不会保存这些编辑。</p>}<ProjectLifecyclePanel project={project} instanceId={instanceId} status={status} task={task} disabled={disabled} onTask={onTask} active={tab === 'manage'} onDraftStateChange={setLifecycleDraft} /></div>}
+    {visited.includes('storage') && <div role="tabpanel" id={`${tabPrefix}-storage-panel`} aria-labelledby={`${tabPrefix}-storage`} hidden={tab !== 'storage'}><ProjectStoragePanel project={project} status={status} task={task} disabled={disabled || versionDraft.dirty || versionDraft.pending} onTask={onTask} onChanged={onChanged} showTask={false} active={tab === 'storage'} onDraftStateChange={setStorageDraft} /></div>}
+    {visited.includes('manage') && <div role="tabpanel" id={`${tabPrefix}-manage-panel`} aria-labelledby={`${tabPrefix}-manage`} hidden={tab !== 'manage'}>{dirty && <p className="overview-unsaved-note">概览中有未保存的基本信息。删除应用不会保存这些编辑。</p>}<ProjectLifecyclePanel project={project} instanceId={instanceId} status={status} task={task} disabled={disabled || versionDraft.dirty || versionDraft.pending} onTask={onTask} active={tab === 'manage'} onDraftStateChange={setLifecycleDraft} /></div>}
   </section>;
 }
