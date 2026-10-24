@@ -269,6 +269,46 @@ fn registration_root(
     Ok(root)
 }
 
+/// Collect names for allocation only. This is not a binding resolver and never
+/// inspects an old absolute target: a stale/malformed binding remains blocked by
+/// registration_root for every actual operation on that project.
+fn retain_directory_claims(
+    names: &mut std::collections::HashSet<String>,
+    owner: &str,
+    directory_name: Option<&str>,
+    project_root: Option<&Path>,
+) -> Result<(), ApiError> {
+    names.insert(checked_directory_name(owner)?.to_owned());
+    if let Some(name) = directory_name {
+        names.insert(checked_directory_name(name)?.to_owned());
+    }
+    if let Some(root) = project_root {
+        let text = root.to_str().ok_or_else(directory_mapping_error)?;
+        if !root.is_absolute()
+            || text.contains('\\')
+            || text.chars().any(char::is_control)
+            || text[1..]
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || root
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                != Some("projects")
+        {
+            return Err(directory_mapping_error());
+        }
+        let name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(directory_mapping_error)?;
+        // Conflicting but safe declarations reserve both names. Neither becomes
+        // a valid binding, and no path is opened, repaired, or adopted here.
+        names.insert(checked_directory_name(name)?.to_owned());
+    }
+    Ok(())
+}
+
 /// Resolve only platform-owned bindings, with the original exact-ID layout as
 /// the compatibility fallback. A manifest never supplies its own location.
 pub(crate) fn resolve_project_root(workspace: &Path, id: &str) -> Result<PathBuf, ApiError> {
@@ -1547,6 +1587,79 @@ impl ProjectStore {
         let _lock = self.registration_lock.lock().unwrap();
         self.reserve_named_identity_locked(id, task, name, except_trash)
     }
+    fn retained_directory_names(
+        &self,
+        except_owner: Option<&str>,
+        current_reservation: &Path,
+    ) -> Result<std::collections::HashSet<String>, ApiError> {
+        let mut names = std::collections::HashSet::new();
+        let states = self.workspace.join(".platform/project-state");
+        for kind in ["", "reservations", "retired", "deleting"] {
+            let directory = states.join(kind);
+            check_no_symlinks(&directory, true)?;
+            if !directory.try_exists()? {
+                continue;
+            }
+            for entry in fs::read_dir(&directory)? {
+                let path = entry?.path();
+                if path == current_reservation
+                    || path.extension().is_none_or(|extension| extension != "json")
+                {
+                    continue;
+                }
+                let Some(owner) = path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .filter(|owner| valid_id(owner))
+                else {
+                    continue;
+                };
+                if Some(owner) == except_owner {
+                    continue;
+                }
+                if kind.is_empty() {
+                    let record: Registration = read_json(&path)?;
+                    if record.schema_version != 1
+                        || record.id != owner
+                        || Uuid::parse_str(&record.document_epoch)
+                            .map(|epoch| epoch.to_string() != record.document_epoch)
+                            .unwrap_or(true)
+                    {
+                        return Err(directory_mapping_error());
+                    }
+                    retain_directory_claims(
+                        &mut names,
+                        owner,
+                        record.directory_name.as_deref(),
+                        Some(&record.project_root),
+                    )?;
+                } else {
+                    let record: Value = read_json(&path)?;
+                    if record["projectId"] != owner
+                        || (kind == "reservations"
+                            && record["taskId"].as_str().is_none_or(|task| !valid_id(task)))
+                    {
+                        return Err(directory_mapping_error());
+                    }
+                    let name = record
+                        .get("directoryName")
+                        .map(|value| value.as_str().ok_or_else(directory_mapping_error))
+                        .transpose()?;
+                    let root = record
+                        .get("projectRoot")
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(Path::new)
+                                .ok_or_else(directory_mapping_error)
+                        })
+                        .transpose()?;
+                    retain_directory_claims(&mut names, owner, name, root)?;
+                }
+            }
+        }
+        Ok(names)
+    }
     fn reserve_named_identity_locked(
         &self,
         id: &str,
@@ -1595,47 +1708,16 @@ impl ProjectStore {
             crate::project_directory_name::readable_directory_name(name, id)
         };
         checked_directory_name(&base)?;
+        let retained_names =
+            self.retained_directory_names(has_binding.then_some(id), &reservation_path)?;
         let mut directory_name = base.clone();
         let mut suffix = 1u32;
         loop {
-            let root = bound_root(&self.workspace, &directory_name)?;
-            let mut occupied = root.try_exists()?;
-            // Missing and retired registrations keep their directory binding.
-            // Disappearing files never make another project's name reusable.
-            for entry in fs::read_dir(self.workspace.join(".platform/project-state"))? {
-                let path = entry?.path();
-                if path.extension().is_none_or(|extension| extension != "json") {
-                    continue;
-                }
-                let Some(owner) = path
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .filter(|owner| valid_id(owner))
-                else {
-                    continue;
-                };
-                if owner != id {
-                    occupied |= registration_root(
-                        &self.workspace,
-                        owner,
-                        &read_json::<Registration>(&path)?,
-                    )? == root;
-                }
-            }
-            let reservations = self.workspace.join(".platform/project-state/reservations");
-            check_no_symlinks(&reservations, true)?;
-            if reservations.is_dir() {
-                for entry in fs::read_dir(&reservations)? {
-                    let path = entry?.path();
-                    if path == reservation_path
-                        || path.extension().is_none_or(|extension| extension != "json")
-                    {
-                        continue;
-                    }
-                    let record: Value = read_json(&path)?;
-                    occupied |= record["directoryName"] == directory_name;
-                }
-            }
+            let root = self.workspace.join("projects").join(&directory_name);
+            // A claimed basename is occupied even when its entity is missing,
+            // inaccessible, or a link. Do not inspect an unrelated old target.
+            let occupied = retained_names.contains(&directory_name)
+                || bound_root(&self.workspace, &directory_name)?.try_exists()?;
             if !occupied {
                 crate::builds::atomic_json(
                     &reservation_path,
@@ -1654,6 +1736,12 @@ impl ProjectStore {
                 ));
             }
             directory_name = format!("{base}-{suffix}");
+            if directory_name.len() > 128 {
+                return Err(ApiError::new(
+                    "PROJECT_DIRECTORY_CONFLICT",
+                    "The retained directory name cannot accept a safe conflict suffix",
+                ));
+            }
         }
     }
     pub(crate) fn release_identity(&self, id: &str, task: &str) -> Result<(), ApiError> {
