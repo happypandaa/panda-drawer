@@ -1,6 +1,7 @@
 @import './ProjectDetails.css';
 @import './ProjectStoragePanel.css';
 @import './ProjectLifecyclePanel.css';
+@import './ProjectDeleteDialog.css';
 
 :root {
   --surface: #fff;
@@ -519,7 +520,6 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .project-delete-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .project-delete-heading p { margin-bottom: 0; }
 .project-delete-heading h3 { color: #8e5141; }
-.project-delete-confirmation { margin-top: 20px; background: #fff; border-color: #e4d5cb; }
 .modal-content .overview-body { padding: 24px 0; }
 .overview-body p, .overview-body strong, .overview-section form > label { font-size: 13px; }
 .overview-status-grid span { font-size: 12px; }
@@ -1227,7 +1227,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea)::placeholder { color: var(--radio-muted); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea, select):focus-visible { outline-color: var(--radio-focus); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) input:is([type='checkbox'], [type='radio']) { accent-color: var(--radio-focus); }
-:root[data-theme] :is(.notice-error, .danger-button, .project-delete-section, .project-delete-confirmation, .purge-confirmation, .node-process-failed) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
+:root[data-theme] :is(.notice-error, .danger-button, .project-delete-section, .purge-confirmation, .node-process-failed) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
 :root[data-theme] :is(.danger-button:hover:not(:disabled), .project-delete:hover:not(:disabled)) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
 :root[data-theme] :is(.project-delete-section h3, .project-delete-section p, .task-error, .node-process-failed, .project-delete, .resource-missing) { color: var(--radio-danger); }
 :root[data-theme] :is(.operation-confirmation, .maintenance-active, .overview-unsaved-note, .node-config-warning, .node-endpoint-confirmation, .workspace-cleanup-item-result.needs-attention) { color: var(--radio-warning); border-color: var(--radio-warning-line); background: var(--radio-warning-surface); }

@@ -9,6 +9,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { ProjectTask } from './ProjectTask';
 import { ImportPanel } from './LifecyclePanels';
 import { ProjectOverview } from './ProjectOverview';
+import { ProjectDeleteDialog } from './ProjectDeleteDialog';
 import type { OverviewTab } from './ProjectOverview';
 import { WorkspaceHub } from './WorkspaceHub';
 import { Modal } from './Modal';
@@ -75,7 +76,9 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [showSources, setShowSources] = useState(false);
   const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
-  const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; taskId: string; origin: { scope: string; version: number } } | null>(null);
+  const [deleteProject, setDeleteProject] = useState<ProjectInfo | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; projectRoot: string; documentEpoch: string; instanceId?: string; taskId: string; origin: { scope: string; version: number } } | null>(null);
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
   const [building, setBuilding] = useState<string[]>([]);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
@@ -93,12 +96,12 @@ function App() {
   const selectedOverviewId = useRef<string | null>(null);
   const selectedOverviewRoot = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
-  const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : showImport ? 'import' : overview ? `project:${overview.project.id}` : 'page'}`;
+  const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : showImport ? 'import' : deleteProject ? `delete:${deleteProject.id}` : overview ? `project:${overview.project.id}` : 'page'}`;
   const { capture, isCurrent, error: showError, success: showSuccess, recover, reset, dismiss, messages } = useManagementFeedback(feedbackScope);
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
   function navigatePage(value: AppPage) {
-    if (value === page || nodeDraft.pending || nodeModalOpen) return;
+    if (value === page || nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setPage(value);
   }
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
@@ -115,7 +118,7 @@ function App() {
     else showSuccess(origin, `${outcome} 保留证据未删除。`, 'main', 'projects:page');
   }, [capture, showError, showSuccess]);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'details' | 'delete') {
-    if (nodeDraft.pending || nodeModalOpen) return;
+    if (nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
   const clearHandoff = useCallback(() => {
@@ -130,12 +133,17 @@ function App() {
     setOverview(null); setReloadProjectId(null);
   }, [clearHandoff]);
   function openOverview(project: ProjectInfo, tab: OverviewTab) {
-    if (nodeDraft.pending || nodeModalOpen) return;
+    if (nodeDraft.pending || nodeModalOpen || deleteProject) return;
     clearHandoff();
     selectedOverviewId.current = project.id;
     selectedOverviewRoot.current = project.projectRoot;
     setReloadProjectId(null);
     setOverview({ project, tab });
+  }
+  function openDelete(project: ProjectInfo) {
+    if (nodeDraft.pending || nodeModalOpen || deleteProject || deletePending) return;
+    clearHandoff();
+    setDeleteProject(project);
   }
   const { migrating, paused, cleanupTask, cleanupBusy } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
   const workspaceBusy = migrating || paused || cleanupBusy;
@@ -400,26 +408,34 @@ function App() {
     }
   }
 
-  function acceptTask(task: TaskRecord) {
+  function acceptTask(task: TaskRecord, deletionTarget?: ProjectInfo) {
     if (!task.projectId) { acceptLifecycleTask(task); return; }
-    if (task.type === 'delete') setRequestedDelete({ projectId: task.projectId, taskId: task.taskId, origin: capture() });
+    if (task.type === 'delete') {
+      const target = deletionTarget ?? projects.find(project => project.id === task.projectId);
+      if (!target) return;
+      setRequestedDelete({ projectId: target.id, projectRoot: target.projectRoot, documentEpoch: target.documentEpoch, instanceId: info?.instanceId, taskId: task.taskId, origin: capture() });
+    }
     setTasks((current) => ({ ...current, [task.projectId!]: task }));
   }
 
   useEffect(() => {
     if (!requestedDelete) return;
     const task = lifecycleTasks[requestedDelete.taskId] ?? tasks[requestedDelete.projectId];
-    if (task?.taskId !== requestedDelete.taskId || !task.final) return;
-    if (task.result?.operationOutcome === 'deleted') {
-      setProjects((current) => current.filter((project) => project.id !== requestedDelete.projectId));
+    if (task?.taskId !== requestedDelete.taskId || task.projectId !== requestedDelete.projectId || task.type !== 'delete' || !task.final) return;
+    if (task.result?.operationOutcome === 'deleted' && requestedDelete.instanceId === info?.instanceId) {
+      const matchesTarget = (project: ProjectInfo) => project.id === requestedDelete.projectId && project.projectRoot === requestedDelete.projectRoot && project.documentEpoch === requestedDelete.documentEpoch;
+      setProjects((current) => current.filter((project) => !matchesTarget(project)));
       void refresh();
-      if (selectedOverviewId.current === requestedDelete.projectId && isCurrent(requestedDelete.origin)) {
-        dismissOverview();
-        showSuccess(requestedDelete.origin, '项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；已有旧备份、操作证据和外部导出文件另行保留。', 'main', `${page}:page`);
+      if (isCurrent(requestedDelete.origin)) {
+        const matchesDialog = Boolean(deleteProject && matchesTarget(projects.find(project => project.id === deleteProject.id) ?? deleteProject));
+        const matchesOverview = Boolean(selectedOverviewId.current === requestedDelete.projectId && overview && matchesTarget(projects.find(project => project.id === overview.project.id) ?? overview.project));
+        if (matchesDialog) setDeleteProject(null);
+        if (matchesOverview) dismissOverview();
+        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；已有旧备份、操作证据和外部导出文件另行保留。', 'main', `${page}:page`);
       }
     }
     setRequestedDelete(null);
-  }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh, isCurrent, showSuccess, page]);
+  }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh, isCurrent, showSuccess, page, info?.instanceId, deleteProject, overview, projects]);
 
   function projectBlocked(project: ProjectInfo) {
     const status = maintenance[project.id];
@@ -429,6 +445,8 @@ function App() {
   const currentOverviewProject = projects.find((project) => project.id === overview?.project.id);
   const overviewProject = currentOverviewProject ?? overview?.project;
   const overviewUnavailable = Boolean(overview && !currentOverviewProject);
+  const currentDeleteProject = projects.find(project => project.id === deleteProject?.id);
+  const deletionTarget = currentDeleteProject ?? deleteProject;
   const projectReady = (project: ProjectInfo) => project.state === 'ready' && !projectBlocked(project);
   const nodeReady = (app: NodeAppDetail) => app.configuration.canStart && !['failed', 'starting', 'stopping'].includes(app.state) && !workspaceBusy;
   const filteredProjects = projects.filter((project) => {
@@ -457,12 +475,12 @@ function App() {
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
   const failedLifecycleTasks = completedLifecycleTasks.filter((task) => task.status === 'failed' || task.status === 'interrupted');
-  const modalOpen = Boolean(overviewProject && overview) || showCreate || nodeModalOpen || settingsOpen || showSources;
+  const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
   const openSettings = () => { if (!nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
-  const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending} detailsDisabled={nodeDraft.pending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openOverview(project, 'manage')} />;
+  const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending || deletePending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending || deletePending} detailsDisabled={nodeDraft.pending || deletePending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openDelete(project)} />;
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
   return (
@@ -556,6 +574,7 @@ function App() {
         <div className="radio-settings-footer"><span>熊猫小抽屉</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
       </Modal>}
         <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
+        {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>
@@ -577,7 +596,7 @@ function App() {
           <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' && buildResults[overviewProject.id] ? buildResults[overviewProject.id] : tasks[overviewProject.id]} />
           <ProjectOverview key={overviewProject.id} project={overviewProject} instanceId={info?.instanceId} technicalDetails={<> <BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />
             {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />重新加载项目窗口</button>}
-            {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={tasks[overviewProject.id]} onTask={(task) => { acceptTask(task); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
+            {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
         </Modal>}
     </div>
   );

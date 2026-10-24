@@ -18,7 +18,6 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
 }) {
   const [tab, setTab] = useState(initialTab);
   const [visited, setVisited] = useState<OverviewTab[]>([initialTab]);
-  const deleteRequested = initialTab === 'manage' ? 1 : 0;
   const [editing, setEditing] = useState(false);
   const [metadata, setMetadata] = useState<ProjectMetadata | null>(null);
   const [draft, setDraft] = useState({ name: '', description: '' });
@@ -141,6 +140,6 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
       <details className="detail-technical-information"><summary>详细运行信息</summary><code className="overview-project-id">{project.id}</code><ObjectLayoutPanel layout={project.objectLayout} />{technicalDetails}</details>
     </div>
     {visited.includes('storage') && <div role="tabpanel" id={`${tabPrefix}-storage-panel`} aria-labelledby={`${tabPrefix}-storage`} hidden={tab !== 'storage'}><ProjectStoragePanel project={project} status={status} task={task} disabled={disabled} onTask={onTask} onChanged={onChanged} showTask={false} active={tab === 'storage'} onDraftStateChange={setStorageDraft} /></div>}
-    {visited.includes('manage') && <div role="tabpanel" id={`${tabPrefix}-manage-panel`} aria-labelledby={`${tabPrefix}-manage`} hidden={tab !== 'manage'}>{dirty && <p className="overview-unsaved-note">概览中有未保存的基本信息。删除应用不会保存这些编辑。</p>}<ProjectLifecyclePanel project={project} instanceId={instanceId} status={status} disabled={disabled} onTask={onTask} active={tab === 'manage'} deleteRequested={deleteRequested} onDraftStateChange={setLifecycleDraft} /></div>}
+    {visited.includes('manage') && <div role="tabpanel" id={`${tabPrefix}-manage-panel`} aria-labelledby={`${tabPrefix}-manage`} hidden={tab !== 'manage'}>{dirty && <p className="overview-unsaved-note">概览中有未保存的基本信息。删除应用不会保存这些编辑。</p>}<ProjectLifecyclePanel project={project} instanceId={instanceId} status={status} task={task} disabled={disabled} onTask={onTask} active={tab === 'manage'} onDraftStateChange={setLifecycleDraft} /></div>}
   </section>;
 }

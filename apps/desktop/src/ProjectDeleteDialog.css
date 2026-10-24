@@ -1,0 +1,21 @@
+.modal-dialog.project-delete-modal { width: 560px; }
+.project-delete-modal .modal-title-icon { color: var(--radio-danger); background: var(--radio-danger-surface); }
+.project-delete-modal .project-delete-confirmation,
+.project-delete-modal .node-delete-confirmation { display: flex; flex-direction: column; gap: 16px; padding: 0; margin: 0; border: 0; background: transparent; }
+.project-delete-modal .modal-content { padding: 24px; }
+.project-delete-modal h3 { margin: 0; font-size: 17px; line-height: 1.6; overflow-wrap: anywhere; }
+.project-delete-modal p { margin: 0; font-size: 13px; line-height: 1.8; }
+:root[data-theme] .project-delete-modal .project-delete-warning { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 8px; color: var(--radio-danger); background: var(--radio-danger-surface); }
+.project-delete-warning > svg { flex-shrink: 0; margin-top: 2px; }
+.project-delete-scope { padding: 16px; border: 1px solid var(--radio-line); border-radius: 10px; }
+.project-delete-modal h4 { margin: 0 0 8px; font-size: 14px; }
+.project-delete-modal code { overflow-wrap: anywhere; }
+.project-delete-modal .node-delete-paths { margin: 0; }
+.project-delete-modal .checkbox-label { align-items: flex-start; font-size: 13px; line-height: 1.8; }
+.project-delete-modal .checkbox-label input { flex-shrink: 0; margin-top: 5px; }
+.project-delete-modal .confirmation-actions { justify-content: flex-end; padding-top: 4px; }
+.project-delete-modal .task-error { margin: 0; }
+@media (max-width: 640px) {
+  .project-delete-modal .confirmation-actions { flex-direction: column-reverse; }
+  .project-delete-modal .confirmation-actions button { width: 100%; }
+}
