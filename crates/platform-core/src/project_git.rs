@@ -537,7 +537,7 @@ impl ProjectGitManager {
             manager.active.lock().unwrap().remove(&task_id);
         });
         let mut runners = self.runners.lock().unwrap();
-        runners.retain(|r| !r.is_finished());
+        // Preserve completed outcomes for the shutdown join; panic is not success.
         runners.push(runner);
         Ok(task)
     }
@@ -564,7 +564,30 @@ impl ProjectGitManager {
         }
         Ok(task)
     }
-    pub async fn shutdown(&self) {
+    /// Inject an owned artificial runner into an isolated test manager.
+    #[cfg(test)]
+    pub(crate) fn fixture_shutdown_runner(&self, runner: JoinHandle<()>) {
+        self.runners.lock().unwrap().push(runner);
+    }
+    /// An isolated cancellation-dependent runner for shutdown ordering tests.
+    #[cfg(test)]
+    pub(crate) fn fixture_shutdown_cancel(self: &Arc<Self>, release: std::sync::mpsc::Sender<()>) {
+        let id = "artificial-shutdown-cancel".to_owned();
+        let (sender, mut cancel) = watch::channel(false);
+        self.active.lock().unwrap().insert(id.clone(), sender);
+        let manager = self.clone();
+        let runner = tokio::spawn(async move {
+            while !*cancel.borrow() {
+                if cancel.changed().await.is_err() {
+                    break;
+                }
+            }
+            let _ = release.send(());
+            manager.active.lock().unwrap().remove(&id);
+        });
+        self.runners.lock().unwrap().push(runner);
+    }
+    pub(crate) fn request_stop(&self) {
         {
             let _submission = self.submission.lock().unwrap();
             self.stopping.store(true, Ordering::Release);
@@ -572,10 +595,12 @@ impl ProjectGitManager {
                 let _ = sender.send(true);
             }
         }
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        let issues = crate::shutdown::join_all("projectGit", runners).await;
+        issues
     }
     fn available(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {

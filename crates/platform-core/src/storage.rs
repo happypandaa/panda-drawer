@@ -1156,19 +1156,21 @@ impl StorageManager {
         .await
         .map_err(|e| ApiError::new("STORAGE_SCAN_FAILED", e.to_string()))?
     }
-    pub async fn quiesce(&self) {
+    pub(crate) fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
+    }
+    pub async fn quiesce(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        let issues = crate::shutdown::join_all("storage", runners).await;
         let _drained = self.readers.write().await;
+        issues
     }
     pub fn resume(&self) {
         self.stopping.store(false, Ordering::Release);
     }
-    pub async fn shutdown(&self) {
-        self.quiesce().await;
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.quiesce().await
     }
 }
 

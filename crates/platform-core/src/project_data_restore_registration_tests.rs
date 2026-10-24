@@ -50,7 +50,7 @@ impl Fixture {
             .unwrap();
         let freeze = Freeze::new(project.control.clone());
         let gate = project.operation_gate.clone().write_owned().await;
-        store.close_database(&info.id).await;
+        store.close_database(&info.id).await.unwrap();
         let staging = paths.workspace_root().join(".platform").join(format!(
             "disposable-data-restore-stage-{}",
             Uuid::new_v4().simple()

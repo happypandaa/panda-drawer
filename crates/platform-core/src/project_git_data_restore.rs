@@ -369,7 +369,7 @@ impl ProjectGitManager {
         }
         // Freeze and the exclusive gate remain held across worker closure and all
         // later filesystem work. A task runner always awaits this blocking join.
-        self.store.close_database(id).await;
+        self.store.close_database(id).await?;
         context.checkpoint()?;
         let store = self.store.clone();
         let paths = self.paths.clone();
@@ -583,7 +583,7 @@ impl ProjectGitManager {
             .data_restore_recovery_access(id, lease, permit)?
             .lock(stop.clone(), cancel.clone())
             .await?;
-        self.store.close_database(id).await;
+        self.store.close_database(id).await?;
         let operation = access.operation().to_path_buf();
         let paths = self.paths.clone();
         let tasks = self.tasks.clone();

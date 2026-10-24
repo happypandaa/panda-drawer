@@ -167,6 +167,7 @@ struct Job {
 pub(crate) struct DatabaseWorker {
     sender: Mutex<Option<mpsc::SyncSender<Job>>>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
+    join_error: Mutex<Option<String>>,
     finished: Arc<AtomicBool>,
 }
 impl DatabaseWorker {
@@ -233,6 +234,7 @@ impl DatabaseWorker {
         Ok(Self {
             sender: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
+            join_error: Mutex::new(None),
             finished,
         })
     }
@@ -293,22 +295,61 @@ impl DatabaseWorker {
             .outcome("unknown")
         })?
     }
+    /// An isolated SQLite-owning thread that deliberately panics, leaving the
+    /// same disconnected sender/unfinished flag shape as a real worker panic.
+    #[cfg(test)]
+    pub(crate) fn fixture_panicked(database: std::path::PathBuf) -> Self {
+        let (sender, receiver) = mpsc::sync_channel::<Job>(32);
+        let thread = thread::spawn(move || {
+            let connection = open_existing(&database).unwrap();
+            connection
+                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .unwrap();
+            drop(receiver);
+            panic!("controlled artificial SQLite worker panic");
+        });
+        // Wait for the fault, but leave the result unjoined for cache retirement.
+        while !thread.is_finished() {
+            thread::yield_now();
+        }
+        Self {
+            sender: Mutex::new(Some(sender)),
+            thread: Mutex::new(Some(thread)),
+            join_error: Mutex::new(None),
+            finished: Arc::new(AtomicBool::new(false)),
+        }
+    }
     pub(crate) fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
     pub(crate) fn stop(&self) {
         self.sender.lock().unwrap().take();
     }
-    pub(crate) fn join(&self) {
-        if let Some(thread) = self.thread.lock().unwrap().take() {
-            let _ = thread.join();
+    pub(crate) fn join(&self) -> Result<(), String> {
+        // Serialize concurrent joins through completion; None alone is not a
+        // success signal while another caller is still joining the thread.
+        let mut thread = self.thread.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(thread) = thread.take() {
+            if thread.join().is_err() {
+                *self.join_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some("Database worker panicked before clean shutdown".into());
+            }
+        }
+        match self
+            .join_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 }
 impl Drop for DatabaseWorker {
     fn drop(&mut self) {
         self.stop();
-        self.join();
+        let _ = self.join();
     }
 }
 

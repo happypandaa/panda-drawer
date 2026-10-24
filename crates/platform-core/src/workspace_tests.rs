@@ -61,7 +61,7 @@ async fn commit(
 ) -> (RuntimePaths, MigrationJournal) {
     store.begin_workspace_migration().unwrap();
     let task = create(paths, dest).unwrap();
-    store.pause_workspace().await;
+    store.pause_workspace().await.unwrap();
     copy_and_commit(paths, store, &task.task_id).unwrap()
 }
 
@@ -314,7 +314,7 @@ async fn migration_gate_prevents_new_creates_tasks_and_database_worker_revival()
     );
     drop(held);
     assert!(!store.has_active_tasks());
-    store.pause_workspace().await;
+    store.pause_workspace().await.unwrap();
     let error = store
         .execute(
             &id,
@@ -453,7 +453,7 @@ async fn unresolved_switch_journals_outside_active_projects_prevent_migration() 
     )
     .unwrap();
     store.begin_workspace_migration().unwrap();
-    store.pause_workspace().await;
+    store.pause_workspace().await.unwrap();
     let error = copy_and_commit(&paths, &store, &task.task_id)
         .err()
         .unwrap();

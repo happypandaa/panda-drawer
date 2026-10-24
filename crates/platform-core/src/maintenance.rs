@@ -350,6 +350,7 @@ impl MaintenanceManager {
             .outcome("not_started")
             .detail("retiredOperation", kind));
         }
+        let mut running = self.running.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
             return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
         }
@@ -443,8 +444,7 @@ impl MaintenanceManager {
             drop(lease);
             manager.notify(&id);
         });
-        let mut running = self.running.lock().unwrap();
-        running.retain(|h| !h.is_finished());
+        // Preserve completed outcomes for the shutdown join; panic is not success.
         running.push(runner);
         Ok(record)
     }
@@ -582,7 +582,7 @@ impl MaintenanceManager {
         self.notify(id);
         let gate = self.store.gate(id);
         let guard = gate.write().await;
-        self.store.close_database(id).await;
+        self.store.close_database(id).await?;
         let root = self.store.project_root(id)?;
         let original = op.join("original");
         let journal_path = op.join("journal.json");
@@ -843,12 +843,14 @@ impl MaintenanceManager {
         }
         Ok(outcome.into())
     }
-    pub async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
+        let _submission = self.running.lock().unwrap();
         self.stopping.store(true, Ordering::Release);
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.running.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        crate::shutdown::join_all("maintenance", runners).await
     }
 }
 
@@ -1026,7 +1028,7 @@ mod tests {
         fs::write(root.join("data/attachments/keep"), "old attachment").unwrap();
         let backup = perform_historical_fixture(&manager, &id, "backup", json!({})).await;
         let backup = good(&backup)["backupId"].as_str().unwrap().to_owned();
-        store.close_database(&id).await;
+        store.close_database(&id).await.unwrap();
         fs::write(
             root.join("data/main.sqlite"),
             "broken original database retained",

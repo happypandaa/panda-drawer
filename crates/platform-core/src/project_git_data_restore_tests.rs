@@ -176,16 +176,16 @@ impl Fixture {
         wait(&self.tasks, &task.task_id).await
     }
     async fn finish(self) {
-        self.manager.shutdown().await;
-        self.tasks.shutdown().await;
-        self.store.shutdown().await;
+        assert!(self.manager.shutdown().await.is_empty());
+        assert!(self.tasks.shutdown().await.is_empty());
+        assert!(self.store.shutdown().await.is_empty());
     }
     async fn restart(&mut self) {
         let paths = self.manager.paths.clone();
         let git = self.manager.git.clone();
-        self.manager.shutdown().await;
-        self.tasks.shutdown().await;
-        self.store.shutdown().await;
+        assert!(self.manager.shutdown().await.is_empty());
+        assert!(self.tasks.shutdown().await.is_empty());
+        assert!(self.store.shutdown().await.is_empty());
         self.store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
         self.tasks = BuildManager::new(
             paths.clone(),
@@ -998,4 +998,87 @@ async fn official_git_data_restore_reserve_unknown_prefix_or_identity_stays_pres
     let task = fixture.recover(RestoreAction::Continue).await;
     assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
     fixture.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "set LOCAL_PROJECTS_TEST_GIT_ROOT to a verified disposable Git payload"]
+async fn official_git_data_restore_recovery_close_failure_reports_actual_retained_state() {
+    for (fault, data_state, outcome) in [
+        (4, "before", "not_committed"),
+        (u32::MAX - 1, "applied", "committed"),
+    ] {
+        let fixture = Fixture::new().await;
+        let target = seed(&fixture).await;
+        fixture
+            .sql("UPDATE notes SET body='before database join fault'")
+            .await;
+        let input = fixture.input(&target).await;
+        fixture.manager.test_data_restore_fault(fault);
+        let task = fixture.apply(input).await;
+        assert_eq!(task.status, TaskStatus::Failed, "{task:?}");
+        let before = fixture.status().await;
+        assert_eq!(before.state, "pending", "{before:?}");
+        let operation = &before.operations[0];
+        assert_eq!(operation.data_state, data_state);
+        let root = operation.retained_path.clone();
+        let plan = fs::read(root.join("plan.json")).unwrap();
+        let journal = fs::read(root.join("journal.json")).unwrap();
+        let slots = serde_json::to_value(&operation.slots).unwrap();
+        let live = fixture
+            .project
+            .root
+            .join(&fixture.project.manifest.database);
+        let live_bytes = fs::read(&live).ok();
+        assert_eq!(live_bytes.is_some(), data_state == "applied");
+
+        // The fault is a real SQLite-owning thread panic and failed OS join,
+        // but its connection uses a separate owned database so it cannot alter
+        // any original/target bytes whose identity the restore plan protects.
+        let disposable = fixture
+            ._temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("disposable-join-fault.sqlite");
+        let connection = rusqlite::Connection::open(&disposable).unwrap();
+        connection
+            .execute_batch("CREATE TABLE probe(value TEXT)")
+            .unwrap();
+        drop(connection);
+        fixture
+            .store
+            .fixture_panicked_recovery_database_worker(&fixture.project.manifest.id, disposable);
+        let failed = fixture.recover(RestoreAction::Continue).await;
+        assert_eq!(failed.status, TaskStatus::Failed, "{failed:?}");
+        let error = failed.error.as_ref().unwrap();
+        assert_eq!(error.code, "DATABASE_CLOSE_FAILED", "{failed:?}");
+        assert_eq!(error.details["operationOutcome"], outcome);
+        assert_eq!(error.details["dataState"], data_state);
+        assert_eq!(error.details["restoreTaskId"], operation.restore_task_id);
+        assert_eq!(error.details["retainedPath"], root.to_str().unwrap());
+        assert_eq!(error.details["pending"], true);
+        assert_eq!(error.details["businessBlocked"], true);
+        assert_eq!(error.details["liveDataChanged"], true);
+        assert_eq!(error.details["originalRetained"], true);
+        assert_eq!(fs::read(root.join("plan.json")).unwrap(), plan);
+        assert_eq!(fs::read(root.join("journal.json")).unwrap(), journal);
+        assert_eq!(fs::read(&live).ok(), live_bytes);
+        let after = fixture.status().await;
+        assert_eq!(after.state, "pending", "{after:?}");
+        assert_eq!(
+            serde_json::to_value(&after.operations[0].slots).unwrap(),
+            slots
+        );
+        assert!(fixture.store.project(&fixture.project.manifest.id).is_err());
+        let finished = fixture.recover(RestoreAction::Continue).await;
+        assert_eq!(finished.status, TaskStatus::Succeeded, "{finished:?}");
+        assert_eq!(fixture.status().await.state, "clear");
+        assert_body(&fixture, "target").await;
+        assert!(fixture.manager.shutdown().await.is_empty());
+        assert!(fixture.tasks.shutdown().await.is_empty());
+        let issues = fixture.store.shutdown().await;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].component, "database");
+        assert_eq!(issues[0].code, "DATABASE_THREAD_JOIN_FAILED");
+    }
 }

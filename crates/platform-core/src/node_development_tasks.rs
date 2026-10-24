@@ -76,6 +76,7 @@ impl NodeDevelopmentTasks {
             let lease = apps.development_build_source_lease(&app_id).await?;
             lease.validate()?;
         }
+        let mut runners = self.runners.lock().unwrap();
         let mut active = self.active.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) || !active.is_empty() {
             return Err(ApiError::new(
@@ -153,8 +154,7 @@ impl NodeDevelopmentTasks {
             let result = result.unwrap_or_else(|_| Err(interrupted()));
             let _ = manager.tasks.finish(&task_id, result);
         });
-        let mut runners = self.runners.lock().unwrap();
-        runners.retain(|runner| !runner.is_finished());
+        // Preserve completed outcomes for the shutdown join; panic is not success.
         runners.push(runner);
         Ok(task)
     }
@@ -171,15 +171,17 @@ impl NodeDevelopmentTasks {
         }
         Ok(task)
     }
-    pub async fn shutdown(&self) {
+    pub(crate) fn request_stop(&self) {
+        let _submission = self.runners.lock().unwrap();
         self.stopping.store(true, Ordering::Release);
         for sender in self.active.lock().unwrap().values() {
             let _ = sender.send(true);
         }
+    }
+    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        self.request_stop();
         let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        for runner in runners {
-            let _ = runner.await;
-        }
+        let issues = crate::shutdown::join_all("nodeDevelopment", runners).await;
         loop {
             let drained = self.drained.notified();
             if self.active.lock().unwrap().is_empty() {
@@ -187,6 +189,7 @@ impl NodeDevelopmentTasks {
             }
             drained.await;
         }
+        issues
     }
 }
 struct Active {

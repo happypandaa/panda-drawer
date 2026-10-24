@@ -465,7 +465,7 @@ mod tests {
             fs::create_dir(&destination).unwrap();
             store.begin_workspace_migration().unwrap();
             let task = workspace::create(&paths, &destination).unwrap();
-            store.pause_workspace().await;
+            store.pause_workspace().await.unwrap();
             let (selected, mut journal) =
                 workspace::copy_and_commit(&paths, &store, &task.task_id).unwrap();
             let selected_store = ProjectStore::new(selected.workspace_root().into()).unwrap();

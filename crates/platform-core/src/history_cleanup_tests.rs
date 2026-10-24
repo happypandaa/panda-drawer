@@ -154,7 +154,7 @@ impl Fixture {
         fs::create_dir(&destination).unwrap();
         self.store.begin_workspace_migration().unwrap();
         let task = crate::workspace::create(&self.paths, &destination).unwrap();
-        self.store.pause_workspace().await;
+        self.store.pause_workspace().await.unwrap();
         let (paths, mut journal) =
             crate::workspace::copy_and_commit(&self.paths, &self.store, &task.task_id).unwrap();
         let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
