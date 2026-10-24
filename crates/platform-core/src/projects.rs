@@ -48,6 +48,9 @@ pub struct ProjectManifest {
     pub extra: MapExtras,
 }
 type MapExtras = serde_json::Map<String, Value>;
+#[path = "project_data_restore_registration.rs"]
+pub(crate) mod data_restore_registration;
+pub(crate) use data_restore_registration::{DataRestoreEpochState, DataRestoreRegistrationPlan};
 fn display_icon<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
@@ -107,6 +110,7 @@ pub(crate) struct ProjectDeletion {
 
 #[derive(Clone)]
 pub struct ProjectHandle {
+    workspace: PathBuf,
     pub root: PathBuf,
     pub manifest: ProjectManifest,
     pub document_epoch: String,
@@ -125,6 +129,7 @@ impl ProjectHandle {
         self.workspace_paused.load(Ordering::Acquire)
     }
     pub fn check(&self) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_business_available(&self.workspace, &self.manifest.id)?;
         if self.workspace_paused.load(Ordering::Acquire) {
             return Err(ApiError::new(
                 "WORKSPACE_MIGRATING",
@@ -695,6 +700,7 @@ impl ProjectStore {
         if !valid_id(id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
+        crate::data_restore_guard::check_business_available(&self.workspace, id)?;
         self.check_not_deleting(id)?;
         self.require_active_identity(id)?;
         let root = self.project_root(id)?;
@@ -770,6 +776,7 @@ impl ProjectStore {
             .or_insert_with(|| Arc::new(RwLock::new(())))
             .clone();
         Ok(ProjectHandle {
+            workspace: self.workspace.clone(),
             root,
             manifest,
             document_epoch: registration.document_epoch.clone(),
@@ -974,6 +981,7 @@ impl ProjectStore {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
         self.check_not_deleting(id)?;
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         crate::project_git::check_data_operations_available(&self.workspace, id)?;
         crate::source_restore_guard::check_development_available(&self.workspace, id)
     }
@@ -995,6 +1003,7 @@ impl ProjectStore {
         task: &str,
     ) -> Result<ProjectTaskLease, ApiError> {
         let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         crate::source_restore_guard::check_development_available(&self.workspace, id)?;
         crate::project_git::check_data_operations_available(&self.workspace, id)?;
         self.deletion_root(id)?;
@@ -1008,6 +1017,7 @@ impl ProjectStore {
     ) -> Result<ProjectTaskLease, ApiError> {
         self.check_not_deleting(id)?;
         let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         // Revalidate after admission: a previously displayed recovery summary is
         // not permission to bypass a newer journal or another pending operation.
         crate::project_git::check_data_operations_available(&self.workspace, id)?;
@@ -1029,6 +1039,7 @@ impl ProjectStore {
     ) -> Result<ProjectTaskLease, ApiError> {
         self.check_not_deleting(id)?;
         let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         crate::source_restore_guard::check_development_available(&self.workspace, id)?;
         crate::project_git::check_data_recovery_record(&self.workspace, id, input)?;
         Ok(lease)
@@ -1066,6 +1077,7 @@ impl ProjectStore {
     }
     /// Only maintenance orchestration calls this while holding the exclusive project gate.
     pub(crate) fn rebind(&self, id: &str, advance: bool) -> Result<String, ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         let root = self.project_root(id)?;
         check_no_symlinks(&root, false)?;
@@ -1113,6 +1125,7 @@ impl ProjectStore {
     }
     pub(crate) fn begin_workspace_migration(&self) -> Result<(), ApiError> {
         self.accepting()?;
+        crate::data_restore_guard::check_workspace_available(&self.workspace)?;
         let _active = self.active_tasks.lock().unwrap();
         let _registration = self.registration_lock.lock().unwrap();
         check_pending_deletions(&self.workspace)?;
@@ -1297,6 +1310,7 @@ impl ProjectStore {
         epoch: &str,
         expected: &FileIdentity,
     ) -> Result<ProjectDeletion, ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let (_, actual) = self.deletion_root(id)?;
         if !expected.matches_captured(&actual) {
             return Err(ApiError::new(
@@ -1334,6 +1348,10 @@ impl ProjectStore {
     }
     /// The marker blocks same-ID registration until the final journal is durable.
     pub(crate) fn retire_deleted_project(&self, marker: &ProjectDeletion) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(
+            &self.workspace,
+            &marker.project_id,
+        )?;
         let (root, _) = self.deletion_root(&marker.project_id)?;
         if root.try_exists()? {
             return Err(ApiError::new(
@@ -1476,6 +1494,7 @@ impl ProjectStore {
         if !valid_id(id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         if let Some(marker) = self.pending_deletion(id)? {
             return Err(ApiError::new("PROJECT_ID_CONFLICT", "Project deletion is incomplete; explicitly retry its deletion before reusing this ID").detail("taskId", marker.task_id));
         }
@@ -1770,6 +1789,7 @@ impl ProjectStore {
         epoch: &str,
         trash_id: Option<&str>,
     ) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         if !valid_id(id) || Uuid::parse_str(epoch).is_err() {
             return Err(ApiError::new(
@@ -1806,6 +1826,7 @@ impl ProjectStore {
         task: &str,
         allow_damaged: bool,
     ) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         let reservation_path = self.reservation_path(id);
         check_no_symlinks(&reservation_path, true)?;
@@ -1868,6 +1889,7 @@ impl ProjectStore {
         allow_damaged: bool,
         root: PathBuf,
     ) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         if !valid_id(id) || Uuid::parse_str(epoch).is_err() {
             return Err(ApiError::new(
                 "INVALID_PROJECT_ID",
@@ -1954,6 +1976,7 @@ impl ProjectStore {
         id: &str,
         error: ApiError,
     ) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         let path = self
             .workspace
@@ -1981,6 +2004,7 @@ impl ProjectStore {
         id: &str,
         source_workspace: &Path,
     ) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         if !valid_id(id) {
             return Err(directory_mapping_error());
@@ -2022,6 +2046,7 @@ impl ProjectStore {
     }
 
     pub(crate) fn rebind_migrated(&self, id: &str, epoch: &str) -> Result<(), ApiError> {
+        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         if !valid_id(id) || Uuid::parse_str(epoch).is_err() {
             return Err(directory_mapping_error());

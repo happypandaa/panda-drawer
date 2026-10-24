@@ -612,6 +612,7 @@ impl LifecycleManager {
         maintenance: Option<&str>,
     ) -> Result<ControlState, ApiError> {
         crate::source_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
+        crate::data_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
         let state = self.store.control(id)?.get();
         if state.recovery_required {
             let owned = self.store.pending_deletion(id)?.is_some_and(|marker| {
@@ -1060,6 +1061,7 @@ impl LifecycleManager {
         let _guard = gate.write().await;
         self.store.close_database(&id).await;
         crate::source_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
+        crate::data_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
         self.check_protection(&id, "", Some(&journal.task_id))?;
         let (root, expected) = self.store.deletion_root(&id)?;
         if root

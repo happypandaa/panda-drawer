@@ -517,6 +517,7 @@ pub(crate) fn save_journal(paths: &RuntimePaths, j: &MigrationJournal) -> Result
 pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
     crate::projects::check_pending_deletions(paths.workspace_root())?;
     crate::source_restore_guard::check_workspace_available(paths.workspace_root())?;
+    crate::data_restore_guard::check_workspace_available(paths.workspace_root())?;
     crate::project_git::check_data_workspace_available(paths.workspace_root())?;
     let directory = paths.workspace_root().join(".platform/operations");
     check_no_symlinks(&directory, true)?;

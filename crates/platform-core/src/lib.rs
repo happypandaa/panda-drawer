@@ -4,6 +4,7 @@ pub mod app_windows;
 pub mod backups;
 pub mod builds;
 mod control;
+mod data_restore_guard;
 mod database;
 pub mod environment;
 mod error;
