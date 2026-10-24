@@ -326,7 +326,9 @@ impl ProjectGitManager {
         cancel: watch::Receiver<bool>,
     ) -> Result<Value, ApiError> {
         let project = self.store.project(id)?;
+        let lease = Arc::new(lease);
         let mut context = Context::new(stop.clone(), cancel.clone())?;
+        context.bind(self.store.processes(), lease.clone());
         let gate = data_versions::read_gate_for_data(&project, &mut context).await?;
         let tools = context.resolve(&self.git).await?;
         let initial =
@@ -351,10 +353,13 @@ impl ProjectGitManager {
         if target.manifest_digest != input.expected_target_snapshot_digest {
             return Err(stale_data());
         }
+        context.clear_phase();
         drop(gate);
-        let snapshot_lease =
+        let snapshot_lease = Arc::new(
             version_data::SnapshotLease::acquire(project.clone(), stop.clone(), cancel.clone())
-                .await?;
+                .await?,
+        );
+        context.phase(snapshot_lease.clone());
         let fresh = Box::pin(self.preview_data_git_status(&project, &tools, &mut context)).await?;
         verify_input(&input, &project, &fresh)?;
         let computed = data_preview::plan_digest(
@@ -371,6 +376,10 @@ impl ProjectGitManager {
         // later filesystem work. A task runner always awaits this blocking join.
         self.store.close_database(id).await?;
         context.checkpoint()?;
+        context.clear_phase();
+        context.clear_operation();
+        let snapshot_lease = Arc::try_unwrap(snapshot_lease).map_err(|_| recovery())?;
+        let lease = Arc::try_unwrap(lease).map_err(|_| recovery())?;
         let store = self.store.clone();
         let paths = self.paths.clone();
         let tasks = self.tasks.clone();

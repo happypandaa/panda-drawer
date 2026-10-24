@@ -6,7 +6,7 @@ use crate::{
     builds::{atomic_json, BuildManager},
     environment::ExecutableInfo,
     git_environment::{GitEnvironmentManager, GitToolchain},
-    projects::{check_no_symlinks, checked_relative},
+    projects::{check_no_symlinks, checked_relative, ProjectTaskLease},
     ApiError, ProjectHandle, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
 };
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ use std::{
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
+    process::Command,
     sync::watch,
     task::JoinHandle,
     time::Instant,
@@ -44,6 +44,10 @@ const MAX_METADATA: u64 = 8 * 1024 * 1024;
 
 #[path = "node_development_git.rs"]
 pub mod node_development_git;
+
+#[path = "project_git_process.rs"]
+mod process_io;
+use process_io::{BlockingPipe, Context};
 
 #[path = "project_git_build_guard.rs"]
 mod build_guard;
@@ -264,19 +268,22 @@ impl ProjectGitManager {
         // Migration waits for transient operations before pausing the workspace.
         // The project read gate alone is acquired too late in that workflow, and
         // also would permit a platform build/save to run alongside this preview.
-        let _operation = self
-            .store
-            .reserve_transient_operation(project_id, "git-status")?;
+        let operation = Arc::new(
+            self.store
+                .reserve_transient_operation(project_id, "git-status")?,
+        );
         let project = self.store.project(project_id)?;
         let (_sender, cancel) = watch::channel(false);
         let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), operation);
         context.checkpoint()?;
         let _gate = tokio::select! {
             biased;
             _ = watch_stop(&mut context.stop) => return Err(interrupted()),
             _ = tokio::time::sleep_until(context.deadline) => return Err(error("PROJECT_GIT_TIMEOUT", "等待项目读取窗口超过内部时间限制。")),
-            gate = project.operation_gate.read() => gate,
+            gate = project.operation_gate.clone().read_owned() => Arc::new(gate),
         };
+        context.phase(_gate.clone());
         project.check()?;
         let tools = context.resolve(&self.git).await;
         let mut snapshot = inspect(&project, tools.as_ref().ok(), &mut context, None).await?;
@@ -316,19 +323,22 @@ impl ProjectGitManager {
             return Err(input_error());
         }
         self.available()?;
-        let _operation = self
-            .store
-            .reserve_transient_operation(project_id, "git-versions")?;
+        let operation = Arc::new(
+            self.store
+                .reserve_transient_operation(project_id, "git-versions")?,
+        );
         let project = self.store.project(project_id)?;
         let (_sender, cancel) = watch::channel(false);
         let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), operation);
         context.checkpoint()?;
         let _gate = tokio::select! {
             biased;
             _ = watch_stop(&mut context.stop) => return Err(interrupted()),
             _ = tokio::time::sleep_until(context.deadline) => return Err(error("PROJECT_GIT_TIMEOUT", "等待项目读取窗口超过内部时间限制。")),
-            gate = project.operation_gate.read() => gate,
+            gate = project.operation_gate.clone().read_owned() => Arc::new(gate),
         };
+        context.phase(_gate.clone());
         let tools = context.resolve(&self.git).await?;
         let mut snapshot = inspect(&project, Some(&tools), &mut context, None).await?;
         self.add_recovery_issue(project_id, &mut snapshot.view)?;
@@ -482,7 +492,7 @@ impl ProjectGitManager {
         let task_id = task.task_id.clone();
         let project_id = project_id.to_owned();
         let runner = tokio::spawn(async move {
-            let _lease = lease;
+            let lease = Arc::new(lease);
             let branch_operation = matches!(operation, Operation::CreateBranch(_));
             let restore_operation = matches!(
                 operation,
@@ -493,7 +503,7 @@ impl ProjectGitManager {
                 _ => None,
             };
             let result = manager
-                .run(&project_id, &task_id, operation, stop, cancel)
+                .run(&project_id, &task_id, operation, lease, stop, cancel)
                 .await
                 .map_err(|mut error| {
                     // A recovery task can stop before entering its filesystem
@@ -652,11 +662,13 @@ impl ProjectGitManager {
         project_id: &str,
         task_id: &str,
         operation: Operation,
+        lease: Arc<ProjectTaskLease>,
         stop: watch::Receiver<bool>,
         cancel: watch::Receiver<bool>,
     ) -> Result<Value, ApiError> {
         let project = self.store.project(project_id)?;
         let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), lease);
         context.checkpoint()?;
         let operation = match operation {
             Operation::DataFinalize(input) => {
@@ -671,8 +683,9 @@ impl ProjectGitManager {
             _ = watch_stop(&mut context.stop) => return Err(interrupted()),
             _ = watch_stop(&mut context.cancel) => return Err(interrupted()),
             _ = tokio::time::sleep_until(context.deadline) => return Err(error("PROJECT_GIT_TIMEOUT", "等待项目读取窗口超过内部时间限制。")),
-            gate = project.operation_gate.read() => gate,
+            gate = project.operation_gate.clone().read_owned() => Arc::new(gate),
         };
+        context.phase(gate.clone());
         project.check()?;
         self.store.control(project_id)?.check(false, None, false)?;
         self.tasks.phase(task_id, "git-preview")?;
@@ -721,6 +734,7 @@ impl ProjectGitManager {
                 if !snapshot.view.can_save {
                     return Err(blocked(&snapshot.view));
                 }
+                context.clear_phase();
                 drop(gate);
                 self.tasks.phase(task_id, "git-data-snapshot")?;
                 let root = self
@@ -916,6 +930,7 @@ impl ProjectGitManager {
         let git_dir = project.root.join(".git");
         let repository_identity = identity(&git_dir)?;
         let mut lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        context.retain(lock.retained.clone());
         let verify = inspect(project, Some(tools), context, Some(&lock)).await?;
         if verify.view.snapshot_digest != input.expected_snapshot {
             return Err(stale());
@@ -1195,8 +1210,13 @@ impl ProjectGitManager {
                 lock.preserve = false;
                 return Err(error.outcome("not_committed"));
             }
+            let outcome = if error.details["commitAcknowledged"] == true {
+                "committed"
+            } else {
+                "unknown"
+            };
             return Err(error
-                .outcome("unknown")
+                .outcome(outcome)
                 .detail("taskId", task_id.to_owned())
                 .detail("candidateCommit", new_head));
         }
@@ -1278,7 +1298,8 @@ impl ProjectGitManager {
             return Err(blocked(&snapshot.view));
         }
         let git_dir = project.root.join(".git");
-        let index_lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        let mut index_lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        context.retain(index_lock.retained.clone());
         let verify = inspect(project, Some(tools), context, Some(&index_lock)).await?;
         if verify.view.snapshot_digest != input.expected_snapshot {
             return Err(stale());
@@ -1300,7 +1321,10 @@ impl ProjectGitManager {
         // of the old branch is rejected by Git as a duplicate HEAD reflog update.
         // Hold the old branch's standard lock ourselves, and recheck its OID.
         // The existing index is only locked; it is never refreshed or published.
-        let old_lock = RefLock::acquire(&git_dir.join(format!("{}.lock", input.expected_branch)))?;
+        let old_lock = Arc::new(RefLock::acquire(
+            &git_dir.join(format!("{}.lock", input.expected_branch)),
+        )?);
+        context.retain(old_lock.clone());
         let mut command = git_command(tools, context.root(), Some(project));
         command.args(["rev-parse", "--verify", &input.expected_branch]);
         if one_oid(&context.run(command, Vec::new()).await?.success()?)? != input.expected_head {
@@ -1344,6 +1368,8 @@ impl ProjectGitManager {
             "start\0create {new_branch}\0{}\0option no-deref\0symref-update HEAD\0{new_branch}\0oid\0{}\0prepare\0",
             input.expected_head, input.expected_head,
         ).into_bytes();
+        index_lock.preserve = true;
+        old_lock.preserve.store(true, Ordering::Release);
         let failure = context
             .commit_transaction(command, commands, || {
                 if !old_lock.matches()
@@ -1365,6 +1391,8 @@ impl ProjectGitManager {
             .await;
         if let Err(error) = failure {
             if error.details["safeAbort"] == true {
+                index_lock.preserve = false;
+                old_lock.preserve.store(false, Ordering::Release);
                 journal.phase = "not-committed".into();
                 atomic_json(&journal_path, &journal)?;
                 self.tasks.append(
@@ -1374,8 +1402,13 @@ impl ProjectGitManager {
                 return Err(error.outcome("not_committed"));
             }
             let _ = self.tasks.append(task_id, b"Branch transaction outcome is unknown; inspect the retained journal before another write.\n");
+            let outcome = if error.details["commitAcknowledged"] == true {
+                "committed"
+            } else {
+                "unknown"
+            };
             return Err(error
-                .outcome("unknown")
+                .outcome(outcome)
                 .detail("taskId", task_id.to_owned())
                 .detail("branch", new_branch));
         }
@@ -1414,6 +1447,8 @@ impl ProjectGitManager {
                 .detail("result", result.clone())
         })?;
         let _ = self.tasks.append(task_id, b"Created and switched to the new branch at the existing HEAD; source, index, data and output were not replaced.\n");
+        index_lock.preserve = false;
+        old_lock.preserve.store(false, Ordering::Release);
         Ok(result)
     }
 }
@@ -2391,6 +2426,30 @@ struct IndexLock {
     published: bool,
     original_index: Option<String>,
     prepared_digest: Option<String>,
+    retained: Arc<RetainedIndexLock>,
+}
+struct RetainedIndexLock {
+    path: PathBuf,
+    file: File,
+    dev: u64,
+    ino: u64,
+    cleanup: AtomicBool,
+}
+impl Drop for RetainedIndexLock {
+    fn drop(&mut self) {
+        if self.cleanup.load(Ordering::Acquire)
+            && check_no_symlinks(&self.path, false).is_ok()
+            && self
+                .file
+                .metadata()
+                .is_ok_and(|m| m.dev() == self.dev && m.ino() == self.ino && m.nlink() == 1)
+            && fs::symlink_metadata(&self.path).is_ok_and(|m| {
+                m.is_file() && m.dev() == self.dev && m.ino() == self.ino && m.nlink() == 1
+            })
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 impl IndexLock {
     fn acquire(path: &Path) -> Result<Self, ApiError> {
@@ -2408,6 +2467,13 @@ impl IndexLock {
                 )
             })?;
         let metadata = file.metadata()?;
+        let retained = Arc::new(RetainedIndexLock {
+            path: path.to_path_buf(),
+            file: file.try_clone()?,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            cleanup: AtomicBool::new(true),
+        });
         let mut lock = Self {
             path: path.to_path_buf(),
             file,
@@ -2417,6 +2483,7 @@ impl IndexLock {
             published: false,
             original_index: None,
             prepared_digest: None,
+            retained,
         };
         lock.original_index = index_fingerprint(&path.with_file_name("index"))?;
         Ok(lock)
@@ -2455,9 +2522,11 @@ impl IndexLock {
 }
 impl Drop for IndexLock {
     fn drop(&mut self) {
-        if !self.preserve && !self.published && self.matches(&self.path) {
-            let _ = fs::remove_file(&self.path);
-        }
+        // The actual process scope may still own its fd after this request has
+        // returned. Only the last verified owner can remove our own lock path.
+        self.retained
+            .cleanup
+            .store(!self.preserve && !self.published, Ordering::Release);
     }
 }
 
@@ -2466,6 +2535,7 @@ struct RefLock {
     _file: File,
     device: u64,
     inode: u64,
+    preserve: AtomicBool,
 }
 impl RefLock {
     fn acquire(path: &Path) -> Result<Self, ApiError> {
@@ -2492,6 +2562,7 @@ impl RefLock {
             _file: file,
             device: metadata.dev(),
             inode: metadata.ino(),
+            preserve: AtomicBool::new(false),
         })
     }
     fn matches(&self) -> bool {
@@ -2506,7 +2577,7 @@ impl RefLock {
 }
 impl Drop for RefLock {
     fn drop(&mut self) {
-        if self.matches() {
+        if !self.preserve.load(Ordering::Acquire) && self.matches() {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -2830,189 +2901,6 @@ fn blocked(view: &ProjectGitStatus) -> ApiError {
     .detail("scope", json!(view.scope))
 }
 
-struct Context {
-    _temporary: TempDir,
-    root: PathBuf,
-    stop: watch::Receiver<bool>,
-    cancel: watch::Receiver<bool>,
-    deadline: Instant,
-}
-impl Context {
-    fn new(stop: watch::Receiver<bool>, cancel: watch::Receiver<bool>) -> Result<Self, ApiError> {
-        let temporary = tempfile::Builder::new()
-            .prefix("local-projects-git-operation-")
-            .tempdir()
-            .map_err(|_| git_failed())?;
-        let root = temporary.path().canonicalize().map_err(|_| unsafe_path())?;
-        if root
-            .to_str()
-            .is_none_or(|path| path.contains(':') || path.chars().any(char::is_control))
-        {
-            return Err(unsafe_path());
-        }
-        private_dir(&root.join("empty-hooks"))?;
-        private_dir(&root.join("home"))?;
-        Ok(Self {
-            _temporary: temporary,
-            root,
-            stop,
-            cancel,
-            deadline: Instant::now() + TIMEOUT,
-        })
-    }
-    fn root(&self) -> &Path {
-        &self.root
-    }
-    fn checkpoint(&self) -> Result<(), ApiError> {
-        if *self.stop.borrow()
-            || *self.cancel.borrow()
-            || self.stop.has_changed().is_err()
-            || self.cancel.has_changed().is_err()
-        {
-            return Err(interrupted());
-        }
-        if Instant::now() >= self.deadline {
-            return Err(error(
-                "PROJECT_GIT_TIMEOUT",
-                "Git 本地操作超过 120 秒内部限制；结果以任务提交点记录为准。",
-            ));
-        }
-        Ok(())
-    }
-    async fn resolve(
-        &mut self,
-        environment: &GitEnvironmentManager,
-    ) -> Result<GitToolchain, ApiError> {
-        self.checkpoint()?;
-        let tools = tokio::select! {
-            biased;
-            _=watch_stop(&mut self.stop)=>return Err(interrupted()),
-            _=watch_stop(&mut self.cancel)=>return Err(interrupted()),
-            _=tokio::time::sleep_until(self.deadline)=>return Err(error("PROJECT_GIT_TIMEOUT","Git 工具核对超过内部时间限制。")),
-            result=environment.resolve()=>result.map_err(|_|error("PROJECT_GIT_ENVIRONMENT_UNAVAILABLE","Git 工具不可用，请先检查工具设置；不会改用另一份 Git。"))?,
-        };
-        if !supported_version(&tools.git.version) {
-            return Err(error(
-                "PROJECT_GIT_VERSION_UNSUPPORTED",
-                "本地版本操作目前只验证 Git 2.54.0 与 2.56.0；工具选择未改变。",
-            ));
-        }
-        Ok(tools)
-    }
-    async fn commit_ref(
-        &mut self,
-        command: Command,
-        new_head: &str,
-        old_head: Option<&str>,
-        validate: impl FnOnce() -> Result<(), ApiError> + Send,
-    ) -> Result<(), ApiError> {
-        let commands = format!(
-            "start\0update HEAD\0{new_head}\0{}\0prepare\0",
-            old_head.unwrap_or("0000000000000000000000000000000000000000")
-        )
-        .into_bytes();
-        self.commit_transaction(command, commands, validate).await
-    }
-    async fn commit_transaction(
-        &mut self,
-        mut command: Command,
-        commands: Vec<u8>,
-        validate: impl FnOnce() -> Result<(), ApiError> + Send,
-    ) -> Result<(), ApiError> {
-        self.checkpoint()
-            .map_err(|error| error.detail("safeAbort", true))?;
-        let child = command
-            .spawn()
-            .map_err(|_| git_failed().detail("safeAbort", true))?;
-        let mut process = Process {
-            group: child.id(),
-            child,
-        };
-        let mut stdin = process.child.stdin.take().ok_or_else(git_failed)?;
-        let mut stdout = process.child.stdout.take().ok_or_else(git_failed)?;
-        let stderr = process.child.stderr.take().ok_or_else(git_failed)?;
-        let mut safe_abort = false;
-        let mut commit_sent = false;
-        let result = tokio::select! {
-            biased;
-            _ = watch_stop(&mut self.stop) => Err(interrupted()),
-            _ = watch_stop(&mut self.cancel) => Err(interrupted()),
-            _ = tokio::time::sleep_until(self.deadline) => Err(error("PROJECT_GIT_TIMEOUT", "Git 引用事务超过内部时间限制；已保留待核对现场。")),
-            result = async {
-                let (_, result) = tokio::try_join!(
-                    read_output(stderr, false, 64 * 1024),
-                    async {
-                        stdin.write_all(&commands).await.map_err(|_| git_failed())?;
-                        stdin.flush().await.map_err(|_| git_failed())?;
-                        expect_line(&mut stdout, b"start: ok\n").await?;
-                        expect_line(&mut stdout, b"prepare: ok\n").await?;
-                        let validation = validate();
-                        if let Err(error) = validation {
-                            stdin.write_all(b"abort\0").await.map_err(|_| git_failed())?;
-                            drop(stdin);
-                            expect_line(&mut stdout, b"abort: ok\n").await?;
-                            let remaining = read_output(stdout, true, 1024).await?;
-                            let status = process.child.wait().await.map_err(|_| git_failed())?;
-                            if !status.success() || !remaining.is_empty() { return Err(git_failed()); }
-                            safe_abort = true;
-                            return Ok::<Result<(), ApiError>, ApiError>(Err(error));
-                        }
-                        commit_sent = true;
-                        stdin.write_all(b"commit\0").await.map_err(|_| git_failed())?;
-                        drop(stdin);
-                        expect_line(&mut stdout, b"commit: ok\n").await?;
-                        let remaining = read_output(stdout, true, 1024).await?;
-                        let status = process.child.wait().await.map_err(|_| git_failed())?;
-                        if !status.success() || !remaining.is_empty() { return Err(git_failed()); }
-                        Ok(Ok(()))
-                    }
-                )?;
-                result
-            } => result,
-        };
-        process.finish().await;
-        // Until commit is sent, closing stdin/killing this private process aborts
-        // Git's prepared transaction. After sending it, missing acknowledgement
-        // is deliberately unknown and leaves the journal for human inspection.
-        safe_abort |= !commit_sent;
-        result.map_err(|error| {
-            error
-                .detail("safeAbort", safe_abort)
-                .detail("commitSent", commit_sent)
-        })
-    }
-
-    async fn run(&mut self, mut command: Command, input: Vec<u8>) -> Result<Output, ApiError> {
-        self.checkpoint()?;
-        if input.len() > MAX_OUTPUT {
-            return Err(limit());
-        }
-        let child = command.spawn().map_err(|_| git_failed())?;
-        let mut process = Process {
-            group: child.id(),
-            child,
-        };
-        let mut stdin = process.child.stdin.take().ok_or_else(git_failed)?;
-        let stdout = process.child.stdout.take().ok_or_else(git_failed)?;
-        let stderr = process.child.stderr.take().ok_or_else(git_failed)?;
-        let result = tokio::select! {
-            biased;
-            _=watch_stop(&mut self.stop)=>Err(interrupted()),
-            _=watch_stop(&mut self.cancel)=>Err(interrupted()),
-            _=tokio::time::sleep_until(self.deadline)=>Err(error("PROJECT_GIT_TIMEOUT","Git 本地操作超过 120 秒内部限制；结果以任务提交点记录为准。")),
-            result=async{
-                let (_,stdout,_,status)=tokio::try_join!(
-                    async{stdin.write_all(&input).await.map_err(|_|git_failed())?;drop(stdin);Ok::<(),ApiError>(())},
-                    read_output(stdout,true,MAX_OUTPUT),read_output(stderr,false,64*1024),
-                    async{process.child.wait().await.map_err(|_|git_failed())}
-                )?;
-                Ok(Output{code:status.code().unwrap_or(-1),stdout})
-            }=>result,
-        };
-        process.finish().await;
-        result
-    }
-}
 fn git_command(tools: &GitToolchain, private: &Path, project: Option<&ProjectHandle>) -> Command {
     let mut command = Command::new(&tools.git.path);
     command
@@ -3117,29 +3005,6 @@ impl Output {
         } else {
             Err(git_failed())
         }
-    }
-}
-struct Process {
-    child: Child,
-    group: Option<u32>,
-}
-impl Process {
-    fn stop(&mut self) {
-        if let Some(pid) = self.group.take() {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
-    async fn finish(&mut self) {
-        self.stop();
-        let _ = self.child.start_kill();
-        let _ = tokio::time::timeout(Duration::from_millis(250), self.child.wait()).await;
-    }
-}
-impl Drop for Process {
-    fn drop(&mut self) {
-        self.stop();
     }
 }
 async fn expect_line(

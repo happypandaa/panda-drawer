@@ -129,62 +129,90 @@ pub(super) async fn materialize(
 ) -> Result<(), ApiError> {
     context.checkpoint()?;
     let root = files::root(destination)?;
+    let blobs = blobs.clone();
+    let stop = context.stop.clone();
+    let cancel = context.cancel.clone();
+    let deadline = context.deadline;
+    #[cfg(test)]
+    let mut writer_pause = context.writer_pause.take();
     let mut command = git_command(tools, context.root(), Some(project));
     command.args(["cat-file", "--batch"]);
-    let child = command.spawn().map_err(|_| git_failed())?;
-    let mut process = Process {
-        group: child.id(),
-        child,
-    };
-    let mut stdin = process.child.stdin.take().ok_or_else(git_failed)?;
-    let mut stdout = process.child.stdout.take().ok_or_else(git_failed)?;
-    let stderr = process.child.stderr.take().ok_or_else(git_failed)?;
-    let result = tokio::select! {
-        biased;
-        _ = watch_stop(&mut context.stop) => Err(interrupted()),
-        _ = watch_stop(&mut context.cancel) => Err(interrupted()),
-        _ = tokio::time::sleep_until(context.deadline) => Err(preview_timeout()),
-        result = async {
-            let (_, ()) = tokio::try_join!(
-                read_output(stderr, false, 64 * 1024),
-                async {
-                    // Keep the bounded streaming buffer on the heap: this
-                    // future is nested inside preview/cancellation selections.
-                    let mut buffer = vec![0u8; 64 * 1024];
-                    for (path, blob) in blobs {
-                        let relative = path.strip_prefix("version-data/").ok_or_else(output_invalid)?;
-                        stdin.write_all(format!("{}\n", blob.oid).as_bytes()).await.map_err(|_| git_failed())?;
-                        stdin.flush().await.map_err(|_| git_failed())?;
-                        expect_line(&mut stdout, format!("{} blob {}\n", blob.oid, blob.bytes).as_bytes()).await?;
-                        let output = files::create(&root, relative)?;
-                        let mut output = tokio::fs::File::from_std(output);
-                        let mut remaining = blob.bytes;
-                        while remaining != 0 {
-                            let length = remaining.min(buffer.len() as u64) as usize;
-                            stdout.read_exact(&mut buffer[..length]).await.map_err(|_| output_invalid())?;
-                            output.write_all(&buffer[..length]).await?;
-                            remaining -= length as u64;
-                        }
-                        output.flush().await?;
-                        output.sync_all().await?;
-                        if stdout.read_u8().await.map_err(|_| output_invalid())? != b'\n' {
-                            return Err(output_invalid());
-                        }
+    let run = context.start(command, move |pipes| {
+        let mut stdin = BlockingPipe::new(pipes.stdin);
+        let mut stdout = BlockingPipe::new(pipes.stdout);
+        let internal_stop = pipes.stop;
+        crate::owned_process::IoPlan::new(async move {
+            // The registered session keeps this actual JoinHandle until the
+            // blocking protocol/file writer completes. Caller stop never aborts
+            // it or drops a tokio::fs wrapper over unfinished filesystem I/O.
+            tokio::task::spawn_blocking(move || {
+                let check = || {
+                    process_io::checkpoint(&stop, &cancel, deadline)?;
+                    if *internal_stop.borrow() {
+                        return Err(interrupted());
                     }
-                    drop(stdin);
-                    if !read_output(stdout, true, 1).await?.is_empty()
-                        || !process.child.wait().await.map_err(|_| git_failed())?.success()
-                    {
+                    Ok::<_, ApiError>(())
+                };
+                let mut buffer = vec![0u8; 64 * 1024];
+                for (path, blob) in blobs {
+                    check()?;
+                    let relative = path
+                        .strip_prefix("version-data/")
+                        .ok_or_else(output_invalid)?;
+                    stdin
+                        .write_all(format!("{}\n", blob.oid).as_bytes())
+                        .map_err(|_| git_failed())?;
+                    stdin.flush().map_err(|_| git_failed())?;
+                    process_io::expect_blocking_line(
+                        &mut stdout,
+                        format!("{} blob {}\n", blob.oid, blob.bytes).as_bytes(),
+                    )?;
+                    let mut output = files::create(&root, relative)?;
+                    #[cfg(test)]
+                    if let Some((entered, release)) = writer_pause.take() {
+                        let _ = entered.send(());
+                        let _ = release.recv();
+                    }
+                    let mut remaining = blob.bytes;
+                    while remaining != 0 {
+                        check()?;
+                        let length = remaining.min(buffer.len() as u64) as usize;
+                        stdout
+                            .read_exact(&mut buffer[..length])
+                            .map_err(|_| output_invalid())?;
+                        output.write_all(&buffer[..length])?;
+                        remaining -= length as u64;
+                    }
+                    output.sync_all()?;
+                    let mut delimiter = [0u8; 1];
+                    stdout
+                        .read_exact(&mut delimiter)
+                        .map_err(|_| output_invalid())?;
+                    if delimiter[0] != b'\n' {
                         return Err(output_invalid());
                     }
-                    Ok::<(), ApiError>(())
                 }
-            )?;
-            Ok(())
-        } => result,
-    };
-    process.finish().await;
-    result
+                drop(stdin);
+                let mut extra = [0u8; 1];
+                if stdout.read(&mut extra).map_err(|_| output_invalid())? != 0 {
+                    return Err(output_invalid());
+                }
+                Ok::<_, ApiError>(())
+            })
+            .await
+            .map_err(|_| super::preview_worker_failed())?
+        })
+        .drain("stderr", async move {
+            read_output(pipes.stderr, false, 64 * 1024)
+                .await
+                .map(|_| ())
+        })
+    })?;
+    let output = context.wait(run).await?;
+    if !output.status.success() {
+        return Err(git_failed());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -210,5 +238,121 @@ mod tests {
                 parse_tree(invalid.as_bytes(), version_data::SnapshotLimits::default()).is_err()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_retains_real_blocking_writer_lease_gate_and_candidate_until_join() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
+        let created = store
+            .create(crate::projects::CreateProjectInput {
+                name: "Disposable raw writer".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        let project = store.project(&created.id).unwrap();
+        let operation = Arc::new(
+            store
+                .reserve_transient_operation(&created.id, "raw-writer-fixture")
+                .unwrap(),
+        );
+        let phase = Arc::new(project.operation_gate.clone().read_owned().await);
+        let (stop, receiver) = watch::channel(false);
+        let (_cancel, cancellation) = watch::channel(false);
+        let mut context = Context::new(receiver, cancellation).unwrap();
+        context.bind(store.processes(), operation);
+        context.phase(phase);
+        let candidate = Arc::new(tempfile::tempdir().unwrap());
+        let destination = candidate.path().canonicalize().unwrap();
+        context.retain(candidate);
+        let private = context.root().to_path_buf();
+        let script = project.root.join("synthetic-cat-file.py");
+        fs::write(&script, "#!/usr/bin/python3\nimport sys\nfor line in sys.stdin.buffer:\n oid=line.strip()\n payload=b'x'*(9*1024*1024)\n sys.stdout.buffer.write(oid+b' blob '+str(len(payload)).encode()+b'\\n'+payload+b'\\n');sys.stdout.buffer.flush()\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let tools = GitToolchain {
+            git: ExecutableInfo {
+                path: script,
+                version: "2.56.0".into(),
+            },
+            path: "/usr/bin:/bin".into(),
+            exec_path: None,
+            template_path: None,
+        };
+        let blobs = BTreeMap::from([(
+            "version-data/attachments/payload.bin".into(),
+            Blob {
+                oid: "a".repeat(40),
+                bytes: 9 * 1024 * 1024,
+            },
+        )]);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        struct ReleaseWriter(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for ReleaseWriter {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let release = ReleaseWriter(Some(release));
+        context.writer_pause = Some((entered, blocked));
+        let writer_project = project.clone();
+        let writer_destination = destination.clone();
+        let request = tokio::spawn(async move {
+            materialize(
+                &writer_project,
+                &tools,
+                &mut context,
+                &writer_destination,
+                &blobs,
+            )
+            .await
+        });
+        tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(3)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(destination.join("attachments/payload.bin").is_file());
+        stop.send(true).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(4), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, "PROCESS_CLEANUP_PENDING");
+        assert!(store.has_active_tasks());
+        assert!(project.operation_gate.try_write().is_err());
+        assert!(destination.is_dir());
+        assert!(private.is_dir());
+        assert!(store
+            .processes()
+            .shutdown()
+            .await
+            .iter()
+            .any(|issue| issue.code == "PROCESS_CLEANUP_PENDING"));
+        drop(release);
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let registry = store.processes();
+                if registry.shutdown().await.is_empty()
+                    && registry
+                        .snapshot()
+                        .iter()
+                        .all(|state| state.resource_closed())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!store.has_active_tasks());
+        assert!(project.operation_gate.try_write().is_ok());
+        assert!(!destination.exists());
+        assert!(!private.exists());
+        assert!(store.shutdown().await.is_empty());
     }
 }

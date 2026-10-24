@@ -19,6 +19,22 @@ impl BuildGitGuard {
         environment: &GitEnvironmentManager,
         stop: watch::Receiver<bool>,
     ) -> Result<Self, ApiError> {
+        Self::capture_with_keep_alive(
+            project,
+            environment,
+            stop,
+            crate::owned_process::OwnedProcessRegistry::default(),
+            Arc::new(()),
+        )
+        .await
+    }
+    pub(crate) async fn capture_with_keep_alive(
+        project: &ProjectHandle,
+        environment: &GitEnvironmentManager,
+        stop: watch::Receiver<bool>,
+        processes: crate::owned_process::OwnedProcessRegistry,
+        keep_alive: Arc<dyn Send + Sync>,
+    ) -> Result<Self, ApiError> {
         let repository = discover(project).map_err(unavailable)?;
         let Some(repo) = &repository else {
             return Ok(Self {
@@ -32,6 +48,7 @@ impl BuildGitGuard {
         repository_ready(&repo.git_dir).map_err(unavailable)?;
         let (_cancel, receiver) = watch::channel(false);
         let mut context = Context::new(stop, receiver).map_err(unavailable)?;
+        context.bind_keep_alive(processes, keep_alive);
         let tools = context.resolve(environment).await.map_err(unavailable)?;
         let digest = inspect_index(repo, &tools, &mut context)
             .await
@@ -50,6 +67,21 @@ impl BuildGitGuard {
         project: &ProjectHandle,
         stop: watch::Receiver<bool>,
     ) -> Result<(), ApiError> {
+        self.recheck_with_keep_alive(
+            project,
+            stop,
+            crate::owned_process::OwnedProcessRegistry::default(),
+            Arc::new(()),
+        )
+        .await
+    }
+    pub(crate) async fn recheck_with_keep_alive(
+        &self,
+        project: &ProjectHandle,
+        stop: watch::Receiver<bool>,
+        processes: crate::owned_process::OwnedProcessRegistry,
+        keep_alive: Arc<dyn Send + Sync>,
+    ) -> Result<(), ApiError> {
         let repository = discover(project).map_err(unavailable)?;
         if repository != self.repository {
             return Err(changed());
@@ -57,6 +89,7 @@ impl BuildGitGuard {
         if let Some(repo) = &repository {
             let (_cancel, receiver) = watch::channel(false);
             let mut context = Context::new(stop, receiver).map_err(unavailable)?;
+            context.bind_keep_alive(processes, keep_alive);
             let digest = inspect_index(repo, self.tools.as_ref().unwrap(), &mut context)
                 .await
                 .map_err(unavailable)?;
@@ -74,24 +107,30 @@ fn changed() -> ApiError {
         "构建期间 Git 仓库、索引或配置发生变化；未发布候选产物，请结束 Git 操作后重新构建。",
     )
 }
-fn unavailable(cause: ApiError) -> ApiError {
-    if cause.code.starts_with("BUILD_GIT_") {
+pub(super) fn unavailable(cause: ApiError) -> ApiError {
+    if cause.code.starts_with("BUILD_GIT_") || cause.code.starts_with("PROCESS_") {
         return cause;
     }
-    if cause.code == "PROJECT_GIT_INTERRUPTED" {
-        return error(
+    let mut issue = if cause.code == "PROJECT_GIT_INTERRUPTED" {
+        error(
             "BUILD_INTERRUPTED",
             "平台正在退出，已停止构建的 Git 冲突检查。",
-        );
-    }
-    if cause.code == "PROJECT_GIT_TIMEOUT" {
-        return error(
+        )
+    } else if cause.code == "PROJECT_GIT_TIMEOUT" {
+        error(
             "BUILD_GIT_CHECK_TIMEOUT",
             "构建的 Git 冲突检查超过 120 秒内部限制；未发布产物。",
-        );
+        )
+    } else {
+        error("BUILD_GIT_CHECK_UNAVAILABLE", "无法安全确认项目 Git 索引没有冲突；未执行 Git 修复或改用另一份工具，请检查仓库及 Git 工具设置。")
+            .detail("causeCode", cause.code.as_str())
+    };
+    for field in ["processResourceClosed", "processClosed", "operationOutcome"] {
+        if let Some(value) = cause.details.get(field) {
+            issue = issue.detail(field, value.clone());
+        }
     }
-    error("BUILD_GIT_CHECK_UNAVAILABLE", "无法安全确认项目 Git 索引没有冲突；未执行 Git 修复或改用另一份工具，请检查仓库及 Git 工具设置。")
-        .detail("causeCode", cause.code)
+    issue
 }
 fn discover(project: &ProjectHandle) -> Result<Option<Repository>, ApiError> {
     check_no_symlinks(&project.root, false)?;
