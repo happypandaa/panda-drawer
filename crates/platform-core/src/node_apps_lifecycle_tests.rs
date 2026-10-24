@@ -164,6 +164,40 @@ async fn product_runtime_constructor_shares_both_launch_probes_with_service_shut
 }
 
 #[tokio::test]
+async fn runtime_reader_failure_keeps_running_owner_and_marker_after_group_exit() {
+    let fixture = Fixture::new("normal");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    fixture
+        .manager
+        .inner
+        .lock()
+        .await
+        .running
+        .get_mut(id)
+        .unwrap()
+        .runtime
+        .fixture_reader_failure();
+    assert!(fixture.manager.stop_all().await.is_err());
+    assert_eq!(fixture.manager.owned_process_ids().await, vec![id]);
+    assert!(fixture.slot(id).join("active.json").is_file());
+    assert!(
+        fixture.manager.stop_all().await.is_err(),
+        "empty child/reader slots discarded a retained failure"
+    );
+    assert!(fixture.manager.start(id).await.is_err());
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("public/index.html")).unwrap(),
+        "<p>Artificial lifecycle fixture</p>"
+    );
+}
+
+#[tokio::test]
 async fn failed_final_detail_rolls_back_only_the_newly_started_backend() {
     let fixture = Fixture::new("remove-manifest");
     let registered = fixture
