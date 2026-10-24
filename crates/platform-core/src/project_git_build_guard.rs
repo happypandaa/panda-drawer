@@ -14,6 +14,7 @@ struct Repository {
     identity: String,
 }
 impl BuildGitGuard {
+    #[cfg(test)]
     pub(crate) async fn capture(
         project: &ProjectHandle,
         environment: &GitEnvironmentManager,
@@ -62,6 +63,7 @@ impl BuildGitGuard {
             digest: Some(digest),
         })
     }
+    #[cfg(test)]
     pub(crate) async fn recheck(
         &self,
         project: &ProjectHandle,

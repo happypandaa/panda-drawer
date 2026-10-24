@@ -832,9 +832,14 @@ impl BuildManager {
         project.check()?;
         self.store.check_development_available(project_id)?;
         self.phase(id, "git-build-check")?;
-        let git_guard =
-            BuildGitGuard::capture(&project, &self.git_environment, self.git_stop.subscribe())
-                .await?;
+        let git_guard = BuildGitGuard::capture_with_keep_alive(
+            &project,
+            &self.git_environment,
+            self.git_stop.subscribe(),
+            self.store.processes(),
+            protection.clone(),
+        )
+        .await?;
         self.phase(id, "environment")?;
         let tools = self
             .environment
@@ -981,13 +986,18 @@ impl BuildManager {
                     .ok_or_else(|| ApiError::new("INVALID_PATH", "Build path must be UTF-8"))?,
             ],
             start,
-            process_protection,
+            process_protection.clone(),
         )
         .await?;
         self.checkpoint(start)?;
         self.phase(id, "git-build-check")?;
         git_guard
-            .recheck(project, self.git_stop.subscribe())
+            .recheck_with_keep_alive(
+                project,
+                self.git_stop.subscribe(),
+                self.store.processes(),
+                process_protection,
+            )
             .await?;
         // No more awaits before publication: validate source, candidate, live
         // output and staging again after the potentially slow Git inspection.

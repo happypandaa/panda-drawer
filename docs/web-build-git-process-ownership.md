@@ -1,0 +1,23 @@
+# Web build Git protection
+
+Web builds pass their real phase owners to both Git checks. Before candidate creation, `capture_with_keep_alive` receives the current `BuildProtection` (actual task lease and owned project read gate). After npm has finished, `recheck_with_keep_alive` receives a fresh `BuildProcessProtection`, including that same project protection and the actual candidate. Both checks use `ProjectStore::processes()`, the shared runtime registry.
+
+The last npm command receives a clone of the process protection so Git recheck can own it too. `BuildGitGuard` does not retain the gate between calls. Its fixture-only convenience wrappers remain available to tests; product paths explicitly supply the registry and phase owner.
+
+A Git cleanup-pending or unconfirmed error carries `processResourceClosed: false` and `operationOutcome: unknown`. The existing pipeline guard returns that failed result before rollback or publication. The registry continues to own the candidate, task lease, gate, actual child and I/O. A failed request does not release those resources, and shutdown cannot treat the pending record as closed.
+
+For a retryable held pipe, only its actual EOF and session/pump joins release those owners. The finished build task keeps its original failed/unknown receipt; later process closure does not turn it into success or rewrite its recorded closure snapshot. It does not later launch an implicit rollback or retry. The original output copy and staged output remain as evidence. A sticky unconfirmed owner stays protected according to the process-registry contract. This preserves the existing conservative result semantics rather than granting a publication or update-installation permission.
+
+## Verification
+
+The narrow checks run in a new disposable export of `9e43626`, after the frozen ProjectGit process patch `1854d766e914dbd9d131e0ef41afbb41ecbcdce1b5885712aaf0cfdcc0839660` was recorded as a non-owned prerequisite. The target is an independent copy-on-write Cargo target; all new source changes are isolated from the root checkout and prior frozen copies.
+
+The capture regression uses the actual BuildManager pipeline and a synthetic Git process whose output pipe remains open. It verifies that even after the task reports failure, the actual project lease and operation gate remain occupied until real I/O completion. Candidate creation and npm never begin.
+
+The recheck regression runs actual local Node/npm, creates a candidate, completes dependency installation/build, and deliberately writes a disposable live output. The second Git check has a real inherited output pipe held open. It verifies the failed task's false closure/unknown receipt, retained candidate/lease/gate, unchanged publication provenance, old output copy and absence of a rollback directory. It verifies the same evidence while registry shutdown reports pending, then releases the private pipe barrier and checks real join before candidate cleanup/gate release. Database and attachment bytes remain unchanged. An opt-in variant delegates all Git operations to a copied official Git 2.56 resource before introducing the same pipe barrier.
+
+The pipe holder deliberately starts a separate session and has a private release file and bounded self-exit. It is an artificial inherited-I/O case, not evidence of tracking escaped descendants. The tests never signal unowned numeric PIDs or groups. All repositories, databases, attachments and outputs are disposable; no network repository, installed application, signing identity or production data is used.
+
+Final targeted checks passed: four owned-build pipeline tests (new capture/recheck Pending and existing npm reader Pending/panic), three ordinary-build/Git-admission regressions, and two official-Git opt-ins (the new recheck case and existing dirty/staged/untracked/conflict/mid-build-merge path). Core all-target strict Clippy and workspace formatting passed. Initial failed attempts were a test-only call to a private sibling helper and a capture fixture without an initial output page; the fixture-only corrections and exact final reruns are retained in the local ledger. This step does not rerun the full Git data restore fault matrix or establish safe updater installation.
+
+Root integration on 2026-10-25: the default `builds::tests` filter passed 34 tests with two explicit opt-ins ignored. The exact official-Git pending-recheck opt-in separately passed (one test, 5.36 seconds). Workspace all-target strict Clippy, formatting and whitespace checks passed. These checks use disposable projects and do not exercise native windows or an installed application.
