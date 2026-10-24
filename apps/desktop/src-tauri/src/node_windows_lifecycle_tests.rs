@@ -110,3 +110,58 @@ fn restart_guard_requires_both_current_generation_and_restarting_phase() {
         assert!(!windows.restart_allowed("same-application", &replacement));
     }
 }
+
+#[test]
+fn shutdown_freezes_navigation_and_retains_sessions_until_real_destroyed_receipts() {
+    let windows = NodeWindows::default();
+    let id = "00000000-0000-4000-8000-000000000001";
+    let current = fresh_session(Phase::Running);
+    put(&windows, id, current.clone());
+    let receipts = super::super::business_window_lifetime::WindowLifetimes::default();
+    let receipt = receipts.reserve(&label(id).unwrap()).unwrap();
+    let captured = windows.freeze_for_shutdown();
+    assert!(closing(&current));
+    assert!(current.lock().unwrap().origin.is_none());
+    assert_eq!(
+        windows
+            .finish_shutdown(&captured, &receipts)
+            .unwrap_err()
+            .code,
+        "NODE_WINDOW_DESTROY_UNCONFIRMED"
+    );
+    assert!(windows.owns(id, &current));
+    receipts.destroyed(&receipt, || {});
+    windows.finish_shutdown(&captured, &receipts).unwrap();
+    assert!(!windows.owns(id, &current));
+    // Repeating completed session cleanup is harmless and still checks receipts.
+    windows.finish_shutdown(&captured, &receipts).unwrap();
+}
+
+#[test]
+fn shutdown_cannot_unregister_a_replacement_session_or_synthesize_a_missing_receipt() {
+    let windows = NodeWindows::default();
+    let id = "00000000-0000-4000-8000-000000000002";
+    let old = fresh_session(Phase::Running);
+    put(&windows, id, old);
+    let captured = windows.freeze_for_shutdown();
+    let receipts = super::super::business_window_lifetime::WindowLifetimes::default();
+    assert_eq!(
+        windows
+            .finish_shutdown(&captured, &receipts)
+            .unwrap_err()
+            .code,
+        "NODE_WINDOW_DESTROY_UNCONFIRMED"
+    );
+    let replacement = fresh_session(Phase::Running);
+    put(&windows, id, replacement.clone());
+    let receipt = receipts.reserve(&label(id).unwrap()).unwrap();
+    receipts.destroyed(&receipt, || {});
+    assert_eq!(
+        windows
+            .finish_shutdown(&captured, &receipts)
+            .unwrap_err()
+            .code,
+        "NODE_SESSION_GENERATION_CHANGED"
+    );
+    assert!(windows.owns(id, &replacement));
+}
