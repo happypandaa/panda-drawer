@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "signingProfile": "macos-developer-id-hardened-runtime-v1",
+  "expectedTeamId": null,
+  "nodeEntitlementsSha256": null,
+  "gitEntitlementsSha256": null
+}

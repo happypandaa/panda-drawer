@@ -95,15 +95,31 @@ impl NodeApps {
     pub fn new(data_root: PathBuf, node_path: PathBuf) -> Result<Self> {
         if crate::build_profile::PRODUCTION_PROFILE {
             crate::platform_support::require_runtime()?;
+            let bin = node_path
+                .parent()
+                .filter(|path| path.file_name().is_some_and(|name| name == "bin"))
+                .ok_or_else(|| fail("正式 Node 路径与固定资源位置不一致。"))?;
+            if node_path.file_name().is_none_or(|name| name != "node") {
+                return Err(fail("正式 Node 文件名与固定资源位置不一致。"));
+            }
+            let resource_root = bin.parent().ok_or_else(|| fail("正式 Node 资源根缺失。"))?;
+            crate::production_resources::verify_tool_payload(
+                resource_root,
+                crate::production_resources::PayloadKind::NodeRuntime,
+            )?;
         }
         ordinary_path(&data_root, true)?;
         let root = data_root.join("node-apps");
-        let release: Value =
-            serde_json::from_str(include_str!("../../../scripts/node-runtime-release.json"))?;
-        let digest = release["binary"]["sha256"]
-            .as_str()
-            .ok_or_else(|| fail("内置 Node 校验信息无效。"))?
-            .to_owned();
+        let digest = if crate::build_profile::PRODUCTION_PROFILE {
+            crate::production_resources::runtime_node_digest()?
+        } else {
+            let release: Value =
+                serde_json::from_str(include_str!("../../../scripts/node-runtime-release.json"))?;
+            release["binary"]["sha256"]
+                .as_str()
+                .ok_or_else(|| fail("内置 Node 校验信息无效。"))?
+                .to_owned()
+        };
         Ok(Self {
             root,
             data_root,

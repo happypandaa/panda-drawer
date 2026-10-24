@@ -350,6 +350,24 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedToolchain, 
 }
 
 pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedToolchain, ApiError> {
+    if crate::build_profile::PRODUCTION_PROFILE {
+        return tokio::task::spawn_blocking(move || {
+            crate::production_resources::verify_tool_payload(
+                &root,
+                crate::production_resources::PayloadKind::DevelopmentNode,
+            )?;
+            let source = release(RELEASE)?;
+            Ok(VerifiedToolchain {
+                node: root.join("bin/node"),
+                npm: root.join("lib/node_modules/npm/bin/npm-cli.js"),
+                root,
+                node_version: source.node_version,
+                npm_version: source.npm_version,
+            })
+        })
+        .await
+        .map_err(|error| invalid(format!("正式工具校验未完成：{error}")))?;
+    }
     tokio::task::spawn_blocking(move || verify_sync(root, RELEASE))
         .await
         .map_err(|error| invalid(format!("受管开发工具校验未完成：{error}")))?

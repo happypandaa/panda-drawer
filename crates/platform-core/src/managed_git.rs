@@ -360,6 +360,24 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedGit, ApiErr
 }
 
 pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedGit, ApiError> {
+    if crate::build_profile::PRODUCTION_PROFILE {
+        return tokio::task::spawn_blocking(move || {
+            crate::production_resources::verify_tool_payload(
+                &root,
+                crate::production_resources::PayloadKind::DevelopmentGit,
+            )?;
+            let source = release(RELEASE)?;
+            Ok(VerifiedGit {
+                git: root.join("bin/git"),
+                exec_path: root.join("libexec/git-core"),
+                template_path: root.join("share/git-core/templates"),
+                root,
+                git_version: source.git_version,
+            })
+        })
+        .await
+        .map_err(|error| invalid(format!("正式工具校验未完成：{error}")))?;
+    }
     tokio::task::spawn_blocking(move || verify_sync(root, RELEASE))
         .await
         .map_err(|error| invalid(format!("私有 Git 工具校验未完成：{error}")))?

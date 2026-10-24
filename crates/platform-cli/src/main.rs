@@ -16,7 +16,9 @@ const CLI_ABOUT: &str = if platform_core::build_profile::PRODUCTION_PROFILE {
 } else {
     "Manage projects in the isolated development platform"
 };
-const CLI_LONG_ABOUT: &str = if platform_core::build_profile::PRODUCTION_PROFILE {
+const CLI_LONG_ABOUT: &str = if platform_core::production_resources::COMPILED_RESOURCE_ANCHORS {
+    "Inspect fixed production metadata with build-info. Digest anchors are compiled, but signature and distribution proof is unavailable; every runtime command is rejected before input files, data roots, discovery or credentials are read. This candidate is not a released or notarized application."
+} else if platform_core::build_profile::PRODUCTION_PROFILE {
     "Inspect the fixed production candidate with build-info. Signed resource anchors are not configured, so every runtime command is rejected before reading inputs, data roots, discovery or credentials. This metadata foundation is not a released, signed or notarized application."
 } else {
     "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, permanently delete selected projects, restore or purge legacy trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
