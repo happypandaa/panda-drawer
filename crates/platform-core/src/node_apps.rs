@@ -779,12 +779,13 @@ impl NodeApps {
         let (port, token) = match runtime.proxy_target() {
             Ok(target) => target,
             Err(error) => {
-                self.finish_failed_start(id, runtime, snapshot.revision, inner)
+                let _ = self
+                    .finish_failed_start(id, runtime, None, snapshot.revision, inner)
                     .await;
                 return Err(error);
             }
         };
-        let proxy = match NodeAppProxy::start(
+        let proxy = match NodeAppProxy::start_retaining_failed(
             record.source_path.join(&manifest.web.root),
             manifest.web.entry.clone(),
             port,
@@ -793,9 +794,16 @@ impl NodeApps {
         .await
         {
             Ok(proxy) => proxy,
-            Err(error) => {
-                self.finish_failed_start(id, runtime, snapshot.revision, inner)
+            Err(failure) => {
+                let shutdown = self
+                    .finish_failed_start(id, runtime, Some(failure.proxy), snapshot.revision, inner)
                     .await;
+                let mut error = failure.error;
+                if let Some(shutdown) = shutdown {
+                    error = error
+                        .detail("shutdownIssues", shutdown.details["shutdownIssues"].clone())
+                        .detail("proxyShutdown", json!(shutdown));
+                }
                 return Err(error);
             }
         };
@@ -815,63 +823,94 @@ impl NodeApps {
     async fn finish_failed_start(
         &self,
         id: &str,
-        mut runtime: NodeRuntimeTrial,
+        runtime: NodeRuntimeTrial,
+        proxy: Option<NodeAppProxy>,
         revision: u64,
         inner: &mut Inner,
-    ) {
-        match runtime.stop().await {
-            Ok(status) if status.process_group_exited => {
+    ) -> Option<ApiError> {
+        let mut running = Running {
+            runtime,
+            proxy,
+            revision,
+            cleanup_pending: true,
+        };
+        let (proxy, process) = Self::stop_resources(&mut running).await;
+        let shutdown = proxy.as_ref().err().cloned();
+        match process {
+            Ok(status) if status.process_group_exited && proxy.is_ok() => {
                 if clean_shutdown(&status) {
                     let _ = fs::remove_file(self.root.join(id).join("active.json"));
                 }
             }
             _ => {
-                inner.running.insert(
-                    id.into(),
-                    Running {
-                        runtime,
-                        proxy: None,
-                        revision,
-                        cleanup_pending: true,
-                    },
-                );
+                inner.running.insert(id.into(), running);
                 inner.errors.insert(
                     id.into(),
-                    "启动失败后的进程尚未确认全部关闭，请重试停止。".into(),
+                    "启动失败后的进程或网页连接尚未确认完整关闭，请重试停止。".into(),
                 );
             }
         }
+        shutdown
     }
-
+    async fn stop_resources(running: &mut Running) -> (Result<()>, Result<TrialStatus>) {
+        let Running { runtime, proxy, .. } = running;
+        if let Some(proxy) = proxy.as_ref() {
+            proxy.request_stop();
+        }
+        tokio::join!(
+            async {
+                match proxy {
+                    Some(proxy) => proxy.stop().await,
+                    None => Ok(()),
+                }
+            },
+            runtime.stop()
+        )
+    }
     async fn stop_locked(&self, id: &str, inner: &mut Inner) -> Result<()> {
         if let Some(running) = inner.running.get_mut(id) {
             running.cleanup_pending = true;
-            if let Some(proxy) = &mut running.proxy {
-                proxy.stop().await;
-            }
-            let status = match running.runtime.stop().await {
-                Ok(status) if status.process_group_exited => status,
-                result => {
-                    inner.errors.insert(id.into(), "应用进程尚未确认全部关闭，已保留受管句柄。请重试停止；平台暂不允许退出或启动第二个实例。".into());
-                    return Err(result
-                        .err()
-                        .unwrap_or_else(|| fail("无法确认应用进程组已关闭。")));
-                }
-            };
-            // Keep ownership until stop has positively confirmed group cleanup.
-            // A forced but fully cleaned process is removed here; its business
-            // failure and recovery marker are still preserved below.
-            inner.running.remove(id);
-            if !clean_shutdown(&status) {
-                inner.errors.insert(
-                    id.into(),
-                    "应用未完成正常关闭，已阻止再次启动并保留数据。".into(),
-                );
-                return Err(fail("应用未正常关闭，请保留运行记录以便恢复。"));
-            }
-            fs::remove_file(self.root.join(id).join("active.json"))?;
-            inner.errors.remove(id);
+            // Proxy connections/files and the runtime drain independently. A
+            // failed proxy cannot suppress process stop or release its owner.
+            let (proxy, process) = Self::stop_resources(running).await;
+            return self.finish_stop(id, inner, proxy, process);
         }
+        Ok(())
+    }
+    fn finish_stop(
+        &self,
+        id: &str,
+        inner: &mut Inner,
+        proxy: Result<()>,
+        process: Result<TrialStatus>,
+    ) -> Result<()> {
+        let status = match process {
+            Ok(status) if status.process_group_exited => status,
+            result => {
+                inner.errors.insert(id.into(),"应用进程尚未确认全部关闭，已保留受管句柄。请重试停止；平台暂不允许退出或启动第二个实例。".into());
+                return Err(result
+                    .err()
+                    .unwrap_or_else(|| fail("无法确认应用进程组已关闭。")));
+            }
+        };
+        if let Err(error) = proxy {
+            inner.errors.insert(
+                id.into(),
+                "应用进程已停止，网页连接或文件工作仍未确认完整关闭，已保留句柄。请重试停止。"
+                    .into(),
+            );
+            return Err(error);
+        }
+        inner.running.remove(id);
+        if !clean_shutdown(&status) {
+            inner.errors.insert(
+                id.into(),
+                "应用未完成正常关闭，已阻止再次启动并保留数据。".into(),
+            );
+            return Err(fail("应用未正常关闭，请保留运行记录以便恢复。"));
+        }
+        fs::remove_file(self.root.join(id).join("active.json"))?;
+        inner.errors.remove(id);
         Ok(())
     }
 
@@ -975,11 +1014,23 @@ impl NodeApps {
                 .lock()
                 .map_err(|_| fail("目录初始化锁不可用。"))?;
         }
-        let ids: Vec<_> = inner.running.keys().cloned().collect();
+        for running in inner.running.values() {
+            if let Some(proxy) = &running.proxy {
+                proxy.request_stop();
+            }
+        }
+        let drains = inner.running.iter_mut().map(|(id, running)| {
+            running.cleanup_pending = true;
+            let id = id.clone();
+            async move { (id, Self::stop_resources(running).await) }
+        });
+        // Poll every application's runtime and proxy before awaiting any one
+        // blocked file/connection. Keep each Running in the owned map throughout.
+        let results = futures_util::future::join_all(drains).await;
         let mut error = None;
-        for id in ids {
-            if let Err(e) = self.stop_locked(&id, &mut inner).await {
-                error = Some(e);
+        for (id, (proxy, process)) in results {
+            if let Err(failure) = self.finish_stop(&id, &mut inner, proxy, process) {
+                error = Some(failure);
             }
         }
         error.map_or(Ok(()), Err)

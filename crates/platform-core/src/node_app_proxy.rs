@@ -1,6 +1,8 @@
 //! Private per-application loopback web adapter. It exposes no platform management
 //! API, never forwards the browser cookie, and keeps the backend bearer in Rust.
-use crate::ApiError;
+use crate::{io_lifetime::IoLease, ApiError};
+#[path = "node_app_proxy_shutdown.rs"]
+mod shutdown;
 use axum::{
     body::{to_bytes, Body, Bytes},
     extract::{Request, State},
@@ -9,6 +11,9 @@ use axum::{
     Router,
 };
 use futures_util::{stream, StreamExt};
+use http_body_util::{BodyExt, Full};
+use hyper_util::rt::TokioIo;
+use shutdown::ProxyShutdown;
 #[cfg(unix)]
 use std::{ffi::CString, path::Component};
 use std::{
@@ -19,7 +24,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{io::AsyncReadExt, net::TcpListener, sync::watch, task::JoinHandle};
+use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 use uuid::Uuid;
 
 const BOOTSTRAP_PATH: &str = "/_platform/bootstrap";
@@ -43,27 +48,118 @@ struct ProxyState {
     origin: String,
     backend: String,
     bearer: HeaderValue,
-    client: reqwest::Client,
     authorization: Arc<Mutex<Authorization>>,
     stopping: watch::Receiver<bool>,
+    owner: Arc<ProxyShutdown>,
 }
 
-/// A browser endpoint for one already-started, authenticated Node application.
-/// Dropping it revokes the page session and cancels active response streams.
+/// A per-application endpoint whose stop waiter never owns the real drain.
 pub struct NodeAppProxy {
     origin: String,
     authorization: Arc<Mutex<Authorization>>,
-    stopping: watch::Sender<bool>,
-    task: Option<JoinHandle<()>>,
+    owner: Arc<ProxyShutdown>,
 }
-
+pub(crate) struct ProxyStartFailure {
+    pub error: ApiError,
+    pub proxy: NodeAppProxy,
+}
+struct StartupWaiter(Option<Arc<ProxyShutdown>>);
+impl Drop for StartupWaiter {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            owner.begin();
+        }
+    }
+}
 impl NodeAppProxy {
+    // Product callers retain failed startup ownership via start_retaining_failed.
+    #[cfg(test)]
     pub async fn start(
         web_root: PathBuf,
         entry: String,
         backend_port: u16,
         backend_token: String,
     ) -> Result<Self, ApiError> {
+        Self::finish_public_start(
+            Self::start_retaining_failed(web_root, entry, backend_port, backend_token).await,
+        )
+        .await
+    }
+    #[cfg(test)]
+    async fn finish_public_start(
+        result: Result<Self, Box<ProxyStartFailure>>,
+    ) -> Result<Self, ApiError> {
+        match result {
+            Ok(proxy) => Ok(proxy),
+            Err(failure) => {
+                let mut error = failure.error;
+                if let Err(shutdown) = failure.proxy.stop().await {
+                    error = error
+                        .detail("shutdownIssues", shutdown.details["shutdownIssues"].clone())
+                        .detail("proxyShutdown", serde_json::json!(shutdown));
+                }
+                Err(error)
+            }
+        }
+    }
+    pub(crate) async fn start_retaining_failed(
+        web_root: PathBuf,
+        entry: String,
+        backend_port: u16,
+        backend_token: String,
+    ) -> Result<Self, Box<ProxyStartFailure>> {
+        Self::start_with_owner(
+            web_root,
+            entry,
+            backend_port,
+            backend_token,
+            ProxyShutdown::new(),
+        )
+        .await
+    }
+    async fn start_with_owner(
+        web_root: PathBuf,
+        entry: String,
+        backend_port: u16,
+        backend_token: String,
+        owner: Arc<ProxyShutdown>,
+    ) -> Result<Self, Box<ProxyStartFailure>> {
+        let mut waiter = StartupWaiter(Some(owner.clone()));
+        let worker = owner.clone();
+        let result = match owner.request(move |lease| async move {
+            Self::start_work(web_root, entry, backend_port, backend_token, worker, lease).await
+        }) {
+            Ok(receive) => receive.await.unwrap_or_else(|_| {
+                Err(proxy_error(
+                    "NODE_APP_PROXY_UNAVAILABLE",
+                    "应用连接初始化未返回结果，句柄已保留。",
+                ))
+            }),
+            Err(error) => Err(error),
+        };
+        waiter.0 = None;
+        let mut proxy = Self {
+            origin: String::new(),
+            authorization: owner.authorization.clone(),
+            owner,
+        };
+        match result {
+            Ok(origin) => {
+                proxy.origin = origin;
+                Ok(proxy)
+            }
+            Err(error) => Err(Box::new(ProxyStartFailure { error, proxy })),
+        }
+    }
+    async fn start_work(
+        web_root: PathBuf,
+        entry: String,
+        backend_port: u16,
+        backend_token: String,
+        owner: Arc<ProxyShutdown>,
+        lease: IoLease,
+    ) -> Result<String, ApiError> {
+        let _lease = lease;
         if backend_port == 0 || backend_token.is_empty() || backend_token.len() > 4096 {
             return Err(proxy_error("NODE_APP_PROXY_INVALID", "应用连接信息无效。"));
         }
@@ -74,21 +170,33 @@ impl NodeAppProxy {
             .filter(|parts| !parts.is_empty())
             .ok_or_else(|| proxy_error("NODE_APP_WEB_INVALID", "应用网页入口无效。"))?;
         let checked_entry = entry.clone();
-        let root = tokio::task::spawn_blocking(move || {
-            let root = open_root(&web_root)?;
-            let _entry = open_file(&root, &checked_entry)?;
-            Ok::<_, io::Error>(root)
-        })
-        .await
-        .map_err(|_| proxy_error("NODE_APP_WEB_INVALID", "无法检查应用网页。"))?
-        .map_err(|_| proxy_error("NODE_APP_WEB_INVALID", "应用网页缺失，或包含不支持的链接。"))?;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(3))
-            .http1_only()
-            .build()
-            .map_err(|_| proxy_error("NODE_APP_PROXY_UNAVAILABLE", "无法准备应用连接。"))?;
+        let opener = owner.clone();
+        let root = owner
+            .blocking(move || {
+                #[cfg(test)]
+                if let Some((entered, release)) = opener.hooks.open.lock().unwrap().take() {
+                    let _ = entered.send(());
+                    let _ = release.recv();
+                }
+                let root = open_root(&web_root)?;
+                let _entry = open_file(&root, &checked_entry)?;
+                #[cfg(test)]
+                if opener
+                    .hooks
+                    .panic_open
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    panic!("controlled artificial proxy startup worker panic");
+                }
+                drop(opener);
+                Ok::<_, io::Error>(root)
+            })
+            .await
+            .map_err(|_| proxy_error("NODE_APP_WEB_INVALID", "应用网页检查未返回结果。"))??
+            .map_err(|_| {
+                proxy_error("NODE_APP_WEB_INVALID", "应用网页缺失，或包含不支持的链接。")
+            })?;
+        owner.lifetime.check_open()?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .map_err(|_| proxy_error("NODE_APP_PROXY_UNAVAILABLE", "无法打开本机应用端口。"))?;
@@ -96,88 +204,60 @@ impl NodeAppProxy {
             .local_addr()
             .map_err(|_| proxy_error("NODE_APP_PROXY_UNAVAILABLE", "无法读取本机应用端口。"))?
             .port();
-        let authority = format!("127.0.0.1:{port}");
-        let origin = format!("http://{authority}");
-        let authorization = Arc::new(Mutex::new(Authorization {
-            bootstrap: None,
-            session: Uuid::new_v4().simple().to_string(),
-        }));
-        let (stopping, stop_rx) = watch::channel(false);
+        let origin = format!("http://127.0.0.1:{port}");
         let state = Arc::new(ProxyState {
             root: Arc::new(root),
             entry,
-            authority,
+            authority: format!("127.0.0.1:{port}"),
             cookie_name: format!("node_app_session_{port}"),
             origin: origin.clone(),
             backend: format!("http://127.0.0.1:{backend_port}"),
             bearer,
-            client,
-            authorization: authorization.clone(),
-            stopping: stop_rx.clone(),
+            authorization: owner.authorization.clone(),
+            stopping: owner.stopping.subscribe(),
+            owner: owner.clone(),
         });
-        let router = Router::new().fallback(handle).with_state(state);
-        let task = tokio::spawn(async move {
-            let mut stop_rx = stop_rx;
-            let _ = axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    if !*stop_rx.borrow() {
-                        let _ = stop_rx.changed().await;
-                    }
-                })
-                .await;
-        });
-        Ok(Self {
-            origin,
-            authorization,
-            stopping,
-            task: Some(task),
-        })
+        #[cfg(test)]
+        {
+            *owner.hooks.state.lock().unwrap() = Arc::downgrade(&state);
+        }
+        owner.install(listener, Router::new().fallback(handle).with_state(state))?;
+        Ok(origin)
     }
-
-    /// A fresh one-use URL. It expires after 60 seconds; issuing another URL
-    /// revokes an earlier unused URL. It never contains the backend bearer.
     pub fn open_url(&mut self) -> String {
         let token = Uuid::new_v4().simple().to_string();
-        let mut authorization = self
-            .authorization
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let mut authorization = self.authorization.lock().unwrap_or_else(|p| p.into_inner());
         authorization.bootstrap = Some(Bootstrap {
             token: token.clone(),
             issued: Instant::now(),
         });
         format!("{}{BOOTSTRAP_PATH}?token={token}", self.origin)
     }
-
-    pub async fn stop(&mut self) {
-        self.revoke();
-        if let Some(mut task) = self.task.take() {
-            if tokio::time::timeout(Duration::from_secs(2), &mut task)
-                .await
-                .is_err()
-            {
-                task.abort();
-                let _ = task.await;
-            }
-        }
+    pub fn request_stop(&self) {
+        self.owner.request_stop();
     }
-
-    fn revoke(&self) {
-        let _ = self.stopping.send(true);
-        let mut authorization = self
-            .authorization
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        authorization.bootstrap = None;
-        authorization.session.clear();
+    pub async fn stop(&self) -> Result<(), ApiError> {
+        self.owner.wait().await
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_read_pause(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self.owner.hooks.read.lock().unwrap() = Some((entered, release));
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_serve_panic(&self) {
+        self.owner
+            .hooks
+            .panic_serve
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 impl Drop for NodeAppProxy {
     fn drop(&mut self) {
-        self.revoke();
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        self.owner.begin();
     }
 }
 
@@ -249,6 +329,16 @@ fn authorized(headers: &HeaderMap, cookie_name: &str, expected: &str) -> bool {
 }
 
 async fn handle(State(state): State<Arc<ProxyState>>, request: Request) -> Response {
+    let owner = state.owner.clone();
+    let receive = match owner.request(move |lease| handle_owned(state, request, lease)) {
+        Ok(receive) => receive,
+        Err(_) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
+    };
+    receive
+        .await
+        .unwrap_or_else(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "应用连接未正常结束。"))
+}
+async fn handle_owned(state: Arc<ProxyState>, request: Request, lease: IoLease) -> Response {
     if *state.stopping.borrow() {
         return refusal(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -329,15 +419,34 @@ async fn handle(State(state): State<Arc<ProxyState>>, request: Request) -> Respo
         }
     }
     if matches!(parts.first().map(String::as_str), Some("api" | "tts")) {
-        forward(state, request, parts).await
+        forward(state, request, parts, lease).await
     } else if safe_method {
-        static_file(state, request.method() == Method::HEAD, parts).await
+        static_file(state, request.method() == Method::HEAD, parts, lease).await
     } else {
         refusal(StatusCode::METHOD_NOT_ALLOWED, "此网页不接受该请求方式。")
     }
 }
 
-async fn forward(state: Arc<ProxyState>, request: Request, parts: Vec<String>) -> Response {
+// A response/timeout owns cancellation until its producer really releases the
+// incoming body. Only the separately registered driver owns the actual socket.
+struct ConnectionCancel(watch::Sender<bool>);
+impl Drop for ConnectionCancel {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+async fn stopped(stop: &mut watch::Receiver<bool>) {
+    if !*stop.borrow() {
+        let _ = stop.changed().await;
+    }
+}
+
+async fn forward(
+    state: Arc<ProxyState>,
+    request: Request,
+    parts: Vec<String>,
+    lease: IoLease,
+) -> Response {
     if !matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::POST | Method::PUT | Method::PATCH | Method::DELETE
@@ -348,21 +457,26 @@ async fn forward(state: Arc<ProxyState>, request: Request, parts: Vec<String>) -
     let mut stop = state.stopping.clone();
     let bytes = tokio::select! {
         biased;
-        _ = stop.changed() => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
+        _ = stopped(&mut stop) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
         result = tokio::time::timeout(Duration::from_secs(15), to_bytes(body, BODY_LIMIT)) => match result {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(_)) => return refusal(StatusCode::PAYLOAD_TOO_LARGE, "请求内容不能超过 64 KiB。"),
             Err(_) => return refusal(StatusCode::REQUEST_TIMEOUT, "读取请求超时，请重试。"),
         }
     };
-    let mut url = reqwest::Url::parse(&state.backend).expect("fixed loopback URL is valid");
+    let mut url = url::Url::parse(&state.backend).expect("fixed loopback URL is valid");
     url.set_path(&format!("/{}", parts.join("/")));
     url.set_query(request.uri.query());
-    let mut upstream = state
-        .client
-        .request(request.method, url)
-        .header(header::AUTHORIZATION, state.bearer.clone())
-        .body(bytes);
+    let target = &url[url::Position::BeforePath..];
+    let mut upstream = Request::builder()
+        .method(request.method)
+        .uri(target)
+        .header(
+            header::HOST,
+            &url[url::Position::BeforeHost..url::Position::AfterPort],
+        )
+        .header(header::CONNECTION, "close")
+        .header(header::AUTHORIZATION, state.bearer.clone());
     for name in [
         header::ACCEPT,
         header::CONTENT_TYPE,
@@ -373,15 +487,76 @@ async fn forward(state: Arc<ProxyState>, request: Request, parts: Vec<String>) -
             upstream = upstream.header(name, value);
         }
     }
+    let upstream = upstream
+        .body(Full::new(bytes))
+        .expect("validated loopback request");
+    // This is a direct loopback HTTP/1 connection. There is no proxy, redirect
+    // follower, pool, or hidden connection driver whose completion we cannot join.
+    let connection = async {
+        let socket = tokio::net::TcpStream::connect((
+            Ipv4Addr::LOCALHOST,
+            url.port().expect("fixed loopback port"),
+        ))
+        .await?;
+        hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(socket))
+            .await
+            .map_err(io::Error::other)
+    };
+    let (mut upstream_sender, connection) = tokio::select! {
+        biased;
+        _ = stopped(&mut stop) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
+        result = tokio::time::timeout(Duration::from_secs(3), connection) => match result {
+            Ok(Ok(connection)) => connection,
+            _ => return refusal(StatusCode::BAD_GATEWAY, "应用服务暂时无法连接。"),
+        }
+    };
+    let (cancel, mut cancelled) = watch::channel(false);
+    let cancellation = ConnectionCancel(cancel);
+    let mut stopping = state.stopping.clone();
+    let driver_owner = state.owner.clone();
+    let driver = state.owner.work(async move {
+        // Dropping Connection here closes the owned TcpStream. The registry
+        // observes this actual driver JoinHandle, not merely a stop notification.
+        let result = {
+            tokio::pin!(connection);
+            tokio::select! {
+                biased;
+                _ = stopped(&mut stopping) => Ok(()),
+                _ = stopped(&mut cancelled) => Ok(()),
+                result = &mut connection => result.map_err(|_| io::Error::other("应用连接已结束。")),
+            }
+        };
+        #[cfg(test)]
+        {
+            let pause = driver_owner.hooks.driver_closed.lock().unwrap().take();
+            if let Some((entered, release)) = pause {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
+            if driver_owner
+                .hooks
+                .panic_driver
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                panic!("controlled artificial proxy connection driver panic");
+            }
+        }
+        drop(driver_owner);
+        // A transport failure with the socket released is a business response
+        // error, not unknown resource ownership. The registry still joins this
+        // actual task and records any panic/JoinError as sticky shutdown failure.
+        result
+    });
     let response = tokio::select! {
         biased;
-        _ = stop.changed() => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
-        result = tokio::time::timeout(Duration::from_secs(120), upstream.send()) => match result {
+        _ = stopped(&mut stop) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
+        result = tokio::time::timeout(Duration::from_secs(120), upstream_sender.send_request(upstream)) => match result {
             Ok(Ok(response)) => response,
             Ok(Err(_)) => return refusal(StatusCode::BAD_GATEWAY, "应用服务暂时无法连接。"),
             Err(_) => return refusal(StatusCode::GATEWAY_TIMEOUT, "应用响应超时，请重试。"),
         }
     };
+    drop(upstream_sender);
     if response.status().is_redirection() || response.status() == StatusCode::SWITCHING_PROTOCOLS {
         return refusal(
             StatusCode::BAD_GATEWAY,
@@ -402,29 +577,41 @@ async fn forward(state: Arc<ProxyState>, request: Request, parts: Vec<String>) -
             headers.insert(name, value.clone());
         }
     }
-    let stream = stream::unfold(
-        (Box::pin(response.bytes_stream()), state.stopping.clone()),
-        |(mut upstream, mut stopping)| async move {
-            if *stopping.borrow() {
-                return None;
-            }
-            tokio::select! {
-                biased;
-                _ = stopping.changed() => None,
-                next = upstream.next() => next.map(|result| (
-                    result.map_err(|_| io::Error::other("应用连接已结束。")),
-                    (upstream, stopping),
-                )),
-            }
-        },
-    );
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let mut stopping = state.stopping.clone();
+    let mut upstream = Box::pin(response.into_body().into_data_stream());
+    let work=lease.hold(Box::pin(async move {
+        loop {
+            if *stopping.borrow() {break;}
+            let next=tokio::select! {biased; _=stopped(&mut stopping)=>break,_=sender.closed()=>break,next=upstream.next()=>next};
+            let Some(next)=next else {break;};
+            let item=next.map_err(|_|io::Error::other("应用连接已结束。"));
+            tokio::select! {biased; _=stopped(&mut stopping)=>break, sent=sender.send(item)=>if sent.is_err(){break;}}
+        }
+        drop(upstream);
+        drop(cancellation);
+        if let Ok(Err(error)) = driver.await {
+            let _ = sender.try_send(Err(error));
+        }
+    }));
+    // The accepted request transfers its original lease to the producer. No
+    // second admission is attempted after stop may have sealed the endpoint.
+    drop(state.owner.work(work));
+    let stream = stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
     let mut response = Body::from_stream(stream).into_response();
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     protect(response)
 }
 
-async fn static_file(state: Arc<ProxyState>, head: bool, parts: Vec<String>) -> Response {
+async fn static_file(
+    state: Arc<ProxyState>,
+    head: bool,
+    parts: Vec<String>,
+    lease: IoLease,
+) -> Response {
     let parts = if parts.is_empty() {
         state.entry.clone()
     } else {
@@ -432,40 +619,65 @@ async fn static_file(state: Arc<ProxyState>, head: bool, parts: Vec<String>) -> 
     };
     let root = state.root.clone();
     let checked = parts.clone();
-    let file = match tokio::task::spawn_blocking(move || open_file(&root, &checked)).await {
-        Ok(Ok(file)) => file,
+    let opened = state
+        .owner
+        .blocking(move || {
+            let file = open_file(&root, &checked)?;
+            let size = file.metadata()?.len();
+            Ok::<_, io::Error>((file, size))
+        })
+        .await;
+    let (file, size) = match opened {
+        Ok(Ok(Ok(opened))) => opened,
         _ => return refusal(StatusCode::NOT_FOUND, "没有找到这个网页文件。"),
     };
-    let size = match file.metadata() {
-        Ok(info) => info.len(),
-        Err(_) => return refusal(StatusCode::NOT_FOUND, "无法读取这个网页文件。"),
-    };
     let body = if head {
+        drop(file);
+        drop(lease);
         Body::empty()
     } else {
-        let file = tokio::fs::File::from_std(file);
-        let chunks = stream::unfold(
-            (file, state.stopping.clone()),
-            |(mut file, mut stopping)| async move {
-                if *stopping.borrow() {
-                    return None;
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        let producer_owner = state.owner.clone();
+        let work = lease.hold(move || {
+            let mut file = file;
+            loop {
+                if producer_owner.lifetime.check_open().is_err() || sender.is_closed() {
+                    return;
                 }
-                let mut bytes = vec![0; 16 * 1024];
-                tokio::select! {
-                    biased;
-                    _ = stopping.changed() => None,
-                    result = file.read(&mut bytes) => match result {
-                        Ok(0) => None,
-                        Ok(count) => {
-                            bytes.truncate(count);
-                            Some((Ok::<_, io::Error>(Bytes::from(bytes)), (file, stopping)))
+                let mut buffer = vec![0; 16 * 1024];
+                let read = read_proxy_file(&producer_owner, &mut file, &mut buffer);
+                let mut item = match read {
+                    Ok(0) => return,
+                    Ok(count) => {
+                        buffer.truncate(count);
+                        Ok(Bytes::from(buffer))
+                    }
+                    Err(_) => Err(io::Error::other("网页读取已结束。")),
+                };
+                let failed = item.is_err();
+                loop {
+                    match sender.try_send(item) {
+                        Ok(()) => break,
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(value)) => {
+                            if producer_owner.lifetime.check_open().is_err() {
+                                return;
+                            }
+                            item = value;
+                            std::thread::sleep(Duration::from_millis(5));
                         }
-                        Err(_) => Some((Err(io::Error::other("网页读取已结束。")), (file, stopping))),
                     }
                 }
-            },
-        );
-        Body::from_stream(chunks)
+                if failed {
+                    return;
+                }
+            }
+        });
+        drop(state.owner.blocking(move || work.run_blocking()));
+        let stream = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|item| (item, receiver))
+        });
+        Body::from_stream(stream)
     };
     let mut response = body.into_response();
     response.headers_mut().insert(
@@ -482,6 +694,25 @@ async fn static_file(state: Arc<ProxyState>, head: bool, parts: Vec<String>) -> 
         HeaderValue::from_str(&size.to_string()).expect("file size is a valid header"),
     );
     protect(response)
+}
+fn read_proxy_file(owner: &ProxyShutdown, file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
+    #[cfg(test)]
+    {
+        let pause = owner.hooks.read.lock().unwrap().take();
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
+        if owner
+            .hooks
+            .panic_read
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            panic!("controlled artificial proxy file worker panic");
+        }
+    }
+    let _ = owner;
+    std::io::Read::read(file, buffer)
 }
 
 /// Decode once, reject both traversal and double-encoded separators. Encoded
@@ -603,12 +834,12 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    struct Fixture {
+    pub(super) struct Fixture {
         _directory: TempDir,
-        root: PathBuf,
-        proxy: NodeAppProxy,
-        client: reqwest::Client,
-        cookie: String,
+        pub(super) root: PathBuf,
+        pub(super) proxy: NodeAppProxy,
+        pub(super) client: reqwest::Client,
+        pub(super) cookie: String,
         calls: Arc<AtomicUsize>,
         received: Arc<Mutex<HeaderMap>>,
         backend_task: JoinHandle<()>,
@@ -618,7 +849,7 @@ mod tests {
             self.backend_task.abort();
         }
     }
-    async fn fixture() -> Fixture {
+    pub(super) async fn fixture() -> Fixture {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap().join("web");
         std::fs::create_dir(&root).unwrap();
@@ -725,7 +956,7 @@ mod tests {
         fn url(&self, path: &str) -> String {
             format!("{}{path}", self.proxy.origin)
         }
-        fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        pub(super) fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
             self.client
                 .request(method, self.url(path))
                 .header(header::COOKIE, &self.cookie)
@@ -781,7 +1012,7 @@ mod tests {
             f.client.get(f.url("/")).send().await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -811,12 +1042,12 @@ mod tests {
                 .status(),
             StatusCode::UNAUTHORIZED
         );
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn strict_host_origin_and_fetch_site_protect_backend() {
-        let mut f = fixture().await;
+        let f = fixture().await;
         let response = f
             .request(Method::GET, "/api/echo")
             .header(header::HOST, "localhost:1")
@@ -846,12 +1077,12 @@ mod tests {
             StatusCode::FORBIDDEN
         );
         assert_eq!(f.calls.load(Ordering::SeqCst), 0);
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn forward_injects_only_backend_bearer_and_preserves_allowed_headers() {
-        let mut f = fixture().await;
+        let f = fixture().await;
         let response = f
             .request(Method::POST, "/api/echo?q=music%20fixture")
             .header(header::ORIGIN, &f.proxy.origin)
@@ -877,12 +1108,12 @@ mod tests {
         assert!(!headers.contains_key(header::COOKIE));
         assert!(!headers.contains_key(header::ORIGIN));
         assert!(!headers.contains_key("x-platform-admin"));
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn request_limit_unsupported_methods_and_non_api_routes_do_not_reach_backend() {
-        let mut f = fixture().await;
+        let f = fixture().await;
         assert_eq!(
             f.request(Method::POST, "/api/echo")
                 .header(header::ORIGIN, &f.proxy.origin)
@@ -919,12 +1150,12 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(f.calls.load(Ordering::SeqCst), 0);
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn backend_redirects_and_cookies_are_never_forwarded_to_page() {
-        let mut f = fixture().await;
+        let f = fixture().await;
         let response = f
             .request(Method::GET, "/api/redirect")
             .send()
@@ -943,13 +1174,13 @@ mod tests {
         assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 0-2/6");
         assert!(!response.headers().contains_key(header::SET_COOKIE));
         assert_eq!(response.text().await.unwrap(), "abc");
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn static_pages_have_local_script_policy_and_do_not_serve_links() {
         use std::os::unix::fs::symlink;
-        let mut f = fixture().await;
+        let f = fixture().await;
         let response = f.request(Method::GET, "/").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
@@ -975,13 +1206,13 @@ mod tests {
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
             assert!(!response.text().await.unwrap().contains("private-fixture"));
         }
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn each_application_has_a_distinct_cookie_and_rejects_other_app_sessions() {
-        let mut first = fixture().await;
-        let mut second = fixture().await;
+        let first = fixture().await;
+        let second = fixture().await;
         assert_ne!(
             first.cookie.split('=').next(),
             second.cookie.split('=').next()
@@ -1008,24 +1239,24 @@ mod tests {
                 .status(),
             StatusCode::OK
         );
-        first.proxy.stop().await;
-        second.proxy.stop().await;
+        first.proxy.stop().await.unwrap();
+        second.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn stop_cancels_sse_stream_and_closes_listener() {
-        let mut f = fixture().await;
+        let f = fixture().await;
         let mut response = f.request(Method::GET, "/api/events").send().await.unwrap();
         let first = response.chunk().await.unwrap().unwrap();
         assert_eq!(first.as_ref(), b"data: fixture\n\n");
         let address = f.proxy.origin.trim_start_matches("http://").to_string();
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
         let next = tokio::time::timeout(Duration::from_secs(1), response.chunk())
             .await
             .expect("stop must cancel open SSE");
         assert!(matches!(next, Ok(None) | Err(_)));
         assert!(tokio::net::TcpStream::connect(&address).await.is_err());
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -1038,13 +1269,13 @@ mod tests {
         let body = response.text().await.unwrap();
         assert!(!body.contains("backend-private-fixture"));
         assert!(!body.contains("127.0.0.1"));
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn anchored_web_root_does_not_follow_replacement_parent_directory() {
         use std::os::unix::fs::symlink;
-        let mut f = fixture().await;
+        let f = fixture().await;
         let saved = f.root.with_file_name("original-web");
         std::fs::rename(&f.root, &saved).unwrap();
         let foreign = f.root.with_file_name("foreign-web");
@@ -1054,6 +1285,10 @@ mod tests {
         let response = f.request(Method::GET, "/").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!response.text().await.unwrap().contains("foreign-private"));
-        f.proxy.stop().await;
+        f.proxy.stop().await.unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "node_app_proxy_shutdown_tests.rs"]
+mod shutdown_tests;
