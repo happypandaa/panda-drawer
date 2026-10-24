@@ -540,7 +540,7 @@ test('Web details explicitly mount version management and preserve its draft acr
   globalThis.__UI_TEST_INVOKE__ = async command => {
     calls.push(command);
     if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
+    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status' || command === 'project_git_data_restore_status') return clearRecovery;
     if (command === 'project_git_status') return overviewGitStatus();
     if (command === 'storage_info') return emptyProjectStorage;
     if (command === 'storage_files') return emptyStorageFiles;
@@ -569,7 +569,7 @@ test('Web version submission keeps the detail and tabs protected until the accep
   await setup(); const accepted = deferred(); const states = []; let guard;
   globalThis.__UI_TEST_INVOKE__ = async command => {
     if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
+    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status' || command === 'project_git_data_restore_status') return clearRecovery;
     if (command === 'project_git_status') return overviewGitStatus({ canInitialize: true, canSave: false, canListVersions: false });
     if (command === 'project_git_initialize') return accepted.promise;
     throw new Error(`Unexpected version integration request: ${command}`);
@@ -583,6 +583,52 @@ test('Web version submission keeps the detail and tabs protected until the accep
   await act(async () => accepted.reject(new Error('Disposable initialization refused; existing files retained')));
   assert.equal(states.at(-1).pending, false);
   assert.match(document.querySelector('.project-git-panel').textContent, /Disposable initialization refused/);
+});
+
+test('A project requiring data recovery opens its recovery entry even when ordinary Git and metadata are unavailable', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    calls.push(command);
+    if (command === 'project_git_data_restore_status') return { state: 'pending', businessBlocked: true, operations: [], issues: [{ message: '保留的恢复现场需要核对' }] };
+    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
+    if (command === 'project_git_status') throw new Error('当前活库缺失，普通 Git 检查不可用');
+    if (command === 'project_metadata') throw new Error('元信息暂不可读取');
+    throw new Error(`Recovery details must not mutate: ${command}`);
+  };
+  await render(h(ProjectOverview, overviewProps({ initialTab: 'manage', project: { ...project, state: 'error', projectRoot: '/disposable/dom-fixture', buildInfo: { sourceState: 'unknown', dataRecoveryRequired: true, dataRecoveryState: 'pending' } } })));
+  const section = document.querySelector('[aria-label="业务数据取回恢复"]');
+  assert.ok(section);
+  assert.match(section.textContent, /保留的恢复现场需要核对/);
+  assert.equal(hubTab('概览').getAttribute('aria-selected'), 'true');
+  assert.match(document.querySelector('.project-git-panel').textContent, /当前活库缺失/);
+  assert.ok(calls.indexOf('project_git_data_restore_status') < calls.indexOf('project_git_status'));
+  const details = section.closest('details');
+  await act(async () => { details.open = false; details.dispatchEvent(new window.Event('toggle')); });
+  assert.equal(details.open, true);
+  assert.equal(calls.some(command => /_(apply|recover|save|initialize)$/.test(command)), false);
+});
+
+test('An immediately completed data recovery refreshes the parent project information', async () => {
+  await setup(); let restored = false; let changes = 0;
+  const operation = { restoreTaskId: 'task_recovery_original', targetCommit: 'a'.repeat(40), planDigest: 'b'.repeat(64), journalDigest: 'c'.repeat(64), phase: 'exchanging', operationOutcome: 'not_committed', dataState: 'before', documentEpoch: null, canContinue: true, canUndo: false, completionPublished: false, originalRetained: true, retainedPath: '/disposable/recovery-evidence', slots: [], issues: [] };
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'project_metadata') return metadata;
+    if (command === 'project_git_data_restore_status') return { state: restored ? 'clear' : 'pending', businessBlocked: !restored, operations: restored ? [] : [operation], issues: [] };
+    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
+    if (command === 'project_git_status') return overviewGitStatus();
+    if (command === 'project_git_data_restore_recover') {
+      restored = true;
+      return { taskId: 'task_recovery_complete', projectId: project.id, type: 'gitDataRestoreContinue', status: 'succeeded', final: true, phase: 'complete', result: { operation: 'data-restore-continue', operationOutcome: 'committed', dataState: 'applied', pending: false, businessBlocked: false }, error: null };
+    }
+    throw new Error(`Unexpected recovery request: ${command}`);
+  };
+  await render(h(ProjectOverview, overviewProps({ project: { ...project, buildInfo: { sourceState: 'unknown', dataRecoveryRequired: true } }, onChanged: async () => { changes++; } })));
+  assert.equal(changes, 0);
+  await click(document.querySelector('[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
+  await click(buttonNamed('继续并核对数据取回'));
+  assert.equal(changes, 1);
+  assert.equal(document.querySelector('[aria-label="业务数据取回恢复"]'), null);
+  assert.match(document.querySelector('.build-task').textContent, /数据库和附件已取回/);
 });
 
 test('Project overview and Modal preserve metadata and storage choices across pages and require explicit discard to close', async () => {

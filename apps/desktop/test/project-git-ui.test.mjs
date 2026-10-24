@@ -72,6 +72,7 @@ async function setup({ overrides = {}, props = {}, strict = false } = {}) {
     if (command === 'project_git_status') return status();
     if (command === 'project_git_source_restore_status') return recoveryStatus();
     if (command === 'project_git_data_save_status') return { state: 'clear', operations: [], issues: [] };
+    if (command === 'project_git_data_restore_status') return { state: 'clear', businessBlocked: false, operations: [], issues: [] };
     throw new Error(`Unexpected disposable command: ${command}`);
   };
   let currentProps = { projectId: 'prj_a', instanceId: 'instance_a', onTask: value => tasks.push(value), onDraftStateChange: value => drafts.push(value), ...props };
@@ -99,7 +100,7 @@ const commandCalls = (calls, command) => calls.filter(([name]) => name === comma
 
 test('Opening the panel only previews local status and shows scope, exclusions and the confirmed HEAD', async () => {
   const { calls, drafts } = await setup();
-  assert.deepEqual(calls, [['project_git_source_restore_status', { id: 'prj_a' }], ['project_git_data_save_status', { id: 'prj_a' }], ['project_git_status', { id: 'prj_a' }]]);
+  assert.deepEqual(calls, [['project_git_data_restore_status', { id: 'prj_a' }], ['project_git_source_restore_status', { id: 'prj_a' }], ['project_git_data_save_status', { id: 'prj_a' }], ['project_git_status', { id: 'prj_a' }]]);
   assert.ok(document.body.textContent.includes(oid));
   assert.match(document.body.textContent, /分支：main/);
   assert.doesNotMatch(document.body.textContent, /refs\/heads\/main/);
@@ -393,9 +394,9 @@ test('An unknown candidate commit is labeled unconfirmed and cannot be presented
 test('StrictMode remounting rejects a stale initial read and disabled props block writes without dropping drafts', async () => {
   const old = deferred(); let reads = 0;
   const { render, calls, drafts } = await setup({ strict: true, overrides: {
-    project_git_source_restore_status: () => ++reads === 1 ? old.promise : recoveryStatus(),
+    project_git_data_restore_status: () => ++reads === 1 ? old.promise : { state: 'clear', businessBlocked: false, operations: [], issues: [] },
   } });
-  await act(async () => old.resolve(recoveryStatus({ issues: [{ message: 'stale-strict-read' }] })));
+  await act(async () => old.resolve({ state: 'clear', businessBlocked: false, operations: [], issues: [{ message: 'stale-strict-read' }] }));
   assert.doesNotMatch(document.body.textContent, /stale-strict-read/);
   await fill(); await render({ disabled: true }); await submit();
   assert.equal(save().disabled, true);
@@ -501,7 +502,7 @@ test('Branch creation sends the checked HEAD, full branch and snapshot once, the
   assert.match(document.body.textContent, /业务数据和运行产物保持不变/);
   assert.equal(commandCalls(calls, 'project_git_versions').length, 2);
   const commands = calls.map(([command]) => command);
-  assert.deepEqual(commands, ['project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status', 'project_git_versions']);
+  assert.deepEqual(commands, ['project_git_data_restore_status', 'project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status', 'project_git_versions', 'project_git_branch_create', 'project_git_data_restore_status', 'project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status', 'project_git_versions']);
 });
 
 test('A rejected branch keeps its name and author draft, requires rechecking and never retries itself', async () => {
@@ -594,7 +595,7 @@ test('Recovery status remains readable when ordinary Git inspection fails and ne
   assert.match(document.body.textContent, /内容尚不能确认/);
   assert.match(document.body.textContent, /当前程序和业务数据仍可使用/);
   assert.equal(byText('确认继续取回'), undefined); assert.equal(byText('确认撤回这次取回'), undefined);
-  assert.deepEqual(calls.map(([command]) => command), ['project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status']);
+  assert.deepEqual(calls.map(([command]) => command), ['project_git_data_restore_status', 'project_git_source_restore_status', 'project_git_data_save_status', 'project_git_status']);
 });
 
 test('Selecting a listed source version does not preview or apply until explicit review and confirmation', async () => {
@@ -940,4 +941,124 @@ test('A mismatched data target or a pending recovery cannot become an actionable
   assert.equal(byText('预览数据版本').disabled, true);
   await click(byText('预览数据版本'));
   assert.equal(commandCalls(calls, 'project_git_data_restore_preview').length, 1);
+});
+
+const dataConfirmation = text => [...document.querySelectorAll('section[aria-label="预览业务数据版本"] label')].find(label => label.textContent === text)?.querySelector('input');
+async function confirmDataRestore() {
+  await click(dataConfirmation('已停止外部编辑器和其他数据写入'));
+  await click(dataConfirmation('已核对数据库和附件变化，确认替换当前业务数据'));
+}
+
+test('Data restore requires both confirmations and submits the exact preview bindings only once', async () => {
+  const accepted = deferred();
+  const preview = dataPreview({ canApply: true, applyImplemented: true });
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_data_restore_preview: () => preview,
+    project_git_data_restore_apply: () => accepted.promise,
+  } });
+  await change(targetField(), nextOid); await click(byText('预览数据版本'));
+  assert.equal(byText('确认取回业务数据').disabled, true);
+  assert.equal(commandCalls(calls, 'project_git_data_restore_apply').length, 0);
+  await click(dataConfirmation('已停止外部编辑器和其他数据写入'));
+  assert.equal(byText('确认取回业务数据').disabled, true);
+  await click(dataConfirmation('已核对数据库和附件变化，确认替换当前业务数据'));
+  await click(byText('确认取回业务数据'));
+  assert.equal(drafts.at(-1).pending, true);
+  await submit();
+  assert.deepEqual(commandCalls(calls, 'project_git_data_restore_apply'), [['project_git_data_restore_apply', { id: 'prj_a', input: {
+    targetCommit: nextOid, expectedHead: oid, expectedBranch: 'refs/heads/main', expectedSnapshot: digest,
+    expectedDocumentEpoch: preview.documentEpoch, expectedLiveDataDigest: preview.liveDataDigest,
+    expectedTargetSnapshotDigest: preview.targetSnapshotDigest, expectedPlanDigest: preview.planDigest,
+  } }]]);
+  await act(async () => accepted.resolve(task({ type: 'gitDataRestoreApply' })));
+  assert.equal(drafts.at(-1).pending, true);
+  assert.equal(commandCalls(calls, 'project_git_save').length, 0);
+});
+
+test('A changed data selection revokes confirmations and a mismatched source binding cannot apply', async () => {
+  let mismatched = false;
+  const { calls } = await setup({ overrides: {
+    project_git_data_restore_preview: ({ input }) => dataPreview({ targetCommit: input.targetCommit, canApply: true, applyImplemented: true, snapshotDigest: mismatched ? '9'.repeat(64) : digest }),
+  } });
+  await change(targetField(), nextOid); await click(byText('预览数据版本')); await confirmDataRestore();
+  assert.equal(byText('确认取回业务数据').disabled, false);
+  await change(targetField(), oid); await click(byText('预览数据版本'));
+  assert.equal(dataConfirmation('已停止外部编辑器和其他数据写入').checked, false);
+  assert.equal(dataConfirmation('已核对数据库和附件变化，确认替换当前业务数据').checked, false);
+  assert.equal(byText('确认取回业务数据').disabled, true);
+  mismatched = true; await click(byText('预览数据版本')); await confirmDataRestore();
+  assert.equal(byText('确认取回业务数据').disabled, true);
+  assert.match(document.body.textContent, /当前源码状态与数据预览不符/);
+  await click(byText('确认取回业务数据'));
+  assert.equal(commandCalls(calls, 'project_git_data_restore_apply').length, 0);
+});
+
+function dataRestoreOperation(overrides = {}) {
+  return { restoreTaskId: 'task_original_restore', targetCommit: nextOid, planDigest: digest, journalDigest: 'd'.repeat(64),
+    phase: 'data-restore-apply', operationOutcome: 'not_committed', dataState: 'unknown', documentEpoch: null,
+    canContinue: true, canUndo: false, completionPublished: false, originalRetained: true,
+    retainedPath: '/disposable/data-restore/original', slots: [{ kind: 'database', path: 'data/main.sqlite', state: 'displaced' }], issues: [], ...overrides };
+}
+
+test('Data recovery remains independent of a missing database and Git state and uses fresh operation guards', async () => {
+  const operation = dataRestoreOperation();
+  const { calls, drafts } = await setup({ overrides: {
+    project_git_data_restore_status: () => ({ state: 'pending', businessBlocked: true, operations: [operation], issues: [] }),
+    project_git_source_restore_status: () => { throw new Error('人工数据库暂缺，源码状态不可用'); },
+    project_git_data_save_status: () => { throw new Error('人工数据库暂缺，保存状态不可用'); },
+    project_git_status: () => { throw new Error('人工数据库暂缺，仓库状态不可用'); },
+    project_git_data_restore_recover: () => task({ type: 'gitDataRestoreContinue' }),
+  } });
+  assert.equal(calls[0][0], 'project_git_data_restore_status');
+  assert.match(document.body.textContent, /人工数据库暂缺/);
+  assert.equal(byText('继续并核对数据取回').disabled, true);
+  const checkbox = document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]');
+  await click(checkbox);
+  assert.equal(byText('撤回本次数据取回').disabled, true);
+  await click(byText('继续并核对数据取回'));
+  assert.equal(drafts.at(-1).pending, true);
+  assert.deepEqual(commandCalls(calls, 'project_git_data_restore_recover'), [['project_git_data_restore_recover', { id: 'prj_a', input: {
+    restoreTaskId: operation.restoreTaskId, expectedPlanDigest: operation.planDigest, expectedJournalDigest: operation.journalDigest, action: 'continue',
+  } }]]);
+  assert.equal(commandCalls(calls, 'project_git_data_restore_apply').length, 0);
+});
+
+test('An unavailable recovery refresh revokes an earlier data recovery confirmation', async () => {
+  const operation = dataRestoreOperation(); let failed = false;
+  const { calls } = await setup({ overrides: {
+    project_git_data_restore_status: () => { if (failed) throw new Error('人工恢复读取失败'); return { state: 'pending', businessBlocked: true, operations: [operation], issues: [] }; },
+  } });
+  await click(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
+  assert.equal(byText('继续并核对数据取回').disabled, false);
+  failed = true; await click(refresh());
+  assert.equal(byText('继续并核对数据取回').disabled, true);
+  await click(byText('继续并核对数据取回'));
+  assert.equal(commandCalls(calls, 'project_git_data_restore_recover').length, 0);
+  assert.match(document.body.textContent, /人工恢复读取失败/);
+});
+
+for (const outcome of ['not_committed', 'committed', 'unknown']) {
+  test(`Failed data restore reports ${outcome} without claiming unchanged data or a saved source version`, async () => {
+    const result = { operation: 'data-restore-apply', operationOutcome: outcome, dataState: 'unknown', pending: true, businessBlocked: true, retainedPath: '/disposable/retained-data', restoreTaskId: 'task_original_restore', targetCommit: nextOid };
+    await setup({ props: { task: task({ type: 'gitDataRestoreApply', final: true, status: 'failed', error: { code: 'DATA_RESTORE_RECOVERY_REQUIRED', message: '人工恢复待核对', details: { operationOutcome: outcome, result } } }) } });
+    const section = document.querySelector('.build-task');
+    assert.match(section.textContent, /数据取回|数据切换/);
+    assert.match(section.textContent, /disposable\/retained-data/);
+    assert.doesNotMatch(section.textContent, /源码和数据保持原状|原内容保持不变|源码版本已保存|备份任务已完成/);
+    if (outcome === 'not_committed') assert.match(section.textContent, /部分数据可能已移动/);
+  });
+}
+
+test('A flat backend data recovery error retains its task identity and evidence path in the task result', async () => {
+  await setup({ props: { task: task({ type: 'gitDataRestoreApply', final: true, status: 'interrupted', error: {
+    code: 'PROJECT_DATA_RESTORE_INTERRUPTED', message: '人工中断后需核对', details: {
+      operationOutcome: 'not_committed', dataState: 'before', pending: true, businessBlocked: true,
+      liveDataChanged: true, originalRetained: true, restoreTaskId: 'task_flat_original', retainedPath: '/disposable/flat-retained-data',
+    },
+  } }) } });
+  const section = document.querySelector('.build-task');
+  assert.match(section.textContent, /部分数据可能已移动/);
+  assert.match(section.textContent, /数据取回任务：task_flat_original/);
+  assert.match(section.textContent, /保留的数据恢复现场：\/disposable\/flat-retained-data/);
+  assert.doesNotMatch(section.textContent, /源码和数据保持原状|原内容保持不变/);
 });

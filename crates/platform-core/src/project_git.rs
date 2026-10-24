@@ -51,8 +51,16 @@ pub(crate) use build_guard::BuildGitGuard;
 
 #[path = "project_git_data_preview.rs"]
 mod data_preview;
+#[path = "project_git_data_restore.rs"]
+pub(crate) mod data_restore;
 #[path = "project_git_data.rs"]
 mod data_versions;
+pub(crate) use data_restore::inspect_completion as inspect_data_restore_completion;
+pub(crate) use data_restore::metadata_usage as data_restore_metadata_usage;
+pub use data_restore::{
+    DataRestoreRecoveryOperation, DataRestoreSlotState, GitDataRestoreApplyInput,
+    GitDataRestoreRecoverInput, GitDataRestoreRecoveryStatus,
+};
 #[path = "project_git_restore.rs"]
 mod source_restore;
 #[path = "project_version_data.rs"]
@@ -215,7 +223,13 @@ pub struct ProjectGitManager {
     stopping: AtomicBool,
     #[cfg(test)]
     data_save_fault: std::sync::atomic::AtomicU8,
+    #[cfg(test)]
+    data_restore_fault: std::sync::atomic::AtomicU32,
+    #[cfg(test)]
+    data_restore_pause: Mutex<Option<DataRestoreTestPause>>,
 }
+#[cfg(test)]
+type DataRestoreTestPause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 impl ProjectGitManager {
     pub fn new(
         paths: RuntimePaths,
@@ -235,6 +249,10 @@ impl ProjectGitManager {
             stopping: AtomicBool::new(false),
             #[cfg(test)]
             data_save_fault: std::sync::atomic::AtomicU8::new(0),
+            #[cfg(test)]
+            data_restore_fault: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(test)]
+            data_restore_pause: Mutex::new(None),
         }))
     }
     pub async fn status(
@@ -531,6 +549,9 @@ impl ProjectGitManager {
                 | "gitSave"
                 | "gitDataSave"
                 | "gitDataSaveFinalize"
+                | "gitDataRestoreApply"
+                | "gitDataRestoreContinue"
+                | "gitDataRestoreUndo"
                 | "gitBranchCreate"
                 | "gitSourceRestoreApply"
                 | "gitSourceRestoreContinue"

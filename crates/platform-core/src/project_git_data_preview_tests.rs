@@ -290,7 +290,8 @@ async fn official_git_data_preview_streams_large_database_and_attachment_without
         path: "current-only.txt".into(),
         kind: "delete".into()
     }));
-    assert!(!preview.can_apply && !preview.apply_implemented);
+    assert_eq!(preview.can_apply, cfg!(target_os = "macos"));
+    assert_eq!(preview.apply_implemented, cfg!(target_os = "macos"));
     assert!(preview.issues.is_empty());
     assert_ne!(preview.live_data_digest, preview.target_snapshot_digest);
     assert_eq!(fs::read(&attachment).unwrap(), b"fresh unsaved attachment");

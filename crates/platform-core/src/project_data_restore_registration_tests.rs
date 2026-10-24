@@ -88,6 +88,8 @@ impl Fixture {
             plan_digest: "a".repeat(64),
             operation_identity: FileIdentity::capture(&staging).unwrap(),
             registration_plan: plan,
+            transaction_plan: None,
+            journal_identity: None,
         };
         let root = guard::publish_prepared(paths.workspace_root(), &staging, &header).unwrap();
         drop(gate);

@@ -5,18 +5,18 @@ use super::*;
 use crate::files;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Blob {
+pub(crate) struct Blob {
     pub oid: String,
     pub bytes: u64,
 }
 
 #[derive(Debug)]
-pub(super) struct DataTree {
+pub(crate) struct DataTree {
     pub files: BTreeMap<String, Blob>,
     pub directories: BTreeSet<String>,
 }
 
-pub(super) async fn target_tree(
+pub(crate) async fn target_tree(
     project: &ProjectHandle,
     target: &str,
     tools: &GitToolchain,

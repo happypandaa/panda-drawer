@@ -1258,6 +1258,62 @@ async fn project_git_data_restore_preview(
         .await?
 }
 #[tauri::command]
+async fn project_git_data_restore_apply(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitDataRestoreApplyInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_data_restore_apply(&id, input)
+                .await
+        })
+        .await?
+}
+#[tauri::command]
+async fn project_git_data_restore_status(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_data_restore_status(&id).await
+        })
+        .await?
+}
+#[tauri::command]
+async fn project_git_data_restore_recover(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    input: platform_core::project_git::GitDataRestoreRecoverInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_data_restore_recover(&id, input)
+                .await
+        })
+        .await?
+}
+#[tauri::command]
 async fn project_git_data_save(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -2361,7 +2417,7 @@ fn main() {
             bootstrap_info,
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
-            project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_data_restore_preview,project_git_data_save,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
+            project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,

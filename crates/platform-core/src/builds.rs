@@ -417,6 +417,27 @@ impl BuildManager {
             .reserve_source_restore_recovery_task(project_id, &task_id, permit)?;
         self.record_operation(project_id, kind, task_id, lease)
     }
+    pub(crate) fn create_data_restore_recovery_operation(
+        &self,
+        project_id: &str,
+        kind: &str,
+        permit: &crate::data_restore_guard::DataRestoreRecoveryPermit,
+    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        if !matches!(kind, "gitDataRestoreContinue" | "gitDataRestoreUndo") {
+            return Err(ApiError::new(
+                "INVALID_TASK_TYPE",
+                "Expected data restore recovery",
+            ));
+        }
+        let task_id = format!("task_{}", Uuid::new_v4().simple());
+        let lease = self
+            .store
+            .reserve_data_restore_recovery_task(project_id, &task_id, permit)?;
+        self.record_operation(project_id, kind, task_id, lease)
+    }
     pub(crate) fn create_data_save_finalization_operation(
         &self,
         project_id: &str,

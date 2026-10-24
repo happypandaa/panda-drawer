@@ -30,8 +30,10 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
   const [storageDraft, setStorageDraft] = useState({ dirty: false, pending: false });
   const [recoveryPending, setRecoveryPending] = useState(false);
   const [lifecycleDraft, setLifecycleDraft] = useState({ dirty: false, pending: false });
-  const [versionsOpen, setVersionsOpen] = useState(false);
+  const dataRecoveryRequired = Boolean(project.buildInfo?.dataRecoveryRequired);
+  const [versionsOpen, setVersionsOpen] = useState(dataRecoveryRequired);
   const [versionDraft, setVersionDraft] = useState({ dirty: false, pending: false });
+  const completedVersionTasks = useRef(new Set<string>());
   const developmentCallback = useRef(onDevelopmentStateChange); developmentCallback.current = onDevelopmentStateChange;
   const [dismissConfirm, setDismissConfirm] = useState(false);
   const [dismissMessage, setDismissMessage] = useState('');
@@ -41,7 +43,7 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
   const discardApproved = useRef(false);
   const dismissNotice = useRef<HTMLDivElement>(null);
   const tabPrefix = useId();
-  const editingBlocked = disabled || versionDraft.pending || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
+  const editingBlocked = disabled || dataRecoveryRequired || versionDraft.pending || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
   const maintenanceInput = status?.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {};
   const dirty = Boolean(metadata && (draft.name !== metadata.name || draft.description !== metadata.description));
   const operationPending = busy || storageDraft.pending || recoveryPending || lifecycleDraft.pending || versionDraft.pending;
@@ -52,6 +54,9 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
   useEffect(() => {
     setTab(initialTab); setVisited((previous) => previous.includes(initialTab) ? previous : [...previous, initialTab]);
   }, [initialTab]);
+  useEffect(() => {
+    if (dataRecoveryRequired) { setTab('overview'); setVisited(previous => previous.includes('overview') ? previous : [...previous, 'overview']); setVersionsOpen(true); }
+  }, [dataRecoveryRequired]);
   useEffect(() => {
     onDismissGuardChange?.(() => {
       if (pending.current || guardState.current.pending) { setDismissMessage('操作、恢复核对或文件选择仍在进行，请等待完成后再关闭。'); return false; }
@@ -143,8 +148,9 @@ export function ProjectOverview({ project, instanceId, initialTab, status, task,
         <div className="detail-data-row"><HardDrive size={24} /><span><strong>数据保存在本机</strong><small>业务记录和用户文件独立保存，构建更新不会替换当前业务数据。</small></span></div>
       </section>
       <section className="detail-location-section"><h3>应用位置</h3><div className="detail-location-row"><FolderOpen size={22} /><span><strong>本机项目目录</strong><code>{project.projectRoot}</code></span><button className="icon-button" aria-label="复制项目目录" onClick={() => void copy(project.projectRoot)}><Copy size={20} /></button></div></section>
-      <details className="detail-technical-information" open={versionsOpen || versionDraft.dirty || versionDraft.pending} onToggle={event => { if ((versionDraft.dirty || versionDraft.pending) && !event.currentTarget.open) event.currentTarget.open = true; else setVersionsOpen(event.currentTarget.open); }}><summary>源码与数据版本</summary>
-        {versionsOpen && <ProjectGitPanel projectId={project.id} instanceId={instanceId} task={task} disabled={disabled || busy || storageDraft.pending || recoveryPending || lifecycleDraft.pending} onTask={onTask} onDraftStateChange={setVersionDraft} />}
+      {dataRecoveryRequired && <p className="maintenance-warning" role="status">数据取回尚未处理完成。请在下方核对恢复状态，明确继续或撤回后再使用应用。</p>}
+      <details className="detail-technical-information" open={versionsOpen || dataRecoveryRequired || versionDraft.dirty || versionDraft.pending} onToggle={event => { if ((dataRecoveryRequired || versionDraft.dirty || versionDraft.pending) && !event.currentTarget.open) event.currentTarget.open = true; else setVersionsOpen(event.currentTarget.open); }}><summary>源码与数据版本</summary>
+        {versionsOpen && <ProjectGitPanel projectId={project.id} instanceId={instanceId} task={task} disabled={disabled || busy || storageDraft.pending || recoveryPending || lifecycleDraft.pending} onTask={value => { onTask(value); if (value.final && !completedVersionTasks.current.has(value.taskId)) { completedVersionTasks.current.add(value.taskId); void onChanged(); } }} onDraftStateChange={setVersionDraft} />}
       </details>
       <details className="detail-requirements"><summary>联网与设备要求<span>{!devices.length && !networks.some(([, items]) => items.length) ? '未声明额外需求' : '查看用途声明'}<ChevronRight size={16} /></span></summary><p>这些是应用声明的用途；使用摄像头或麦克风时仍需系统授权。</p>{networks.map(([kind, origins]) => <div key={kind}><h4>{({ connect: '网络连接', images: '外部图片', media: '外部音视频' } as Record<string, string>)[kind] ?? kind}</h4>{origins.map((item, index) => <p key={`${item.origin}:${index}`}><code>{item.origin}</code> · {item.purpose || '未说明用途'}{item.dataSent ? ` · 发送数据：${item.dataSent}` : ''}</p>)}</div>)}{devices.map(([device, value]) => <p key={device}>{device === 'camera' ? '摄像头' : device === 'microphone' ? '麦克风' : device} · {value.purpose || '未说明用途'}</p>)}{!devices.length && !networks.some(([, items]) => items.length) && <p>未声明外部连接或设备用途。</p>}</details>
       <details className="detail-technical-information"><summary>详细运行信息</summary><code className="overview-project-id">{project.id}</code><ObjectLayoutPanel layout={project.objectLayout} />{technicalDetails}</details>

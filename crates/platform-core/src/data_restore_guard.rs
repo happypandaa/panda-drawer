@@ -24,13 +24,13 @@ const MAX_PROJECT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_WORKSPACE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_WORKSPACE_ENTRIES: usize = 4096;
 const LONGEST_PHASE: usize = "undo-committing".len();
+const TRANSACTION_RESERVED: u64 = 2 * 1024 * 1024 + 128 * 1024;
 // No capacity is persisted or retained after publication. Serializing the scan
 // and directory publication closes concurrent admissions from different projects.
 static PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
 
 /// Publish a complete prepared directory before any live-data movement. No
 /// arbitrary directory or pre-existing journal is adopted or recursively removed.
-#[allow(dead_code)] // Preparatory primitive; the live apply workflow is not exposed.
 pub(crate) fn publish_prepared<T: Serialize>(
     workspace: &Path,
     staging: &Path,
@@ -61,8 +61,32 @@ pub(crate) fn publish_prepared<T: Serialize>(
     {
         return Err(changed());
     }
-    let maximum = bytes.len() as u64 + (LONGEST_PHASE - header.phase.len()) as u64;
-    let _permit = reserve_publication(workspace, &header.project_id, &header.task_id, maximum)?;
+    let maximum = if let Some(plan) = &header.transaction_plan {
+        plan.verify(&staging.join("plan.json"), MAX_JOURNAL)?;
+        // Reserve immutable plan plus maximum active journal and completion.
+        plan.bytes
+            .checked_add(TRANSACTION_RESERVED)
+            .ok_or_else(capacity)?
+    } else {
+        bytes.len() as u64 + (LONGEST_PHASE - header.phase.len()) as u64
+    };
+    let _permit = if header.transaction_plan.is_some() {
+        reserve_publication_with_limits(
+            workspace,
+            &header.project_id,
+            &header.task_id,
+            maximum,
+            PublicationLimits {
+                project_bytes: MAX_PROJECT_BYTES,
+                project_tasks: MAX_TASKS,
+                workspace_bytes: MAX_WORKSPACE_BYTES,
+                workspace_entries: MAX_WORKSPACE_ENTRIES,
+                incoming_entries: 130,
+            },
+        )?
+    } else {
+        reserve_publication(workspace, &header.project_id, &header.task_id, maximum)?
+    };
     let root = workspace
         .join(ROOT)
         .join(&header.project_id)
@@ -82,9 +106,33 @@ pub(crate) fn publish_prepared<T: Serialize>(
     {
         return Err(changed());
     }
-    let mut file = crate::files::create(&staging_fd, "journal.json").map_err(|_| changed())?;
-    file.write_all(&bytes).map_err(|_| invalid())?;
-    file.sync_all().map_err(|_| invalid())?;
+    if let Some(identity) = &header.journal_identity {
+        if identity.is_legacy()
+            || !identity
+                .matches_path(&staging.join("journal.json"))
+                .map_err(|_| changed())?
+        {
+            return Err(changed());
+        }
+        let observed = read_journal(
+            &staging.join("journal.json"),
+            &mut ReadBudget {
+                remaining_bytes: MAX_JOURNAL,
+                remaining_entries: 1,
+            },
+            MAX_JOURNAL,
+        )?;
+        if observed != bytes {
+            return Err(changed());
+        }
+        crate::files::read(&staging_fd, "journal.json")?
+            .sync_all()
+            .map_err(|_| invalid())?;
+    } else {
+        let mut file = crate::files::create(&staging_fd, "journal.json").map_err(|_| changed())?;
+        file.write_all(&bytes).map_err(|_| invalid())?;
+        file.sync_all().map_err(|_| invalid())?;
+    }
     staging_fd.sync_all().map_err(|_| invalid())?;
     let publication = (|| {
         move_directory_exclusive(staging, &root)?;
@@ -176,6 +224,7 @@ struct PublicationLimits {
     project_tasks: usize,
     workspace_bytes: u64,
     workspace_entries: usize,
+    incoming_entries: usize,
 }
 
 /// Keep this permit until the prepared directory's exclusive publication and
@@ -188,7 +237,6 @@ pub(crate) struct DataRestorePublicationPermit {
 /// `max_journal_bytes` is the largest exact serialized journal over every phase.
 /// The transaction, which owns that format, computes
 /// it before calling this function. This function does not create any files.
-#[allow(dead_code)] // Infrastructure admission; no destructive workflow is exposed in this step.
 pub(crate) fn reserve_publication(
     workspace: &Path,
     project_id: &str,
@@ -205,6 +253,7 @@ pub(crate) fn reserve_publication(
             project_tasks: MAX_TASKS,
             workspace_bytes: MAX_WORKSPACE_BYTES,
             workspace_entries: MAX_WORKSPACE_ENTRIES,
+            incoming_entries: 0,
         },
     )
 }
@@ -255,6 +304,9 @@ fn check_publication_capacity(
     // Charge the new task before reading any existing content. A new project
     // directory is charged below only if it is not already in the directory scan.
     budget.entry()?;
+    for _ in 0..limits.incoming_entries {
+        budget.entry()?;
+    }
     budget.bytes(max_journal_bytes)?;
     if limits.project_tasks == 0 || max_journal_bytes > limits.project_bytes {
         return Err(capacity());
@@ -273,6 +325,7 @@ fn check_publication_capacity(
             target_present |= target;
             let mut project_bytes = if target { max_journal_bytes } else { 0 };
             let mut project_tasks = usize::from(target);
+            let project_entries_before = budget.remaining_entries;
             for entry in fs::read_dir(project.path()).map_err(|_| invalid())? {
                 project_tasks += 1;
                 if project_tasks > limits.project_tasks {
@@ -293,7 +346,17 @@ fn check_publication_capacity(
                     limits.project_bytes.saturating_sub(project_bytes),
                 )?;
                 let header = journal_header(&bytes, &id, &task)?;
-                let pending = pending_phase(&header.phase);
+                let before_material = budget.remaining_bytes;
+                let released = inspect_transaction_material(
+                    &entry.path(),
+                    &header,
+                    &mut budget,
+                    limits
+                        .project_bytes
+                        .saturating_sub(project_bytes + bytes.len() as u64),
+                )?;
+                let extra = before_material - budget.remaining_bytes;
+                let pending = !released && pending_phase(&header.phase);
                 if target && pending {
                     return Err(ApiError::new(
                         "PROJECT_DATA_RESTORE_PENDING",
@@ -305,15 +368,32 @@ fn check_publication_capacity(
                 // Account for an in-flight journal's longest future spelling,
                 // even when another project finishes while this scan proceeds.
                 let growth = if pending {
-                    (LONGEST_PHASE - header.phase.len()) as u64
+                    if let Some(proof) = &header.transaction_plan {
+                        TRANSACTION_RESERVED
+                            .saturating_sub(bytes.len() as u64 + extra.saturating_sub(proof.bytes))
+                    } else {
+                        (LONGEST_PHASE - header.phase.len()) as u64
+                    }
                 } else {
                     0
                 };
+                if pending && header.transaction_plan.is_some() {
+                    let (count, _) =
+                        crate::project_git::data_restore_metadata_usage(&entry.path())?;
+                    for _ in count..128 {
+                        budget.entry()?;
+                    }
+                }
+                let project_entries = project_entries_before - budget.remaining_entries
+                    + usize::from(target) * (limits.incoming_entries + 1);
+                if project_entries > MAX_TASKS {
+                    return Err(capacity());
+                }
                 if bytes.len() as u64 + growth > MAX_JOURNAL {
                     return Err(capacity());
                 }
                 budget.bytes(growth)?;
-                project_bytes += bytes.len() as u64 + growth;
+                project_bytes += bytes.len() as u64 + growth + extra;
                 if project_bytes > limits.project_bytes {
                     return Err(capacity());
                 }
@@ -354,8 +434,19 @@ pub(crate) struct DataRestoreJournalHeader {
     pub task_id: String,
     pub phase: String,
     pub plan_digest: String,
+    #[serde(
+        deserialize_with = "crate::projects::data_restore_registration::strict_identity::deserialize"
+    )]
     pub operation_identity: PersistedIdentity,
     pub registration_plan: DataRestoreRegistrationPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_plan: Option<crate::projects::data_restore_registration::FileProof>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::projects::data_restore_registration::strict_identity::optional"
+    )]
+    pub journal_identity: Option<PersistedIdentity>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -440,7 +531,6 @@ impl DataRestoreRecoveryPermit {
     }
 }
 
-#[allow(dead_code)] // Explicit recovery admission is exercised before the apply workflow is exposed.
 pub(crate) fn validate_recovery(
     workspace: &Path,
     project_id: &str,
@@ -561,7 +651,25 @@ fn inspect_project(
             let remaining = MAX_PROJECT_BYTES.saturating_sub(bytes_before - budget.remaining_bytes);
             let bytes = read_journal(&entry.path().join("journal.json"), budget, remaining)?;
             let header = journal_header(&bytes, project_id, &task_id)?;
+            let released = inspect_transaction_material(
+                &entry.path(),
+                &header,
+                budget,
+                MAX_PROJECT_BYTES.saturating_sub(bytes_before - budget.remaining_bytes),
+            )?;
+            if released {
+                return Ok(None);
+            }
             if pending_phase(&header.phase) {
+                if let Some(identity) = &header.journal_identity {
+                    if identity.is_legacy()
+                        || !identity
+                            .matches_path(&entry.path().join("journal.json"))
+                            .map_err(|_| invalid())?
+                    {
+                        return Err(invalid());
+                    }
+                }
                 if !header
                     .operation_identity
                     .matches_path(&entry.path())
@@ -589,10 +697,64 @@ fn inspect_project(
             Ok(Some(pending)) => state.pending.push(pending),
             Ok(None) => (),
             Err(error) if error.code == "PROJECT_DATA_RESTORE_LIMIT" => return Err(error),
-            Err(error) => state.issues.push(error.detail("taskId", task_id)),
+            Err(error) => state.issues.push(
+                error
+                    .detail("taskId", task_id)
+                    .detail("retainedPath", entry.path().display().to_string()),
+            ),
         }
     }
     Ok(())
+}
+
+fn inspect_transaction_material(
+    root: &Path,
+    header: &DataRestoreJournalHeader,
+    budget: &mut ReadBudget,
+    project_remaining: u64,
+) -> Result<bool, ApiError> {
+    let Some(proof) = &header.transaction_plan else {
+        return Ok(false);
+    };
+    let start = budget.remaining_bytes;
+    let plan = read_journal(&root.join("plan.json"), budget, project_remaining)?;
+    if plan.len() as u64 != proof.bytes || format!("{:x}", Sha256::digest(&plan)) != proof.sha256 {
+        return Err(invalid());
+    }
+    let mut optional = Vec::new();
+    for name in ["completion.json", "terminal.json"] {
+        let bytes = match fs::symlink_metadata(root.join(name)) {
+            Ok(_) => Some(read_journal(
+                &root.join(name),
+                budget,
+                project_remaining
+                    .saturating_sub(start - budget.remaining_bytes)
+                    .min(16 * 1024),
+            )?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err(invalid()),
+        };
+        optional.push(bytes);
+    }
+    let (count, metadata_bytes) = crate::project_git::data_restore_metadata_usage(root)?;
+    if metadata_bytes > project_remaining.saturating_sub(start - budget.remaining_bytes) {
+        return Err(limit());
+    }
+    budget.bytes(metadata_bytes)?;
+    for _ in 0..count + 2 {
+        budget.entry()?;
+    }
+    let released = crate::project_git::inspect_data_restore_completion(
+        root,
+        header,
+        &plan,
+        optional[0].as_deref(),
+        optional[1].as_deref(),
+    )?;
+    if !released {
+        proof.verify(&root.join("plan.json"), MAX_JOURNAL)?;
+    }
+    Ok(released)
 }
 
 fn journal_header(
@@ -607,10 +769,9 @@ fn journal_header(
         || header.task_id != task_id
         || header.operation_identity.is_legacy()
         || !valid_digest(&header.plan_digest)
-        // Phase text alone must never release a gate. This infrastructure step
-        // has no verified terminal release protocol; every existing journal
-        // therefore remains blocking, including a relabelled pending journal.
-        || !pending_phase(&header.phase)
+        // Terminal phase text alone never releases a gate; the transaction's
+        // independent, immutable-plan-bound completion is checked by inspection.
+        || !(pending_phase(&header.phase) || (header.transaction_plan.is_some() && matches!(header.phase.as_str(),"completed"|"undone")))
     {
         return Err(invalid());
     }

@@ -56,6 +56,8 @@ export interface OpenProjectResult {
 }
 
 export interface BuildInfo {
+  dataRecoveryRequired?: boolean;
+  dataRecoveryState?: 'clear' | 'pending' | 'blocked';
   origin?: 'bundledTemplate' | 'projectBuild';
   templateVersion?: string;
   sourceState: 'unbuilt' | 'matched' | 'modified' | 'unknown';

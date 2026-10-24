@@ -1,6 +1,6 @@
-//! Registration primitives for a future explicit data restore. They never move
-//! a live database/attachment or expose an apply route. Pending access deliberately
-//! does not construct a normal ProjectHandle, whose database may be displaced.
+//! Fixed registration publication for explicit data restore. Live slot exchange
+//! is owned by the transaction module. Pending access deliberately does not
+//! construct a normal ProjectHandle, whose database may be displaced.
 use super::*;
 use crate::{control::Freeze, data_restore_guard::DataRestoreRecoveryPermit, files};
 use sha2::{Digest, Sha256};
@@ -66,20 +66,55 @@ pub(crate) fn validate_data_restore_layout(manifest: &ProjectManifest) -> Result
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FileProof {
-    identity: FileIdentity,
-    sha256: String,
-    bytes: u64,
-    mode: u32,
+pub(crate) struct FileProof {
+    #[serde(deserialize_with = "strict_identity::deserialize")]
+    pub(crate) identity: FileIdentity,
+    pub(crate) sha256: String,
+    pub(crate) bytes: u64,
+    pub(crate) mode: u32,
+}
+
+/// New restore evidence accepts only the exact stable identity object. The
+/// global identity reader intentionally still supports older project records.
+pub(crate) mod strict_identity {
+    use crate::file_identity::PersistedIdentity;
+    use serde::{Deserialize, Deserializer};
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Identity {
+        device: u64,
+        inode: u64,
+        volume_uuid: Option<String>,
+    }
+    impl From<Identity> for PersistedIdentity {
+        fn from(value: Identity) -> Self {
+            Self {
+                device: value.device,
+                inode: value.inode,
+                volume_uuid: value.volume_uuid,
+            }
+        }
+    }
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PersistedIdentity, D::Error> {
+        Identity::deserialize(deserializer).map(Into::into)
+    }
+    pub(crate) fn optional<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PersistedIdentity>, D::Error> {
+        Option::<Identity>::deserialize(deserializer).map(|identity| identity.map(Into::into))
+    }
 }
 impl FileProof {
-    fn matches(&self, observed: &Self) -> bool {
+    pub(crate) fn matches(&self, observed: &Self) -> bool {
         self.identity.matches_captured(&observed.identity)
             && self.sha256 == observed.sha256
             && self.bytes == observed.bytes
             && self.mode == observed.mode
     }
-    fn verify(&self, path: &Path, maximum: u64) -> Result<(), ApiError> {
+    pub(crate) fn verify(&self, path: &Path, maximum: u64) -> Result<(), ApiError> {
         if self.matches(&read_proof(path, maximum, false)?.0) {
             Ok(())
         } else {
@@ -142,6 +177,30 @@ pub(crate) struct DataRestoreEpochCommit {
 }
 
 impl DataRestoreRegistrationPlan {
+    pub(crate) fn epoch(&self, direction: DataRestoreDirection) -> Result<String, ApiError> {
+        Ok(if direction == DataRestoreDirection::Continue {
+            self.apply.registration()?
+        } else {
+            self.undo.registration()?
+        }
+        .document_epoch)
+    }
+    pub(crate) fn visible_state(
+        &self,
+        workspace: &Path,
+        id: &str,
+    ) -> Result<DataRestoreEpochState, ApiError> {
+        let observed = read_proof(&registration_path(workspace, id), MAX_RECORD, false)?.0;
+        if self.before.proof.matches(&observed) {
+            Ok(DataRestoreEpochState::Before)
+        } else if self.apply.proof.matches(&observed) {
+            Ok(DataRestoreEpochState::Applied)
+        } else if self.undo.proof.matches(&observed) {
+            Ok(DataRestoreEpochState::Undone)
+        } else {
+            Err(changed())
+        }
+    }
     pub(crate) fn validate_shape(&self, id: &str) -> Result<(), ApiError> {
         let before = self.before.registration()?;
         let apply = self.apply.registration()?;
@@ -268,6 +327,21 @@ pub(crate) struct DataRestoreExclusiveAccess {
     _freeze: Freeze,
 }
 impl DataRestoreRecoveryAccess {
+    pub(crate) fn with_lock(
+        self,
+        gate: OwnedRwLockWriteGuard<()>,
+        freeze: Freeze,
+    ) -> Result<DataRestoreExclusiveAccess, ApiError> {
+        if !Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(&gate), &self.gate) {
+            return Err(invalid());
+        }
+        self.verify()?;
+        Ok(DataRestoreExclusiveAccess {
+            access: self,
+            _gate: gate,
+            _freeze: freeze,
+        })
+    }
     fn verify(&self) -> Result<(), ApiError> {
         self.permit.revalidate(&self.workspace, &self.id)?;
         self.plan.verify_root(&self.workspace, &self.id)?;
@@ -275,7 +349,6 @@ impl DataRestoreRecoveryAccess {
             .epoch_state(&self.workspace, &self.id, &self.operation)?;
         Ok(())
     }
-    #[allow(dead_code)] // Complete locking primitive; no live apply API is exposed yet.
     pub(crate) async fn lock(
         self,
         mut stop: watch::Receiver<bool>,
@@ -312,7 +385,6 @@ impl DataRestoreRecoveryAccess {
 impl ProjectStore {
     /// Prepare only two private registration images. The caller owns the task
     /// lease and has quiesced/closed SQLite before recording the raw DB proof.
-    #[allow(dead_code)] // Tested primitive, intentionally not wired to an apply workflow.
     pub(crate) fn prepare_data_restore_registration(
         &self,
         id: &str,
@@ -403,7 +475,6 @@ impl ProjectStore {
         }
         Ok(())
     }
-    #[allow(dead_code)] // Recovery task admission is ready before the public workflow.
     pub(crate) fn reserve_data_restore_recovery_task(
         &self,
         id: &str,
@@ -417,7 +488,6 @@ impl ProjectStore {
         permit.revalidate(&self.workspace, id)?;
         Ok(lease)
     }
-    #[allow(dead_code)] // Does not require a present or registered live DB.
     pub(crate) fn data_restore_recovery_access(
         &self,
         id: &str,
@@ -448,9 +518,21 @@ impl ProjectStore {
 }
 
 impl DataRestoreExclusiveAccess {
+    pub(crate) fn root(&self) -> &Path {
+        &self.access.root
+    }
+    pub(crate) fn operation(&self) -> &Path {
+        &self.access.operation
+    }
+    pub(crate) fn epoch_state(&self) -> Result<DataRestoreEpochState, ApiError> {
+        self.access.plan.epoch_state(
+            &self.access.workspace,
+            &self.access.id,
+            &self.access.operation,
+        )
+    }
     /// The only publication here is registration metadata. A future transaction
     /// must install and verify the appropriate DB before asking for its epoch.
-    #[allow(dead_code)] // Complete, tested primitive; no public data replacement route.
     pub(crate) fn publish_epoch(
         &self,
         direction: DataRestoreDirection,
@@ -590,7 +672,11 @@ fn read_registration(bytes: &[u8]) -> Result<Registration, ApiError> {
     }
     serde_json::from_value(value).map_err(|_| invalid())
 }
-fn read_proof(path: &Path, maximum: u64, keep: bool) -> Result<(FileProof, Vec<u8>), ApiError> {
+pub(crate) fn read_proof(
+    path: &Path,
+    maximum: u64,
+    keep: bool,
+) -> Result<(FileProof, Vec<u8>), ApiError> {
     let parent = files::root(path.parent().ok_or_else(invalid)?)?;
     let name = path
         .file_name()

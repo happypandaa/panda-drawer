@@ -78,6 +78,12 @@ pub(crate) struct SnapshotLease {
     _freeze: Freeze,
 }
 impl SnapshotLease {
+    pub(crate) fn gate(&self) -> &OwnedRwLockWriteGuard<()> {
+        &self._gate
+    }
+    pub(crate) fn into_lock_parts(self) -> (OwnedRwLockWriteGuard<()>, Freeze) {
+        (self._gate, self._freeze)
+    }
     pub async fn acquire(
         project: ProjectHandle,
         mut stop: watch::Receiver<bool>,
@@ -108,6 +114,16 @@ impl SnapshotLease {
 /// while reading SQLite and copying attachments; Git object writes happen later.
 pub(crate) fn prepare_snapshot(
     lease: SnapshotLease,
+    destination: &Path,
+    limits: SnapshotLimits,
+    stop: &watch::Receiver<bool>,
+    cancel: &watch::Receiver<bool>,
+) -> Result<PreparedDataSnapshot, ApiError> {
+    prepare_snapshot_locked(&lease, destination, limits, stop, cancel)
+}
+
+pub(crate) fn prepare_snapshot_locked(
+    lease: &SnapshotLease,
     destination: &Path,
     limits: SnapshotLimits,
     stop: &watch::Receiver<bool>,
