@@ -121,6 +121,77 @@ async fn owned_environment_cancelled_waiter_keeps_actual_process_owner() {
 }
 
 #[tokio::test]
+async fn owned_environment_pending_probe_reports_false_closure_until_actual_pipe_join() {
+    let directory = Arc::new(
+        tempfile::Builder::new()
+            .prefix("disposable-environment-pending-")
+            .tempdir()
+            .unwrap(),
+    );
+    let marker = directory.path().join("escaped-reader");
+    let release = directory.path().join("release-reader");
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, b"release");
+        }
+    }
+    let _release = Release(release.clone());
+    let registry = OwnedProcessRegistry::default();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let script = "import os,sys,time\npid=os.fork()\nif pid==0:\n os.setsid()\n open(sys.argv[1],'w').write(str(os.getpid()))\n end=time.monotonic()+12\n while not os.path.exists(sys.argv[2]) and time.monotonic()<end: time.sleep(.01)\n os._exit(0)\nwhile not os.path.exists(sys.argv[1]): time.sleep(.005)\nprint('v24.22.0',flush=True)\ntime.sleep(60)";
+    let mut command = Command::new("/usr/bin/python3");
+    command.args([
+        "-c",
+        script,
+        marker.to_str().unwrap(),
+        release.to_str().unwrap(),
+    ]);
+    let pending = {
+        let registry = registry.clone();
+        let keep_alive = KeepAlive {
+            _directory: directory.clone(),
+            dropped: dropped.clone(),
+        };
+        tokio::spawn(async move { output(command, &registry, keep_alive).await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(registry
+        .shutdown()
+        .await
+        .iter()
+        .any(|issue| issue.code == "PROCESS_CLEANUP_PENDING"));
+    let error = pending.await.unwrap().unwrap_err();
+    assert_eq!(error.code, "PROCESS_CLEANUP_PENDING");
+    assert_eq!(error.details["processResourceClosed"], false);
+    assert_eq!(error.details["operationOutcome"], "unknown");
+    assert!(!dropped.load(Ordering::Acquire));
+    fs::write(&release, b"actual pipe may close").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if registry.shutdown().await.is_empty()
+                && registry
+                    .snapshot()
+                    .iter()
+                    .all(|record| record.resource_closed())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(dropped.load(Ordering::Acquire));
+}
+
+#[tokio::test]
 async fn owned_environment_sealed_registry_cannot_replace_tool_selection() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::Builder::new()

@@ -74,3 +74,5 @@ registry 位于 `RuntimeSwitch`，实际工作区迁移前后共享同一 `Arc`�
 原 `stop` 在进程组退出后 abort 两条 reader 并忽略 join 结果。现在关闭 control 消息接收端以解除队列发送等待，实际 await 每条 reader；未观察到 join 的句柄始终保存在 Trial owner 中。两秒软预算到期返回 `TRIAL_READER_CLEANUP_PENDING`，保留句柄供后续显式停止重试；丢失该重试 future 不移走句柄。发生 reader JoinError 则保留 sticky `TRIAL_READER_JOIN_FAILED`，即使 child 和 reader 槽都已空也不能再次返回成功。`NodeApps` 沿既有失败路径保留 Running、active marker 并拒绝第二次启动。
 
 此独立增量的 Trial 专项 **21 通过、2 opt-in 忽略**（7.14 秒），NodeApps 既有/探针集合 **55 通过**（10.62 秒），新增 reader 失败产品接点精确回归 **1 通过**；两项配套 Node opt-in **2 通过**（12.25 秒），全工作区全目标严格 Clippy、格式和差异检查通过。人工 reader 暂停后进行实际文件写入，核对 Pending/丢等待者保留句柄再完成；人工 panic 核对不可丢弃的失败回执。该故障注入不代表真实操作系统阻塞 I/O、断电或逃逸后代控制验收。裸 Trial Drop 仍是原有 best-effort，尚未改写为通用进程 registry owner；产品不得用丢 Trial 代替 stop 的实际成功。
+
+Node/npm 开发工具探针另统一携带真实 `processResourceClosed`：回复错误时保留 ProcessRun，读取实际 phase/leader/group/I/O 状态；未闭合同时标 `operationOutcome=unknown`，供外层禁止清理或推进。新增实际输出 pipe 保持回归在停止后获得 Pending/false，确认真实 G 未释放，释放测试自建 pipe holder 后才完成 join。该 holder 自行结束，不向已脱组数字 PID 发信号，也不证明追踪脱组后代。环境命名选集 30 通过、2 忽略（3.06 秒，包含 Git 等子串匹配项），全工作区全目标严格 Clippy、格式及差异检查通过；没有改成新的全库结果。

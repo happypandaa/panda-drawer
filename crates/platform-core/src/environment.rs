@@ -256,50 +256,57 @@ async fn output<G: Send + 'static>(
     processes: &OwnedProcessRegistry,
     keep_alive: G,
 ) -> Result<String, ApiError> {
-    let result = processes
-        .start(
-            command,
-            ProcessOptions::new("node-environment/version-probe", Duration::from_secs(5)),
-            keep_alive,
-            |pipes| {
-                let ProcessPipes {
-                    stdin,
-                    mut stdout,
-                    mut stderr,
-                    stop: _,
-                } = pipes;
-                drop(stdin);
-                IoPlan::new(async move {
-                    let mut output = Vec::new();
-                    let mut bytes = [0u8; 4096];
-                    loop {
-                        let count = stdout.read(&mut bytes).await?;
-                        if count == 0 {
-                            return Ok(output);
-                        }
-                        if output.len() + count > 16_384 {
-                            return Err(ApiError::new(
-                                "TOOLCHAIN_PROBE_FAILED",
-                                "Node/npm version output exceeded its byte budget",
-                            ));
-                        }
-                        output.extend_from_slice(&bytes[..count]);
+    let mut run = processes.start(
+        command,
+        ProcessOptions::new("node-environment/version-probe", Duration::from_secs(5)),
+        keep_alive,
+        |pipes| {
+            let ProcessPipes {
+                stdin,
+                mut stdout,
+                mut stderr,
+                stop: _,
+            } = pipes;
+            drop(stdin);
+            IoPlan::new(async move {
+                let mut output = Vec::new();
+                let mut bytes = [0u8; 4096];
+                loop {
+                    let count = stdout.read(&mut bytes).await?;
+                    if count == 0 {
+                        return Ok(output);
                     }
-                })
-                .drain("version-stderr", async move {
-                    let mut bytes = [0u8; 4096];
-                    while stderr.read(&mut bytes).await? != 0 {}
-                    Ok(())
-                })
-            },
-        )?
-        .await
-        .map_err(|mut error| {
-            if error.code == "PROCESS_WORK_TIMEOUT" {
-                error.code = "TOOLCHAIN_PROBE_TIMEOUT".into();
-            }
-            error
-        })?;
+                    if output.len() + count > 16_384 {
+                        return Err(ApiError::new(
+                            "TOOLCHAIN_PROBE_FAILED",
+                            "Node/npm version output exceeded its byte budget",
+                        ));
+                    }
+                    output.extend_from_slice(&bytes[..count]);
+                }
+            })
+            .drain("version-stderr", async move {
+                let mut bytes = [0u8; 4096];
+                while stderr.read(&mut bytes).await? != 0 {}
+                Ok(())
+            })
+        },
+    )?;
+    let result = (&mut run).await.map_err(|mut error| {
+        if error.code == "PROCESS_WORK_TIMEOUT" {
+            error.code = "TOOLCHAIN_PROBE_TIMEOUT".into();
+        }
+        let receipt = run.snapshot();
+        let closed = receipt.phase == crate::owned_process::ProcessPhase::Closed
+            && receipt.leader_reaped
+            && receipt.group_exited
+            && receipt.io_joined;
+        error = error.detail("processResourceClosed", closed);
+        if !closed {
+            error = error.outcome("unknown");
+        }
+        error
+    })?;
     if !result.status.success() {
         return Err(ApiError::new(
             "TOOLCHAIN_PROBE_FAILED",
