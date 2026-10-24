@@ -389,3 +389,209 @@ async fn control_failure_with_graceful_exit_still_preserves_business_failure_mar
         "failed"
     );
 }
+
+async fn proxy_test_browser(manager: &NodeApps, id: &str) -> (reqwest::Client, String, String) {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let bootstrap = manager.open_url(id).await.unwrap();
+    let url = url::Url::parse(&bootstrap).unwrap();
+    let origin = format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap(),
+        url.port().unwrap()
+    );
+    let response = client.get(bootstrap).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    let cookie = response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    (client, origin, cookie)
+}
+async fn wait_artificial_process_gone(pid: u32) {
+    let pid: i32 = pid.try_into().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("owned artificial runtime should stop before the blocked proxy file is released");
+}
+
+#[tokio::test]
+async fn proxy_drain_failure_retains_running_even_after_the_actual_runtime_exits() {
+    let fixture = Fixture::new("normal");
+    let registered = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registered["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    let evidence = fixture.slot(id).join("data/artificial-preserved-value");
+    fs::write(&evidence, b"artificial retained business bytes").unwrap();
+    {
+        let inner = fixture.manager.inner.lock().await;
+        inner.running[id]
+            .proxy
+            .as_ref()
+            .unwrap()
+            .fixture_serve_panic();
+    }
+    assert_eq!(
+        fixture.manager.stop_all().await.unwrap_err().code,
+        "NODE_APP_PROXY_DRAIN_BLOCKED"
+    );
+    assert_eq!(fixture.manager.owned_process_ids().await, [id]);
+    assert!(fixture.manager.running_ids().await.is_empty());
+    {
+        let mut inner = fixture.manager.inner.lock().await;
+        let running = inner.running.get_mut(id).unwrap();
+        assert!(running.runtime.status().unwrap().process_group_exited);
+        assert!(running.proxy.is_some());
+        assert!(running.cleanup_pending);
+    }
+    assert!(marker.exists());
+    assert!(fs::read(evidence).unwrap() == b"artificial retained business bytes");
+    assert!(fixture.manager.start(id).await.is_err());
+    assert!(fixture.manager.stop_all().await.is_err());
+}
+
+#[tokio::test]
+async fn one_blocked_proxy_does_not_prevent_the_other_real_runtime_from_stopping() {
+    let fixture = Fixture::new("normal");
+    let second = Fixture::new("normal");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(second.source.join("local-app.json")).unwrap()).unwrap();
+    manifest["app"]["id"] = json!("test.disposable.lifecycle.second");
+    fs::write(
+        second.source.join("local-app.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let first = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let second_registered = fixture
+        .manager
+        .register(second.source.clone())
+        .await
+        .unwrap();
+    let mut ids = [
+        first["id"].as_str().unwrap().to_owned(),
+        second_registered["id"].as_str().unwrap().to_owned(),
+    ];
+    ids.sort();
+    for id in &ids {
+        fixture.manager.start(id).await.unwrap();
+    }
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    {
+        let inner = fixture.manager.inner.lock().await;
+        inner.running[&ids[0]]
+            .proxy
+            .as_ref()
+            .unwrap()
+            .fixture_read_pause(entered, blocked);
+    }
+    let pids = ids.iter().map(|id| fixture.pid(id)).collect::<Vec<_>>();
+    let (client, origin, cookie) = proxy_test_browser(&fixture.manager, &ids[0]).await;
+    let request = tokio::spawn(
+        client
+            .get(format!("{origin}/"))
+            .header(reqwest::header::COOKIE, cookie)
+            .send(),
+    );
+    ready.await.unwrap();
+    let manager = Arc::new(fixture.manager);
+    let closing = manager.clone();
+    let stop = tokio::spawn(async move { closing.stop_all().await });
+    wait_artificial_process_gone(pids[1]).await;
+    wait_artificial_process_gone(pids[0]).await;
+    assert!(
+        !stop.is_finished(),
+        "first proxy remains busy despite both runtimes really exiting"
+    );
+    release.send(()).unwrap();
+    if let Ok(Ok(response)) = request.await {
+        drop(response);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(4), stop)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(manager.owned_process_ids().await.is_empty());
+}
+
+#[tokio::test]
+async fn losing_node_stop_waiter_preserves_running_and_proxy_until_actual_file_completion() {
+    let fixture = Fixture::new("normal");
+    let registered = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registered["id"].as_str().unwrap().to_owned();
+    fixture.manager.start(&id).await.unwrap();
+    let pid = fixture.pid(&id);
+    let marker = fixture.slot(&id).join("active.json");
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    {
+        let inner = fixture.manager.inner.lock().await;
+        inner.running[&id]
+            .proxy
+            .as_ref()
+            .unwrap()
+            .fixture_read_pause(entered, blocked);
+    }
+    let (client, origin, cookie) = proxy_test_browser(&fixture.manager, &id).await;
+    let request = tokio::spawn(
+        client
+            .get(format!("{origin}/"))
+            .header(reqwest::header::COOKIE, cookie)
+            .send(),
+    );
+    ready.await.unwrap();
+    let manager = Arc::new(fixture.manager);
+    let closing = manager.clone();
+    let stop = tokio::spawn(async move { closing.stop_all().await });
+    wait_artificial_process_gone(pid).await;
+    assert!(!stop.is_finished());
+    stop.abort();
+    assert!(stop.await.unwrap_err().is_cancelled());
+    assert_eq!(manager.owned_process_ids().await, [id.as_str()]);
+    assert!(marker.exists());
+    assert!(manager.start(&id).await.is_err());
+    release.send(()).unwrap();
+    if let Ok(Ok(response)) = request.await {
+        drop(response);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(4), manager.stop_all())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(manager.owned_process_ids().await.is_empty());
+    assert!(!marker.exists());
+}
