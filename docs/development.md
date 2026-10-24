@@ -268,7 +268,7 @@ Git 版本管理由 AI 先读取范围和改动，再明确初始化或保存，
 
 `project git branch-create --project ID --input FILE --json` 对应 `POST /api/v1/projects/:id/git/branches`。完整输入为 `name`（新分支短名）、`expectedHead`（现存完整提交号）、`expectedBranch`（状态返回的 `refs/heads/...`）和 `expectedSnapshot`。只允许在干净且已保存的当前版本新建分支并将 HEAD 指向它；已有同名分支、过期核对、未知／暂存／冲突内容均拒绝。不会取回其他提交或替换源码、索引、活库、附件及当前产物。仅此操作要求已验证的 Git2.56.0 引用事务；2.54.0 的保存和列表仍可用，分支限制单独放在 `branchCreationIssue` 中，不自动换工具。
 
-新建分支返回 `gitBranchCreate` 持久任务，沿用取消入口和已提交／未提交／未知结果；成功结果含原分支、新分支及当前提交。开始修改前先等待最终结果。现有分支切换、合并／拉取及数据库版本仍未实现，不能用新建分支代替这些操作。旧源码取回是下面的独立显式操作。
+新建分支返回 `gitBranchCreate` 持久任务，沿用取消入口和已提交／未提交／未知结果；成功结果含原分支、新分支及当前提交。开始修改前先等待最终结果。现有分支切换、合并／拉取仍未实现，不能用新建分支代替这些操作。旧源码取回是下面的独立显式操作；project-v1 的主动[数据保存](project-data-git.md)及明确[数据取回与恢复](project-data-restore-apply.md)使用各自入口，不由新建分支触发。
 
 ### 取回本机已保存源码
 
