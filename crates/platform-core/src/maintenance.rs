@@ -1,4 +1,6 @@
 //! Backup/maintenance tasks and recoverable directory replacement.
+//! Legacy archives are retained without automatic count-based pruning while
+//! the independent backup workflow is retired in separate compatibility steps.
 use crate::{
     backups::{self, PendingBuild, SnapshotOptions, SnapshotState},
     builds::{self, BuildManager},
@@ -588,7 +590,6 @@ impl MaintenanceManager {
         state.ready_for_changes = true;
         state.last_error = None;
         control.set(state)?;
-        self.retention(task, id);
         Ok(
             json!({"maintenanceId":control.get().maintenance_id,"baselineBackupId":backup,"readyForChanges":true,"maintenance":self.status(id)?}),
         )
@@ -662,18 +663,7 @@ impl MaintenanceManager {
         control.set(state)?;
         drop(freeze);
         self.notify(id);
-        self.retention(task, id);
         Ok(json!({"documentEpoch":epoch,"reloadRequired":true,"maintenance":self.status(id)?}))
-    }
-    fn retention(&self, task: &str, id: &str) {
-        let result = self
-            .directory(id)
-            .and_then(|dir| backups::apply_retention(&dir, &self.protected(id)?));
-        if let Err(error) = result {
-            let _ = self
-                .tasks
-                .append(task, format!("Retention deferred: {error}\n").as_bytes());
-        }
     }
     async fn restore(&self, task: &str, id: &str, backup: String) -> Result<Value, ApiError> {
         self.phase(task, "candidate-validation")?;
@@ -1543,3 +1533,7 @@ mod tests {
 #[cfg(test)]
 #[path = "maintenance_restart_tests.rs"]
 mod restart_tests;
+
+#[cfg(test)]
+#[path = "maintenance_retirement_tests.rs"]
+mod retirement_tests;
