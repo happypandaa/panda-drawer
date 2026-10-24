@@ -244,6 +244,163 @@ fn disposable_git_object(
     String::from_utf8(result.stdout).unwrap().trim().into()
 }
 
+/// Public HTTP/RuntimeHandle preview uses real Git and SQLite; applying a data
+/// version is deliberately unavailable in this step.
+#[tokio::test]
+#[ignore = "set LOCAL_PROJECTS_TEST_GIT_ROOT to a verified disposable development-git payload"]
+async fn official_git_data_preview_http_is_authenticated_read_only_and_returns_200() {
+    let tool_root =
+        std::path::PathBuf::from(std::env::var("LOCAL_PROJECTS_TEST_GIT_ROOT").unwrap())
+            .canonicalize()
+            .unwrap();
+    assert!(tool_root.starts_with(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-artifacts")
+            .canonicalize()
+            .unwrap()
+    ));
+    let (_temporary, _paths, service, client) = tests::start().await;
+    service
+        .handle()
+        .set_git_path(Some(tool_root.join("bin/git").to_string_lossy().into()))
+        .await
+        .unwrap();
+    let project = tests::create(&service, "Disposable HTTP data preview").await;
+    let base = format!("projects/{}/git", project.id);
+    let endpoint = format!(
+        "{}/api/v1/{base}/data-restore-preview",
+        service.info().base_url
+    );
+    let unauthenticated = client
+        .post(&endpoint)
+        .json(&json!({"targetCommit":"1111111111111111111111111111111111111111"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    assert!(!project.project_root.join(".git").exists());
+    let status = git_http(&service, &client, Method::GET, &base, None, StatusCode::OK).await;
+    let task = git_http(
+        &service,
+        &client,
+        Method::POST,
+        &format!("{base}/initialize"),
+        Some(json!({"initialBranch":"main","expectedSnapshot":status["snapshotDigest"]})),
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    assert_eq!(
+        git_http_task(&service, &client, &task).await["status"],
+        "succeeded"
+    );
+    let db = format!("projects/{}/db/execute", project.id);
+    for sql in [
+        "CREATE TABLE notes(body TEXT)",
+        "INSERT INTO notes VALUES('saved HTTP data')",
+    ] {
+        git_http(
+            &service,
+            &client,
+            Method::POST,
+            &db,
+            Some(json!({"sql":sql})),
+            StatusCode::OK,
+        )
+        .await;
+    }
+    std::fs::write(
+        project.project_root.join("data/attachments/note.txt"),
+        "saved HTTP attachment",
+    )
+    .unwrap();
+    let status = git_http(&service, &client, Method::GET, &base, None, StatusCode::OK).await;
+    let task = git_http(&service, &client, Method::POST, &format!("{base}/data-saves"), Some(json!({"expectedHead":status["repository"]["head"]["oid"],"expectedSnapshot":status["snapshotDigest"],"message":"disposable preview target","author":{"name":"HTTP preview fixture","email":"preview@example.invalid"}})), StatusCode::ACCEPTED).await;
+    let saved = git_http_task(&service, &client, &task).await;
+    assert_eq!(saved["status"], "succeeded", "{saved}");
+    let target_commit = saved["result"]["commit"].as_str().unwrap();
+    git_http(
+        &service,
+        &client,
+        Method::POST,
+        &db,
+        Some(json!({"sql":"INSERT INTO notes VALUES('unsaved HTTP data remains live')"})),
+        StatusCode::OK,
+    )
+    .await;
+    std::fs::write(
+        project.project_root.join("data/attachments/note.txt"),
+        "unsaved HTTP attachment remains live",
+    )
+    .unwrap();
+    let index = std::fs::read(project.project_root.join(".git/index")).unwrap();
+    let manifest = std::fs::read(project.project_root.join("version-data/snapshot.json")).unwrap();
+    let preview = git_http(
+        &service,
+        &client,
+        Method::POST,
+        &format!("{base}/data-restore-preview"),
+        Some(json!({"targetCommit":target_commit})),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(preview["targetCommit"], target_commit);
+    assert_eq!(preview["canApply"], false);
+    assert_eq!(preview["applyImplemented"], false);
+    assert_eq!(preview["databaseChanged"], true);
+    assert_eq!(preview["issues"], json!([]));
+    assert_eq!(
+        preview["attachmentChanges"],
+        json!([{"path":"note.txt","kind":"modify"}])
+    );
+    let direct = service
+        .handle()
+        .project_git_data_restore_preview(
+            &project.id,
+            crate::project_git::GitDataRestorePreviewInput {
+                target_commit: target_commit.into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview["planDigest"], direct["planDigest"]);
+    assert_eq!(
+        std::fs::read(project.project_root.join(".git/index")).unwrap(),
+        index
+    );
+    assert_eq!(
+        std::fs::read(project.project_root.join("version-data/snapshot.json")).unwrap(),
+        manifest
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.project_root.join("data/attachments/note.txt")).unwrap(),
+        "unsaved HTTP attachment remains live"
+    );
+    let read = git_http(
+        &service,
+        &client,
+        Method::POST,
+        &db,
+        Some(json!({"sql":"SELECT body FROM notes ORDER BY rowid"})),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(read["rows"][1]["body"], "unsaved HTTP data remains live");
+    for body in [
+        json!({"targetCommit":"HEAD"}),
+        json!({"targetCommit":target_commit,"apply":true}),
+    ] {
+        let invalid = client
+            .post(&endpoint)
+            .bearer_auth(&service.shared.snapshot().token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    }
+    service.shutdown().await.unwrap();
+}
+
 /// Real public HTTP and a real Git executable; still not a native UI test.
 #[tokio::test]
 #[ignore = "set LOCAL_PROJECTS_TEST_GIT_ROOT to a verified disposable development-git payload"]
