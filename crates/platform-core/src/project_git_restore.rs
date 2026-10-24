@@ -171,13 +171,15 @@ impl ProjectGitManager {
     ) -> Result<GitSourceRestorePreview, ApiError> {
         validate_target(&input.target_commit)?;
         self.available()?;
-        let _lease = self
-            .store
-            .reserve_transient_operation(id, "source-restore-preview")?;
+        let lease = Arc::new(
+            self.store
+                .reserve_transient_operation(id, "source-restore-preview")?,
+        );
         guard::check_development_available(self.paths.workspace_root(), id)?;
         let project = self.store.project(id)?;
         let (_sender, cancel) = watch::channel(false);
         let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), lease);
         let _gate = read_gate(&project, &mut context).await?;
         let tools = context.resolve(&self.git).await?;
         let plan = self
@@ -214,12 +216,14 @@ impl ProjectGitManager {
         stop: watch::Receiver<bool>,
     ) -> Result<GitSourceRestoreRecoveryStatus, ApiError> {
         self.available()?;
-        let _lease = self
-            .store
-            .reserve_transient_operation(id, "source-restore-status")?;
+        let lease = Arc::new(
+            self.store
+                .reserve_transient_operation(id, "source-restore-status")?,
+        );
         let project = self.store.project(id)?;
         let (_sender, cancel) = watch::channel(false);
         let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), lease);
         let _gate = read_gate(&project, &mut context).await?;
         let state = guard::inspect(self.paths.workspace_root(), id);
         let blocked = !state.issues.is_empty() || state.pending.len() > 1;
@@ -439,16 +443,20 @@ fn validate_target(value: &str) -> Result<(), ApiError> {
 fn plan_digest(plan: &RestorePlan) -> Result<String, ApiError> {
     Ok(sha256(&serde_json::to_vec(plan)?))
 }
-async fn read_gate<'a>(
-    project: &'a ProjectHandle,
+async fn read_gate(
+    project: &ProjectHandle,
     context: &mut Context,
-) -> Result<tokio::sync::RwLockReadGuard<'a, ()>, ApiError> {
+) -> Result<Arc<tokio::sync::OwnedRwLockReadGuard<()>>, ApiError> {
     context.checkpoint()?;
     tokio::select! { biased;
         _ = watch_stop(&mut context.stop) => Err(interrupted()),
         _ = watch_stop(&mut context.cancel) => Err(interrupted()),
         _ = tokio::time::sleep_until(context.deadline) => Err(restore_error("PROJECT_SOURCE_RESTORE_TIMEOUT", "源码取回超过内部时间限制。")),
-        guard = project.operation_gate.read() => Ok(guard),
+        guard = project.operation_gate.clone().read_owned() => {
+            let guard = Arc::new(guard);
+            context.phase(guard.clone());
+            Ok(guard)
+        },
     }
 }
 fn bind(project: &ProjectHandle, status: &ProjectGitStatus) -> Result<Binding, ApiError> {
@@ -640,75 +648,113 @@ async fn materialize_blobs(
     destination: &Path,
 ) -> Result<BTreeMap<String, PlannedFile>, ApiError> {
     context.checkpoint()?;
+    let blobs = blobs.to_vec();
+    let destination = destination.to_path_buf();
+    let stop = context.stop.clone();
+    let cancel = context.cancel.clone();
+    let deadline = context.deadline;
+    #[cfg(test)]
+    let mut writer_pause = context.writer_pause.take();
     let mut command = git_command(tools, context.root(), Some(project));
     command.args(["cat-file", "--batch"]);
-    let child = command.spawn().map_err(|_| git_failed())?;
-    let mut process = Process {
-        group: child.id(),
-        child,
-    };
-    let mut stdin = process.child.stdin.take().ok_or_else(git_failed)?;
-    let mut stdout = process.child.stdout.take().ok_or_else(git_failed)?;
-    let stderr = process.child.stderr.take().ok_or_else(git_failed)?;
-    let input = blobs
-        .iter()
-        .map(|blob| format!("{}\n", blob.oid))
-        .collect::<String>();
-    let mut stop = context.stop.clone();
-    let mut cancel = context.cancel.clone();
-    let result = tokio::select! { biased;
-        _ = watch_stop(&mut stop) => Err(interrupted()),
-        _ = watch_stop(&mut cancel) => Err(interrupted()),
-        _ = tokio::time::sleep_until(context.deadline) => Err(restore_error("PROJECT_SOURCE_RESTORE_TIMEOUT", "读取目标版本超过内部时间限制。")),
-        result = async {
-            let (_, _, files, status) = tokio::try_join!(
-                async { stdin.write_all(input.as_bytes()).await.map_err(|_| git_failed())?; drop(stdin); Ok(()) },
-                read_output(stderr, false, 64 * 1024),
-                async {
-                    let mut files = BTreeMap::new();
-                    for blob in blobs {
-                        context.checkpoint()?;
-                        let mut header = Vec::new();
-                        loop {
-                            let byte = stdout.read_u8().await.map_err(|_| output_invalid())?;
-                            if byte == b'\n' { break; }
-                            header.push(byte);
-                            if header.len() > 1024 { return Err(output_invalid()); }
-                        }
-                        if header != format!("{} blob {}", blob.oid, blob.size).as_bytes() { return Err(output_invalid()); }
-                        let path = destination.join(&blob.path);
-                        private_dir(path.parent().ok_or_else(unsafe_path)?)?;
-                        let mut file = OpenOptions::new().write(true).create_new(true).mode(if blob.executable { 0o755 } else { 0o644 }).custom_flags(libc::O_NOFOLLOW).open(&path)?;
-                        let mut remaining = blob.size;
-                        let mut digest = Sha256::new();
-                        // This buffer survives await inside nested request futures.
-                        // Keep it on the heap so routing a preview does not enlarge
-                        // every HTTP handler's stack frame by the blob buffer.
-                        let mut buffer = vec![0u8; 64 * 1024];
-                        while remaining != 0 {
-                            context.checkpoint()?;
-                            let count = remaining.min(buffer.len() as u64) as usize;
-                            stdout.read_exact(&mut buffer[..count]).await.map_err(|_| output_invalid())?;
-                            digest.update(&buffer[..count]);
-                            file.write_all(&buffer[..count])?;
-                            remaining -= count as u64;
-                        }
-                        if stdout.read_u8().await.map_err(|_| output_invalid())? != b'\n' { return Err(output_invalid()); }
-                        file.sync_all()?;
-                        files.insert(blob.path.clone(), PlannedFile { oid: blob.oid.clone(), descriptor: RestoreDescriptor { sha256: format!("{:x}", digest.finalize()), size: blob.size, executable: blob.executable } });
+    let run = context.start(command, move |pipes| {
+        let mut stdin = BlockingPipe::new(pipes.stdin);
+        let mut stdout = BlockingPipe::new(pipes.stdout);
+        let internal_stop = pipes.stop;
+        crate::owned_process::IoPlan::new(async move {
+            tokio::task::spawn_blocking(move || {
+                let check = || {
+                    process_io::checkpoint(&stop, &cancel, deadline)?;
+                    if *internal_stop.borrow() {
+                        return Err(interrupted());
                     }
-                    let mut extra = [0u8; 1];
-                    if stdout.read(&mut extra).await.map_err(|_| git_failed())? != 0 { return Err(output_invalid()); }
-                    Ok(files)
-                },
-                async { process.child.wait().await.map_err(|_| git_failed()) }
-            )?;
-            if !status.success() { return Err(git_failed()); }
-            Ok(files)
-        } => result,
-    };
-    process.finish().await;
-    result
+                    Ok::<_, ApiError>(())
+                };
+                let mut files = BTreeMap::new();
+                let mut buffer = vec![0u8; 64 * 1024];
+                for blob in blobs {
+                    check()?;
+                    // Interleave requests and responses so neither bounded
+                    // facade can deadlock behind a large request list/payload.
+                    stdin
+                        .write_all(format!("{}\n", blob.oid).as_bytes())
+                        .map_err(|_| git_failed())?;
+                    stdin.flush().map_err(|_| git_failed())?;
+                    process_io::expect_blocking_line(
+                        &mut stdout,
+                        format!("{} blob {}\n", blob.oid, blob.size).as_bytes(),
+                    )?;
+                    let path = destination.join(&blob.path);
+                    private_dir(path.parent().ok_or_else(unsafe_path)?)?;
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(if blob.executable { 0o755 } else { 0o644 })
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&path)?;
+                    #[cfg(test)]
+                    if let Some((entered, release)) = writer_pause.take() {
+                        let _ = entered.send(());
+                        let _ = release.recv();
+                    }
+                    let mut remaining = blob.size;
+                    let mut digest = Sha256::new();
+                    while remaining != 0 {
+                        check()?;
+                        let count = remaining.min(buffer.len() as u64) as usize;
+                        stdout
+                            .read_exact(&mut buffer[..count])
+                            .map_err(|_| output_invalid())?;
+                        digest.update(&buffer[..count]);
+                        file.write_all(&buffer[..count])?;
+                        remaining -= count as u64;
+                    }
+                    let mut delimiter = [0u8; 1];
+                    stdout
+                        .read_exact(&mut delimiter)
+                        .map_err(|_| output_invalid())?;
+                    if delimiter[0] != b'\n' {
+                        return Err(output_invalid());
+                    }
+                    file.sync_all()?;
+                    files.insert(
+                        blob.path.clone(),
+                        PlannedFile {
+                            oid: blob.oid,
+                            descriptor: RestoreDescriptor {
+                                sha256: format!("{:x}", digest.finalize()),
+                                size: blob.size,
+                                executable: blob.executable,
+                            },
+                        },
+                    );
+                }
+                drop(stdin);
+                let mut extra = [0u8; 1];
+                if stdout.read(&mut extra).map_err(|_| git_failed())? != 0 {
+                    return Err(output_invalid());
+                }
+                Ok::<_, ApiError>(files)
+            })
+            .await
+            .map_err(|_| {
+                restore_error(
+                    "PROJECT_SOURCE_RESTORE_WORKER_FAILED",
+                    "读取目标源码的文件工作者未正常收尾；保留现场待核对。",
+                )
+            })?
+        })
+        .drain("stderr", async move {
+            read_output(pipes.stderr, false, 64 * 1024)
+                .await
+                .map(|_| ())
+        })
+    })?;
+    let output = context.wait(run).await?;
+    if !output.status.success() {
+        return Err(git_failed());
+    }
+    Ok(output.value)
 }
 async fn validate_target_policy(
     project: &ProjectHandle,

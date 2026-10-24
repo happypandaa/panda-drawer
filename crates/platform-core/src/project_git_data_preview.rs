@@ -68,9 +68,10 @@ impl ProjectGitManager {
             ));
         }
         self.available()?;
-        let operation = self
-            .store
-            .reserve_transient_operation(id, "data-restore-preview")?;
+        let operation = Arc::new(
+            self.store
+                .reserve_transient_operation(id, "data-restore-preview")?,
+        );
         self.store.check_development_available(id)?;
         let project = self.store.project(id)?;
         project.control.check(false, None, false)?;
@@ -80,6 +81,7 @@ impl ProjectGitManager {
         )?;
         let (_sender, cancel) = watch::channel(false);
         let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), operation.clone());
         let gate = data_versions::read_gate_for_data(&project, &mut context).await?;
         let tools = context.resolve(&self.git).await?;
         let initial =
@@ -93,11 +95,15 @@ impl ProjectGitManager {
         .await?;
         let (target_temporary, target) =
             Box::pin(target_snapshot(self, &project, &tools, &mut context, tree)).await?;
+        context.clear_phase();
         drop(gate);
+        context.clear_operation();
+        let operation = Arc::try_unwrap(operation).map_err(|_| recovery())?;
         // The blocking worker owns both the freeze/gate and operation lease. If
         // this async request is dropped, deletion/migration cannot race its I/O.
-        let (_operation, _live_temporary, current) =
+        let (operation, _live_temporary, current) =
             current_snapshot(self, project.clone(), operation, &mut context).await?;
+        context.bind(self.store.processes(), Arc::new(operation));
         let _gate = data_versions::read_gate_for_data(&project, &mut context).await?;
         let fresh = Box::pin(self.preview_data_git_status(&project, &tools, &mut context)).await?;
         if initial.view.snapshot_digest != fresh.view.snapshot_digest {
@@ -206,10 +212,12 @@ pub(super) async fn target_snapshot(
     tools: &GitToolchain,
     context: &mut Context,
     tree: objects::DataTree,
-) -> Result<(TempDir, version_data::PreparedDataSnapshot), ApiError> {
+) -> Result<(Arc<TempDir>, version_data::PreparedDataSnapshot), ApiError> {
     let temporary = tempfile::Builder::new()
         .prefix("local-projects-data-target-")
         .tempdir()?;
+    let temporary = Arc::new(temporary);
+    context.retain(temporary.clone());
     let root = temporary.path().canonicalize()?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let key = "version-data/snapshot.json".to_string();

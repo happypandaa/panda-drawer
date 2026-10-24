@@ -777,3 +777,129 @@ async fn recovery_cancel_while_waiting_for_gate_keeps_original_pending_identity(
     f.protected_unchanged();
     f.close().await;
 }
+
+#[tokio::test]
+#[ignore = "set LOCAL_PROJECTS_TEST_GIT_ROOT to an explicit disposable official Git resource; no network"]
+async fn official_git_source_materialization_streams_large_blob_and_more_than_one_pipe_of_requests()
+{
+    let resource = PathBuf::from(std::env::var_os("LOCAL_PROJECTS_TEST_GIT_ROOT").unwrap())
+        .canonicalize()
+        .unwrap();
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.test-artifacts")
+        .canonicalize()
+        .unwrap();
+    assert!(resource.starts_with(evidence));
+    let (_temporary, paths) = RuntimePaths::for_test();
+    let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
+    let created = store
+        .create(crate::projects::CreateProjectInput {
+            name: "Disposable raw source materialization".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let project = store.project(&created.id).unwrap();
+    let before_database = fs::read(project.root.join(&project.manifest.database)).unwrap();
+    let operation = Arc::new(
+        store
+            .reserve_transient_operation(&created.id, "raw-source-fixture")
+            .unwrap(),
+    );
+    let phase = Arc::new(project.operation_gate.clone().read_owned().await);
+    let (_stop, receiver) = watch::channel(false);
+    let (_cancel, cancellation) = watch::channel(false);
+    let mut context = Context::new(receiver, cancellation).unwrap();
+    context.bind(store.processes(), operation);
+    context.phase(phase);
+    let environment = GitEnvironmentManager::with_processes(
+        paths.data_root().to_path_buf(),
+        Some(resource),
+        store.processes(),
+    );
+    let tools = context.resolve(&environment).await.unwrap();
+    let template = context.root().join("empty-template");
+    private_dir(&template).unwrap();
+    let mut command = git_command(&tools, context.root(), None);
+    command
+        .args(["init", "--quiet", "--initial-branch=main", "--template"])
+        .arg(&template)
+        .arg(&project.root);
+    context
+        .run(command, vec![])
+        .await
+        .unwrap()
+        .success()
+        .unwrap();
+    let payload = vec![b'p'; 9 * 1024 * 1024];
+    let original = context.root().join("original-large-payload");
+    fs::write(&original, &payload).unwrap();
+    let mut command = git_command(&tools, context.root(), Some(&project));
+    command
+        .args(["hash-object", "--no-filters", "-w", "--"])
+        .arg(&original);
+    let large = one_oid(
+        &context
+            .run(command, vec![])
+            .await
+            .unwrap()
+            .success()
+            .unwrap(),
+    )
+    .unwrap();
+    let mut command = git_command(&tools, context.root(), Some(&project));
+    command.args(["hash-object", "--no-filters", "-w", "--stdin"]);
+    let empty = one_oid(
+        &context
+            .run(command, vec![])
+            .await
+            .unwrap()
+            .success()
+            .unwrap(),
+    )
+    .unwrap();
+    let mut blobs = vec![Blob {
+        path: "app/src/large.bin".into(),
+        oid: large,
+        size: payload.len() as u64,
+        executable: false,
+    }];
+    for index in 0..1700 {
+        blobs.push(Blob {
+            path: format!("app/src/small-{index:04}.txt"),
+            oid: empty.clone(),
+            size: 0,
+            executable: index == 0,
+        });
+    }
+    assert!(blobs.len() * 41 > 64 * 1024);
+    let target = context.root().join("restore-target");
+    private_dir(&target).unwrap();
+    let materialized = materialize_blobs(&project, &tools, &mut context, &blobs, &target)
+        .await
+        .unwrap();
+    assert_eq!(materialized.len(), 1701);
+    assert_eq!(fs::read(target.join("app/src/large.bin")).unwrap(), payload);
+    assert_eq!(
+        materialized["app/src/large.bin"].descriptor.sha256,
+        sha256(&payload)
+    );
+    assert!(
+        fs::metadata(target.join("app/src/small-0000.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111
+            != 0
+    );
+    assert_eq!(
+        fs::read(project.root.join(&project.manifest.database)).unwrap(),
+        before_database
+    );
+    assert!(!project.root.join("app/src/large.bin").exists());
+    assert!(!project.root.join(".git/index").exists());
+    drop(context);
+    assert!(store.processes().shutdown().await.is_empty());
+    assert!(!store.has_active_tasks());
+    assert!(store.shutdown().await.is_empty());
+}
