@@ -11,7 +11,8 @@ export interface SourceInstallCandidate {
   name: string;
   status: string;
   contentDigest?: string;
-  inspection?: { kind: string; name?: string; issues?: unknown[] };
+  buildSourceDigest?: string | null;
+  inspection?: { kind: string; name?: string; requiresBuild?: boolean; issues?: unknown[] };
 }
 export interface PreparedNodeInstall {
   candidateId: string;
@@ -20,7 +21,7 @@ export interface PreparedNodeInstall {
   manifest: { runtime: string; app: { id: string; name: string; version: string }; dataContract?: NodeDataContract; [key: string]: unknown };
   programDigest: string;
   provenance: {
-    sourceId: string; sourceDigest: string; sourceCommit: string | null;
+    sourceId: string; sourceDigest: string; sourceCommit: string | null; buildSourceDigest?: string | null;
     node: { path: string; version: string }; npm: { path: string; version: string }; preparedAt: number;
   };
 }
@@ -53,7 +54,8 @@ const generationPattern = /^gen_[a-f0-9]{32}$/;
 const appPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function eligible(source: SourceInstallCandidate) {
   return source.status === 'ready' && source.inspection?.kind === 'node-service-source'
-    && sourcePattern.test(source.sourceId) && typeof source.contentDigest === 'string' && digestPattern.test(source.contentDigest);
+    && sourcePattern.test(source.sourceId) && typeof source.contentDigest === 'string' && digestPattern.test(source.contentDigest)
+    && (source.buildSourceDigest == null || digestPattern.test(source.buildSourceDigest));
 }
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 function cancelledPreparationRecord(item: InstallRecord) {
@@ -72,6 +74,7 @@ function preparedResult(value: unknown): PreparedNodeInstall | null {
   if (!record(source) || typeof source.sourceId !== 'string' || !sourcePattern.test(source.sourceId)
     || typeof source.sourceDigest !== 'string' || !digestPattern.test(source.sourceDigest)
     || !(source.sourceCommit === null || typeof source.sourceCommit === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(source.sourceCommit))
+    || !(source.buildSourceDigest == null || typeof source.buildSourceDigest === 'string' && digestPattern.test(source.buildSourceDigest))
     || typeof source.preparedAt !== 'number' || !Number.isFinite(source.preparedAt)
     || ![source.node, source.npm].every(tool => record(tool) && typeof tool.path === 'string' && typeof tool.version === 'string')) return null;
   return value as unknown as PreparedNodeInstall;
@@ -128,6 +131,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
   const binding = useRef<{ sourceId: string; digest: string } | null>(null);
   const availableSources = sources.filter(eligible);
   const selected = availableSources.find(source => source.sourceId === sourceId);
+  const requiresBuild = selected?.inspection?.requiresBuild === true && !selected.buildSourceDigest;
   const active = Boolean(task && !task.final);
   const visibleRecords = records.filter(item => item.state === 'unavailable' || item.targetAppId === (targetAppId ?? null));
   const listActive = visibleRecords.some(item => ['preparing', 'committing'].includes(item.state));
@@ -263,11 +267,11 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     const generation = lifetime.current; const choice = choiceRevision.current;
     binding.current = { sourceId: selected.sourceId, digest: selected.contentDigest! };
     try {
-      const value = await invoke<TaskRecord>('node_install_prepare', { input: { sourceId: selected.sourceId, expectedSourceDigest: selected.contentDigest, targetAppId: targetAppId ?? null } });
+      const value = await invoke<TaskRecord>('node_install_prepare', { input: { sourceId: selected.sourceId, expectedSourceDigest: selected.contentDigest, targetAppId: targetAppId ?? null, ...(requiresBuild ? { buildSource: true } : {}) } });
       if (!current(generation) || choice !== choiceRevision.current) return;
       if (value.type !== 'nodeInstallPrepare') throw new Error('返回的任务不是安装准备任务。');
       currentCandidate.current = null; setCandidate(null); setKnownCandidateId('');
-      setNotice('准备任务已接受；依赖准备完成后仍需单独确认安装。');
+      setNotice('准备任务已接受；完成后仍需单独确认安装。');
       await acceptTask(value);
     } catch (cause) { if (current(generation)) setError(messageFrom(cause)); }
     finally { pending.current = false; if (current(generation)) setBusy(false); }
@@ -330,9 +334,9 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
 
   return <section className="node-install-panel" aria-labelledby={`${id}-title`}>
     <h3 id={`${id}-title`}>{targetAppId ? '准备应用更新' : '安装本地服务应用'}</h3>
-    <p>选择已检查的源码候选，先准备安装材料，再确认安装。准备会使用平台选定的 Node/npm 下载生产依赖，并跳过项目与依赖的安装脚本；不会启动应用。</p>
-    <p>需要安装脚本或额外构建的项目可能仍需适配。安装完成后需明确打开应用。</p>
-    {targetAppId && <><p>更新保留现有数据和配置，不自动转换数据。当前应用和候选均须声明相同的数据标识与版本；缺少或不同会阻止普通更新，声明匹配不代表实际数据格式已经验证。请先正常关闭目标应用窗口；平台会在提交前再次核对，不会替你停止或启动应用。</p><p>更新目标：<code>{targetAppId}</code></p></>}
+    <p>选择已检查的来源，准备完成后核对并确认。应用不会自动打开。</p>
+    {targetAppId && <p>更新保留数据和配置，不自动转换业务数据。当前应用和候选均须声明相同的数据标识与版本；缺少或不同会阻止普通更新，声明匹配不代表实际数据格式已经验证。请先正常关闭目标应用窗口。</p>}
+    <details className="node-install-method"><summary>安装方式与支持范围</summary><p>准备使用选定的 Node/npm 下载生产依赖，跳过项目与依赖的安装脚本。来源声明 npm 构建时，须另行明确“构建并准备安装材料”，才执行该脚本；已构建候选不再次执行。安装不启动应用，也不使用原目录的配置、密钥或依赖。</p></details>
     {!targetValid && <p role="alert">更新目标标识无效，请从受管应用详情重新进入。</p>}
     {error && <p className="task-error" role="alert">{error}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
@@ -341,20 +345,26 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
       <label htmlFor={`${id}-source`}>源码候选</label>
       <select id={`${id}-source`} value={sourceId} disabled={busy || active || disabled} onChange={event => changeSource(event.target.value)}>
         <option value="">请选择已检查的本地服务源码</option>
-        {availableSources.map(source => <option key={source.sourceId} value={source.sourceId}>{source.inspection?.name ?? source.name} · {source.sourceId}</option>)}
+        {availableSources.map(source => <option key={source.sourceId} value={source.sourceId}>{source.inspection?.name ?? source.name}</option>)}
       </select>
       {!availableSources.length && <p>暂无可准备的源码候选。请先获取或检查带本地服务声明的源码，并确认获取状态为已完成。</p>}
       {sourceId && !selected && <p role="alert">所选源码当前不可用或已改变，请重新选择并准备。</p>}
-      <button type="submit" className="primary-button" disabled={disabled || busy || active || checking || listActive || !selected || !targetValid}>{candidate ? '重新准备安装材料' : '准备安装材料'}</button>
+      {requiresBuild && <p className="node-config-warning">此来源需要构建，将执行声明的构建脚本。</p>}
+      <button type="submit" className="primary-button" disabled={disabled || busy || active || checking || listActive || !selected || !targetValid}>{requiresBuild ? '构建并准备安装材料' : candidate ? '重新准备安装材料' : '准备安装材料'}</button>
     </form>
     {candidate && <section className="operation-confirmation" aria-label="安装候选确认">
       <h4>{candidate.manifest.app.name} · {candidate.manifest.app.version}</h4>
-      <p>应用标识：<code>{candidate.manifest.app.id}</code></p>
       <NodeDataContractInfo value={candidate.manifest.dataContract ?? null} matched={Boolean(targetAppId && checked)} legacyNotice={targetAppId ? '后续普通更新无法核对数据契约，将被阻止。' : '可以安装为新应用；后续普通更新无法核对数据契约，将被阻止。'} />
-      <p>来源候选：<code>{candidate.provenance.sourceId}</code></p>
-      {candidate.provenance.sourceCommit && <p>源码提交：<code>{candidate.provenance.sourceCommit}</code></p>}
-      <p>准备环境：Node {candidate.provenance.node.version} / npm {candidate.provenance.npm.version}</p>
-      <details><summary>核验记录</summary><p>候选：<code>{candidate.candidateId}</code></p><p>程序代次：<code>{candidate.generation}</code></p><p>源码摘要：<code>{candidate.provenance.sourceDigest}</code></p></details>
+      <details className="node-install-verification"><summary>核验记录</summary>
+        <p>应用标识：<code>{candidate.manifest.app.id}</code></p>
+        {targetAppId && <p>更新目标：<code>{targetAppId}</code></p>}
+        <p>来源候选：<code>{candidate.provenance.sourceId}</code></p>
+        {candidate.provenance.sourceCommit && <p>源码基线提交：<code>{candidate.provenance.sourceCommit}</code></p>}
+        {candidate.provenance.buildSourceDigest && <p>构建源码摘要：<code>{candidate.provenance.buildSourceDigest}</code></p>}
+        <p>准备环境：Node {candidate.provenance.node.version} / npm {candidate.provenance.npm.version}</p>
+        <p>候选：<code>{candidate.candidateId}</code></p><p>程序代次：<code>{candidate.generation}</code></p>
+        <p>来源摘要：<code>{candidate.provenance.sourceDigest}</code></p><p>程序摘要：<code>{candidate.programDigest}</code></p>
+      </details>
       {!sameSource && <p role="alert">候选与当前源码记录不一致，不能直接安装，请重新准备。</p>}
       {!installed && <>
         {targetAppId && <label><input type="checkbox" checked={windowClosed} disabled={busy || active} onChange={event => setWindowClosed(event.target.checked)} />我已正常关闭目标应用窗口</label>}
@@ -363,7 +373,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
       </>}
     </section>}
     {knownCandidateId && !installed && <button type="button" className="refresh-button" disabled={busy || active || checking || disabled} onClick={() => { setError(''); void lookup(knownCandidateId, currentCandidate.current); }}>{checking ? '正在核验…' : '核验准备结果'}</button>}
-    {installed && <p role="status">已确认{targetAppId ? '更新' : '安装'}，应用未自动启动。<br />应用编号：<code>{installed.appId}</code></p>}
+    {installed && <p role="status">已确认{targetAppId ? '更新' : '安装'}，应用未自动启动。</p>}
     {task && <><ProjectTask key={task.taskId} task={task} />{!task.final && <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={busy} onClick={() => void poll()}>刷新任务状态</button>{task.type === 'nodeInstallPrepare' && <button type="button" className="refresh-button" disabled={busy} onClick={() => void cancel()}>取消准备</button>}</div>}</>}
     <section aria-label="保留的安装记录"><div className="storage-heading"><h4>保留的安装记录</h4><button type="button" className="refresh-button" disabled={listing || busy} onClick={() => void readList()}>{listing ? '读取记录…' : '刷新安装记录'}</button></div>
       {listError && <p role="alert">{listError}</p>}{listIssues.map((issue, index) => <p role="alert" key={index}>{messageFrom(issue)}</p>)}

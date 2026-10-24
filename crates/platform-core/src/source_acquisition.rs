@@ -6,6 +6,7 @@ use crate::{
     environment::ExecutableInfo,
     git_environment::{GitEnvironmentManager, GitToolchain},
     node_app_manifest::{TrialManifest, TrialRuntime},
+    node_development_build::NodeDevelopmentBuildOutput,
     projects::{check_no_symlinks, checked_relative, valid_id, validate_manifest},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
 };
@@ -44,10 +45,25 @@ const MAX_METADATA: u64 = 256 * 1024;
 const MAX_TREE_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT: usize = 64 * 1024;
 
+enum CaptureInput {
+    External(PathBuf),
+    Built(NodeDevelopmentBuildOutput, Option<String>),
+}
+impl CaptureInput {
+    fn path(&self) -> &Path {
+        match self {
+            Self::External(path) => path,
+            Self::Built(output, _) => &output.program_root,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcquireSourceInput {
     pub url: String,
+    #[serde(default)]
+    pub branch: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -65,6 +81,8 @@ pub struct SourceInspection {
     pub name: Option<String>,
     pub next_step: String,
     pub execution_state: String,
+    #[serde(default)]
+    pub requires_build: bool,
     pub issues: Vec<ApiError>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -83,11 +101,15 @@ struct SourceRecord {
     status: String,
     phase: String,
     url: String,
+    #[serde(default)]
+    branch: Option<String>,
     provider: String,
     #[serde(default)]
     local_source_path: Option<PathBuf>,
     #[serde(default)]
     capture_policy: Option<String>,
+    #[serde(default)]
+    build_source_digest: Option<String>,
     #[serde(default)]
     excluded_paths: Vec<String>,
     created_at: u64,
@@ -101,6 +123,8 @@ struct SourceRecord {
     content_digest: Option<String>,
     inspection: Option<SourceInspection>,
     error: Option<ApiError>,
+    #[serde(skip)]
+    legacy_build_inspection: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,9 +135,11 @@ pub struct SourceCandidate {
     pub status: String,
     pub phase: String,
     pub url: String,
+    pub branch: Option<String>,
     pub provider: String,
     pub local_source_path: Option<PathBuf>,
     pub capture_policy: Option<String>,
+    pub build_source_digest: Option<String>,
     pub capture_notice: Option<String>,
     pub excluded_paths: Vec<String>,
     pub created_at: u64,
@@ -179,13 +205,22 @@ impl SourceAcquisitionManager {
         Ok(path)
     }
     fn read_record(&self, id: &str) -> Result<SourceRecord, ApiError> {
-        let record: SourceRecord =
+        let value: serde_json::Value =
             serde_json::from_slice(&read_small(&self.slot(id)?.join("source.json"))?)
                 .map_err(|_| invalid("源码候选记录无效，请保留现场。"))?;
+        let legacy_build_inspection = value["inspection"].get("requiresBuild").is_none();
+        let mut record: SourceRecord =
+            serde_json::from_value(value).map_err(|_| invalid("源码候选记录无效，请保留现场。"))?;
+        record.legacy_build_inspection = legacy_build_inspection;
         if record.schema_version != 1
             || record.source_id != id
             || !valid_id(&record.task_id)
             || record.repository != "repository"
+            || record
+                .branch
+                .as_deref()
+                .is_some_and(|branch| validate_branch(branch).is_err())
+            || (record.provider == "local" && record.branch.is_some())
             || !matches!(
                 record.status.as_str(),
                 "acquiring" | "ready" | "failed" | "cancelled" | "interrupted"
@@ -204,6 +239,7 @@ impl SourceAcquisitionManager {
     }
     fn view(&self, record: SourceRecord) -> Result<SourceCandidate, ApiError> {
         let slot = self.slot(&record.source_id)?;
+        let built = record.capture_policy.as_deref() == Some("node-development-build-v1");
         let source_path = if record.status == "ready" {
             let payload = slot.join("repository");
             check_no_symlinks(&payload, false)?;
@@ -214,6 +250,39 @@ impl SourceAcquisitionManager {
         } else {
             None
         };
+        let mut inspection = record.inspection;
+        if record.build_source_digest.is_some() {
+            if let Some(inspection) = &mut inspection {
+                inspection.requires_build = false;
+            }
+        } else if record.legacy_build_inspection {
+            if let (Some(inspection), Some(root)) = (&mut inspection, &source_path) {
+                if inspection.kind == "node-service-source" {
+                    // Old metadata did not describe build authorization. Derive
+                    // it from a verified immutable public manifest, read-only.
+                    // New records avoid this additional full tree verification.
+                    let path = root.join("local-app.json");
+                    let bytes = read_small(&path)?;
+                    if record.content_digest.as_deref() != Some(directory_digest(root)?.as_str())
+                        || read_small(&path)? != bytes
+                    {
+                        return Err(error(
+                            "SOURCE_CHANGED",
+                            "候选源码已经改变，请重新获取后核对构建方式。",
+                        ));
+                    }
+                    let manifest = TrialManifest::parse(&bytes)
+                        .map_err(|_| invalid("应用声明无效，无法核对旧来源的构建方式。"))?;
+                    inspection.requires_build =
+                        manifest.development.as_ref().is_some_and(|declaration| {
+                            matches!(
+                                declaration.build,
+                                crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
+                            )
+                        });
+                }
+            }
+        }
         Ok(SourceCandidate {
             source_id: record.source_id,
             task_id: record.task_id,
@@ -221,10 +290,16 @@ impl SourceAcquisitionManager {
             status: record.status,
             phase: record.phase,
             url: record.url,
-            capture_notice: (record.provider == "local").then(|| "按已知路径排除了本机数据、依赖、凭据和临时文件；未知文件中的秘密无法通用识别，不能视为已脱敏。".into()),
+            capture_notice: (record.provider == "local").then(|| if built {
+                "开发材料已在独立目录准备，未启动应用。已排除 Git、依赖及已知数据和凭据目录，不保证识别源码中的秘密。".into()
+            } else {
+                "按已知路径排除了本机数据、依赖、凭据和临时文件；未知文件中的秘密无法通用识别，不能视为已脱敏。".into()
+            }),
             provider: record.provider,
+            branch: record.branch,
             local_source_path: record.local_source_path,
             capture_policy: record.capture_policy,
+            build_source_digest: record.build_source_digest,
             excluded_paths: record.excluded_paths,
             created_at: record.created_at,
             completed_at: record.completed_at,
@@ -236,14 +311,17 @@ impl SourceAcquisitionManager {
             file_count: record.file_count,
             total_bytes: record.total_bytes,
             content_digest: record.content_digest,
-            inspection: record.inspection,
+            inspection,
             error: record.error,
-            execution_state: "not-executed".into(),
+            execution_state: if built { "build-prepared-program-not-started" } else { "not-executed" }.into(),
             registration_available: false,
         })
     }
     pub fn info(&self, id: &str) -> Result<SourceCandidate, ApiError> {
         self.view(self.read_record(id)?)
+    }
+    pub(crate) fn git_environment(&self) -> GitEnvironmentManager {
+        self.git.clone()
     }
     /// Recheck downloaded bytes before any later operation. Inspection alone is
     /// deliberately not an authorization to execute a mutable source directory.
@@ -329,9 +407,11 @@ impl SourceAcquisitionManager {
             status: "unavailable".into(),
             phase: "record-unavailable".into(),
             url: String::new(),
+            branch: None,
             provider: String::new(),
             local_source_path: None,
             capture_policy: None,
+            build_source_digest: None,
             capture_notice: None,
             excluded_paths: Vec::new(),
             created_at: 0,
@@ -368,8 +448,11 @@ impl SourceAcquisitionManager {
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord, ApiError> {
         let (url, provider, repository_name) = validate_url(&input.url)?;
+        if let Some(branch) = &input.branch {
+            validate_branch(branch)?;
+        }
         let name = input.name.unwrap_or(repository_name);
-        self.start_source(name, url, provider, None, stop)
+        self.start_source(name, url, input.branch, provider, None, stop)
     }
     pub async fn capture(
         self: &Arc<Self>,
@@ -384,14 +467,47 @@ impl SourceAcquisitionManager {
                 .to_string_lossy()
                 .into_owned()
         });
-        self.start_source(name, String::new(), "local".into(), Some(source), stop)
+        self.start_source(
+            name,
+            String::new(),
+            None,
+            "local".into(),
+            Some(CaptureInput::External(source)),
+            stop,
+        )
+    }
+    /// This internal entry accepts only a token produced by the isolated Node
+    /// builder. It never relaxes public local-directory capture restrictions.
+    pub(crate) async fn capture_built_output(
+        self: &Arc<Self>,
+        output: NodeDevelopmentBuildOutput,
+        name: Option<String>,
+        commit: Option<String>,
+        stop: watch::Receiver<bool>,
+    ) -> Result<TaskRecord, ApiError> {
+        output.verify()?;
+        if commit.as_deref().is_some_and(|value| {
+            ![40, 64].contains(&value.len()) || !value.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(invalid("构建来源提交号无效。"));
+        }
+        let name = name.unwrap_or_else(|| "Node 开发构建".into());
+        self.start_source(
+            name,
+            String::new(),
+            None,
+            "local".into(),
+            Some(CaptureInput::Built(output, commit)),
+            stop,
+        )
     }
     fn start_source(
         self: &Arc<Self>,
         name: String,
         url: String,
+        branch: Option<String>,
         provider: String,
-        local_source_path: Option<PathBuf>,
+        local_input: Option<CaptureInput>,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord, ApiError> {
         if name.trim().is_empty()
@@ -411,7 +527,16 @@ impl SourceAcquisitionManager {
                 "已有源码正在获取，请等待完成或取消。",
             ));
         }
-        let local = local_source_path.is_some();
+        let local = local_input.is_some();
+        let built = matches!(local_input, Some(CaptureInput::Built(_, _)));
+        let commit = match &local_input {
+            Some(CaptureInput::Built(_, commit)) => commit.clone(),
+            _ => None,
+        };
+        let build_source_digest = match &local_input {
+            Some(CaptureInput::Built(output, _)) => Some(output.source_digest.clone()),
+            _ => None,
+        };
         let task = self.tasks.create_workspace_operation(if local {
             "sourceCapture"
         } else {
@@ -431,6 +556,7 @@ impl SourceAcquisitionManager {
             }
         };
         let record = SourceRecord {
+            legacy_build_inspection: false,
             schema_version: 1,
             source_id: id.clone(),
             task_id: task.task_id.clone(),
@@ -438,16 +564,24 @@ impl SourceAcquisitionManager {
             status: "acquiring".into(),
             phase: "queued".into(),
             url,
+            branch,
             provider,
-            local_source_path,
-            capture_policy: local.then(|| CAPTURE_POLICY.into()),
+            local_source_path: local_input.as_ref().map(|input| input.path().to_path_buf()),
+            capture_policy: local.then(|| {
+                if built {
+                    "node-development-build-v1".into()
+                } else {
+                    CAPTURE_POLICY.into()
+                }
+            }),
+            build_source_digest,
             excluded_paths: Vec::new(),
             created_at: now(),
             completed_at: None,
             repository: "repository".into(),
             shallow: !local,
             git: None,
-            commit: None,
+            commit,
             file_count: None,
             total_bytes: None,
             content_digest: None,
@@ -472,7 +606,7 @@ impl SourceAcquisitionManager {
         let manager = self.clone();
         let runner = tokio::spawn(async move {
             let _lease = lease;
-            manager.run(record, stop, cancel).await;
+            manager.run(record, stop, cancel, local_input).await;
         });
         let mut runners = self.runners.lock().unwrap();
         runners.retain(|runner| !runner.is_finished());
@@ -543,6 +677,7 @@ impl SourceAcquisitionManager {
         mut record: SourceRecord,
         stop: watch::Receiver<bool>,
         cancel: watch::Receiver<bool>,
+        local_input: Option<CaptureInput>,
     ) {
         let mut control = RunControl {
             stop,
@@ -551,7 +686,8 @@ impl SourceAcquisitionManager {
             monitor: self.root().join(&record.source_id),
         };
         let result = if record.provider == "local" {
-            self.capture_local(&mut record, &mut control).await
+            self.capture_local(&mut record, &mut control, local_input.as_ref())
+                .await
         } else {
             self.acquire(&mut record, &mut control).await
         }
@@ -610,13 +746,28 @@ impl SourceAcquisitionManager {
         &self,
         record: &mut SourceRecord,
         control: &mut RunControl,
+        input: Option<&CaptureInput>,
     ) -> Result<(), ApiError> {
         self.phase(record, "inspecting-local-scope")?;
         let original = record
             .local_source_path
             .clone()
             .ok_or_else(|| invalid("缺少本机来源路径。"))?;
-        let source = validate_local_root(&original, &self.paths)?;
+        let trusted = match input {
+            Some(CaptureInput::Built(output, _)) => {
+                if output.program_root != original {
+                    return Err(invalid("构建产物位置已变化。"));
+                }
+                output.verify()?;
+                Some(output)
+            }
+            _ => None,
+        };
+        let source = if trusted.is_some() {
+            original
+        } else {
+            validate_local_root(&original, &self.paths)?
+        };
         let slot = self.slot(&record.source_id)?;
         let stage = slot.join(".acquiring");
         new_dir(&stage)?;
@@ -639,8 +790,14 @@ impl SourceAcquisitionManager {
         record.file_count = Some(copied.file_count);
         record.total_bytes = Some(copied.total_bytes);
         record.content_digest = Some(copied.digest);
+        if let Some(output) = trusted {
+            output.verify()?;
+        }
         self.phase(record, "inspecting")?;
         let mut inspection = inspect_directory(&candidate)?;
+        if trusted.is_some() {
+            inspection.execution_state = "build-prepared-program-not-started".into();
+        }
         if !copied.issues.is_empty() {
             inspection.kind = "needs-adaptation".into();
             inspection.next_step = "review-and-adapt-source".into();
@@ -692,11 +849,37 @@ impl SourceAcquisitionManager {
                 "--no-local",
                 "--no-recurse-submodules",
             ])
-            .arg(format!("--template={}", template.display()))
-            .arg("--")
-            .arg(&record.url)
-            .arg(&repository);
+            .arg(format!("--template={}", template.display()));
+        if let Some(branch) = &record.branch {
+            clone.arg("--branch").arg(branch);
+        }
+        clone.arg("--").arg(&record.url).arg(&repository);
         execute(clone, control, MAX_OUTPUT).await?;
+        if let Some(branch) = &record.branch {
+            // --branch can also name a tag. Accept only an actual local branch
+            // created from the explicitly requested remote branch, never a
+            // detached tag/commit or a fallback to the remote default branch.
+            let mut symbolic = isolated_command(&toolchain, &repository, &home, &template);
+            symbolic.args(["symbolic-ref", "--quiet", "HEAD"]);
+            let actual = execute(symbolic, control, MAX_OUTPUT)
+                .await
+                .map_err(|issue| {
+                    if issue.code == "SOURCE_GIT_FAILED" {
+                        error(
+                            "SOURCE_BRANCH_UNAVAILABLE",
+                            "未获取到指定分支，请核对公开仓库中的分支名称。",
+                        )
+                    } else {
+                        issue
+                    }
+                })?;
+            if actual != format!("refs/heads/{branch}\n").as_bytes() {
+                return Err(error(
+                    "SOURCE_BRANCH_UNAVAILABLE",
+                    "获取结果与指定分支不一致，未发布源码候选。",
+                ));
+            }
+        }
         self.phase(record, "validating-objects")?;
         let mut head = isolated_command(&toolchain, &repository, &home, &template);
         head.args(["rev-parse", "--verify", "HEAD^{commit}"]);
@@ -771,6 +954,12 @@ fn local_excluded(path: &str, output: Option<&str>) -> bool {
     }) {
         return true;
     }
+    if ["user", "work"]
+        .iter()
+        .any(|name| folded == *name || folded.starts_with(&format!("{name}/")))
+    {
+        return true;
+    }
     folded.split('/').any(|name| {
         matches!(
             name,
@@ -811,7 +1000,7 @@ fn local_excluded(path: &str, output: Option<&str>) -> bool {
                 | "backups"
                 | "trash"
                 | ".ds_store"
-        ) || name.starts_with(".env")
+        ) || (name.starts_with(".env") && name != ".env.example")
             || [
                 ".pem",
                 ".key",
@@ -1136,7 +1325,9 @@ fn validate_local_dependencies(
         if lower.starts_with("file:") || lower.starts_with("link:") {
             target(base, &value[5..], plan, false)
         } else if force
-            || value.starts_with(['.', '/', '~'])
+            || value.starts_with(['.', '/'])
+            || value == "~"
+            || value.starts_with("~/")
             || value.contains('\\')
             || (value.len() > 1 && value.as_bytes()[1] == b':')
         {
@@ -1462,6 +1653,30 @@ fn validate_url(value: &str) -> Result<(String, String, String), ApiError> {
         repo.into(),
     ))
 }
+fn validate_branch(value: &str) -> Result<(), ApiError> {
+    if value.is_empty()
+        || value.len() > 128
+        || value == "HEAD"
+        || value.starts_with("refs/")
+        || value.contains("..")
+        || value.contains("@{")
+        || value.ends_with('.')
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-/".contains(&byte))
+        || value
+            .split('/')
+            .any(|part| part.is_empty() || part.starts_with('.') || part.ends_with(".lock"))
+        || ([40, 64].contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(error(
+            "SOURCE_BRANCH_INVALID",
+            "请输入普通分支名称，例如 main 或 codex/tts-providers。",
+        ));
+    }
+    Ok(())
+}
 fn supported_version(version: &str) -> bool {
     ["2.54.0", "2.56.0"].iter().any(|base| {
         version == *base
@@ -1484,6 +1699,7 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         name: None,
         next_step: "review-and-adapt-source".into(),
         execution_state: "not-executed".into(),
+        requires_build: false,
         issues: Vec::new(),
     };
     let project = path.join("project.json");
@@ -1530,6 +1746,12 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         });
         match parsed {
             Ok(manifest) if manifest.runtime == TrialRuntime::NodeService => {
+                result.requires_build = manifest.development.as_ref().is_some_and(|declaration| {
+                    matches!(
+                        declaration.build,
+                        crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
+                    )
+                });
                 result.kind = "node-service-source".into();
                 result.name = Some(manifest.app.name);
                 result.next_step = "prepare-node-runtime-before-registration".into();

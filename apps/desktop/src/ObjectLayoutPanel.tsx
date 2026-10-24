@@ -5,7 +5,7 @@ export function ObjectLayoutPanel({ layout }: { layout?: ObjectLayout | null }) 
     <summary>文件与版本范围</summary>
     {!layout ? <p>尚未读取或未能核验目录与版本范围，暂不能判断源码、构建和数据库纳管情况。</p> : <>
       <dl className="object-layout-paths">
-        <div><dt>{layout.kind === 'local-node-source' ? '登记的外部应用目录' : '源码目录'}</dt><dd>{layout.source.path ? <code>{layout.source.path}</code> : '路径不可用'}<p>{({ available: '源码目录存在', missing: '源码缺失', unverified: '源码未核实' })[layout.source.state]}。{layout.source.reason}</p></dd></div>
+        <div><dt>源码目录</dt><dd>{layout.source.path ? <code>{layout.source.path}</code> : '路径不可用'}<p>{({ available: '源码目录存在', missing: '源码缺失', unverified: '源码未核实' })[layout.source.state]}。{layout.source.reason}</p></dd></div>
         <div><dt>{layout.kind === 'project-v1' ? '声明的网页产物目录' : '当前网页运行目录'}</dt><dd>{layout.runtime.webRoot ? <code>{layout.runtime.webRoot}</code> : '未声明或不可用'}</dd></div>
         <div><dt>{layout.kind === 'project-v1' ? '声明的后端产物目录' : '当前后端运行目录'}</dt><dd>{layout.runtime.backendRoot ? <code>{layout.runtime.backendRoot}</code> : '未声明或不可用'}</dd></div>
         <div><dt>业务数据目录</dt><dd>{layout.data.root ? <code>{layout.data.root}</code> : '路径未能核验'}</dd></div>

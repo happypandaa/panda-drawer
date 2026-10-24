@@ -28,6 +28,9 @@ pub use deletion::DeleteNodeAppInput;
 #[path = "node_app_directory.rs"]
 mod directory;
 pub use directory::DirectoryInitializeInput;
+#[path = "node_app_development.rs"]
+pub(crate) mod development;
+pub use development::{NodeDevelopmentSource, NodeDevelopmentSourceLease};
 
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
@@ -83,6 +86,7 @@ pub struct NodeApps {
     node_path: PathBuf,
     digest: String,
     inner: Mutex<Inner>,
+    development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: std::sync::Mutex<()>,
     directory_stopping: std::sync::atomic::AtomicBool,
 }
@@ -103,6 +107,7 @@ impl NodeApps {
             node_path,
             digest,
             inner: Mutex::new(Inner::default()),
+            development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: std::sync::Mutex::new(()),
             directory_stopping: std::sync::atomic::AtomicBool::new(false),
         })
@@ -117,7 +122,12 @@ impl NodeApps {
 
     fn load_source(&self, source: &Path) -> Result<TrialManifest> {
         ordinary_path(source, true)?;
-        if source.starts_with(&self.data_root) || self.data_root.starts_with(source) {
+        if source.starts_with(&self.data_root)
+            || self.data_root.starts_with(source)
+            || source
+                .components()
+                .any(|part| part.as_os_str() == ".platform")
+        {
             return Err(fail(
                 "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
             ));
@@ -209,9 +219,7 @@ impl NodeApps {
             self.load_source(&record.source_path)?
         };
         if digest_manifest(&record.source_path)? != record.manifest_digest {
-            return Err(fail(
-                "应用说明文件已更改，当前已暂停启动。请保留原配置和源码以便核对；此版本尚未提供声明更新入口。",
-            ));
+            return Err(fail("应用说明已更改，请从开发工具构建并更新后再打开。"));
         }
         Ok(manifest)
     }
@@ -262,6 +270,19 @@ impl NodeApps {
         } else {
             "stopped"
         };
+        // Ordinary detail/configuration reads do not establish a writable
+        // development association. That requires the explicit development entry.
+        let development_source = self
+            .read_development_binding(&record.id)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                record
+                    .managed
+                    .as_ref()
+                    .and_then(|managed| managed.development_source.clone())
+            })
+            .filter(|binding| binding.validate_record().is_ok());
         let mut object_layout = crate::object_layout::node_layout(
             &record.source_path,
             &self.root.join(&record.id),
@@ -272,10 +293,31 @@ impl NodeApps {
             object_layout["runtime"]["external"] = json!(false);
             object_layout["build"] = json!({"state":"unavailable","reason":"此程序由独立安装候选准备；打开应用不会安装依赖，普通更新须重新准备并核验候选。"});
         }
+        if let Some(source) = &development_source {
+            let available = source
+                .source(&record.id, record.managed.is_none())
+                .validate()
+                .is_ok();
+            object_layout["source"] = json!({"state":if available {"available"} else {"missing"},"path":source.source_root,"reason":if available {""} else {"源码目录已变化，请重新绑定。"}});
+            object_layout["build"] = development::build_capability(source, available);
+            if available {
+                let source_manifest = TrialManifest::load(&source.source_root).ok();
+                object_layout["versioning"] = crate::object_layout::node_layout(
+                    &source.source_root,
+                    &self.root.join(&record.id),
+                    source_manifest.as_ref(),
+                )["versioning"]
+                    .clone();
+                object_layout["versioning"]["state"] = json!("source-git");
+                object_layout["versioning"]["reason"] =
+                    json!("在“源码版本”中查看与保存；尚未核实远端同步。");
+            }
+        }
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
             "dataContract":manifest.data_contract,
             "objectLayout":object_layout,
+            "development":development_source.as_ref().map(|source|json!({"sourcePath":source.source_root,"runtimeIsSource":record.managed.is_none(),"manifestId":source.manifest_id})),
             "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
@@ -415,7 +457,13 @@ impl NodeApps {
         )
     }
 
+    fn require_no_pending_delete(&self, id: &str) -> Result<()> {
+        deletion::require_available(&self.root, id)
+    }
+
     fn require_install_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
+        self.require_no_pending_delete(id)?;
+        self.require_no_development_operation(id)?;
         if inner.shutting_down || inner.running.contains_key(id) {
             return Err(ApiError::new(
                 "NODE_INSTALL_BUSY",
@@ -439,10 +487,27 @@ impl NodeApps {
         }
         self.require_install_stopped(id, inner)?;
         let record = self.registration(id)?;
-        let managed = record.managed.as_ref().ok_or_else(|| {
-            fail("外部登记应用不能原地转为受管安装，请保留现有应用并新建安装实例。")
-        })?;
-        let manifest = self.manifest(&record)?;
+        let binding = self.development_binding(&record)?;
+        if record.managed.is_none() {
+            binding
+                .as_ref()
+                .ok_or_else(|| fail("请先确认应用源码目录。"))?
+                .source(id, true)
+                .validate()?;
+        }
+        let manifest_value = if record.managed.is_some() {
+            serde_json::from_slice(&read_small(&record.source_path.join("local-app.json"))?)?
+        } else {
+            binding
+                .as_ref()
+                .ok_or_else(|| fail("请先确认应用源码目录。"))?
+                .registered_manifest()?
+        };
+        let manifest = TrialManifest::parse(&serde_json::to_vec(&manifest_value)?)
+            .map_err(|error| fail(error.to_string()))?;
+        if record.managed.is_some() {
+            self.manifest(&record)?;
+        }
         let revision = self
             .store(id)?
             .view(&manifest)
@@ -451,11 +516,20 @@ impl NodeApps {
         Ok(InstallTargetSnapshot {
             app_id: id.into(),
             registration_digest: node_app_install::registration_digest(&self.root.join(id))?,
-            generation: Some(managed.generation.clone()),
-            manifest: Some(serde_json::from_slice(&read_small(
-                &record.source_path.join("local-app.json"),
-            )?)?),
+            generation: record
+                .managed
+                .as_ref()
+                .map(|managed| managed.generation.clone()),
+            manifest: Some(manifest_value),
             configuration_revision: revision,
+            external_registration: record
+                .managed
+                .is_none()
+                .then(|| read_small(&self.root.join(id).join("registration.json")))
+                .transpose()?
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose()?,
+            development_source: binding,
         })
     }
 
@@ -525,16 +599,48 @@ impl NodeApps {
     }
 
     fn available_detail(&self, record: &Registration, inner: &Inner) -> Value {
-        self.manifest(record).and_then(|manifest|self.detail(record,&manifest,inner))
-            .unwrap_or_else(|error|json!({
-                "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
-                "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
-                "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
-                "dataContract":null,
-                "objectLayout":null,
-                "restartRequired":false,"runningRevision":null,"lastError":error.message,
-                "configuration":{"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]
-            }))
+        let result = self
+            .require_no_pending_delete(&record.id)
+            .and_then(|()| self.manifest(record))
+            .and_then(|manifest| self.detail(record, &manifest, inner));
+        match result {
+            Ok(detail) => detail,
+            Err(error) => {
+                // A developer may edit the external declaration before its
+                // first managed publication. Show the registered configuration
+                // snapshot, while keeping launch blocked until explicit apply.
+                let previous = (|| -> Result<Value> {
+                    if record.managed.is_some() {
+                        return Err(error.clone());
+                    }
+                    let binding = self
+                        .read_development_binding(&record.id)?
+                        .ok_or_else(|| error.clone())?;
+                    binding.validate_record()?;
+                    if binding.source_root != record.source_path
+                        || binding.registered_manifest_digest != record.manifest_digest
+                    {
+                        return Err(error.clone());
+                    }
+                    let manifest =
+                        TrialManifest::parse(&serde_json::to_vec(&binding.registered_manifest()?)?)
+                            .map_err(|_| error.clone())?;
+                    let mut detail = self.detail(record, &manifest, inner)?;
+                    detail["state"] = json!("failed");
+                    detail["lastError"] = json!(error.message);
+                    detail["configuration"]["canStart"] = json!(false);
+                    Ok(detail)
+                })();
+                previous.unwrap_or_else(|_| json!({
+                    "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
+                    "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
+                    "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
+                    "objectLayout":null,"dataContract":null,
+                    "restartRequired":false,"runningRevision":null,"lastError":error.message,
+                    "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]
+                }))
+            }
+        }
     }
 
     pub async fn configuration(&self, id: &str) -> Result<Value> {
@@ -545,6 +651,7 @@ impl NodeApps {
 
     pub async fn save(&self, id: &str, input: SaveConfigurationRequest) -> Result<Value> {
         let inner = self.inner.lock().await;
+        self.require_no_development_operation(id)?;
         let record = self.registration(id)?;
         let manifest = self.manifest(&record)?;
         self.store(id)?
@@ -572,6 +679,7 @@ impl NodeApps {
     }
 
     async fn start_locked(&self, id: &str, inner: &mut Inner) -> Result<()> {
+        self.require_no_development_operation(id)?;
         if inner.shutting_down {
             return Err(fail("平台正在关闭，不能启动应用。"));
         }
@@ -928,12 +1036,12 @@ fn read_small(path: &Path) -> Result<Vec<u8>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > 65536 {
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > 256 * 1024 {
             return Err(fail("应用记录必须为大小受限且不共享硬链接的普通文件。"));
         }
     }
-    file.take(65537).read_to_end(&mut bytes)?;
-    if bytes.len() > 65536 {
+    file.take(256 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 256 * 1024 {
         return Err(fail("应用记录超出大小限制。"));
     }
     Ok(bytes)

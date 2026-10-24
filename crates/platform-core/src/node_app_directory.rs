@@ -406,7 +406,7 @@ impl NodeApps {
             .replace('\'', "&#39;");
         let html = INDEX.replace("__LOCAL_APP_NAME__", &html_name);
         let readme = format!("# {name}\n\n这是一个本地起始应用。在平台选择“生成并添加项目”会创建源码并完成添加；成功后可从项目列表进入。若目录已有这些文件但未出现在列表，重新选择目录并确认添加即可，无需再次生成。生成和添加均不会安装依赖或启动应用。\n\n网页包含连接检查按钮。使用平台提供的独立数据目录保存持久数据；不要把用户数据或密钥写进源码、Git或分享包。配置、打开与关闭均由平台管理。\n");
-        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。dataContract 声明兼容性；更改数据格式前明确迁移策略。初始应用不创建业务数据。\n\n修改后回平台重新检查；需要改变 local-app.json 的已登记外部应用请先核对平台当前声明更新能力，不要绕过暂停提示。\n";
+        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。dataContract 声明兼容性；更改数据格式前明确迁移策略。初始应用不创建业务数据。\n\n首次修改前，在平台应用详情展开“开发与更新”，明确构建并更新，把运行副本与作者源码分开；之后把同一源码仓库交给 AI，修改并测试，再构建、核验并明确更新。应用标识、配置和数据契约不兼容时必须停止，不要绕过暂停提示。\n";
         let package_name = format!("local-starter-{}", Uuid::new_v4().simple());
         let package = serde_json::to_vec_pretty(
             &json!({"name":package_name,"version":"0.1.0","private":true,"type":"module"}),

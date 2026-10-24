@@ -130,6 +130,8 @@ impl Fixture {
                     .unwrap(),
             ),
             configuration_revision: revision,
+            external_registration: None,
+            development_source: None,
         }
     }
     async fn shutdown(self) {
@@ -143,6 +145,95 @@ fn live_control() -> (watch::Sender<bool>, watch::Sender<bool>, InstallControl) 
     (stop, cancel, InstallControl::new(stopped, cancelled))
 }
 const NPM_OK: &str = "mkdir -p node_modules; printf '{}' > node_modules/.package-lock.json";
+
+#[tokio::test]
+async fn bundled_platform_tools_are_preserved_hashed_and_not_executed() {
+    let fixture = Fixture::new(&format!(
+        "{NPM_OK}\nmkdir -p node_modules/platform-tools\nprintf 'MZ-disposable-windows-tool' > node_modules/platform-tools/service.exe\nprintf 'MZ-disposable-windows-library' > node_modules/platform-tools/service.DLL\nprintf 'disposable-library' > node_modules/platform-tools/library.so\nprintf 'disposable-library' > node_modules/platform-tools/library.dylib\nprintf '#!/bin/sh\\nexit 91\\n' > node_modules/platform-tools/tool.EXE\nchmod +x node_modules/platform-tools/tool.EXE"
+    ));
+    let target = InstallTargetSnapshot::fresh();
+    let prepared = fixture.prepare(target.clone()).await;
+    let installed = fixture.apply(&prepared, &target);
+    let program = fixture
+        .installer
+        .slot(&installed.app_id)
+        .unwrap()
+        .join("generations")
+        .join(&installed.generation);
+    for (name, bytes) in [
+        ("service.exe", b"MZ-disposable-windows-tool".as_slice()),
+        ("service.DLL", b"MZ-disposable-windows-library".as_slice()),
+        ("library.so", b"disposable-library".as_slice()),
+        ("library.dylib", b"disposable-library".as_slice()),
+        ("tool.EXE", b"#!/bin/sh\nexit 91\n".as_slice()),
+    ] {
+        assert_eq!(
+            fs::read(program.join("node_modules/platform-tools").join(name)).unwrap(),
+            bytes
+        );
+    }
+    let (_stop, _cancel, control) = live_control();
+    assert_eq!(
+        program_digest(&program, &control).unwrap(),
+        prepared.program_digest
+    );
+    fs::write(
+        program.join("node_modules/platform-tools/service.exe"),
+        b"changed",
+    )
+    .unwrap();
+    assert_ne!(
+        program_digest(&program, &control).unwrap(),
+        prepared.program_digest
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn third_party_node_addons_still_reject_before_registration_and_keep_evidence() {
+    for extension in ["node", "NODE"] {
+        let fixture = Fixture::new(&format!(
+            "{NPM_OK}\nprintf 'unsupported-native-addon' > node_modules/addon.{extension}"
+        ));
+        let task = fixture
+            .tasks
+            .create_workspace_operation("nodeInstallPrepare")
+            .unwrap();
+        let target = InstallTargetSnapshot::fresh();
+        let (_stop, _cancel, control) = live_control();
+        let error = fixture
+            .installer
+            .prepare(
+                &task.task_id,
+                fixture.source(),
+                target.clone(),
+                fixture.tools.clone(),
+                control,
+                &fixture.tasks,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.message.contains(".node"), "{error:?}");
+        assert!(!fixture.installer.slot(&target.app_id).unwrap().exists());
+        let final_task = fixture.tasks.task(&task.task_id).unwrap();
+        let candidate = final_task.result.unwrap()["candidateId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            fs::read(
+                fixture
+                    .installer
+                    .operation(&candidate)
+                    .unwrap()
+                    .join(format!("program/node_modules/addon.{extension}"))
+            )
+            .unwrap(),
+            b"unsupported-native-addon"
+        );
+        fixture.shutdown().await;
+    }
+}
 
 fn public_logs(tasks: &BuildManager, task_id: &str) -> String {
     let mut cursor = 0;
@@ -815,6 +906,7 @@ fn journal_for_commit(
         manifest_digest: digest_bytes(&manifest),
         program_digest: prepared.program_digest.clone(),
         provenance: prepared.provenance.clone(),
+        development_source: None,
     });
     journal.apply_task_id = Some(apply_task.into());
     journal

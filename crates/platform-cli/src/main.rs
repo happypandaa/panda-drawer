@@ -114,6 +114,8 @@ enum SourceCommand {
         #[arg(long)]
         url: String,
         #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
         name: Option<String>,
         #[command(flatten)]
         output: OutputOptions,
@@ -1002,13 +1004,18 @@ fn source_command(command: SourceCommand) -> (bool, Result<Value>) {
                 ))
             },
         ),
-        SourceCommand::Acquire { url, name, output } => (
+        SourceCommand::Acquire {
+            url,
+            branch,
+            name,
+            output,
+        } => (
             output.json,
             business_request(
                 "POST",
                 "/api/v1/sources/acquisitions",
                 None,
-                Some(json!({"url":url, "name":name})),
+                Some(json!({"url":url, "branch":branch, "name":name})),
             ),
         ),
         SourceCommand::Cancel(options) => (
@@ -2482,6 +2489,42 @@ mod tests {
         assert_eq!(result["data"]["final"], false);
         assert_eq!(result["data"]["waitTimedOut"], true);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn source_acquire_accepts_an_explicit_branch_without_changing_default() {
+        for (arguments, expected) in [
+            (
+                vec![
+                    "platform",
+                    "source",
+                    "acquire",
+                    "--url",
+                    "https://github.com/example/disposable",
+                ],
+                None,
+            ),
+            (
+                vec![
+                    "platform",
+                    "source",
+                    "acquire",
+                    "--url",
+                    "https://github.com/example/disposable",
+                    "--branch",
+                    "codex/tts-providers",
+                ],
+                Some("codex/tts-providers"),
+            ),
+        ] {
+            let parsed = Cli::try_parse_from(arguments).unwrap();
+            match parsed.command {
+                Command::Source {
+                    command: SourceCommand::Acquire { branch, .. },
+                } => assert_eq!(branch.as_deref(), expected),
+                _ => panic!("expected source acquire"),
+            }
+        }
     }
 
     #[test]

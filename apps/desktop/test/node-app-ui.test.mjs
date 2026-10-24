@@ -1603,3 +1603,51 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   assert.equal(document.querySelector('[role=dialog] h2').textContent, 'Disposable Node fixture');
   assert.match(document.querySelector('[role=dialog]').textContent, /Artificial configuration read failure/);
 });
+
+test('Node development is explicit inside the current three-tab details and never starts or updates an app while reading', async () => {
+  const { value } = managedInstallFixture();
+  const calls = [];
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_development_info') return { sourceRoot: '/disposable/author-repository', runtimeIsSource: false, instanceId: 'current' };
+    throw new Error(command);
+  }), { instanceId: 'current', request: { app: value, intent: 'details', token: 1 } });
+  assert.deepEqual(calls, []);
+  await click(byText('概览'));
+  assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(tab => tab.textContent), ['概览', '应用配置', '运行状态']);
+  const section = [...document.querySelectorAll('details')].find(item => item.querySelector(':scope > summary')?.textContent === '开发与更新');
+  assert.ok(section); assert.equal(section.open, false);
+  await click(section.querySelector('summary'));
+  await act(async () => section.dispatchEvent(new Event('toggle')));
+  assert.deepEqual(calls, [['node_development_info', { appId: value.id }]]);
+  assert.match(section.textContent, /author-repository/);
+  assert.ok(byText('构建并更新'));
+  await click(byText('应用配置'));
+  await change(input('MODEL'), 'unfinished artificial configuration');
+  await click(byText('概览'));
+  assert.equal(byText('构建并更新').disabled, true);
+  assert.equal(byText('删除项目').disabled, true);
+  assert.deepEqual(calls.map(([command]) => command), ['node_development_info']);
+});
+
+test('Node source-version drafts join the current detail close guard and prevent deleting the application', async () => {
+  const { value } = managedInstallFixture();
+  const calls = [];
+  const status = { repository: { state: 'project-root', root: '/disposable/source', markers: [], head: null, indexState: 'clean', git: null }, scope: { complete: true, excluded: [], protectedTrackedPaths: [] }, changes: [], snapshotDigest: 'a'.repeat(64), canInitialize: false, canSave: true, canListVersions: false, canCreateBranch: false, issues: [] };
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_development_git') return status;
+    throw new Error(command);
+  }), { instanceId: 'current', request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('概览'));
+  const section = [...document.querySelectorAll('details')].find(item => item.querySelector(':scope > summary')?.textContent === '源码版本');
+  await click(section.querySelector('summary'));
+  await act(async () => section.dispatchEvent(new Event('toggle')));
+  const label = [...section.querySelectorAll('label')].find(item => item.textContent === '版本说明');
+  await change(document.getElementById(label.htmlFor), 'unfinished version message');
+  assert.equal(byText('删除项目').disabled, true);
+  await click(document.querySelector('.node-detail-modal .modal-close'));
+  assert.match(document.querySelector('[aria-label="关闭配置确认"]').textContent, /有未保存的修改/);
+  assert.match(section.textContent, /版本说明/);
+  assert.deepEqual(calls.map(([command]) => command), ['node_development_git']);
+});

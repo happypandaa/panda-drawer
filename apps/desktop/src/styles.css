@@ -1464,3 +1464,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-group-toggle > svg { transition: transform .15s; }
 .project-group-toggle[aria-expanded='true'] > svg { transform: rotate(90deg); }
 .project-group-toggle > span { min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--radio-subtle); color: var(--radio-muted); font-size: 11px; line-height: 18px; text-align: center; }
+
+.node-development-path { display: block; margin: 0 0 14px; overflow-wrap: anywhere; font-size: 12px; color: var(--radio-secondary); }
+.node-development-panel .handoff-card { margin: 18px 0 0; }
+.node-git-panel > .section-heading { padding: 0; }
+.node-git-panel > details { margin: 16px 0; }
+.node-git-panel summary { cursor: pointer; font-size: 13px; }
+.node-git-save { display: grid; gap: 10px; margin: 20px 0; }
+.node-git-save > label, .node-git-author label { font-size: 13px; color: var(--radio-secondary); }
+.node-git-panel input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--radio-line); border-radius: 8px; padding: 10px 12px; background: var(--radio-subtle); color: var(--radio-text); font: inherit; }
+.node-git-author { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.node-git-author label { display: grid; gap: 8px; }
+.node-git-save > button { justify-self: start; }
+.node-git-panel details form { display: grid; gap: 10px; margin-top: 12px; }
+.node-git-panel details form > button { justify-self: start; }
+.node-git-history { padding: 0; list-style: none; }
+.node-git-history li { display: grid; grid-template-columns: 1fr auto; gap: 5px 14px; border-bottom: 1px solid var(--radio-line); padding: 12px 0; }
+.node-git-history small { grid-column: 1 / -1; color: var(--radio-secondary); }
+@media (max-width: 560px) { .node-git-author { grid-template-columns: 1fr; } }
