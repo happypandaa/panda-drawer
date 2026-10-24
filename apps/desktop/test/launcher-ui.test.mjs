@@ -73,14 +73,18 @@ test('Launcher preserves real names and custom project icons with a native entry
   assert.equal(enters, 1);
 });
 
-test('Default icon and color stay tied to stable project identity across renames', async () => {
+test('Default monogram follows the name while its color stays tied to stable project identity', async () => {
   await render();
   const color = document.querySelector('.launcher-icon').className;
-  const icon = document.querySelector('.launcher-icon svg').outerHTML;
-  await render(ProjectCard, { project: { ...fixture, name: 'A renamed app' } });
+  assert.equal(document.querySelector('.launcher-monogram').textContent, 'M');
+  await render(ProjectCard, { project: { ...fixture, name: 'a renamed app' } });
   assert.equal(document.querySelector('.launcher-icon').className, color);
-  assert.equal(document.querySelector('.launcher-icon svg').outerHTML, icon);
-  assert.equal(document.querySelector('.launcher-name').textContent, 'A renamed app');
+  assert.equal(document.querySelector('.launcher-monogram').textContent, 'A');
+  assert.equal(document.querySelector('.launcher-name').textContent, 'a renamed app');
+  await render(ProjectCard, { project: { ...fixture, name: '  打僵尸' } });
+  assert.equal(document.querySelector('.launcher-monogram').textContent, '打');
+  await render(ProjectCard, { project: { ...fixture, name: '12 号应用' } });
+  assert.equal(document.querySelector('.launcher-monogram').textContent, '12');
 });
 
 test('Menu has a keyboard entry, arrow navigation, Escape closing and focus return', async () => {
@@ -240,16 +244,16 @@ test('Unbuilt and recovery projects keep accessible status, keyboard details and
   assert.match(description(), /恢复待处理/);
 });
 
-test('Node hexagon stays visible when stopped or failed; missing configuration can still enter', async () => {
+test('Node tiles name their type in the status line when stopped or failed; missing configuration can still enter', async () => {
   let enters = 0;
   await render(NodeProjectCard, { onEnter: () => enters++ });
-  assert.equal(document.querySelector('.launcher-node-badge').getAttribute('src'), '/ui/node-mark.png');
-  assert.equal(document.querySelector('.launcher-node-badge').getAttribute('alt'), '');
+  assert.equal(document.querySelector('.launcher-node-badge'), null);
+  assert.ok(document.querySelector('.launcher-monogram'));
   assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /Node 服务项目/);
   assert.equal(document.querySelector('.launcher-statuses'), null);
   assert.equal(document.querySelector('.launcher-more'), null);
   await render(NodeProjectCard, { app: { ...nodeFixture, state: 'failed', lastError: 'Artificial service failure', configuration: { ...nodeFixture.configuration, canStart: false, missingRequired: ['KEY'] } }, onEnter: () => enters++ });
-  assert.ok(document.querySelector('.launcher-node-badge'));
+  assert.equal(document.querySelector('.launcher-state').textContent, '需要检查');
   assert.match(description(), /需要检查/);
   assert.match(description(), /需要配置/);
   assert.equal(document.querySelector('.launcher-statuses'), null);

@@ -171,7 +171,7 @@ test('Launcher items show icon, name and one type or status line, with contextua
   assert.equal(tile.querySelectorAll('button').length, 1);
   assert.equal(tile.querySelector('.launcher-name').title, project.name);
   const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
-  assert.ok(nodeEntry.querySelector('.launcher-node-badge'));
+  assert.equal(nodeEntry.querySelector('.launcher-node-badge'), null);
   assert.match(nodeEntry.title, /需要配置/);
   assert.equal(nodeEntry.querySelector('.launcher-state').textContent, '需要配置');
   assert.ok(nodeEntry.querySelector('.launcher-state').classList.contains('is-attention'));
@@ -551,4 +551,21 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   await click(byText('完成', dialog()));
   assert.equal(dialog(), null);
   assert.equal(document.activeElement, settings);
+});
+
+test('Disposable validation projects collapse into a test-project group unless searched for', async () => {
+  const make = (id, name) => ({ id, name, description: '', projectRoot: `/disposable/radio-shell/${id}`, documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null });
+  await setup({ projects: [make('prj_disposable_kept', 'Everyday notes'), make('prj_disposable_a', '可丢弃 · 样本 A'), make('prj_disposable_b', 'M5 可丢弃 · 样本 B')] });
+  const names = () => [...document.querySelectorAll('.project-grid .launcher-name')].map(element => element.textContent);
+  const toggle = () => document.querySelector('.project-group-toggle');
+  assert.deepEqual(names(), ['Everyday notes']);
+  assert.equal(toggle().getAttribute('aria-expanded'), 'false');
+  assert.match(toggle().textContent, /测试项目2/);
+  assert.match(document.querySelector('.radio-footer').textContent, /共 3 个应用/);
+  await click(toggle());
+  assert.deepEqual(names(), ['Everyday notes', '可丢弃 · 样本 A', 'M5 可丢弃 · 样本 B']);
+  await click(toggle());
+  await change(document.querySelector('input[type="search"]'), '样本 B');
+  assert.deepEqual(names(), ['M5 可丢弃 · 样本 B']);
+  assert.equal(toggle(), null);
 });

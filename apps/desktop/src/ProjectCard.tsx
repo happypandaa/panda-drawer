@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { AppWindow, FolderOpen, Globe, Info, Layers3, PanelsTopLeft, Server, Trash2 } from 'lucide-react';
+import { Globe, Info, Server, Trash2 } from 'lucide-react';
 import { bytesText } from './storage-utils';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
 import type { NodeAppDetail } from './node-app-types';
@@ -8,7 +8,18 @@ import type { NodeAppDetail } from './node-app-types';
 const labels: Record<ProjectInfo['state'], string> = {
   ready: '可进入', unbuilt: '等待构建', missing: '文件缺失', error: '需要检查', maintenance: '维护中', recoveryRequired: '恢复待处理',
 };
-const fallbackIcons = [FolderOpen, AppWindow, Layers3, PanelsTopLeft];
+/** Default icon text: leading digits (up to two) or the first character, upper-cased for Latin letters. */
+export function launcherMonogram(name: string) {
+  const text = name.trim();
+  const digits = /^\d{1,2}/.exec(text);
+  if (digits) return digits[0];
+  let first = '';
+  try {
+    const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
+    first = segmenter.segment(text)[Symbol.iterator]().next().value?.segment ?? '';
+  } catch { first = Array.from(text)[0] ?? ''; }
+  return first ? first.toLocaleUpperCase('en') : '?';
+}
 
 function iconSlot(id: string) {
   let value = 0;
@@ -63,7 +74,6 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
   const menuId = useId();
   const descriptionId = useId();
   const slot = iconSlot(id);
-  const DefaultIcon = fallbackIcons[slot % fallbackIcons.length];
   const runtimeLabel = runtime === 'node-service' ? 'Node 服务项目' : '网页项目';
   const unavailable = actions.every(action => action.disabled);
   const summary = [runtimeLabel, description, ...statuses].filter(Boolean).join('。');
@@ -143,8 +153,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
     onKeyDown={event => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); openMenu(); } }}>
     <button ref={entryRef} className="primary-button launcher-open" type="button" disabled={disabled} onClick={onEnter} aria-label={`进入项目「${name}」`} aria-describedby={descriptionId} aria-busy={opening} title={tooltip}>
       <span className={`project-icon launcher-icon launcher-color-${slot}`} aria-hidden="true">
-        {iconDataUrl ? <img src={iconDataUrl} alt="" /> : <DefaultIcon size={30} strokeWidth={1.6} />}
-        {runtime === 'node-service' && <img className="launcher-node-badge" src="/ui/node-mark.png" alt="" />}
+        {iconDataUrl ? <img src={iconDataUrl} alt="" /> : <span className="launcher-monogram">{launcherMonogram(name)}</span>}
       </span>
       <span className="launcher-name" title={name}>{name}</span>
       <span className={`launcher-state is-${launcherState.tone}`} aria-hidden="true"><span className="launcher-state-dot" />{launcherState.label}</span>
