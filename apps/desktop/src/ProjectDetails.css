@@ -79,3 +79,27 @@
 :root[data-theme] .software-detail-modal svg { stroke-width: 1.7; }
 .operation-recovery-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 @media (max-width: 900px) { :root[data-theme] .software-detail-modal .project-storage-panel.overview-body, :root[data-theme] .software-detail-modal [role="tabpanel"] > .project-more-panel { padding: 24px; } }
+
+/* Node service details share the software detail layout (2026-10-24). */
+:root[data-theme] .software-detail-modal .detail-status-badge.is-idle { color: var(--radio-secondary); background: var(--radio-subtle); }
+:root[data-theme] .software-detail-modal .detail-status-badge.is-error { color: var(--radio-danger); background: var(--radio-danger-surface); }
+:root[data-theme] .software-detail-modal .detail-summary-facts dd.detail-warning-text { color: var(--radio-warning); }
+:root[data-theme] .software-detail-modal .detail-summary-facts dd.detail-error-text { color: var(--radio-danger); }
+:root[data-theme] .software-detail-modal .detail-action-note { margin: 12px 0 0; color: var(--radio-secondary); font-size: 12px; line-height: 20px; }
+:root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button { margin-left: auto; min-height: 40px; padding: 8px 12px; gap: 6px; border: 0; border-radius: 8px; color: var(--radio-danger); background: transparent; font-size: 13px; }
+:root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button:hover:not(:disabled) { background: var(--radio-danger-surface); }
+:root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button:disabled { color: var(--radio-muted); opacity: .6; }
+:root[data-theme] .software-detail-modal .detail-section-note { margin: 0; color: var(--radio-secondary); font-size: 13px; line-height: 22px; }
+:root[data-theme] .software-detail-modal .detail-update-section { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.node-detail-modal .node-app-modal-detail { padding: 0; border: 0; background: transparent; }
+.node-detail-modal .node-app-modal-detail > .overview-tabs { position: sticky; top: 0; padding-top: 0; }
+:root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] { padding: 28px 32px 32px; }
+:root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] > h3 { color: var(--radio-text); font-size: 18px; line-height: 28px; margin: 0; }
+:root[data-theme] .node-detail-modal .node-app-modal-detail > :is(.operation-confirmation, .node-inline-message, .node-config-warning, .node-delete-confirmation) { margin: 16px 32px 0; }
+:root[data-theme] .node-detail-modal .node-runtime-actions { padding: 0; border: 0; background: transparent; }
+:root[data-theme] .node-detail-modal .detail-technical-information > * + * { margin-top: 10px; }
+@media (max-width: 760px) {
+  :root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] { padding: 24px; }
+  :root[data-theme] .node-detail-modal .node-app-modal-detail > :is(.operation-confirmation, .node-inline-message, .node-config-warning, .node-delete-confirmation) { margin-inline: 24px; }
+  :root[data-theme] .software-detail-modal .detail-summary-facts { grid-template-columns: 1fr; gap: 12px; }
+}
