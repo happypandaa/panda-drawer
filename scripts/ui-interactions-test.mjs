@@ -505,7 +505,7 @@ function overviewProps(extra = {}) {
 }
 const buttonNamed = (name) => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === name);
 
-test('Ordinary project details show three pages and never expose or submit legacy Git and backup tools', async () => {
+test('Ordinary project details show three pages with version tools collapsed and never submit legacy backup tools', async () => {
   await setup(); const calls = [];
   globalThis.__UI_TEST_INVOKE__ = async command => {
     calls.push(command);
@@ -523,6 +523,66 @@ test('Ordinary project details show three pages and never expose or submit legac
   assert.equal(document.querySelector('.backup-panel'), null);
   assert.doesNotMatch(document.querySelector('.project-overview').textContent, /源码版本|创建独立副本|历史与维护|旧版工具|完整快照/);
   assert.equal(calls.some(command => /^(backup_|maintenance_begin|project_git_(initialize|save|branch|source_restore_(apply|recover)))/.test(command)), false);
+});
+
+function overviewGitStatus(extra = {}) {
+  return { repository: { state: 'project-root', root: '/disposable/dom-fixture', markers: [], head: { oid: 'a'.repeat(40), branch: 'refs/heads/main' }, indexState: 'matched', git: { path: '/disposable/git', version: '2.56.0' } }, scope: { policy: 'project-source-v1', includedRoots: ['app'], includedPaths: ['app/src/App.tsx'], excluded: [], unclassifiedPaths: [], protectedTrackedPaths: [], complete: true }, changes: [{ path: 'app/src/App.tsx', kind: 'modify', staged: false }], snapshotDigest: 'b'.repeat(64), canInitialize: false, canSave: true, canListVersions: true, canCreateBranch: false, branchCreationIssue: null, database: { state: 'available', canSave: true, reason: 'Disposable data' }, issues: [], ...extra };
+}
+async function openOverviewVersions() {
+  const details = [...document.querySelectorAll('details')].find(element => element.querySelector('summary')?.textContent === '源码与数据版本');
+  assert.ok(details);
+  await act(async () => { details.open = true; details.dispatchEvent(new window.Event('toggle')); });
+  return details;
+}
+
+test('Web details explicitly mount version management and preserve its draft across folding and pages', async () => {
+  await setup(); const calls = []; const states = []; let guard;
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    calls.push(command);
+    if (command === 'project_metadata') return metadata;
+    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
+    if (command === 'project_git_status') return overviewGitStatus();
+    if (command === 'storage_info') return emptyProjectStorage;
+    if (command === 'storage_files') return emptyStorageFiles;
+    throw new Error(`Unexpected version integration request: ${command}`);
+  };
+  await render(h(ProjectOverview, overviewProps({ onDismissGuardChange: value => { guard = value; }, onDevelopmentStateChange: value => states.push(value) })));
+  assert.equal(calls.some(command => command === 'project_git_status' || command === 'project_git_data_save_status'), false);
+  const details = await openOverviewVersions();
+  assert.ok(document.querySelector('.project-git-panel'));
+  const label = [...document.querySelectorAll('label')].find(element => element.textContent === '版本说明');
+  const field = document.getElementById(label.htmlFor);
+  await inputValue(field, '尚未保存的网页版本草稿');
+  assert.equal(states.at(-1).dirty, true);
+  await act(async () => { details.open = false; details.dispatchEvent(new window.Event('toggle')); });
+  assert.equal(details.open, true);
+  await click(hubTab('空间与文件')); await click(hubTab('概览'));
+  assert.equal(field.value, '尚未保存的网页版本草稿');
+  await act(async () => { assert.equal(guard(), false); });
+  assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
+  assert.equal(calls.some(command => /project_git_(save|initialize|data_save)$/.test(command)), false);
+  await render(h('div'));
+  assert.deepEqual(states.at(-1), { dirty: false, pending: false });
+});
+
+test('Web version submission keeps the detail and tabs protected until the accepted request resolves', async () => {
+  await setup(); const accepted = deferred(); const states = []; let guard;
+  globalThis.__UI_TEST_INVOKE__ = async command => {
+    if (command === 'project_metadata') return metadata;
+    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
+    if (command === 'project_git_status') return overviewGitStatus({ canInitialize: true, canSave: false, canListVersions: false });
+    if (command === 'project_git_initialize') return accepted.promise;
+    throw new Error(`Unexpected version integration request: ${command}`);
+  };
+  await render(h(ProjectOverview, overviewProps({ onDismissGuardChange: value => { guard = value; }, onDevelopmentStateChange: value => states.push(value) })));
+  await openOverviewVersions();
+  await click(buttonNamed('初始化本项目 Git'));
+  assert.equal(states.at(-1).pending, true);
+  assert.equal(hubTab('更多操作').disabled, true);
+  await act(async () => { assert.equal(guard(), false); });
+  await act(async () => accepted.reject(new Error('Disposable initialization refused; existing files retained')));
+  assert.equal(states.at(-1).pending, false);
+  assert.match(document.querySelector('.project-git-panel').textContent, /Disposable initialization refused/);
 });
 
 test('Project overview and Modal preserve metadata and storage choices across pages and require explicit discard to close', async () => {
