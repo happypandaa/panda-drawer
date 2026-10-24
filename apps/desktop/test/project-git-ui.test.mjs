@@ -876,3 +876,68 @@ test('Finalizing an interrupted save never claims a data version was saved when 
   assert.match(result, /已确认此前保存没有提交/);
   assert.doesNotMatch(result, /数据版本已保存|数据版本的保存收尾|备份任务已完成/);
 });
+
+function dataPreview(overrides = {}) {
+  return { repositoryRoot: '/disposable/project', head: { oid, branch: 'refs/heads/main' }, targetCommit: nextOid,
+    documentEpoch: 'disposable_epoch', snapshotDigest: digest, liveDataDigest: 'd'.repeat(64), targetSnapshotDigest: 'e'.repeat(64), planDigest: 'f'.repeat(64),
+    current: { databaseBytes: 4096, attachmentCount: 2, attachmentBytes: 100, directoryCount: 1 },
+    target: { databaseBytes: 8192, attachmentCount: 1, attachmentBytes: 80, directoryCount: 1 },
+    attachmentChanges: [{ path: 'example.txt', kind: 'delete' }], directoryChanges: [{ path: 'old-empty', kind: 'delete' }, { path: 'new-empty', kind: 'add' }], databaseChanged: true, canApply: false, applyImplemented: false,
+    reason: '人工数据预览已核对。', issues: [], ...overrides };
+}
+
+test('Data preview is explicit, reads the selected local commit, and never submits a source or data mutation', async () => {
+  const { calls } = await setup({ overrides: { project_git_data_restore_preview: async () => dataPreview() } });
+  assert.equal(commandCalls(calls, 'project_git_data_restore_preview').length, 0);
+  assert.equal(byText('预览数据版本').disabled, true);
+  await change(targetField(), nextOid); await click(byText('预览数据版本'));
+  assert.deepEqual(commandCalls(calls, 'project_git_data_restore_preview'), [['project_git_data_restore_preview', { id: 'prj_a', input: { targetCommit: nextOid } }]]);
+  const section = document.querySelector('section[aria-label="预览业务数据版本"]');
+  assert.match(section.textContent, /数据库内容与当前数据不同/);
+  assert.match(section.textContent, /example\.txt.*删除/);
+  assert.match(section.textContent, /old-empty.*删除目录/);
+  assert.match(section.textContent, /new-empty.*新增目录/);
+  assert.match(section.textContent, /尚不能用它替换业务数据/);
+  assert.equal(commandCalls(calls, 'project_git_source_restore_apply').length, 0);
+  assert.equal(commandCalls(calls, 'project_git_data_save').length, 0);
+});
+
+test('Refreshing or changing the selected commit revokes the previous data comparison', async () => {
+  await setup({ overrides: { project_git_data_restore_preview: async ({ input }) => dataPreview({ targetCommit: input.targetCommit }) } });
+  await change(targetField(), nextOid); await click(byText('预览数据版本'));
+  assert.ok(document.querySelector('section[aria-label="预览业务数据版本"] table'));
+  await change(targetField(), oid);
+  assert.equal(document.querySelector('section[aria-label="预览业务数据版本"] table'), null);
+  await click(byText('预览数据版本')); await click(refresh());
+  assert.equal(document.querySelector('section[aria-label="预览业务数据版本"] table'), null);
+});
+
+test('Pending data preview blocks duplicate operations and ignores a response from a previous platform instance', async () => {
+  const response = deferred();
+  const { calls, drafts, render } = await setup({ overrides: { project_git_data_restore_preview: () => response.promise } });
+  await change(targetField(), nextOid); await click(byText('预览数据版本'));
+  assert.equal(drafts.at(-1).pending, true);
+  assert.equal(byText('正在核对数据…').disabled, true);
+  await submit();
+  assert.equal(commandCalls(calls, 'project_git_save').length, 0);
+  await render({ instanceId: 'instance_new' });
+  await act(async () => response.resolve(dataPreview()));
+  assert.equal(targetField().value, nextOid);
+  assert.equal(document.querySelector('section[aria-label="预览业务数据版本"] table'), null);
+  assert.equal(drafts.at(-1).pending, false);
+});
+
+test('A mismatched data target or a pending recovery cannot become an actionable preview', async () => {
+  let pending = false;
+  const { calls } = await setup({ overrides: {
+    project_git_data_restore_preview: async () => dataPreview({ targetCommit: oid }),
+    project_git_data_save_status: async () => ({ state: pending ? 'blocked' : 'clear', operations: [], issues: [] }),
+  } });
+  await change(targetField(), nextOid); await click(byText('预览数据版本'));
+  assert.match(document.querySelector('section[aria-label="预览业务数据版本"]').textContent, /返回的数据版本与选择不符/);
+  assert.equal(document.querySelector('section[aria-label="预览业务数据版本"] table'), null);
+  pending = true; await click(refresh());
+  assert.equal(byText('预览数据版本').disabled, true);
+  await click(byText('预览数据版本'));
+  assert.equal(commandCalls(calls, 'project_git_data_restore_preview').length, 1);
+});

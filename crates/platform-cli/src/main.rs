@@ -278,9 +278,11 @@ enum ProjectGitCommand {
     Save(ProjectGitInputOptions),
     /// Save source plus a consistent database and attachment snapshot to this local project repository.
     SaveData(ProjectGitInputOptions),
+    /// Compare a saved local data version with a fresh consistent snapshot of live data.
+    DataRestorePreview(ProjectGitInputOptions),
     /// Inspect retained data-save finalization state without changing live data.
     DataSaveRecovery(ProjectOptions),
-    /// Finish one already committed data snapshot using the current journal digest.
+    /// Check and finalize an interrupted data save using the current journal digest.
     DataSaveFinalize(ProjectGitInputOptions),
     /// Request cancellation, then inspect the persistent final result.
     Cancel {
@@ -636,6 +638,14 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
                 serde_json::from_value::<platform_core::project_git::GitDataSaveInput>(body.clone())
                     .map_err(|_| CliError::new("INPUT_INVALID", "Provide explicit expectedHead (null for no commit), expectedSnapshot, message and author name/email. Data is captured after acquiring the project write window."))?;
                 project_request(&options.project, "POST", "/git/data-saves", Some(body))
+            }),
+        ),
+        ProjectGitCommand::DataRestorePreview(options) => (
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body| {
+                serde_json::from_value::<platform_core::project_git::GitDataRestorePreviewInput>(body.clone())
+                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide the full local targetCommit. This previews data without replacing live resources."))?;
+                project_request(&options.project, "POST", "/git/data-restore-preview", Some(body))
             }),
         ),
         ProjectGitCommand::DataSaveRecovery(options) => (
@@ -1725,6 +1735,7 @@ mod tests {
             "source-restore",
             "source-recover",
             "save-data",
+            "data-restore-preview",
             "data-save-finalize",
         ] {
             assert!(Cli::try_parse_from([

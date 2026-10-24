@@ -817,6 +817,29 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn project_git_data_restore_preview(
+        &self,
+        id: &str,
+        input: crate::project_git::GitDataRestorePreviewInput,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .data_restore_preview(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
     pub async fn project_git_data_save(
         &self,
         id: &str,
@@ -2212,6 +2235,11 @@ async fn management(
             }
             (Method::POST, ["projects", id, "git", "saves"]) => {
                 handle.project_git_save(id, input(request).await?).await
+            }
+            (Method::POST, ["projects", id, "git", "data-restore-preview"]) => {
+                handle
+                    .project_git_data_restore_preview(id, input(request).await?)
+                    .await
             }
             (Method::POST, ["projects", id, "git", "data-saves"]) => {
                 handle.project_git_data_save(id, input(request).await?).await

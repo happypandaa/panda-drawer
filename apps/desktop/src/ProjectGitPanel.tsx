@@ -8,6 +8,8 @@ import type { SourceRestoreOperation, SourceRestorePreview, SourceRestoreStatus 
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { bytesText } from './storage-utils';
+import { ProjectGitDataRestore } from './ProjectGitDataRestore';
+import type { DataRestorePreview } from './ProjectGitDataRestore';
 
 export interface ProjectGitStatus {
   repository: {
@@ -102,6 +104,9 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const [dataRecovery, setDataRecovery] = useState<DataSaveRecovery | null>(null);
   const [dataRecoveryFresh, setDataRecoveryFresh] = useState(false);
   const [dataRecoveryError, setDataRecoveryError] = useState('');
+  const [dataRestorePreview, setDataRestorePreview] = useState<DataRestorePreview | null>(null);
+  const [dataRestoreError, setDataRestoreError] = useState('');
+  const [dataRestoreReading, setDataRestoreReading] = useState(false);
   const [versions, setVersions] = useState<ProjectGitVersionsResult | null>(null);
   const [versionsFresh, setVersionsFresh] = useState(false);
   const [listing, setListing] = useState(false);
@@ -131,6 +136,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     const generation = lifetime.current; const statusRequest = readSequence.current;
     const request = ++versionsSequence.current;
     versionsPending.current = true; setListing(true); setVersionsFresh(false); setVersionsError('');
+    setDataRestorePreview(null);
     setRestorePreview(null); setRestoreConfirmed(false);
     const valid = () => current(generation) && statusRequest === readSequence.current && request === versionsSequence.current;
     try {
@@ -148,6 +154,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     if (versionsPending.current) return;
     const generation = lifetime.current;
     const request = ++readSequence.current;
+    setDataRestorePreview(null); setDataRestoreError('');
     statusPending.current = true; setReading(true); setFresh(false); setVersionsFresh(false); setDataSaveConfirmed(false); setDataRecoveryFresh(false);
     setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false); setRecoveryReading(true);
     // Recovery is independently readable even when ordinary Git inspection fails.
@@ -228,6 +235,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     if (previous?.taskId !== externalTask.taskId && seenTasks.current.has(externalTask.taskId)) return;
     readSequence.current += 1; versionsSequence.current += 1;
     statusPending.current = false; versionsPending.current = false;
+    setDataRestorePreview(null); setDataRestoreError('');
     setFresh(false); setReading(false); setVersionsFresh(false); setListing(false); setDataRecoveryFresh(false); setDataSaveConfirmed(false);
     setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false); setRecoveryReading(false);
     if (acceptTask(externalTask, false)) void read();
@@ -260,6 +268,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     const saving = operation === 'save' || operation === 'save-data';
     if (operation === 'initialize' ? !status.canInitialize : saving ? !validAuthor || !validMessage || (operation === 'save' ? !status.canSave || !hasChanges : !status.database.canSave || !dataSaveConfirmed) : !branchReady || !validBranchName(branchName)) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
+    setDataRestorePreview(null);
     const generation = lifetime.current;
     readSequence.current += 1; versionsSequence.current += 1; setFresh(false); setVersionsFresh(false);
     setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false);
@@ -285,6 +294,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   async function finalizeDataSave(operation: DataSaveRecovery['operations'][number]) {
     if (pending.current || statusPending.current || versionsPending.current || !idle || disabled || !dataRecoveryFresh || !operation.canFinalize) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
+    setDataRestorePreview(null);
     const generation = lifetime.current;
     readSequence.current += 1; versionsSequence.current += 1; setFresh(false); setVersionsFresh(false); setDataRecoveryFresh(false);
     try {
@@ -303,7 +313,25 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   function selectRestoreTarget(value: string) {
     if (pending.current || currentTask.current && !currentTask.current.final) return;
     changeDraft({ ...draftValues, targetCommit: value });
+    setDataRestorePreview(null); setDataRestoreError('');
     setRestorePreview(null); setRestoreConfirmed(false);
+  }
+
+  async function previewDataRestore() {
+    if (pending.current || statusPending.current || versionsPending.current || !idle || disabled || !recoveryClear || !/^[0-9a-f]{40}$/.test(targetCommit)) return;
+    pending.current = true; setBusy(true); setDataRestoreReading(true); setDataRestorePreview(null); setDataRestoreError('');
+    const generation = lifetime.current; const request = readSequence.current;
+    try {
+      const value = await invoke<DataRestorePreview>('project_git_data_restore_preview', { id: projectId, input: { targetCommit } });
+      if (!current(generation) || request !== readSequence.current) return;
+      if (value.targetCommit !== targetCommit) throw new Error('返回的数据版本与选择不符，请重新预览。');
+      setDataRestorePreview(value);
+    } catch (cause) {
+      if (current(generation) && request === readSequence.current) setDataRestoreError(messageFrom(cause));
+    } finally {
+      pending.current = false;
+      if (current(generation)) { setBusy(false); setDataRestoreReading(false); }
+    }
   }
 
   async function previewRestore() {
@@ -329,7 +357,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     pending.current = true; setBusy(true); setError(''); setNotice('');
     const generation = lifetime.current;
     readSequence.current += 1; versionsSequence.current += 1;
-    setFresh(false); setVersionsFresh(false); setRecoveryFresh(false); setRestorePreview(null); setRestoreConfirmed(false);
+    setFresh(false); setVersionsFresh(false); setRecoveryFresh(false); setRestorePreview(null); setRestoreConfirmed(false); setDataRestorePreview(null);
     try {
       const value = await invoke<TaskRecord>(operation ? 'project_git_source_restore_recover' : 'project_git_source_restore_apply', { id: projectId, input });
       if (!current(generation)) return;
@@ -437,6 +465,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
       busy={busy || active} canPreview={idle && !disabled && recoveryClear} canApply={idle && !disabled && recoveryClear} canRecover={idle && !disabled && recoveryFresh} canRefresh={idle}
       stopped={externalEditingStopped} confirmed={restoreConfirmed} onStoppedChange={value => { setExternalEditingStopped(value); setRestoreConfirmed(false); }} onConfirmedChange={setRestoreConfirmed}
       onPreview={() => void previewRestore()} onApply={() => void submitRestore()} onRefresh={() => void read()} onRecover={(operation, action) => void submitRestore(operation, action)} />
+    <ProjectGitDataRestore targetCommit={targetCommit} preview={dataRestorePreview} error={dataRestoreError} disabled={!idle || disabled || !recoveryClear} reading={dataRestoreReading} onPreview={() => void previewDataRestore()} />
     {task && <><ProjectTask key={task.taskId} task={task} />{!task.final && <><p role="status">{restoreActive ? '源码操作结束前请保留此面板。停止后仍需核对恢复状态。' : '关闭此面板不会停止任务。'}</p><button type="button" className="refresh-button" disabled={busy} onClick={() => void cancel()}>取消当前操作</button></>}</>}
   </section>;
 }

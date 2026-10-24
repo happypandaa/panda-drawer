@@ -1,7 +1,7 @@
-//! Explicit local source versions in the project's own standard Git repository.
-//! No database snapshot, network access, checkout, global identity, user hook or
-//! content filter is part of this slice. Paths reported here describe a bounded
-//! save scope, never authorization to move a repository or replace user data.
+//! Explicit local source and project-v1 data versions in the project's own Git.
+//! No network access, checkout, global identity, user hook or content filter is
+//! part of these operations. Scopes describe bounded saves and data previews,
+//! never authorization to move a repository or implicitly replace live data.
 use crate::{
     builds::{atomic_json, BuildManager},
     environment::ExecutableInfo,
@@ -49,12 +49,17 @@ pub mod node_development_git;
 mod build_guard;
 pub(crate) use build_guard::BuildGitGuard;
 
+#[path = "project_git_data_preview.rs"]
+mod data_preview;
 #[path = "project_git_data.rs"]
 mod data_versions;
 #[path = "project_git_restore.rs"]
 mod source_restore;
 #[path = "project_version_data.rs"]
 mod version_data;
+pub use data_preview::{
+    DataAttachmentChange, DataVersionSummary, GitDataRestorePreview, GitDataRestorePreviewInput,
+};
 pub(crate) use data_versions::{
     check_data_operations_available, check_data_recovery_record, check_data_workspace_available,
 };
