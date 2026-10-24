@@ -845,6 +845,72 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn project_git_data_restore_apply(
+        &self,
+        id: &str,
+        input: crate::project_git::GitDataRestoreApplyInput,
+    ) -> Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .data_restore_apply(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_data_restore_recover(
+        &self,
+        id: &str,
+        input: crate::project_git::GitDataRestoreRecoverInput,
+    ) -> Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .data_restore_recover(id, input, state.stop.subscribe())
+                .await?
+        ))
+    }
+    pub async fn project_git_data_restore_status(&self, id: &str) -> Result<Value, ApiError> {
+        let state = self.current();
+        state.active.fetch_add(1, Ordering::SeqCst);
+        let _active = Active(state.clone());
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
+        }
+        Ok(json!(
+            state
+                .project_git
+                .as_ref()
+                .map_err(Clone::clone)?
+                .data_restore_status(id, state.stop.subscribe())
+                .await?
+        ))
+    }
+
     pub async fn project_git_data_save(
         &self,
         id: &str,
@@ -1974,6 +2040,8 @@ fn status(error: &ApiError) -> StatusCode {
         | "PROJECT_DELETE_INCOMPLETE"
         | "PROJECT_DELETE_CONFIRMATION_CHANGED"
         | "PROJECT_REGISTRATION_PENDING"
+        | "PROJECT_DATA_RESTORE_PENDING"
+        | "PROJECT_DATA_RESTORE_BLOCKED"
         | "WORKSPACE_MIGRATING"
         | "SERVICE_INSTANCE_CHANGED"
         | "PROJECT_NOT_BUILT"
@@ -2168,6 +2236,8 @@ async fn management(
                         | "branches"
                         | "source-restores"
                         | "source-recoveries"
+                        | "data-restores"
+                        | "data-recoveries"
                 ]
         );
     let rid = Uuid::new_v4().to_string();
@@ -2274,6 +2344,12 @@ async fn management(
             (Method::POST, ["projects", id, "git", "data-saves"]) => {
                 handle.project_git_data_save(id, input(request).await?).await
             }
+            (Method::POST,["projects",id,"git","data-restores"])=>handle.project_git_data_restore_apply(id,input(request).await?).await,
+            (Method::GET,["projects",id,"git","data-recovery"])=>{
+                if !query(&request)?.is_empty(){return Err(ApiError::new("INVALID_INPUT","Data recovery status does not accept query parameters."));}
+                handle.project_git_data_restore_status(id).await
+            },
+            (Method::POST,["projects",id,"git","data-recoveries"])=>handle.project_git_data_restore_recover(id,input(request).await?).await,
             (Method::GET, ["projects", id, "git", "data-save-recovery"]) => {
                 if !query(&request)?.is_empty() { return Err(ApiError::new("INVALID_INPUT", "Data save recovery does not accept query parameters.")); }
                 handle.project_git_data_save_status(id).await

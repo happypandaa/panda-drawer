@@ -676,6 +676,9 @@ impl ProjectStore {
                         }
                     }
                     Err(error) => {
+                        if error.code.starts_with("PROJECT_DATA_RESTORE_") {
+                            info.build_info = json!({"sourceState":"unknown","checkedAt":null,"stale":true,"dataRecoveryRequired":true,"dataRecoveryState":if error.code=="PROJECT_DATA_RESTORE_PENDING"{"pending"}else{"blocked"},"reason":error.message});
+                        }
                         if matches!(error.code.as_str(), "DATABASE_MISSING" | "PROJECT_MISSING") {
                             info.state = "missing".into();
                         }

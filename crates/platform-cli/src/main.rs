@@ -295,6 +295,12 @@ enum ProjectGitCommand {
     SaveData(ProjectGitInputOptions),
     /// Compare a saved local data version with a fresh consistent snapshot of live data.
     DataRestorePreview(ProjectGitInputOptions),
+    /// Apply a freshly confirmed local project-v1 database and attachment version.
+    DataRestore(ProjectGitInputOptions),
+    /// Inspect retained data retrieval even when the live database is displaced.
+    DataRecovery(ProjectOptions),
+    /// Explicitly continue or undo the same retained data retrieval operation.
+    DataRecover(ProjectGitInputOptions),
     /// Inspect retained data-save finalization state without changing live data.
     DataSaveRecovery(ProjectOptions),
     /// Check and finalize an interrupted data save using the current journal digest.
@@ -679,6 +685,21 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
                 serde_json::from_value::<platform_core::project_git::GitDataRestorePreviewInput>(body.clone())
                     .map_err(|_| CliError::new("INPUT_INVALID", "Provide the full local targetCommit. This previews data without replacing live resources."))?;
                 project_request(&options.project, "POST", "/git/data-restore-preview", Some(body))
+            }),
+        ),
+        ProjectGitCommand::DataRestore(options)=>(
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body|{
+                serde_json::from_value::<platform_core::project_git::GitDataRestoreApplyInput>(body.clone()).map_err(|_|CliError::new("INPUT_INVALID","Provide targetCommit and the exact expectedHead, expectedBranch, expectedSnapshot, expectedDocumentEpoch, expectedLiveDataDigest, expectedTargetSnapshotDigest and expectedPlanDigest from a fresh data preview."))?;
+                project_request(&options.project,"POST","/git/data-restores",Some(body))
+            }),
+        ),
+        ProjectGitCommand::DataRecovery(options)=>(options.output.json,project_request(&options.project,"GET","/git/data-recovery",None)),
+        ProjectGitCommand::DataRecover(options)=>(
+            options.input.output.json,
+            read_input(&options.input.input).and_then(|body|{
+                serde_json::from_value::<platform_core::project_git::GitDataRestoreRecoverInput>(body.clone()).map_err(|_|CliError::new("INPUT_INVALID","Provide restoreTaskId, expectedPlanDigest, expectedJournalDigest and action continue or undo. Live slot state is reclassified before every action."))?;
+                project_request(&options.project,"POST","/git/data-recoveries",Some(body))
             }),
         ),
         ProjectGitCommand::DataSaveRecovery(options) => (
@@ -1769,6 +1790,8 @@ mod tests {
             "source-recover",
             "save-data",
             "data-restore-preview",
+            "data-restore",
+            "data-recover",
             "data-save-finalize",
         ] {
             assert!(Cli::try_parse_from([
@@ -1811,6 +1834,16 @@ mod tests {
             "project",
             "git",
             "source-recovery",
+            "--project",
+            "prj_disposable",
+            "--json"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "local-projects-dev",
+            "project",
+            "git",
+            "data-recovery",
             "--project",
             "prj_disposable",
             "--json"

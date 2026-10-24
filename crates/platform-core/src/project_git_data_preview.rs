@@ -5,7 +5,7 @@ use crate::{files, projects::ProjectTaskLease};
 use unicode_normalization::UnicodeNormalization;
 
 #[path = "project_git_data_objects.rs"]
-mod objects;
+pub(super) mod objects;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -75,6 +75,9 @@ impl ProjectGitManager {
         let project = self.store.project(id)?;
         project.control.check(false, None, false)?;
         version_data::validate_layout(&project.manifest)?;
+        crate::projects::data_restore_registration::validate_data_restore_layout(
+            &project.manifest,
+        )?;
         let (_sender, cancel) = watch::channel(false);
         let mut context = Context::new(stop, cancel)?;
         let gate = data_versions::read_gate_for_data(&project, &mut context).await?;
@@ -104,18 +107,13 @@ impl ProjectGitManager {
             ));
         }
         project.check()?;
-        let metadata = fs::metadata(&project.root)?;
-        let plan_digest = sha256(&serde_json::to_vec(&json!({
-            "policy":"project-data-restore-preview-v1",
-            "projectId":project.manifest.id,
-            "projectRoot":project.root,
-            "projectRootIdentity":[metadata.dev(),metadata.ino()],
-            "documentEpoch":project.document_epoch,
-            "snapshotDigest":fresh.view.snapshot_digest,
-            "targetCommit":input.target_commit,
-            "targetSnapshotDigest":target.manifest_digest,
-            "liveDataDigest":current.manifest_digest,
-        }))?);
+        let plan_digest = plan_digest(
+            &project,
+            &fresh,
+            &input.target_commit,
+            &current.manifest_digest,
+            &target.manifest_digest,
+        )?;
         let result = GitDataRestorePreview {
             repository_root: project.root.clone(),
             head: fresh.view.repository.head.ok_or_else(output_invalid)?,
@@ -130,11 +128,13 @@ impl ProjectGitManager {
             attachment_changes: attachment_changes(&current.manifest, &target.manifest),
             directory_changes: directory_changes(&current.manifest, &target.manifest),
             database_changed: current.manifest.database != target.manifest.database,
-            can_apply: false,
-            apply_implemented: false,
-            reason:
-                "已核对目标数据版本和本次当前数据摘要；当前仅提供预览，尚不能将数据版本应用到活库。"
-                    .into(),
+            can_apply: cfg!(target_os = "macos"),
+            apply_implemented: cfg!(target_os = "macos"),
+            reason: if cfg!(target_os = "macos") {
+                "已核对目标数据版本和本次当前数据摘要；确认取回前仍会重新核对，完成后需重新打开业务页面。"
+            } else {
+                "已核对目标数据版本和当前数据摘要；数据取回目前仅验证 macOS。"
+            }.into(),
             issues: vec![],
         };
         // These are private temporary candidates, not retained data history.
@@ -143,7 +143,7 @@ impl ProjectGitManager {
         Ok(result)
     }
 
-    async fn preview_data_git_status(
+    pub(super) async fn preview_data_git_status(
         &self,
         project: &ProjectHandle,
         tools: &GitToolchain,
@@ -165,7 +165,7 @@ impl ProjectGitManager {
     /// The request may be cancelled or dropped while a blocking SQLite read is
     /// still finishing. Its runner remains joinable by manager shutdown, and
     /// admission shares the shutdown mutex so no worker appears after draining.
-    fn preview_worker<T: Send + 'static>(
+    pub(super) fn preview_worker<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<T, ApiError>>, ApiError> {
@@ -187,7 +187,20 @@ impl ProjectGitManager {
     }
 }
 
-async fn target_snapshot(
+pub(super) fn plan_digest(
+    project: &ProjectHandle,
+    snapshot: &Snapshot,
+    target: &str,
+    live: &str,
+    target_digest: &str,
+) -> Result<String, ApiError> {
+    let metadata = fs::metadata(&project.root)?;
+    Ok(sha256(&serde_json::to_vec(
+        &json!({"policy":"project-data-restore-preview-v1","projectId":project.manifest.id,"projectRoot":project.root,"projectRootIdentity":[metadata.dev(),metadata.ino()],"documentEpoch":project.document_epoch,"snapshotDigest":snapshot.view.snapshot_digest,"targetCommit":target,"targetSnapshotDigest":target_digest,"liveDataDigest":live}),
+    )?))
+}
+
+pub(super) async fn target_snapshot(
     manager: &ProjectGitManager,
     project: &ProjectHandle,
     tools: &GitToolchain,
@@ -430,7 +443,7 @@ async fn current_snapshot(
     await_worker(&mut worker, context).await
 }
 
-async fn await_worker<T: Send + 'static>(
+pub(super) async fn await_worker<T: Send + 'static>(
     worker: &mut tokio::sync::oneshot::Receiver<Result<T, ApiError>>,
     context: &mut Context,
 ) -> Result<T, ApiError> {
