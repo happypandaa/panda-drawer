@@ -191,18 +191,26 @@ async fn maintenance_end_rejects_old_document_even_with_a_new_shared_cookie() {
     )
     .await;
     assert_eq!(table["ok"], true);
-    let begin = management(
-        &service,
-        &client,
+    // Materialize an explicit pre-retirement maintenance session. The HTTP
+    // checks below exercise its real gates and end route, never new admission.
+    let prepared = crate::maintenance::legacy_test_fixtures::historical_operation(
+        &service.shared.snapshot().maintenance,
         &project.id,
-        "maintenance",
-        json!({"reason":"HTTP gating test"}),
+        "maintenanceBegin",
+        crate::maintenance::OperationInput {
+            reason: Some("Historical HTTP gating fixture".into()),
+            ..Default::default()
+        },
     )
     .await;
-    let prepared = wait_task(&service, &client, &begin).await;
-    assert_eq!(prepared["status"], "succeeded", "{prepared}");
-    let maintenance_id = prepared["result"]["maintenanceId"].as_str().unwrap();
-    assert_eq!(prepared["result"]["readyForChanges"], true);
+    assert_eq!(prepared.status, TaskStatus::Succeeded, "{prepared:?}");
+    let maintenance = service
+        .handle()
+        .maintenance_status(&project.id)
+        .await
+        .unwrap();
+    let maintenance_id = maintenance["maintenanceId"].as_str().unwrap();
+    assert_eq!(maintenance["readyForChanges"], true);
     let blocked = browser_sql(
         &service,
         &client,
@@ -336,35 +344,32 @@ async fn maintenance_end_rejects_old_document_even_with_a_new_shared_cookie() {
 }
 
 #[tokio::test]
-async fn backup_freeze_keeps_context_readable_and_does_not_advance_document_identity() {
+async fn retired_backup_admission_keeps_context_readable_without_freeze_or_document_change() {
     let (_temp, _paths, service, client) = super::tests::start().await;
     let project = super::tests::create(&service, "M3 freeze fixture").await;
     let cookie = super::tests::connect(&service, &client, &project.id).await;
-    // Keep a previous operation alive so snapshot acquisition remains observable.
+    // Rejected HTTP admission must not wait on the write gate, acquire a freeze,
+    // create a task or make an otherwise usable browser session stale.
     let gate = service.store().gate(&project.id);
     let held = gate.read().await;
-    let accepted = management(
-        &service,
-        &client,
-        &project.id,
-        "backups",
-        json!({"note":"freeze test"}),
-    )
-    .await;
-    assert_eq!(accepted["ok"], true, "{accepted}");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if service
-            .handle()
-            .maintenance_status(&project.id)
-            .await
-            .unwrap()["busy"]
-            == true
-        {
-            break;
-        }
-        assert!(Instant::now() < deadline, "snapshot did not acquire freeze");
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    for (route, body) in [
+        ("backups", json!({"note":"retired HTTP backup fixture"})),
+        (
+            "maintenance",
+            json!({"reason":"retired HTTP baseline fixture"}),
+        ),
+    ] {
+        let rejected = management(&service, &client, &project.id, route, body).await;
+        assert_eq!(rejected["ok"], false, "{rejected}");
+        assert_eq!(
+            rejected["error"]["code"], "BACKUP_WORKFLOW_RETIRED",
+            "{rejected}"
+        );
+        assert_eq!(
+            rejected["error"]["details"]["operationOutcome"],
+            "not_started"
+        );
+        assert!(!service.store().has_active_tasks());
     }
     let status = context(
         &service,
@@ -374,9 +379,9 @@ async fn backup_freeze_keeps_context_readable_and_does_not_advance_document_iden
         &project.document_epoch,
     )
     .await;
-    assert_eq!(status["data"]["state"]["busy"], true);
+    assert_eq!(status["data"]["state"]["busy"], false);
     assert_eq!(status["data"]["state"]["mode"], "normal");
-    let denied = browser_sql(
+    let allowed = browser_sql(
         &service,
         &client,
         &project.id,
@@ -385,12 +390,8 @@ async fn backup_freeze_keeps_context_readable_and_does_not_advance_document_iden
         "SELECT 1",
     )
     .await;
-    assert_eq!(denied["error"]["code"], "PROJECT_BUSY");
-    let conflict = management(&service, &client, &project.id, "backups", json!({})).await;
-    assert_eq!(conflict["error"]["code"], "PROJECT_BUSY");
+    assert_eq!(allowed["ok"], true, "{allowed}");
     drop(held);
-    let completed = wait_task(&service, &client, &accepted).await;
-    assert_eq!(completed["status"], "succeeded", "{completed}");
     let status = context(
         &service,
         &client,

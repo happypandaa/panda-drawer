@@ -2,7 +2,7 @@
 //! Legacy archives are retained without automatic count-based pruning while
 //! the independent backup workflow is retired in separate compatibility steps.
 use crate::{
-    backups::{self, PendingBuild, SnapshotOptions, SnapshotState},
+    backups::{self, SnapshotState},
     builds::{self, BuildManager},
     control::{ControlState, Freeze},
     file_identity::PersistedIdentity,
@@ -29,7 +29,11 @@ use uuid::Uuid;
 pub(crate) struct OperationInput {
     pub maintenance_id: Option<String>,
     pub backup_id: Option<String>,
+    // Still parse old clients' inputs so the common entry returns the explicit
+    // retirement error; these fields no longer authorize a production write.
+    #[allow(dead_code)]
     pub reason: Option<String>,
+    #[allow(dead_code)]
     pub note: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -336,6 +340,16 @@ impl MaintenanceManager {
         kind: &str,
         input: OperationInput,
     ) -> Result<TaskRecord, ApiError> {
+        // Retired operations must not create a task, reserve a project, load its
+        // control state, or mutate any existing legacy maintenance evidence.
+        if matches!(kind, "backup" | "maintenanceBegin") {
+            return Err(ApiError::new(
+                "BACKUP_WORKFLOW_RETIRED",
+                "独立备份和新维护基线已退役；未创建备份或进入维护。普通源码、SQL 和构建无需 ZIP 基线；已有维护与恢复现场请先查看原状态。",
+            )
+            .outcome("not_started")
+            .detail("retiredOperation", kind));
+        }
         if self.stopping.load(Ordering::Acquire) {
             return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
         }
@@ -351,42 +365,6 @@ impl MaintenanceManager {
             ));
         }
         match kind {
-            "backup" => {
-                self.store.project(id)?.check()?;
-                control.check(false, input.maintenance_id.as_deref(), false)?;
-            }
-            "maintenanceBegin" => {
-                self.store.project(id)?.check()?;
-                if current.mode == "maintenance" {
-                    if input.maintenance_id != current.maintenance_id {
-                        return Err(ApiError::new(
-                            "MAINTENANCE_ID_MISMATCH",
-                            "Retry requires the current maintenanceId",
-                        ));
-                    }
-                    if current.ready_for_changes
-                        && current.baseline_backup_id.as_deref().is_some_and(|backup| {
-                            self.archive(id, backup).is_ok_and(|p| p.is_file())
-                        })
-                    {
-                        return Err(ApiError::new(
-                            "PROJECT_MAINTENANCE",
-                            "Maintenance baseline is already ready",
-                        ));
-                    }
-                } else if input.maintenance_id.is_some() {
-                    return Err(ApiError::new(
-                        "MAINTENANCE_ID_MISMATCH",
-                        "No maintenance session is active",
-                    ));
-                }
-                if input.reason.as_ref().is_none_or(|s| s.trim().is_empty()) {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "Maintenance reason is required",
-                    ));
-                }
-            }
             "maintenanceEnd" => {
                 if current.mode != "maintenance"
                     || input.maintenance_id.is_none()
@@ -482,117 +460,10 @@ impl MaintenanceManager {
         input: OperationInput,
     ) -> Result<Value, ApiError> {
         match kind {
-            "backup" => {
-                let backup = self.snapshot(task, id, "manual", input.note).await?;
-                Ok(json!({"backupId":backup,"maintenance":self.status(id)?}))
-            }
-            "maintenanceBegin" => self.begin(task, id, input).await,
             "maintenanceEnd" => self.end(task, id).await,
             "restore" => self.restore(task, id, input.backup_id.unwrap()).await,
             _ => unreachable!(),
         }
-    }
-    async fn snapshot(
-        &self,
-        task: &str,
-        id: &str,
-        kind: &str,
-        note: Option<String>,
-    ) -> Result<String, ApiError> {
-        self.phase(task, "snapshot-freeze")?;
-        let control = self.store.control(id)?;
-        let freeze = Freeze::new(control.clone());
-        self.notify(id);
-        let gate = self.store.gate(id);
-        let guard = gate.write().await;
-        let project = self.store.project(id)?;
-        project.check()?;
-        let state = control.get();
-        let backup_id = format!("backup_{}", Uuid::new_v4().simple());
-        let directory = self.directory(id)?;
-        let archive = directory.join(format!("{backup_id}.zip"));
-        let snapshot = self
-            .paths
-            .workspace_root()
-            .join(".platform/operations")
-            .join(task)
-            .join(format!("snapshot-{backup_id}"));
-        let info = builds::build_info(&self.paths, &project)?;
-        let pending = state.pending_build
-            || (state.mode == "maintenance"
-                && info["sourceState"] != "matched"
-                && state.baseline_input_digest.as_ref().is_some_and(|digest| {
-                    builds::input_digest(&project).ok().as_ref() != Some(digest)
-                }));
-        let options = SnapshotOptions {
-            backup_id: backup_id.clone(),
-            kind: kind.into(),
-            note,
-            snapshot_state: if state.mode == "maintenance" {
-                SnapshotState::Maintenance
-            } else {
-                SnapshotState::Ready
-            },
-            pending_build: PendingBuild {
-                required: pending,
-                reason: if pending {
-                    Some("Maintenance includes unfinished build inputs".into())
-                } else {
-                    None
-                },
-            },
-            build_provenance: backups::capture_provenance(&project)?,
-        };
-        builds::atomic_json(
-            &snapshot.parent().unwrap().join("snapshot.json"),
-            &json!({"taskId":task,"projectId":id,"backupId":backup_id,"maintenanceId":state.maintenance_id}),
-        )?;
-        let prepared = tokio::task::spawn_blocking(move || {
-            backups::prepare_snapshot(&project.root, &project.manifest, &snapshot, options)
-        })
-        .await
-        .map_err(|e| ApiError::new("BACKUP_FAILED", e.to_string()))??;
-        drop(guard);
-        drop(freeze);
-        self.notify(id);
-        self.phase(task, "archive-publish")?;
-        let staging = prepared.root.clone();
-        tokio::task::spawn_blocking(move || backups::publish_snapshot(&prepared, &archive))
-            .await
-            .map_err(|e| ApiError::new("BACKUP_FAILED", e.to_string()))??;
-        if let Err(error) = fs::remove_dir_all(staging) {
-            let _ = self.tasks.append(
-                task,
-                format!("Snapshot cleanup deferred: {error}\n").as_bytes(),
-            );
-        }
-        Ok(backup_id)
-    }
-    async fn begin(&self, task: &str, id: &str, input: OperationInput) -> Result<Value, ApiError> {
-        self.phase(task, "maintenance-intent")?;
-        let control = self.store.control(id)?;
-        if control.get().mode != "maintenance" {
-            let project = self.store.project(id)?;
-            let info = self.tasks.info(id).await?;
-            control.begin(
-                input.reason.unwrap(),
-                Some(builds::input_digest(&project)?),
-                info["sourceState"] != "unbuilt",
-            )?;
-            self.notify(id);
-        }
-        let backup = self
-            .snapshot(task, id, "maintenanceBaseline", input.note)
-            .await?;
-        let mut state = control.get();
-        state.baseline_backup_id = Some(backup.clone());
-        state.protected_backup_ids.push(backup.clone());
-        state.ready_for_changes = true;
-        state.last_error = None;
-        control.set(state)?;
-        Ok(
-            json!({"maintenanceId":control.get().maintenance_id,"baselineBackupId":backup,"readyForChanges":true,"maintenance":self.status(id)?}),
-        )
     }
     async fn end(&self, task: &str, id: &str) -> Result<Value, ApiError> {
         self.phase(task, "maintenance-check")?;
@@ -696,46 +567,12 @@ impl MaintenanceManager {
             &validated.project_manifest,
             validated.manifest.build_provenance.as_ref(),
         )?;
-        // A healthy current project gets an automatic pre-restore archive. A broken
-        // database must never prevent recovery; the original directory is retained in all cases.
-        let pre_restore = match self
-            .snapshot(
-                task,
-                id,
-                "preRestore",
-                Some(format!("Before restoring {backup}")),
-            )
-            .await
-        {
-            Ok(id) => Some(id),
-            Err(error)
-                if matches!(
-                    error.code.as_str(),
-                    "SPACE_INSUFFICIENT" | "INSUFFICIENT_SPACE" | "BACKUP_SOURCE_CHANGED"
-                ) =>
-            {
-                return Err(error)
-            }
-            Err(error) => {
-                self.tasks.append(
-                    task,
-                    format!(
-                        "Pre-restore archive unavailable; preserving complete original: {error}\n"
-                    )
-                    .as_bytes(),
-                )?;
-                None
-            }
-        };
+        // Legacy restore preserves the complete original directory below. It
+        // never creates a second ZIP before replacing the selected instance.
         self.phase(task, "restore-maintenance")?;
         let control = self.store.control(id)?;
         if control.get().mode != "maintenance" {
             control.begin(format!("Restore {backup}"), None, false)?;
-        }
-        if let Some(backup) = pre_restore {
-            let mut state = control.get();
-            state.protected_backup_ids.push(backup);
-            control.set(state)?;
         }
         let previous_control = control.get();
         let mut blocked = previous_control.clone();
@@ -1061,6 +898,20 @@ mod tests {
         }
         panic!("task timeout");
     }
+    async fn perform_historical_fixture(
+        manager: &Arc<MaintenanceManager>,
+        id: &str,
+        kind: &str,
+        input: Value,
+    ) -> TaskRecord {
+        legacy_test_fixtures::historical_operation(
+            manager,
+            id,
+            kind,
+            serde_json::from_value(input).unwrap(),
+        )
+        .await
+    }
     fn good(task: &TaskRecord) -> &Value {
         assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
         task.result.as_ref().unwrap()
@@ -1078,7 +929,7 @@ mod tests {
     async fn unbuilt_maintenance_baseline_and_pending_inputs_survive_end() {
         let (_temp, _paths, store, tasks, manager, id) = fixture().await;
         let old = store.project(&id).unwrap().document_epoch;
-        let begin = perform(
+        let begin = perform_historical_fixture(
             &manager,
             &id,
             "maintenanceBegin",
@@ -1123,11 +974,11 @@ mod tests {
         stop(manager, tasks, store).await;
     }
     #[tokio::test]
-    async fn failed_baseline_stays_locked_and_retries_same_identity() {
+    async fn legacy_failed_baseline_fixtures_keep_same_identity_and_write_gate() {
         let (_temp, _paths, store, tasks, manager, id) = fixture().await;
         let root = store.project(&id).unwrap().root;
         std::os::unix::fs::symlink("README.md", root.join("invalid-link")).unwrap();
-        let task = perform(
+        let task = perform_historical_fixture(
             &manager,
             &id,
             "maintenanceBegin",
@@ -1148,7 +999,7 @@ mod tests {
             "PROJECT_MAINTENANCE"
         );
         fs::remove_file(root.join("invalid-link")).unwrap();
-        let task = perform(
+        let task = perform_historical_fixture(
             &manager,
             &id,
             "maintenanceBegin",
@@ -1173,7 +1024,7 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("data/attachments/keep"), "old attachment").unwrap();
-        let backup = perform(&manager, &id, "backup", json!({})).await;
+        let backup = perform_historical_fixture(&manager, &id, "backup", json!({})).await;
         let backup = good(&backup)["backupId"].as_str().unwrap().to_owned();
         store.close_database(&id).await;
         fs::write(
@@ -1216,7 +1067,7 @@ mod tests {
             .submit(&id, "backup", OperationInput::default())
             .await
             .unwrap_err();
-        assert_eq!(error.code, "PROJECT_BUSY");
+        assert_eq!(error.code, "BACKUP_WORKFLOW_RETIRED");
         drop(lease);
         let root = store.project(&id).unwrap().root;
         let before = identity(&root).unwrap();
@@ -1236,7 +1087,7 @@ mod tests {
         let conn = rusqlite::Connection::open(root.join("data/main.sqlite")).unwrap();
         conn.execute_batch("PRAGMA foreign_keys=OFF; CREATE TABLE parent(id PRIMARY KEY);CREATE TABLE child(id REFERENCES parent(id));INSERT INTO child VALUES(5);").unwrap();
         drop(conn);
-        let task = perform(
+        let task = perform_historical_fixture(
             &manager,
             &id,
             "maintenanceBegin",
@@ -1260,7 +1111,7 @@ mod tests {
     async fn restart_reconciles_directory_moves_and_stable_identity_device_renumbering() {
         for phase in 0..4 {
             let (_temp, paths, store, tasks, manager, id) = fixture().await;
-            let backup = perform(&manager, &id, "backup", json!({})).await;
+            let backup = perform_historical_fixture(&manager, &id, "backup", json!({})).await;
             let backup = good(&backup)["backupId"].as_str().unwrap().to_owned();
             let task = format!("task_{}", Uuid::new_v4().simple());
             let op = paths
@@ -1357,7 +1208,7 @@ mod tests {
             b"original attachment",
         )
         .unwrap();
-        let backup = perform(&manager, &id, "backup", json!({})).await;
+        let backup = perform_historical_fixture(&manager, &id, "backup", json!({})).await;
         let backup_id = good(&backup)["backupId"].as_str().unwrap();
         let archive = manager.archive(&id, backup_id).unwrap();
         let alternate = paths
@@ -1537,3 +1388,7 @@ mod restart_tests;
 #[cfg(test)]
 #[path = "maintenance_retirement_tests.rs"]
 mod retirement_tests;
+
+#[cfg(test)]
+#[path = "maintenance_legacy_test_fixtures.rs"]
+pub(crate) mod legacy_test_fixtures;

@@ -1,8 +1,9 @@
 //! Historical ZIP fixtures are created explicitly in a disposable workspace.
-//! This first retirement step stops automatic pruning; creation and legacy
-//! maintenance admission remain unchanged until their callers are migrated.
+//! Production creation is retired even in tests; old evidence is materialized
+//! only by the explicitly named disposable legacy fixture builder.
 use super::*;
-use crate::{CreateProjectInput, TaskStatus};
+use crate::backups::{PendingBuild, SnapshotOptions};
+use crate::{CreateProjectInput, SqlCaller, SqlOptions, SqlRequest, TaskStatus};
 use std::collections::BTreeMap;
 
 struct LegacyFixture {
@@ -159,20 +160,124 @@ async fn legacy_maintenance_end_and_restart_preserve_all_historical_archives() {
 }
 
 #[tokio::test]
-async fn legacy_baseline_preparation_does_not_prune_existing_archives() {
+async fn retired_backup_and_baseline_admission_never_write_or_reserve_anything() {
     let fixture = LegacyFixture::new().await;
-    // Admission is intentionally still live in this first, narrowly scoped step.
-    fixture
+    fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut result = BTreeMap::new();
+        let mut pending = vec![root.to_owned()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    result.insert(path.clone(), Vec::new());
+                    pending.push(path);
+                } else {
+                    result.insert(path, fs::read(entry.path()).unwrap());
+                }
+            }
+        }
+        result
+    }
+    let control = fixture.store.control(&fixture.project_id).unwrap();
+    for recovery_required in [false, true] {
+        if recovery_required {
+            control
+                .begin("Retained unfinished legacy recovery".into(), None, false)
+                .unwrap();
+            let mut state = control.get();
+            state.recovery_required = true;
+            state.pending_build = true;
+            control.set(state).unwrap();
+        }
+        let before = tree(fixture.paths.workspace_root());
+        let old_control = serde_json::to_value(control.get()).unwrap();
+        for kind in ["backup", "maintenanceBegin"] {
+            let error = fixture
+                .manager
+                .submit(
+                    &fixture.project_id,
+                    kind,
+                    OperationInput {
+                        reason: Some("Never create a new baseline".into()),
+                        ..OperationInput::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "BACKUP_WORKFLOW_RETIRED");
+            assert_eq!(error.details["operationOutcome"], "not_started");
+            assert_eq!(tree(fixture.paths.workspace_root()), before);
+            assert_eq!(serde_json::to_value(control.get()).unwrap(), old_control);
+            assert!(!fixture.store.has_active_tasks());
+        }
+    }
+    fixture.assert_archives_unchanged();
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn legacy_restore_keeps_original_and_uses_existing_archive_without_new_zip() {
+    let fixture = LegacyFixture::new().await;
+    let root = fixture.store.project(&fixture.project_id).unwrap().root;
+    let selected = fixture
+        .archives
+        .keys()
+        .find(|path| path.file_name().unwrap() != "backup_retained_invalid.zip")
+        .unwrap();
+    let backup_id = selected.file_stem().unwrap().to_str().unwrap().to_owned();
+    for sql in [
+        "CREATE TABLE new_live_material(value TEXT)",
+        "INSERT INTO new_live_material VALUES('preserve in original')",
+    ] {
+        fixture
+            .store
+            .execute(
+                &fixture.project_id,
+                SqlRequest {
+                    sql: sql.into(),
+                    params: vec![],
+                    options: SqlOptions::default(),
+                },
+                None,
+                SqlCaller::Management,
+            )
+            .await
+            .unwrap();
+    }
+    fs::write(
+        root.join("data/attachments/new-live.txt"),
+        b"preserve current attachment",
+    )
+    .unwrap();
+    let restored = fixture
         .perform(
-            "maintenanceBegin",
+            "restore",
             OperationInput {
-                reason: Some("Disposable compatibility preparation".into()),
+                backup_id: Some(backup_id.clone()),
                 ..OperationInput::default()
             },
         )
         .await;
-    let status = fixture.manager.status(&fixture.project_id).unwrap();
-    assert_eq!(status["readyForChanges"], true);
+    let result = restored.result.unwrap();
+    let original = PathBuf::from(result["originalPath"].as_str().unwrap());
+    assert_eq!(
+        fs::read(original.join("data/attachments/new-live.txt")).unwrap(),
+        b"preserve current attachment"
+    );
+    let original_db = rusqlite::Connection::open_with_flags(
+        original.join("data/main.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        original_db
+            .query_row("SELECT value FROM new_live_material", [], |row| row
+                .get::<_, String>(0))
+            .unwrap(),
+        "preserve in original"
+    );
+    drop(original_db);
     fixture.assert_archives_unchanged();
     assert_eq!(
         fixture
@@ -183,7 +288,72 @@ async fn legacy_baseline_preparation_does_not_prune_existing_archives() {
             .as_array()
             .unwrap()
             .len(),
-        14
+        13
     );
+    assert!(!original.parent().unwrap().join("snapshot.json").exists());
+    let status = fixture.manager.status(&fixture.project_id).unwrap();
+    assert_eq!(status["baselineBackupId"], backup_id);
+    assert_eq!(status["baselineAvailable"], true);
+    assert_eq!(status["readyForChanges"], true);
+    fixture
+        .perform(
+            "maintenanceEnd",
+            OperationInput {
+                maintenance_id: status["maintenanceId"].as_str().map(str::to_owned),
+                ..OperationInput::default()
+            },
+        )
+        .await;
+    assert_eq!(
+        fixture.manager.status(&fixture.project_id).unwrap()["mode"],
+        "ready"
+    );
+    fixture.assert_archives_unchanged();
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn normal_sql_needs_no_backup_or_maintenance_baseline() {
+    let (_temporary, paths) = RuntimePaths::for_test();
+    let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
+    let project = store
+        .create(CreateProjectInput {
+            name: "Disposable SQL after backup retirement".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let tasks =
+        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+    let manager = MaintenanceManager::new(paths.clone(), store.clone(), tasks.clone()).unwrap();
+    for sql in [
+        "CREATE TABLE evidence(value TEXT)",
+        "INSERT INTO evidence VALUES('ordinary data')",
+    ] {
+        store
+            .execute(
+                &project.id,
+                SqlRequest {
+                    sql: sql.into(),
+                    params: vec![],
+                    options: SqlOptions::default(),
+                },
+                None,
+                SqlCaller::Management,
+            )
+            .await
+            .unwrap();
+    }
+    let status = manager.status(&project.id).unwrap();
+    assert_eq!(status["mode"], "ready");
+    assert!(status["baselineBackupId"].is_null());
+    assert_eq!(
+        fs::read_dir(paths.workspace_root().join("backups"))
+            .unwrap()
+            .count(),
+        0
+    );
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
 }

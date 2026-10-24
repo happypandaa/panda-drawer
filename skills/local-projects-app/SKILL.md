@@ -71,23 +71,21 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 保留已注册 SQLite 文件及其 WAL/SHM，不用替换文件、删除数据库或改注册状态来修复问题。常规写入走平台接口；若用户明确要求外部数据库工具操作，另行核实平台的运行限制，完成后用 `project refresh` 通知页面重新查询，不能把它当作构建或数据库恢复命令。
 
-## 备份、维护与恢复
+## Git 版本与旧维护兼容
 
-先用当前 CLI 的帮助和 `maintenance status` 核对能力；旧安装包可能尚不支持本节命令。管理接口只通过 CLI 使用，不读取控制令牌。项目持有的旧 SDK 仍按原版本使用，不为管理备份升级或改写它。
+修改前先读取当前 CLI 帮助及 `project git status`，按用户确认的作者与范围保存 Git 版本。源码版本和数据版本分别核对，不把源码提交称作数据库备份；Git 不可用时明确未保存，不另建 ZIP 或私有恢复仓库。普通源码编辑、SQL 和候选构建不要求 ZIP 基线；优先采用兼容的数据事务，由平台的具体替换操作协调必要停写、失败保留与重启检查。
+
+新的 `backup create` 和 `maintenance begin` 已退役，生产入口返回 `BACKUP_WORKFLOW_RETIRED`，不创建任务、不生成 ZIP、不进入维护。旧项目自己的文档若仍要求新建这些基线，以当前平台交接和 CLI 的退役结果为准；不要改写旧 SDK 或项目 skill 来绕过保护。
+
+只有用户任务涉及旧资料时才使用兼容入口：
 
 ```sh
 "$PROJECT_CLI" backup list --project "$PROJECT_ID" --json
-"$PROJECT_CLI" backup create --project "$PROJECT_ID" --json
 "$PROJECT_CLI" backup info --project "$PROJECT_ID" --backup "$BACKUP_ID" --json
 "$PROJECT_CLI" maintenance status --project "$PROJECT_ID" --json
-"$PROJECT_CLI" maintenance begin --project "$PROJECT_ID" --input maintenance.json --json
 ```
 
-普通备份返回任务 ID；等待同一任务最终成功后才把它当作可恢复快照。快照覆盖源码、固定 SDK、skill 和隐藏持久资料、清单与图标、当前网页、SQLite 一致性副本及全部用户附件；`node_modules` 等工程依赖和本机控制状态不随归档。暂存期间业务 SQL 与附件短暂冻结，之后恢复原模式。备份及恢复期间暂停直接文件编辑、外部 SQLite 工具和其他写入；平台互斥不能锁住任意外部程序。
-
-进入维护的输入形如 `{"reason":"调整表结构及页面"}`。等待任务成功，再读取 `maintenance status`，确认 `readyForChanges: true`、`baselineBackupId` 及本轮 `maintenanceId` 后才修改文件或数据。基线失败仍处维护，不能继续改动；查明失败原因后以 `{"reason":"重试基线准备","maintenanceId":"实际ID"}` 重试同一轮。AI 退出或平台重启不会自动解除维护。
-
-维护中的 SQL、事务、构建、备份和恢复显式带本轮 ID。可在 JSON 输入里加入 `maintenanceId`，或用 CLI `--maintenance "$MAINTENANCE_ID"`；两处同时提供必须一致。业务网页在整个维护期间停用，不能通过重新取 Cookie 绕过。
+已有维护和恢复现场不会因退出 AI、重启或功能退役自动解除。保留当前 `maintenanceId`、`readyForChanges`、待构建要求和旧基线引用；不可写或基线缺失时不要重试新建基线、改控制记录或跳过门禁。允许的旧维护 SQL、事务、构建和显式恢复仍须携带当前维护 ID。
 
 ```sh
 "$PROJECT_CLI" db execute --project "$PROJECT_ID" --maintenance "$MAINTENANCE_ID" --input request.json --json
@@ -95,19 +93,11 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 "$PROJECT_CLI" maintenance end --project "$PROJECT_ID" --input end-maintenance.json --json
 ```
 
-结束请求为 `{"maintenanceId":"实际ID"}`。先完成数据检查、源码修改和必要的成功构建，再结束维护。仅改 README、清单名称/简介、`meta/` 或业务数据不要求构建；维护期间改过构建输入或已有待构建要求，不能以建立新基线解除。合法的 `unbuilt` 项目可以结束为尚未构建，仍不能打开业务网页；已登记网页意外丢失不属于此例外。结束失败时保留维护和原因；**结束维护不会撤销任何修改**。
+结束输入为 `{"maintenanceId":"实际ID"}`。检查数据库、当前产物和待构建要求，检查通过后才显式结束；失败保留原维护和原因。结束不会撤销修改，旧页面须在处理草稿后明确重载。
 
-需要撤销时，明确选定备份并恢复：
+只有用户明确选择旧归档来替换整个当前实例时，才调用 `backup restore --project "$PROJECT_ID" --input restore.json --json`，输入 `{"backupId":"实际备份ID"}`，已有维护再带当前 ID。恢复保留完整原目录及 WAL/SHM，使用所选已有归档作为旧维护依据，不新建恢复前 ZIP；恢复成功后仍须完成检查并显式结束维护。归档后新增数据不会自动合并。
 
-```sh
-"$PROJECT_CLI" backup restore --project "$PROJECT_ID" --input restore.json --json
-```
-
-请求为 `{"backupId":"实际备份ID"}`；已在维护时另加 `maintenanceId`。恢复会让整个项目回到该快照，之后新增的业务数据不会自动合并。等待恢复任务最终成功，核对结果和维护状态；恢复成功后仍须显式结束维护。已验证的初始网页和用户构建网页可直接复用，恢复动作本身不要求 Node；归档原有的未完成构建要求继续保留。
-
-若出现 `recoveryRequired` 或任务中断，先查看同一任务、日志、维护状态及原现场提示，不自动重复恢复、删除现场或强行结束维护。原库损坏的恢复保留完整原目录及 WAL/SHM，它是待处理现场，不冒充健康备份。手动备份不自动清理；受保护基线和恢复现场不要手工删除。
-
-结束维护和恢复会推进文档身份。旧页面收到 `PROJECT_RELOAD_REQUIRED` 后保留未提交草稿并提供明确的重载决定；不能替换 SDK 内存中的旧代次或自动重放写入。结束后从平台明确重开／重载原生应用窗口验证实际功能；会话 URL 只按实际接口用于必要诊断，不记录或分享。
+若 `recoveryRequired` 或任务中断，先检查同一任务、日志、维护状态和保留现场，不重放恢复、删除证据或强行结束。旧 ZIP不自动按份数裁剪；它们与唯一 Git 历史、未完成操作、原目录都不得手工清理。现有同实例恢复不等于维护／未知归档已能安装为新实例。
 
 网页附件通过 SDK `files` 接口保存和读取。数据库保存相对 `data/attachments/` 的逻辑路径，不保存临时访问 URL。用户素材不放进 `app/public/` 或 `dist/`。SQL 与附件上传不是一个事务，业务流程需处理部分成功；SDK 的具体调用及限制见项目 `docs/platform.md`。
 
@@ -129,7 +119,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 原 ID 导入不能覆盖活跃项目、回收站或登记中的同 ID；副本得到新平台 ID，但业务主键、业务 UUID 和附件名保持。完成后使用返回的新 ID 和 `project handoff` 核对项目根，不依赖复制过来的业务 README 内旧路径或旧 ID。平台不会全局重写用户文字，也不因复制升级 SDK。已有可复用网页无需 Node 即可打开。
 
-维护/未知快照导入或复制后有独立的维护 ID 和新项目基线，原有待构建要求继续保留。任务返回 `registered_maintenance_not_ready` 时，项目已登记但基线未成功；查询该项目的维护状态，以同一维护 ID 重试基线，不重新导入制造另一个副本。确认 `readyForChanges` 后才修改。
+新实例导入／复制只接受状态明确可用、无待构建要求且数据库关系检查通过的归档。维护、未知、仍需构建或有外键问题时返回 `LEGACY_ARCHIVE_REQUIRES_REVIEW`，在登记实例前拒绝并保留原归档和候选位置；不创建 ZIP 基线、不清除原要求。先检查来源实例和错误原因，不自动重复导入或修改归档状态冒充通过。
 
 2026-10-23 当前删除规则：`project delete` 直接永久删除选中实例的源码、网页、数据库、附件等项目目录内容，不进入平台或系统回收站，无法撤销。执行前核对项目 ID、实际目录和永久删除范围，并确认用户要求删除该实例；不要将其作为编辑、导入冲突或验证的例行收尾。历史备份、外部 ZIP、旧回收项及受保护恢复证据继续保留。部分失败或结果未知时查看原任务与残留，不承诺可以恢复、不自动重放删除。
 
@@ -177,7 +167,7 @@ Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 No
 
 ## 当前能力与交接
 
-当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、`backup create/list/info/restore`、`maintenance status/begin/end`、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、旧 `backup list/info/restore`、`maintenance status/end` 兼容接口、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
 
 `env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机源码保存、历史列表、新建定制分支和源码取回有独立命令，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
 
@@ -189,7 +179,7 @@ Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 No
 
 保存用 `project git save --project PROJECT_ID --input FILE --json`，完整输入含最新 `expectedSnapshot`、明确的 `expectedHead`（尚无提交则 JSON null）、`message`、`author:{name,email}`。作者必须来自用户明确提供或会话已确认的信息，不猜身份、不读写全局身份；缺作者先保留待保存内容。`canSave:false` 时处理报告的问题后重新检查，不强制重置、不覆盖暂存内容。不将整个项目目录直接加入提交。
 
-返回任务后通过 `task get/wait/logs` 核对最终结果，取消用 `project git cancel --project PROJECT_ID --task TASK_ID --json`，请求取消不表示提交未发生。`operationOutcome:committed` 表示已提交但可能收尾需检查，`unknown` 需保留现场核对，不能自动重试。此步骤保存源码开发材料，不包含活库、附件、配置、依赖或运行产物；数据库快照仍未提供，不自动推送。任意文件内的秘密不能通用识别，提交前仍须核对明确范围。
+返回任务后通过 `task get/wait/logs` 核对最终结果，取消用 `project git cancel --project PROJECT_ID --task TASK_ID --json`，请求取消不表示提交未发生。`operationOutcome:committed` 表示已提交但可能收尾需检查，`unknown` 需保留现场核对，不能自动重试。普通 `project git save` 保存源码开发材料并保留已有 `version-data` 数据子树，不重新读取活库。project-v1 项目根的标准 Git 可由用户明确选择 `project git save-data --project PROJECT_ID --input FILE --json`，输入与源码保存相同，主动保存源码、SQLite 一致性文件和完整附件至 `version-data`；先核对状态中的 `database.canSave`，等待同一任务最终结果。已有 `app/.git` 与 Node 自有数据库不纳管，不移动仓库根；配置、凭据、依赖和运行产物仍排除。源码取回不修改数据子树、活库或当前附件，从 Git 取回数据库到活库尚未实现；不自动推送含业务数据的历史。保存收尾失败先用 `project git data-save-recovery --project PROJECT_ID --json` 核对，只有当前允许且任务已授权时，才以最新 `saveTaskId`、`expectedJournalDigest` 调用 `project git data-save-finalize --project PROJECT_ID --input FILE --json`，不重建一个版本或删除外部锁。任意文件内的秘密不能通用识别，提交前仍须核对明确范围。
 
 `project git versions --project PROJECT_ID --limit 50 --json` 只读当前 HEAD 可达的本机历史；范围1–100、默认50，`hasMore` 表示更早记录未显示，不取回文件或联网。明确创建定制分支时，先重新读取状态，要求 `canCreateBranch:true`；调用 `project git branch-create --project PROJECT_ID --input FILE --json`，输入完整包含新分支短名 `name`、最新 `expectedHead`、`expectedBranch` 和 `expectedSnapshot`，等待任务最终结果。此操作只在当前干净版本创建并指向新分支，保留源码／索引／业务数据／当前产物，不覆盖已有分支。仅分支创建要求Git2.56.0；工具不支持时按 `branchCreationIssue` 说明处理，不擅自换工具。分支创建后再开始业务修改；已有分支切换、合并不在当前入口范围；旧源码取回是下述独立显式操作。
 

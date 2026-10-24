@@ -962,7 +962,7 @@ impl LifecycleManager {
             .name
             .unwrap_or_else(|| format!("{} · 副本", manifest.name));
         builds::atomic_json(&candidate.join("project.json"), &manifest)?;
-        self.prepare_install(journal, candidate, manifest, snapshot.manifest, None)
+        self.prepare_install(journal, candidate, manifest, snapshot.manifest)
             .await
     }
     async fn import(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
@@ -992,14 +992,8 @@ impl LifecycleManager {
                 .unwrap_or_else(|| format!("{} · 副本", manifest.name));
             builds::atomic_json(&candidate.join("project.json"), &manifest)?;
         }
-        self.prepare_install(
-            journal,
-            candidate,
-            manifest,
-            validated.manifest,
-            original.then_some(archived),
-        )
-        .await
+        self.prepare_install(journal, candidate, manifest, validated.manifest)
+            .await
     }
     async fn prepare_install(
         &self,
@@ -1007,9 +1001,17 @@ impl LifecycleManager {
         candidate: PathBuf,
         manifest: ProjectManifest,
         metadata: BackupManifest,
-        source_archive: Option<PathBuf>,
     ) -> Result<Value, ApiError> {
         validate_manifest(&manifest, &journal.project_id, &candidate)?;
+        // Validate before creating control state or committing a new instance.
+        // Old maintenance/unknown archives need an explicit compatibility flow;
+        // they cannot silently become ready when ZIP baselines are retired.
+        let root = candidate.clone();
+        let project = manifest.clone();
+        let legacy = metadata.clone();
+        tokio::task::spawn_blocking(move || validate_install_snapshot(&root, &project, &legacy))
+            .await
+            .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         let target = self.store.reserve_named_identity(
             &journal.project_id,
             &journal.task_id,
@@ -1024,22 +1026,14 @@ impl LifecycleManager {
         let project = manifest.clone();
         let task = journal.task_id.clone();
         let final_root = target.clone();
-        let (state, baseline_error, diagnostics) = tokio::task::spawn_blocking(move || {
-            initialize_candidate(
-                &workspace,
-                &root,
-                &final_root,
-                &project,
-                &metadata,
-                source_archive.as_deref(),
-                &task,
-            )
+        let (state, diagnostics) = tokio::task::spawn_blocking(move || {
+            initialize_candidate(&workspace, &root, &final_root, &project, &metadata, &task)
         })
         .await
         .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         journal.directory_identity = Some(persistent_identity(&candidate)?);
         journal.control = Some(state.clone());
-        journal.result = json!({"projectId":journal.project_id,"targetProjectId":journal.project_id,"sourceProjectId":journal.source_project_id,"documentEpoch":journal.target_epoch,"mode":state.mode,"maintenanceId":state.maintenance_id,"readyForChanges":state.ready_for_changes,"baselineBackupId":state.baseline_backup_id,"pendingBuild":{"required":state.pending_build,"reason":state.pending_build_reason},"diagnostics":diagnostics,"operationOutcome":if baseline_error.is_some(){"registered_maintenance_not_ready"}else if journal.kind=="copy"{"copied"}else{"imported"}});
+        journal.result = json!({"projectId":journal.project_id,"targetProjectId":journal.project_id,"sourceProjectId":journal.source_project_id,"documentEpoch":journal.target_epoch,"mode":state.mode,"maintenanceId":state.maintenance_id,"readyForChanges":state.ready_for_changes,"baselineBackupId":state.baseline_backup_id,"pendingBuild":{"required":state.pending_build,"reason":state.pending_build_reason},"diagnostics":diagnostics,"operationOutcome":if journal.kind=="copy"{"copied"}else{"imported"}});
         self.phase(journal, "install-intent")?;
         self.store.control(&journal.project_id)?.set(state)?;
         clear_project_provenance(self.paths.workspace_root(), &journal.project_id)?;
@@ -1052,18 +1046,8 @@ impl LifecycleManager {
         )?;
         MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &journal.project_id)?;
         journal.committed = true;
-        journal.error = baseline_error.clone();
         self.finish_journal(journal)?;
         self.notify(&journal.project_id);
-        if let Some(error) = baseline_error {
-            return Err(error
-                .outcome("registered_maintenance_not_ready")
-                .detail("projectId", journal.project_id.clone())
-                .detail(
-                    "maintenanceId",
-                    json!(journal.control.as_ref().unwrap().maintenance_id),
-                ));
-        }
         Ok(journal.result.clone())
     }
     async fn delete(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
@@ -1915,34 +1899,47 @@ fn inspect_restored_project(
     }
     Ok(diagnostics)
 }
+fn validate_install_snapshot(
+    root: &Path,
+    project: &ProjectManifest,
+    metadata: &BackupManifest,
+) -> Result<backups::DatabaseDiagnostics, ApiError> {
+    let diagnostics = backups::check_database(&root.join(&project.database))?;
+    if !matches!(metadata.snapshot_state, SnapshotState::Ready)
+        || metadata.pending_build.required
+        || !diagnostics.foreign_key_violations.is_empty()
+    {
+        return Err(ApiError::new(
+            "LEGACY_ARCHIVE_REQUIRES_REVIEW",
+            "旧归档处于维护、来源状态未知、仍需构建或存在数据库关系问题，当前不能直接安装为新实例。原归档和候选已保留；请先检查来源实例，未创建 ZIP 基线或清除待构建要求。",
+        )
+        .outcome("not_started")
+        .detail("candidatePath", json!(root))
+        .detail("snapshotState", json!(metadata.snapshot_state))
+        .detail("pendingBuild", json!(metadata.pending_build))
+        .detail("diagnostics", json!(diagnostics)));
+    }
+    Ok(diagnostics)
+}
 fn initialize_candidate(
     workspace: &Path,
     root: &Path,
     final_root: &Path,
     project: &ProjectManifest,
     metadata: &BackupManifest,
-    source_archive: Option<&Path>,
     task: &str,
-) -> Result<(ControlState, Option<ApiError>, backups::DatabaseDiagnostics), ApiError> {
+) -> Result<(ControlState, backups::DatabaseDiagnostics), ApiError> {
     validate_manifest(project, &project.id, root)?;
-    let diagnostics = backups::check_database(&root.join(&project.database))?;
+    let diagnostics = validate_install_snapshot(root, project, metadata)?;
     backups::restore_provenance(root, workspace, project, metadata.build_provenance.as_ref())?;
     let input_digest = builds::digest_project_inputs(root, project)?;
-    let matched = metadata
-        .build_provenance
-        .as_ref()
-        .is_some_and(|provenance| provenance.input_digest == input_digest);
-    let maintenance = !matches!(metadata.snapshot_state, SnapshotState::Ready)
-        || !diagnostics.foreign_key_violations.is_empty();
-    let unknown_build = maintenance && metadata.has_artifact && !matched;
-    let mut state=ControlState {
-        mode:if maintenance{"maintenance"}else{"ready"}.into(),
-        maintenance_id:maintenance.then(||format!("maintenance_{}",Uuid::new_v4().simple())),
-        reason:maintenance.then(||"Imported snapshot requires explicit maintenance checks".into()),
-        started_at:maintenance.then(now_ms),baseline_input_digest:Some(input_digest),had_artifact:metadata.has_artifact,
-        pending_build:metadata.pending_build.required || unknown_build,
-        pending_build_reason:metadata.pending_build.reason.clone().or_else(||unknown_build.then(||"Existing artifact cannot be confirmed against current inputs; build before ending maintenance".into())),
-        last_task_id:Some(task.into()),..ControlState::default()
+    let state = ControlState {
+        baseline_input_digest: Some(input_digest),
+        had_artifact: metadata.has_artifact,
+        pending_build: metadata.pending_build.required,
+        pending_build_reason: metadata.pending_build.reason.clone(),
+        last_task_id: Some(task.into()),
+        ..ControlState::default()
     };
     fs::create_dir_all(root.join(".platform"))?;
     let handoff = root.join(".platform/handoff.md");
@@ -1953,73 +1950,7 @@ fn initialize_candidate(
         .open(&handoff)?;
     write!(file,"# Platform-managed project handoff\n\nProject ID: `{}`\nProject root: `{}`\nRead the unchanged `README.md`, project skill and bundled documentation before editing.\nSource project: `{}`\n",project.id,final_root.display(),metadata.project_id)?;
     file.sync_all()?;
-    let baseline = (|| -> Result<Option<String>, ApiError> {
-        if !maintenance {
-            return Ok(None);
-        }
-        let directory = workspace.join("backups").join(&project.id);
-        check_no_symlinks(&directory, true)?;
-        fs::create_dir_all(&directory)?;
-        if let Some(source) = source_archive {
-            let destination = directory.join(format!("{}.zip", metadata.backup_id));
-            check_no_symlinks(&destination, true)?;
-            if destination.exists() {
-                if sha256(&destination)? != sha256(source)? {
-                    return Err(ApiError::new(
-                        "BACKUP_CONFLICT",
-                        "A different historical archive already uses this backupId",
-                    ));
-                }
-            } else {
-                let staged = directory.join(format!(".import-{task}.partial"));
-                copy_verified(source, &staged)?;
-                fs::hard_link(&staged, &destination)?;
-                fs::remove_file(staged)?;
-                sync_parent(&destination)?;
-            }
-            return Ok(Some(metadata.backup_id.clone()));
-        }
-        let backup_id = format!("backup_{}", Uuid::new_v4().simple());
-        let prepared = backups::prepare_snapshot(
-            root,
-            project,
-            &workspace
-                .join(".platform/operations")
-                .join(task)
-                .join("new-identity-baseline"),
-            SnapshotOptions {
-                backup_id: backup_id.clone(),
-                kind: "maintenanceBaseline".into(),
-                note: Some(format!(
-                    "Independent identity copied from {}",
-                    metadata.project_id
-                )),
-                snapshot_state: SnapshotState::Maintenance,
-                pending_build: PendingBuild {
-                    required: state.pending_build,
-                    reason: state.pending_build_reason.clone(),
-                },
-                build_provenance: metadata.build_provenance.clone(),
-            },
-        )?;
-        backups::publish_snapshot(&prepared, &directory.join(format!("{backup_id}.zip")))?;
-        Ok(Some(backup_id))
-    })();
-    let baseline_error = match baseline {
-        Ok(Some(id)) => {
-            state.baseline_backup_id = Some(id.clone());
-            state.protected_backup_ids.push(id);
-            state.ready_for_changes = true;
-            None
-        }
-        Ok(None) => None,
-        Err(error) if error.code == "BACKUP_CONFLICT" => return Err(error),
-        Err(error) => {
-            state.last_error = Some(error.clone());
-            Some(error)
-        }
-    };
-    Ok((state, baseline_error, diagnostics))
+    Ok((state, diagnostics))
 }
 
 #[cfg(test)]
