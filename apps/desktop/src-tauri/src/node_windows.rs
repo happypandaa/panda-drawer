@@ -376,6 +376,9 @@ pub(super) fn close_requested(window: &tauri::Window) -> bool {
     let Some(current) = session(&state, id) else {
         return false;
     };
+    let Ok(io_lease) = state.handle.io_lifetime().admit_cleanup() else {
+        return true;
+    };
     {
         let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
         if current.phase == Phase::Closing {
@@ -386,7 +389,7 @@ pub(super) fn close_requested(window: &tauri::Window) -> bool {
     }
     let app = app.clone();
     let id = id.to_owned();
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(io_lease.hold(Box::pin(async move {
         let state = app.state::<AppState>();
         let _operation = state.node_windows.operations.lock().await;
         if !owned(&state, &id, &current) {
@@ -398,7 +401,7 @@ pub(super) fn close_requested(window: &tauri::Window) -> bool {
             app.dialog().message("应用关闭未完整完成，请在‘我的项目 → 详情 → 运行状态’中核对并重试停止；平台不会自动重新启动。")
                 .title("应用关闭状态").show(|_|{});
         }
-    });
+    })));
     true
 }
 
@@ -426,10 +429,13 @@ pub(super) fn destroyed(window: &tauri::Window) {
     // owned cleanup has run even when destruction precedes that queued task.
     // For ordinary close this is an idempotent no-process operation, never a
     // second shutdown message to the child.
+    let Ok(io_lease) = state.handle.io_lifetime().admit_cleanup() else {
+        return;
+    };
     phase(&current, Phase::Closing, None);
     let app = app.clone();
     let id = id.to_owned();
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(io_lease.hold(Box::pin(async move {
         let state = app.state::<AppState>();
         let _operation = state.node_windows.operations.lock().await;
         if !owned(&state, &id, &current) {
@@ -447,7 +453,7 @@ pub(super) fn destroyed(window: &tauri::Window) {
         {
             sessions.remove(&id);
         }
-    });
+    })));
 }
 
 pub(super) async fn reconcile(app: &tauri::AppHandle) {

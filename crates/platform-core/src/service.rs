@@ -37,7 +37,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::TcpListener,
     sync::{broadcast, oneshot, watch, Notify, Semaphore},
     task::JoinHandle,
@@ -98,6 +98,7 @@ struct Change {
 }
 struct HttpState {
     paths: RuntimePaths,
+    io_lifetime: crate::io_lifetime::IoLifetime,
     shared: Weak<RuntimeSwitch>,
     lifecycle: Arc<crate::lifecycle::LifecycleManager>,
     metadata: crate::metadata::MetadataManager,
@@ -128,6 +129,7 @@ struct HttpState {
     stop: watch::Sender<bool>,
 }
 struct RuntimeSwitch {
+    io_lifetime: crate::io_lifetime::IoLifetime,
     current: StdRwLock<Option<Arc<HttpState>>>,
     router: StdRwLock<Router>,
     migration_runner: Mutex<Option<JoinHandle<()>>>,
@@ -189,6 +191,9 @@ impl EditorHandoffLease {
     }
 }
 impl RuntimeHandle {
+    pub fn io_lifetime(&self) -> crate::io_lifetime::IoLifetime {
+        self.shared.io_lifetime.clone()
+    }
     fn current(&self) -> Arc<HttpState> {
         self.pinned
             .clone()
@@ -1225,6 +1230,7 @@ impl RuntimeService {
         let listener = bind_loopback(paths.last_port()?).await?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(RuntimeSwitch {
+            io_lifetime: crate::io_lifetime::IoLifetime::default(),
             current: StdRwLock::new(None),
             router: StdRwLock::new(Router::new()),
             migration_runner: Mutex::new(None),
@@ -1286,6 +1292,7 @@ impl RuntimeService {
         launch(&self.shared.snapshot(), id)
     }
     pub async fn shutdown(mut self) -> Result<()> {
+        self.shared.io_lifetime.seal();
         self.shared.closing.store(true, Ordering::Release);
         // Migration waits for source/project leases held by long-running work.
         // Signal that work before awaiting migration, then let migration finish
@@ -1311,6 +1318,7 @@ impl RuntimeService {
             }
             notified.await;
         }
+        self.shared.io_lifetime.drain().await;
         state.storage.shutdown().await;
         state.history_cleanup.shutdown().await;
         state.lifecycle.shutdown().await;
@@ -1343,6 +1351,7 @@ impl RuntimeService {
 }
 impl Drop for RuntimeService {
     fn drop(&mut self) {
+        self.shared.io_lifetime.seal();
         self.shared.closing.store(true, Ordering::Release);
         let state = self.shared.snapshot();
         state.stopping.store(true, Ordering::SeqCst);
@@ -1482,6 +1491,11 @@ fn make_state(
         source_acquisition.clone(),
     );
     let state = Arc::new(HttpState {
+        io_lifetime: shared
+            .upgrade()
+            .expect("runtime owner exists")
+            .io_lifetime
+            .clone(),
         paths,
         shared,
         info: info.clone(),
@@ -1907,14 +1921,29 @@ async fn validate_host(
         );
     }
     state.active.fetch_add(1, Ordering::SeqCst);
-    let _active = Active(state.clone());
+    let active = Active(state.clone());
     if state.stopping.load(Ordering::SeqCst) {
         return failure(
             ApiError::new("SERVICE_STOPPING", "Platform is shutting down"),
             None,
         );
     }
-    let mut response = next.run(request).await;
+    let io_lease = match state.io_lifetime.admit() {
+        Ok(lease) => lease,
+        Err(error) => return failure(error, None),
+    };
+    // Losing a connection/request must not detach a blocking handler from the
+    // service's drain. The response body has a separate producer lifetime.
+    let mut response = match io_lease
+        .run(async move {
+            let _active = active;
+            next.run(request).await
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return failure(error, None),
+    };
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -2622,7 +2651,7 @@ async fn project_api(
             }
         };
         if method == Method::GET {
-            return read_attachment(&project, &path, &epoch, request.headers())
+            return read_attachment(&state, &project, &path, &epoch, request.headers())
                 .await
                 .unwrap_or_else(|e| failure(e, Some(&id)));
         }
@@ -2937,7 +2966,7 @@ async fn serve_project(
             html.insert_str(position, &meta);
             ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
         } else {
-            stream_file(file, path, &headers, false, lease).await?
+            stream_file(file, path, &headers, false, lease, &state.io_lifetime).await?
         };
         // Apply the same restrictions to every resource, including SVG/XHTML
         // opened as a top-level document. MIME, not extension spelling, decides
@@ -2961,6 +2990,7 @@ async fn stream_file(
     headers: &HeaderMap,
     attachment: bool,
     lease: tokio::sync::OwnedRwLockReadGuard<()>,
+    lifetime: &crate::io_lifetime::IoLifetime,
 ) -> std::result::Result<Response, ApiError> {
     let size = file.metadata().map_err(files::error)?.len();
     let mut start = 0;
@@ -3008,24 +3038,53 @@ async fn stream_file(
         }
     }
     let length = if size == 0 { 0 } else { end - start + 1 };
-    let mut file = tokio::fs::File::from_std(file);
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(files::error)?;
-    let reader = file.take(length);
-    let body = Body::from_stream(stream::try_unfold(
-        (reader, lease),
-        |(mut reader, lease)| async move {
-            let mut buffer = vec![0; 65536];
-            let count = reader.read(&mut buffer).await?;
-            if count == 0 {
-                Ok::<_, std::io::Error>(None)
-            } else {
+    // The producer owns the actual descriptor and project gate, rather than a
+    // response future that can disappear while a blocking read is still alive.
+    let io_lease = lifetime.admit()?;
+    let lifetime = lifetime.clone();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let work = io_lease.hold(move || {
+        use std::io::{Read, Seek};
+        let _project_lease = lease;
+        let mut file = file;
+        let result = (|| -> std::io::Result<()> {
+            file.seek(std::io::SeekFrom::Start(start))?;
+            let mut reader = file.take(length);
+            loop {
+                if lifetime.check_open().is_err() || sender.is_closed() {
+                    return Ok(());
+                }
+                let mut buffer = vec![0; 65536];
+                let count = reader.read(&mut buffer)?;
+                if count == 0 {
+                    return Ok(());
+                }
                 buffer.truncate(count);
-                Ok(Some((buffer, (reader, lease))))
+                let mut item = Ok(buffer);
+                loop {
+                    match sender.try_send(item) {
+                        Ok(()) => break,
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(value)) => {
+                            if lifetime.check_open().is_err() {
+                                return Ok(());
+                            }
+                            item = value;
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                }
             }
-        },
-    ));
+        })();
+        if let Err(error) = result {
+            let _ = sender.try_send(Err(error));
+        }
+    });
+    // This owned blocking task is deliberately not aborted with a response.
+    tokio::task::spawn_blocking(move || work.run_blocking());
+    let body = Body::from_stream(stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    }));
     let mut response = body.into_response();
     *response.status_mut() = if partial {
         StatusCode::PARTIAL_CONTENT
@@ -3067,6 +3126,7 @@ async fn stream_file(
     Ok(response)
 }
 async fn read_attachment(
+    state: &Arc<HttpState>,
     project: &ProjectHandle,
     path: &str,
     epoch: &str,
@@ -3075,7 +3135,15 @@ async fn read_attachment(
     let lease = project.operation_gate.clone().read_owned().await;
     project.validate_epoch(Some(epoch))?;
     let root = files::root(&project.root.join(&project.manifest.attachments_dir))?;
-    stream_file(files::read(&root, path)?, path, headers, true, lease).await
+    stream_file(
+        files::read(&root, path)?,
+        path,
+        headers,
+        true,
+        lease,
+        &state.io_lifetime,
+    )
+    .await
 }
 struct Temporary {
     root: std::fs::File,
@@ -4014,3 +4082,7 @@ pub use node_development::{NodeDevelopmentLease, NodeGitAction};
 #[cfg(test)]
 #[path = "service_node_development_tests.rs"]
 mod node_development_tests;
+
+#[cfg(test)]
+#[path = "service_io_lifetime_tests.rs"]
+mod io_lifetime_tests;

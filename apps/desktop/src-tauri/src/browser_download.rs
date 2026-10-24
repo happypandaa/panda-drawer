@@ -1,6 +1,6 @@
 //! WKWebView downloads need an explicit handler. Download to an owned private
 //! staging directory, then ask where to save with a non-blocking native dialog.
-use platform_core::{projects::check_no_symlinks, ApiError, RuntimeHandle};
+use platform_core::{io_lifetime::TrackedIo, projects::check_no_symlinks, ApiError, RuntimeHandle};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
@@ -123,6 +123,25 @@ impl Drop for PendingDownload {
     fn drop(&mut self) {
         // Closing a WebView may drop its callback before Finished is delivered.
         self.cleanup();
+    }
+}
+
+// Until Finished, WebKit owns the destination and may still write it. Dropping
+// the callback alone is not an engine-cancellation acknowledgement. Retain both
+// evidence and the busy lease in that exceptional case, rather than deleting
+// the engine's file and falsely reporting a drained service.
+struct EngineDownload(Option<TrackedIo<PendingDownload>>);
+impl EngineDownload {
+    fn finished(mut self) -> TrackedIo<PendingDownload> {
+        self.0.take().expect("owned download")
+    }
+}
+impl Drop for EngineDownload {
+    fn drop(&mut self) {
+        if let Some(resource) = self.0.take() {
+            eprintln!("Native download callback ended without Finished; preserving its stage and blocking drain");
+            std::mem::forget(resource);
+        }
     }
 }
 
@@ -250,9 +269,12 @@ pub fn handler(
     handle: RuntimeHandle,
     id: String,
 ) -> impl Fn(Webview, DownloadEvent<'_>) -> bool + Send + Sync + 'static {
-    let pending = Arc::new(Mutex::new(HashMap::<String, PendingDownload>::new()));
+    let pending = Arc::new(Mutex::new(HashMap::<String, EngineDownload>::new()));
     move |webview, event| match event {
         DownloadEvent::Requested { url, destination } => {
+            let Ok(io_lease) = handle.io_lifetime().admit() else {
+                return false;
+            };
             let info = handle.info();
             let permitted = Url::parse(&info.base_url)
                 .ok()
@@ -282,7 +304,7 @@ pub fn handler(
             match PendingDownload::create(&info.data_root, suggested) {
                 Ok(stage) => {
                     *destination = stage.file.clone();
-                    downloads.insert(key, stage);
+                    downloads.insert(key, EngineDownload(Some(io_lease.hold(stage))));
                     true
                 }
                 Err(error) => {
@@ -299,40 +321,49 @@ pub fn handler(
             let Some(stage) = stage else {
                 return false;
             };
+            let stage = stage.finished();
             if !success {
-                stage.cleanup();
                 notify_error(&app, &invalid("Browser download did not complete"));
                 return false;
             }
-            if let Err(error) = stage.open_file() {
-                stage.cleanup();
+            if let Err(error) = stage.resource().open_file() {
                 notify_error(&app, &error);
                 return false;
             }
+            let suggested_name = stage.resource().suggested_name.clone();
+            let Ok(deferred) = handle.io_lifetime().defer(stage) else {
+                return false;
+            };
             let app = app.clone();
             let handle = handle.clone();
             app.dialog()
                 .file()
                 .set_parent(&webview.window())
                 .set_title("保存项目下载")
-                .set_file_name(&stage.suggested_name)
+                .set_file_name(&suggested_name)
                 .save_file(move |selected| {
-                    // File copying must not block the UI thread or the dialog completion.
-                    std::thread::spawn(move || {
-                        if let Some(selected) = selected {
-                            let result = selected
-                                .into_path()
-                                .map_err(|error| invalid(&error.to_string()))
-                                .and_then(|destination| {
-                                    publish_copy(&stage, &destination, |path| {
-                                        handle.validate_download_destination(path)
-                                    })
-                                });
-                            if let Err(error) = result {
-                                notify_error(&app, &error);
-                            }
+                    let Some(selected) = selected else {
+                        return;
+                    };
+                    // Claim and stop share admission's lock. An unselected stage
+                    // is revoked on stop; a successful claim keeps the original
+                    // lease through copying and private-stage destruction.
+                    let Ok(stage) = deferred.claim() else {
+                        return;
+                    };
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let result = selected
+                            .into_path()
+                            .map_err(|error| invalid(&error.to_string()))
+                            .and_then(|destination| {
+                                publish_copy(stage.resource(), &destination, |path| {
+                                    handle.validate_download_destination(path)
+                                })
+                            });
+                        if let Err(error) = result {
+                            notify_error(&app, &error);
                         }
-                        stage.cleanup();
+                        drop(stage);
                     });
                 });
             true
@@ -434,5 +465,51 @@ mod tests {
         assert_eq!(fs::read(&output).unwrap(), b"updated");
         stage.cleanup();
         fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn stopped_save_dialog_cleans_private_stage_and_cannot_publish_later() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let stage = PendingDownload::create(&root, "artificial.txt").unwrap();
+        fs::write(&stage.file, b"artificial local content").unwrap();
+        let directory = stage.directory.clone();
+        let registry = platform_core::io_lifetime::IoLifetime::default();
+        let deferred = registry
+            .defer(registry.admit().unwrap().hold(stage))
+            .unwrap();
+        registry.close();
+        registry.drain().await;
+        assert!(!directory.exists());
+        assert!(deferred.claim().is_err());
+        assert!(!root.join("selected-after-stop.txt").exists());
+    }
+    #[tokio::test]
+    async fn selected_save_owns_stage_until_worker_finishes_cleanup() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let stage = PendingDownload::create(&root, "artificial.txt").unwrap();
+        fs::write(&stage.file, b"artificial local content").unwrap();
+        let directory = stage.directory.clone();
+        let destination = root.join("accepted.txt");
+        let registry = platform_core::io_lifetime::IoLifetime::default();
+        let selected = registry
+            .defer(registry.admit().unwrap().hold(stage))
+            .unwrap()
+            .claim()
+            .unwrap();
+        registry.seal();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), registry.drain())
+                .await
+                .is_err()
+        );
+        let output = destination.clone();
+        tokio::task::spawn_blocking(move || publish_copy(selected.resource(), &output, |_| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        registry.drain().await;
+        assert!(!directory.exists());
+        assert_eq!(fs::read(destination).unwrap(), b"artificial local content");
     }
 }

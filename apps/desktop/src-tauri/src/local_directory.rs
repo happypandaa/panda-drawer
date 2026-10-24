@@ -31,13 +31,13 @@ pub(super) async fn open(location: &Path, select_file: bool) -> Result<(), ApiEr
         "此系统暂不支持打开本地目录",
     ));
     #[cfg(target_os = "macos")]
-    match tokio::time::timeout(
+    match super::native_process::status(
+        finder_command(location, select_file)?,
         Duration::from_secs(5),
-        finder_command(location, select_file)?.status(),
     )
     .await
     {
-        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(status) if status.success() => Ok(()),
         _ => Err(ApiError::new(
             "REVEAL_FAILED",
             "无法打开本地目录，请检查目录是否仍可访问",
