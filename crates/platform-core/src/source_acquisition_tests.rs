@@ -294,7 +294,7 @@ fn local_declaration_symlink_cannot_open_external_file() {
 }
 
 #[allow(clippy::type_complexity)]
-fn fixture() -> (
+pub(super) fn fixture() -> (
     TempDir,
     RuntimePaths,
     Arc<ProjectStore>,
@@ -305,12 +305,13 @@ fn fixture() -> (
     let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
     let tasks =
         BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1".into()).unwrap();
-    let git = GitEnvironmentManager::new(paths.data_root().into(), None);
+    let git =
+        GitEnvironmentManager::with_processes(paths.data_root().into(), None, store.processes());
     let manager =
         SourceAcquisitionManager::new(paths.clone(), store.clone(), tasks.clone(), git).unwrap();
     (temp, paths, store, tasks, manager)
 }
-fn fake_git(paths: &RuntimePaths, body: &str) -> PathBuf {
+pub(super) fn fake_git(paths: &RuntimePaths, body: &str) -> PathBuf {
     let file = paths.data_root().join("disposable-git");
     fs::write(&file,format!("#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'git version 2.56.0\\n'; exit 0; fi\n{body}\n")).unwrap();
     fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
@@ -321,7 +322,7 @@ fn fake_git(paths: &RuntimePaths, body: &str) -> PathBuf {
     .unwrap();
     file
 }
-async fn final_task(tasks: &BuildManager, id: &str) -> TaskRecord {
+pub(super) async fn final_task(tasks: &BuildManager, id: &str) -> TaskRecord {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let task = tasks.task(id).unwrap();
@@ -632,6 +633,9 @@ async fn actual_git_blob_materialization_index_and_filters_are_non_executing() {
         cancel: cancel.subscribe(),
         deadline: Instant::now() + Duration::from_secs(30),
         monitor: root.clone(),
+        processes: Default::default(),
+        scope: None,
+        hooks: Default::default(),
     };
     let mut init = isolated_command(&toolchain, &repository, &home, &template);
     init.args(["init", "--initial-branch=main"]);
@@ -719,6 +723,12 @@ async fn actual_git_blob_materialization_index_and_filters_are_non_executing() {
         digest,
         "executable permissions participate in source identity"
     );
+    assert!(control.processes.shutdown().await.is_empty());
+    assert!(control
+        .processes
+        .snapshot()
+        .iter()
+        .all(|process| process.resource_closed()));
 }
 
 #[tokio::test]
@@ -828,6 +838,9 @@ fn capture_control(root: &Path) -> (watch::Sender<bool>, watch::Sender<bool>, Ru
             cancel: cancel_rx,
             deadline: Instant::now() + TIMEOUT,
             monitor: root.to_path_buf(),
+            processes: Default::default(),
+            scope: None,
+            hooks: Default::default(),
         },
     )
 }

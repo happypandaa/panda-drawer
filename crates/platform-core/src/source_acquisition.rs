@@ -26,14 +26,20 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    process::Command,
     sync::watch,
     task::JoinHandle,
     time::Instant,
 };
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
+
+#[path = "source_acquisition_process.rs"]
+mod process;
+#[cfg(test)]
+use process::SourceHooks;
+use process::{execute, materialize, resolve_source_git, SourceScope};
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_FILES: usize = 10_000;
@@ -163,7 +169,9 @@ pub struct SourceAcquisitionManager {
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
     git: GitEnvironmentManager,
-    active: Mutex<HashMap<String, watch::Sender<bool>>>,
+    active: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+    #[cfg(test)]
+    hooks: Arc<SourceHooks>,
     runners: Mutex<Vec<JoinHandle<()>>>,
     submission: Mutex<()>,
     stopping: AtomicBool,
@@ -180,7 +188,9 @@ impl SourceAcquisitionManager {
             store,
             tasks,
             git,
-            active: Mutex::new(HashMap::new()),
+            active: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            hooks: Arc::new(SourceHooks::default()),
             runners: Mutex::new(Vec::new()),
             submission: Mutex::new(()),
             stopping: AtomicBool::new(false),
@@ -592,12 +602,24 @@ impl SourceAcquisitionManager {
             private_dir(&self.root())?;
             new_dir(&self.root().join(&id))?;
             self.save_record(&record)?;
-            self.tasks.append(&task.task_id, format!("Source candidate: {id}\nProvider: {}\nPublic URL: {}\nWorkspace path: .platform/sources/{id}\nNo project code is executed.\n", record.provider, record.url).as_bytes())
+            self.tasks.append(&task.task_id, format!("Source candidate: {id}\nProvider: {}\nPublic URL: {}\nWorkspace path: .platform/sources/{id}\nNo project code is executed.\n", record.provider, record.url).as_bytes())?;
+            fs::File::open(self.root().join(&id)).map_err(ApiError::from)
         })();
-        if let Err(error) = prepared {
-            self.tasks.finish(&task.task_id, Err(error.clone()))?;
-            return Err(error);
-        }
+        let anchor = match prepared {
+            Ok(anchor) => anchor,
+            Err(error) => {
+                self.tasks.finish(&task.task_id, Err(error.clone()))?;
+                return Err(error);
+            }
+        };
+        let scope = Arc::new(SourceScope::new(
+            lease,
+            self.active.clone(),
+            self.tasks.clone(),
+            task.task_id.clone(),
+            self.root().join(&id),
+            anchor,
+        ));
         let (sender, cancel) = watch::channel(false);
         self.active
             .lock()
@@ -605,8 +627,7 @@ impl SourceAcquisitionManager {
             .insert(task.task_id.clone(), sender);
         let manager = self.clone();
         let runner = tokio::spawn(async move {
-            let _lease = lease;
-            manager.run(record, stop, cancel, local_input).await;
+            manager.run(record, stop, cancel, local_input, scope).await;
         });
         let mut runners = self.runners.lock().unwrap();
         // Preserve completed outcomes for the shutdown join; panic is not success.
@@ -680,12 +701,17 @@ impl SourceAcquisitionManager {
         stop: watch::Receiver<bool>,
         cancel: watch::Receiver<bool>,
         local_input: Option<CaptureInput>,
+        scope: Arc<SourceScope>,
     ) {
         let mut control = RunControl {
             stop,
             cancel,
             deadline: Instant::now() + TIMEOUT,
             monitor: self.root().join(&record.source_id),
+            processes: self.store.processes(),
+            scope: Some(scope.clone()),
+            #[cfg(test)]
+            hooks: self.hooks.clone(),
         };
         let result = if record.provider == "local" {
             self.capture_local(&mut record, &mut control, local_input.as_ref())
@@ -707,7 +733,9 @@ impl SourceAcquisitionManager {
                 record.status = "ready".into();
                 record.phase = "completed".into();
                 record.completed_at = Some(now());
-                self.save_record(&record)
+                scope
+                    .check_identity()
+                    .and_then(|()| self.save_record(&record))
                     .and_then(|()| self.view(record.clone()))
                     .and_then(|candidate| serde_json::to_value(candidate).map_err(ApiError::from))
             }
@@ -719,8 +747,14 @@ impl SourceAcquisitionManager {
                 }
                 .into();
                 record.completed_at = Some(now());
+                if error.details["processResourceClosed"] == false {
+                    record.phase = "process-unconfirmed".into();
+                }
                 record.error = Some(error.clone());
-                if let Err(persist) = self.save_record(&record) {
+                if let Err(persist) = scope
+                    .check_identity()
+                    .and_then(|()| self.save_record(&record))
+                {
                     let _ = self.tasks.append(
                         &record.task_id,
                         format!(
@@ -732,9 +766,14 @@ impl SourceAcquisitionManager {
                 }
                 // Partial payloads are retained as operation evidence. A retry is
                 // a new slot; no previous or unknown directory is deleted.
-                Err(error
-                    .detail("sourceId", record.source_id.clone())
-                    .outcome("not_registered"))
+                let unknown = error.details["processResourceClosed"] == false
+                    || error.details["candidateOwnershipConfirmed"] == false;
+                let issue = error.detail("sourceId", record.source_id.clone());
+                Err(if unknown {
+                    issue.outcome("unknown")
+                } else {
+                    issue.outcome("not_registered")
+                })
             }
         };
         let _ = self.tasks.append(
@@ -742,7 +781,8 @@ impl SourceAcquisitionManager {
             format!("Result: {}\n", record.status).as_bytes(),
         );
         let _ = self.tasks.finish(&record.task_id, result);
-        self.active.lock().unwrap().remove(&record.task_id);
+        drop(control);
+        drop(scope);
     }
     async fn capture_local(
         &self,
@@ -750,6 +790,7 @@ impl SourceAcquisitionManager {
         control: &mut RunControl,
         input: Option<&CaptureInput>,
     ) -> Result<(), ApiError> {
+        control.check()?;
         self.phase(record, "inspecting-local-scope")?;
         let original = record
             .local_source_path
@@ -781,6 +822,7 @@ impl SourceAcquisitionManager {
             .await
             .map_err(|_| invalid("本机源码检查未完成；现场保留。"))??;
         record.excluded_paths = plan.excluded.clone();
+        control.check()?;
         self.phase(record, "capturing-local")?;
         let copy_control = control.clone();
         let copy_candidate = candidate.clone();
@@ -795,6 +837,7 @@ impl SourceAcquisitionManager {
         if let Some(output) = trusted {
             output.verify()?;
         }
+        control.check()?;
         self.phase(record, "inspecting")?;
         let mut inspection = inspect_directory(&candidate)?;
         if trusted.is_some() {
@@ -821,8 +864,9 @@ impl SourceAcquisitionManager {
         record: &mut SourceRecord,
         control: &mut RunControl,
     ) -> Result<(), ApiError> {
+        control.check()?;
         self.phase(record, "environment")?;
-        let toolchain = supervise(control, self.git.resolve()).await?;
+        let toolchain = resolve_source_git(&self.git, control).await?;
         if !supported_version(&toolchain.git.version) {
             return Err(error(
                 "SOURCE_GIT_VERSION_UNSUPPORTED",
@@ -839,6 +883,7 @@ impl SourceAcquisitionManager {
         let template = stage.join("empty-template");
         new_dir(&template)?;
         let repository = stage.join("repository");
+        control.check()?;
         self.phase(record, "downloading")?;
         let mut clone = isolated_command(&toolchain, &home, &home, &template);
         clone
@@ -882,6 +927,7 @@ impl SourceAcquisitionManager {
                 ));
             }
         }
+        control.check()?;
         self.phase(record, "validating-objects")?;
         let mut head = isolated_command(&toolchain, &repository, &home, &template);
         head.args(["rev-parse", "--verify", "HEAD^{commit}"]);
@@ -895,6 +941,7 @@ impl SourceAcquisitionManager {
         record.commit = Some(commit.clone());
         record.file_count = Some(entries.len());
         record.total_bytes = Some(entries.iter().map(|entry| entry.size).sum());
+        control.check()?;
         self.phase(record, "materializing")?;
         record.content_digest =
             Some(materialize(&toolchain, &repository, &home, &template, &entries, control).await?);
@@ -903,6 +950,7 @@ impl SourceAcquisitionManager {
         let mut index = isolated_command(&toolchain, &repository, &home, &template);
         index.args(["read-tree", &commit]);
         execute(index, control, MAX_OUTPUT).await?;
+        control.check()?;
         self.phase(record, "inspecting")?;
         control.check()?;
         record.inspection = Some(inspect_directory(&repository)?);
@@ -1793,9 +1841,16 @@ struct RunControl {
     cancel: watch::Receiver<bool>,
     deadline: Instant,
     monitor: PathBuf,
+    processes: crate::owned_process::OwnedProcessRegistry,
+    scope: Option<Arc<SourceScope>>,
+    #[cfg(test)]
+    hooks: Arc<SourceHooks>,
 }
 impl RunControl {
     fn check(&self) -> Result<(), ApiError> {
+        if let Some(scope) = &self.scope {
+            scope.check_identity()?;
+        }
         if *self.stop.borrow() || self.stop.has_changed().is_err() {
             return Err(interrupted());
         }
@@ -1943,35 +1998,6 @@ fn isolated_command(tools: &GitToolchain, cwd: &Path, home: &Path, template: &Pa
         .arg(format!("core.hooksPath={}", template.display()));
     command
 }
-struct ChildGroup {
-    child: Child,
-    pid: Option<u32>,
-}
-impl ChildGroup {
-    fn spawn(command: &mut Command) -> Result<Self, ApiError> {
-        let child = command.spawn().map_err(|_| process_failed())?;
-        let pid = child.id();
-        Ok(Self { child, pid })
-    }
-    fn kill_group(&self) {
-        if let Some(pid) = self.pid {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
-    async fn finish(&mut self) {
-        self.kill_group();
-        let _ = self.child.start_kill();
-        let _ = tokio::time::timeout(Duration::from_secs(1), self.child.wait()).await;
-        self.pid = None;
-    }
-}
-impl Drop for ChildGroup {
-    fn drop(&mut self) {
-        self.kill_group();
-    }
-}
 async fn bounded(
     mut reader: impl AsyncRead + Unpin,
     maximum: usize,
@@ -1999,32 +2025,6 @@ async fn bounded(
     }
     Ok(result)
 }
-async fn execute(
-    mut command: Command,
-    control: &mut RunControl,
-    maximum: usize,
-) -> Result<Vec<u8>, ApiError> {
-    control.check()?;
-    let mut group = ChildGroup::spawn(&mut command)?;
-    let stdout = group.child.stdout.take().unwrap();
-    let stderr = group.child.stderr.take().unwrap();
-    let result = {
-        let operation = async {
-            let (out, _, status) = tokio::try_join!(
-                bounded(stdout, maximum, true),
-                bounded(stderr, MAX_OUTPUT, false),
-                async { group.child.wait().await.map_err(|_| process_failed()) }
-            )?;
-            if !status.success() {
-                return Err(process_failed());
-            }
-            Ok(out)
-        };
-        supervise(control, operation).await
-    };
-    group.finish().await;
-    result
-}
 fn parse_commit(bytes: &[u8]) -> Result<String, ApiError> {
     let s = std::str::from_utf8(bytes).map_err(|_| invalid("Git 未返回有效提交。"))?;
     let oid = s
@@ -2042,7 +2042,7 @@ fn valid_oid(oid: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         && !oid.bytes().all(|b| b == b'0')
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct TreeEntry {
     path: String,
     oid: String,
@@ -2152,99 +2152,10 @@ fn validate_tree_path(path: &str) -> Result<(), ApiError> {
     }
     Ok(())
 }
-async fn materialize(
-    tools: &GitToolchain,
-    repository: &Path,
-    home: &Path,
-    template: &Path,
-    entries: &[TreeEntry],
-    control: &mut RunControl,
-) -> Result<String, ApiError> {
-    let mut command = isolated_command(tools, repository, home, template);
-    command.args(["cat-file", "--batch"]).stdin(Stdio::piped());
-    let mut group = ChildGroup::spawn(&mut command)?;
-    let mut input = group.child.stdin.take().unwrap();
-    let mut output = BufReader::new(group.child.stdout.take().unwrap());
-    let stderr = group.child.stderr.take().unwrap();
-    let result = {
-        let operation = async {
-            let blobs = async {
-                let mut tree = Sha256::new();
-                let mut buffer = vec![0u8; 65536];
-                for entry in entries {
-                    input
-                        .write_all(format!("{}\n", entry.oid).as_bytes())
-                        .await
-                        .map_err(|_| process_failed())?;
-                    input.flush().await.map_err(|_| process_failed())?;
-                    let mut header = Vec::new();
-                    loop {
-                        if header.len() >= 160 {
-                            return Err(invalid("Git blob 响应头超限。"));
-                        }
-                        let byte = output.read_u8().await.map_err(|_| process_failed())?;
-                        if byte == b'\n' {
-                            break;
-                        }
-                        header.push(byte);
-                    }
-                    if header != format!("{} blob {}", entry.oid, entry.size).as_bytes() {
-                        return Err(invalid("Git blob 与已检查文件树不一致。"));
-                    }
-                    let path = repository.join(&entry.path);
-                    private_dir(path.parent().unwrap())?;
-                    let file = OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .mode(if entry.executable { 0o755 } else { 0o644 })
-                        .custom_flags(libc::O_NOFOLLOW)
-                        .open(&path)?;
-                    let mut file = tokio::fs::File::from_std(file);
-                    let mut remaining = entry.size;
-                    let mut digest = Sha256::new();
-                    while remaining > 0 {
-                        let n = remaining.min(buffer.len() as u64) as usize;
-                        output
-                            .read_exact(&mut buffer[..n])
-                            .await
-                            .map_err(|_| process_failed())?;
-                        file.write_all(&buffer[..n]).await?;
-                        digest.update(&buffer[..n]);
-                        remaining -= n as u64;
-                    }
-                    file.sync_all().await?;
-                    if output.read_u8().await.map_err(|_| process_failed())? != b'\n' {
-                        return Err(invalid("Git blob 响应分隔无效。"));
-                    }
-                    tree.update(entry.path.as_bytes());
-                    tree.update([0]);
-                    tree.update(entry.size.to_le_bytes());
-                    tree.update([u8::from(entry.executable)]);
-                    tree.update(digest.finalize());
-                }
-                input.shutdown().await.map_err(|_| process_failed())?;
-                drop(input);
-                let trailing = bounded(output, 1, true).await?;
-                if !trailing.is_empty() {
-                    return Err(invalid("Git 返回了未请求的文件内容。"));
-                }
-                Ok::<_, ApiError>(format!("{:x}", tree.finalize()))
-            };
-            let (digest, _, status) =
-                tokio::try_join!(blobs, bounded(stderr, MAX_OUTPUT, false), async {
-                    group.child.wait().await.map_err(|_| process_failed())
-                })?;
-            if !status.success() {
-                return Err(process_failed());
-            }
-            Ok(digest)
-        };
-        supervise(control, operation).await
-    };
-    group.finish().await;
-    result
-}
-
 #[cfg(test)]
 #[path = "source_acquisition_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "source_acquisition_owned_process_tests.rs"]
+mod owned_process_tests;
