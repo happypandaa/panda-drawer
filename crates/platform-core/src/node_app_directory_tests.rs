@@ -362,6 +362,29 @@ fn declared_entry_symlinks_are_review_issues_but_root_scope_violations_are_error
 
 #[tokio::test]
 async fn bound_registration_requires_ready_current_revision_and_preserves_same_path_identity() {
+    fn source_files(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn collect(
+            root: &Path,
+            current: &Path,
+            files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+        ) {
+            for entry in fs::read_dir(current).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    collect(root, &entry.path(), files);
+                } else {
+                    assert!(entry.file_type().unwrap().is_file());
+                    files.insert(
+                        entry.path().strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(entry.path()).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        collect(root, root, &mut files);
+        files
+    }
     let fixture = Fixture::new();
     let empty_revision = fixture.revision();
     assert_eq!(
@@ -375,14 +398,24 @@ async fn bound_registration_requires_ready_current_revision_and_preserves_same_p
     );
     fixture.assert_no_platform_writes();
     let ready = fixture.initialize("external starter");
+    assert!(
+        fixture.manager.list().await.unwrap().is_empty(),
+        "Generating source alone must not register an application"
+    );
+    fixture.assert_no_platform_writes();
     let revision = ready["expectedRevision"].as_str().unwrap().to_owned();
-    let before = fs::read(fixture.source.join("local-app.json")).unwrap();
+    let before = source_files(&fixture.source);
     let first = fixture
         .manager
         .register_directory(fixture.source.clone(), revision.clone())
         .await
         .unwrap();
     assert_eq!(first["state"], "stopped");
+    let listed = fixture.manager.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], first["id"]);
+    assert_eq!(listed[0]["sourcePath"], json!(fixture.source));
+    assert_eq!(listed[0]["name"], "external starter");
     let second = fixture
         .manager
         .register_directory(fixture.source.clone(), revision)
@@ -390,12 +423,34 @@ async fn bound_registration_requires_ready_current_revision_and_preserves_same_p
         .unwrap();
     assert_eq!(first["id"], second["id"]);
     assert_eq!(fixture.manager.registrations().unwrap().len(), 1);
-    assert_eq!(
-        fs::read(fixture.source.join("local-app.json")).unwrap(),
-        before
-    );
+    assert_eq!(source_files(&fixture.source), before);
+    assert!(fixture.manager.running_ids().await.is_empty());
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
     assert!(!fixture.manager.node_path.exists());
     fixture.manager.stop_all().await.unwrap();
+
+    // Read through a fresh manager after the original has shut down: the list
+    // must come from the durable registration, independent of UI callbacks.
+    let reopened = NodeApps::new(
+        fixture.manager.data_root.clone(),
+        fixture.manager.node_path.clone(),
+    )
+    .unwrap();
+    let persisted = reopened.list().await.unwrap();
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0]["id"], first["id"]);
+    assert_eq!(persisted[0]["sourcePath"], json!(fixture.source));
+    assert_eq!(persisted[0]["state"], "stopped");
+    assert!(reopened.running_ids().await.is_empty());
+    assert!(reopened.owned_process_ids().await.is_empty());
+    assert_eq!(source_files(&fixture.source), before);
+    assert!(!fixture
+        .manager
+        .root
+        .join(first["id"].as_str().unwrap())
+        .join("active.json")
+        .exists());
+    reopened.stop_all().await.unwrap();
 }
 
 #[tokio::test]

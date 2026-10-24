@@ -897,6 +897,12 @@ test('Adding a ready local folder previews first and binds registration to the r
   await click(byText('选择本地项目文件夹'));
   assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_directory_inspect', { sourcePath: '/artificial/node-source' }]]);
   assert.ok(byText('确认添加此项目')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
+  const readyHeading = document.querySelector('.node-inspection-preview h3');
+  assert.equal(readyHeading.textContent, '确认添加到项目列表');
+  assert.equal(document.activeElement, byText('确认添加此项目'));
+  assert.match(document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent, /核对下面的项目和目录/);
+  const copyPath = byText('复制目录路径'); copyPath.focus(); await click(copyPath);
+  assert.equal(document.activeElement, copyPath, 'A later local operation must not repeatedly pull focus back to the preview');
   assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /org.example.inspected-data · 版本 1/);
   assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /平台未验证实际数据格式/);
   await click(byText('确认添加此项目'));
@@ -927,7 +933,10 @@ test('An empty folder requires a name and separate acknowledged initialization b
   await click(byText('在空目录生成起始项目…')); await click(document.querySelector('[aria-label="生成起始项目确认"] input')); await click(byText('确认生成起始项目'));
   assert.deepEqual(calls[2], ['node_app_directory_initialize', { sourcePath: '/artificial/node-source', input: { expectedRevision: 'directory-revision-1', name: 'My local project' } }]);
   assert.deepEqual(added, []); assert.equal(calls.length, 3); assert.ok(byText('确认添加此项目'));
-  assert.match(document.body.textContent, /尚未添加或运行/);
+  assert.match(document.body.textContent, /目录已初始化，尚未加入项目列表/);
+  const readyHeading = document.querySelector('.node-inspection-preview h3');
+  assert.equal(readyHeading.textContent, '确认添加到项目列表');
+  assert.equal(document.activeElement, byText('确认添加此项目'));
   await click(byText('确认添加此项目'));
   assert.deepEqual(calls[3], ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'initialized-revision' }]);
   assert.equal(added.length, 1); assert.equal(calls.length, 4);
@@ -1244,6 +1253,77 @@ function shellMock(state, action = async (command) => { throw new Error(command)
     return action(command, args);
   };
 }
+
+test('An empty local folder reaches the App list only after explicit registration and survives refresh', async () => {
+  const sourcePath = '/artificial/node-source';
+  const value = app({ name: 'Disposable initialized starter', sourcePath, fields: [], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: true } });
+  const initialized = deferred(); const registered = deferred();
+  const state = { nodes: [] }; const calls = [];
+  const mock = shellMock(state, async (command) => {
+    if (command === 'choose_path') return sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview('empty', { reviewPrompt: 'Artificial retained empty-folder AI prompt' });
+    if (command === 'node_app_directory_initialize') return initialized.promise;
+    if (command === 'node_app_directory_register') {
+      const result = await registered.promise; state.nodes = [result]; return result;
+    }
+    throw new Error(command);
+  });
+  await setup(async (command, args) => { calls.push([command, args]); return mock(command, args); }, {}, App);
+  assert.equal(document.querySelectorAll('.project-card').length, 0);
+  await click(document.querySelector('.radio-add-menu summary'));
+  await click(byText('添加本地应用')); await click(byText('选择本地项目文件夹'));
+  await change(document.querySelector('.local-directory-empty input'), value.name);
+  await click(byText('在空目录生成起始项目…'));
+  await click(document.querySelector('[aria-label="生成起始项目确认"] input'));
+  await click(byText('确认生成起始项目'));
+  assert.deepEqual(calls.filter(([command]) => command === 'node_app_directory_initialize'), [['node_app_directory_initialize', { sourcePath, input: { expectedRevision: 'directory-revision-1', name: value.name } }]]);
+  assert.equal(calls.some(([command]) => command === 'node_app_directory_register'), false);
+  assert.equal(document.querySelectorAll('.project-card').length, 0);
+  assert.equal(document.querySelector('[role="dialog"] [aria-label^="关闭"]').disabled, true);
+  assert.equal(byText('重新检查').disabled, true);
+  assert.match(document.querySelector('[role=dialog]').textContent, /正在生成起始文件，完成后还需确认添加到项目列表/);
+  assert.equal(document.querySelector('.local-directory-prompt'), null);
+  assert.doesNotMatch(document.querySelector('[role=dialog]').textContent, /Artificial retained empty-folder AI prompt/);
+  assert.ok([...document.querySelectorAll('.radio-primary-nav button')].every(button => button.disabled));
+  await act(async () => initialized.resolve(directoryReview('ready', { expectedRevision: 'initialized-list-revision', reviewPrompt: 'Artificial retained initialized-folder AI prompt', inspection: { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { id: 'org.example.starter', name: value.name, version: '0.1.0' }, configuration: { fields: [], missingRequired: [] } } })));
+  assert.equal(document.querySelectorAll('.project-card').length, 0, 'Initialization writes source only; it must not silently register');
+  assert.ok(byText('确认添加此项目'));
+  assert.equal(byText('确认添加此项目').disabled, false, 'The parent pending gate must release after initialization');
+  const heading = document.querySelector('.node-inspection-preview h3');
+  assert.equal(heading.textContent, '确认添加到项目列表');
+  assert.equal(document.activeElement, byText('确认添加此项目'), 'The completed initialization must lead keyboard users to the remaining action');
+  const backwardTab = new window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => document.activeElement.dispatchEvent(backwardTab));
+  assert.equal(backwardTab.defaultPrevented, false, 'The modal must allow normal backward traversal from the focused action instead of redirecting a non-tabbable heading');
+  assert.match(document.querySelector('[role=dialog]').textContent, /目录已初始化，尚未加入项目列表/);
+  assert.equal(document.querySelector('[role="dialog"] [aria-label^="关闭"]').disabled, false);
+  await click(byText('确认添加此项目'));
+  assert.deepEqual(calls.filter(([command]) => command === 'node_app_directory_register'), [['node_app_directory_register', { sourcePath, expectedRevision: 'initialized-list-revision' }]]);
+  assert.equal(document.querySelectorAll('.project-card').length, 0, 'A pending registration is not a listed project');
+  assert.equal(document.querySelector('[role="dialog"] [aria-label^="关闭"]').disabled, true);
+  assert.match(document.querySelector('[role=dialog]').textContent, /正在添加到项目列表/);
+  assert.equal(document.querySelector('.local-directory-prompt'), null);
+  assert.doesNotMatch(document.querySelector('[role=dialog]').textContent, /Artificial retained initialized-folder AI prompt/);
+  await act(async () => registered.resolve(value));
+  assert.equal(document.querySelectorAll('.project-card').length, 1, 'The registration callback must update the real App list immediately');
+  assert.ok(byLabel(`进入项目「${value.name}」`));
+  assert.match(document.querySelector('.radio-footer').textContent, /1 APPS/);
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.match(document.querySelector('[role=dialog]').textContent, /此应用无需配置/);
+  assert.equal(byText('进入项目').disabled, false);
+  assert.equal(byText('保存配置').disabled, true);
+  await click(document.querySelector('[role="dialog"] [aria-label^="关闭"]'));
+  assert.equal(document.querySelector('[role="dialog"]'), null);
+  assert.equal(document.querySelectorAll('.project-card').length, 1);
+  const listReads = calls.filter(([command]) => command === 'node_app_list').length;
+  await click(byLabel('刷新项目和运行状态'));
+  assert.ok(calls.filter(([command]) => command === 'node_app_list').length > listReads);
+  assert.equal(document.querySelectorAll('.project-card').length, 1, 'A fresh backend list must retain the registered application');
+  assert.ok(byLabel(`进入项目「${value.name}」`));
+  assert.equal(calls.some(([command]) => ['node_app_start', 'node_app_restart', 'node_app_configuration_save'].includes(command)), false, 'Initialization and adding must not run the starter or require an empty configuration save');
+  assert.equal(calls.filter(([command]) => command === 'node_app_directory_initialize').length, 1);
+  assert.equal(calls.filter(([command]) => command === 'node_app_directory_register').length, 1);
+});
 
 test('Deleting from a Node launcher action removes the app only after an explicit deleted result', async () => {
   for (const metadataCleanupPending of [false, true]) {

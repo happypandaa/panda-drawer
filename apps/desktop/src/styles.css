@@ -1337,3 +1337,5 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .local-directory-path input, .local-directory-prompt textarea { width: 100%; min-width: 0; box-sizing: border-box; }
 .local-directory-prompt textarea { resize: vertical; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .local-directory-review { margin-top: 18px; }
+.local-directory-ready-action { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.local-directory-ready-action strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
