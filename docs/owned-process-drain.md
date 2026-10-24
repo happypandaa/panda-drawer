@@ -35,6 +35,18 @@ registry 位于 `RuntimeSwitch`，实际工作区迁移前后共享同一 `Arc`�
 
 独立 disposable 源码和独立构建目录执行：真实 stdout/非零退出、实际 stdin EOF/完整 UTF8 回显、消费者早退后 4 MiB 输出继续排空、工作超时、TERM 忽略子进程、连续六轮祖孙写入与丢失等待者、实际 TempDir keepalive、清理 pending→继续 join、工厂 panic、reader panic/sticky、reader 业务错误广播停止、无执行器/缺 I/O runtime/已关闭 runtime 与 submit/seal 竞态、失去 unreaped 身份不再发信号、受控枚举变化/零返回预算，以及实际 RuntimeService 的 SQLite/HTTP 保留与真实公开迁移后的同一登记。精确执行条数和检查日志由本步交付 ledger 记录；不将受控 I/O 暂停当作断电或恶意进程沙箱验收。
 
+## 第二步：Node/npm 版本检查与网页 npm 构建
+
+`EnvironmentManager::with_processes` 接收共享 registry；网页 BuildManager 从 store 传同一实例。版本 stdout 在读取过程中限制为 16 KiB，stderr 独立排空；超时、调用者取消和输出过量均通过 registry 清理。配置节点失败不会覆盖原工具选择，资源未知/Pending 不会被改写成普通 npm 缺失后继续探测其他工具。
+
+网页 npm ci/build 的 G 实际持有候选 `BuildCandidate`、`Arc<ProjectTaskLease>` 和拥有的项目 operation read guard；不持有全局 I/O lease。ProcessRun 首次回复 Pending 时保留整条 pipeline，观察到真实 Closed 后仍以原错误失败，再执行既有输出回滚；Unconfirmed 时明确记录 `processResourceClosed=false` 并禁止回滚，候选、previous 与租约保留。不会以回滚写盘 Drop 终结器代替已登记的生命周期。
+
+受控 reader 测试在真实 npm/candidate pipeline 中验证 Pending 期间 task 仍 running、候选存在、项目 lease/gate 未放开，释放并完成实际日志写入后才关闭/回滚；reader panic 则保留未知现场及不可核销证据。该暂停是故障注入，不称操作系统、断电或第三方逃逸验收。官方随包 Node/npm 的 opt-in 只使用独立复制的工具树及 disposable 数据/缓存，离线验证版本解析和共享旧日志逐字节/inode保留。精确结果见本步 ledger。
+
+本步只迁移这两类 helper。其余 Git、源码获取与 Node 制作/安装等适配仍按各自交付检查；本步不授 installer 或桌面最终退出许可。
+
+主线在 `da215d9` 上整合本步，保留已接入的 Git 共享登记：构建命名选集 36 通过、2 忽略，环境命名选集 29 通过、2 忽略（含 Git 环境/远端相关匹配项，不另累计）。配套 Node 工具树解析与真实离线 npm ci/build 两项精确 opt-in 均通过，后者核对 20 份旧共享日志的字节、inode 和修改时间，并仅向任务目录写新日志。全工作区全目标严格 Clippy、格式和差异检查通过。第一次 npm opt-in 使用了错误模块全名，实际选中 0 项，未计为验收；随后用正确精确名称运行了实际测试。尚未以本步单独重跑全核心库，也未进行原生 GUI 或真实项目构建验收。
+
 ## 主线整合
 
 主线为 `ProjectStore` 增加内部共享构造入口；初始状态和公开迁移后的新 store 均接收 `RuntimeSwitch` 的同一 registry，`make_state` 拒绝不匹配的 store。独立 fixture 的原公开构造保持默认独立登记。真实迁移与 pending 退出回归改从 store 的实际登记启动人工工作，并核对新 store 继续共享该实例；各产品 manager 的具体命令适配仍分组进行。

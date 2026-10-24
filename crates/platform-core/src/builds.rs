@@ -2,6 +2,7 @@
 use crate::{
     environment::{EnvironmentManager, Toolchain},
     git_environment::GitEnvironmentManager,
+    owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
     project_git::BuildGitGuard,
     projects::{check_no_symlinks, checked_relative},
     tasks::{TaskRecord, TaskStatus},
@@ -26,7 +27,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    sync::{broadcast, mpsc, watch},
+    sync::{broadcast, mpsc, watch, OwnedRwLockReadGuard},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -129,7 +130,22 @@ struct Registry {
     records: HashMap<String, TaskRecord>,
     legacy_build_times: HashMap<String, Option<SystemTime>>,
     active: HashSet<String>,
-    leases: HashMap<String, crate::projects::ProjectTaskLease>,
+    leases: HashMap<String, Arc<crate::projects::ProjectTaskLease>>,
+}
+struct BuildProtection {
+    _lease: Arc<crate::projects::ProjectTaskLease>,
+    _operation: OwnedRwLockReadGuard<()>,
+}
+struct BuildProcessProtection {
+    _project: Arc<BuildProtection>,
+    _candidate: Arc<candidate::BuildCandidate>,
+}
+#[cfg(test)]
+struct BuildReaderFixture {
+    operation: String,
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
+    panic: bool,
 }
 pub struct BuildManager {
     paths: RuntimePaths,
@@ -144,6 +160,8 @@ pub struct BuildManager {
     stopping: AtomicBool,
     events: broadcast::Sender<BuildEvent>,
     log_lock: Arc<Mutex<()>>,
+    #[cfg(test)]
+    reader_fixture: Mutex<Option<BuildReaderFixture>>,
 }
 impl BuildManager {
     pub fn new(
@@ -217,12 +235,11 @@ impl BuildManager {
         let (sender, mut receiver) = mpsc::channel::<String>(BUILD_QUEUE);
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
-            environment: match managed_node {
-                Some(root) => {
-                    EnvironmentManager::with_managed_node(paths.data_root().to_path_buf(), root)
-                }
-                None => EnvironmentManager::new(paths.data_root().to_path_buf()),
-            },
+            environment: EnvironmentManager::with_processes(
+                paths.data_root().to_path_buf(),
+                managed_node,
+                store.processes(),
+            ),
             git_environment: GitEnvironmentManager::with_processes(
                 paths.data_root().to_path_buf(),
                 managed_git,
@@ -243,6 +260,8 @@ impl BuildManager {
             stopping: AtomicBool::new(false),
             events,
             log_lock: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            reader_fixture: Mutex::new(None),
         });
         let weak = Arc::downgrade(&manager);
         let handle = tokio::spawn(async move {
@@ -365,7 +384,7 @@ impl BuildManager {
             });
         }
         registry.active.insert(project_id.into());
-        registry.leases.insert(task_id, lease);
+        registry.leases.insert(task_id, Arc::new(lease));
         registry
             .records
             .insert(record.task_id.clone(), record.clone());
@@ -792,7 +811,24 @@ impl BuildManager {
         let start = Instant::now();
         self.phase(id, "environment")?;
         let project = self.store.project(project_id)?;
-        let _operation = project.operation_gate.read().await;
+        let lease = self
+            .registry
+            .lock()
+            .unwrap()
+            .leases
+            .get(id)
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::new(
+                    "BUILD_TASK_LEASE_MISSING",
+                    "Build task has no owned project lease",
+                )
+            })?;
+        let operation = project.operation_gate.clone().read_owned().await;
+        let protection = Arc::new(BuildProtection {
+            _lease: lease,
+            _operation: operation,
+        });
         project.check()?;
         self.store.check_development_available(project_id)?;
         self.phase(id, "git-build-check")?;
@@ -800,13 +836,18 @@ impl BuildManager {
             BuildGitGuard::capture(&project, &self.git_environment, self.git_stop.subscribe())
                 .await?;
         self.phase(id, "environment")?;
-        let tools = self.environment.resolve().await?;
+        let tools = self
+            .environment
+            .resolve_with_keepalive(protection.clone())
+            .await?;
         self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
         self.phase(id, "input-digest")?;
         let baseline = snapshot_input_digest(&project)?;
         let task_root = checked_relative(&project.root, &format!(".platform/builds/{id}"), true)?;
         ensure_dir(&task_root)?;
-        let candidate = candidate::BuildCandidate::prepare(&project, &task_root, &baseline)?;
+        let candidate = Arc::new(candidate::BuildCandidate::prepare(
+            &project, &task_root, &baseline,
+        )?);
         let source = candidate.source();
         let package: Value = serde_json::from_slice(&fs::read(source.join("package.json"))?)?;
         let lock: Value = serde_json::from_slice(&fs::read(source.join("package-lock.json"))?)?;
@@ -839,6 +880,7 @@ impl BuildManager {
                 &project,
                 &tools,
                 &candidate,
+                protection,
                 &git_guard,
                 &task_root,
                 &baseline,
@@ -846,7 +888,12 @@ impl BuildManager {
                 start,
             )
             .await;
-        if result.is_err() {
+        if let Err(error) = &result {
+            if error.details["processResourceClosed"] == false {
+                // A still-owned/unknown writer may touch the live output. Keep
+                // all evidence and never race it with the rollback transaction.
+                return result;
+            }
             let committed = read_optional::<BuildProvenance>(&provenance_path(
                 self.paths.workspace_root(),
                 project_id,
@@ -881,7 +928,8 @@ impl BuildManager {
         id: &str,
         project: &ProjectHandle,
         tools: &Toolchain,
-        candidate: &candidate::BuildCandidate,
+        candidate: &Arc<candidate::BuildCandidate>,
+        protection: Arc<BuildProtection>,
         git_guard: &BuildGitGuard,
         task_root: &Path,
         baseline: &str,
@@ -891,8 +939,19 @@ impl BuildManager {
         let source = candidate.source();
         self.phase(id, "dependencies")?;
         self.append(id, b"Installing exact locked dependencies in a private source candidate with npm ci. Existing project dependencies are not reused.\n")?;
-        self.command(id, tools, source, &["ci", "--no-audit", "--no-fund"], start)
-            .await?;
+        let process_protection = Arc::new(BuildProcessProtection {
+            _project: protection,
+            _candidate: candidate.clone(),
+        });
+        self.command(
+            id,
+            tools,
+            source,
+            &["ci", "--no-audit", "--no-fund"],
+            start,
+            process_protection.clone(),
+        )
+        .await?;
         ensure_unchanged(project, baseline)?;
         candidate.ensure_unchanged(&project.manifest, baseline)?;
         let installed_lock = checked_relative(source, "node_modules/.package-lock.json", true)?;
@@ -922,6 +981,7 @@ impl BuildManager {
                     .ok_or_else(|| ApiError::new("INVALID_PATH", "Build path must be UTF-8"))?,
             ],
             start,
+            process_protection,
         )
         .await?;
         self.checkpoint(start)?;
@@ -988,13 +1048,14 @@ impl BuildManager {
             json!({"buildId":id,"logPath":self.task_dir(id),"url":format!("{}/p/{}/",self.base_url,project.manifest.id),"node":tools.node,"npm":tools.npm,"digestRuleVersion":DIGEST_RULE,"inputDigest":baseline,"artifactDigest":provenance.artifact_digest,"sdkVersion":provenance.sdk_version,"completedAt":provenance.completed_at}),
         )
     }
-    async fn command(
+    async fn command<G: Send + 'static>(
         &self,
         id: &str,
         tools: &Toolchain,
         cwd: &Path,
         args: &[&str],
         start: Instant,
+        keep_alive: G,
     ) -> Result<(), ApiError> {
         self.checkpoint(start)?;
         let cache = self.paths.workspace_root().join(".platform/cache/npm");
@@ -1019,79 +1080,82 @@ impl BuildManager {
             .env("PATH", &tools.path)
             .env("npm_config_cache", cache)
             .env("npm_config_update_notifier", "false")
-            .env("NO_COLOR", "1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
+            .env("NO_COLOR", "1");
         candidate::isolate_git_environment(&mut command, cwd)?;
-        let mut child = command
-            .spawn()
-            .map_err(|error| ApiError::new("BUILD_PROCESS_FAILED", error.to_string()))?;
-        let pid = child.id().unwrap() as i32;
-        let mut group = candidate::BuildProcessGroup(Some(pid));
         let log = self.task_dir(id);
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-        let out = tokio::spawn(read_output(stdout, log.clone(), self.log_lock.clone()));
-        let err = tokio::spawn(read_output(stderr, log, self.log_lock.clone()));
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
-                Ok(None) => (),
-                Err(error) => break Err(ApiError::new("BUILD_PROCESS_FAILED", error.to_string())),
-            }
-            if let Err(error) = self.checkpoint(start) {
-                break Err(error);
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        let log_lock = self.log_lock.clone();
+        let remaining = BUILD_TIMEOUT.saturating_sub(start.elapsed());
+        let mut stopped = self.git_stop.subscribe();
+        #[cfg(test)]
+        let reader_fixture = self
+            .reader_fixture
+            .lock()
+            .unwrap()
+            .take_if(|fixture| args.first().copied() == Some(fixture.operation.as_str()));
+        let mut run = self.store.processes().start(
+            command,
+            ProcessOptions::new("web-build/npm", remaining),
+            keep_alive,
+            move |pipes| {
+                let ProcessPipes {
+                    stdin,
+                    stdout,
+                    stderr,
+                    stop: _,
+                } = pipes;
+                drop(stdin);
+                let output_log = log.clone();
+                let output_lock = log_lock.clone();
+                IoPlan::new(async move {
+                    read_output(stdout, output_log.clone(), output_lock.clone()).await?;
+                    #[cfg(test)]
+                    if let Some(fixture) = reader_fixture {
+                        let _ = fixture.entered.send(());
+                        assert!(!fixture.panic, "controlled disposable build reader panic");
+                        if let Some(release) = fixture.release {
+                            let _ = release.await;
+                            let _guard = output_lock.lock().unwrap();
+                            append_log(&output_log, b"actual owned log writer completed\n")?;
+                        }
+                    }
+                    Ok(())
+                })
+                .drain("npm-stderr", read_output(stderr, log, log_lock))
+            },
+        )?;
+        if *stopped.borrow() {
+            run.cancel();
+        }
+        let result = tokio::select! {
+            result = &mut run => result,
+            _ = stopped.changed() => { run.cancel(); (&mut run).await }
         };
-        // A shell can exit while leaving grandchildren alive. Always close the entire group.
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
+        // The first reply can be a cleanup deadline, not permission to drop
+        // this pipeline's rollback context or publish a partial candidate.
+        while matches!(
+            run.snapshot().phase,
+            ProcessPhase::Running | ProcessPhase::Stopping | ProcessPhase::CleanupPending
+        ) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        if status.is_err() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-            let _ = child.wait().await;
-        } else {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-        group.0 = None;
-        let mut reader_error = None;
-        for mut reader in [out, err] {
-            match tokio::time::timeout(Duration::from_secs(2), &mut reader).await {
-                Ok(Ok(Err(error))) => {
-                    reader_error.get_or_insert(error);
-                }
-                Ok(Ok(Ok(()))) => (),
-                Ok(Err(error)) => {
-                    reader_error.get_or_insert_with(|| {
-                        ApiError::new("BUILD_LOG_FAILED", error.to_string())
-                    });
-                }
-                Err(_) => {
-                    reader.abort();
-                    let _ = reader.await;
-                    reader_error.get_or_insert_with(|| {
-                        ApiError::new(
-                            "BUILD_PROCESS_FAILED",
-                            "Build descendants kept their output streams open",
-                        )
-                    });
-                }
-            }
-        }
-        if let Some(error) = reader_error {
-            return Err(error);
-        }
-        let status = status?;
+        let snapshot = run.snapshot();
+        let resource_closed = snapshot.phase == ProcessPhase::Closed
+            && snapshot.leader_reaped
+            && snapshot.group_exited
+            && snapshot.io_joined;
+        let output = result.map_err(|mut error| {
+            let original = error.code.clone();
+            error.code = match original.as_str() {
+                "PROCESS_WORK_TIMEOUT" => "BUILD_TIMEOUT".into(),
+                "PROCESS_CANCELLED" => "BUILD_INTERRUPTED".into(),
+                "PROCESS_CLEANUP_PENDING" if resource_closed => "BUILD_PROCESS_FAILED".into(),
+                _ => original.clone(),
+            };
+            error
+                .detail("processCauseCode", original)
+                .detail("processResourceClosed", resource_closed)
+        })?;
+        let status = output.status;
         if !status.success() {
             return Err(ApiError::new(
                 "BUILD_FAILED",
@@ -2007,6 +2071,9 @@ mod tests {
     }
     mod result_recovery {
         include!("build_result_tests.rs");
+    }
+    mod owned_process {
+        include!("build_owned_process_tests.rs");
     }
 
     async fn wait(manager: &BuildManager, id: &str) -> TaskRecord {

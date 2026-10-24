@@ -364,19 +364,6 @@ pub(super) fn isolate_git_environment(command: &mut Command, cwd: &Path) -> Resu
     Ok(())
 }
 
-/// Drop also covers cancellation while command() is awaiting output or process
-/// completion. Normal completion already terminates the complete process group.
-pub(super) struct BuildProcessGroup(pub(super) Option<i32>);
-impl Drop for BuildProcessGroup {
-    fn drop(&mut self) {
-        if let Some(pid) = self.0.take() {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "build_candidate_tests.rs"]
 mod tests;

@@ -1,7 +1,11 @@
 //! Development Node selection is independent of application runtime Node selection.
 //! Installed resources default to verified private Node/npm; an explicit local choice
 //! is preserved. Resource-free development/test managers retain system discovery.
-use crate::{projects::check_no_symlinks, ApiError};
+use crate::{
+    owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions, ProcessPipes},
+    projects::check_no_symlinks,
+    ApiError,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -9,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,6 +46,7 @@ pub struct Toolchain {
 pub struct EnvironmentManager {
     settings_path: PathBuf,
     managed_root: Option<PathBuf>,
+    processes: OwnedProcessRegistry,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,15 +56,20 @@ struct Settings {
 }
 impl EnvironmentManager {
     pub fn new(data_root: PathBuf) -> Self {
-        Self {
-            settings_path: data_root.join("toolchain.json"),
-            managed_root: None,
-        }
+        Self::with_processes(data_root, None, OwnedProcessRegistry::default())
     }
     pub fn with_managed_node(data_root: PathBuf, root: PathBuf) -> Self {
+        Self::with_processes(data_root, Some(root), OwnedProcessRegistry::default())
+    }
+    pub(crate) fn with_processes(
+        data_root: PathBuf,
+        managed_root: Option<PathBuf>,
+        processes: OwnedProcessRegistry,
+    ) -> Self {
         Self {
             settings_path: data_root.join("toolchain.json"),
-            managed_root: Some(root),
+            managed_root,
+            processes,
         }
     }
     fn configured(&self) -> Result<Option<PathBuf>, ApiError> {
@@ -84,7 +95,7 @@ impl EnvironmentManager {
                     "Choose an absolute path to the Node executable",
                 ));
             }
-            probe(path).await?;
+            probe_owned(path, &self.processes, ()).await?;
         }
         crate::builds::atomic_json(
             &self.settings_path,
@@ -122,7 +133,7 @@ impl EnvironmentManager {
         } else if self.managed_root.is_some() {
             info.selection = "managed".into();
         }
-        match self.selected(configured).await {
+        match self.selected(configured, ()).await {
             Ok(toolchain) => {
                 info.ready = true;
                 info.node = Some(toolchain.node);
@@ -133,24 +144,41 @@ impl EnvironmentManager {
         info
     }
     pub async fn resolve(&self) -> Result<Toolchain, ApiError> {
-        self.selected(self.configured()?).await
+        self.resolve_with_keepalive(()).await
     }
-    async fn selected(&self, configured: Option<PathBuf>) -> Result<Toolchain, ApiError> {
+    pub(crate) async fn resolve_with_keepalive<G: Clone + Send + 'static>(
+        &self,
+        keep_alive: G,
+    ) -> Result<Toolchain, ApiError> {
+        self.selected(self.configured()?, keep_alive).await
+    }
+    async fn selected<G: Clone + Send + 'static>(
+        &self,
+        configured: Option<PathBuf>,
+        keep_alive: G,
+    ) -> Result<Toolchain, ApiError> {
         if let Some(node) = configured {
             // Never silently change an explicit v1 selection when it disappears.
-            return probe(&node).await;
+            return probe_owned(&node, &self.processes, keep_alive).await;
         }
         if let Some(root) = &self.managed_root {
             // A damaged installation must not silently execute a host toolchain.
             // Verify once per resolution, on a blocking worker, before either probe.
             let verified = crate::managed_toolchain::verify(root.clone()).await?;
-            return probe_managed(verified).await;
+            return probe_managed(verified, &self.processes, keep_alive).await;
         }
         let mut last_error = None;
         for candidate in candidates() {
-            match probe(&candidate).await {
+            match probe_owned(&candidate, &self.processes, keep_alive.clone()).await {
                 Ok(toolchain) => return Ok(toolchain),
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    if error.code.starts_with("PROCESS_")
+                        && error.details["operationOutcome"] != "not_started"
+                    {
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                }
             }
         }
         Err(last_error.unwrap_or_else(|| {
@@ -223,26 +251,72 @@ fn tool_path(node: &Path) -> String {
         node.parent().unwrap_or(Path::new("/usr/bin")).display()
     )
 }
-async fn output(mut command: Command) -> Result<String, ApiError> {
-    command.kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+async fn output<G: Send + 'static>(
+    command: Command,
+    processes: &OwnedProcessRegistry,
+    keep_alive: G,
+) -> Result<String, ApiError> {
+    let result = processes
+        .start(
+            command,
+            ProcessOptions::new("node-environment/version-probe", Duration::from_secs(5)),
+            keep_alive,
+            |pipes| {
+                let ProcessPipes {
+                    stdin,
+                    mut stdout,
+                    mut stderr,
+                    stop: _,
+                } = pipes;
+                drop(stdin);
+                IoPlan::new(async move {
+                    let mut output = Vec::new();
+                    let mut bytes = [0u8; 4096];
+                    loop {
+                        let count = stdout.read(&mut bytes).await?;
+                        if count == 0 {
+                            return Ok(output);
+                        }
+                        if output.len() + count > 16_384 {
+                            return Err(ApiError::new(
+                                "TOOLCHAIN_PROBE_FAILED",
+                                "Node/npm version output exceeded its byte budget",
+                            ));
+                        }
+                        output.extend_from_slice(&bytes[..count]);
+                    }
+                })
+                .drain("version-stderr", async move {
+                    let mut bytes = [0u8; 4096];
+                    while stderr.read(&mut bytes).await? != 0 {}
+                    Ok(())
+                })
+            },
+        )?
         .await
-        .map_err(|_| {
-            ApiError::new(
-                "TOOLCHAIN_PROBE_TIMEOUT",
-                "Node/npm version check timed out",
-            )
-        })?
-        .map_err(|error| ApiError::new("NODE_NOT_FOUND", error.to_string()))?;
-    if !output.status.success() || output.stdout.len() > 16_384 {
+        .map_err(|mut error| {
+            if error.code == "PROCESS_WORK_TIMEOUT" {
+                error.code = "TOOLCHAIN_PROBE_TIMEOUT".into();
+            }
+            error
+        })?;
+    if !result.status.success() {
         return Err(ApiError::new(
             "TOOLCHAIN_PROBE_FAILED",
             "Node/npm version check failed",
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(String::from_utf8_lossy(&result.value).trim().to_owned())
 }
+#[cfg(test)]
 async fn probe(candidate: &Path) -> Result<Toolchain, ApiError> {
+    probe_owned(candidate, &OwnedProcessRegistry::default(), ()).await
+}
+async fn probe_owned<G: Clone + Send + 'static>(
+    candidate: &Path,
+    processes: &OwnedProcessRegistry,
+    keep_alive: G,
+) -> Result<Toolchain, ApiError> {
     if !candidate.is_absolute() || !candidate.is_file() {
         return Err(ApiError::new(
             "NODE_NOT_FOUND",
@@ -252,7 +326,7 @@ async fn probe(candidate: &Path) -> Result<Toolchain, ApiError> {
     let node_path = fs::canonicalize(candidate)?;
     let mut command = Command::new(&node_path);
     command.arg("--version");
-    let version = output(command).await?;
+    let version = output(command, processes, keep_alive.clone()).await?;
     if !supported_node(&version) {
         return Err(ApiError::new(
             "NODE_VERSION_UNSUPPORTED",
@@ -286,9 +360,14 @@ async fn probe(candidate: &Path) -> Result<Toolchain, ApiError> {
     let path = tool_path(&node_path);
     let mut command = Command::new(&node_path);
     command.arg(&npm).arg("--version").env("PATH", &path);
-    let npm_version = output(command)
+    let npm_version = output(command, processes, keep_alive)
         .await
-        .map_err(|error| ApiError::new("NPM_NOT_FOUND", error.message))?;
+        .map_err(|mut error| {
+            if !error.code.starts_with("PROCESS_") {
+                error.code = "NPM_NOT_FOUND".into();
+            }
+            error
+        })?;
     Ok(Toolchain {
         node: ExecutableInfo {
             path: node_path,
@@ -302,8 +381,10 @@ async fn probe(candidate: &Path) -> Result<Toolchain, ApiError> {
     })
 }
 
-async fn probe_managed(
+async fn probe_managed<G: Clone + Send + 'static>(
     verified: crate::managed_toolchain::VerifiedToolchain,
+    processes: &OwnedProcessRegistry,
+    keep_alive: G,
 ) -> Result<Toolchain, ApiError> {
     let path = std::env::join_paths([
         verified.root.join("bin"),
@@ -340,7 +421,7 @@ async fn probe_managed(
     };
     let mut node = command();
     node.arg("--version");
-    let version = output(node).await?;
+    let version = output(node, processes, keep_alive.clone()).await?;
     if version != format!("v{}", verified.node_version) {
         return Err(ApiError::new(
             "MANAGED_NODE_VERSION_MISMATCH",
@@ -352,7 +433,7 @@ async fn probe_managed(
         .arg("--prefix")
         .arg(&verified.root)
         .arg("--version");
-    let npm_version = output(npm).await?;
+    let npm_version = output(npm, processes, keep_alive).await?;
     if npm_version != verified.npm_version {
         return Err(ApiError::new(
             "MANAGED_NODE_VERSION_MISMATCH",
@@ -371,6 +452,10 @@ async fn probe_managed(
         path,
     })
 }
+#[cfg(test)]
+#[path = "environment_owned_process_tests.rs"]
+mod owned_process_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
