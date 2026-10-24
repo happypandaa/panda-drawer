@@ -282,6 +282,8 @@ Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包�
 
 SQL 输入格式以当前 CLI 帮助为准；不要直接写入或替换运行中的 SQLite 文件或 WAL/SHM。修改前核对 Git 状态并保存当前版本，确认保存范围是否包括数据；Git 不可用时如实说明，不生成替代 ZIP。普通源码、SQL 和候选构建不要求新维护基线；优先采用兼容的数据事务，由平台的具体操作负责必要停写与失败保留。新的 backup create 和 maintenance begin 已退役，会返回 BACKUP_WORKFLOW_RETIRED；旧项目自带 skill 若仍要求创建 ZIP 或进入新维护，以本段当前规则为准，不覆盖旧文档。已有旧维护或恢复现场先查询 maintenance status，保留 maintenanceId、readyForChanges、待构建要求和原现场，只在检查通过后显式 maintenance end；recoveryRequired 时不得强行结束或重试新建基线。
 
+project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库和附件；源码取回与数据取回是两项独立操作。只有用户明确要求取回数据时才使用 project git data-restore-preview 并核对当前 CLI 的全部新鲜绑定，再明确提交 data-restore；预览不自动执行。先查 project git data-recovery；pending 或 blocked 时保留原件、日志和候选，仅按核实后的允许方向继续或撤回同一操作，不删除现场、不重新登记、不直接替换 SQLite。not_committed 也可能已有部分文件移动，不能据此说数据未变。完成后页面代次已更新，先处理草稿再从平台明确重新打开。任意 Node 应用自己的数据库不适用这一流程。
+
 保留现有用户数据、附件、备份和未保存草稿；不要为了修复构建或刷新页面清空数据。检查异步任务的最终状态与日志，在平台原生应用窗口验证发布结果、重复打开聚焦、关闭重开与数据保留；短期 launchUrl 的 HTTP/浏览器诊断只作补充，不能代替原生窗口验收。平台重启或工作区迁移后重新获取项目路径与入口，不要保存端口、令牌、票据、Cookie 或其他密钥。未知写入结果不要自动重放，刷新或重载前先处理草稿。
 
 完成后报告实际修改、数据库/schema 变化、构建任务结果、实际验证和已知限制；没有执行的验证请明确说明，并把这些信息写回项目说明。
