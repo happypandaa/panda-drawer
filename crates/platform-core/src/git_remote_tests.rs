@@ -466,6 +466,8 @@ mod processes {
             template_path: None,
         };
         let (_sender, mut stop) = watch::channel(false);
+        let processes = OwnedProcessRegistry::default();
+        let keep_alive = Arc::new(sample._temp);
         // A control command proves this disposable fixture really is discoverable.
         let mut control = isolated_command(&toolchain, &cwd);
         control.env_remove("GIT_CEILING_DIRECTORIES").args([
@@ -474,9 +476,15 @@ mod processes {
             "--get",
             "remotecheck.isolation",
         ]);
-        let output = execute(control, &mut stop, Instant::now() + Duration::from_secs(5))
-            .await
-            .unwrap();
+        let output = execute(
+            control,
+            &processes,
+            keep_alive.clone(),
+            &mut stop,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             output.stdout,
             b"synthetic-parent-config-should-not-be-read\n"
@@ -485,11 +493,17 @@ mod processes {
         let mut isolated = isolated_command(&toolchain, &cwd);
         isolated.args(["config", "--local", "--get", "remotecheck.isolation"]);
         assert_eq!(
-            execute(isolated, &mut stop, Instant::now() + Duration::from_secs(5))
-                .await
-                .err()
-                .unwrap()
-                .code,
+            execute(
+                isolated,
+                &processes,
+                keep_alive.clone(),
+                &mut stop,
+                Instant::now() + Duration::from_secs(5)
+            )
+            .await
+            .err()
+            .unwrap()
+            .code,
             "GIT_REMOTE_CHECK_FAILED"
         );
         assert_eq!(fs::read(parent.join(".git/config")).unwrap(), before);
@@ -533,6 +547,65 @@ mod processes {
             .check(&sample.environment, input(), stop)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_deadline_await_the_actual_managed_verification_worker() {
+        for cancel in [false, true] {
+            let sample = sample();
+            fs::remove_file(sample.root.join("git-toolchain.json")).unwrap();
+            let root = sample.root.join("missing-managed-resource");
+            let (pause, entered) =
+                crate::managed_git::verification_pause::Guard::install(root.clone());
+            let processes = OwnedProcessRegistry::default();
+            let environment = GitEnvironmentManager::with_processes(
+                sample.root.clone(),
+                Some(root),
+                processes.clone(),
+            );
+            let checker = GitRemoteChecker::with_processes(processes.clone());
+            let other = checker.clone();
+            let (sender, stop) = watch::channel(false);
+            let mut running = tokio::spawn(async move {
+                other
+                    .check_with_timeout(&environment, input(), stop, Duration::from_millis(40))
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(2), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            if cancel {
+                sender.send(true).unwrap();
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(80), &mut running)
+                    .await
+                    .is_err(),
+                "request lost its still-running blocking verifier"
+            );
+            assert_eq!(checker.available.available_permits(), 0);
+            assert!(
+                processes.snapshot().is_empty(),
+                "verification must finish before any tool probe starts"
+            );
+            drop(pause);
+            let error = tokio::time::timeout(Duration::from_secs(2), running)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                if cancel {
+                    "GIT_REMOTE_CHECK_CANCELLED"
+                } else {
+                    "GIT_REMOTE_CHECK_TIMEOUT"
+                }
+            );
+            assert_eq!(checker.available.available_permits(), 1);
+            assert!(processes.snapshot().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -594,6 +667,9 @@ mod processes {
                     "GIT_REMOTE_CHECK_TIMEOUT"
                 );
             }
+            // Dropping the normal waiter only requests stop. The owned registry
+            // must actually finish before its directory/admission can be released.
+            assert!(checker.processes.shutdown().await.is_empty());
             let cwd = fs::read_to_string(cwd_record).unwrap();
             assert!(!Path::new(cwd.trim()).exists());
             tokio::time::timeout(Duration::from_secs(2), async {
@@ -626,5 +702,148 @@ mod processes {
         );
         tokio::time::sleep(Duration::from_millis(450)).await;
         assert!(!marker.exists());
+    }
+    // This child deliberately leaves the leader's process group but keeps the
+    // inherited OS output pipe open. The registry cannot claim that reader is
+    // joined merely because the leader/group has exited. It self-expires too.
+    fn hold_output(marker: &Path, release: &Path) -> String {
+        format!(
+            r#"/usr/bin/perl -MPOSIX -e 'POSIX::setsid() >= 0 or die; open(my $f, ">", $ARGV[0]) or die; print $f $$; close($f); my $end=time()+12; while (!-e $ARGV[1] && time()<$end) {{ select(undef,undef,undef,0.01); }}' {} {} &
+wait"#,
+            quote(marker),
+            quote(release)
+        )
+    }
+    struct ReleaseOutput(PathBuf);
+    impl Drop for ReleaseOutput {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, b"release inherited pipe");
+        }
+    }
+    async fn assert_closed(processes: &OwnedProcessRegistry) {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let issues = processes.shutdown().await;
+                if issues.is_empty()
+                    && processes
+                        .snapshot()
+                        .iter()
+                        .all(|item| item.resource_closed())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("actual process readers did not close");
+    }
+
+    #[tokio::test]
+    async fn pending_remote_cleanup_retains_real_directory_and_admission_until_reader_join() {
+        let mut sample = sample();
+        let processes = OwnedProcessRegistry::default();
+        sample.environment =
+            GitEnvironmentManager::with_processes(sample.root.clone(), None, processes.clone());
+        let marker = sample.root.join("escaped-reader-pid");
+        let release = sample.root.join("release-reader");
+        let _release = ReleaseOutput(release.clone());
+        let cwd_record = sample.root.join("cwd");
+        install(
+            &sample,
+            "2.56.0",
+            &format!(
+                "pwd > {}\n{}",
+                quote(&cwd_record),
+                hold_output(&marker, &release)
+            ),
+        );
+        let checker = GitRemoteChecker::with_processes(processes.clone());
+        let (sender, stop) = watch::channel(false);
+        let environment = sample.environment.clone();
+        let other = checker.clone();
+        let first_stop = stop.clone();
+        let running =
+            tokio::spawn(async move { other.check(&environment, input(), first_stop).await });
+        // Interrupt only after the remote helper has really inherited its pipe;
+        // a short wall deadline can expire during earlier version resolution.
+        await_file(&marker).await;
+        sender.send(true).unwrap();
+        let error = running.await.unwrap().unwrap_err();
+        assert_eq!(error.code, "PROCESS_CLEANUP_PENDING");
+        let cwd = fs::read_to_string(cwd_record).unwrap();
+        assert!(
+            Path::new(cwd.trim()).is_dir(),
+            "live reader lost its real cwd owner"
+        );
+        assert_eq!(checker.available.available_permits(), 0);
+        assert_eq!(
+            checker
+                .check(&sample.environment, input(), stop)
+                .await
+                .unwrap_err()
+                .code,
+            "GIT_REMOTE_CHECK_BUSY"
+        );
+        assert!(processes
+            .shutdown()
+            .await
+            .iter()
+            .any(|issue| issue.code == "PROCESS_CLEANUP_PENDING"));
+        assert!(processes.snapshot().iter().any(|item| !item.io_joined));
+        fs::write(&release, b"actual output may close").unwrap();
+        assert_closed(&processes).await;
+        assert!(!Path::new(cwd.trim()).exists());
+        assert_eq!(checker.available.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn dropped_check_during_environment_probe_retains_admission_until_real_probe_drain() {
+        let mut sample = sample();
+        let processes = OwnedProcessRegistry::default();
+        sample.environment =
+            GitEnvironmentManager::with_processes(sample.root.clone(), None, processes.clone());
+        let marker = sample.root.join("version-reader-pid");
+        let release = sample.root.join("release-version-reader");
+        let _release = ReleaseOutput(release.clone());
+        let unexpected_remote = sample.root.join("unexpected-remote-process");
+        fs::write(&sample.git, format!(
+            "#!/bin/sh\nif test \"${{1-}}\" = '--version'; then\n{}\nexit 0\nfi\nprintf unexpected > {}\n",
+            hold_output(&marker, &release), quote(&unexpected_remote)
+        )).unwrap();
+        fs::set_permissions(&sample.git, fs::Permissions::from_mode(0o755)).unwrap();
+        let checker = GitRemoteChecker::with_processes(processes.clone());
+        let environment = sample.environment.clone();
+        let other = checker.clone();
+        let (_sender, stop) = watch::channel(false);
+        let first_stop = stop.clone();
+        let request =
+            tokio::spawn(async move { other.check(&environment, input(), first_stop).await });
+        await_file(&marker).await;
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert_eq!(checker.available.available_permits(), 0);
+        assert_eq!(
+            checker
+                .check(&sample.environment, input(), stop)
+                .await
+                .unwrap_err()
+                .code,
+            "GIT_REMOTE_CHECK_BUSY"
+        );
+        assert!(!unexpected_remote.exists());
+        let issues = processes.shutdown().await;
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "PROCESS_CLEANUP_PENDING"));
+        assert_eq!(checker.available.available_permits(), 0);
+        assert!(processes
+            .snapshot()
+            .iter()
+            .all(|item| item.component == "git-environment"));
+        fs::write(&release, b"real probe may finish").unwrap();
+        assert_closed(&processes).await;
+        assert_eq!(checker.available.available_permits(), 1);
+        assert!(!unexpected_remote.exists());
     }
 }

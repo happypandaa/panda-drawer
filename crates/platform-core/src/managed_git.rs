@@ -362,6 +362,8 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedGit, ApiErr
 pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedGit, ApiError> {
     if crate::build_profile::PRODUCTION_PROFILE {
         return tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            verification_pause::at_worker(&root);
             crate::production_resources::verify_tool_payload(
                 &root,
                 crate::production_resources::PayloadKind::DevelopmentGit,
@@ -378,9 +380,59 @@ pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedGit, ApiError> {
         .await
         .map_err(|error| invalid(format!("正式工具校验未完成：{error}")))?;
     }
-    tokio::task::spawn_blocking(move || verify_sync(root, RELEASE))
-        .await
-        .map_err(|error| invalid(format!("私有 Git 工具校验未完成：{error}")))?
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        verification_pause::at_worker(&root);
+        verify_sync(root, RELEASE)
+    })
+    .await
+    .map_err(|error| invalid(format!("私有 Git 工具校验未完成：{error}")))?
+}
+
+#[cfg(test)]
+pub(crate) mod verification_pause {
+    use std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+        sync::{mpsc, Mutex, OnceLock},
+        time::Duration,
+    };
+    type Pause = (tokio::sync::oneshot::Sender<()>, mpsc::Receiver<()>);
+    fn pauses() -> &'static Mutex<HashMap<PathBuf, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<PathBuf, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+    pub(crate) struct Guard {
+        root: PathBuf,
+        release: mpsc::Sender<()>,
+    }
+    impl Guard {
+        pub(crate) fn install(root: PathBuf) -> (Self, tokio::sync::oneshot::Receiver<()>) {
+            let (entered, observed) = tokio::sync::oneshot::channel();
+            let (release, wait) = mpsc::channel();
+            assert!(pauses()
+                .lock()
+                .unwrap()
+                .insert(root.clone(), (entered, wait))
+                .is_none());
+            (Self { root, release }, observed)
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            pauses().lock().unwrap().remove(&self.root);
+            let _ = self.release.send(());
+        }
+    }
+    pub(super) fn at_worker(root: &Path) {
+        let pause = pauses().lock().unwrap().remove(root);
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            release
+                .recv_timeout(Duration::from_secs(10))
+                .expect("verification test did not release its actual worker");
+        }
+    }
 }
 
 #[cfg(test)]

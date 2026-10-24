@@ -160,6 +160,7 @@ async fn remote_check_auth_validation_and_read_only_result_are_separate_from_doc
 #[tokio::test]
 async fn native_remote_check_is_single_flight_and_shutdown_cancels_and_drains_it() {
     let (temp, _paths, service, _client) = tests::start().await;
+    let processes = service.store().processes();
     let started = temp.path().join("started");
     let executable = mock_git(
         temp.path(),
@@ -183,6 +184,13 @@ async fn native_remote_check_is_single_flight_and_shutdown_cancels_and_drains_it
             .await
     });
     wait_for_process_record(&started).await;
+    let records = processes.snapshot();
+    assert!(records
+        .iter()
+        .any(|record| record.component == "git-environment"));
+    assert!(records
+        .iter()
+        .any(|record| record.component == "git-remote"));
     let error = handle
         .check_git_remote(GitRemoteCheckInput {
             url: "https://github.com/git/git.git".into(),
@@ -208,6 +216,10 @@ async fn native_remote_check_is_single_flight_and_shutdown_cancels_and_drains_it
         "direct process survived shutdown"
     );
     assert!(!cwd.exists(), "private cwd remained after cancellation");
+    assert!(processes
+        .snapshot()
+        .iter()
+        .all(|record| record.resource_closed()));
     let error = handle
         .check_git_remote(GitRemoteCheckInput {
             url: "https://github.com/git/git.git".into(),
