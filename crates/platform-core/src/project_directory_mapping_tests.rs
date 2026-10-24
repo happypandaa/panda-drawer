@@ -514,3 +514,286 @@ fn exclusive_publication_keeps_an_existing_empty_destination_and_the_candidate()
     assert!(existing.join("candidate.txt").is_file());
     assert!(!candidate.exists());
 }
+
+#[tokio::test]
+async fn stale_migrated_retired_registration_does_not_block_unrelated_create_or_touch_old_roots() {
+    for legacy in [false, true] {
+        for old_exists in [false, true] {
+            let (_old_temp, old) = fixture();
+            let project = create_fixture(&old, "Disposable pre-migration retired owner").await;
+            let mut old_root = project.project_root.clone();
+            if legacy {
+                old_root = old.workspace_root().join("projects").join(&project.id);
+                fs::rename(&project.project_root, &old_root).unwrap();
+                let mut record = state(&old, &project.id);
+                record["projectRoot"] = json!(old_root);
+                record.as_object_mut().unwrap().remove("directoryName");
+                save_state(&old, &project.id, &record);
+            }
+            old.unregister_lifecycle(&project.id, &Uuid::new_v4().to_string(), None)
+                .unwrap();
+            let registration = fs::read(state_path(&old, &project.id)).unwrap();
+            let retired = fs::read(old.retirement_path(&project.id)).unwrap();
+            let original_manifest = fs::read(old_root.join("project.json")).unwrap();
+            if !old_exists {
+                fs::remove_dir_all(&old_root).unwrap();
+            }
+            let (_target_temp, target) = fixture();
+            fs::write(state_path(&target, &project.id), &registration).unwrap();
+            ensure_dir(target.retirement_path(&project.id).parent().unwrap()).unwrap();
+            fs::write(target.retirement_path(&project.id), &retired).unwrap();
+            let fresh = create_fixture(&target, "Disposable unrelated new project").await;
+            assert!(fresh.project_root.join("data/main.sqlite").is_file());
+            assert_ne!(fresh.project_root.file_name(), old_root.file_name());
+            assert_eq!(
+                target.project_root(&project.id).unwrap_err().code,
+                "PROJECT_DIRECTORY_MAPPING_INVALID"
+            );
+            assert_eq!(target.list().await.unwrap().len(), 1);
+            assert_eq!(
+                fs::read(state_path(&target, &project.id)).unwrap(),
+                registration
+            );
+            assert_eq!(
+                fs::read(target.retirement_path(&project.id)).unwrap(),
+                retired
+            );
+            assert_eq!(
+                fs::read(state_path(&old, &project.id)).unwrap(),
+                registration
+            );
+            if old_exists {
+                assert_eq!(
+                    fs::read(old_root.join("project.json")).unwrap(),
+                    original_manifest
+                );
+            } else {
+                assert!(!old_root.exists());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn safe_conflicting_directory_claims_both_remain_reserved_without_adopting_either() {
+    let (_temp, store) = fixture();
+    let owner = create_fixture(&store, "Disposable ambiguous safe owner").await;
+    let first_id = "prj_1123456789abcdef0123456789abcde1";
+    let second_id = "prj_1123456789abcdef0123456789abcde2";
+    let first = crate::project_directory_name::readable_directory_name("First candidate", first_id);
+    let second =
+        crate::project_directory_name::readable_directory_name("Second candidate", second_id);
+    let mut record = state(&store, &owner.id);
+    record["directoryName"] = json!(first);
+    // This path is only parsed lexically. No old path needs to exist.
+    record["projectRoot"] = json!(format!("/unopened-history/workspace/projects/{second}"));
+    save_state(&store, &owner.id, &record);
+    let retained = fs::read(state_path(&store, &owner.id)).unwrap();
+    for (id, name, base, task) in [
+        (first_id, "First candidate", &first, "task_first_claim"),
+        (second_id, "Second candidate", &second, "task_second_claim"),
+    ] {
+        let allocated = store.reserve_named_identity(id, task, name, None).unwrap();
+        assert_eq!(
+            allocated.file_name().unwrap().to_str().unwrap(),
+            format!("{base}-2")
+        );
+        assert!(!allocated.exists());
+    }
+    assert_eq!(
+        store.project_root(&owner.id).unwrap_err().code,
+        "PROJECT_DIRECTORY_MAPPING_INVALID"
+    );
+    assert_eq!(fs::read(state_path(&store, &owner.id)).unwrap(), retained);
+}
+
+#[tokio::test]
+async fn stale_claim_does_not_resolve_old_absolute_path_or_a_claimed_current_symlink() {
+    let (_temp, store) = fixture();
+    let owner = create_fixture(&store, "Disposable old symlink owner").await;
+    let external = tempfile::tempdir().unwrap();
+    let external = external.path().canonicalize().unwrap();
+    fs::write(external.join("sentinel"), b"preserved external evidence").unwrap();
+    let old_parent = tempfile::tempdir().unwrap();
+    let old_parent = old_parent.path().canonicalize().unwrap();
+    std::os::unix::fs::symlink(&external, old_parent.join("projects")).unwrap();
+    let id = "prj_2123456789abcdef0123456789abcdef";
+    let candidate = crate::project_directory_name::readable_directory_name("Symlink claim", id);
+    let mut record = state(&store, &owner.id);
+    record["directoryName"] = json!(candidate);
+    record["projectRoot"] = json!(old_parent.join("projects").join(&candidate));
+    save_state(&store, &owner.id, &record);
+    let claimed = store.workspace_root().join("projects").join(&candidate);
+    std::os::unix::fs::symlink(&external, &claimed).unwrap();
+    let allocated = store
+        .reserve_named_identity(id, "task_symlink_claim", "Symlink claim", None)
+        .unwrap();
+    assert_eq!(
+        allocated.file_name().unwrap().to_str().unwrap(),
+        format!("{candidate}-2")
+    );
+    assert!(fs::symlink_metadata(&claimed)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read(external.join("sentinel")).unwrap(),
+        b"preserved external evidence"
+    );
+    assert_eq!(fs::read_dir(&external).unwrap().count(), 1);
+    assert!(store.project_root(&owner.id).is_err());
+}
+
+#[tokio::test]
+async fn orphan_retirement_deletion_and_reservation_markers_keep_their_names_after_restart() {
+    for kind in ["retired", "deleting", "reservations"] {
+        let (_temp, store) = fixture();
+        let owner = "prj_3123456789abcdef0123456789abcdef";
+        let id = "prj_4123456789abcdef0123456789abcdef";
+        let candidate =
+            crate::project_directory_name::readable_directory_name("Retained marker", id);
+        let path = store
+            .workspace_root()
+            .join(".platform/project-state")
+            .join(kind)
+            .join(format!("{owner}.json"));
+        ensure_dir(path.parent().unwrap()).unwrap();
+        let marker = json!({"projectId":owner,"taskId":"task_old_marker","directoryName":candidate,"documentEpoch":Uuid::new_v4().to_string(),"retired":true});
+        fs::write(&path, serde_json::to_vec_pretty(&marker).unwrap()).unwrap();
+        let original = fs::read(&path).unwrap();
+        let reopened = ProjectStore::new(store.workspace_root().to_owned()).unwrap();
+        let allocated = reopened
+            .reserve_named_identity(id, "task_after_restart", "Retained marker", None)
+            .unwrap();
+        assert_eq!(
+            allocated.file_name().unwrap().to_str().unwrap(),
+            format!("{candidate}-2")
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!allocated.exists());
+    }
+}
+
+#[tokio::test]
+async fn ambiguous_or_unsafe_history_still_rejects_allocation_before_any_new_write() {
+    for damage in [
+        "json",
+        "schema",
+        "id",
+        "epoch",
+        "name",
+        "relative",
+        "traversal",
+        "unbounded-parent",
+        "root-type",
+    ] {
+        let (_temp, store) = fixture();
+        let owner = create_fixture(&store, "Disposable unsafe historical claim").await;
+        let mut record = state(&store, &owner.id);
+        match damage {
+            "schema" => record["schemaVersion"] = json!(99),
+            "id" => record["id"] = json!("different_owner"),
+            "epoch" => record["documentEpoch"] = json!("unknown-epoch"),
+            "name" => record["directoryName"] = json!("../outside"),
+            "relative" => record["projectRoot"] = json!("projects/old-name"),
+            "traversal" => record["projectRoot"] = json!("/old/../workspace/projects/old-name"),
+            "unbounded-parent" => record["projectRoot"] = json!("/old/arbitrary/old-name"),
+            "root-type" => record["projectRoot"] = json!(17),
+            "json" => (),
+            _ => unreachable!(),
+        }
+        if damage == "json" {
+            fs::write(state_path(&store, &owner.id), b"{broken").unwrap();
+        } else {
+            save_state(&store, &owner.id, &record);
+        }
+        let before = fs::read(state_path(&store, &owner.id)).unwrap();
+        let id = "prj_5123456789abcdef0123456789abcdef";
+        let project_entries = fs::read_dir(store.workspace_root().join("projects"))
+            .unwrap()
+            .count();
+        assert!(
+            store
+                .reserve_named_identity(id, "task_unknown_claim", "Disposable new project", None)
+                .is_err(),
+            "{damage}"
+        );
+        assert!(!store.reservation_path(id).exists(), "{damage}");
+        assert_eq!(
+            fs::read_dir(store.workspace_root().join("projects"))
+                .unwrap()
+                .count(),
+            project_entries
+        );
+        assert_eq!(fs::read(state_path(&store, &owner.id)).unwrap(), before);
+        assert!(store.project_root(&owner.id).is_err(), "{damage}");
+    }
+}
+
+#[tokio::test]
+async fn maximal_retained_basename_is_kept_without_expanding_it_for_unrelated_new_projects() {
+    let (_temp, store) = fixture();
+    let owner = create_fixture(&store, "Disposable maximal historical claim").await;
+    let maximal = "a".repeat(128);
+    let mut record = state(&store, &owner.id);
+    record["directoryName"] = json!(maximal);
+    record["projectRoot"] = json!(format!("/unopened-history/projects/{maximal}"));
+    save_state(&store, &owner.id, &record);
+    let names = store
+        .retained_directory_names(None, Path::new("/not-a-reservation"))
+        .unwrap();
+    assert!(names.contains(&maximal));
+    let fresh = create_fixture(&store, "Disposable unrelated short new name").await;
+    assert!(fresh.project_root.file_name().unwrap().len() <= 63);
+    assert_eq!(state(&store, &owner.id), record);
+}
+
+#[tokio::test]
+async fn malformed_retained_name_markers_never_make_a_protected_name_reusable() {
+    for kind in ["retired", "deleting", "reservations"] {
+        for damage in ["json", "owner", "name", "root"] {
+            let (_temp, store) = fixture();
+            let owner = "prj_6123456789abcdef0123456789abcdef";
+            let id = "prj_7123456789abcdef0123456789abcdef";
+            let path = store
+                .workspace_root()
+                .join(".platform/project-state")
+                .join(kind)
+                .join(format!("{owner}.json"));
+            ensure_dir(path.parent().unwrap()).unwrap();
+            let mut record = json!({"projectId":owner,"taskId":"task_legacy_marker","directoryName":"retained-safe-name"});
+            match damage {
+                "owner" => record["projectId"] = json!("different_owner"),
+                "name" => record["directoryName"] = json!("../unknown"),
+                "root" => record["projectRoot"] = json!("/old/unknown-parent/safe-name"),
+                "json" => (),
+                _ => unreachable!(),
+            }
+            let bytes = if damage == "json" {
+                b"{broken".to_vec()
+            } else {
+                serde_json::to_vec_pretty(&record).unwrap()
+            };
+            fs::write(&path, &bytes).unwrap();
+            assert!(
+                store
+                    .reserve_named_identity(
+                        id,
+                        "task_new_marker_claim",
+                        "Disposable new project",
+                        None
+                    )
+                    .is_err(),
+                "{kind}/{damage}"
+            );
+            assert!(!store.reservation_path(id).exists());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                fs::read_dir(store.workspace_root().join("projects"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+}
