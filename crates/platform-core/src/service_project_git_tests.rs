@@ -38,6 +38,165 @@ async fn git_http_task(service: &RuntimeService, client: &reqwest::Client, task:
     .unwrap()
 }
 
+/// Real HTTP management authorization, task dispatch and the selected real Git.
+/// This is a disposable runtime service, not native desktop acceptance.
+#[tokio::test]
+#[ignore = "set LOCAL_PROJECTS_TEST_GIT_ROOT to a verified disposable development-git payload"]
+async fn official_git_data_save_http_uses_real_sql_and_requires_management_auth() {
+    let tool_root =
+        std::path::PathBuf::from(std::env::var("LOCAL_PROJECTS_TEST_GIT_ROOT").unwrap())
+            .canonicalize()
+            .unwrap();
+    assert!(tool_root.starts_with(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-artifacts")
+            .canonicalize()
+            .unwrap()
+    ));
+    let (_temp, paths, service, client) = tests::start().await;
+    service
+        .handle()
+        .set_git_path(Some(tool_root.join("bin/git").to_string_lossy().into()))
+        .await
+        .unwrap();
+    let project = tests::create(&service, "Disposable HTTP SQLite Git data save").await;
+    let base = format!("projects/{}/git", project.id);
+    let token = paths.read_control_token().unwrap();
+    for (method, tail) in [
+        (Method::POST, "data-saves"),
+        (Method::GET, "data-save-recovery"),
+        (Method::POST, "data-save-finalizations"),
+    ] {
+        let mut request = client.request(
+            method,
+            format!("{}/api/v1/{base}/{tail}", service.info().base_url),
+        );
+        if tail != "data-save-recovery" {
+            request = request.json(&json!({}));
+        }
+        assert_eq!(
+            request.send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert!(!project.project_root.join("version-data").exists());
+    assert!(!project.project_root.join(".git").exists());
+    let response = client
+        .get(format!(
+            "{}/api/v1/{base}/data-save-recovery?unexpected=true",
+            service.info().base_url
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let invalid: Value = response.json().await.unwrap();
+    assert_eq!(invalid["ok"], false);
+    assert_eq!(invalid["error"]["code"], "INVALID_INPUT");
+    let status = git_http(&service, &client, Method::GET, &base, None, StatusCode::OK).await;
+    let task = git_http(
+        &service,
+        &client,
+        Method::POST,
+        &format!("{base}/initialize"),
+        Some(json!({"initialBranch":"main","expectedSnapshot":status["snapshotDigest"]})),
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    assert_eq!(
+        git_http_task(&service, &client, &task).await["status"],
+        "succeeded"
+    );
+    let db = format!("projects/{}/db/execute", project.id);
+    for sql in [
+        "CREATE TABLE notes(body TEXT)",
+        "INSERT INTO notes VALUES('artificial HTTP record remains live')",
+    ] {
+        git_http(
+            &service,
+            &client,
+            Method::POST,
+            &db,
+            Some(json!({"sql":sql})),
+            StatusCode::OK,
+        )
+        .await;
+    }
+    std::fs::write(
+        project.project_root.join("data/attachments/完整.txt"),
+        "HTTP人工附件\n完整第二行",
+    )
+    .unwrap();
+    let status = git_http(&service, &client, Method::GET, &base, None, StatusCode::OK).await;
+    assert_eq!(status["database"]["canSave"], true);
+    let task=git_http(&service,&client,Method::POST,&format!("{base}/data-saves"),Some(json!({"expectedHead":status["repository"]["head"]["oid"],"expectedSnapshot":status["snapshotDigest"],"message":"Artificial HTTP source and SQLite data version","author":{"name":"HTTP data fixture","email":"http-data@example.invalid"}})),StatusCode::ACCEPTED).await;
+    assert_eq!(task["type"], "gitDataSave");
+    let saved = git_http_task(&service, &client, &task).await;
+    assert_eq!(saved["status"], "succeeded", "{saved}");
+    assert_eq!(saved["result"]["operation"], "save-data");
+    assert_eq!(saved["result"]["database"]["state"], "included");
+    let read = git_http(
+        &service,
+        &client,
+        Method::POST,
+        &db,
+        Some(json!({"sql":"SELECT body FROM notes"})),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        read["rows"][0]["body"],
+        "artificial HTTP record remains live"
+    );
+    let status = git_http(&service, &client, Method::GET, &base, None, StatusCode::OK).await;
+    assert_eq!(status["database"]["canSave"], true);
+    assert_eq!(
+        status["database"]["currentSavedSnapshot"]["attachmentCount"],
+        1
+    );
+    assert_eq!(
+        git_http(
+            &service,
+            &client,
+            Method::GET,
+            &format!("{base}/data-save-recovery"),
+            None,
+            StatusCode::OK
+        )
+        .await["state"],
+        "clear"
+    );
+    assert_eq!(
+        service
+            .handle()
+            .project_git_data_save_status(&project.id)
+            .await
+            .unwrap()["state"],
+        "clear"
+    );
+    let snapshot =
+        rusqlite::Connection::open(project.project_root.join("version-data/database.sqlite"))
+            .unwrap();
+    assert_eq!(
+        snapshot
+            .query_row("SELECT body FROM notes", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "artificial HTTP record remains live"
+    );
+    drop(snapshot);
+    assert_eq!(
+        std::fs::read_to_string(
+            project
+                .project_root
+                .join("version-data/attachments/完整.txt")
+        )
+        .unwrap(),
+        "HTTP人工附件\n完整第二行"
+    );
+    service.shutdown().await.unwrap();
+}
+
 fn disposable_git_object(
     git: &std::path::Path,
     project: &std::path::Path,

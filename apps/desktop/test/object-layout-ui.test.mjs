@@ -74,7 +74,7 @@ test('Git files, ancestors and unsafe markers are observations without verified 
   assert.match(panel.textContent, /上级目录 · 目录标记/);
   assert.match(panel.textContent, /无法安全核实的标记/);
   assert.match(panel.textContent, /标记读取失败，保留原文件/);
-  assert.match(panel.textContent, /数据库尚未纳入平台 Git 版本管理/);
+  assert.match(panel.textContent, /当前活库不直接参与版本切换/);
   assert.match(panel.textContent, /不另建独立备份体系。旧备份与未完成现场继续保留/);
   assert.doesNotMatch(panel.textContent, /仓库可用|已有版本|工作区干净/);
 });

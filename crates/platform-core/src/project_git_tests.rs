@@ -550,7 +550,7 @@ async fn official_git_initialization_source_save_and_protection_are_standard_and
     let before_data = crate::builds::tree_digest(&project.root.join("data"), false).unwrap();
     let preview = manager.status(&created.id, receiver.clone()).await.unwrap();
     assert!(preview.can_save, "{preview:?}");
-    assert_eq!(preview.database["state"], "not-supported");
+    assert_eq!(preview.database["state"], "supported");
     let author = GitAuthor {
         name: "Explicit Disposable Author".into(),
         email: "disposable@localhost".into(),

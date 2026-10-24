@@ -144,12 +144,12 @@ fn versioning(project: Option<&Path>, source: Option<&Path>, mut issues: Vec<Str
     }
     json!({
         "state":"not-integrated",
-        "reason":"平台尚未接入 Git 版本操作；仅浅查目录及祖先的 .git 标记，未确认仓库有效性、工作区状态或纳管范围。",
+        "reason":"本报告仅浅查目录及祖先的 .git 标记，未确认仓库有效性、工作区状态或纳管范围；实际能力以源码版本入口的新鲜核对为准。",
         "markers":markers,
         "inspectionIssues":issues,
         "database":{
-            "state":"not-supported",
-            "reason":"平台尚未实现数据库与附件的 Git 保存或取回；发现 Git 标记不代表业务数据已纳入版本。"
+            "state":if project.is_some() {"not-inspected"} else {"not-supported"},
+            "reason":if project.is_some() {"此目录报告未核验数据版本。请在源码版本中核对是否支持保存数据库与附件；发现 Git 标记不代表业务数据已保存。"} else {"Node 自有业务数据不属于源码 Git；不能从目录标记推断数据库已纳入版本。"}
         }
     })
 }
@@ -346,7 +346,7 @@ mod tests {
             ])
         );
         assert_eq!(layout["versioning"]["state"], "not-integrated");
-        assert_eq!(layout["versioning"]["database"]["state"], "not-supported");
+        assert_eq!(layout["versioning"]["database"]["state"], "not-inspected");
         assert_eq!(layout["build"]["state"], "unavailable");
     }
 

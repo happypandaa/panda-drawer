@@ -590,6 +590,9 @@ async fn read_target(
             ));
         }
         valid_relative(path)?;
+        if data_versions::is_data_path(path) {
+            continue;
+        }
         if path.len() > 1024 || path.split('/').count() > 32 {
             return Err(restore_limit());
         }

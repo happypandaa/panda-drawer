@@ -30,6 +30,6 @@ export interface ObjectLayout {
       scope: 'project' | 'source' | 'ancestor';
     }[];
     inspectionIssues: string[];
-    database: { state: 'not-supported'; reason: string };
+    database: { state: 'not-supported' | 'not-inspected'; reason: string };
   };
 }
