@@ -129,6 +129,7 @@ struct HttpState {
     stop: watch::Sender<bool>,
 }
 struct RuntimeSwitch {
+    processes: crate::owned_process::OwnedProcessRegistry,
     shutdown_issues: Mutex<Vec<crate::shutdown::ShutdownIssue>>,
     io_lifetime: crate::io_lifetime::IoLifetime,
     current: StdRwLock<Option<Arc<HttpState>>>,
@@ -1303,6 +1304,7 @@ impl RuntimeService {
         let listener = bind_loopback(paths.last_port()?).await?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(RuntimeSwitch {
+            processes: crate::owned_process::OwnedProcessRegistry::default(),
             shutdown_issues: Mutex::new(Vec::new()),
             io_lifetime: crate::io_lifetime::IoLifetime::default(),
             current: StdRwLock::new(None),
@@ -1419,13 +1421,23 @@ fn make_state(
     shared: Weak<RuntimeSwitch>,
     store: Option<Arc<ProjectStore>>,
 ) -> Result<Arc<HttpState>> {
+    let processes = shared
+        .upgrade()
+        .expect("runtime owner exists")
+        .processes
+        .clone();
     let store = match store {
         Some(store) => store,
-        None => Arc::new(ProjectStore::with_resources(
+        None => Arc::new(ProjectStore::with_resources_and_processes(
             paths.workspace_root().into(),
             resources.clone(),
+            processes.clone(),
         )?),
     };
+    anyhow::ensure!(
+        store.processes().shares_registry(&processes),
+        "Project store must share the runtime process registry"
+    );
     let info = BootstrapInfo {
         display_name: DISPLAY_NAME.into(),
         identifier: APP_IDENTIFIER.into(),
@@ -1677,9 +1689,10 @@ async fn submit_migration(
             .await
             .map_err(|e| ApiError::new("WORKSPACE_MIGRATION_FAILED", e.to_string()))??;
             committed = true;
-            let store = Arc::new(ProjectStore::with_resources(
+            let store = Arc::new(ProjectStore::with_resources_and_processes(
                 selected.workspace_root().into(),
                 state.resources.clone(),
+                state.store.processes(),
             )?);
             crate::workspace::initialize_selected(&selected, &store, &mut journal)?;
             let Some(shared) = weak.upgrade() else {

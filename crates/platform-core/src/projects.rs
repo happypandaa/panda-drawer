@@ -427,6 +427,7 @@ pub(crate) fn enumerate_project_roots(
 
 pub struct ProjectStore {
     workspace: PathBuf,
+    processes: crate::owned_process::OwnedProcessRegistry,
     registration_lock: Mutex<()>,
     gates: Mutex<HashMap<String, Arc<RwLock<()>>>>,
     workers: Mutex<HashMap<String, Arc<DatabaseWorker>>>,
@@ -449,6 +450,13 @@ impl ProjectStore {
         workspace: PathBuf,
         resources: Option<Arc<crate::resources::ProjectResources>>,
     ) -> Result<Self, ApiError> {
+        Self::with_resources_and_processes(workspace, resources, Default::default())
+    }
+    pub(crate) fn with_resources_and_processes(
+        workspace: PathBuf,
+        resources: Option<Arc<crate::resources::ProjectResources>>,
+        processes: crate::owned_process::OwnedProcessRegistry,
+    ) -> Result<Self, ApiError> {
         crate::platform_support::require_runtime().map_err(ApiError::from)?;
         check_no_symlinks(&workspace, false)?;
         for path in [
@@ -459,6 +467,7 @@ impl ProjectStore {
         }
         Ok(Self {
             workspace,
+            processes,
             registration_lock: Mutex::new(()),
             gates: Mutex::new(HashMap::new()),
             workers: Mutex::new(HashMap::new()),
@@ -476,6 +485,9 @@ impl ProjectStore {
     }
     pub fn workspace_root(&self) -> &Path {
         &self.workspace
+    }
+    pub(crate) fn processes(&self) -> crate::owned_process::OwnedProcessRegistry {
+        self.processes.clone()
     }
     fn accepting(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
@@ -1092,6 +1104,10 @@ impl ProjectStore {
             active: self.active_tasks.clone(),
             id: id.into(),
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_has_database_worker(&self, id: &str) -> bool {
+        self.workers.lock().unwrap().contains_key(id)
     }
     #[cfg(test)]
     pub(crate) fn fixture_panicked_database_worker(&self, id: &str) {

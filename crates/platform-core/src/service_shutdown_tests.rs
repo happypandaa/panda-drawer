@@ -3,6 +3,212 @@
 use super::*;
 use crate::shutdown::ShutdownStatus;
 
+fn process_fixture_io(
+    pipes: crate::owned_process::ProcessPipes,
+) -> crate::owned_process::IoPlan<()> {
+    use tokio::io::AsyncReadExt;
+    let crate::owned_process::ProcessPipes {
+        stdin,
+        mut stdout,
+        mut stderr,
+        stop: _,
+    } = pipes;
+    drop(stdin);
+    crate::owned_process::IoPlan::new(async move {
+        let mut bytes = [0u8; 1024];
+        while stdout.read(&mut bytes).await? != 0 {}
+        Ok(())
+    })
+    .drain("stderr", async move {
+        let mut bytes = [0u8; 1024];
+        while stderr.read(&mut bytes).await? != 0 {}
+        Ok(())
+    })
+}
+
+#[tokio::test]
+async fn owned_process_quiesce_retains_discovery_until_pending_reader_really_joins() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let (_temporary, paths, service, _client) = super::super::tests::start().await;
+    let registry = service.store().processes();
+    let project =
+        super::super::tests::create(&service, "Disposable owned-process SQLite boundary").await;
+    let store = service.store();
+    let result = store
+        .execute(
+            &project.id,
+            serde_json::from_value(json!({"sql":"SELECT 1 AS value"})).unwrap(),
+            None,
+            SqlCaller::Management,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.rows[0]["value"], 1);
+    assert!(store.fixture_has_database_worker(&project.id));
+    let writer_directory = Arc::new(
+        tempfile::Builder::new()
+            .prefix("disposable-process-owned-writer-")
+            .tempdir()
+            .unwrap(),
+    );
+    let marker = writer_directory.path().join("complete");
+    let writer_marker = marker.clone();
+    let (release, blocked) = oneshot::channel();
+    let mut options = crate::owned_process::ProcessOptions::new(
+        "disposable-service-reader",
+        Duration::from_secs(3),
+    );
+    options.cleanup_timeout = Duration::from_millis(25);
+    let run = registry
+        .start(
+            tokio::process::Command::new("/usr/bin/true"),
+            options,
+            writer_directory,
+            |pipes| {
+                process_fixture_io(pipes).drain("owned-held-reader", async move {
+                    let _ = blocked.await;
+                    std::fs::write(writer_marker, b"actual owned writer completed")?;
+                    Ok(())
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(run.await.unwrap_err().code, "PROCESS_CLEANUP_PENDING");
+    let manager_drained = Arc::new(AtomicBool::new(false));
+    let observed = manager_drained.clone();
+    let manager_registry = registry.clone();
+    service
+        .shared
+        .snapshot()
+        .project_git
+        .as_ref()
+        .unwrap()
+        .fixture_shutdown_runner(tokio::spawn(async move {
+            while manager_registry.snapshot()[0].phase != crate::owned_process::ProcessPhase::Closed
+            {
+                tokio::task::yield_now().await;
+            }
+            // A real pipeline must wait for this proof before touching output
+            // rollback. Joining it first would hide the cleanup-pending report.
+            observed.store(true, Ordering::Release);
+        }));
+    let failed = tokio::time::timeout(Duration::from_secs(3), service.quiesce())
+        .await
+        .expect("process pending is reported before manager join");
+    assert_eq!(failed.status, ShutdownStatus::Blocked);
+    assert!(!failed.resource_closed);
+    assert_eq!(failed.phase, "processes");
+    assert!(
+        store.fixture_has_database_worker(&project.id),
+        "actual SQLite worker stays owned before process drain"
+    );
+    assert!(
+        service.shutdown.resources.lock().await.http.is_some(),
+        "HTTP join owner is not consumed early"
+    );
+    assert_eq!(service.shutdown.resources.lock().await.stage, 2);
+    assert!(!manager_drained.load(Ordering::Acquire));
+    assert!(paths.connection_path().is_file());
+    assert!(paths.acquire_lock().is_err());
+    assert!(failed
+        .issues
+        .iter()
+        .any(|i| i.code == "PROCESS_CLEANUP_PENDING" && i.retryable));
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while registry.snapshot()[0].phase != crate::owned_process::ProcessPhase::Closed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let complete = service.quiesce().await;
+    assert!(complete.is_complete(), "{complete:?}");
+    assert!(manager_drained.load(Ordering::Acquire));
+    assert!(registry.snapshot()[0].resource_closed());
+    assert!(
+        !store.fixture_has_database_worker(&project.id),
+        "worker closes only after real process and writer joins"
+    );
+    assert!(!paths.connection_path().exists());
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn owned_process_registry_and_pending_owner_survive_real_workspace_migration() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let (_temporary, paths, service, _client) = super::super::tests::start().await;
+    let registry = service.store().processes();
+    let (release, blocked) = oneshot::channel();
+    let mut options = crate::owned_process::ProcessOptions::new(
+        "disposable-migration-reader",
+        Duration::from_secs(3),
+    );
+    options.cleanup_timeout = Duration::from_millis(25);
+    let run = registry
+        .start(
+            tokio::process::Command::new("/usr/bin/true"),
+            options,
+            (),
+            |pipes| {
+                process_fixture_io(pipes).drain("global-fixture-reader", async move {
+                    let _ = blocked.await;
+                    Ok(())
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(run.await.unwrap_err().code, "PROCESS_CLEANUP_PENDING");
+    let process_id = registry.snapshot()[0].id.clone();
+    let instance = service.info().instance_id;
+    let destination = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-owned-process-selected-workspace");
+    std::fs::create_dir(&destination).unwrap();
+    submit_migration(
+        service.shared.clone(),
+        service.shared.snapshot(),
+        crate::workspace::MigrationInput {
+            destination_path: destination,
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.info().instance_id == instance
+            || service.shared.migration_active.load(Ordering::Acquire)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(service.shared.processes.snapshot()[0].id, process_id);
+    assert!(service.store().processes().shares_registry(&registry));
+    assert_eq!(
+        service.shared.processes.snapshot()[0].phase,
+        crate::owned_process::ProcessPhase::CleanupPending
+    );
+    let failed = service.quiesce().await;
+    assert!(!failed.resource_closed);
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while registry.snapshot()[0].phase != crate::owned_process::ProcessPhase::Closed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(service.quiesce().await.is_complete());
+    service.shutdown().await.unwrap();
+}
+
 async fn http_panic_fixture(service: &RuntimeService) {
     let mut resources = service.shutdown.resources.lock().await;
     if let Some(signal) = resources.signal.take() {

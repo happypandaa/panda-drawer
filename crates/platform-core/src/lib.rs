@@ -32,6 +32,8 @@ pub mod node_install_tasks;
 pub use project_git::node_development_git;
 pub mod node_runtime_trial;
 pub mod object_layout;
+#[allow(dead_code)] // Registry foundation; legacy helper ports are a separate step.
+mod owned_process;
 mod paths;
 mod platform_info;
 pub mod platform_support;

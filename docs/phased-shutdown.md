@@ -2,6 +2,8 @@
 
 本步只建立核心服务的关闭协议，不签发自动更新安装许可。桌面正常退出仍需单独接入；Node 进程树、原生窗口与 WebKit 下载取消完成也需保留各自的证明。开发身份、固定数据根和用户资料保持原合同。
 
+后续[受管子进程登记](owned-process-drain.md)补充了同步封闭进程准入、先检查真实进程和管道收尾再 join 业务管理器的阶段；它保留本文的未知状态、实例及 SQLite 保护，具体 helper 的接入范围按该文实际记录判断。
+
 ## API 与所有权
 
 `RuntimeService::begin_quiesce()` 关闭接纳并启动或复用单一 owned coordinator，立即返回报告；`quiesce(&self)` 等待本次报告，`shutdown_status()` 只读取状态。原有 `shutdown(self) -> Result<()>` 保留兼容，但只在报告 Complete、resourceClosed=true、无问题时返回成功。报告是诊断结果，不是 updater 许可。
