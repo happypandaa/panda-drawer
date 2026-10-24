@@ -20,6 +20,11 @@ function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDire
   return value;
 }
 
+function checkedAddedApp(value: NodeAppDetail, sourcePath: string): NodeAppDetail {
+  if (!value || !value.id || value.sourcePath !== sourcePath || value.runtime !== 'node-service' || !Array.isArray(value.fields) || !value.configuration) throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');
+  return value;
+}
+
 export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAdded }: {
   enabled: boolean;
   instanceId?: string;
@@ -30,8 +35,6 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
   const [name, setName] = useState('');
   const [review, setReview] = useState<NodeDirectoryReview | null>(null);
   const [reviewPrompt, setReviewPrompt] = useState('');
-  const [initializeConfirm, setInitializeConfirm] = useState(false);
-  const [initializeAcknowledged, setInitializeAcknowledged] = useState(false);
   const [pending, setPending] = useState<Operation>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -49,7 +52,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
 
   function revokeReview() {
     focusPreview.current = false;
-    setReview(null); setInitializeConfirm(false); setInitializeAcknowledged(false);
+    setReview(null);
   }
   useEffect(() => {
     alive.current = true;
@@ -74,7 +77,12 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     const request = ++sequence.current; const service = context.current.instanceId;
     const current = () => alive.current && sequence.current === request && context.current.enabled && context.current.instanceId === service;
     try { await perform(current); }
-    catch (cause) { if (current()) { if (kind !== 'copy') revokeReview(); setError(messageFrom(cause)); } }
+    catch (cause) {
+      if (current()) {
+        if (kind !== 'copy') revokeReview();
+        setError(`${messageFrom(cause)}${kind === 'initialize' ? ' 已生成的文件会保留；请重新检查并核对项目列表，不要重复生成。' : ''}`);
+      }
+    }
     finally { if (current()) { operation.current = false; setPending(null); callbacks.current.onPendingChange(false); } }
   }
   async function inspect(source: string, current: () => boolean) {
@@ -101,17 +109,13 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     revokeReview();
     void run('inspect', current => inspect(sourcePath, current));
   }
-  function initialize() {
-    if (blocked || !review || review.state !== 'empty' || !initializeConfirm || !initializeAcknowledged || !name.trim() || operation.current) return;
+  function initializeAndRegister() {
+    if (blocked || !review || review.state !== 'empty' || !name.trim() || operation.current) return;
     const selected = review; revokeReview();
     void run('initialize', async current => {
-      const value = await invoke<NodeDirectoryReview>('node_app_directory_initialize', { sourcePath: selected.sourcePath, input: { expectedRevision: selected.expectedRevision, name: name.trim() } });
+      const value = await invoke<NodeAppDetail>('node_app_directory_initialize_and_register', { sourcePath: selected.sourcePath, input: { expectedRevision: selected.expectedRevision, name: name.trim() } });
       if (!current()) return;
-      const checked = checkedReview(value, selected.sourcePath);
-      if (checked.state !== 'ready') throw new Error('生成结果尚不能确认。请重新检查目录，不要重复生成。');
-      focusPreview.current = true;
-      setReview(checked); setReviewPrompt(checked.reviewPrompt);
-      setNotice('目录已初始化，尚未加入项目列表，也未运行。请核对下方预览，再点击“确认添加此项目”。');
+      callbacks.current.onAdded(checkedAddedApp(value, selected.sourcePath));
     });
   }
   function register() {
@@ -120,8 +124,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     void run('register', async current => {
       const value = await invoke<NodeAppDetail>('node_app_directory_register', { sourcePath: selected.sourcePath, expectedRevision: selected.expectedRevision });
       if (!current()) return;
-      if (!value || !value.id || value.sourcePath !== selected.sourcePath || value.runtime !== 'node-service' || !Array.isArray(value.fields) || !value.configuration) throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');
-      callbacks.current.onAdded(value);
+      callbacks.current.onAdded(checkedAddedApp(value, selected.sourcePath));
     });
   }
   function copy(value: string, prompt: boolean) {
@@ -139,18 +142,17 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
 
   const inspection = review?.state === 'ready' ? review.inspection : null;
   return <div className="node-add-dialog local-directory-panel" aria-label="本地项目文件夹接入" aria-busy={pending !== null}>
-    <p>选择本机项目文件夹。平台先只读检查目录，生成起始项目和添加项目都需要你分别明确确认。</p>
+    <p>选择本机项目文件夹。空目录可直接生成并添加项目；已有项目检查后预览添加。</p>
     <div className="local-directory-actions"><button className="refresh-button" disabled={blocked} onClick={choose}><FolderOpen size={16} />{pending === 'choose' ? '正在选择与检查…' : sourcePath ? '重新选择文件夹' : '选择本地项目文件夹'}</button><button className="refresh-button" disabled={blocked || !sourcePath} onClick={recheck}><RefreshCw size={14} />{pending === 'inspect' ? '正在检查…' : '重新检查'}</button></div>
     {sourcePath && <div className="local-directory-path"><label htmlFor={`${id}-path`}>本地项目目录</label><input id={`${id}-path`} className="node-selected-source" readOnly value={sourcePath} /><button className="text-button" disabled={blocked} onClick={() => copy(sourcePath, false)}><Copy size={13} />复制目录路径</button></div>}
     {error && <p className="task-error" role="alert">{error} 请重新检查或重新选择目录后继续。</p>}
-    {(pending === 'initialize' || pending === 'register') && <p className="workspace-inline-notice" role="status">{pending === 'initialize' ? '正在生成起始文件，完成后还需确认添加到项目列表…' : '正在添加到项目列表…'}</p>}
+    {(pending === 'initialize' || pending === 'register') && <p className="workspace-inline-notice" role="status">{pending === 'initialize' ? '正在生成并添加项目…' : '正在添加到项目列表…'}</p>}
     {notice && <p className="workspace-inline-notice" role="status">{notice}</p>}
     {review && review.issues.length > 0 && <ul aria-label="目录检查说明">{review.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>}
     {review?.state === 'empty' && <section className="local-directory-empty" aria-label="空目录初始化">
-      <h3>这是一个空目录</h3><p>可在此生成 Node 起始项目。生成会写入所选目录，不会添加项目、安装依赖或启动应用。以后从平台删除此类外部目录应用时，原始目录仍保留。</p>
-      <label htmlFor={`${id}-name`}>项目名称<input id={`${id}-name`} value={name} maxLength={200} disabled={blocked} onChange={event => { setName(event.target.value); setInitializeConfirm(false); setInitializeAcknowledged(false); }} /></label>
-      {!initializeConfirm && <button className="primary-button" disabled={blocked || !name.trim()} onClick={() => { setInitializeConfirm(true); setInitializeAcknowledged(false); }}>在空目录生成起始项目…</button>}
-      {initializeConfirm && <div className="operation-confirmation" aria-label="生成起始项目确认"><strong>为「{name.trim()}」生成 Node 起始项目？</strong><code>{sourcePath}</code><p>这会向上方空目录写入起始文件。生成完成后仍需核对并明确确认添加，不会自动运行。</p><label className="checkbox-label"><input type="checkbox" checked={initializeAcknowledged} disabled={blocked} onChange={event => setInitializeAcknowledged(event.target.checked)} />我已核对目录与项目名称，同意写入起始文件</label><div className="confirmation-actions"><button className="primary-button" disabled={blocked || !initializeAcknowledged || !name.trim()} onClick={initialize}>确认生成起始项目</button><button className="refresh-button" disabled={blocked} onClick={() => { setInitializeConfirm(false); setInitializeAcknowledged(false); }}>取消，保留空目录</button></div></div>}
+      <h3>这是一个空目录</h3><p id={`${id}-create-hint`}>点击后会在上方目录生成 Node 起始文件，并将项目加入列表。不安装依赖，也不会自动运行。以后从平台删除此类外部目录应用时，原始目录仍保留。</p>
+      <label htmlFor={`${id}-name`}>项目名称<input id={`${id}-name`} value={name} maxLength={200} disabled={blocked} onChange={event => setName(event.target.value)} /></label>
+      <button className="primary-button" aria-describedby={`${id}-create-hint`} disabled={blocked || !name.trim()} onClick={initializeAndRegister}>生成并添加项目</button>
     </section>}
     {inspection && <section className="node-inspection-preview" aria-label="可添加项目预览">
       <h3>确认添加到项目列表</h3>
