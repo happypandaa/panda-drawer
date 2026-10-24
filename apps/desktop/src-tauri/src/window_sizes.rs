@@ -126,6 +126,13 @@ impl WindowSizes {
         }
     }
 
+    pub fn untrack(&self, label: &str) {
+        self.bindings
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(label);
+    }
+
     pub fn flush(&self) {
         if let Err(error) = self.store.flush() {
             if let Some(path) = error.details["preservedPath"].as_str() {

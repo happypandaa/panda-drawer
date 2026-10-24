@@ -29,7 +29,58 @@ pub(super) struct NodeWindows {
     pub(super) operations: tokio::sync::Mutex<()>,
     sessions: Mutex<BTreeMap<String, Arc<Mutex<Session>>>>,
 }
+pub(super) struct ShutdownSessions(Vec<(String, Arc<Mutex<Session>>)>);
 impl NodeWindows {
+    pub fn freeze_for_shutdown(&self) -> ShutdownSessions {
+        let sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
+        ShutdownSessions(
+            sessions
+                .iter()
+                .map(|(id, current)| {
+                    phase(current, Phase::Closing, None);
+                    (id.clone(), current.clone())
+                })
+                .collect(),
+        )
+    }
+    pub fn finish_shutdown(
+        &self,
+        captured: &ShutdownSessions,
+        receipts: &super::business_window_lifetime::WindowLifetimes,
+    ) -> Result<(), super::desktop_shutdown::Issue> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
+        for (id, current) in sessions.iter() {
+            if !captured
+                .0
+                .iter()
+                .any(|(old, owned)| old == id && Arc::ptr_eq(owned, current))
+            {
+                return Err(super::desktop_shutdown::Issue::new(
+                    "NODE_SESSION_GENERATION_CHANGED",
+                    false,
+                    false,
+                ));
+            }
+        }
+        for (id, _) in &captured.0 {
+            if !receipts
+                .receipt(&label(id).map_err(|_| {
+                    super::desktop_shutdown::Issue::new("NODE_WINDOW_ID_INVALID", false, false)
+                })?)
+                .is_some_and(|r| r.destroyed())
+            {
+                return Err(super::desktop_shutdown::Issue::new(
+                    "NODE_WINDOW_DESTROY_UNCONFIRMED",
+                    false,
+                    false,
+                ));
+            }
+        }
+        for (id, _) in &captured.0 {
+            sessions.remove(id);
+        }
+        Ok(())
+    }
     fn owns(&self, id: &str, current: &Arc<Mutex<Session>>) -> bool {
         self.sessions
             .lock()
@@ -196,6 +247,25 @@ async fn build(
 ) -> Result<(), ApiError> {
     let launch =
         Url::parse(&state.node_apps.open_url(id).await?).map_err(|_| error("应用入口无效。"))?;
+    alive(state)?;
+    let id = id.to_owned();
+    let detail = detail.clone();
+    super::native_ui(app, move |app, state| {
+        build_on_main(app, state, &id, &detail, launch)
+    })
+    .await
+}
+fn build_on_main(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+    detail: &Value,
+    launch: Url,
+) -> Result<(), ApiError> {
+    let receipt = state
+        .window_lifetimes
+        .reserve(&label(id)?)
+        .map_err(|_| error("上次应用窗口尚未确认关闭，请保留当前状态。"))?;
     let current = Arc::new(Mutex::new(Session {
         origin: Some(launch.clone()),
         phase: Phase::Opening,
@@ -229,11 +299,40 @@ async fn build(
                     ),
                 )
             })
+            // Node engine downloads are not yet a supported source-contract
+            // feature. Do not allow WebKit's untracked default file writes.
+            .on_download(|_, _| false)
             .on_new_window(|_, _| NewWindowResponse::Deny)
             // This source contract does not yet declare camera/microphone grants.
             .on_permission_request(|_, _| PermissionResponse::Deny)
             .build()
-            .map_err(|_| error("无法打开应用窗口，请检查系统窗口状态后再试。"))?;
+            .map_err(|_| {
+                receipt.failed();
+                error("无法打开应用窗口，关闭状态须保留核对。")
+            })?;
+    let event_app = app.clone();
+    let event_id = id.to_owned();
+    let event_session = current.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            if close_requested_generation(&event_app, &event_id, &event_session) {
+                api.prevent_close();
+            }
+        }
+        tauri::WindowEvent::Destroyed => {
+            let state = event_app.state::<AppState>();
+            state.window_lifetimes.destroyed(&receipt, || {
+                if !state.shutting_down.load(Ordering::Acquire) {
+                    if let Ok(_lease) = state.handle.io_lifetime().admit_cleanup() {
+                        state.window_sizes.flush();
+                    }
+                }
+                state.window_sizes.untrack(&receipt.label);
+            });
+            destroyed_generation(&event_app, &event_id, &event_session);
+        }
+        _ => {}
+    });
     state.window_sizes.track(&window, identity, config);
     let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
     if current.phase == Phase::Opening {
@@ -291,6 +390,25 @@ async fn close_locked(
         }
     }
     stopped?;
+    if let Some(current) = current {
+        if state
+            .window_lifetimes
+            .receipt(&label(id)?)
+            .is_some_and(|r| r.destroyed())
+        {
+            let mut sessions = state
+                .node_windows
+                .sessions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if sessions
+                .get(id)
+                .is_some_and(|owned| Arc::ptr_eq(owned, &current))
+            {
+                sessions.remove(id);
+            }
+        }
+    }
     state.node_apps.configuration(id).await
 }
 
@@ -362,20 +480,21 @@ pub(super) async fn restart(
 }
 
 /// Called synchronously on CloseRequested, before returning to Cocoa.
-pub(super) fn close_requested(window: &tauri::Window) -> bool {
-    let Some(id) = window.label().strip_prefix("node-app-") else {
-        return false;
-    };
-    let app = window.app_handle();
+fn close_requested_generation(
+    app: &tauri::AppHandle,
+    id: &str,
+    current: &Arc<Mutex<Session>>,
+) -> bool {
     let Some(state) = app.try_state::<AppState>() else {
         return false;
     };
     if state.shutting_down.load(Ordering::Acquire) {
         return false;
     }
-    let Some(current) = session(&state, id) else {
-        return false;
-    };
+    if !owned(&state, id, current) {
+        return true;
+    }
+    let current = current.clone();
     let Ok(io_lease) = state.handle.io_lifetime().admit_cleanup() else {
         return true;
     };
@@ -405,26 +524,14 @@ pub(super) fn close_requested(window: &tauri::Window) -> bool {
     true
 }
 
-pub(super) fn destroyed(window: &tauri::Window) {
-    let Some(id) = window.label().strip_prefix("node-app-") else {
-        return;
-    };
-    let app = window.app_handle();
+fn destroyed_generation(app: &tauri::AppHandle, id: &str, current: &Arc<Mutex<Session>>) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let Some(current) = session(&state, id) else {
-        return;
-    };
-    if state.shutting_down.load(Ordering::Acquire) {
-        state
-            .node_windows
-            .sessions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(id);
+    if !owned(&state, id, current) || state.shutting_down.load(Ordering::Acquire) {
         return;
     }
+    let current = current.clone();
     // Closing may still mean a queued close operation. Keep the tombstone until
     // owned cleanup has run even when destruction precedes that queued task.
     // For ordinary close this is an idempotent no-process operation, never a
@@ -441,7 +548,9 @@ pub(super) fn destroyed(window: &tauri::Window) {
         if !owned(&state, &id, &current) {
             return;
         }
-        let _ = state.node_apps.stop_runtime(&id).await;
+        if state.node_apps.stop_runtime(&id).await.is_err() {
+            return;
+        }
         let mut sessions = state
             .node_windows
             .sessions
@@ -464,6 +573,9 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
         return;
     }
     let _operation = state.node_windows.operations.lock().await;
+    if alive(&state).is_err() {
+        return;
+    }
     let active = state.node_apps.running_ids().await;
     let stale: Vec<_> = state
         .node_windows

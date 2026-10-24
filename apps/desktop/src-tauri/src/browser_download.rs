@@ -130,15 +130,19 @@ impl Drop for PendingDownload {
 // the callback alone is not an engine-cancellation acknowledgement. Retain both
 // evidence and the busy lease in that exceptional case, rather than deleting
 // the engine's file and falsely reporting a drained service.
-struct EngineDownload(Option<TrackedIo<PendingDownload>>);
+struct EngineDownload {
+    resource: Option<TrackedIo<PendingDownload>>,
+    ticket: Option<super::engine_downloads::EngineTicket>,
+}
 impl EngineDownload {
     fn finished(mut self) -> TrackedIo<PendingDownload> {
-        self.0.take().expect("owned download")
+        self.ticket.take().expect("owned engine ticket").finished();
+        self.resource.take().expect("owned download")
     }
 }
 impl Drop for EngineDownload {
     fn drop(&mut self) {
-        if let Some(resource) = self.0.take() {
+        if let Some(resource) = self.resource.take() {
             eprintln!("Native download callback ended without Finished; preserving its stage and blocking drain");
             std::mem::forget(resource);
         }
@@ -268,11 +272,12 @@ pub fn handler(
     app: AppHandle,
     handle: RuntimeHandle,
     id: String,
+    engines: Arc<super::engine_downloads::EngineDownloads>,
 ) -> impl Fn(Webview, DownloadEvent<'_>) -> bool + Send + Sync + 'static {
     let pending = Arc::new(Mutex::new(HashMap::<String, EngineDownload>::new()));
     move |webview, event| match event {
         DownloadEvent::Requested { url, destination } => {
-            let Ok(io_lease) = handle.io_lifetime().admit() else {
+            let Ok((io_lease, mut ticket)) = engines.admit(|| handle.io_lifetime().admit()) else {
                 return false;
             };
             let info = handle.info();
@@ -304,7 +309,14 @@ pub fn handler(
             match PendingDownload::create(&info.data_root, suggested) {
                 Ok(stage) => {
                     *destination = stage.file.clone();
-                    downloads.insert(key, EngineDownload(Some(io_lease.hold(stage))));
+                    ticket.started();
+                    downloads.insert(
+                        key,
+                        EngineDownload {
+                            resource: Some(io_lease.hold(stage)),
+                            ticket: Some(ticket),
+                        },
+                    );
                     true
                 }
                 Err(error) => {
@@ -511,5 +523,70 @@ mod tests {
         registry.drain().await;
         assert!(!directory.exists());
         assert_eq!(fs::read(destination).unwrap(), b"artificial local content");
+    }
+    #[tokio::test]
+    async fn finished_engine_releases_only_its_ticket_while_the_actual_save_stage_stays_busy() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let engines = Arc::new(super::super::engine_downloads::EngineDownloads::default());
+        let io = platform_core::io_lifetime::IoLifetime::default();
+        let (lease, mut ticket) = engines.admit(|| io.admit()).unwrap();
+        let stage = PendingDownload::create(&root, "artificial.txt").unwrap();
+        let directory = stage.directory.clone();
+        fs::write(&stage.file, b"artificial engine content").unwrap();
+        ticket.started();
+        let engine = EngineDownload {
+            resource: Some(lease.hold(stage)),
+            ticket: Some(ticket),
+        };
+        engines.close();
+        io.close();
+        io.seal();
+        let stage = engine.finished();
+        engines.wait_for_finished().await;
+        assert!(directory.exists());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), io.drain())
+                .await
+                .is_err()
+        );
+        drop(stage);
+        io.drain().await;
+        assert!(!directory.exists());
+    }
+    #[tokio::test]
+    async fn callback_drop_keeps_the_real_stage_and_io_busy_as_well_as_the_engine_barrier() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let engines = Arc::new(super::super::engine_downloads::EngineDownloads::default());
+        let io = platform_core::io_lifetime::IoLifetime::default();
+        let (lease, mut ticket) = engines.admit(|| io.admit()).unwrap();
+        let stage = PendingDownload::create(&root, "artificial.txt").unwrap();
+        let file = stage.file.clone();
+        fs::write(&file, b"artificial unfinished engine content").unwrap();
+        ticket.started();
+        let engine = EngineDownload {
+            resource: Some(lease.hold(stage)),
+            ticket: Some(ticket),
+        };
+        engines.close();
+        io.close();
+        io.seal();
+        drop(engine);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            engines.wait_for_finished()
+        )
+        .await
+        .is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), io.drain())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(file).unwrap(),
+            b"artificial unfinished engine content"
+        );
     }
 }

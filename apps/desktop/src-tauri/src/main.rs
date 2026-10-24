@@ -1,7 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser_download;
+mod business_window_lifetime;
 mod codex_handoff;
+mod desktop_monitor;
+mod desktop_partial_startup;
+mod desktop_shutdown;
+mod desktop_shutdown_native;
+mod engine_downloads;
 mod local_directory;
 mod native_process;
 mod node_development;
@@ -17,7 +23,6 @@ use serde_json::Value;
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
-    sync::Mutex,
 };
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -46,14 +51,24 @@ struct DesktopInfo {
     platform: Value,
 }
 
-struct StartupFailure(String);
+struct StartupFailure {
+    message: String,
+    // Runtime startup can succeed before NodeApps initialization fails.
+    runtime: Option<std::sync::Arc<RuntimeService>>,
+    shutdown: std::sync::Arc<desktop_shutdown::DesktopShutdown>,
+    exit_ready: std::sync::atomic::AtomicBool,
+}
 
 struct AppState {
     info: DesktopInfo,
     handle: RuntimeHandle,
-    runtime: Mutex<Option<RuntimeService>>,
+    runtime: std::sync::Arc<RuntimeService>,
+    desktop_shutdown: std::sync::Arc<desktop_shutdown::DesktopShutdown>,
+    window_lifetimes: business_window_lifetime::WindowLifetimes,
+    engine_downloads: std::sync::Arc<engine_downloads::EngineDownloads>,
     project_windows: tokio::sync::Mutex<()>,
     node_apps: std::sync::Arc<platform_core::node_apps::NodeApps>,
+    node_monitor: desktop_monitor::OwnedMonitor,
     node_windows: node_windows::NodeWindows,
     window_sizes: window_sizes::WindowSizes,
     shutting_down: std::sync::atomic::AtomicBool,
@@ -91,7 +106,7 @@ fn bootstrap_info(
 ) -> Result<DesktopInfo, ApiError> {
     require_manager(&window)?;
     if let Some(failure) = app.try_state::<StartupFailure>() {
-        return Err(ApiError::new("WORKSPACE_START_FAILED", &failure.0));
+        return Err(ApiError::new("WORKSPACE_START_FAILED", &failure.message));
     }
     let state = app.state::<AppState>();
     let _io_lease = state.handle.io_lifetime().admit()?;
@@ -634,6 +649,7 @@ async fn project_open(
             // Creation is serialized, so two close clicks cannot create two containers.
             // Reuse only focuses the current document and never exchanges a new ticket.
             let _creation = state.project_windows.lock().await;
+            window_creation_allowed(&state)?;
             let maintenance = state.handle.maintenance_status(&project_id).await?;
             if maintenance["recoveryRequired"] == true {
                 return Err(ApiError::new(
@@ -658,14 +674,21 @@ async fn project_open(
                     },
                 ));
             }
+            window_creation_allowed(&state)?;
             if matches!(target, OpenTarget::Desktop) && !reload.unwrap_or(false) {
                 if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
-                    existing
-                        .show()
-                        .and_then(|_| existing.unminimize())
-                        .and_then(|_| existing.set_title(&project_title(&project.name)))
-                        .and_then(|_| existing.set_focus())
-                        .map_err(|error| ApiError::new("WINDOW_OPEN_FAILED", error.to_string()))?;
+                    let label = existing.label().to_owned();
+                    let title = project_title(&project.name);
+                    native_ui(&app, move |app, _| {
+                        app.get_webview_window(&label)
+                            .ok_or_else(|| ApiError::new("WINDOW_OPEN_FAILED", "项目窗口已关闭"))?
+                            .show()
+                            .and_then(|_| existing.unminimize())
+                            .and_then(|_| existing.set_title(&title))
+                            .and_then(|_| existing.set_focus())
+                            .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法显示项目窗口"))
+                    })
+                    .await?;
                     return Ok(OpenProjectResult {
                         project_id,
                         target,
@@ -688,30 +711,28 @@ async fn project_open(
                 ));
             }
 
+            window_creation_allowed(&state)?;
             match target {
                 OpenTarget::Desktop => {
                     if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
                         // Explicit reload discards the current document only after the
                         // user asks for it. Normal open still preserves form state.
-                        existing
-                            .navigate(launch_url)
-                            .and_then(|_| existing.show())
-                            .and_then(|_| existing.set_focus())
-                            .map_err(|error| {
-                                ApiError::new("WINDOW_OPEN_FAILED", error.to_string())
-                            })?;
+                        native_ui(&app, move |_, _| {
+                            existing
+                                .navigate(launch_url)
+                                .and_then(|_| existing.show())
+                                .and_then(|_| existing.set_focus())
+                                .map_err(|_| {
+                                    ApiError::new("WINDOW_OPEN_FAILED", "无法重新加载项目窗口")
+                                })
+                        })
+                        .await?;
                         return Ok(OpenProjectResult {
                             project_id,
                             target,
                             reused: true,
                         });
                     }
-                    let allowed_id = project_id.clone();
-                    let runtime_handle = state.handle.clone();
-                    let permission_handle = state.handle.clone();
-                    let permission_id = project_id.clone();
-                    let navigation_app = app.clone();
-                    let new_window_app = app.clone();
                     let window_config = platform_core::app_windows::AppWindowConfig::from_value(
                         project
                             .manifest
@@ -722,75 +743,12 @@ async fn project_open(
                         eprintln!("Project window declaration ignored: {}", error.code);
                         Default::default()
                     });
-                    let window_identity = platform_core::app_windows::WindowIdentity::project(
-                        &state.handle.info().workspace_root,
-                        &project_id,
-                    );
-                    let size = state
-                        .window_sizes
-                        .initial(&app, &window_identity, window_config);
-                    let project_window = tauri::WebviewWindowBuilder::new(
-                        &app,
-                        project_label(&project_id),
-                        tauri::WebviewUrl::External(launch_url),
-                    )
-                    .title(project_title(&project.name))
-                    .inner_size(size.width, size.height)
-                    .min_inner_size(
-                        platform_core::app_windows::MIN_WIDTH,
-                        platform_core::app_windows::MIN_HEIGHT,
-                    )
-                    .on_navigation(move |url| {
-                        let local = Url::parse(&runtime_handle.info().base_url)
-                            .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
-                        if !local {
-                            request_external_link(&navigation_app, url.clone());
-                        }
-                        local
+                    let id = project_id.clone();
+                    let name = project.name.clone();
+                    native_ui(&app, move |app, state| {
+                        build_project_window(app, state, id, name, launch_url, window_config)
                     })
-                    .on_download(browser_download::handler(
-                        app.clone(),
-                        state.handle.clone(),
-                        project_id.clone(),
-                    ))
-                    .disable_drag_drop_handler()
-                    .on_permission_request(move |webview, kind| {
-                        use tauri::webview::{PermissionKind, PermissionResponse};
-                        let Some(device) = (match kind {
-                            PermissionKind::Camera => Some("camera"),
-                            PermissionKind::Microphone => Some("microphone"),
-                            _ => None,
-                        }) else {
-                            return PermissionResponse::Deny;
-                        };
-                        let Ok(_io_lease) = permission_handle.io_lifetime().admit() else {
-                            return PermissionResponse::Deny;
-                        };
-                        let info = permission_handle.info();
-                        let allowed = webview
-                            .url()
-                            .ok()
-                            .zip(Url::parse(&info.base_url).ok())
-                            .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
-                            && permission_handle.device_permission_declared(&permission_id, device);
-                        if allowed {
-                            PermissionResponse::Default
-                        } else {
-                            PermissionResponse::Deny
-                        }
-                    })
-                    // Project windows have browser APIs, never native management access.
-                    .on_new_window(move |url, _| {
-                        request_external_link(&new_window_app, url);
-                        NewWindowResponse::Deny
-                    })
-                    .build()
-                    .map_err(|_| {
-                        ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，请重新打开项目")
-                    })?;
-                    state
-                        .window_sizes
-                        .track(&project_window, window_identity, window_config);
+                    .await?;
                 }
                 OpenTarget::Browser => {
                     // Fixed executable, separate argument, no shell, no caller-supplied
@@ -823,6 +781,155 @@ async fn project_open(
             })
         })
         .await?
+}
+
+fn window_creation_allowed(state: &AppState) -> Result<(), ApiError> {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "DESKTOP_STOPPING",
+            "平台正在退出，暂时不能打开新窗口",
+        ));
+    }
+    state.handle.io_lifetime().check_open()
+}
+async fn native_ui<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    work: impl FnOnce(&tauri::AppHandle, &AppState) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let owner = app.clone();
+    app.run_on_main_thread(move || {
+        let state = owner.state::<AppState>();
+        let result = window_creation_allowed(&state).and_then(|()| work(&owner, &state));
+        let _ = send.send(result);
+    })
+    .map_err(|_| {
+        ApiError::new(
+            "WINDOW_UI_DISPATCH_FAILED",
+            "窗口操作尚未完成，已保留原状态",
+        )
+    })?;
+    receive
+        .await
+        .map_err(|_| ApiError::new("WINDOW_UI_REPLY_LOST", "未收到窗口操作回执，已保留原状态"))?
+}
+fn observe_project_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    receipt: std::sync::Arc<business_window_lifetime::Receipt>,
+) {
+    let app = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let state = app.state::<AppState>();
+            state.window_lifetimes.destroyed(&receipt, || {
+                if !state
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    if let Ok(_lease) = state.handle.io_lifetime().admit_cleanup() {
+                        state.window_sizes.flush();
+                    }
+                }
+                state.window_sizes.untrack(&receipt.label);
+            });
+        }
+    });
+}
+fn build_project_window(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    project_id: String,
+    name: String,
+    launch_url: Url,
+    window_config: platform_core::app_windows::AppWindowConfig,
+) -> Result<(), ApiError> {
+    let allowed_id = project_id.clone();
+    let runtime_handle = state.handle.clone();
+    let permission_handle = state.handle.clone();
+    let permission_id = project_id.clone();
+    let navigation_app = app.clone();
+    let new_window_app = app.clone();
+    let window_identity = platform_core::app_windows::WindowIdentity::project(
+        &state.handle.info().workspace_root,
+        &project_id,
+    );
+    let size = state
+        .window_sizes
+        .initial(app, &window_identity, window_config);
+    let receipt = state
+        .window_lifetimes
+        .reserve(&project_label(&project_id))
+        .map_err(|_| ApiError::new("WINDOW_GENERATION_STILL_OWNED", "上次项目窗口尚未确认关闭"))?;
+    let project_window = tauri::WebviewWindowBuilder::new(
+        app,
+        project_label(&project_id),
+        tauri::WebviewUrl::External(launch_url),
+    )
+    .title(project_title(&name))
+    .inner_size(size.width, size.height)
+    .min_inner_size(
+        platform_core::app_windows::MIN_WIDTH,
+        platform_core::app_windows::MIN_HEIGHT,
+    )
+    .on_navigation(move |url| {
+        let local = Url::parse(&runtime_handle.info().base_url)
+            .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
+        if !local {
+            request_external_link(&navigation_app, url.clone());
+        }
+        local
+    })
+    .on_download(browser_download::handler(
+        app.clone(),
+        state.handle.clone(),
+        project_id.clone(),
+        state.engine_downloads.clone(),
+    ))
+    .disable_drag_drop_handler()
+    .on_permission_request(move |webview, kind| {
+        use tauri::webview::{PermissionKind, PermissionResponse};
+        let Some(device) = (match kind {
+            PermissionKind::Camera => Some("camera"),
+            PermissionKind::Microphone => Some("microphone"),
+            _ => None,
+        }) else {
+            return PermissionResponse::Deny;
+        };
+        let Ok(_io_lease) = permission_handle.io_lifetime().admit() else {
+            return PermissionResponse::Deny;
+        };
+        let info = permission_handle.info();
+        let allowed = webview
+            .url()
+            .ok()
+            .zip(Url::parse(&info.base_url).ok())
+            .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
+            && permission_handle.device_permission_declared(&permission_id, device);
+        if allowed {
+            PermissionResponse::Default
+        } else {
+            PermissionResponse::Deny
+        }
+    })
+    // Project windows have browser APIs, never native management access.
+    .on_new_window(move |url, _| {
+        request_external_link(&new_window_app, url);
+        NewWindowResponse::Deny
+    })
+    .build()
+    .map_err(|_| {
+        receipt.failed();
+        ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，关闭状态须保留核对")
+    })?;
+    state
+        .window_sizes
+        .track(&project_window, window_identity, window_config);
+    observe_project_window(app, &project_window, receipt);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2313,92 +2420,8 @@ fn install_application_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn shutdown_runtime(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<AppState>() else {
-        return;
-    };
-    state.handle.io_lifetime().close();
-    if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() {
-        state.window_sizes.flush();
-    }
-    state
-        .shutting_down
-        .store(true, std::sync::atomic::Ordering::Release);
-    if let Err(error) = tauri::async_runtime::block_on(state.node_apps.stop_all()) {
-        eprintln!("Node application shutdown: {}", error.code);
-    }
-    if !tauri::async_runtime::block_on(state.node_apps.owned_process_ids()).is_empty() {
-        // Exit has no prevent API. This fallback also covers OS termination
-        // paths that bypass ExitRequested; normal exits use the gate below.
-        eprintln!("Node cleanup remains unconfirmed during OS termination");
-    }
-    // Release the mutex before waiting. These callbacks run on the main thread,
-    // so the runtime stays alive in this stack frame until shutdown finishes.
-    let runtime = {
-        state
-            .runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-    };
-    if let Some(runtime) = runtime {
-        // Await the service's operation drain here. macOS termination may not
-        // permit an asynchronous follow-up after this callback returns.
-        if let Err(error) = tauri::async_runtime::block_on(runtime.shutdown()) {
-            eprintln!("Runtime shutdown: {error}");
-        }
-    }
-}
-
 fn request_safe_shutdown(app: &tauri::AppHandle) {
-    use std::sync::atomic::Ordering;
-    let Some(state) = app.try_state::<AppState>() else {
-        app.exit(0);
-        return;
-    };
-    state.handle.io_lifetime().close();
-    if state.shutting_down.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() {
-        state.window_sizes.flush();
-    }
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let state = app.state::<AppState>();
-        for attempt in 0..2 {
-            if let Err(error) = state.node_apps.stop_all().await {
-                eprintln!("Node application shutdown: {}", error.code);
-            }
-            if state.node_apps.owned_process_ids().await.is_empty() {
-                break;
-            }
-            if attempt == 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-        if !state.node_apps.owned_process_ids().await.is_empty() {
-            state.shutting_down.store(false, Ordering::Release);
-            show_manager(&app);
-            app.dialog().message("部分应用进程尚未确认全部关闭，本次退出已取消，并已暂停启动新的后台服务。请在‘我的项目 → 详情 → 运行状态’重试停止，或再次退出。")
-                .title("应用进程尚未关闭").show(|_|{});
-            return;
-        }
-        let runtime = {
-            state
-                .runtime
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take()
-        };
-        if let Some(runtime) = runtime {
-            if let Err(error) = runtime.shutdown().await {
-                eprintln!("Runtime shutdown: {error}");
-            }
-        }
-        state.exit_ready.store(true, Ordering::Release);
-        app.exit(0);
-    });
+    desktop_shutdown_native::request(app);
 }
 
 fn main() {
@@ -2473,6 +2496,7 @@ fn main() {
                 &app.package_info().version.to_string(),
             )?;
             platform_core::platform_support::require_runtime()?;
+            let mut started_runtime = None;
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
                 let window_sizes = window_sizes::WindowSizes::new(paths.data_root());
@@ -2491,15 +2515,18 @@ fn main() {
                 resource_root,
                 cli_executable,
             ))?;
+            let runtime = std::sync::Arc::new(runtime);
+            started_runtime = Some(runtime.clone());
             let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::with_runtime(
                 node_data_root, runtime_node, &runtime.handle(),
             )?);
             let monitor = std::sync::Arc::downgrade(&node_apps);
             let node_monitor_app = app.handle().clone();
             let monitor_io = runtime.handle().io_lifetime();
-            tauri::async_runtime::spawn(async move {
+            let node_monitor = desktop_monitor::OwnedMonitor::start(
+                tauri::async_runtime::handle().inner().clone(), move |mut stop| async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    if !desktop_monitor::next_tick(&mut stop, std::time::Duration::from_secs(3)).await { break; }
                     let Some(manager) = monitor.upgrade() else { break; };
                     let Ok(io_lease) = monitor_io.admit() else { break; };
                     io_lease.hold(Box::pin(async {
@@ -2519,9 +2546,13 @@ fn main() {
             Ok(AppState {
                 info,
                 handle: runtime.handle(),
-                runtime: Mutex::new(Some(runtime)),
+                runtime,
+                desktop_shutdown: std::sync::Arc::new(desktop_shutdown::DesktopShutdown::default()),
+                window_lifetimes: business_window_lifetime::WindowLifetimes::default(),
+                engine_downloads: std::sync::Arc::new(engine_downloads::EngineDownloads::default()),
                 project_windows: tokio::sync::Mutex::new(()),
                 node_apps,
+                node_monitor,
                 node_windows: node_windows::NodeWindows::default(),
                 window_sizes,
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -2533,7 +2564,12 @@ fn main() {
                 Err(error) => {
                     let message = format!("平台工作区无法启动：{error:#}\n\n请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。");
                     eprintln!("{message}");
-                    app.manage(StartupFailure(message));
+                    app.manage(StartupFailure {
+                        message,
+                        runtime: started_runtime,
+                        shutdown: std::sync::Arc::new(desktop_shutdown::DesktopShutdown::default()),
+                        exit_ready: std::sync::atomic::AtomicBool::new(false),
+                    });
                 }
             }
             // Create the webview only after namespace validation and state setup.
@@ -2546,10 +2582,13 @@ fn main() {
                 .ok_or("Missing management window configuration")?;
             tauri::WebviewWindowBuilder::from_config(app, config)?
                 .on_navigation(|url| is_manager_url(url, cfg!(debug_assertions)))
+                // Manager file saves use the owned native commands. Arbitrary
+                // WebKit engine downloads have no supported ownership contract.
+                .on_download(|_, _| false)
                 .on_new_window(|_, _| NewWindowResponse::Deny)
                 .build()?;
             if let Some(failure) = app.try_state::<StartupFailure>() {
-                app.dialog().message(&failure.0).title("熊猫小抽屉 · 工作区无法启动").kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
+                app.dialog().message(&failure.message).title("熊猫小抽屉 · 工作区无法启动").kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
             }
             install_application_menu(app)?;
             let show =
@@ -2567,7 +2606,9 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let Some(state) = window.app_handle().try_state::<AppState>() {
-                if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() { state.window_sizes.on_event(window, event); }
+                if !matches!(event, tauri::WindowEvent::Destroyed) {
+                    if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() { state.window_sizes.on_event(window, event); }
+                }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "manager" {
@@ -2581,28 +2622,32 @@ fn main() {
                     }
                     #[cfg(not(target_os = "macos"))]
                     window.app_handle().exit(0);
-                } else if node_windows::close_requested(window) {
-                    api.prevent_close();
                 }
             }
-            if matches!(event, tauri::WindowEvent::Destroyed) {node_windows::destroyed(window);}
+
         })
         .build(tauri::generate_context!())
         .expect("Unable to start isolated M5 desktop application");
 
     app.run(|app, event| match event {
         tauri::RunEvent::ExitRequested { api, .. } => {
-            if app
+            let wait_for_running = app
                 .try_state::<AppState>()
-                .is_some_and(|state| !state.exit_ready.load(std::sync::atomic::Ordering::Acquire))
-            {
+                .is_some_and(|state| !state.exit_ready.load(std::sync::atomic::Ordering::Acquire));
+            let wait_for_partial = app.try_state::<StartupFailure>().is_some_and(|failure| {
+                failure.runtime.is_some()
+                    && !failure
+                        .exit_ready
+                        .load(std::sync::atomic::Ordering::Acquire)
+            });
+            if wait_for_running || wait_for_partial {
                 api.prevent_exit();
                 request_safe_shutdown(app);
             }
         }
         // Cocoa/forced termination can bypass the preventable request. Keep a
-        // synchronous final cleanup fallback without claiming crash guarantees.
-        tauri::RunEvent::Exit => shutdown_runtime(app),
+        // owned cleanup fallback without blocking the event loop or claiming crash guarantees.
+        tauri::RunEvent::Exit => desktop_shutdown_native::forced_exit(app),
         tauri::RunEvent::Reopen { .. } => show_manager(app),
         _ => {}
     });
