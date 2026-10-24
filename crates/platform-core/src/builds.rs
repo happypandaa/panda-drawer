@@ -223,9 +223,10 @@ impl BuildManager {
                 }
                 None => EnvironmentManager::new(paths.data_root().to_path_buf()),
             },
-            git_environment: GitEnvironmentManager::new(
+            git_environment: GitEnvironmentManager::with_processes(
                 paths.data_root().to_path_buf(),
                 managed_git,
+                store.processes(),
             ),
             git_stop: watch::channel(false).0,
             paths,

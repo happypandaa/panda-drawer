@@ -1,7 +1,12 @@
 //! Git tool selection is independent of Node and of repository/SSH authentication.
 //! Doctor runs only offline version probes in an isolated environment. A successful
 //! probe grants no repository operation and proves neither identity nor remote access.
-use crate::{environment::ExecutableInfo, projects::check_no_symlinks, ApiError};
+use crate::{
+    environment::ExecutableInfo,
+    owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions},
+    projects::check_no_symlinks,
+    ApiError,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, Metadata, OpenOptions},
@@ -9,6 +14,7 @@ use std::{
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
     process::{ExitStatus, Stdio},
+    sync::Arc,
     time::Duration,
 };
 use tokio::{io::AsyncReadExt, process::Command};
@@ -55,6 +61,11 @@ pub struct GitToolchain {
 pub struct GitEnvironmentManager {
     settings_path: PathBuf,
     managed_root: Option<PathBuf>,
+    processes: OwnedProcessRegistry,
+}
+pub(crate) enum PreparedGitSelection {
+    Local(PathBuf),
+    Managed(crate::managed_git::VerifiedGit),
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -71,9 +82,17 @@ fn required_git_path<'de, D: serde::Deserializer<'de>>(
 
 impl GitEnvironmentManager {
     pub fn new(data_root: PathBuf, managed_root: Option<PathBuf>) -> Self {
+        Self::with_processes(data_root, managed_root, OwnedProcessRegistry::default())
+    }
+    pub(crate) fn with_processes(
+        data_root: PathBuf,
+        managed_root: Option<PathBuf>,
+        processes: OwnedProcessRegistry,
+    ) -> Self {
         Self {
             settings_path: data_root.join("git-toolchain.json"),
             managed_root,
+            processes,
         }
     }
     fn configured(&self) -> Result<Option<PathBuf>, ApiError> {
@@ -95,7 +114,7 @@ impl GitEnvironmentManager {
         // Check an existing settings file before replacement; never follow links.
         read_settings_bytes(&self.settings_path)?;
         if let Some(path) = &path {
-            probe_local(path).await?;
+            probe_local(path, &self.processes, Arc::new(())).await?;
         }
         crate::builds::atomic_json(
             &self.settings_path,
@@ -131,7 +150,7 @@ impl GitEnvironmentManager {
             return info;
         }
         // SSH availability is independent; failure never invalidates a usable Git.
-        info.ssh = inspect_ssh(Path::new("/usr/bin/ssh")).await;
+        info.ssh = inspect_ssh(Path::new("/usr/bin/ssh"), &self.processes).await;
         let configured = match self.configured() {
             Ok(value) => value,
             Err(error) => {
@@ -156,12 +175,35 @@ impl GitEnvironmentManager {
         info
     }
     pub async fn resolve(&self) -> Result<GitToolchain, ApiError> {
+        self.resolve_with_keep_alive(Arc::new(())).await
+    }
+    // A remote check keeps its actual admission and temporary directory alive
+    // through version resolution too, even if its normal waiter disappears.
+    pub(crate) async fn resolve_with_keep_alive(
+        &self,
+        keep_alive: ProbeKeepAlive,
+    ) -> Result<GitToolchain, ApiError> {
+        let prepared = self.prepare_resolution().await?;
+        self.resolve_prepared_with_keep_alive(prepared, keep_alive)
+            .await
+    }
+    // Preparation can own blocking verification before a process record exists.
+    // Product callers await this phase before selecting on their stop/deadline.
+    pub(crate) async fn prepare_resolution(&self) -> Result<PreparedGitSelection, ApiError> {
         crate::platform_support::require_runtime().map_err(ApiError::from)?;
-        self.selected(self.configured()?).await
+        self.prepare_selection(self.configured()?).await
     }
     async fn selected(&self, configured: Option<PathBuf>) -> Result<GitToolchain, ApiError> {
+        let prepared = self.prepare_selection(configured).await?;
+        self.resolve_prepared_with_keep_alive(prepared, Arc::new(()))
+            .await
+    }
+    async fn prepare_selection(
+        &self,
+        configured: Option<PathBuf>,
+    ) -> Result<PreparedGitSelection, ApiError> {
         if let Some(path) = configured {
-            return probe_local(&path).await;
+            return Ok(PreparedGitSelection::Local(path));
         }
         let root = self.managed_root.clone().ok_or_else(|| {
             ApiError::new(
@@ -170,7 +212,25 @@ impl GitEnvironmentManager {
             )
         })?;
         // One complete verification per resolution, off the async executor.
-        probe_managed(crate::managed_git::verify(root).await?).await
+        Ok(PreparedGitSelection::Managed(
+            crate::managed_git::verify(root).await?,
+        ))
+    }
+    // All asynchronous work in this phase belongs to an owned process record;
+    // dropping its reply requests stop without dropping the real I/O or scope.
+    pub(crate) async fn resolve_prepared_with_keep_alive(
+        &self,
+        prepared: PreparedGitSelection,
+        keep_alive: ProbeKeepAlive,
+    ) -> Result<GitToolchain, ApiError> {
+        match prepared {
+            PreparedGitSelection::Local(path) => {
+                probe_local(&path, &self.processes, keep_alive).await
+            }
+            PreparedGitSelection::Managed(verified) => {
+                probe_managed(verified, &self.processes, keep_alive).await
+            }
+        }
     }
 }
 
@@ -276,22 +336,7 @@ struct ProbeOutput {
     stderr: Vec<u8>,
     status: ExitStatus,
 }
-struct ProbeGroup(Option<u32>);
-impl ProbeGroup {
-    fn stop(&mut self) {
-        if let Some(pid) = self.0.take() {
-            // Every probe starts its own group, so descendants cannot keep pipes alive.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
-}
-impl Drop for ProbeGroup {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
+type ProbeKeepAlive = Arc<dyn Send + Sync>;
 async fn read_probe(mut stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>, ApiError> {
     let mut bytes = Vec::new();
     let mut chunk = [0; 4096];
@@ -312,45 +357,52 @@ async fn read_probe(mut stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec
         bytes.extend_from_slice(&chunk[..count]);
     }
 }
-async fn run_probe(mut command: Command, timeout: Duration) -> Result<ProbeOutput, ApiError> {
-    let mut child = command.spawn().map_err(|error| {
-        ApiError::new(
-            "GIT_TOOL_PROBE_FAILED",
-            format!("工具版本检查无法启动：{error}"),
-        )
-    })?;
-    let mut group = ProbeGroup(child.id());
-    let stdout = child.stdout.take().expect("probe stdout is piped");
-    let stderr = child.stderr.take().expect("probe stderr is piped");
-    let result = tokio::time::timeout(timeout, async {
-        let (stdout, stderr, status) =
-            tokio::try_join!(read_probe(stdout), read_probe(stderr), async {
-                child
-                    .wait()
-                    .await
-                    .map_err(|_| ApiError::new("GIT_TOOL_PROBE_FAILED", "工具版本检查未正常结束。"))
-            })?;
-        Ok(ProbeOutput {
-            stdout,
-            stderr,
-            status,
-        })
+async fn run_probe(
+    command: Command,
+    timeout: Duration,
+    processes: &OwnedProcessRegistry,
+    keep_alive: ProbeKeepAlive,
+) -> Result<ProbeOutput, ApiError> {
+    let (stderr_sender, mut stderr_receiver) = tokio::sync::oneshot::channel();
+    let mut run = processes.start(
+        command,
+        ProcessOptions::new("git-environment", timeout),
+        keep_alive,
+        move |pipes| {
+            drop(pipes.stdin);
+            IoPlan::new(read_probe(pipes.stdout)).drain("stderr", async move {
+                let stderr = read_probe(pipes.stderr).await?;
+                let _ = stderr_sender.send(stderr);
+                Ok(())
+            })
+        },
+    )?;
+    let output = tokio::select! {
+        biased;
+        _ = tokio::time::sleep(timeout) => {
+            run.cancel();
+            match run.await {
+                Err(error) if error.code != "PROCESS_CANCELLED" && error.code != "PROCESS_WORK_TIMEOUT" => return Err(error),
+                _ => return Err(probe_timeout()),
+            }
+        },
+        output = &mut run => output.map_err(|error| match error.code.as_str() {
+            "PROCESS_WORK_TIMEOUT" => probe_timeout(),
+            "PROCESS_SPAWN_FAILED" => ApiError::new("GIT_TOOL_PROBE_FAILED", "工具版本检查无法启动。"),
+            _ => error,
+        })?,
+    };
+    let stderr = stderr_receiver
+        .try_recv()
+        .map_err(|_| ApiError::new("GIT_TOOL_PROBE_FAILED", "工具版本输出未完整收尾。"))?;
+    Ok(ProbeOutput {
+        stdout: output.value,
+        stderr,
+        status: output.status,
     })
-    .await
-    .unwrap_or_else(|_| {
-        Err(ApiError::new(
-            "GIT_TOOL_PROBE_TIMEOUT",
-            "工具版本检查超时。",
-        ))
-    });
-    // A selected tool can fork and close its output before exiting. Reap its
-    // whole dedicated group even when the version command itself succeeded.
-    group.stop();
-    if result.is_err() {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-    }
-    result
+}
+fn probe_timeout() -> ApiError {
+    ApiError::new("GIT_TOOL_PROBE_TIMEOUT", "工具版本检查超时。")
 }
 fn single_line(bytes: &[u8]) -> Option<&str> {
     let text = std::str::from_utf8(bytes).ok()?.trim();
@@ -415,16 +467,26 @@ fn developer_git(output: &[u8]) -> Result<PathBuf, ApiError> {
 fn developer_tools_error(message: &str) -> ApiError {
     ApiError::new("GIT_DEVELOPER_TOOLS_UNAVAILABLE", message)
 }
-async fn local_git_path(candidate: &Path) -> Result<PathBuf, ApiError> {
+async fn local_git_path(
+    candidate: &Path,
+    processes: &OwnedProcessRegistry,
+    keep_alive: ProbeKeepAlive,
+) -> Result<PathBuf, ApiError> {
     let path = ordinary_executable(candidate)?;
     if cfg!(target_os = "macos") && path == Path::new("/usr/bin/git") {
         // Never execute Apple's shim or xcrun: either may offer an installation UI.
         let mut command = isolated_command(Path::new("/usr/bin/xcode-select"), SYSTEM_PATH);
         command.arg("-p");
-        let output = run_probe(command, Duration::from_secs(5))
+        let output = run_probe(command, Duration::from_secs(5), processes, keep_alive)
             .await
-            .map_err(|_| {
-                developer_tools_error("无法查询已安装的 Apple 开发工具；未运行系统 Git 安装入口。")
+            .map_err(|error| {
+                if error.code.starts_with("PROCESS_") {
+                    error
+                } else {
+                    developer_tools_error(
+                        "无法查询已安装的 Apple 开发工具；未运行系统 Git 安装入口。",
+                    )
+                }
             })?;
         if !output.status.success() {
             return Err(developer_tools_error(
@@ -439,6 +501,8 @@ async fn probe_git(
     git: PathBuf,
     exec_path: Option<PathBuf>,
     template_path: Option<PathBuf>,
+    processes: &OwnedProcessRegistry,
+    keep_alive: ProbeKeepAlive,
 ) -> Result<GitToolchain, ApiError> {
     let path = tool_path(&git)?;
     let mut command = isolated_command(&git, &path);
@@ -449,7 +513,7 @@ async fn probe_git(
     if let Some(value) = &template_path {
         command.env("GIT_TEMPLATE_DIR", value);
     }
-    let output = run_probe(command, Duration::from_secs(5)).await?;
+    let output = run_probe(command, Duration::from_secs(5), processes, keep_alive).await?;
     if !output.status.success() {
         return Err(ApiError::new("GIT_TOOL_PROBE_FAILED", "Git 版本检查失败。"));
     }
@@ -463,17 +527,32 @@ async fn probe_git(
         template_path,
     })
 }
-async fn probe_local(candidate: &Path) -> Result<GitToolchain, ApiError> {
-    probe_git(local_git_path(candidate).await?, None, None).await
+async fn probe_local(
+    candidate: &Path,
+    processes: &OwnedProcessRegistry,
+    keep_alive: ProbeKeepAlive,
+) -> Result<GitToolchain, ApiError> {
+    probe_git(
+        local_git_path(candidate, processes, keep_alive.clone()).await?,
+        None,
+        None,
+        processes,
+        keep_alive,
+    )
+    .await
 }
 async fn probe_managed(
     verified: crate::managed_git::VerifiedGit,
+    processes: &OwnedProcessRegistry,
+    keep_alive: ProbeKeepAlive,
 ) -> Result<GitToolchain, ApiError> {
     debug_assert_eq!(verified.git, verified.root.join("bin/git"));
     let toolchain = probe_git(
         verified.git,
         Some(verified.exec_path),
         Some(verified.template_path),
+        processes,
+        keep_alive,
     )
     .await?;
     if toolchain.git.version != verified.git_version {
@@ -484,7 +563,7 @@ async fn probe_managed(
     }
     Ok(toolchain)
 }
-async fn inspect_ssh(path: &Path) -> SshEnvironmentInfo {
+async fn inspect_ssh(path: &Path, processes: &OwnedProcessRegistry) -> SshEnvironmentInfo {
     let mut info = SshEnvironmentInfo {
         ready: false,
         selection: "system".into(),
@@ -496,7 +575,7 @@ async fn inspect_ssh(path: &Path) -> SshEnvironmentInfo {
             .map_err(|_| ApiError::new("SSH_NOT_FOUND", "未找到可用的系统 SSH 工具。"))?;
         let mut command = isolated_command(&path, SYSTEM_PATH);
         command.arg("-V");
-        let output = run_probe(command, Duration::from_secs(5)).await?;
+        let output = run_probe(command, Duration::from_secs(5), processes, Arc::new(())).await?;
         if !output.status.success() {
             return Err(ApiError::new("SSH_PROBE_FAILED", "系统 SSH 版本检查失败。"));
         }
@@ -610,7 +689,9 @@ mod tests {
         let git = script(&root, "synthetic-isolation-probe", &format!(
             "{{ printf 'arg=%s\\n' \"$@\"; printf 'cwd=%s\\n' \"$PWD\"; /usr/bin/env; }} > {quoted}\nprintf 'git version 2.56.0\\n'"
         ));
-        let toolchain = probe_local(&git).await.unwrap();
+        let toolchain = probe_local(&git, &OwnedProcessRegistry::default(), Arc::new(()))
+            .await
+            .unwrap();
         let output = fs::read_to_string(log).unwrap();
         assert!(output.contains("arg=--version\n"));
         assert!(output.contains("cwd=/\n"));
@@ -654,7 +735,9 @@ mod tests {
         let git = fake_git(&root);
         let link = root.join("selected-git");
         symlink(&git, &link).unwrap();
-        let toolchain = probe_local(&link).await.unwrap();
+        let toolchain = probe_local(&link, &OwnedProcessRegistry::default(), Arc::new(()))
+            .await
+            .unwrap();
         assert_eq!(toolchain.git.path, git);
     }
 
@@ -706,13 +789,17 @@ mod tests {
     async fn ssh_version_on_stderr_is_only_tool_availability() {
         let (_temp, root) = disposable();
         let ssh = script(&root, "synthetic-ssh", "test \"$#\" = 1 && test \"$1\" = '-V' || exit 2\nprintf 'OpenSSH_9.9p2, LibreSSL 3.3.6\\n' >&2");
-        let info = inspect_ssh(&ssh).await;
+        let info = inspect_ssh(&ssh, &OwnedProcessRegistry::default()).await;
         assert!(info.ready);
         assert_eq!(
             info.executable.unwrap().version,
             "OpenSSH_9.9p2, LibreSSL 3.3.6"
         );
-        assert!(!inspect_ssh(&root.join("missing-ssh")).await.ready);
+        assert!(
+            !inspect_ssh(&root.join("missing-ssh"), &OwnedProcessRegistry::default())
+                .await
+                .ready
+        );
     }
 
     #[test]
@@ -738,6 +825,8 @@ mod tests {
         let error = run_probe(
             isolated_command(&large, SYSTEM_PATH),
             Duration::from_secs(2),
+            &OwnedProcessRegistry::default(),
+            Arc::new(()),
         )
         .await
         .err()
@@ -748,6 +837,8 @@ mod tests {
         let error = run_probe(
             isolated_command(&stalled, SYSTEM_PATH),
             Duration::from_millis(50),
+            &OwnedProcessRegistry::default(),
+            Arc::new(()),
         )
         .await
         .err()
@@ -764,7 +855,9 @@ mod tests {
         let git = script(&root, "synthetic-background-child", &format!(
             "(/bin/sleep 0.3; printf survived > {quoted}) </dev/null >/dev/null 2>&1 &\nprintf 'git version 2.56.0\\n'"
         ));
-        probe_local(&git).await.unwrap();
+        probe_local(&git, &OwnedProcessRegistry::default(), Arc::new(()))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(450)).await;
         assert!(
             !marker.exists(),
@@ -850,5 +943,37 @@ mod tests {
         );
         assert!(!root.join("git-toolchain.json").exists());
         assert!(!root.join("toolchain.json").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn all_environment_paths_use_the_injected_registry_and_sealed_admission() {
+        let (_temp, root) = disposable();
+        let git = fake_git(&root);
+        let processes = OwnedProcessRegistry::default();
+        let manager = GitEnvironmentManager::with_processes(root, None, processes.clone());
+        let info = manager.configure_git(Some(git)).await.unwrap();
+        assert!(info.ready);
+        // configure local probe, doctor SSH and doctor's selected Git all belong
+        // to this one instance, rather than ephemeral per-command registries.
+        let snapshots = processes.snapshot();
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots
+            .iter()
+            .all(|item| item.component == "git-environment"));
+        assert!(processes.shutdown().await.is_empty());
+        assert!(processes
+            .snapshot()
+            .iter()
+            .all(|item| item.resource_closed()));
+        assert_eq!(
+            manager.resolve().await.unwrap_err().code,
+            "SERVICE_STOPPING"
+        );
+        assert_eq!(
+            processes.snapshot().len(),
+            3,
+            "sealed registry started another probe"
+        );
     }
 }

@@ -1484,11 +1484,12 @@ fn make_state(
     )?;
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
-    let git_environment = crate::git_environment::GitEnvironmentManager::new(
+    let git_environment = crate::git_environment::GitEnvironmentManager::with_processes(
         paths.data_root().into(),
         resources
             .as_ref()
             .map(|resources| resources.development_git_root()),
+        processes.clone(),
     );
     // Corrupt source evidence must not prevent existing applications opening.
     // Keep the feature error and preserve its files for explicit inspection.
@@ -1534,7 +1535,7 @@ fn make_state(
         store,
         builds,
         git_environment,
-        git_remote: crate::git_remote::GitRemoteChecker::new(),
+        git_remote: crate::git_remote::GitRemoteChecker::with_processes(processes),
         project_git,
         node_install,
         node_development,

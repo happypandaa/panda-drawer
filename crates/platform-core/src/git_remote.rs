@@ -4,6 +4,7 @@
 use crate::{
     environment::ExecutableInfo,
     git_environment::{GitEnvironmentManager, GitToolchain},
+    owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions},
     ApiError,
 };
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,8 @@ use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{
     io::AsyncReadExt,
-    process::{Child, Command},
-    sync::{watch, Semaphore},
+    process::Command,
+    sync::{watch, OwnedSemaphorePermit, Semaphore},
     time::Instant,
 };
 
@@ -44,6 +45,7 @@ pub struct GitRemoteCheckResult {
 #[derive(Clone)]
 pub struct GitRemoteChecker {
     available: Arc<Semaphore>,
+    processes: OwnedProcessRegistry,
 }
 impl Default for GitRemoteChecker {
     fn default() -> Self {
@@ -52,8 +54,12 @@ impl Default for GitRemoteChecker {
 }
 impl GitRemoteChecker {
     pub fn new() -> Self {
+        Self::with_processes(OwnedProcessRegistry::default())
+    }
+    pub(crate) fn with_processes(processes: OwnedProcessRegistry) -> Self {
         Self {
             available: Arc::new(Semaphore::new(1)),
+            processes,
         }
     }
     pub async fn check(
@@ -74,28 +80,12 @@ impl GitRemoteChecker {
     ) -> Result<GitRemoteCheckResult, ApiError> {
         let deadline = Instant::now() + timeout;
         let remote = validate_url(&input.url)?;
-        let _permit = self.available.try_acquire().map_err(|_| {
+        let permit = self.available.clone().try_acquire_owned().map_err(|_| {
             ApiError::new(
                 "GIT_REMOTE_CHECK_BUSY",
                 "已有一个远端检查正在进行，请等待其结束。",
             )
         })?;
-        checkpoint(&stop, deadline)?;
-        // Resolve exactly once. A later settings edit does not switch this request's tool.
-        let toolchain = tokio::select! {
-            biased;
-            _ = stopped(&mut stop) => return Err(cancelled()),
-            _ = tokio::time::sleep_until(deadline) => return Err(timed_out()),
-            result = environment.resolve() => result.map_err(|_| {
-                ApiError::new("GIT_REMOTE_ENVIRONMENT_UNAVAILABLE", "Git 工具不可用，请先检查 Git 环境设置。")
-            })?,
-        };
-        if !supported_version(&toolchain.git.version) {
-            return Err(ApiError::new(
-                "GIT_REMOTE_VERSION_UNSUPPORTED",
-                "此远端检查仅验证支持 Git 2.54.0 和 2.56.0；当前工具选择保持不变。",
-            ));
-        }
         checkpoint(&stop, deadline)?;
         let temporary = tempfile::Builder::new()
             .prefix("local-projects-git-remote-check-")
@@ -112,9 +102,41 @@ impl GitRemoteChecker {
         {
             return Err(temporary_error());
         }
+        let scope = Arc::new(RemoteCheckScope {
+            _permit: permit,
+            _temporary: temporary,
+        });
+        // Resolve exactly once. A later settings edit does not switch this request's tool.
+        // Managed-resource verification owns blocking filesystem work before
+        // any process record exists. The product's owned request must await it;
+        // dropping this future on a deadline would abandon its real I/O join.
+        let prepared = environment.prepare_resolution().await;
+        checkpoint(&stop, deadline)?;
+        let prepared = prepared.map_err(|_| environment_unavailable())?;
+        let resolved = tokio::select! {
+            biased;
+            _ = stopped(&mut stop) => return Err(cancelled()),
+            _ = tokio::time::sleep_until(deadline) => return Err(timed_out()),
+            result = environment.resolve_prepared_with_keep_alive(prepared, scope.clone()) => result,
+        };
+        let toolchain = match resolved {
+            Ok(toolchain) => toolchain,
+            Err(error) if error.code.starts_with("PROCESS_") => return Err(error),
+            Err(_) => {
+                checkpoint(&stop, deadline)?;
+                return Err(environment_unavailable());
+            }
+        };
+        checkpoint(&stop, deadline)?;
+        if !supported_version(&toolchain.git.version) {
+            return Err(ApiError::new(
+                "GIT_REMOTE_VERSION_UNSUPPORTED",
+                "此远端检查仅验证支持 Git 2.54.0 和 2.56.0；当前工具选择保持不变。",
+            ));
+        }
         checkpoint(&stop, deadline)?;
         let command = command_for(&toolchain, &remote.url, &cwd);
-        let output = execute(command, &mut stop, deadline).await?;
+        let output = execute(command, &self.processes, scope, &mut stop, deadline).await?;
         if output.exit_code == 2 && !output.stdout.is_empty() {
             return Err(invalid_output());
         }
@@ -210,6 +232,12 @@ fn timed_out() -> ApiError {
 fn temporary_error() -> ApiError {
     ApiError::new("GIT_REMOTE_CHECK_FAILED", "无法创建隔离的远端检查目录。")
 }
+fn environment_unavailable() -> ApiError {
+    ApiError::new(
+        "GIT_REMOTE_ENVIRONMENT_UNAVAILABLE",
+        "Git 工具不可用，请先检查 Git 环境设置。",
+    )
+}
 fn failed() -> ApiError {
     ApiError::new(
         "GIT_REMOTE_CHECK_FAILED",
@@ -301,29 +329,11 @@ fn command_for(toolchain: &GitToolchain, url: &str, cwd: &Path) -> Command {
     command.args(["ls-remote", "--symref", "--exit-code", "--", url, "HEAD"]);
     command
 }
-struct Process {
-    child: Child,
-    group: Option<u32>,
-}
-impl Process {
-    fn stop(&mut self) {
-        if let Some(pid) = self.group.take() {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
-    async fn finish(&mut self) {
-        self.stop();
-        let _ = self.child.start_kill();
-        // kill_on_drop also covers interruption while reaping the direct child.
-        let _ = tokio::time::timeout(Duration::from_millis(250), self.child.wait()).await;
-    }
-}
-impl Drop for Process {
-    fn drop(&mut self) {
-        self.stop();
-    }
+// The registry owns the real directory and remote-check admission through every
+// child and reader join, including the earlier executable-resolution probe.
+struct RemoteCheckScope {
+    _permit: OwnedSemaphorePermit,
+    _temporary: tempfile::TempDir,
 }
 struct Output {
     stdout: Vec<u8>,
@@ -353,35 +363,62 @@ async fn read_output(
         }
     }
 }
-async fn execute(
-    mut command: Command,
+async fn execute<G: Send + 'static>(
+    command: Command,
+    processes: &OwnedProcessRegistry,
+    keep_alive: G,
     stop: &mut watch::Receiver<bool>,
     deadline: Instant,
 ) -> Result<Output, ApiError> {
     checkpoint(stop, deadline)?;
-    let child = command.spawn().map_err(|_| failed())?;
-    let mut process = Process {
-        group: child.id(),
-        child,
-    };
-    let stdout = process.child.stdout.take().ok_or_else(failed)?;
-    let stderr = process.child.stderr.take().ok_or_else(failed)?;
-    let result = tokio::select! {
+    let mut run = processes.start(
+        command,
+        ProcessOptions::new(
+            "git-remote",
+            deadline.saturating_duration_since(Instant::now()),
+        ),
+        keep_alive,
+        |pipes| {
+            drop(pipes.stdin);
+            IoPlan::new(read_output(pipes.stdout, true)).drain("stderr", async move {
+                read_output(pipes.stderr, false).await.map(|_| ())
+            })
+        },
+    )?;
+    let interrupted = tokio::select! {
         biased;
-        _ = stopped(stop) => Err(cancelled()),
-        _ = tokio::time::sleep_until(deadline) => Err(timed_out()),
-        output = async {
-            let (stdout, _, status) = tokio::try_join!(
-                read_output(stdout, true), read_output(stderr, false),
-                async { process.child.wait().await.map_err(|_| failed()) }
-            )?;
-            let exit_code = status.code().filter(|code| *code == 0 || *code == 2).ok_or_else(failed)?;
-            Ok(Output { stdout, exit_code })
-        } => output,
+        _ = stopped(stop) => cancelled(),
+        _ = tokio::time::sleep_until(deadline) => timed_out(),
+        output = &mut run => return remote_output(output),
     };
-    // Stop the complete group even when Git exited and closed both output streams.
-    process.finish().await;
-    result
+    run.cancel();
+    // A cancellation acknowledgement is not resource closure. Pending cleanup
+    // keeps the real scope in the registry and must remain visible to callers.
+    match run.await {
+        Err(error) if error.code != "PROCESS_CANCELLED" && error.code != "PROCESS_WORK_TIMEOUT" => {
+            Err(error)
+        }
+        _ => Err(interrupted),
+    }
+}
+fn remote_output(
+    output: Result<crate::owned_process::ProcessOutput<Vec<u8>>, ApiError>,
+) -> Result<Output, ApiError> {
+    let output = output.map_err(|error| match error.code.as_str() {
+        "PROCESS_CANCELLED" => cancelled(),
+        "PROCESS_WORK_TIMEOUT" => timed_out(),
+        "PROCESS_SPAWN_FAILED" => failed(),
+        _ => error,
+    })?;
+    let exit_code = output
+        .status
+        .code()
+        .filter(|code| *code == 0 || *code == 2)
+        .ok_or_else(failed)?;
+    Ok(Output {
+        stdout: output.value,
+        exit_code,
+    })
 }
 fn valid_symbolic_ref(value: &str) -> bool {
     value.starts_with("refs/")
