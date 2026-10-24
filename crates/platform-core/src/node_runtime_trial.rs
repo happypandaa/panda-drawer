@@ -4,6 +4,7 @@
 //! falls back to a Node from PATH. Callers must explicitly stop the instance.
 //! Drop is best-effort cleanup; host hard-crash/orphan recovery is not implemented.
 
+use crate::owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions};
 use crate::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -381,22 +382,62 @@ fn verify_node_digest(path: &Path, expected: &str) -> TrialResult<()> {
     Ok(())
 }
 
-async fn verify_node_version(path: &Path) -> TrialResult<()> {
+async fn verify_node_version(path: &Path, processes: &OwnedProcessRegistry) -> TrialResult<()> {
     let mut command = Command::new(path);
     command
         .arg("--version")
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(3), command.output())
-        .await
-        .map_err(|_| fail("TRIAL_NODE_VERSION", "Private Node version probe timed out"))?
-        .map_err(|_| fail("TRIAL_NODE_VERSION", "Private Node could not be executed"))?;
+        .stderr(Stdio::piped());
+    let output = processes
+        .start(
+            command,
+            ProcessOptions::new("node-runtime/version-probe", Duration::from_secs(3)),
+            (),
+            |pipes| {
+                drop(pipes.stdin);
+                IoPlan::new(async move {
+                    let mut stdout = pipes.stdout;
+                    let mut output = Vec::new();
+                    let mut buffer = [0u8; 65];
+                    loop {
+                        let count = stdout.read(&mut buffer).await?;
+                        if count == 0 {
+                            return Ok(output);
+                        }
+                        if output.len() + count > 64 {
+                            return Err(fail(
+                                "TRIAL_NODE_VERSION",
+                                "Private Node version output exceeded its budget",
+                            ));
+                        }
+                        output.extend_from_slice(&buffer[..count]);
+                    }
+                })
+                .drain("stderr", async move {
+                    let mut stderr = pipes.stderr;
+                    let mut bytes = [0u8; 4096];
+                    let mut total = 0usize;
+                    loop {
+                        let count = stderr.read(&mut bytes).await?;
+                        if count == 0 {
+                            return Ok(());
+                        }
+                        total += count;
+                        if total > 16 * 1024 {
+                            return Err(fail(
+                                "TRIAL_NODE_VERSION",
+                                "Private Node version diagnostics exceeded their budget",
+                            ));
+                        }
+                    }
+                })
+            },
+        )?
+        .await?;
     if !output.status.success()
-        || output.stdout.len() > 64
-        || String::from_utf8_lossy(&output.stdout).trim() != format!("v{EXPECTED_NODE_VERSION}")
+        || String::from_utf8_lossy(&output.value).trim() != format!("v{EXPECTED_NODE_VERSION}")
     {
         return Err(fail(
             "TRIAL_NODE_VERSION",
@@ -455,6 +496,7 @@ struct PreparedLaunch {
 async fn prepare_launch(
     config: &RuntimeLaunchConfig,
     persistent: Option<(&Path, &Path)>,
+    processes: &OwnedProcessRegistry,
 ) -> TrialResult<PreparedLaunch> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(fail(
@@ -493,7 +535,7 @@ async fn prepare_launch(
         })
         .transpose()?;
     verify_node_digest(&node, &config.expected_node_sha256)?;
-    verify_node_version(&node).await?;
+    verify_node_version(&node, processes).await?;
     Ok(PreparedLaunch {
         node,
         cwd,
@@ -505,7 +547,7 @@ async fn prepare_launch(
 
 impl NodeRuntimeTrial {
     pub async fn launch(config: RuntimeLaunchConfig) -> TrialResult<Self> {
-        Self::launch_inner(config, None, None).await
+        Self::launch_inner(config, None, None, &OwnedProcessRegistry::default()).await
     }
 
     /// Use caller-owned persistent data/cache while preserving a fresh run/tmp.
@@ -516,7 +558,13 @@ impl NodeRuntimeTrial {
         data: PathBuf,
         cache: PathBuf,
     ) -> TrialResult<Self> {
-        Self::launch_inner(config, Some((data, cache)), None).await
+        Self::launch_inner(
+            config,
+            Some((data, cache)),
+            None,
+            &OwnedProcessRegistry::default(),
+        )
+        .await
     }
 
     /// The platform retains any failed-start handle whose group cleanup could
@@ -525,9 +573,11 @@ impl NodeRuntimeTrial {
         config: RuntimeLaunchConfig,
         data: PathBuf,
         cache: PathBuf,
+        processes: &OwnedProcessRegistry,
     ) -> (TrialResult<Self>, Option<Self>) {
         let mut pending = None;
-        let result = Self::launch_inner(config, Some((data, cache)), Some(&mut pending)).await;
+        let result =
+            Self::launch_inner(config, Some((data, cache)), Some(&mut pending), processes).await;
         (result, pending)
     }
 
@@ -539,7 +589,15 @@ impl NodeRuntimeTrial {
         data: &Path,
         cache: &Path,
     ) -> TrialResult<()> {
-        prepare_launch(config, Some((data, cache)))
+        Self::preflight_with_processes(config, data, cache, &OwnedProcessRegistry::default()).await
+    }
+    pub(crate) async fn preflight_with_processes(
+        config: &RuntimeLaunchConfig,
+        data: &Path,
+        cache: &Path,
+        processes: &OwnedProcessRegistry,
+    ) -> TrialResult<()> {
+        prepare_launch(config, Some((data, cache)), processes)
             .await
             .map(|_| ())
     }
@@ -548,6 +606,7 @@ impl NodeRuntimeTrial {
         config: RuntimeLaunchConfig,
         persistent: Option<(PathBuf, PathBuf)>,
         pending: Option<&mut Option<Self>>,
+        processes: &OwnedProcessRegistry,
     ) -> TrialResult<Self> {
         let PreparedLaunch {
             node,
@@ -560,6 +619,7 @@ impl NodeRuntimeTrial {
             persistent
                 .as_ref()
                 .map(|(data, cache)| (data.as_path(), cache.as_path())),
+            processes,
         )
         .await?;
         let instance_id = Uuid::new_v4().to_string();
@@ -1476,6 +1536,82 @@ server.shutdown(); server.server_close()
             "TRIAL_OWNERSHIP_RELEASED"
         );
         assert_eq!(owner.signals_sent.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn owned_version_probe_stops_silent_descendants_and_bounds_output_while_reading() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_fixture, config) = protocol_fixture("");
+        let marker = config.node_path.with_file_name("late-version-child");
+        fs::write(&config.node_path, format!("#!/bin/sh\n(/bin/sleep 0.3; printf unexpected > '{}') </dev/null >/dev/null 2>&1 &\nprintf 'v24.22.0\\n'\n", marker.display())).unwrap();
+        fs::set_permissions(&config.node_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let processes = OwnedProcessRegistry::default();
+        verify_node_version(&config.node_path, &processes)
+            .await
+            .unwrap();
+        assert!(processes.shutdown().await.is_empty());
+        assert!(processes
+            .snapshot()
+            .iter()
+            .all(|record| record.resource_closed()));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(!marker.exists());
+
+        let processes = OwnedProcessRegistry::default();
+        fs::write(
+            &config.node_path,
+            "#!/bin/sh\nwhile :; do printf 'too-much-version-output'; done\n",
+        )
+        .unwrap();
+        assert_eq!(
+            verify_node_version(&config.node_path, &processes)
+                .await
+                .unwrap_err()
+                .code,
+            "TRIAL_NODE_VERSION"
+        );
+        assert!(processes.shutdown().await.is_empty());
+        assert!(processes
+            .snapshot()
+            .iter()
+            .all(|record| record.resource_closed()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lost_version_probe_waiter_retains_owned_group_and_real_readers_until_join() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_fixture, config) = protocol_fixture("");
+        let marker = config.node_path.with_file_name("version-probe-started");
+        fs::write(
+            &config.node_path,
+            format!(
+                "#!/bin/sh\nprintf started > '{}'\n/bin/sleep 60 & wait\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&config.node_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let processes = OwnedProcessRegistry::default();
+        let owned = processes.clone();
+        let path = config.node_path.clone();
+        let waiter = tokio::spawn(async move { verify_node_version(&path, &owned).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(!processes.snapshot().is_empty());
+        assert!(processes.shutdown().await.is_empty());
+        assert!(processes
+            .snapshot()
+            .iter()
+            .all(|record| record.resource_closed()));
     }
 
     #[cfg(target_os = "macos")]

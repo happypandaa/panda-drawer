@@ -2483,15 +2483,17 @@ fn main() {
                 root: resource_root,
                 cli_executable,
             } = resource_info(app)?;
-            let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::new(
-                paths.data_root().to_path_buf(), resource_root.join("node-runtime/bin/node"),
-            )?);
+            let node_data_root = paths.data_root().to_path_buf();
+            let runtime_node = resource_root.join("node-runtime/bin/node");
             let runtime = tauri::async_runtime::block_on(RuntimeService::start_with_resources(
                 paths,
                 lock,
                 resource_root,
                 cli_executable,
             ))?;
+            let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::with_runtime(
+                node_data_root, runtime_node, &runtime.handle(),
+            )?);
             let monitor = std::sync::Arc::downgrade(&node_apps);
             let node_monitor_app = app.handle().clone();
             let monitor_io = runtime.handle().io_lifetime();
