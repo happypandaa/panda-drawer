@@ -2,6 +2,10 @@ use super::*;
 use crate::{environment::EnvironmentManager, ProjectStore, RuntimePaths};
 use std::sync::Arc;
 
+mod owned_process {
+    include!("node_install_owned_process_tests.rs");
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     paths: RuntimePaths,
@@ -1069,14 +1073,33 @@ async fn recovery_records_unknown_when_registration_cannot_be_verified() {
     fixture.shutdown().await;
 }
 
+async fn selected_real_tools(fixture: &Fixture) -> Toolchain {
+    let managed = std::env::var_os("PLATFORM_TEST_NODE_ROOT").map(PathBuf::from);
+    if let Some(root) = &managed {
+        let artifact_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-artifacts")
+            .canonicalize()
+            .unwrap();
+        assert!(
+            root.canonicalize().unwrap().starts_with(artifact_root),
+            "real-tool opt-in copies must be disposable artifacts"
+        );
+    }
+    EnvironmentManager::with_processes(
+        fixture.paths.data_root().into(),
+        managed,
+        fixture.store.processes(),
+    )
+    .resolve()
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 #[ignore = "opt-in: uses a real selected Node/npm; no application code or network dependency"]
 async fn real_npm_prepares_a_dependency_free_program_with_distinct_empty_configs() {
     let mut fixture = Fixture::new(NPM_OK);
-    fixture.tools = EnvironmentManager::new(fixture.paths.data_root().to_path_buf())
-        .resolve()
-        .await
-        .unwrap();
+    fixture.tools = selected_real_tools(&fixture).await;
     fixture.prepare(InstallTargetSnapshot::fresh()).await;
     fixture.shutdown().await;
 }
@@ -1085,10 +1108,7 @@ async fn real_npm_prepares_a_dependency_free_program_with_distinct_empty_configs
 #[ignore = "opt-in: real npm attempts only an intentionally refused loopback dependency download"]
 async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
     let mut fixture = Fixture::new(NPM_OK);
-    fixture.tools = EnvironmentManager::new(fixture.paths.data_root().to_path_buf())
-        .resolve()
-        .await
-        .unwrap();
+    fixture.tools = selected_real_tools(&fixture).await;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);

@@ -5,6 +5,7 @@
 use crate::{
     environment::Toolchain,
     node_app_manifest::{NodeDevelopmentBuild, TrialManifest, TrialRuntime},
+    owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
     projects::check_no_symlinks,
     ApiError,
 };
@@ -16,7 +17,6 @@ use std::{
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 use tokio::{
@@ -27,6 +27,9 @@ use tokio::{
 };
 
 type Result<T> = std::result::Result<T, ApiError>;
+#[path = "node_process_scope.rs"]
+pub(crate) mod process_scope;
+pub(crate) use process_scope::NodeProcessScope;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_TREE: u64 = 512 * 1024 * 1024;
 const MAX_ENTRIES: usize = 50_000;
@@ -114,7 +117,16 @@ pub async fn build_repository(
     stop: watch::Receiver<bool>,
     cancel: watch::Receiver<bool>,
 ) -> Result<NodeDevelopmentBuildOutput> {
-    build_repository_inner(repository, operation, tools, stop, cancel, None).await
+    build_repository_inner(
+        repository,
+        operation,
+        tools,
+        stop,
+        cancel,
+        None,
+        NodeProcessScope::standalone(),
+    )
+    .await
 }
 
 /// The task manager supplies the freshly reviewed Git scope. It includes
@@ -127,9 +139,19 @@ pub(crate) async fn build_repository_scoped(
     stop: watch::Receiver<bool>,
     cancel: watch::Receiver<bool>,
     included_paths: &[String],
+    processes: NodeProcessScope,
 ) -> Result<NodeDevelopmentBuildOutput> {
     let scope = BuildScope::new(included_paths)?;
-    build_repository_inner(repository, operation, tools, stop, cancel, Some(&scope)).await
+    build_repository_inner(
+        repository,
+        operation,
+        tools,
+        stop,
+        cancel,
+        Some(&scope),
+        processes,
+    )
+    .await
 }
 
 struct BuildScope {
@@ -186,6 +208,7 @@ async fn build_repository_inner(
     stop: watch::Receiver<bool>,
     cancel: watch::Receiver<bool>,
     scope: Option<&BuildScope>,
+    processes: NodeProcessScope,
 ) -> Result<NodeDevelopmentBuildOutput> {
     let control = Control {
         stop,
@@ -215,6 +238,7 @@ async fn build_repository_inner(
     let (before, excluded_paths) = scan_scoped(repository, excluded_output, true, scope)?;
     control.check()?;
     create_new_dir(operation)?;
+    let processes = processes.with_operation(operation)?;
     let copied = operation.join("repository");
     create_new_dir(&copied)?;
     copy_tree(repository, &copied, &before, Some(&control))?;
@@ -239,6 +263,7 @@ async fn build_repository_inner(
             tools,
             &["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
             &control,
+            processes.clone(),
         )
         .await?;
         // ignore-scripts disables pre/post lifecycle hooks while the explicit
@@ -249,6 +274,7 @@ async fn build_repository_inner(
             tools,
             &["run", "--ignore-scripts", script],
             &control,
+            processes.clone(),
         )
         .await?;
     }
@@ -604,29 +630,17 @@ fn npm_command(operation: &Path, cwd: &Path, tools: &Toolchain) -> Command {
         .env("npm_config_fund", "false")
         .env("npm_config_update_notifier", "false")
         .env("CI", "true")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true);
+        .env("LC_ALL", "C");
     command
 }
 
-struct ProcessGroup(i32);
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.0, libc::SIGKILL);
-        }
-    }
-}
 async fn run_npm(
     operation: &Path,
     cwd: &Path,
     tools: &Toolchain,
     args: &[&str],
     control: &Control,
+    processes: NodeProcessScope,
 ) -> Result<()> {
     for name in ["home", "tmp", "npm-cache"] {
         let path = operation.join(name);
@@ -648,82 +662,101 @@ async fn run_npm(
     control.check()?;
     let mut command = npm_command(operation, cwd, tools);
     command.args(args);
-    let mut child = command
-        .spawn()
-        .map_err(|_| invalid("无法启动开发构建工具。"))?;
-    let group = ProcessGroup(child.id().ok_or_else(|| invalid("无法核对构建进程。"))? as i32);
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| invalid("构建输出不可用。"))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| invalid("构建输出不可用。"))?;
-    // Drain incrementally; arbitrary script output is never returned to the UI
-    // or task log because a trusted script can itself print private information.
-    let drain_out = tokio::spawn(async move {
-        let mut bytes = [0u8; 8192];
-        loop {
-            if stdout.read(&mut bytes).await? == 0 {
-                break;
-            }
-        }
-        Ok::<(), std::io::Error>(())
-    });
-    let drain_err = tokio::spawn(async move {
-        let mut bytes = [0u8; 8192];
-        loop {
-            if stderr.read(&mut bytes).await? == 0 {
-                break;
-            }
-        }
-        Ok::<(), std::io::Error>(())
-    });
+    let reader_scope = processes.clone();
+    let step = args.first().copied().unwrap_or_default().to_owned();
+    let mut run = processes.processes.start(
+        command,
+        ProcessOptions::new(
+            "node-development/npm",
+            control.deadline.saturating_duration_since(Instant::now()),
+        ),
+        processes.owner,
+        move |pipes| {
+            let ProcessPipes {
+                stdin,
+                stdout,
+                stderr,
+                stop: _,
+            } = pipes;
+            drop(stdin);
+            IoPlan::new(async move {
+                reader_scope
+                    .finish_reader("node-development/npm", &step, drain_output(stdout))
+                    .await
+            })
+            .drain("build-stderr", drain_output(stderr))
+        },
+    )?;
+    let mut interruption = None;
     let result = loop {
-        if let Err(error) = control.check() {
-            break Err(error);
-        }
-        if let Err(error) = scan_operation_budget(operation) {
-            break Err(error);
+        if let Err(error) = control
+            .check()
+            .and_then(|()| scan_operation_budget(operation))
+        {
+            interruption.get_or_insert(error);
+            run.cancel();
         }
         tokio::select! {
-            status = child.wait() => {
-                break match status {
-                    Ok(status) if status.success() => Ok(()),
-                    _ => Err(ApiError::new("NODE_DEVELOPMENT_BUILD_FAILED", "构建未完成，当前程序未改变；请检查构建脚本和依赖。")),
-                };
-            }
-            _ = sleep(Duration::from_millis(250)) => {}
+            result = &mut run => break result,
+            _ = sleep(Duration::from_millis(250)) => {},
         }
     };
-    let group_id = group.0;
-    drop(group);
-    let _ = child.wait().await;
-    drain_out.abort();
-    drain_err.abort();
-    let _ = drain_out.await;
-    let _ = drain_err.await;
-    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if unsafe { libc::kill(-group_id, 0) } != 0 {
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-                break;
-            }
-            return Err(ApiError::new(
-                "NODE_DEVELOPMENT_CLEANUP_REQUIRED",
-                "无法核对构建进程收尾，现场已保留。",
-            ));
-        }
-        if Instant::now() >= cleanup_deadline {
-            return Err(ApiError::new(
-                "NODE_DEVELOPMENT_CLEANUP_REQUIRED",
-                "构建进程尚未完成收尾，现场已保留。",
-            ));
+    // A cleanup reply is consumed once. Keep the actual build context and its
+    // source lease until the independently owned writer really closes.
+    while matches!(
+        run.snapshot().phase,
+        ProcessPhase::Running | ProcessPhase::Stopping | ProcessPhase::CleanupPending
+    ) {
+        if let Err(error) = control.check() {
+            interruption.get_or_insert(error);
+            run.cancel();
         }
         sleep(Duration::from_millis(10)).await;
     }
-    result
+    let receipt = run.snapshot();
+    let closed = receipt.phase == ProcessPhase::Closed
+        && receipt.leader_reaped
+        && receipt.group_exited
+        && receipt.io_joined;
+    if !closed {
+        let error = result.err().unwrap_or_else(|| {
+            ApiError::new(
+                "NODE_DEVELOPMENT_CLEANUP_REQUIRED",
+                "构建进程归属未确认，不能发布；现场及租约保留。",
+            )
+        });
+        return Err(error
+            .detail("processResourceClosed", false)
+            .outcome("unknown"));
+    }
+    if let Some(error) = interruption {
+        return Err(error.detail("processResourceClosed", true));
+    }
+    let result = result.map_err(|error| {
+        let code = match error.code.as_str() {
+            "PROCESS_WORK_TIMEOUT" => "NODE_DEVELOPMENT_TIMEOUT",
+            "PROCESS_CANCELLED" => "NODE_DEVELOPMENT_INTERRUPTED",
+            _ => "NODE_DEVELOPMENT_BUILD_FAILED",
+        };
+        ApiError::new(code, "构建未完成；进程和输出已收尾，当前程序未改变。")
+            .detail("processCauseCode", error.code)
+            .detail("processResourceClosed", true)
+    })?;
+    if !result.status.success() {
+        return Err(ApiError::new(
+            "NODE_DEVELOPMENT_BUILD_FAILED",
+            "构建未完成，当前程序未改变；请检查构建脚本和依赖。",
+        )
+        .detail("processResourceClosed", true));
+    }
+    Ok(())
+}
+async fn drain_output(mut output: impl tokio::io::AsyncRead + Unpin) -> Result<()> {
+    // Do not surface arbitrary build diagnostics; trusted scripts can print
+    // private information. The registry owns and joins the actual OS reader.
+    let mut bytes = [0u8; 8192];
+    while output.read(&mut bytes).await? != 0 {}
+    Ok(())
 }
 
 fn scan_operation_budget(root: &Path) -> Result<()> {

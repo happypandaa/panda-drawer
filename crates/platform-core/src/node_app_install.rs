@@ -8,6 +8,8 @@ use crate::{
     builds::{atomic_json, BuildManager},
     environment::{ExecutableInfo, Toolchain},
     node_app_manifest::{TrialManifest, TrialRuntime},
+    node_development_build::NodeProcessScope,
+    owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
     projects::check_no_symlinks,
     ApiError,
 };
@@ -20,7 +22,6 @@ use std::{
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
-    process::Stdio,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -421,6 +422,7 @@ impl NodeAppInstaller {
 
     /// Caller creates a persistent nodeInstallPrepare task and owns its source
     /// lease/cancellation runner. Shutdown must drain this future before tasks.
+    #[cfg(test)]
     pub(crate) async fn prepare(
         &self,
         task_id: &str,
@@ -430,9 +432,27 @@ impl NodeAppInstaller {
         control: InstallControl,
         tasks: &Arc<BuildManager>,
     ) -> Result<PreparedNodeInstall> {
+        let processes = NodeProcessScope::new(
+            crate::owned_process::OwnedProcessRegistry::default(),
+            tasks.clone(),
+        );
+        self.prepare_with_scope(task_id, source, target, tools, control, tasks, processes)
+            .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn prepare_with_scope(
+        &self,
+        task_id: &str,
+        source: VerifiedNodeSource,
+        target: InstallTargetSnapshot,
+        tools: Toolchain,
+        control: InstallControl,
+        tasks: &Arc<BuildManager>,
+        processes: NodeProcessScope,
+    ) -> Result<PreparedNodeInstall> {
         require_task(tasks, task_id, "nodeInstallPrepare")?;
         let result = self
-            .prepare_task(task_id, source, target, tools, control, tasks)
+            .prepare_task(task_id, source, target, tools, control, tasks, processes)
             .await;
         if let Err(error) = &result {
             if tasks
@@ -449,6 +469,7 @@ impl NodeAppInstaller {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_task(
         &self,
         task_id: &str,
@@ -457,6 +478,7 @@ impl NodeAppInstaller {
         tools: Toolchain,
         control: InstallControl,
         tasks: &Arc<BuildManager>,
+        processes: NodeProcessScope,
     ) -> Result<PreparedNodeInstall> {
         target.validate()?;
         control.check()?;
@@ -466,6 +488,7 @@ impl NodeAppInstaller {
         let operation = self.operations().join(&candidate_id);
         fs::create_dir(&operation)?;
         fs::set_permissions(&operation, fs::Permissions::from_mode(0o700))?;
+        let processes = processes.with_operation(&operation)?;
         let mut journal = Journal {
             version: 1,
             candidate_id: candidate_id.clone(),
@@ -480,7 +503,7 @@ impl NodeAppInstaller {
         self.save(&journal)?;
         tasks.append(task_id, format!("Node installation candidate: {candidate_id}\nPreparation does not start the application or access its saved configuration/data.\n").as_bytes())?;
         let result = self
-            .prepare_inner(&journal, &source, &tools, &control, tasks)
+            .prepare_inner(&journal, &source, &tools, &control, tasks, processes)
             .await
             .and_then(|prepared| {
                 control.check()?;
@@ -519,6 +542,7 @@ impl NodeAppInstaller {
         tools: &Toolchain,
         control: &InstallControl,
         tasks: &Arc<BuildManager>,
+        processes: NodeProcessScope,
     ) -> Result<PreparedNodeInstall> {
         tasks.phase(&journal.prepare_task_id, "copying")?;
         let operation = self.operation(&journal.candidate_id)?;
@@ -558,6 +582,7 @@ impl NodeAppInstaller {
             control,
             tasks,
             &journal.prepare_task_id,
+            processes,
         )
         .await?;
         control.check()?;
@@ -1357,6 +1382,7 @@ async fn npm_ci(
     control: &InstallControl,
     tasks: &Arc<BuildManager>,
     task_id: &str,
+    processes: NodeProcessScope,
 ) -> Result<()> {
     control.check()?;
     let home = operation.join("npm-home");
@@ -1392,127 +1418,107 @@ async fn npm_ci(
         .env("NPM_CONFIG_CACHE", &cache)
         .env("NPM_CONFIG_UPDATE_NOTIFIER", "false")
         .env("GIT_CEILING_DIRECTORIES", operation)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true);
-    let mut child = command.spawn().map_err(|_| {
-        failure(
-            "NODE_INSTALL_NPM_FAILED",
-            "无法启动候选依赖准备，当前程序未改变。",
-        )
-    })?;
-    let pid = child
-        .id()
-        .ok_or_else(|| invalid("安装子进程身份不可用。"))? as i32;
-    let mut group = ProcessGroup(Some(pid));
-    let mut readers = [
-        Some(tokio::spawn(drain(
-            child.stdout.take().unwrap(),
-            tasks.clone(),
-            task_id.into(),
-        ))),
-        Some(tokio::spawn(drain(
-            child.stderr.take().unwrap(),
-            tasks.clone(),
-            task_id.into(),
-        ))),
-    ];
+        .env("NO_COLOR", "1");
+    let logs = tasks.clone();
+    let id = task_id.to_owned();
+    let reader_scope = processes.clone();
+    let mut run = processes.processes.start(
+        command,
+        ProcessOptions::new(
+            "node-install/npm",
+            control.deadline.saturating_duration_since(Instant::now()),
+        ),
+        processes.owner,
+        move |pipes| {
+            let ProcessPipes {
+                stdin,
+                stdout,
+                stderr,
+                stop: _,
+            } = pipes;
+            drop(stdin);
+            let stdout_logs = logs.clone();
+            let stdout_id = id.clone();
+            IoPlan::new(async move {
+                reader_scope
+                    .finish_reader(
+                        "node-install/npm",
+                        "ci",
+                        drain(stdout, stdout_logs, stdout_id),
+                    )
+                    .await
+            })
+            .drain("install-stderr", drain(stderr, logs, id))
+        },
+    )?;
     let mut next_space_check = Instant::now() + NPM_SPACE_INTERVAL;
+    let mut interruption = None;
     let result = loop {
-        let mut failed = None;
-        for reader in &mut readers {
-            if reader.as_ref().is_some_and(|r| r.is_finished())
-                && !matches!(reader.take().unwrap().await, Ok(Ok(())))
-            {
-                failed = Some(failure(
-                    "NODE_INSTALL_OUTPUT_LIMIT",
-                    "依赖准备输出异常或超限，现场保留。",
-                ));
-            }
-        }
-        if let Some(error) = failed {
-            break Err(error);
-        }
         if let Err(error) = control.check() {
-            break Err(error);
+            interruption.get_or_insert(error);
+            run.cancel();
         }
         if Instant::now() >= next_space_check {
+            // Own and await the actual blocking scanner; cancellation cannot
+            // detach its filesystem I/O from the current source lease.
             if let Err(error) = check_npm_space(operation, control).await {
-                break Err(error);
+                interruption.get_or_insert(error);
+                run.cancel();
             }
-            // This is a periodic check, not a filesystem quota or sandbox;
-            // transient allocation between scans can exceed the thresholds.
             next_space_check = Instant::now() + NPM_SPACE_INTERVAL;
         }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break Ok(()),
-            Ok(Some(_)) => {
-                break Err(failure(
-                    "NODE_INSTALL_NPM_FAILED",
-                    "依赖下载或准备失败；当前程序、配置及数据未改变。",
-                ))
-            }
-            Err(_) => {
-                break Err(failure(
-                    "NODE_INSTALL_NPM_FAILED",
-                    "无法确认依赖准备结果，现场保留。",
-                ))
-            }
-            Ok(None) => (),
+        tokio::select! {
+            result = &mut run => break result,
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {},
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
     };
-    unsafe {
-        libc::kill(-pid, libc::SIGTERM);
+    while matches!(
+        run.snapshot().phase,
+        ProcessPhase::Running | ProcessPhase::Stopping | ProcessPhase::CleanupPending
+    ) {
+        if let Err(error) = control.check() {
+            interruption.get_or_insert(error);
+            run.cancel();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-    }
-    let _ = child.wait().await;
-    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
-    while unsafe { libc::kill(-pid, 0) } == 0 {
-        if Instant::now() >= cleanup_deadline {
-            abort_output_readers(readers).await;
-            return Err(failure(
+    let receipt = run.snapshot();
+    let closed = receipt.phase == ProcessPhase::Closed
+        && receipt.leader_reaped
+        && receipt.group_exited
+        && receipt.io_joined;
+    if !closed {
+        let error = result.err().unwrap_or_else(|| {
+            failure(
                 "NODE_INSTALL_CLEANUP_PENDING",
-                "安装子进程尚未确认完全退出，不能报告取消完成；现场保留。",
-            ));
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+                "安装进程归属未确认，不能发布；现场及租约保留。",
+            )
+        });
+        return Err(error
+            .detail("processResourceClosed", false)
+            .outcome("unknown"));
     }
-    if std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-        abort_output_readers(readers).await;
+    if let Some(error) = interruption {
+        return Err(error.detail("processResourceClosed", true));
+    }
+    let output = result.map_err(|error| {
+        let code = match error.code.as_str() {
+            "PROCESS_CANCELLED" => "NODE_INSTALL_INTERRUPTED",
+            "PROCESS_WORK_TIMEOUT" => "NODE_INSTALL_TIMEOUT",
+            "PROCESS_CLEANUP_PENDING" => "NODE_INSTALL_NPM_FAILED",
+            _ => "NODE_INSTALL_OUTPUT_LIMIT",
+        };
+        failure(code, "依赖准备未完成；进程和日志已收尾，当前程序未改变。")
+            .detail("processCauseCode", error.code)
+            .detail("processResourceClosed", true)
+    })?;
+    if !output.status.success() {
         return Err(failure(
-            "NODE_INSTALL_CLEANUP_PENDING",
-            "无法核对安装进程组的收尾状态，现场保留。",
-        ));
+            "NODE_INSTALL_NPM_FAILED",
+            "依赖下载或准备失败；当前程序、配置及数据未改变。",
+        )
+        .detail("processResourceClosed", true));
     }
-    group.0 = None;
-    let mut output_ok = true;
-    for mut reader in readers.into_iter().flatten() {
-        match tokio::time::timeout(Duration::from_secs(2), &mut reader).await {
-            Ok(Ok(Ok(()))) => (),
-            Ok(_) => {
-                output_ok = false;
-            }
-            Err(_) => {
-                output_ok = false;
-                reader.abort();
-                let _ = reader.await;
-            }
-        }
-    }
-    if !output_ok {
-        return Err(failure(
-            "NODE_INSTALL_OUTPUT_LIMIT",
-            "依赖准备输出未完成，现场保留。",
-        ));
-    }
-    result?;
     check_npm_space(operation, control).await
 }
 async fn drain(
@@ -1539,26 +1545,6 @@ async fn drain(
         }
     }
 }
-async fn abort_output_readers(readers: [Option<tokio::task::JoinHandle<Result<()>>>; 2]) {
-    let readers: Vec<_> = readers.into_iter().flatten().collect();
-    for reader in &readers {
-        reader.abort();
-    }
-    for reader in readers {
-        let _ = reader.await;
-    }
-}
-struct ProcessGroup(Option<i32>);
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        if let Some(pid) = self.0.take() {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
 fn excluded(path: &Path) -> bool {
     path.components().any(|part| {
         part.as_os_str().to_str().is_some_and(|name| {

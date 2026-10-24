@@ -19,6 +19,10 @@ pub use restore::{
 pub struct NodeGit {
     environment: GitEnvironmentManager,
     stop: Option<watch::Receiver<bool>>,
+    process_scope: Option<(
+        crate::owned_process::OwnedProcessRegistry,
+        Arc<dyn Send + Sync>,
+    )>,
 }
 
 impl NodeGit {
@@ -26,6 +30,7 @@ impl NodeGit {
         Self {
             environment,
             stop: None,
+            process_scope: None,
         }
     }
 
@@ -34,10 +39,24 @@ impl NodeGit {
         self
     }
 
+    /// Bind only the current operation's source/task owner. A long-lived
+    /// manager must not retain a phase read gate across later publication.
+    pub(crate) fn with_process_scope(
+        mut self,
+        processes: crate::owned_process::OwnedProcessRegistry,
+        owner: Arc<dyn Send + Sync>,
+    ) -> Self {
+        self.process_scope = Some((processes, owner));
+        self
+    }
+
     fn context(&self) -> Result<(Context, [watch::Sender<bool>; 2]), ApiError> {
         let (mut context, senders) = node_context()?;
         if let Some(stop) = &self.stop {
             context.stop = stop.clone();
+        }
+        if let Some((processes, owner)) = &self.process_scope {
+            context.bind_keep_alive(processes.clone(), owner.clone());
         }
         Ok((context, senders))
     }
@@ -48,6 +67,12 @@ impl NodeGit {
             Ok(tools) => Ok(inspect_node(root, Some(&tools), &mut context, None)
                 .await?
                 .view),
+            Err(issue)
+                if issue.code.starts_with("PROCESS_")
+                    || issue.details["processResourceClosed"] == false =>
+            {
+                Err(issue)
+            }
             Err(issue) => {
                 let mut snapshot = inspect_node(root, None, &mut context, None).await?;
                 snapshot.view.issues.push(issue);
@@ -130,6 +155,7 @@ impl NodeGit {
             .ok_or_else(input_error)?;
         let git_dir = root.join(".git");
         let mut lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        context.retain(lock.retained.clone());
         let verify = inspect_node(root, Some(&tools), &mut context, Some(&lock)).await?;
         expected(
             &verify,
@@ -256,8 +282,9 @@ impl NodeGit {
                 atomic_json(&journal, &record)?;
                 return Err(issue.outcome("not_committed"));
             }
+            let published = issue.details["commitAcknowledged"] == true;
             return Err(issue
-                .outcome("unknown")
+                .outcome(if published { "committed" } else { "unknown" })
                 .detail("journal", json!(journal))
                 .detail("candidateCommit", commit));
         }
@@ -382,7 +409,8 @@ impl NodeGit {
             return Err(blocked(&snapshot.view));
         }
         let git_dir = root.join(".git");
-        let index_lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        let mut index_lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
+        context.retain(index_lock.retained.clone());
         let verify = inspect_node(root, Some(&tools), &mut context, Some(&index_lock)).await?;
         expected(
             &verify,
@@ -390,7 +418,10 @@ impl NodeGit {
             Some(&input.expected_head),
             true,
         )?;
-        let old_lock = RefLock::acquire(&git_dir.join(format!("{}.lock", input.expected_branch)))?;
+        let old_lock = Arc::new(RefLock::acquire(
+            &git_dir.join(format!("{}.lock", input.expected_branch)),
+        )?);
+        context.retain(old_lock.clone());
         let branch = format!("refs/heads/{}", input.name);
         let mut command = node_command(&tools, context.root(), Some(root));
         command.args(["show-ref", "--verify", "--quiet", &branch]);
@@ -423,6 +454,8 @@ impl NodeGit {
             },
         );
         let commands = format!("start\0create {branch}\0{}\0option no-deref\0symref-update HEAD\0{branch}\0oid\0{}\0prepare\0", input.expected_head, input.expected_head).into_bytes();
+        index_lock.preserve = true;
+        old_lock.preserve.store(true, Ordering::Release);
         let outcome = context
             .commit_transaction(command, commands, || {
                 if !old_lock.matches()
@@ -441,11 +474,18 @@ impl NodeGit {
             .await;
         if let Err(issue) = outcome {
             if issue.details["safeAbort"] == true {
+                index_lock.preserve = false;
+                old_lock.preserve.store(false, Ordering::Release);
                 record["phase"] = json!("not-committed");
                 atomic_json(&journal, &record)?;
                 return Err(issue.outcome("not_committed"));
             }
-            return Err(issue.outcome("unknown").detail("journal", json!(journal)));
+            index_lock.preserve = true;
+            old_lock.preserve.store(true, Ordering::Release);
+            let published = issue.details["commitAcknowledged"] == true;
+            return Err(issue
+                .outcome(if published { "committed" } else { "unknown" })
+                .detail("journal", json!(journal)));
         }
         record["phase"] = json!("completed");
         let result = json!({"operation":"create-branch","operationOutcome":"committed","repositoryRoot":root,"head":input.expected_head,"previousBranch":input.expected_branch,"branch":branch,"name":input.name});
@@ -454,8 +494,17 @@ impl NodeGit {
                 .outcome("committed")
                 .detail("result", result.clone())
         })?;
+        index_lock.preserve = false;
+        old_lock.preserve.store(false, Ordering::Release);
         drop(old_lock);
         drop(index_lock);
+        // All processes have actually closed. Release the context's retained
+        // lock FDs before inspecting the final view, so our own locks cannot
+        // make a successful branch appear permanently busy.
+        drop(context);
+        let (mut context, _status_senders) = self
+            .context()
+            .map_err(|issue| issue.outcome("committed").detail("result", result.clone()))?;
         let status = inspect_node(root, Some(&tools), &mut context, None)
             .await
             .map_err(|issue| issue.outcome("committed").detail("result", result.clone()))?

@@ -6,6 +6,45 @@ struct Fixture {
     source: PathBuf,
     apps: NodeApps,
 }
+
+#[tokio::test]
+async fn owned_node_source_token_outlives_borrowed_lease_without_opening_instance_mutations() {
+    let fixture = Fixture::new();
+    let id = fixture.register().await;
+    let lease = fixture
+        .apps
+        .development_build_source_lease(&id)
+        .await
+        .unwrap();
+    let owner = lease.keep_alive();
+    drop(lease);
+    assert_eq!(
+        fixture.apps.start(&id).await.unwrap_err().code,
+        "NODE_DEVELOPMENT_BUSY"
+    );
+    assert_eq!(
+        fixture.apps.delete_preview(&id).await.unwrap_err().code,
+        "NODE_DEVELOPMENT_BUSY"
+    );
+    assert!(fixture
+        .apps
+        .development_build_source_lease(&id)
+        .await
+        .is_err());
+    drop(owner);
+    fixture
+        .apps
+        .install_target_snapshot(Some(&id))
+        .await
+        .unwrap();
+    fixture
+        .apps
+        .development_build_source_lease(&id)
+        .await
+        .unwrap()
+        .validate()
+        .unwrap();
+}
 impl Fixture {
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();

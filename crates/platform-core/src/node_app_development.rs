@@ -88,8 +88,25 @@ pub struct NodeDevelopmentSourceLease<'a> {
     apps: &'a NodeApps,
     source: NodeDevelopmentSource,
     registration_digest: String,
+    active: Arc<DevelopmentActiveToken>,
+}
+struct DevelopmentActiveToken {
+    active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    id: String,
+}
+impl Drop for DevelopmentActiveToken {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.id);
+        }
+    }
 }
 impl NodeDevelopmentSourceLease<'_> {
+    /// A registered process can keep the actual instance token after a caller
+    /// or borrowed lease disappears. No lifetime is extended with unsafe code.
+    pub(crate) fn keep_alive(&self) -> Arc<dyn Send + Sync> {
+        self.active.clone()
+    }
     pub fn source_root(&self) -> &Path {
         &self.source.source_root
     }
@@ -114,13 +131,6 @@ impl NodeDevelopmentSourceLease<'_> {
             return Err(development_changed());
         }
         self.source.validate()
-    }
-}
-impl Drop for NodeDevelopmentSourceLease<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut active) = self.apps.development_active.lock() {
-            active.remove(&self.source.app_id);
-        }
     }
 }
 
@@ -315,6 +325,10 @@ impl NodeApps {
             apps: self,
             source,
             registration_digest,
+            active: Arc::new(DevelopmentActiveToken {
+                active: self.development_active.clone(),
+                id: id.into(),
+            }),
         };
         lease.validate()?;
         Ok(lease)

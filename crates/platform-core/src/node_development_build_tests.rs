@@ -9,6 +9,10 @@ use crate::{
 use serde_json::json;
 use std::{os::unix::fs::symlink, sync::Arc};
 
+mod owned_process {
+    include!("node_build_owned_process_tests.rs");
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -480,6 +484,7 @@ async fn reviewed_git_scope_excludes_ignored_private_files_but_keeps_tracked_ign
         stop,
         cancel,
         &paths,
+        NodeProcessScope::standalone(),
     )
     .await
     .unwrap();

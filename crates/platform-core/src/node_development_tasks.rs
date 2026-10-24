@@ -103,7 +103,7 @@ impl NodeDevelopmentTasks {
         let manager = self.clone();
         let task_id = task.task_id.clone();
         let runner = tokio::spawn(async move {
-            let _lease = lease;
+            let lease = Arc::new(lease);
             let _active = Active {
                 manager: manager.clone(),
                 task_id: task_id.clone(),
@@ -113,18 +113,24 @@ impl NodeDevelopmentTasks {
                 let source_lease = apps.development_build_source_lease(&app_id).await?;
                 source_lease.validate()?;
                 let source = source_lease.source().clone();
-                let git = crate::node_development_git::NodeGit::new(manager.git.clone()).with_stop(stop.clone());
+                let owner: Arc<dyn Send + Sync> = Arc::new((lease.clone(), source_lease.keep_alive(), apps.clone()));
+                let processes = crate::node_development_build::NodeProcessScope::new(manager.store.processes(), owner.clone());
+                let git = crate::node_development_git::NodeGit::new(manager.git.clone()).with_stop(stop.clone())
+                    .with_process_scope(processes.processes.clone(), processes.owner.clone());
                 let before = git.status(&source.source_root).await?;
                 if !before.scope.complete || !before.scope.protected_tracked_paths.is_empty() || !matches!(before.repository.state.as_str(), "none" | "project-root") || (before.repository.state == "project-root" && before.repository.git.is_none()) {
                     return Err(ApiError::new("NODE_DEVELOPMENT_SCOPE_INVALID", "请先在源码版本中核对并处理源码范围。"));
                 }
                 manager.tasks.phase(&task_id, "building-source")?;
-                let tools = manager.tasks.environment().resolve().await?;
+                // Managed verification can use blocking I/O: await the real
+                // work before checking cancellation, never drop it via select.
+                let tools = manager.tasks.environment().resolve_with_keepalive(owner).await.map_err(crate::node_development_build::NodeProcessScope::resolution_error)?;
+                check(&stop)?; check(&cancel)?;
                 let build_root = manager.paths.data_root().join("node-development-builds");
                 if !build_root.try_exists()? { std::fs::create_dir(&build_root)?; }
                 crate::projects::check_no_symlinks(&build_root, false)?;
                 let operation = build_root.join(&task_id);
-                let output = crate::node_development_build::build_repository_scoped(&source.source_root, &operation, &tools, stop.clone(), cancel.clone(), &before.scope.included_paths).await?;
+                let output = crate::node_development_build::build_repository_scoped(&source.source_root, &operation, &tools, stop.clone(), cancel.clone(), &before.scope.included_paths, processes).await?;
                 source.validate()?;
                 source_lease.validate()?;
                 let after = git.status(&source.source_root).await?;

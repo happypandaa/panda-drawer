@@ -299,6 +299,10 @@ async fn local_versions_preserve_existing_history_remotes_data_and_never_run_hoo
             .await
             .unwrap();
         assert_eq!(branch["branch"], "refs/heads/custom/disposable");
+        assert_eq!(branch["status"]["canSave"], true);
+        assert_eq!(branch["status"]["canCreateBranch"], true);
+        assert!(!root.join(".git/index.lock").exists());
+        assert!(!root.join(".git/refs/heads/main.lock").exists());
         assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
         assert!(!root.join("reference-hook-ran").exists());
     }
@@ -395,3 +399,6 @@ async fn initialization_rejects_changed_preview_and_never_wraps_an_ancestor_repo
         "ambiguous"
     );
 }
+
+#[path = "node_git_owned_process_tests.rs"]
+mod owned_process;
