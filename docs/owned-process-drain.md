@@ -58,3 +58,11 @@ registry 位于 `RuntimeSwitch`，实际工作区迁移前后共享同一 `Arc`�
 主线最终完整串行核心回归 **700 通过、0 失败、54 忽略**（218.00 秒），Node 登记另 **10 项通过**。进程命名选集 **21 项通过**（其中含两项服务整合回归），退出协调器全集 **22 项通过**；两选集有重叠，不作为 43 项独立测试累计。新增整合回归还确认管理器等待进程真正关闭时，退出能先报告 Blocked，再于实际 writer 结束后 join 管理器并关闭数据库。全工作区全目标严格 Clippy、格式及差异检查通过；测试不涉及原生 GUI、真实业务内容或自动更新安装。
 
 另显式使用已核验的配套 Node 运行人工 JavaScript，两项 opt-in 回归均通过（11.59 秒），包含正常控制/健康检查及清除同组子孙而保留独立 Node。这不代表旧 Trial 的全部生命周期、真实业务服务或最低系统版本已经验收。
+
+## 运行 Node 的版本探针
+
+`NodeRuntimeTrial` 的 `--version` 现在使用相同的进程 owner，保留 3 秒工作预算、读取时的 64 字节 stdout 上限和独立有界 stderr 排空。超量、调用者丢失和超时不再依赖 `command.output()` 的 kill-on-drop；实际组和 I/O 由登记持有，Pending/unknown 原样保留。原公开 Trial/NodeApps 构造继续服务独立 fixture；产品桌面改用 `NodeApps::with_runtime` 从真实 RuntimeHandle 注入共享 registry，preflight 与正式启动前的两次版本探针均登记到该实例。
+
+定向验证：Trial 19 通过、2 opt-in 忽略；NodeApps 55 通过；两项配套 Node opt-in 实际通过（13.48 秒）；全工作区全目标严格 Clippy、格式及差异检查通过。新测试核对静默子孙停止、读取时拒绝无限版本输出、丢版本等待者仍完成真实组/reader join，以及两个产品启动探针出现在服务的同一登记。首次新增 NodeApps fixture 以不允许的空字符串默认配置启动失败，修正为既有 normal 行为后通过，原失败日志保留。此步骤没有重写 Trial 长运行协议、reader 的原停止语义或 Drop，也不提供安装许可。
+
+并行验证曾耗尽磁盘：完整核心回归和一个 compile check 因 ENOSPC 中断，失败日志保留，不计为通过。确认相关命令退出后，只删除本次根构建和两个 disposable 副本的 `target/debug/incremental` 可重建缓存；源码、SDK、生成应用、测试证据、资料、备份和恢复现场均保留。后续关闭 incremental 重新验证，完整结果在完成后另行记录。

@@ -85,6 +85,7 @@ pub struct NodeApps {
     data_root: PathBuf,
     node_path: PathBuf,
     digest: String,
+    processes: crate::owned_process::OwnedProcessRegistry,
     inner: Mutex<Inner>,
     development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: std::sync::Mutex<()>,
@@ -93,6 +94,24 @@ pub struct NodeApps {
 
 impl NodeApps {
     pub fn new(data_root: PathBuf, node_path: PathBuf) -> Result<Self> {
+        Self::with_processes(
+            data_root,
+            node_path,
+            crate::owned_process::OwnedProcessRegistry::default(),
+        )
+    }
+    pub fn with_runtime(
+        data_root: PathBuf,
+        node_path: PathBuf,
+        runtime: &crate::RuntimeHandle,
+    ) -> Result<Self> {
+        Self::with_processes(data_root, node_path, runtime.store().processes())
+    }
+    fn with_processes(
+        data_root: PathBuf,
+        node_path: PathBuf,
+        processes: crate::owned_process::OwnedProcessRegistry,
+    ) -> Result<Self> {
         if crate::build_profile::PRODUCTION_PROFILE {
             crate::platform_support::require_runtime()?;
             let bin = node_path
@@ -125,6 +144,7 @@ impl NodeApps {
             data_root,
             node_path,
             digest,
+            processes,
             inner: Mutex::new(Inner::default()),
             development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: std::sync::Mutex::new(()),
@@ -739,7 +759,13 @@ impl NodeApps {
             trial_root: trial_root.clone(),
             business_env: snapshot.environment,
         };
-        NodeRuntimeTrial::preflight(&config, &slot.join("data"), &slot.join("cache")).await?;
+        NodeRuntimeTrial::preflight_with_processes(
+            &config,
+            &slot.join("data"),
+            &slot.join("cache"),
+            &self.processes,
+        )
+        .await?;
         // Write intent before spawning. A host hard crash fails closed; no PID guessing.
         write_new_json(
             &marker,
@@ -749,6 +775,7 @@ impl NodeApps {
             config,
             slot.join("data"),
             slot.join("cache"),
+            &self.processes,
         )
         .await;
         let runtime = match launched {

@@ -120,6 +120,50 @@ server.shutdown(); server.server_close()
 }
 
 #[tokio::test]
+async fn product_runtime_constructor_shares_both_launch_probes_with_service_shutdown() {
+    let mut fixture = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let lock = paths.acquire_lock().unwrap();
+    let service = crate::RuntimeService::start(paths, lock).await.unwrap();
+    let handle = service.handle();
+    let mut apps = NodeApps::with_runtime(
+        fixture.data.clone(),
+        fixture.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    apps.digest = fixture.manager.digest.clone();
+    assert!(apps.processes.shares_registry(&service.store().processes()));
+    fixture.manager = apps;
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    let records = service.store().processes().snapshot();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.component == "node-runtime/version-probe")
+            .count(),
+        2
+    );
+    fixture.manager.stop_all().await.unwrap();
+    let processes = service.store().processes();
+    service.shutdown().await.unwrap();
+    assert!(processes
+        .snapshot()
+        .iter()
+        .all(|record| record.resource_closed()));
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("public/index.html")).unwrap(),
+        "<p>Artificial lifecycle fixture</p>"
+    );
+}
+
+#[tokio::test]
 async fn failed_final_detail_rolls_back_only_the_newly_started_backend() {
     let fixture = Fixture::new("remove-manifest");
     let registered = fixture
