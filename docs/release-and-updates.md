@@ -28,6 +28,10 @@
 
 用户有 Apple 开发者账号，但本机暂未发现 Developer ID Application 签名身份；站外正式发行仍按 [Apple Developer ID 与公证流程](https://developer.apple.com/developer-id/)准备该证书与公证，不将现有 Apple Development／Apple Distribution 当作替代。证书、公证与更新签名私钥不写入工程或聊天。
 
+2026-10-25 用户授权使用自己的开发者身份完成站外签名，并说明未来准备开源；这不等于已授权改变当前源码仓库可见性或已经选定开源许可。用户随后要求先跳过账号、证书及公证凭据配置，由自己操作，其余核心流程、数据版本、退出保护和发行准备继续。Xcode 中可见开发团队和 Apple Development／Apple Distribution 证书，但尚未看到 Developer ID Application；创建菜单当时不可用，未确认会员有效期及所需权限，未创建、导出或撤销证书。正式发行门槛仍保留。
+
+用户自行准备时，先在开发者账号确认有效会员及 Team ID，再通过 Xcode 或 [Apple 官方证书流程](https://developer.apple.com/help/account/certificates/create-developer-id-certificates)创建本机持有私钥的 Developer ID Application 证书。网页创建要求 Account Holder 身份；不要将 Apple Distribution 或 Developer ID Installer 当作该应用证书。公证使用 Apple 账号的 App 专用密码，通过 `xcrun notarytool store-credentials "panda-drawer-notary" --apple-id <Apple账号> --team-id <TeamID>` 的本机交互提示验证并保存到钥匙串，密码不写进命令、工程、日志或聊天。后续打包使用该钥匙串 profile；配置完成不代表已签名、公证或发布。
+
 ## 1 已确定的首版范围
 
 | 事项 | 确定方案与后续范围 | 理由 |
