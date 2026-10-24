@@ -962,6 +962,10 @@ impl BuildManager {
         self.checkpoint(start)?;
         let cache = self.paths.workspace_root().join(".platform/cache/npm");
         ensure_dir(&cache)?;
+        // npm prunes logs on startup. Keep that cleanup inside this task;
+        // shared cache/_logs and earlier tasks are preservation evidence.
+        let npm_logs = self.task_dir(id).join("npm-logs");
+        ensure_dir(&npm_logs)?;
         let mut command = Command::new(&tools.node.path);
         command
             .arg(&tools.npm.path)
@@ -970,6 +974,9 @@ impl BuildManager {
             .arg("--prefix")
             .arg(cwd)
             .arg("--global=false")
+            // CLI configuration wins over inherited environment/.npmrc values.
+            .arg("--logs-dir")
+            .arg(&npm_logs)
             .args(args)
             .current_dir(cwd)
             .env("PATH", &tools.path)
@@ -2499,3 +2506,7 @@ mod tests {
         manager.shutdown().await;
     }
 }
+
+#[cfg(test)]
+#[path = "build_npm_logs_tests.rs"]
+mod npm_logs_tests;
