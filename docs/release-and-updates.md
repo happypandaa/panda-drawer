@@ -32,6 +32,8 @@
 
 用户自行准备时，先在开发者账号确认有效会员及 Team ID，再通过 Xcode 或 [Apple 官方证书流程](https://developer.apple.com/help/account/certificates/create-developer-id-certificates)创建本机持有私钥的 Developer ID Application 证书。网页创建要求 Account Holder 身份；不要将 Apple Distribution 或 Developer ID Installer 当作该应用证书。公证使用 Apple 账号的 App 专用密码，通过 `xcrun notarytool store-credentials "panda-drawer-notary" --apple-id <Apple账号> --team-id <TeamID>` 的本机交互提示验证并保存到钥匙串，密码不写进命令、工程、日志或聊天。后续打包使用该钥匙串 profile；配置完成不代表已签名、公证或发布。
 
+账号持有人可直接按[本机配置步骤](macos-signing-setup.md)操作，包含 Xcode 创建、灰色菜单的网页替代流程、凭据保存和只读检查。
+
 ## 1 已确定的首版范围
 
 | 事项 | 确定方案与后续范围 | 理由 |
