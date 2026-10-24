@@ -156,21 +156,25 @@ test('Light and dark choices persist and apply to html so body-level settings po
   assert.equal(document.documentElement.dataset.theme, 'dark');
 });
 
-test('Launcher items expose only their icon and name, with contextual actions and normal opening preserved', async () => {
+test('Launcher items show icon, name and one type or status line, with contextual actions and normal opening preserved', async () => {
   const project = { id: 'prj_disposable_compact_launcher', name: 'Disposable long launcher name', description: 'Artificial project description', projectRoot: '/disposable/radio-shell/project', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
   const calls = await setup({ projects: [project], nodes: [nodeFixture], overrides: { project_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
   const entry = document.querySelector(`[aria-label='进入项目「${project.name}」']`);
   const tile = entry.closest('article');
   assert.equal(document.querySelector('.launcher-more'), null);
   assert.equal(document.querySelector('.launcher-statuses'), null);
-  assert.equal(entry.children.length, 2);
+  assert.equal(entry.children.length, 3);
   assert.ok(entry.children[0].classList.contains('launcher-icon'));
   assert.ok(entry.children[1].classList.contains('launcher-name'));
+  assert.ok(entry.children[2].classList.contains('launcher-state'));
+  assert.equal(entry.children[2].textContent, '网页');
   assert.equal(tile.querySelectorAll('button').length, 1);
   assert.equal(tile.querySelector('.launcher-name').title, project.name);
   const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
   assert.ok(nodeEntry.querySelector('.launcher-node-badge'));
   assert.match(nodeEntry.title, /需要配置/);
+  assert.equal(nodeEntry.querySelector('.launcher-state').textContent, '需要配置');
+  assert.ok(nodeEntry.querySelector('.launcher-state').classList.contains('is-attention'));
   assert.equal(nodeEntry.disabled, false);
   await act(async () => entry.focus());
   await key(entry, 'F10', { shiftKey: true });

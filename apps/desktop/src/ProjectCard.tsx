@@ -16,6 +16,7 @@ function iconSlot(id: string) {
   return value % 8;
 }
 
+export type LauncherState = { label: string; tone: 'idle' | 'running' | 'busy' | 'attention' | 'error' };
 type LauncherAction = { label: string; accessibleLabel: string; disabled: boolean; danger?: boolean; icon: ReactNode; run: () => void };
 
 export function launcherMenuPosition(anchor: { top: number; bottom: number; right: number }, menu: { width: number; height: number }, viewport: { width: number; height: number }) {
@@ -38,7 +39,7 @@ export function launcherMenuPosition(anchor: { top: number; bottom: number; righ
   };
 }
 
-function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening, statuses, description, metadata, actions, onEnter }: {
+function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening, statuses, launcherState, description, metadata, actions, onEnter }: {
   id: string;
   name: string;
   runtime: 'static-web' | 'node-service';
@@ -47,6 +48,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
   title?: string;
   opening: boolean;
   statuses: string[];
+  launcherState: LauncherState;
   description?: string;
   metadata?: string;
   actions: LauncherAction[];
@@ -145,6 +147,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
         {runtime === 'node-service' && <img className="launcher-node-badge" src="/ui/node-mark.png" alt="" />}
       </span>
       <span className="launcher-name" title={name}>{name}</span>
+      <span className={`launcher-state is-${launcherState.tone}`} aria-hidden="true"><span className="launcher-state-dot" />{launcherState.label}</span>
     </button>
     <span id={descriptionId} className="sr-only" aria-live="polite">{summary}</span>
     {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={`项目「${name}」操作`} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
@@ -171,7 +174,12 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
   const taskStatus = !task || task.final ? null : task.type === 'storageScan' ? '正在统计空间' : '任务进行中';
   const size = project.storage?.currentProject;
   const metadata = size?.totalBytes != null ? `${bytesText(size.totalBytes)}${size.stale ? ' · 待扫描' : size.complete === false ? ' · 部分统计' : ''}` : '空间尚未统计';
-  return <LauncherTile id={project.id} name={project.name} runtime="static-web" iconDataUrl={project.iconDataUrl}
+  const launcherState: LauncherState = opening ? { label: '进入中…', tone: 'busy' }
+    : taskStatus ? { label: taskStatus, tone: 'busy' }
+    : state === 'error' || state === 'missing' ? { label: labels[state], tone: 'error' }
+    : state !== 'ready' ? { label: labels[state], tone: 'attention' }
+    : { label: '网页', tone: 'idle' };
+  return <LauncherTile id={project.id} name={project.name} runtime="static-web" iconDataUrl={project.iconDataUrl} launcherState={launcherState}
     disabled={blocked || project.state !== 'ready' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? '请先在详情中检查状态或构建项目' : blocked ? '请先处理项目维护或等待工作区任务完成' : undefined}
     description={project.description} metadata={metadata}
@@ -187,7 +195,13 @@ export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onD
 }) {
   const needsConfiguration = !app.configuration.canStart;
   const runtimeState = app.state === 'running' ? '运行中' : app.state === 'starting' ? '打开中' : app.state === 'stopping' ? '关闭中' : app.state === 'failed' ? '需要检查' : null;
-  return <LauncherTile id={app.id} name={app.name} runtime="node-service" disabled={blocked || opening} opening={opening} onEnter={onEnter}
+  const launcherState: LauncherState = app.state === 'failed' ? { label: '需要检查', tone: 'error' }
+    : app.state === 'starting' || app.state === 'stopping' || opening ? { label: runtimeState ?? '进入中…', tone: 'busy' }
+    : needsConfiguration ? { label: '需要配置', tone: 'attention' }
+    : app.state === 'running' ? { label: app.restartRequired ? '运行中 · 待重启' : '运行中', tone: 'running' }
+    : app.restartRequired ? { label: '待重启', tone: 'attention' }
+    : { label: 'Node 服务', tone: 'idle' };
+  return <LauncherTile id={app.id} name={app.name} runtime="node-service" launcherState={launcherState} disabled={blocked || opening} opening={opening} onEnter={onEnter}
     description={app.lastError ?? (needsConfiguration ? '进入前请先完成应用配置。' : undefined)}
     metadata={app.restartRequired ? '已保存配置' : needsConfiguration ? undefined : '配置完整'}
     statuses={[runtimeState, needsConfiguration ? '需要配置' : null, app.restartRequired ? '待重启' : null, opening && !['starting', 'stopping'].includes(app.state) ? '进入中…' : null].filter((value): value is string => Boolean(value))}

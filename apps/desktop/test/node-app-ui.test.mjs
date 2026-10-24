@@ -1341,7 +1341,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   await act(async () => completed.resolve(value));
   assert.equal(document.querySelectorAll('.project-card').length, 1, 'The registration callback must update the real App list immediately');
   assert.ok(byLabel(`进入项目「${value.name}」`));
-  assert.match(document.querySelector('.radio-footer').textContent, /1 APPS/);
+  assert.match(document.querySelector('.radio-footer').textContent, /共 1 个应用/);
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
   assert.equal(document.querySelector('.local-directory-panel'), null, 'A successful combined command must close the add step');
   assert.equal(byText('确认添加此项目'), undefined);
@@ -1396,13 +1396,13 @@ test('All project types share My Projects, counts and search without a separate 
   const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: 'Artificial webpage', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
   await setup(shellMock(state), {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 2);
-  assert.match(document.querySelector('.radio-footer').textContent, /2 APPS/);
+  assert.match(document.querySelector('.radio-footer').textContent, /共 2 个应用/);
   assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(value => value.textContent), ['我的项目', '空间与工作区']);
   assert.match(document.querySelector('.project-grid').textContent, /网页项目/);
   assert.match(document.querySelector('.project-grid').textContent, /Node 服务项目/);
   await change(document.querySelector('input[type="search"]'), 'Disposable');
   assert.equal(document.querySelectorAll('.project-card').length, 1);
-  assert.match(document.querySelector('.radio-footer').textContent, /1 \/ 2 APPS/);
+  assert.match(document.querySelector('.radio-footer').textContent, /显示 1 \/ 共 2 个应用/);
   await change(document.querySelector('input[type="search"]'), 'no match artificial');
   assert.match(document.querySelector('.project-search-empty').textContent, /没有找到匹配/);
 });
