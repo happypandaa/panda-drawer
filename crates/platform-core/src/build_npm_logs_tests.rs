@@ -31,7 +31,8 @@ async fn real_npm_preserves_twenty_shared_logs_and_writes_only_task_logs() {
         std::env::var_os("PANDA_DRAWER_TEST_NPM_CLI").expect("explicit local npm CLI artifact"),
     );
     assert!(node.is_absolute() && npm.is_absolute());
-    let (_temporary, paths, store, manager, id, source) = fixture().await;
+    let (temporary, paths, store, manager, id, source) = fixture().await;
+    let temporary = Arc::new(temporary);
     let cache = paths.workspace_root().join(".platform/cache/npm");
     let previous_logs = cache.join("_logs");
     ensure_dir(&previous_logs).unwrap();
@@ -89,7 +90,14 @@ async fn real_npm_preserves_twenty_shared_logs_and_writes_only_task_logs() {
         ];
         args.extend(operation);
         manager
-            .command(&id, &tools, &source, &args, Instant::now())
+            .command(
+                &id,
+                &tools,
+                &source,
+                &args,
+                Instant::now(),
+                (temporary.clone(), store.clone()),
+            )
             .await
             .unwrap();
     }
