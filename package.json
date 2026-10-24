@@ -1,5 +1,5 @@
 {
-  "name": "local-projects-platform",
+  "name": "panda-drawer",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -54,5 +54,14 @@
     "@tauri-apps/cli": "2.12.3",
     "jsdom": "26.1.0",
     "transliteration": "2.6.2"
+  },
+  "description": "熊猫小抽屉：帮助你制作、获取、使用、定制和分享个人小应用的本地应用平台。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/happypandaa/panda-drawer.git"
+  },
+  "homepage": "https://github.com/happypandaa/panda-drawer#readme",
+  "bugs": {
+    "url": "https://github.com/happypandaa/panda-drawer/issues"
   }
 }

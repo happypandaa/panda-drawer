@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 export const repository = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const artifactRoot = join(repository, '.test-artifacts');
-export const cliPath = process.env.M3_TEST_CLI || join(repository, 'target/release/bundle/macos/熊猫应用小抽屉.app/Contents/MacOS/local-projects-dev');
+export const cliPath = process.env.M3_TEST_CLI || join(repository, 'target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
 export const expectedWorkspace = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0/workspace');
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 

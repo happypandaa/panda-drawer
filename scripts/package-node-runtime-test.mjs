@@ -52,7 +52,7 @@ function fixture(extra = []) {
 }
 
 async function ownedRoot(t) {
-  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'postgresui-node-runtime-fixture-'));
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'panda-drawer-node-runtime-fixture-'));
   t.after(async () => {
     async function makeWritable(target) {
       const info = await lstat(target);

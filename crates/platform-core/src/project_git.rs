@@ -868,7 +868,7 @@ impl ProjectGitManager {
             "update-ref",
             "--create-reflog",
             "-m",
-            "Local Projects: save source",
+            "Panda Drawer: save source",
             "--stdin",
             "-z",
         ]);
@@ -995,7 +995,7 @@ impl ProjectGitManager {
             "update-ref",
             "--create-reflog",
             "-m",
-            "Local Projects: create customization branch",
+            "Panda Drawer: create customization branch",
             "--stdin",
             "-z",
         ]);
@@ -1003,8 +1003,8 @@ impl ProjectGitManager {
         author_environment(
             &mut command,
             &GitAuthor {
-                name: "Local Projects".into(),
-                email: "local-projects@localhost".into(),
+                name: "Panda Drawer".into(),
+                email: "panda-drawer@localhost".into(),
             },
         );
         let commands = format!(

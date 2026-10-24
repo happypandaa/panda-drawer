@@ -20,5 +20,6 @@
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "~5.9.3",
     "vite": "^8.3.4"
-  }
+  },
+  "description": "熊猫小抽屉的桌面管理界面。"
 }

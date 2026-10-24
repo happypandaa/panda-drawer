@@ -48,7 +48,7 @@ pub use platform_preflight as startup_preflight;
 pub use service::{BootstrapInfo, HealthInfo, LaunchInfo, RuntimeHandle, RuntimeService};
 
 pub const APP_IDENTIFIER: &str = "dev.localprojects.platform.m0";
-pub const DISPLAY_NAME: &str = "熊猫应用小抽屉 · 开发版";
+pub const DISPLAY_NAME: &str = "熊猫小抽屉 · 开发版";
 pub const ENVIRONMENT: &str = "development";
 pub const API_VERSION: u32 = 1;
 

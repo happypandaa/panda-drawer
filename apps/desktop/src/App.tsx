@@ -453,7 +453,7 @@ function App() {
       <header className="radio-header">
         <div className="radio-brand">
           <img src="/panda-app-drawer.png" alt="" />
-          <div><strong className="radio-brand-wordmark">PANDA DRAWER</strong><span className="radio-brand-caption">熊猫应用小抽屉</span></div>
+          <div><strong className="radio-brand-wordmark">PANDA DRAWER</strong><span className="radio-brand-caption">熊猫小抽屉</span></div>
         </div>
         <nav className="radio-primary-nav" aria-label="工作台导航">
           <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending} onClick={() => navigatePage('projects')}>我的项目</button>
@@ -526,7 +526,7 @@ function App() {
         </section>
         <section className="radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">关于</h3>
-          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫应用小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>
+          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>
           <p>项目数据保存在本机；联网功能由具体应用决定。</p>
           <details className="radio-about-details"><summary>程序信息与更新状态</summary><AboutPlatform info={info} /></details>
         </section>

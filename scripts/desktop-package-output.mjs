@@ -10,9 +10,10 @@ import { verifyDevelopmentNode } from './package-development-node.mjs';
 import { verifyDevelopmentGit } from './package-development-git.mjs';
 
 const execute = promisify(execFile);
-const productName = '熊猫应用小抽屉';
-// The only historical output owned by this build workflow keeps its own name.
-const generatedProductNames = [productName, 'Local Projects Dev'];
+const productName = '熊猫小抽屉';
+// Historical outputs owned by this workflow retain their exact original names.
+const generatedProductNames = [productName, '熊猫应用小抽屉', 'Local Projects Dev'];
+const packagedExecutables = ['local-projects-desktop-dev', 'local-projects-dev'];
 const missing = error => error.code === 'ENOENT';
 async function statIfPresent(file) {
   try { return await lstat(file); } catch (error) { if (missing(error)) return undefined; throw error; }
@@ -105,6 +106,27 @@ async function runningAppPaths() {
   return stdout.split('\n').map(line => line.trim()).filter(Boolean);
 }
 
+async function canonicalPathIfPresent(file) {
+  try { return await realpath(file); } catch (error) {
+    if (missing(error) || error.code === 'ENOTDIR') return undefined;
+    throw error;
+  }
+}
+
+async function appIsRunning(app, commands) {
+  const executables = packagedExecutables.map(name => path.join(app, 'Contents', 'MacOS', name));
+  if (commands.some(command => executables.includes(command))) return true;
+  // A source-directory rename may leave an old symlink spelling in ps output.
+  // Resolve only for comparison; cleanup still owns the fixed generated paths.
+  const canonicalExecutables = (await Promise.all(executables.map(canonicalPathIfPresent))).filter(Boolean);
+  for (const command of commands) {
+    if (!path.isAbsolute(command) || !packagedExecutables.includes(path.basename(command))) continue;
+    const canonicalCommand = await canonicalPathIfPresent(command);
+    if (canonicalCommand && canonicalExecutables.includes(canonicalCommand)) return true;
+  }
+  return false;
+}
+
 export async function withDesktopPackageOutput(plan, build, {
   verifyApp = verifyDesktopApp, verifyDmg = verifyDesktopDmg,
   processes = runningAppPaths,
@@ -138,7 +160,7 @@ export async function withDesktopPackageOutput(plan, build, {
     await normalDirectory(path.dirname(currentDmg), { create: true });
     const active = await processes();
     for (const candidate of generatedApps) {
-      if (active.some(command => command.startsWith(`${candidate.app}/Contents/MacOS/`))) throw new Error(`请先从菜单退出正在运行的 ${candidate.plan.productName}，再打包；当前程序：${candidate.app}`);
+      if (await appIsRunning(candidate.app, active)) throw new Error(`请先从菜单退出正在运行的 ${candidate.plan.productName}，再打包；当前程序：${candidate.app}`);
     }
     // Previous releases need a valid identity/signature, but may predate the
     // development toolchain. New outputs below must carry the complete payload.
@@ -172,7 +194,9 @@ export async function withDesktopPackageOutput(plan, build, {
     if (plan.expectedDmg) await verifyDmg(currentDmg, plan, { requireDevelopmentTools: true });
     completed = true;
     const beforeCleanup = await processes();
-    if (moved.some(({ saved }) => beforeCleanup.some(command => command.startsWith(`${saved}/Contents/MacOS/`)))) throw new Error(`旧生成包正在运行，保留它及打包恢复记录：${backup}`);
+    for (const { source, saved } of moved) {
+      if (generatedApps.some(candidate => candidate.app === source) && await appIsRunning(saved, beforeCleanup)) throw new Error(`旧生成包正在运行，保留它及打包恢复记录：${backup}`);
+    }
     // The staging directory contains only the entries moved above and our marker.
     for (const { saved } of moved) await rm(saved, { recursive: true });
     await rm(path.join(backup, 'transaction.json'), { force: true });

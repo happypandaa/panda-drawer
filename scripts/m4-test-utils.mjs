@@ -13,7 +13,7 @@ export const repository = resolve(fileURLToPath(new URL('..', import.meta.url)))
 export const artifactRoot = join(repository, '.test-artifacts');
 export const dataRoot = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0');
 export const defaultWorkspace = join(dataRoot, 'workspace');
-export const cliPath = process.env.M4_TEST_CLI || join(repository, 'target/release/bundle/macos/熊猫应用小抽屉.app/Contents/MacOS/local-projects-dev');
+export const cliPath = process.env.M4_TEST_CLI || join(repository, 'target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export function settings() {
   const value = JSON.parse(readFileSync(join(dataRoot, 'settings.json'), 'utf8'));

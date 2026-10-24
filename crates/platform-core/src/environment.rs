@@ -506,7 +506,7 @@ mod tests {
     #[ignore = "Requires an explicit official development-node sample under .test-artifacts"]
     async fn official_managed_sample_resolves_without_user_settings_or_host_path() {
         let sample = PathBuf::from(
-            std::env::var_os("POSTGRESUI_DEVELOPMENT_NODE_TEST_ROOT")
+            std::env::var_os("PANDA_DRAWER_DEVELOPMENT_NODE_TEST_ROOT")
                 .expect("explicit official development-node sample"),
         );
         let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "熊猫应用小抽屉",
+  "productName": "熊猫小抽屉",
   "version": "0.0.0",
   "identifier": "dev.localprojects.platform.m0",
   "build": {
@@ -14,7 +14,7 @@
       {
         "label": "manager",
         "create": false,
-        "title": "熊猫应用小抽屉 · 开发版",
+        "title": "熊猫小抽屉 · 开发版",
         "width": 960,
         "height": 640,
         "minWidth": 640,
@@ -34,7 +34,7 @@
       "dmg"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "Isolated M5 project management and browser capabilities development build",
+    "shortDescription": "熊猫小抽屉：集中收纳和打开本地应用的开发版",
     "externalBin": [
       "binaries/local-projects-dev"
     ],

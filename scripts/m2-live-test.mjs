@@ -5,7 +5,7 @@ import {readFile,writeFile,rm,mkdir,symlink,rename} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {homedir} from 'node:os';
 import {createHash} from 'node:crypto';
-const cliPath=resolve('target/release/bundle/macos/熊猫应用小抽屉.app/Contents/MacOS/local-projects-dev');
+const cliPath=resolve('target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
 function invoke(args,input,allowError=false){const result=spawnSync(cliPath,[...args,'--json'],{input:input===undefined?undefined:JSON.stringify(input),encoding:'utf8',maxBuffer:10_000_000});assert.ifError(result.error);const wire=JSON.parse(result.stdout);if(!allowError)assert.equal(wire.ok,true,JSON.stringify(wire));return wire;}
 const cli=(args,input)=>invoke(args,input).data;
 const runtime=cli(['service','status']).runtime;

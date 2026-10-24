@@ -235,7 +235,7 @@ Resource limits exposed by this development runtime are internal test parameters
         let text = format!(
             r#"请接手以下业务应用，并根据我接下来提供的需求继续开发。
 
-熊猫应用小抽屉（开发版）是 macOS 上的本地业务应用平台。它管理各个项目的源码、独立 SQLite 数据库、附件、运行入口、构建发布、备份与维护。你要开发的是下面的业务项目；平台会把发布后的网页显示在唯一原生应用窗口中，用户应当能在 AI 离线时继续使用。
+熊猫小抽屉（开发版）是 macOS 上的本地业务应用平台。它管理各个项目的源码、独立 SQLite 数据库、附件、运行入口、构建发布、备份与维护。你要开发的是下面的业务项目；平台会把发布后的网页显示在唯一原生应用窗口中，用户应当能在 AI 离线时继续使用。
 
 业务项目 ID：{id}
 业务项目根目录：{project_root}
@@ -426,7 +426,7 @@ mod tests {
         assert!(constraints.is_file());
         let text = handoff["text"].as_str().unwrap();
         for expected in [
-            "熊猫应用小抽屉（开发版）是 macOS 上的本地业务应用平台",
+            "熊猫小抽屉（开发版）是 macOS 上的本地业务应用平台",
             "独立 SQLite 数据库",
             "业务项目 ID：prj_current",
             "先读取当前接管 skill（项目自带）",

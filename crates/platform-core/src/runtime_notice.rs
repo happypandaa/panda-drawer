@@ -57,7 +57,7 @@ pub(crate) fn script() -> &'static str {
       heading = '工作区正在迁移，操作暂时暂停';
       explanation = '当前页面和草稿会保留。请等待平台迁移任务完成，处理草稿后再从平台重新进入；平台不会自动重新提交失败的保存。';
     } else if (expired) {
-      heading = '熊猫抽屉连接已失效';
+      heading = '熊猫小抽屉连接已失效';
       explanation = '平台重启或工作区迁移后，需要从平台重新进入此项目。当前页面保留未提交内容，请先复制草稿或保存到别处。';
     } else if (policyChanged) {
       heading = '运行需求已变化，需要重新加载';
