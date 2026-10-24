@@ -43,8 +43,8 @@ async fn find_app(directories: &[PathBuf]) -> Result<PathBuf, ApiError> {
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
                 .kill_on_drop(true);
-            let output = tokio::time::timeout(Duration::from_secs(3), command.output()).await;
-            if !matches!(output, Ok(Ok(ref value)) if value.status.success() && String::from_utf8_lossy(&value.stdout).trim() == BUNDLE_ID)
+            let output = super::native_process::output(command, Duration::from_secs(3)).await;
+            if !matches!(output, Ok(ref value) if value.status.success() && String::from_utf8_lossy(&value.stdout).trim() == BUNDLE_ID)
             {
                 continue;
             }
@@ -68,8 +68,8 @@ async fn verify_app(path: &Path) -> Result<(), ApiError> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    match tokio::time::timeout(Duration::from_secs(20), command.status()).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
+    match super::native_process::status(command, Duration::from_secs(20)).await {
+        Ok(status) if status.success() => Ok(()),
         _ => Err(ApiError::new(
             "CODEX_INSTALLATION_INVALID",
             "无法验证 Codex 安装，请检查应用是否完整。接手说明已保留，可手动选择项目目录。",
@@ -88,8 +88,8 @@ pub async fn open(app: &Path, root: &Path) -> Result<(), ApiError> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    match tokio::time::timeout(Duration::from_secs(5), command.status()).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
+    match super::native_process::status(command, Duration::from_secs(5)).await {
+        Ok(status) if status.success() => Ok(()),
         _ => Err(ApiError::new(
             "CODEX_OPEN_FAILED",
             "未能确认 Codex 已打开，请手动选择下方项目目录并粘贴说明。",

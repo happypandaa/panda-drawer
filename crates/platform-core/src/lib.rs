@@ -15,6 +15,7 @@ pub mod git_environment;
 pub mod git_remote;
 mod history_cleanup;
 mod identity_upgrade;
+pub mod io_lifetime;
 mod lifecycle;
 mod maintenance;
 mod managed_git;

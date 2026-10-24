@@ -3,6 +3,7 @@
 mod browser_download;
 mod codex_handoff;
 mod local_directory;
+mod native_process;
 mod node_development;
 mod node_windows;
 mod window_sizes;
@@ -93,6 +94,7 @@ fn bootstrap_info(
         return Err(ApiError::new("WORKSPACE_START_FAILED", &failure.0));
     }
     let state = app.state::<AppState>();
+    let _io_lease = state.handle.io_lifetime().admit()?;
     let mut info = state.info.clone();
     info.runtime = state.handle.info();
     info.platform = state.handle.platform_info();
@@ -118,6 +120,8 @@ async fn choose_path(
     suggested_name: Option<String>,
 ) -> Result<Option<String>, ApiError> {
     require_manager(&window)?;
+    let io_lifetime = app.state::<AppState>().handle.io_lifetime();
+    io_lifetime.check_open()?;
     let dialog = app.dialog().file().set_parent(&window);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     match kind {
@@ -158,9 +162,11 @@ async fn choose_path(
                 })
         }
     }
-    receiver
+    let selected = receiver
         .await
-        .map_err(|_| ApiError::new("DIALOG_FAILED", "路径选择未完成"))?
+        .map_err(|_| ApiError::new("DIALOG_FAILED", "路径选择未完成"))?;
+    io_lifetime.check_open()?;
+    selected
         .map(|path| {
             path.into_path()
                 .map(|path| path.to_string_lossy().into_owned())
@@ -176,17 +182,25 @@ async fn project_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    let projects = state.handle.projects().await?;
-    for project in projects.as_array().into_iter().flatten() {
-        let (Some(id), Some(name)) = (project["id"].as_str(), project["name"].as_str()) else {
-            continue;
-        };
-        if let Some(project_window) = app.get_webview_window(&project_label(id)) {
-            // Metadata refresh changes the host title without reloading forms.
-            let _ = project_window.set_title(&project_title(name));
-        }
-    }
-    Ok(projects)
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            let projects = state.handle.projects().await?;
+            for project in projects.as_array().into_iter().flatten() {
+                let (Some(id), Some(name)) = (project["id"].as_str(), project["name"].as_str())
+                else {
+                    continue;
+                };
+                if let Some(project_window) = app.get_webview_window(&project_label(id)) {
+                    // Metadata refresh changes the host title without reloading forms.
+                    let _ = project_window.set_title(&project_title(name));
+                }
+            }
+            Ok(projects)
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -196,7 +210,14 @@ async fn project_metadata(
     project_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_metadata(&project_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_metadata(&project_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_metadata_set(
@@ -207,16 +228,23 @@ async fn project_metadata_set(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    let result = state
-        .handle
-        .project_metadata_set(&project_id, input)
-        .await?;
-    if let Some(project) = app.get_webview_window(&project_label(&project_id)) {
-        if let Some(name) = result["name"].as_str() {
-            let _ = project.set_title(&project_title(name));
-        }
-    }
-    Ok(result)
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            let result = state
+                .handle
+                .project_metadata_set(&project_id, input)
+                .await?;
+            if let Some(project) = app.get_webview_window(&project_label(&project_id)) {
+                if let Some(name) = result["name"].as_str() {
+                    let _ = project.set_title(&project_title(name));
+                }
+            }
+            Ok(result)
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_icon_import(
@@ -227,10 +255,17 @@ async fn project_icon_import(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .project_icon_import(&project_id, std::path::Path::new(&source_path), input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_icon_import(&project_id, std::path::Path::new(&source_path), input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn storage_info(
@@ -239,7 +274,14 @@ async fn storage_info(
     project_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.storage_info(&project_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.storage_info(&project_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn storage_scan(
@@ -248,7 +290,14 @@ async fn storage_scan(
     project_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.storage_scan(&project_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.storage_scan(&project_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn storage_files(
@@ -258,7 +307,14 @@ async fn storage_files(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.storage_files(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.storage_files(&project_id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn storage_cleanup(
@@ -268,7 +324,14 @@ async fn storage_cleanup(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.storage_cleanup(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.storage_cleanup(&project_id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn workspace_storage(
@@ -276,7 +339,14 @@ async fn workspace_storage(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.workspace_storage().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.workspace_storage().await
+        })
+        .await?
 }
 #[tauri::command]
 async fn workspace_cleanup_preview(
@@ -284,7 +354,14 @@ async fn workspace_cleanup_preview(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.workspace_cleanup_preview().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.workspace_cleanup_preview().await
+        })
+        .await?
 }
 #[tauri::command]
 async fn workspace_cleanup(
@@ -293,7 +370,14 @@ async fn workspace_cleanup(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.workspace_cleanup(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.workspace_cleanup(input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn storage_preview(
@@ -306,6 +390,10 @@ async fn storage_preview(
     use base64::Engine;
     use std::io::Read;
     require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease.run(async move {
+        let state = io_app.state::<AppState>();
     let (file, lease, info) = state
         .handle
         .attachment_read(&project_id, &path, &document_epoch)
@@ -338,6 +426,8 @@ async fn storage_preview(
         ));
     }
     tauri::async_runtime::spawn_blocking(move || {let _lease=lease;let mut bytes=Vec::new();file.take(16_000_001).read_to_end(&mut bytes)?;if bytes.len()>16_000_000{return Err(ApiError::new("PREVIEW_TOO_LARGE","文件在读取期间超出预览上限"));} Ok(serde_json::json!({"dataUrl":format!("data:{mime};base64,{}",base64::engine::general_purpose::STANDARD.encode(&bytes)),"mimeType":mime,"sizeBytes":bytes.len()}))}).await.map_err(|_|ApiError::new("PREVIEW_FAILED","预览读取未完成"))?
+
+    }).await?
 }
 #[tauri::command]
 async fn storage_download(
@@ -349,6 +439,7 @@ async fn storage_download(
     document_epoch: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
+    state.handle.io_lifetime().check_open()?;
     let name = std::path::Path::new(&path)
         .file_name()
         .and_then(|v| v.to_str())
@@ -363,30 +454,37 @@ async fn storage_download(
         .save_file(move |value| {
             let _ = sender.send(value);
         });
-    let Some(destination) = receiver
+    let selected = receiver
         .await
-        .map_err(|_| ApiError::new("DIALOG_FAILED", "保存选择未完成"))?
-    else {
+        .map_err(|_| ApiError::new("DIALOG_FAILED", "保存选择未完成"))?;
+    state.handle.io_lifetime().check_open()?;
+    let Some(destination) = selected else {
         return Ok(Value::Null);
     };
     let destination = destination
         .into_path()
         .map_err(|e| ApiError::new("INVALID_PATH", e.to_string()))?;
-    state.handle.validate_download_destination(&destination)?;
-    let (file, lease, _) = state
-        .handle
-        .attachment_read(&project_id, &path, &document_epoch)
-        .await?;
+    // Selection is not an I/O lease. Recheck admission only when actual copying
+    // can start, then let the owned task outlive a lost native reply.
+    let io_lease = state.handle.io_lifetime().admit()?;
     let handle = state.handle.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _lease = lease;
-        browser_download::publish_file(file, &destination, |path| {
-            handle.validate_download_destination(path)
-        })?;
-        Ok(serde_json::json!({"savedPath":destination}))
-    })
-    .await
-    .map_err(|_| ApiError::new("DOWNLOAD_FAILED", "附件保存未完成"))?
+    io_lease
+        .run(async move {
+            handle.validate_download_destination(&destination)?;
+            let (file, lease, _) = handle
+                .attachment_read(&project_id, &path, &document_epoch)
+                .await?;
+            tauri::async_runtime::spawn_blocking(move || {
+                let _lease = lease;
+                browser_download::publish_file(file, &destination, |path| {
+                    handle.validate_download_destination(path)
+                })?;
+                Ok(serde_json::json!({"savedPath":destination}))
+            })
+            .await
+            .map_err(|_| ApiError::new("DOWNLOAD_FAILED", "附件保存未完成"))?
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_reveal(
@@ -396,20 +494,27 @@ async fn project_reveal(
     target: String,
 ) -> Result<(), ApiError> {
     require_manager(&window)?;
-    let location = state.handle.project_location(&project_id, &target).await?;
-    let mut command = Command::new("/usr/bin/open");
-    if target == "readme" {
-        command.arg("-R");
-    }
-    command.arg(location);
-    let status = command
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err(ApiError::new("REVEAL_FAILED", "无法打开项目位置"));
-    }
-    Ok(())
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            let location = state.handle.project_location(&project_id, &target).await?;
+            let mut command = Command::new("/usr/bin/open");
+            if target == "readme" {
+                command.arg("-R");
+            }
+            command.arg(location);
+            let status = command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?;
+            if !status.success() {
+                return Err(ApiError::new("REVEAL_FAILED", "无法打开项目位置"));
+            }
+            Ok(())
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -419,7 +524,14 @@ async fn project_create(
     input: CreateProjectInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.create_project(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.create_project(input).await
+        })
+        .await?
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -469,6 +581,13 @@ fn request_external_link(app: &tauri::AppHandle, url: Url) {
     if !external_link_allowed(&url) {
         return;
     }
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let io_lifetime = state.handle.io_lifetime();
+    if io_lifetime.check_open().is_err() {
+        return;
+    }
     app.dialog()
         .message(format!(
             "将在默认浏览器打开：\n{}\n\n项目窗口仍保留当前内容。",
@@ -480,13 +599,20 @@ fn request_external_link(app: &tauri::AppHandle, url: Url) {
             "取消".into(),
         ))
         .show(move |approved| {
-            if approved {
+            if !approved {
+                return;
+            }
+            let Ok(lease) = io_lifetime.admit() else {
+                return;
+            };
+            let work = lease.hold(move || {
                 let _ = Command::new("/usr/bin/open")
                     .arg(url.as_str())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
-                    .spawn();
-            }
+                    .status();
+            });
+            tauri::async_runtime::spawn_blocking(move || work.run_blocking());
         });
 }
 
@@ -500,186 +626,203 @@ async fn project_open(
     reload: Option<bool>,
 ) -> Result<OpenProjectResult, ApiError> {
     require_manager(&window)?;
-    // Creation is serialized, so two close clicks cannot create two containers.
-    // Reuse only focuses the current document and never exchanges a new ticket.
-    let _creation = state.project_windows.lock().await;
-    let maintenance = state.handle.maintenance_status(&project_id).await?;
-    if maintenance["recoveryRequired"] == true {
-        return Err(ApiError::new(
-            "RECOVERY_REQUIRED",
-            "此项目有待处理的恢复操作，请先查看备份与维护。",
-        ));
-    }
-    if maintenance["mode"] == "maintenance" {
-        return Err(ApiError::new(
-            "PROJECT_MAINTENANCE",
-            "项目仍处于维护。完成检查并显式结束维护后，再重新加载项目。",
-        ));
-    }
-    let project = state.handle.store().info(&project_id).await?;
-    if project.state != "ready" {
-        return Err(ApiError::new(
-            "PROJECT_NOT_READY",
-            match project.state.as_str() {
-                "unbuilt" => "此项目还没有网页产物。请先构建项目后再打开。",
-                "missing" => "项目文件缺失，请查看项目详情。",
-                _ => "此项目暂时无法打开，请查看项目详情。",
-            },
-        ));
-    }
-    if matches!(target, OpenTarget::Desktop) && !reload.unwrap_or(false) {
-        if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
-            existing
-                .show()
-                .and_then(|_| existing.unminimize())
-                .and_then(|_| existing.set_title(&project_title(&project.name)))
-                .and_then(|_| existing.set_focus())
-                .map_err(|error| ApiError::new("WINDOW_OPEN_FAILED", error.to_string()))?;
-            return Ok(OpenProjectResult {
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            // Creation is serialized, so two close clicks cannot create two containers.
+            // Reuse only focuses the current document and never exchanges a new ticket.
+            let _creation = state.project_windows.lock().await;
+            let maintenance = state.handle.maintenance_status(&project_id).await?;
+            if maintenance["recoveryRequired"] == true {
+                return Err(ApiError::new(
+                    "RECOVERY_REQUIRED",
+                    "此项目有待处理的恢复操作，请先查看备份与维护。",
+                ));
+            }
+            if maintenance["mode"] == "maintenance" {
+                return Err(ApiError::new(
+                    "PROJECT_MAINTENANCE",
+                    "项目仍处于维护。完成检查并显式结束维护后，再重新加载项目。",
+                ));
+            }
+            let project = state.handle.store().info(&project_id).await?;
+            if project.state != "ready" {
+                return Err(ApiError::new(
+                    "PROJECT_NOT_READY",
+                    match project.state.as_str() {
+                        "unbuilt" => "此项目还没有网页产物。请先构建项目后再打开。",
+                        "missing" => "项目文件缺失，请查看项目详情。",
+                        _ => "此项目暂时无法打开，请查看项目详情。",
+                    },
+                ));
+            }
+            if matches!(target, OpenTarget::Desktop) && !reload.unwrap_or(false) {
+                if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
+                    existing
+                        .show()
+                        .and_then(|_| existing.unminimize())
+                        .and_then(|_| existing.set_title(&project_title(&project.name)))
+                        .and_then(|_| existing.set_focus())
+                        .map_err(|error| ApiError::new("WINDOW_OPEN_FAILED", error.to_string()))?;
+                    return Ok(OpenProjectResult {
+                        project_id,
+                        target,
+                        reused: true,
+                    });
+                }
+            }
+
+            let launch = state.handle.launch(&project_id).await?;
+            let base = Url::parse(&state.handle.info().base_url)
+                .map_err(|_| ApiError::new("INVALID_RUNTIME_URL", "本地服务地址无效"))?;
+            let launch_url = Url::parse(&launch.launch_url)
+                .map_err(|_| ApiError::new("INVALID_LAUNCH_URL", "项目入口地址无效"))?;
+            if !is_project_url(&launch_url, &base, &project_id)
+                || launch_url.path() != "/_platform/connect"
+            {
+                return Err(ApiError::new(
+                    "INVALID_LAUNCH_URL",
+                    "项目入口不属于当前本地服务",
+                ));
+            }
+
+            match target {
+                OpenTarget::Desktop => {
+                    if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
+                        // Explicit reload discards the current document only after the
+                        // user asks for it. Normal open still preserves form state.
+                        existing
+                            .navigate(launch_url)
+                            .and_then(|_| existing.show())
+                            .and_then(|_| existing.set_focus())
+                            .map_err(|error| {
+                                ApiError::new("WINDOW_OPEN_FAILED", error.to_string())
+                            })?;
+                        return Ok(OpenProjectResult {
+                            project_id,
+                            target,
+                            reused: true,
+                        });
+                    }
+                    let allowed_id = project_id.clone();
+                    let runtime_handle = state.handle.clone();
+                    let permission_handle = state.handle.clone();
+                    let permission_id = project_id.clone();
+                    let navigation_app = app.clone();
+                    let new_window_app = app.clone();
+                    let window_config = platform_core::app_windows::AppWindowConfig::from_value(
+                        project
+                            .manifest
+                            .as_ref()
+                            .and_then(|manifest| manifest.extra.get("window")),
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("Project window declaration ignored: {}", error.code);
+                        Default::default()
+                    });
+                    let window_identity = platform_core::app_windows::WindowIdentity::project(
+                        &state.handle.info().workspace_root,
+                        &project_id,
+                    );
+                    let size = state
+                        .window_sizes
+                        .initial(&app, &window_identity, window_config);
+                    let project_window = tauri::WebviewWindowBuilder::new(
+                        &app,
+                        project_label(&project_id),
+                        tauri::WebviewUrl::External(launch_url),
+                    )
+                    .title(project_title(&project.name))
+                    .inner_size(size.width, size.height)
+                    .min_inner_size(
+                        platform_core::app_windows::MIN_WIDTH,
+                        platform_core::app_windows::MIN_HEIGHT,
+                    )
+                    .on_navigation(move |url| {
+                        let local = Url::parse(&runtime_handle.info().base_url)
+                            .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
+                        if !local {
+                            request_external_link(&navigation_app, url.clone());
+                        }
+                        local
+                    })
+                    .on_download(browser_download::handler(
+                        app.clone(),
+                        state.handle.clone(),
+                        project_id.clone(),
+                    ))
+                    .disable_drag_drop_handler()
+                    .on_permission_request(move |webview, kind| {
+                        use tauri::webview::{PermissionKind, PermissionResponse};
+                        let Some(device) = (match kind {
+                            PermissionKind::Camera => Some("camera"),
+                            PermissionKind::Microphone => Some("microphone"),
+                            _ => None,
+                        }) else {
+                            return PermissionResponse::Deny;
+                        };
+                        let Ok(_io_lease) = permission_handle.io_lifetime().admit() else {
+                            return PermissionResponse::Deny;
+                        };
+                        let info = permission_handle.info();
+                        let allowed = webview
+                            .url()
+                            .ok()
+                            .zip(Url::parse(&info.base_url).ok())
+                            .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
+                            && permission_handle.device_permission_declared(&permission_id, device);
+                        if allowed {
+                            PermissionResponse::Default
+                        } else {
+                            PermissionResponse::Deny
+                        }
+                    })
+                    // Project windows have browser APIs, never native management access.
+                    .on_new_window(move |url, _| {
+                        request_external_link(&new_window_app, url);
+                        NewWindowResponse::Deny
+                    })
+                    .build()
+                    .map_err(|_| {
+                        ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，请重新打开项目")
+                    })?;
+                    state
+                        .window_sizes
+                        .track(&project_window, window_identity, window_config);
+                }
+                OpenTarget::Browser => {
+                    // Fixed executable, separate argument, no shell, no caller-supplied
+                    // URL. LaunchServices opens only the validated service-issued entry.
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let status = Command::new("/usr/bin/open")
+                            .arg(launch_url.as_str())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .map_err(|_| {
+                                ApiError::new("BROWSER_OPEN_FAILED", "无法启动默认浏览器")
+                            })?;
+                        if !status.success() {
+                            return Err(ApiError::new(
+                                "BROWSER_OPEN_FAILED",
+                                "默认浏览器没有接受打开请求",
+                            ));
+                        }
+                        Ok(())
+                    })
+                    .await
+                    .map_err(|_| ApiError::new("BROWSER_OPEN_FAILED", "浏览器打开任务未完成"))??;
+                }
+            }
+            Ok(OpenProjectResult {
                 project_id,
                 target,
-                reused: true,
-            });
-        }
-    }
-
-    let launch = state.handle.launch(&project_id).await?;
-    let base = Url::parse(&state.handle.info().base_url)
-        .map_err(|_| ApiError::new("INVALID_RUNTIME_URL", "本地服务地址无效"))?;
-    let launch_url = Url::parse(&launch.launch_url)
-        .map_err(|_| ApiError::new("INVALID_LAUNCH_URL", "项目入口地址无效"))?;
-    if !is_project_url(&launch_url, &base, &project_id) || launch_url.path() != "/_platform/connect"
-    {
-        return Err(ApiError::new(
-            "INVALID_LAUNCH_URL",
-            "项目入口不属于当前本地服务",
-        ));
-    }
-
-    match target {
-        OpenTarget::Desktop => {
-            if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
-                // Explicit reload discards the current document only after the
-                // user asks for it. Normal open still preserves form state.
-                existing
-                    .navigate(launch_url)
-                    .and_then(|_| existing.show())
-                    .and_then(|_| existing.set_focus())
-                    .map_err(|error| ApiError::new("WINDOW_OPEN_FAILED", error.to_string()))?;
-                return Ok(OpenProjectResult {
-                    project_id,
-                    target,
-                    reused: true,
-                });
-            }
-            let allowed_id = project_id.clone();
-            let runtime_handle = state.handle.clone();
-            let permission_handle = state.handle.clone();
-            let permission_id = project_id.clone();
-            let navigation_app = app.clone();
-            let new_window_app = app.clone();
-            let window_config = platform_core::app_windows::AppWindowConfig::from_value(
-                project
-                    .manifest
-                    .as_ref()
-                    .and_then(|manifest| manifest.extra.get("window")),
-            )
-            .unwrap_or_else(|error| {
-                eprintln!("Project window declaration ignored: {}", error.code);
-                Default::default()
-            });
-            let window_identity = platform_core::app_windows::WindowIdentity::project(
-                &state.handle.info().workspace_root,
-                &project_id,
-            );
-            let size = state
-                .window_sizes
-                .initial(&app, &window_identity, window_config);
-            let project_window = tauri::WebviewWindowBuilder::new(
-                &app,
-                project_label(&project_id),
-                tauri::WebviewUrl::External(launch_url),
-            )
-            .title(project_title(&project.name))
-            .inner_size(size.width, size.height)
-            .min_inner_size(
-                platform_core::app_windows::MIN_WIDTH,
-                platform_core::app_windows::MIN_HEIGHT,
-            )
-            .on_navigation(move |url| {
-                let local = Url::parse(&runtime_handle.info().base_url)
-                    .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
-                if !local {
-                    request_external_link(&navigation_app, url.clone());
-                }
-                local
+                reused: false,
             })
-            .on_download(browser_download::handler(
-                app.clone(),
-                state.handle.clone(),
-                project_id.clone(),
-            ))
-            .disable_drag_drop_handler()
-            .on_permission_request(move |webview, kind| {
-                use tauri::webview::{PermissionKind, PermissionResponse};
-                let Some(device) = (match kind {
-                    PermissionKind::Camera => Some("camera"),
-                    PermissionKind::Microphone => Some("microphone"),
-                    _ => None,
-                }) else {
-                    return PermissionResponse::Deny;
-                };
-                let info = permission_handle.info();
-                let allowed = webview
-                    .url()
-                    .ok()
-                    .zip(Url::parse(&info.base_url).ok())
-                    .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
-                    && permission_handle.device_permission_declared(&permission_id, device);
-                if allowed {
-                    PermissionResponse::Default
-                } else {
-                    PermissionResponse::Deny
-                }
-            })
-            // Project windows have browser APIs, never native management access.
-            .on_new_window(move |url, _| {
-                request_external_link(&new_window_app, url);
-                NewWindowResponse::Deny
-            })
-            .build()
-            .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，请重新打开项目"))?;
-            state
-                .window_sizes
-                .track(&project_window, window_identity, window_config);
-        }
-        OpenTarget::Browser => {
-            // Fixed executable, separate argument, no shell, no caller-supplied
-            // URL. LaunchServices opens only the validated service-issued entry.
-            tauri::async_runtime::spawn_blocking(move || {
-                let status = Command::new("/usr/bin/open")
-                    .arg(launch_url.as_str())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_err(|_| ApiError::new("BROWSER_OPEN_FAILED", "无法启动默认浏览器"))?;
-                if !status.success() {
-                    return Err(ApiError::new(
-                        "BROWSER_OPEN_FAILED",
-                        "默认浏览器没有接受打开请求",
-                    ));
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|_| ApiError::new("BROWSER_OPEN_FAILED", "浏览器打开任务未完成"))??;
-        }
-    }
-    Ok(OpenProjectResult {
-        project_id,
-        target,
-        reused: false,
-    })
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -690,10 +833,20 @@ async fn project_build(
     input: Option<Value>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .build_project_with_input(&project_id, input.unwrap_or_else(|| serde_json::json!({})))
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .build_project_with_input(
+                    &project_id,
+                    input.unwrap_or_else(|| serde_json::json!({})),
+                )
+                .await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -703,7 +856,14 @@ async fn backup_list(
     project_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.backup_list(&project_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.backup_list(&project_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -714,7 +874,14 @@ async fn backup_info(
     backup_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.backup_info(&project_id, &backup_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.backup_info(&project_id, &backup_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -725,7 +892,14 @@ async fn backup_create(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.backup_create(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.backup_create(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -736,7 +910,14 @@ async fn backup_restore(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.backup_restore(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.backup_restore(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -746,7 +927,14 @@ async fn maintenance_status(
     project_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.maintenance_status(&project_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.maintenance_status(&project_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -757,7 +945,14 @@ async fn maintenance_begin(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.maintenance_begin(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.maintenance_begin(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -768,7 +963,14 @@ async fn maintenance_end(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.maintenance_end(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.maintenance_end(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -779,7 +981,14 @@ async fn project_export(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_export(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_export(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -790,7 +999,14 @@ async fn project_copy(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_copy(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_copy(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -801,7 +1017,14 @@ async fn project_delete(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_delete(&project_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_delete(&project_id, input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -811,7 +1034,14 @@ async fn project_import(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_import(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_import(input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -821,7 +1051,14 @@ async fn workspace_migrate(
     input: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.workspace_migrate(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.workspace_migrate(input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -830,7 +1067,14 @@ async fn source_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.source_list().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.source_list().await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -840,7 +1084,14 @@ async fn project_git_status(
     id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_status(&id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_status(&id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_versions(
@@ -850,7 +1101,14 @@ async fn project_git_versions(
     limit: u32,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_versions(&id, limit).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_versions(&id, limit).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_branch_create(
@@ -860,7 +1118,14 @@ async fn project_git_branch_create(
     input: platform_core::project_git::GitCreateBranchInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_create_branch(&id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_create_branch(&id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_source_restore_preview(
@@ -870,10 +1135,17 @@ async fn project_git_source_restore_preview(
     input: platform_core::project_git::GitSourceRestorePreviewInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .project_git_source_restore_preview(&id, input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_source_restore_preview(&id, input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_source_restore_apply(
@@ -883,10 +1155,17 @@ async fn project_git_source_restore_apply(
     input: platform_core::project_git::GitSourceRestoreApplyInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .project_git_source_restore_apply(&id, input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_source_restore_apply(&id, input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_source_restore_status(
@@ -895,7 +1174,14 @@ async fn project_git_source_restore_status(
     id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_source_restore_status(&id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_source_restore_status(&id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_source_restore_recover(
@@ -905,10 +1191,17 @@ async fn project_git_source_restore_recover(
     input: platform_core::project_git::GitSourceRestoreRecoverInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .project_git_source_restore_recover(&id, input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_source_restore_recover(&id, input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_initialize(
@@ -918,7 +1211,14 @@ async fn project_git_initialize(
     input: platform_core::project_git::GitInitInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_initialize(&id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_initialize(&id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_save(
@@ -928,7 +1228,14 @@ async fn project_git_save(
     input: platform_core::project_git::GitSaveInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_save(&id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_save(&id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_data_restore_preview(
@@ -938,10 +1245,17 @@ async fn project_git_data_restore_preview(
     input: platform_core::project_git::GitDataRestorePreviewInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .project_git_data_restore_preview(&id, input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_data_restore_preview(&id, input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_data_save(
@@ -951,7 +1265,14 @@ async fn project_git_data_save(
     input: platform_core::project_git::GitDataSaveInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_data_save(&id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_data_save(&id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_data_save_status(
@@ -960,7 +1281,14 @@ async fn project_git_data_save_status(
     id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_data_save_status(&id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_data_save_status(&id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_data_save_finalize(
@@ -970,10 +1298,17 @@ async fn project_git_data_save_finalize(
     input: platform_core::project_git::GitDataSaveFinalizeInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .project_git_data_save_finalize(&id, input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .project_git_data_save_finalize(&id, input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn project_git_cancel(
@@ -983,7 +1318,14 @@ async fn project_git_cancel(
     task_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.project_git_cancel(&id, &task_id).await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_git_cancel(&id, &task_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn source_info(
@@ -992,7 +1334,14 @@ async fn source_info(
     source_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.source_info(&source_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.source_info(&source_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn source_inspect(
@@ -1001,10 +1350,17 @@ async fn source_inspect(
     source_path: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .source_inspect(PathBuf::from(source_path))
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .source_inspect(PathBuf::from(source_path))
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn source_acquire(
@@ -1013,7 +1369,14 @@ async fn source_acquire(
     input: platform_core::source_acquisition::AcquireSourceInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.source_acquire(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.source_acquire(input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn source_cancel(
@@ -1022,7 +1385,14 @@ async fn source_cancel(
     task_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.source_cancel(&task_id).await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.source_cancel(&task_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1032,7 +1402,14 @@ async fn source_capture(
     input: platform_core::source_acquisition::CaptureLocalSourceInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.source_capture(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.source_capture(input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_install_prepare(
@@ -1041,10 +1418,17 @@ async fn node_install_prepare(
     input: platform_core::node_install_tasks::PrepareNodeInstallInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state
-        .handle
-        .node_install_prepare(state.node_apps.clone(), input)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state
+                .handle
+                .node_install_prepare(state.node_apps.clone(), input)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_install_candidate(
@@ -1053,7 +1437,14 @@ async fn node_install_candidate(
     candidate_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.node_install_candidate(&candidate_id)
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.node_install_candidate(&candidate_id)
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_install_issues(
@@ -1061,7 +1452,14 @@ async fn node_install_issues(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    Ok(state.handle.node_install_issues())
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            Ok(state.handle.node_install_issues())
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_install_list(
@@ -1069,7 +1467,14 @@ async fn node_install_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.node_install_list()
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.node_install_list()
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_install_cancel(
@@ -1078,7 +1483,14 @@ async fn node_install_cancel(
     task_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.node_install_cancel(&task_id)
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.node_install_cancel(&task_id)
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_install_apply(
@@ -1088,7 +1500,14 @@ async fn node_install_apply(
     candidate_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    node_windows::apply_install(&app, &state, &candidate_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            node_windows::apply_install(&app, &state, &candidate_id).await
+        })
+        .await?
 }
 
 // These commands deliberately belong only to the native manager. Node pages
@@ -1100,15 +1519,22 @@ async fn node_app_directory_inspect(
     source_path: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    let apps = state.node_apps.clone();
-    tokio::task::spawn_blocking(move || apps.inspect_directory(&PathBuf::from(source_path)))
-        .await
-        .map_err(|_| {
-            ApiError::new(
-                "LOCAL_DIRECTORY_CHECK_FAILED",
-                "目录检查未完成，请重新检查。",
-            )
-        })?
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            let apps = state.node_apps.clone();
+            tokio::task::spawn_blocking(move || apps.inspect_directory(&PathBuf::from(source_path)))
+                .await
+                .map_err(|_| {
+                    ApiError::new(
+                        "LOCAL_DIRECTORY_CHECK_FAILED",
+                        "目录检查未完成，请重新检查。",
+                    )
+                })?
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_directory_initialize(
@@ -1119,38 +1545,45 @@ async fn node_app_directory_initialize(
     input: platform_core::node_apps::DirectoryInitializeInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    if state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(ApiError::new(
-            "SERVICE_STOPPING",
-            "平台正在退出，请稍后重新检查目录。",
-        ));
-    }
-    let apps = state.node_apps.clone();
-    tokio::task::spawn_blocking(move || {
-        if app
-            .state::<AppState>()
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "平台正在退出，尚未开始初始化，请稍后重新检查目录。",
-            )
-            .outcome("not_started"));
-        }
-        apps.initialize_directory(&PathBuf::from(source_path), input)
-    })
-    .await
-    .map_err(|_| {
-        ApiError::new(
-            "LOCAL_DIRECTORY_INITIALIZE_INTERRUPTED",
-            "初始化结果未能确认，请保留目录中的文件并重新检查；不会自动重复初始化。",
-        )
-        .outcome("unknown")
-    })?
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(ApiError::new(
+                    "SERVICE_STOPPING",
+                    "平台正在退出，请稍后重新检查目录。",
+                ));
+            }
+            let apps = state.node_apps.clone();
+            tokio::task::spawn_blocking(move || {
+                if app
+                    .state::<AppState>()
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    return Err(ApiError::new(
+                        "SERVICE_STOPPING",
+                        "平台正在退出，尚未开始初始化，请稍后重新检查目录。",
+                    )
+                    .outcome("not_started"));
+                }
+                apps.initialize_directory(&PathBuf::from(source_path), input)
+            })
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    "LOCAL_DIRECTORY_INITIALIZE_INTERRUPTED",
+                    "初始化结果未能确认，请保留目录中的文件并重新检查；不会自动重复初始化。",
+                )
+                .outcome("unknown")
+            })?
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_directory_initialize_and_register(
@@ -1161,40 +1594,49 @@ async fn node_app_directory_initialize_and_register(
     input: platform_core::node_apps::DirectoryInitializeInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    if state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(ApiError::new(
-            "SERVICE_STOPPING",
-            "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
-        )
-        .outcome("not_started"));
-    }
-    let apps = state.node_apps.clone();
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        if app
-            .state::<AppState>()
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
-            )
-            .outcome("not_started"));
-        }
-        runtime.block_on(apps.initialize_and_register_directory(PathBuf::from(source_path), input))
-    })
-    .await
-    .map_err(|_| {
-        ApiError::new(
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(ApiError::new(
+                    "SERVICE_STOPPING",
+                    "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
+                )
+                .outcome("not_started"));
+            }
+            let apps = state.node_apps.clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                if app
+                    .state::<AppState>()
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    return Err(ApiError::new(
+                        "SERVICE_STOPPING",
+                        "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
+                    )
+                    .outcome("not_started"));
+                }
+                runtime.block_on(
+                    apps.initialize_and_register_directory(PathBuf::from(source_path), input),
+                )
+            })
+            .await
+            .map_err(|_| {
+                ApiError::new(
             "LOCAL_DIRECTORY_CREATE_INTERRUPTED",
             "生成并添加的结果未能确认，请保留目录文件并重新检查登记状态；不会自动重复生成或添加。",
         )
         .outcome("unknown")
-    })?
+            })?
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_directory_register(
@@ -1204,19 +1646,26 @@ async fn node_app_directory_register(
     expected_revision: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    if state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(ApiError::new(
-            "SERVICE_STOPPING",
-            "平台正在退出，请稍后重新检查目录。",
-        ));
-    }
-    state
-        .node_apps
-        .register_directory(PathBuf::from(source_path), expected_revision)
-        .await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(ApiError::new(
+                    "SERVICE_STOPPING",
+                    "平台正在退出，请稍后重新检查目录。",
+                ));
+            }
+            state
+                .node_apps
+                .register_directory(PathBuf::from(source_path), expected_revision)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_inspect(
@@ -1225,7 +1674,14 @@ async fn node_app_inspect(
     source_path: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.inspect(&PathBuf::from(source_path))
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.inspect(&PathBuf::from(source_path))
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_register(
@@ -1234,7 +1690,14 @@ async fn node_app_register(
     source_path: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.register(PathBuf::from(source_path)).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.register(PathBuf::from(source_path)).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_list(
@@ -1242,7 +1705,14 @@ async fn node_app_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Value>, ApiError> {
     require_manager(&window)?;
-    state.node_apps.list().await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.list().await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_delete_preview(
@@ -1251,7 +1721,14 @@ async fn node_app_delete_preview(
     app_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.delete_preview(&app_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.delete_preview(&app_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_delete(
@@ -1262,7 +1739,14 @@ async fn node_app_delete(
     input: platform_core::node_apps::DeleteNodeAppInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    node_windows::delete(&app, &state, &app_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            node_windows::delete(&app, &state, &app_id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_configuration(
@@ -1271,7 +1755,14 @@ async fn node_app_configuration(
     app_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.configuration(&app_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.configuration(&app_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_configuration_save(
@@ -1281,7 +1772,14 @@ async fn node_app_configuration_save(
     input: platform_core::node_app_configuration::SaveConfigurationRequest,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.save(&app_id, input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.save(&app_id, input).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_start(
@@ -1291,7 +1789,14 @@ async fn node_app_start(
     app_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    node_windows::open(&app, &state, &app_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            node_windows::open(&app, &state, &app_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_stop(
@@ -1301,7 +1806,14 @@ async fn node_app_stop(
     app_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    node_windows::close(&app, &state, &app_id).await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            node_windows::close(&app, &state, &app_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_restart(
@@ -1311,7 +1823,14 @@ async fn node_app_restart(
     app_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    node_windows::restart(&app, &state, &app_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            node_windows::restart(&app, &state, &app_id).await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_status(
@@ -1320,7 +1839,14 @@ async fn node_app_status(
     app_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.status(&app_id).await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.node_apps.status(&app_id).await
+        })
+        .await?
 }
 fn open_node_url(url: String) -> Result<(), ApiError> {
     Command::new("/usr/bin/open")
@@ -1328,7 +1854,7 @@ fn open_node_url(url: String) -> Result<(), ApiError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .status()
         .map(|_| ())
         .map_err(|_| {
             ApiError::new(
@@ -1345,7 +1871,14 @@ async fn node_app_open(
     app_id: String,
 ) -> Result<(), ApiError> {
     require_manager(&window)?;
-    node_windows::open(&app, &state, &app_id).await.map(|_| ())
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            node_windows::open(&app, &state, &app_id).await.map(|_| ())
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_open_help(
@@ -1355,7 +1888,14 @@ async fn node_app_open_help(
     field_name: String,
 ) -> Result<(), ApiError> {
     require_manager(&window)?;
-    open_node_url(state.node_apps.help_url(&app_id, &field_name).await?)
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            open_node_url(state.node_apps.help_url(&app_id, &field_name).await?)
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1365,7 +1905,14 @@ async fn trash_info(
     trash_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.trash_info(&trash_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.trash_info(&trash_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1375,7 +1922,14 @@ async fn trash_restore(
     trash_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.trash_restore(&trash_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.trash_restore(&trash_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1385,7 +1939,14 @@ async fn trash_purge(
     trash_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.trash_purge(&trash_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.trash_purge(&trash_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1394,7 +1955,14 @@ async fn trash_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.trash_list().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.trash_list().await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1403,7 +1971,14 @@ async fn workspace_info(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.workspace_info().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.workspace_info().await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1413,7 +1988,14 @@ async fn task_get(
     task_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.task(&task_id).await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.task(&task_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1424,7 +2006,14 @@ async fn task_logs(
     cursor: u64,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.task_logs(&task_id, cursor).await
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.task_logs(&task_id, cursor).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1433,7 +2022,14 @@ async fn environment_doctor(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.environment().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.environment().await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1443,7 +2039,14 @@ async fn environment_node_set(
     node_path: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.set_node_path(node_path).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.set_node_path(node_path).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1452,7 +2055,14 @@ async fn environment_git_doctor(
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.git_environment().await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.git_environment().await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1462,17 +2072,24 @@ async fn environment_git_set(
     git_path: Value,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    let path = match git_path {
-        Value::Null => None,
-        Value::String(path) => Some(path),
-        _ => {
-            return Err(ApiError::new(
-                "INVALID_GIT_PATH",
-                "gitPath must be an absolute path string or null",
-            ))
-        }
-    };
-    state.handle.set_git_path(path).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            let path = match git_path {
+                Value::Null => None,
+                Value::String(path) => Some(path),
+                _ => {
+                    return Err(ApiError::new(
+                        "INVALID_GIT_PATH",
+                        "gitPath must be an absolute path string or null",
+                    ))
+                }
+            };
+            state.handle.set_git_path(path).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1482,7 +2099,14 @@ async fn environment_git_remote_check(
     input: platform_core::git_remote::GitRemoteCheckInput,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.check_git_remote(input).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.check_git_remote(input).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1492,7 +2116,14 @@ async fn project_handoff(
     project_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.handle.handoff(&project_id).await
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.handoff(&project_id).await
+        })
+        .await?
 }
 
 #[tauri::command]
@@ -1504,16 +2135,23 @@ async fn project_open_codex(
     expected_instance_id: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    let lease = state.handle.editor_handoff_lease(
-        &project_id,
-        std::path::Path::new(&expected_project_root),
-        &expected_instance_id,
-    )?;
-    let app = codex_handoff::installed_app().await?;
-    // Recheck after signature validation: closing/migration may have started.
-    lease.validate()?;
-    codex_handoff::open(&app, &lease.project_root).await?;
-    Ok(serde_json::json!({"projectRoot":lease.project_root,"requested":true}))
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            let lease = state.handle.editor_handoff_lease(
+                &project_id,
+                std::path::Path::new(&expected_project_root),
+                &expected_instance_id,
+            )?;
+            let app = codex_handoff::installed_app().await?;
+            // Recheck after signature validation: closing/migration may have started.
+            lease.validate()?;
+            codex_handoff::open(&app, &lease.project_root).await?;
+            Ok(serde_json::json!({"projectRoot":lease.project_root,"requested":true}))
+        })
+        .await?
 }
 
 struct InstalledResources {
@@ -1623,7 +2261,10 @@ fn shutdown_runtime(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    state.window_sizes.flush();
+    state.handle.io_lifetime().close();
+    if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() {
+        state.window_sizes.flush();
+    }
     state
         .shutting_down
         .store(true, std::sync::atomic::Ordering::Release);
@@ -1659,10 +2300,13 @@ fn request_safe_shutdown(app: &tauri::AppHandle) {
         app.exit(0);
         return;
     };
+    state.handle.io_lifetime().close();
     if state.shutting_down.swap(true, Ordering::AcqRel) {
         return;
     }
-    state.window_sizes.flush();
+    if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() {
+        state.window_sizes.flush();
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
@@ -1786,22 +2430,26 @@ fn main() {
             let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::new(
                 paths.data_root().to_path_buf(), resource_root.join("node-runtime/bin/node"),
             )?);
-            let monitor = std::sync::Arc::downgrade(&node_apps);
-            let node_monitor_app = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let Some(manager) = monitor.upgrade() else { break; };
-                    manager.monitor_tick().await;
-                    node_windows::reconcile(&node_monitor_app).await;
-                }
-            });
             let runtime = tauri::async_runtime::block_on(RuntimeService::start_with_resources(
                 paths,
                 lock,
                 resource_root,
                 cli_executable,
             ))?;
+            let monitor = std::sync::Arc::downgrade(&node_apps);
+            let node_monitor_app = app.handle().clone();
+            let monitor_io = runtime.handle().io_lifetime();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let Some(manager) = monitor.upgrade() else { break; };
+                    let Ok(io_lease) = monitor_io.admit() else { break; };
+                    io_lease.hold(Box::pin(async {
+                        manager.monitor_tick().await;
+                        node_windows::reconcile(&node_monitor_app).await;
+                    })).await;
+                }
+            });
             let info = DesktopInfo {
                 runtime: runtime.handle().info(),
                 version: app.package_info().version.to_string(),
@@ -1861,7 +2509,7 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let Some(state) = window.app_handle().try_state::<AppState>() {
-                state.window_sizes.on_event(window, event);
+                if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() { state.window_sizes.on_event(window, event); }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "manager" {
