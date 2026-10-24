@@ -90,6 +90,7 @@ impl RuntimeShutdown {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         self.shared.io_lifetime.seal();
+        self.shared.processes.seal();
         self.shared.closing.store(true, Ordering::Release);
         let state = self.shared.snapshot();
         state.stopping.store(true, Ordering::SeqCst);
@@ -319,6 +320,35 @@ impl RuntimeShutdown {
                 .issues
                 .extend(self.shared.io_lifetime.shutdown_issues());
             resources.stage = 2;
+        }
+        // A helper's deadline cannot discard the independently owned process.
+        // Retryable issues are removed only by a subsequent real drain receipt.
+        // Observe this before manager joins: a manager may retain its pipeline
+        // until the process actually closes before rolling back output files.
+        self.phase("processes");
+        let process_issues = self.shared.processes.shutdown().await;
+        resources
+            .issues
+            .retain(|issue| !(issue.component.starts_with("process/") && issue.retryable));
+        for issue in process_issues {
+            if !resources.issues.contains(&issue) {
+                resources.issues.push(issue);
+            }
+        }
+        if resources
+            .issues
+            .iter()
+            .any(|issue| issue.component.starts_with("process/") && !issue.resource_closed)
+        {
+            // A retained process/session can still own project gates, files or
+            // SQLite-dependent work. Do not close later resources underneath it.
+            return ShutdownReport {
+                status: ShutdownStatus::Blocked,
+                phase: "processes".into(),
+                attempt: self.status().attempt,
+                resource_closed: false,
+                issues: resources.issues.clone(),
+            };
         }
         if resources.stage == 2 {
             self.phase("managers");

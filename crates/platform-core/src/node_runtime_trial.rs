@@ -232,56 +232,15 @@ fn observe_without_reaping(pid: u32) -> TrialResult<Option<ExitObservation>> {
 fn group_has_other_members(pid: u32) -> TrialResult<bool> {
     #[cfg(target_os = "macos")]
     {
-        // PROC_PGRP_ONLY from the macOS SDK sys/proc_info.h; return value is bytes.
-        const PROC_PGRP_ONLY: u32 = 2;
-        let mut members = [0i32; 4096];
-        let bytes = std::mem::size_of_val(&members);
-        let count = unsafe {
-            libc::proc_listpids(
-                PROC_PGRP_ONLY,
-                pid,
-                members.as_mut_ptr().cast(),
-                bytes as i32,
-            )
-        };
-        if count < 0
-            || count as usize >= bytes
-            || !(count as usize).is_multiple_of(std::mem::size_of::<i32>())
-        {
-            return Err(fail(
+        // ProcessOwnership (or the disposable test's retained Child) pins the
+        // unreaped leader throughout both complete member scans. Keep the
+        // established trial error vocabulary at this boundary.
+        crate::owned_process::group_has_other_members(pid).map_err(|_| {
+            fail(
                 "TRIAL_GROUP_UNCONFIRMED",
-                "Could not completely inspect the owned trial group",
-            ));
-        }
-        for member in &members[..count as usize / std::mem::size_of::<i32>()] {
-            if *member <= 0 || *member == pid as i32 {
-                continue;
-            }
-            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-            let size = std::mem::size_of_val(&info);
-            let received = unsafe {
-                libc::proc_pidinfo(
-                    *member,
-                    libc::PROC_PIDTBSDINFO,
-                    0,
-                    (&mut info as *mut libc::proc_bsdinfo).cast(),
-                    size as i32,
-                )
-            };
-            if received == size as i32 {
-                // A PID can disappear or be reused after the group snapshot.
-                // Inspect its current group and ignore only proven dead zombies.
-                if info.pbi_pgid == pid && info.pbi_status != libc::SZOMB {
-                    return Ok(true);
-                }
-            } else if std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                return Err(fail(
-                    "TRIAL_GROUP_UNCONFIRMED",
-                    "Could not confirm the state of an owned group member",
-                ));
-            }
-        }
-        Ok(false)
+                "Could not completely confirm the owned trial group",
+            )
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1383,12 +1342,15 @@ server.shutdown(); server.server_close()
         output.read_line(&mut line).await.unwrap();
         let child_pid: i32 = line.trim().parse().unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
-            while process_is_live(child_pid) {
+            // A disappearing proc_pidinfo lookup is not yet an empty-group
+            // receipt. Wait for the same stable enumeration used by stop.
+            while group_has_other_members(pid).unwrap() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .unwrap();
+        assert!(!process_is_live(child_pid));
         assert!(!group_has_other_members(pid).unwrap());
         let owner = ProcessOwnership::new(pid);
         owner.signal(SIGNAL_KILL).unwrap();
