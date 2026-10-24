@@ -9,3 +9,11 @@ Git/源码操作成功后仍执行原有租约校验。若校验失败，保留�
 验证只使用新 disposable 源码、NodeApps、RuntimeService 和完整真实任务租约。版本探针夹具给出人工版本文本，但确实执行 OS 进程并保持实际 stdout/stderr pipe；另一显式测试使用复制的官方 Git，经过真实初始化及元数据命令。pipe holder 是测试自建、独立会话且自结束的进程，仅用私有文件请求其退出，不按陈旧 PID 发信号，不作为恶意逃逸追踪证明。`nativeIoLease.run` 路径验证丢回复不取消实际请求，且 native I/O 排空后进程 owner 仍保留源码和任务保护。没有 GUI、签名账号、现有项目或真实业务数据操作。
 
 独立增量基线为精确 `c823524` 源码导出加已冻结 Node 16 文件补丁 `3b691d…`，没有复制桌面未提交修改。最终新增命名选集显式包含 opt-in，**4 项全部通过**（其中真实 Git 命令用例内部包含 Pending 与丢调用者两轮）；既有 Node 开发服务默认 **2 通过、1 忽略**。实际测试核对公开迁移停在 waiting-for-project-tasks、私有释放后迁移成功、同一 store 的 git-environment/project-git records，以及同一个真实服务 lease 所取得的 Git 初始化回执在确定 stopping 边界仍保留 committed，实际 status 读取回执不虚构提交。严格 core 全目标 Clippy 与格式检查通过，没有在此独立副本重复全核心、整个桌面工作区、原生 GUI 或最低系统版本验证。原始日志与一次早期 fixture 编译失败均留在独立 ledger，没有以失败或零选中项充当通过。
+
+## 界面显示保留的提交回执（2026-10-25）
+
+Node 版本与源码取回面板在错误态保留明确的已提交提示，同时继续要求核对状态。保存、建分支、初始化只有错误详情和实际 result 双方都明确 committed，且 result.operation 与当前变更请求相符时，才显示对应提交文字。源码取回沿用现有无 operation 字段的结果合同：只在双 committed、sourceOnly 为真、合法 operationId 和 completed/undone 终态齐全时泛称“源码操作已提交”；恢复还必须匹配请求的 operationId，不猜目标或取回方向，不改 Rust 或持久格式。
+
+未知、缺失或不匹配的结果继续待核对；processResourceClosed 为 false 时保留任务仍待收尾的提示。读取、预览、版本列表不会从伪造的提交字段显示提交；变更成功后的状态读取失败单独使用读取上下文。原错误、失败草稿、禁用条件及代次隔离保留，没有把错误改成功、自动重试或授予退出／安装许可。
+
+主线相关三个 Node UI 选集 **123 通过、0 失败**；其中开发界面 28 项，新增 9 项包括生产 helper 的两项输入矩阵和 7 项 DOM 交互回归，矩阵内部输入不另计数。TypeScript 检查及 Vite 构建通过，仅保留已有大于 500 kB 的 chunk 提示。DOM 使用 jsdom／模拟原生 invoke，不代表 Cocoa、WebKit、真实原生命令或安装验收；后台真实服务和完整工作区检查另见本页前文及[信号主线记录](owned-signal-reobservation.md#主线整合检查2026-10-25)。

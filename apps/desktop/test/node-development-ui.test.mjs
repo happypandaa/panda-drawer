@@ -299,3 +299,181 @@ test('Unknown Node restore evidence disables recovery and runtime/source prerequ
   await act(async () => root.render(h(NodeSourceRestorePanel, restoreProps({ runtimeIsSource: true }))));
   assert.equal(button('预览源码取回').disabled, true); assert.match(document.body.textContent, /将运行副本与作者源码分开/);
 });
+
+const { nodeGitFailureMessage } = await component('node-git-error.ts');
+const stoppingReceipt = (result, details = {}) => ({ code: 'SERVICE_STOPPING', message: '人工服务正在退出', details: { operationOutcome: 'committed', result, ...details } });
+const savedReceipt = { operation: 'save', operationOutcome: 'committed', repositoryRoot: '/disposable/source', commit: 'a'.repeat(40), parent: 'b'.repeat(40), branch: 'refs/heads/main', message: '人工源码说明', author: { name: 'Disposable Author', email: 'disposable@example.invalid' } };
+const restoredReceipt = { operationId: restoreOperation().operationId, state: 'completed', operationOutcome: 'committed', sourceOnly: true, controlUpdateWarning: false, evidencePath: '/disposable/source/.git/local-projects-node-restores/retained', database: { state: 'not-supported' } };
+const committedWords = /源码版本已保存|已创建并切换分支|Git 已启用|源码操作已提交/;
+
+test('Native error receipt matrix recognizes only actual matching business commits and keeps physical cleanup separate', () => {
+  const accepted = [
+    [{ operation: 'save' }, savedReceipt, '源码版本已保存'],
+    [{ operation: 'branch' }, { operation: 'create-branch', operationOutcome: 'committed', branch: 'refs/heads/custom', head: 'a'.repeat(40) }, '已创建并切换分支'],
+    [{ operation: 'initialize' }, { operation: 'initialize', operationOutcome: 'committed', branch: 'main', head: null }, 'Git 已启用'],
+    [{ operation: 'restore-apply' }, restoredReceipt, '源码操作已提交'],
+    [{ operation: 'restore-apply' }, { ...restoredReceipt, state: 'undone' }, '源码操作已提交'],
+    [{ operation: 'restore-recover', operationId: restoredReceipt.operationId }, restoredReceipt, '源码操作已提交'],
+    [{ operation: 'restore-recover', operationId: restoredReceipt.operationId }, { ...restoredReceipt, state: 'undone' }, '源码操作已提交'],
+  ];
+  for (const [request, receipt, phrase] of accepted) {
+    const message = nodeGitFailureMessage(stoppingReceipt(receipt), request);
+    assert.ok(message.startsWith(phrase)); assert.match(message, /人工服务正在退出.*SERVICE_STOPPING/);
+    assert.match(message, /最后状态尚待.*请勿重复提交/);
+    if (request.operation.startsWith('restore-')) assert.doesNotMatch(message, /已取回|已撤回|目标提交/);
+  }
+  const pending = nodeGitFailureMessage(stoppingReceipt(savedReceipt, { processResourceClosed: false }), { operation: 'save' });
+  assert.match(pending, /源码版本已保存/); assert.match(pending, /相关任务仍待收尾/); assert.doesNotMatch(pending, /资源已关闭|收尾完成/);
+  const unknown = nodeGitFailureMessage(stoppingReceipt(savedReceipt, { operationOutcome: 'unknown', processResourceClosed: false }), { operation: 'save' });
+  assert.doesNotMatch(unknown, committedWords); assert.match(unknown, /待核对/);
+});
+
+test('Missing, contradictory, unrelated and read-only receipts never claim a committed Node operation', () => {
+  const rejected = [
+    [{ operation: 'save' }, null],
+    [{ operation: 'save' }, new Error('人工服务正在退出')],
+    [{ operation: 'save' }, JSON.stringify(stoppingReceipt(savedReceipt))],
+    [{ operation: 'save' }, { message: '人工服务正在退出', details: [] }],
+    [{ operation: 'save' }, { message: '人工服务正在退出', details: { result: savedReceipt } }],
+    [{ operation: 'save' }, stoppingReceipt(undefined)],
+    [{ operation: 'save' }, stoppingReceipt([])],
+    [{ operation: 'save' }, stoppingReceipt({ ...savedReceipt, operation: 'create-branch' })],
+    [{ operation: 'branch' }, stoppingReceipt(savedReceipt)],
+    [{ operation: 'save' }, stoppingReceipt({ ...savedReceipt, operationOutcome: 'unknown' })],
+    [{ operation: 'save' }, stoppingReceipt(savedReceipt, { operationOutcome: true })],
+    [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, sourceOnly: undefined })],
+    [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, sourceOnly: 'true' })],
+    [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, state: undefined })],
+    [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, state: ['completed'] })],
+    [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, state: 'applying' })],
+    [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, operationId: 'restore_invalid' })],
+    [{ operation: 'restore-recover' }, stoppingReceipt(restoredReceipt)],
+    [{ operation: 'restore-recover', operationId: 'restore_22222222-2222-4222-8222-222222222222' }, stoppingReceipt(restoredReceipt)],
+    ...['status', 'versions', 'restore-preview', 'restore-status'].flatMap(operation => [
+      [{ operation }, stoppingReceipt(savedReceipt)], [{ operation }, stoppingReceipt(restoredReceipt)],
+    ]),
+  ];
+  for (const [request, error] of rejected) {
+    const message = nodeGitFailureMessage(error, request);
+    assert.doesNotMatch(message, committedWords, JSON.stringify(request));
+    if (['save', 'branch', 'restore-apply', 'restore-recover'].includes(request.operation)) assert.match(message, /待核对/);
+  }
+});
+
+test('A committed save error remains an alert, retains its draft and waits for an explicit status refresh', async () => {
+  const calls = []; const drafts = [];
+  await mount(NodeGitPanel, gitProps({ onDraftStateChange: value => drafts.push(value) }), async (_command, args) => {
+    calls.push(args); if (args.operation === 'status') return status();
+    if (args.operation === 'save') throw stoppingReceipt(savedReceipt, { processResourceClosed: false });
+    throw Error(args.operation);
+  });
+  await fillGit(); await click('保存源码版本');
+  assert.match(document.querySelector('[role=alert]').textContent, /源码版本已保存.*请勿重复提交.*仍待收尾/);
+  assert.equal(document.querySelector('[role=status]'), null); assert.equal(document.querySelector('.node-git-save'), null);
+  assert.equal(drafts.at(-1).dirty, true); assert.equal(drafts.at(-1).pending, false);
+  assert.deepEqual(calls.map(value => value.operation), ['status', 'save']);
+  await click('刷新状态'); assert.equal(gitInput('版本说明').value, '人工源码说明'); assert.equal(gitInput('提交人').value, 'Disposable Author');
+  assert.equal(calls.filter(value => value.operation === 'save').length, 1);
+});
+
+test('Matching branch and initialize error receipts disclose publication without treating the operation as success', async () => {
+  const calls = [];
+  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
+    calls.push(args); if (args.operation === 'status') return status();
+    throw stoppingReceipt({ operation: 'create-branch', operationOutcome: 'committed', branch: 'refs/heads/custom' });
+  });
+  await change(gitInput('分支名称'), 'custom'); await click('创建并切换');
+  assert.match(document.querySelector('[role=alert]').textContent, /已创建并切换分支.*请勿重复提交/);
+  assert.deepEqual(calls.map(value => value.operation), ['status', 'branch']);
+  await click('刷新状态'); assert.equal(gitInput('分支名称').value, 'custom');
+  await act(async () => root.unmount()); root = null;
+  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
+    if (args.operation === 'status') return status({ canInitialize: true, canSave: false });
+    assert.equal(args.operation, 'initialize'); throw stoppingReceipt({ operation: 'initialize', operationOutcome: 'committed', branch: 'main', head: null });
+  });
+  await click('启用 Git'); assert.match(document.querySelector('[role=alert]').textContent, /Git 已启用.*最后状态尚待刷新/);
+  assert.equal(document.querySelector('[role=status]'), null);
+});
+
+test('A committed-looking version read or old-generation error never becomes a save confirmation', async () => {
+  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
+    if (args.operation === 'status') return status(); throw stoppingReceipt(savedReceipt);
+  });
+  await click('查看版本记录'); assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/); assert.doesNotMatch(document.body.textContent, committedWords);
+  await act(async () => root.unmount()); root = null;
+  const saved = deferred(); const props = gitProps();
+  await mount(NodeGitPanel, props, async (_command, args) => args.operation === 'save' ? saved.promise : status());
+  await fillGit(); await click('保存源码版本');
+  await act(async () => root.render(h(NodeGitPanel, { ...props, instanceId: 'instance_two' })));
+  await act(async () => saved.reject(stoppingReceipt(savedReceipt)));
+  assert.equal(document.querySelector('[role=alert]'), null); assert.equal(gitInput('版本说明').value, '人工源码说明');
+  assert.doesNotMatch(document.body.textContent, committedWords);
+});
+
+test('A source-only terminal error receipt uses generic commit wording, retains error state and never applies again', async () => {
+  const calls = []; let changed = 0;
+  await mount(NodeSourceRestorePanel, restoreProps({ onChanged: () => changed++ }), async (_command, args) => {
+    calls.push(args); if (args.operation === 'restore-status') return clearRestore();
+    if (args.operation === 'restore-preview') return restorePreview();
+    if (args.operation === 'restore-apply') throw stoppingReceipt(restoredReceipt, { processResourceClosed: false });
+    throw Error(args.operation);
+  });
+  await previewRestore(); await act(async () => document.querySelector('input[type=checkbox]').click()); await click('确认取回源码');
+  assert.match(document.querySelector('[role=alert]').textContent, /源码操作已提交.*最后状态尚待核对.*请勿重复提交.*仍待收尾/);
+  assert.doesNotMatch(document.querySelector('[role=alert]').textContent, /已取回|已撤回/);
+  assert.equal(document.querySelector('[role=status]'), null); assert.equal(document.querySelector('[aria-label="Node 源码取回预览"]'), null);
+  assert.equal(document.querySelector('.node-source-restore-panel input').value, 'a'.repeat(40)); assert.equal(changed, 0);
+  assert.deepEqual(calls.map(value => value.operation), ['restore-status', 'restore-preview', 'restore-apply', 'restore-status']);
+});
+
+test('Recovery error receipts must match the exact record and never infer a direction', async () => {
+  for (const same of [false, true]) {
+    if (root) { await act(async () => root.unmount()); root = null; }
+    const calls = [];
+    await mount(NodeSourceRestorePanel, restoreProps(), async (_command, args) => {
+      calls.push(args); if (args.operation === 'restore-status') return { state: 'needs-attention', operations: [restoreOperation()], issues: [] };
+      if (args.operation === 'restore-recover') throw stoppingReceipt({ ...restoredReceipt, state: 'undone', operationId: same ? restoredReceipt.operationId : 'restore_22222222-2222-4222-8222-222222222222' });
+      throw Error(args.operation);
+    });
+    await click('撤回本次取回'); const text = document.querySelector('[role=alert]').textContent;
+    if (same) assert.match(text, /源码操作已提交/); else assert.doesNotMatch(text, committedWords);
+    assert.doesNotMatch(text, /已取回|已撤回/); assert.match(text, /待核对/);
+    assert.equal(calls.filter(value => value.operation === 'restore-recover').length, 1);
+    assert.equal(calls.at(-1).operation, 'restore-status');
+  }
+});
+
+test('A stale restore commit error and a preview error cannot publish a confirmation into the current generation', async () => {
+  const applied = deferred(); const props = restoreProps(); let changed = 0;
+  await mount(NodeSourceRestorePanel, { ...props, onChanged: () => changed++ }, async (_command, args) => {
+    if (args.operation === 'restore-status') return clearRestore();
+    if (args.operation === 'restore-preview') return restorePreview(); return applied.promise;
+  });
+  await previewRestore(); await act(async () => document.querySelector('input[type=checkbox]').click()); await click('确认取回源码');
+  await act(async () => root.render(h(NodeSourceRestorePanel, { ...props, instanceId: 'instance_two', onChanged: () => changed++ })));
+  await act(async () => applied.reject(stoppingReceipt(restoredReceipt)));
+  assert.equal(document.querySelector('[role=alert]'), null); assert.equal(changed, 0); assert.doesNotMatch(document.body.textContent, committedWords);
+  await act(async () => root.unmount()); root = null;
+  await mount(NodeSourceRestorePanel, restoreProps(), async (_command, args) => { if (args.operation === 'restore-status') return clearRestore(); throw stoppingReceipt(restoredReceipt); });
+  await previewRestore(); assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/); assert.doesNotMatch(document.body.textContent, committedWords);
+});
+
+test('A failed status read after a successful write uses read context instead of trusting an unrelated error receipt', async () => {
+  let reads = 0;
+  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
+    if (args.operation === 'status') { if (++reads === 1) return status(); throw stoppingReceipt(savedReceipt); }
+    assert.equal(args.operation, 'save'); return { operationOutcome: 'committed' };
+  });
+  await fillGit(); await click('保存源码版本');
+  assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/);
+  assert.doesNotMatch(document.querySelector('[role=alert]').textContent, committedWords);
+  await act(async () => root.unmount()); root = null;
+  reads = 0;
+  await mount(NodeSourceRestorePanel, restoreProps(), async (_command, args) => {
+    if (args.operation === 'restore-status') { if (++reads === 1) return clearRestore(); throw stoppingReceipt(restoredReceipt); }
+    if (args.operation === 'restore-preview') return restorePreview(); return { operationOutcome: 'committed', state: 'completed' };
+  });
+  await previewRestore(); await act(async () => document.querySelector('input[type=checkbox]').click()); await click('确认取回源码');
+  assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/);
+  assert.doesNotMatch(document.querySelector('[role=alert]').textContent, committedWords);
+});
