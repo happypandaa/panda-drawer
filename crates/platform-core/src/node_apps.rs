@@ -324,7 +324,18 @@ impl NodeApps {
         for record in self.registrations()? {
             if record.source_path == source {
                 check()?;
-                return self.detail(&record, &self.manifest(&record)?, inner);
+                // A previous publication may have reached disk but failed its
+                // parent sync. Explicit reuse must finish that durability step.
+                self.sync_registration_parents(&record.id)?;
+                return self
+                    .manifest(&record)
+                    .and_then(|manifest| self.detail(&record, &manifest, inner))
+                    .map_err(|error| {
+                        error
+                            .outcome("registered_needs_attention")
+                            .detail("registrationCommitted", true)
+                            .detail("appId", record.id.clone())
+                    });
             }
         }
         let id = Uuid::new_v4().to_string();
@@ -349,8 +360,43 @@ impl NodeApps {
         };
         // The digest is computed from the explicit source, not a cached declaration.
         check()?;
-        write_new_json(&slot.join("registration.json"), &record)?;
+        let publication = (|| {
+            write_new_json(&slot.join("registration.json"), &record)?;
+            self.sync_registration_parents(&record.id)
+        })();
+        publication.map_err(|error| {
+            error
+                .outcome("unknown")
+                .detail("registrationAttempted", true)
+                .detail("requiresRecheck", true)
+                .detail("appId", record.id.clone())
+        })?;
+        let id = record.id.clone();
         self.detail(&record.into(), &manifest, inner)
+            .map_err(|error| {
+                error
+                    .outcome("registered_needs_attention")
+                    .detail("registrationCommitted", true)
+                    .detail("appId", id)
+            })
+    }
+
+    fn sync_registration_parents(&self, id: &str) -> Result<()> {
+        let synced = (|| {
+            // Sync the UUID slot plus both ancestors for new publication and
+            // explicit recovery of an existing registration alike.
+            fs::File::open(self.root.join(id))?.sync_all()?;
+            fs::File::open(&self.root)?.sync_all()?;
+            fs::File::open(&self.data_root)?.sync_all()?;
+            Ok::<(), ApiError>(())
+        })();
+        synced.map_err(|error| {
+            error
+                .outcome("unknown")
+                .detail("registrationAttempted", true)
+                .detail("requiresRecheck", true)
+                .detail("appId", id)
+        })
     }
 
     /// Preparation reads only this public snapshot. It never obtains credential

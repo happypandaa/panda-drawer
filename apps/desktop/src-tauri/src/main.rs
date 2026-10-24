@@ -1106,6 +1106,50 @@ async fn node_app_directory_initialize(
     })?
 }
 #[tauri::command]
+async fn node_app_directory_initialize_and_register(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+    input: platform_core::node_apps::DirectoryInitializeInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::new(
+            "SERVICE_STOPPING",
+            "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
+        )
+        .outcome("not_started"));
+    }
+    let apps = state.node_apps.clone();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        if app
+            .state::<AppState>()
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
+            )
+            .outcome("not_started"));
+        }
+        runtime.block_on(apps.initialize_and_register_directory(PathBuf::from(source_path), input))
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "LOCAL_DIRECTORY_CREATE_INTERRUPTED",
+            "生成并添加的结果未能确认，请保留目录文件并重新检查登记状态；不会自动重复生成或添加。",
+        )
+        .outcome("unknown")
+    })?
+}
+#[tauri::command]
 async fn node_app_directory_register(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1627,7 +1671,7 @@ fn main() {
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_cancel,
-            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
+            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,

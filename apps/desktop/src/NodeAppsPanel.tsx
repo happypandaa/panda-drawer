@@ -376,7 +376,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
         <NodeConfigurationForm key={`${instanceId ?? ''}:${detail.id}:${configurationRead}`} app={detail} draft={draft} active={tab === 'configuration' && !deleteOpen} disabled={blocked || loading} dirty={dirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} onReload={() => { if (dirty) setRequestedSelection(detail); else void select(detail, 'configuration'); }} onOpenHelp={(name) => void open('node_app_open_help', name)} />
         </div>
       </section></Modal>}
-    {addOpen && <Modal title="添加本地应用" description="选择本地项目文件夹，检查后分别确认生成起始项目或添加。" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); }}>
+    {addOpen && <Modal title="添加本地应用" description="选择本地项目文件夹。空目录可生成并添加，已有项目先检查预览。" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); }}>
       <LocalDirectoryPanel enabled={enabled && !pending && !installPending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} />
     </Modal>}
   </>;

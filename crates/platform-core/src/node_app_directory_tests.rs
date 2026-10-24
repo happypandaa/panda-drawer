@@ -54,6 +54,30 @@ impl Fixture {
     }
 }
 
+fn source_files(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(
+        root: &Path,
+        current: &Path,
+        files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                collect(root, &entry.path(), files);
+            } else {
+                assert!(entry.file_type().unwrap().is_file());
+                files.insert(
+                    entry.path().strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(entry.path()).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    collect(root, root, &mut files);
+    files
+}
+
 #[test]
 fn inspection_is_read_only_and_hidden_or_unrelated_files_are_never_empty() {
     let fixture = Fixture::new();
@@ -362,29 +386,6 @@ fn declared_entry_symlinks_are_review_issues_but_root_scope_violations_are_error
 
 #[tokio::test]
 async fn bound_registration_requires_ready_current_revision_and_preserves_same_path_identity() {
-    fn source_files(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
-        fn collect(
-            root: &Path,
-            current: &Path,
-            files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
-        ) {
-            for entry in fs::read_dir(current).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    collect(root, &entry.path(), files);
-                } else {
-                    assert!(entry.file_type().unwrap().is_file());
-                    files.insert(
-                        entry.path().strip_prefix(root).unwrap().to_path_buf(),
-                        fs::read(entry.path()).unwrap(),
-                    );
-                }
-            }
-        }
-        let mut files = std::collections::BTreeMap::new();
-        collect(root, root, &mut files);
-        files
-    }
     let fixture = Fixture::new();
     let empty_revision = fixture.revision();
     assert_eq!(
@@ -451,6 +452,404 @@ async fn bound_registration_requires_ready_current_revision_and_preserves_same_p
         .join("active.json")
         .exists());
     reopened.stop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn one_confirmed_generation_registers_durably_without_starting_or_later_source_changes() {
+    let fixture = Fixture::new();
+    let input = fixture.input("One confirmed project");
+    let result = fixture
+        .manager
+        .initialize_and_register_directory(fixture.source.clone(), input)
+        .await
+        .unwrap();
+    assert_eq!(result["name"], "One confirmed project");
+    assert_eq!(result["sourcePath"], json!(fixture.source));
+    assert_eq!(result["state"], "stopped");
+    assert!(Uuid::parse_str(result["id"].as_str().unwrap()).is_ok());
+    let generated = source_files(&fixture.source);
+    let listed = fixture.manager.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], result["id"]);
+    let reopened = NodeApps::new(
+        fixture.manager.data_root.clone(),
+        fixture.manager.node_path.clone(),
+    )
+    .unwrap();
+    let persisted = reopened.list().await.unwrap();
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0]["id"], result["id"]);
+    assert_eq!(persisted[0]["sourcePath"], result["sourcePath"]);
+    assert!(reopened.running_ids().await.is_empty());
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert_eq!(source_files(&fixture.source), generated);
+    assert!(!fixture.manager.node_path.exists());
+    assert!(!fixture
+        .manager
+        .root
+        .join(result["id"].as_str().unwrap())
+        .join("active.json")
+        .exists());
+    let stale = fixture
+        .manager
+        .initialize_and_register_directory(
+            fixture.source.clone(),
+            fixture.input("Do not overwrite"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, "NODE_DIRECTORY_NOT_EMPTY");
+    assert_eq!(fixture.manager.list().await.unwrap().len(), 1);
+    assert_eq!(source_files(&fixture.source), generated);
+    reopened.stop_all().await.unwrap();
+    fixture.manager.stop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn combined_generation_rejects_stale_confirmation_and_shutdown_before_writing() {
+    let fixture = Fixture::new();
+    let input = fixture.input("Stale confirmation");
+    fs::write(fixture.source.join("user.txt"), b"keep this user file").unwrap();
+    let error = fixture
+        .manager
+        .initialize_and_register_directory(fixture.source.clone(), input)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_DIRECTORY_CHANGED");
+    assert_eq!(
+        fs::read(fixture.source.join("user.txt")).unwrap(),
+        b"keep this user file"
+    );
+    assert_eq!(source_files(&fixture.source).len(), 1);
+    fixture.assert_no_platform_writes();
+    let stopped = Fixture::new();
+    let input = stopped.input("Stopped confirmation");
+    stopped.manager.stop_all().await.unwrap();
+    let error = stopped
+        .manager
+        .initialize_and_register_directory(stopped.source.clone(), input)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_DIRECTORY_STOPPING");
+    assert_eq!(error.details["operationOutcome"], "not_started");
+    assert!(source_files(&stopped.source).is_empty());
+    stopped.assert_no_platform_writes();
+}
+
+#[tokio::test]
+async fn combined_generation_keeps_partial_files_and_does_not_register_or_retry() {
+    let fixture = Fixture::new();
+    let error = fixture
+        .manager
+        .initialize_and_register_directory_admitted(
+            fixture.source.clone(),
+            fixture.input("Partial project"),
+            |path| {
+                if path == Path::new("web/app.js") {
+                    return Err(directory_error(
+                        "DISPOSABLE_WRITE_FAILURE",
+                        "Artificial write failure",
+                    ));
+                }
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "DISPOSABLE_WRITE_FAILURE");
+    assert_eq!(
+        error.details["operationOutcome"],
+        "initialization_incomplete"
+    );
+    assert_eq!(error.details["partialFilesRetained"], true);
+    assert!(fixture.source.join("web/index.html").is_file());
+    assert!(!fixture.source.join("web/app.js").exists());
+    assert!(!fixture.source.join("local-app.json").exists());
+    fixture.assert_no_platform_writes();
+    assert_eq!(fixture.preview()["state"], "needs-review");
+}
+
+#[tokio::test]
+async fn generated_files_survive_registration_failure_and_explicit_reinspection_can_finish_adding()
+{
+    let fixture = Fixture::new();
+    // A real filesystem obstacle affects only registration, after generation.
+    fs::write(&fixture.manager.root, b"registration directory is blocked").unwrap();
+    let error = fixture
+        .manager
+        .initialize_and_register_directory(
+            fixture.source.clone(),
+            fixture.input("Retained generated project"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_DIRECTORY_ADD_FAILED");
+    assert_eq!(
+        error.details["operationOutcome"],
+        "initialized_not_registered"
+    );
+    assert_eq!(error.details["initializationCompleted"], true);
+    assert_eq!(error.details["partialFilesRetained"], true);
+    assert_eq!(error.details["requiresRecheck"], true);
+    assert!(fixture.source.join("local-app.json").is_file());
+    assert_eq!(
+        fs::read(&fixture.manager.root).unwrap(),
+        b"registration directory is blocked"
+    );
+    let generated = source_files(&fixture.source);
+    fs::remove_file(&fixture.manager.root).unwrap();
+    assert!(fixture.manager.list().await.unwrap().is_empty());
+    let ready = fixture.preview();
+    assert_eq!(ready["state"], "ready");
+    let added = fixture
+        .manager
+        .register_directory(
+            fixture.source.clone(),
+            ready["expectedRevision"].as_str().unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fixture.manager.list().await.unwrap()[0]["id"], added["id"]);
+    assert_eq!(source_files(&fixture.source), generated);
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    fixture.manager.stop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn combined_admission_cannot_adopt_valid_external_edits_after_generation() {
+    let fixture = Fixture::new();
+    let error = fixture
+        .manager
+        .initialize_and_register_directory_admitted(
+            fixture.source.clone(),
+            fixture.input("Generated name"),
+            |_| Ok(()),
+            |source| {
+                let declaration = source.join("local-app.json");
+                let mut manifest: Value = serde_json::from_slice(&fs::read(&declaration)?)?;
+                manifest["app"]["name"] = json!("Unconfirmed external name");
+                fs::write(declaration, serde_json::to_vec_pretty(&manifest)?)?;
+                fs::write(
+                    source.join("web/index.html"),
+                    b"<h1>Unconfirmed but valid edited page</h1>",
+                )?;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_DIRECTORY_ADD_FAILED");
+    assert_eq!(
+        error.details["operationOutcome"],
+        "initialized_not_registered"
+    );
+    assert_eq!(error.details["cause"]["code"], "NODE_DIRECTORY_CHANGED");
+    fixture.assert_no_platform_writes();
+    assert_eq!(
+        fs::read(fixture.source.join("web/index.html")).unwrap(),
+        b"<h1>Unconfirmed but valid edited page</h1>"
+    );
+    let ready = fixture.preview();
+    assert_eq!(ready["state"], "ready");
+    assert_eq!(
+        ready["inspection"]["app"]["name"],
+        "Unconfirmed external name"
+    );
+    let added = fixture
+        .manager
+        .register_directory(
+            fixture.source.clone(),
+            ready["expectedRevision"].as_str().unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added["name"], "Unconfirmed external name");
+    assert_eq!(fixture.manager.list().await.unwrap().len(), 1);
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    fixture.manager.stop_all().await.unwrap();
+}
+
+#[tokio::test]
+async fn registration_publication_and_postcommit_detail_failures_report_actual_uncertainty() {
+    for fail_detail in [false, true] {
+        let fixture = Fixture::new();
+        let mut retained = None;
+        let error = fixture
+            .manager
+            .initialize_and_register_directory_admitted(
+                fixture.source.clone(),
+                fixture.input("Retained registration outcome"),
+                |_| Ok(()),
+                |_| {
+                    // The last precommit check sees the newly allocated private slot.
+                    // Fail on actual filesystem content, without timing a race.
+                    if retained.is_none() && fixture.manager.root.is_dir() {
+                        for entry in fs::read_dir(&fixture.manager.root)? {
+                            let slot = entry?.path();
+                            if slot.join("configuration").is_dir()
+                                && !slot.join("registration.json").exists()
+                            {
+                                let path = if fail_detail {
+                                    slot.join("configuration/configuration.json")
+                                } else {
+                                    slot.join("registration.json")
+                                };
+                                fs::write(&path, b"retained invalid fixture, do not overwrite")?;
+                                retained = Some(path);
+                                break;
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "NODE_DIRECTORY_ADD_FAILED");
+        assert_eq!(error.details["initializationCompleted"], true);
+        assert_eq!(error.details["partialFilesRetained"], true);
+        let retained = retained.unwrap();
+        assert_eq!(
+            fs::read(&retained).unwrap(),
+            b"retained invalid fixture, do not overwrite"
+        );
+        let generated = source_files(&fixture.source);
+        if fail_detail {
+            assert_eq!(
+                error.details["operationOutcome"],
+                "registered_needs_attention"
+            );
+            assert_eq!(
+                error.details["cause"]["details"]["registrationCommitted"],
+                true
+            );
+            let id = error.details["cause"]["details"]["appId"].as_str().unwrap();
+            let registration: Value = serde_json::from_slice(
+                &fs::read(fixture.manager.root.join(id).join("registration.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(registration["id"], id);
+            let listed = fixture.manager.list().await.unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0]["id"], id);
+            assert_eq!(listed[0]["state"], "failed");
+            let registration_bytes =
+                fs::read(fixture.manager.root.join(id).join("registration.json")).unwrap();
+            fs::remove_file(retained).unwrap();
+            let ready = fixture.preview();
+            let added = fixture
+                .manager
+                .register_directory(
+                    fixture.source.clone(),
+                    ready["expectedRevision"].as_str().unwrap().into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(added["id"], id);
+            let reopened = NodeApps::new(
+                fixture.manager.data_root.clone(),
+                fixture.manager.node_path.clone(),
+            )
+            .unwrap();
+            let reused = reopened
+                .register_directory(
+                    fixture.source.clone(),
+                    ready["expectedRevision"].as_str().unwrap().into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(reused["id"], id);
+            assert_eq!(reused["state"], "stopped");
+            assert_eq!(reopened.list().await.unwrap().len(), 1);
+            assert_eq!(
+                fs::read(fixture.manager.root.join(id).join("registration.json")).unwrap(),
+                registration_bytes
+            );
+            assert!(reopened.owned_process_ids().await.is_empty());
+            reopened.stop_all().await.unwrap();
+        } else {
+            assert_eq!(
+                error.details["operationOutcome"],
+                "initialized_registration_unconfirmed"
+            );
+            assert_eq!(
+                error.details["cause"]["details"]["registrationAttempted"],
+                true
+            );
+            assert!(fixture.manager.list().await.is_err());
+        }
+        assert_eq!(source_files(&fixture.source), generated);
+        assert!(fixture.manager.owned_process_ids().await.is_empty());
+        fixture.manager.stop_all().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_waits_for_accepted_combined_creation_and_rejects_queued_duplicate() {
+    let fixture = Fixture::new();
+    let input = fixture.input("Accepted combined project");
+    let queued_input = input.clone();
+    let manager = fixture.manager.clone();
+    let source = fixture.source.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let creating = std::thread::spawn(move || {
+        let mut first = true;
+        runtime.block_on(manager.initialize_and_register_directory_admitted(
+            source,
+            input,
+            |_| {
+                if first {
+                    first = false;
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                }
+                Ok(())
+            },
+            |_| Ok(()),
+        ))
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    let manager = fixture.manager.clone();
+    let source = fixture.source.clone();
+    let queued = tokio::spawn(async move {
+        manager
+            .initialize_and_register_directory(source, queued_input)
+            .await
+    });
+    let manager = fixture.manager.clone();
+    let stopping = tokio::spawn(async move { manager.stop_all().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !fixture
+            .manager
+            .directory_stopping
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!stopping.is_finished());
+    assert!(!queued.is_finished());
+    release_tx.send(()).unwrap();
+    let accepted = creating.join().unwrap().unwrap();
+    assert_eq!(accepted["state"], "stopped");
+    let rejected = queued.await.unwrap().unwrap_err();
+    assert_eq!(rejected.code, "NODE_DIRECTORY_STOPPING");
+    assert_eq!(rejected.details["operationOutcome"], "not_started");
+    stopping.await.unwrap().unwrap();
+    let listed = fixture.manager.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], accepted["id"]);
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(fixture.source.join("local-app.json").is_file());
 }
 
 #[tokio::test]
