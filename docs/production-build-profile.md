@@ -16,11 +16,11 @@ CLI `build-info --json` 完全离线，只返回编译身份、版本、目标�
 
 ## 尚未配置签后资源锚
 
-固定配置的 `resourceAnchors` 目前只接受 `unconfigured`。不存在能开启正式运行的 JSON 字段、资源清单路径或环境变量。此生产候选版允许编译与离线检查，但 `require_runtime` 总是返回 `PRODUCTION_RESOURCE_ANCHORS_UNCONFIGURED`，操作结果为 `not_started`。
+固定配置的 `resourceAnchors` 目前只接受 `unconfigured`，不在 profile 中接收任意替换摘要。普通 `production-profile` 允许编译与离线检查，但 `require_runtime` 返回 `PRODUCTION_RESOURCE_ANCHORS_UNCONFIGURED`。后续独立的 `production-resource-anchors` feature 只接收严格编译输入，见[签后资源协议](production-resource-anchors.md)；即使摘要锚已编译，也继续返回 `PRODUCTION_DISTRIBUTION_PROOF_UNCONFIGURED`。操作结果均为 `not_started`，不存在能打开正式运行的 JSON ready 字段或运行时覆盖。
 
 桌面在创建 Tauri 插件和窗口前检查此门禁。CLI 在读取任何业务输入文件之前统一检查，所有业务命令都被拒绝；帮助、版本和 build-info 可离线使用。core 的初始化、发现、身份修复、已有根目录/凭据读取、服务启动与 Node 管理器构造也在目录或资源读取前拒绝。生产身份因此不会收养开发工作区，也不会建立未准备好的生产数据根。
 
-后续步骤须另行实现签后资源清单协议：先正式签署内嵌 Node/Git 叶子可执行文件，再生成覆盖运行 Node、完整开发 Node 树和完整开发 Git 树的摘要，绑定生产配置、目标和现有来源锚，经过严格构建校验后编译进只读二进制。生产运行时不得从邻近可写 JSON 接受替换摘要。缺失、旧 schema、错误目标、来源或字节不匹配必须拒绝；不能把本步骤的 `unconfigured` 改成 `ready` 来绕过它。开发资源的三处既有来源锚保持原规则。
+签后资源清单的摘要/路径协议和编译、运行检查接点已经单独实现；真实签名转换与包装事务仍待后续步骤：先正式签署内嵌 Node/Git 叶子可执行文件，再生成覆盖运行 Node、完整开发 Node 树和完整开发 Git 树的摘要，绑定生产配置、目标和现有来源锚，经过严格构建校验后编译进只读二进制。生产运行时不得从邻近可写 JSON 接受替换摘要。缺失、旧 schema、错误目标、来源或字节不匹配必须拒绝；不能把本步骤的 `unconfigured` 改成 `ready` 来绕过它。开发资源的三处既有来源锚保持原规则。
 
 Mac 正式分发仍须 Developer ID Application 签名、Apple 公证、票据和实际安装验收。主程序及 CLI 的最终签名属于后续外层签名事务，不能把它们自己的 hash 放入待编译清单形成循环。
 

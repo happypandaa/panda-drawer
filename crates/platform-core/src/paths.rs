@@ -415,7 +415,12 @@ mod production_profile_tests {
         let gate = error
             .downcast_ref::<crate::platform_support::RuntimeSupportError>()
             .expect("admission must run before filesystem/resource validation");
-        assert_eq!(gate.code, crate::build_profile::PRODUCTION_RESOURCE_ERROR);
+        assert_eq!(
+            gate.code,
+            crate::platform_support::runtime_support()
+                .error_code
+                .unwrap()
+        );
         let api_error = crate::ApiError::from(*gate);
         assert_eq!(api_error.details["operationOutcome"], "not_started");
     }
@@ -444,7 +449,9 @@ mod production_profile_tests {
             .expect("production Node manager must not initialize");
         assert_eq!(
             node_error.code,
-            crate::build_profile::PRODUCTION_RESOURCE_ERROR
+            crate::platform_support::runtime_support()
+                .error_code
+                .unwrap()
         );
         assert_eq!(node_error.details["operationOutcome"], "not_started");
         assert!(!missing.exists());

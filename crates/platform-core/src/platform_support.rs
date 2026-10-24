@@ -88,8 +88,16 @@ pub const fn runtime_support() -> RuntimeSupport {
         return RuntimeSupport {
             platform: HostPlatform::current(),
             runtime_available: false,
-            error_code: Some(crate::build_profile::PRODUCTION_RESOURCE_ERROR),
-            message: crate::build_profile::PRODUCTION_RESOURCE_MESSAGE,
+            error_code: Some(if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
+                crate::build_profile::PRODUCTION_PROOF_ERROR
+            } else {
+                crate::build_profile::PRODUCTION_RESOURCE_ERROR
+            }),
+            message: if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
+                crate::build_profile::PRODUCTION_PROOF_MESSAGE
+            } else {
+                crate::build_profile::PRODUCTION_RESOURCE_MESSAGE
+            },
         };
     }
     support_for(HostPlatform::current())
@@ -192,7 +200,7 @@ mod tests {
         if crate::build_profile::PRODUCTION_PROFILE {
             assert_eq!(
                 require_runtime().unwrap_err().code,
-                crate::build_profile::PRODUCTION_RESOURCE_ERROR
+                runtime_support().error_code.unwrap()
             );
             assert!(!runtime_support().runtime_available);
         } else {

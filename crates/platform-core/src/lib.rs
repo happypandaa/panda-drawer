@@ -35,6 +35,7 @@ pub mod object_layout;
 mod paths;
 mod platform_info;
 pub mod platform_support;
+pub mod production_resources;
 mod project_directory_name;
 pub mod project_git;
 pub mod projects;

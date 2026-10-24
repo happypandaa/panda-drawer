@@ -11,6 +11,8 @@ include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 // identity constants to run under a development admission policy.
 const _: () = assert!(PRODUCTION_PROFILE == cfg!(feature = "production-profile"));
 pub const PRODUCTION_RESOURCE_ERROR: &str = "PRODUCTION_RESOURCE_ANCHORS_UNCONFIGURED";
+pub const PRODUCTION_PROOF_ERROR: &str = "PRODUCTION_DISTRIBUTION_PROOF_UNCONFIGURED";
+pub const PRODUCTION_PROOF_MESSAGE: &str = "此构建已绑定资源摘要，但真实签名前后来源链、Developer ID 和分发验证尚未完成；不会读取或初始化生产数据、发现记录或凭据。";
 pub const PRODUCTION_RESOURCE_MESSAGE: &str = "正式版签后资源校验锚尚未配置；此构建仅供离线检查元数据，未读取或初始化数据目录、发现记录或本机凭据，不能启动平台。";
 
 /// No path, environment, discovery, credentials, network or resource reads.
@@ -28,7 +30,10 @@ pub fn info() -> Value {
         "profileSha256": if PROFILE_DIGEST.is_empty() { None } else { Some(PROFILE_DIGEST) },
         "releaseRepository": if RELEASE_REPOSITORY.is_empty() { None } else { Some(RELEASE_REPOSITORY) },
         "cargoPackageVersion": env!("CARGO_PKG_VERSION"),
-        "resourceAnchors": if PRODUCTION_PROFILE { "unconfigured" } else { "development-source-v1" },
+        "resourceAnchors": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { "compiled-signed-tools-v1" } else if PRODUCTION_PROFILE { "unconfigured" } else { "development-source-v1" },
+        "resourceManifestSha256": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { Some(crate::production_resources::COMPILED_RESOURCE_MANIFEST_SHA256) } else { None },
+        "signatureEvidenceVerified": false,
+        "sourceTransformationVerified": false,
         "releaseReady": false,
         "runtimeAdmission": crate::platform_support::runtime_support().runtime_available,
         "runtimeErrorCode": crate::platform_support::runtime_support().error_code,
@@ -43,9 +48,8 @@ pub fn validate_desktop_identity(identifier: &str, version: &str) -> Result<(), 
     Ok(())
 }
 
-#[cfg(test)]
 #[path = "../build_support/profile.rs"]
-mod profile_schema;
+pub(crate) mod profile_schema;
 
 #[cfg(test)]
 mod tests {
@@ -69,9 +73,21 @@ mod tests {
             assert_eq!(ENVIRONMENT, "production");
             assert_eq!(DISPLAY_NAME, "熊猫小抽屉");
             assert_eq!(DISTRIBUTION, "production-candidate");
-            assert_eq!(metadata["resourceAnchors"], "unconfigured");
+            assert_eq!(
+                metadata["resourceAnchors"],
+                if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
+                    "compiled-signed-tools-v1"
+                } else {
+                    "unconfigured"
+                }
+            );
             assert_eq!(metadata["runtimeAdmission"], false);
-            assert_eq!(metadata["runtimeErrorCode"], PRODUCTION_RESOURCE_ERROR);
+            assert_eq!(
+                metadata["runtimeErrorCode"],
+                crate::platform_support::runtime_support()
+                    .error_code
+                    .unwrap()
+            );
             assert_eq!(PROFILE_DIGEST.len(), 64);
         } else {
             assert_eq!(APP_VERSION, "0.0.0");

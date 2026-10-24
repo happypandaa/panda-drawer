@@ -38,7 +38,13 @@ fn build_info_and_version_are_offline_and_share_compiled_metadata() {
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
     if platform_core::build_profile::PRODUCTION_PROFILE {
-        assert!(help.contains("Signed resource anchors are not configured"));
+        assert!(help.contains(
+            if platform_core::production_resources::COMPILED_RESOURCE_ANCHORS {
+                "signature and distribution proof is unavailable"
+            } else {
+                "Signed resource anchors are not configured"
+            }
+        ));
         assert!(!help.contains("connects to a production environment"));
     } else {
         assert!(
@@ -82,7 +88,9 @@ fn every_production_command_family_is_blocked_before_command_input_or_discovery(
         assert_eq!(response["ok"], false);
         assert_eq!(
             response["error"]["code"],
-            platform_core::build_profile::PRODUCTION_RESOURCE_ERROR,
+            platform_core::platform_support::runtime_support()
+                .error_code
+                .unwrap(),
             "{arguments:?}"
         );
         assert_eq!(

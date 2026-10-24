@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 production-profile = ["platform-core/production-profile"]
+production-resource-anchors = ["production-profile", "platform-core/production-resource-anchors"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
