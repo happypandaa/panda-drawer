@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   Activity, ArrowUpRight, BookOpen, Check, CircleAlert, Play,
   Database, Folder, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, Hammer, Trash2, Search, Settings,
+  RefreshCw, ShieldCheck, Terminal, Hammer, Trash2, Search, Settings, Sun, Moon,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -427,16 +427,21 @@ function App() {
   const currentOverviewProject = projects.find((project) => project.id === overview?.project.id);
   const overviewProject = currentOverviewProject ?? overview?.project;
   const overviewUnavailable = Boolean(overview && !currentOverviewProject);
+  const projectReady = (project: ProjectInfo) => project.state === 'ready' && !projectBlocked(project);
+  const nodeReady = (app: NodeAppDetail) => app.configuration.canStart && !['failed', 'starting', 'stopping'].includes(app.state) && !workspaceBusy;
   const filteredProjects = projects.filter((project) => {
     const matchesQuery = `${project.name} ${project.description ?? ''} ${project.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const ready = project.state === 'ready' && !projectBlocked(project);
+    const ready = projectReady(project);
     return matchesQuery && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
   });
   const filteredNodeApps = nodeApps.filter((app) => {
     const matches = `${app.name} ${app.id} ${app.sourcePath} Node 服务项目`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const ready = app.configuration.canStart && !['failed', 'starting', 'stopping'].includes(app.state) && !workspaceBusy;
+    const ready = nodeReady(app);
     return matches && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
   });
+  const attentionCount = projects.filter((project) => !projectReady(project)).length + nodeApps.filter((app) => !nodeReady(app)).length;
+  const runningCount = nodeApps.filter((app) => app.state === 'running').length;
+  const filterChoices = [['all', '全部'], ['ready', '可使用'], ['attention', '需要处理']] as const;
   const totalProjects = projects.length + nodeApps.length;
   const filteredCount = filteredProjects.length + filteredNodeApps.length;
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
@@ -453,7 +458,7 @@ function App() {
       <header className="radio-header">
         <div className="radio-brand">
           <img src="/panda-app-drawer.png" alt="" />
-          <div><strong className="radio-brand-wordmark">PANDA DRAWER</strong><span className="radio-brand-caption">熊猫小抽屉</span></div>
+          <strong className="radio-brand-name">熊猫小抽屉</strong>
         </div>
         <nav className="radio-primary-nav" aria-label="工作台导航">
           <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending} onClick={() => navigatePage('projects')}>我的项目</button>
@@ -461,19 +466,21 @@ function App() {
         </nav>
         <div className="radio-header-actions">
           <div className="radio-theme-switch" role="group" aria-label="外观主题">
-            <button aria-label="切换暗色主题" aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}>DARK</button>
-            <button aria-label="切换亮色主题" aria-pressed={theme === 'light'} onClick={() => setTheme('light')}>LIGHT</button>
+            <button aria-label="切换亮色主题" title="浅色" aria-pressed={theme === 'light'} onClick={() => setTheme('light')}><Sun size={15} aria-hidden="true" /></button>
+            <button aria-label="切换暗色主题" title="深色" aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}><Moon size={15} aria-hidden="true" /></button>
           </div>
           <button className="radio-settings-button" aria-label="设置" title="运行环境与关于" disabled={nodeDraft.pending} onClick={openSettings}><Settings size={17} /></button>
         </div>
       </header>
       {page === 'projects' && <div className="radio-toolbar">
         <label className="project-search"><Search size={16} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目…" /></label>
-        <label className="project-filter"><span className="sr-only">筛选项目状态</span><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value as 'all' | 'ready' | 'attention')}><option value="all">全部项目</option><option value="ready">可进入</option><option value="attention">需要处理</option></select></label>
+        <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
         <div className="radio-toolbar-spacer" />
-        <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={16} className={loading ? 'rotating' : undefined} /></button>
-        <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} onAcquire={() => setShowSources(true)} />
-        <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}>新建项目</button>
+        <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'rotating' : undefined} /></button>
+        <div className="radio-create-group">
+          <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}><Plus size={15} aria-hidden="true" />新建项目</button>
+          <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} onAcquire={() => setShowSources(true)} />
+        </div>
       </div>}
       <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
         <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间与工作区'}</h1>
@@ -500,7 +507,7 @@ function App() {
             </section>}
           </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} />}
       </main>
-      <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects}` : totalProjects} APPS</span><span title={info?.workspaceRoot}>LOCAL FIRST</span></footer>
+      <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `显示 ${filteredCount} / 共 ${totalProjects} 个应用` : `共 ${totalProjects} 个应用`}{runningCount > 0 ? ` · ${runningCount} 个运行中` : ''}</span><span title={info?.workspaceRoot}><ShieldCheck size={12} aria-hidden="true" />数据保存在本机</span></footer>
       {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={settingsBusy} onClose={() => setSettingsOpen(false)}>
         {feedback}
         <section className="runtime-view" aria-labelledby="settings-runtime-title">
@@ -532,7 +539,7 @@ function App() {
         </section>
         <details className="radio-settings-tasks recent-tasks" open={showManagementTasks} onToggle={(event) => setShowManagementTasks(event.currentTarget.open)}><summary>管理任务 <span>{activeLifecycleTasks.length + completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{activeLifecycleTasks.length > 0 && <div aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{completedLifecycleTasks.length > 0 && <div aria-label="最近的管理任务">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{activeLifecycleTasks.length + completedLifecycleTasks.length === 0 && <p className="radio-tasks-empty">暂无管理任务。</p>}</div></details>
         <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} onCreate={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (settingsBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
-        <div className="radio-settings-footer"><span>PANDA DRAWER</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
+        <div className="radio-settings-footer"><span>熊猫小抽屉</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
       </Modal>}
         <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>

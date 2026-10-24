@@ -1339,3 +1339,98 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .local-directory-review { margin-top: 18px; }
 .local-directory-ready-action { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .local-directory-ready-action strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* Home refresh (2026-10-24): compact header, chip filters, split create button,
+   launcher tiles with a type/status line, plain-language footer. */
+.radio-shell { background-size: 22px 22px; }
+.radio-header {
+  min-height: 56px;
+  gap: 16px;
+  padding: 10px 24px;
+  background-image: none;
+  box-shadow: none;
+}
+.radio-brand { gap: 10px; }
+.radio-brand > img { width: 30px; height: 30px; }
+.radio-brand-name { color: var(--radio-text); font-size: 15px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+.radio-primary-nav { padding: 2px; }
+.radio-primary-nav button { min-height: 30px; padding: 5px 14px; font-size: 13px; }
+.radio-theme-switch { padding: 2px; }
+.radio-theme-switch button { width: 30px; min-height: 28px; padding: 0; font: inherit; }
+.radio-settings-button { width: 32px; height: 32px; border-color: transparent; }
+.radio-settings-button:hover:not(:disabled) { border-color: var(--radio-line); }
+
+.radio-toolbar { min-height: 60px; gap: 10px; padding: 14px 32px 6px; }
+.radio-toolbar .project-search { max-width: 320px; }
+.project-filter-chips { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.project-filter-chips button {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 30px; padding: 5px 12px;
+  border: 1px solid transparent; border-radius: 999px;
+  color: var(--radio-secondary); background: transparent;
+  font-size: 12px; white-space: nowrap; cursor: pointer;
+  transition: background-color .15s, color .15s;
+}
+.project-filter-chips button:hover { background: var(--radio-selected); color: var(--radio-text); }
+.project-filter-chips button[aria-pressed='true'] { border-color: var(--radio-line); color: var(--radio-text); background: var(--radio-surface); font-weight: 500; box-shadow: 0 1px 2px #1711220d; }
+.filter-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; color: var(--radio-warning); background: var(--radio-warning-surface); font-size: 11px; font-weight: 600; line-height: 1; }
+.radio-refresh-button { width: 32px; height: 32px; border-color: transparent; color: var(--radio-secondary); }
+.radio-refresh-button:hover:not(:disabled) { color: var(--radio-text); }
+
+/* New project + "more ways to add" read as one split control. */
+.radio-create-group { display: inline-flex; align-items: stretch; flex-shrink: 0; }
+.radio-create-group > .primary-button { min-height: 34px; padding: 7px 14px 7px 12px; border-radius: 999px 0 0 999px; gap: 6px; }
+.radio-create-group .radio-add-menu > summary {
+  min-height: 34px; height: 100%; padding: 0 11px 0 9px;
+  border: 1px solid var(--radio-active); border-left-color: color-mix(in srgb, var(--radio-active-text) 25%, var(--radio-active));
+  border-radius: 0 999px 999px 0;
+  color: var(--radio-active-text); background: var(--radio-active);
+}
+.radio-create-group .radio-add-menu > summary:hover, .radio-create-group .radio-add-menu[open] > summary { color: var(--radio-active-text); background: var(--radio-active); filter: brightness(.88); }
+.radio-create-group .radio-add-menu > summary[aria-disabled='true'] { border-color: var(--radio-line); color: var(--radio-muted); background: var(--radio-subtle); filter: none; cursor: default; }
+.radio-create-group .radio-add-menu > div { right: 0; left: auto; min-width: 180px; }
+
+/* Launcher tiles: icon, up to two lines of name, then a type/status line. */
+.radio-project-grid, .radio-main > .project-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 136px)); justify-content: start; gap: 10px 14px; padding: 14px 26px 28px; }
+.project-card.launcher-tile { min-height: 0; padding: 14px 6px 12px; border-radius: 16px; }
+.project-card.launcher-tile:hover, .project-card.launcher-tile:focus-within { background: var(--radio-surface); box-shadow: 0 1px 2px #1711220f, 0 6px 18px #17112212; }
+.launcher-tile .launcher-open { gap: 0; }
+.launcher-tile .launcher-icon { width: 60px; height: 60px; border-radius: 16px; margin-bottom: 10px; box-shadow: inset 0 0 0 1px #0000000d, 0 1px 2px #1711221a; }
+.launcher-tile .launcher-icon > svg { width: 26px; height: 26px; }
+.launcher-tile .launcher-icon > img.launcher-node-badge { right: -5px; bottom: -5px; width: 20px; height: 20px; filter: drop-shadow(0 0 1.5px var(--radio-background)) drop-shadow(0 0 1px var(--radio-background)); }
+.launcher-tile .launcher-name, .project-card.launcher-tile h2.launcher-name {
+  display: -webkit-box; height: auto; max-height: 38px;
+  white-space: normal; text-overflow: ellipsis; overflow-wrap: anywhere;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  padding-inline: 2px; font-size: 13px; line-height: 19px;
+}
+.launcher-state { display: inline-flex; align-items: center; justify-content: center; gap: 5px; max-width: 100%; margin-top: 4px; overflow: hidden; color: var(--radio-muted); font-size: 11px; line-height: 16px; font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }
+.launcher-state-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--radio-line); }
+.launcher-state.is-running { color: var(--radio-success); }
+.launcher-state.is-running .launcher-state-dot { background: var(--radio-success); box-shadow: 0 0 0 3px var(--radio-success-surface); }
+.launcher-state.is-busy .launcher-state-dot { background: var(--radio-focus); animation: launcher-pulse 1.2s ease-in-out infinite; }
+.launcher-state.is-attention { color: var(--radio-warning); }
+.launcher-state.is-attention .launcher-state-dot { background: #d6a23a; }
+.launcher-state.is-error { color: var(--radio-danger); }
+.launcher-state.is-error .launcher-state-dot { background: var(--radio-danger); }
+@keyframes launcher-pulse { 50% { opacity: .35; } }
+
+.radio-footer { min-height: 30px; padding: 6px 32px; background-image: none; font-family: inherit; font-size: 11px; line-height: 1.6; letter-spacing: 0; }
+.radio-footer > span { gap: 5px; }
+
+@media (max-width: 860px) {
+  .radio-header { padding-inline: 20px; }
+  .radio-toolbar { padding-inline: 24px; }
+  .radio-toolbar .project-search { max-width: 240px; }
+}
+@media (max-width: 720px) {
+  .radio-header { min-height: 52px; padding: 8px 16px; }
+  .radio-brand-name { display: none; }
+  .radio-toolbar { flex-wrap: wrap; padding: 10px 20px 4px; }
+  .radio-toolbar .project-search { flex-basis: 100%; max-width: none; order: -1; }
+  .project-filter-chips button { padding-inline: 10px; }
+  .radio-create-group > .primary-button { min-height: 32px; padding-inline: 11px; }
+  .radio-create-group .radio-add-menu > summary { min-height: 32px; }
+  .radio-create-group { margin-left: auto; }
+  .radio-project-grid, .radio-main > .project-grid { padding-inline: 14px; }
+}

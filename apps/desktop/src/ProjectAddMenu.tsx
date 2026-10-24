@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { ChevronDown, FolderOpen, Upload } from 'lucide-react';
+import { ChevronDown, Download, FolderOpen, Upload } from 'lucide-react';
 
 type Props = {
   disabled: boolean;
@@ -32,9 +32,9 @@ export function ProjectAddMenu({ disabled, onAdd, onImport, onAcquire }: Props) 
       event.preventDefault(); event.stopPropagation(); close(); trigger.current?.focus();
     }
   }}>
-    <summary ref={trigger} aria-disabled={disabled} onClick={(event) => { if (disabled) event.preventDefault(); }}><ChevronDown size={16} />添加</summary>
+    <summary ref={trigger} aria-disabled={disabled} aria-label="更多添加方式" title="获取源码、添加本地应用或导入" onClick={(event) => { if (disabled) event.preventDefault(); }}><ChevronDown size={15} aria-hidden="true" /></summary>
     <div className="radio-add-menu-content" aria-label="项目操作">
-      {onAcquire && <button disabled={disabled} onClick={() => run(onAcquire)}><FolderOpen size={15} />获取项目源码</button>}
+      {onAcquire && <button disabled={disabled} onClick={() => run(onAcquire)}><Download size={15} />获取项目源码</button>}
       <button disabled={disabled} onClick={() => run(onAdd)}><FolderOpen size={15} />添加本地应用</button>
       <button disabled={disabled} onClick={() => run(onImport)}><Upload size={15} />导入项目</button>
     </div>
