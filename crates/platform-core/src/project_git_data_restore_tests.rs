@@ -1082,3 +1082,7 @@ async fn official_git_data_restore_recovery_close_failure_reports_actual_retaine
         assert_eq!(issues[0].code, "DATABASE_THREAD_JOIN_FAILED");
     }
 }
+
+#[cfg(unix)]
+#[path = "disposable_process_restore_test.rs"]
+mod disposable_process;
