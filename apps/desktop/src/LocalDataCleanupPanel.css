@@ -1,0 +1,16 @@
+.local-data-cleanup { margin-top: 18px; padding: 16px; border: 1px solid var(--radio-danger-line); border-radius: 10px; background: var(--radio-danger-surface); }
+.local-data-cleanup-heading { display: flex; align-items: center; gap: 8px; color: var(--radio-danger); }
+.local-data-cleanup-heading h3 { margin: 0; font-size: 13px; line-height: 20px; }
+.local-data-cleanup > p { margin: 8px 0 14px; color: var(--radio-secondary); font-size: 12px; line-height: 1.7; }
+.local-data-cleanup-modal p, .local-data-cleanup-modal li { font-size: 12px; line-height: 1.8; }
+.local-data-cleanup-warning { padding: 12px; color: var(--radio-danger); border: 1px solid var(--radio-danger-line); border-radius: 8px; background: var(--radio-danger-surface); }
+.local-data-cleanup-paths { margin-block: 16px; }
+.local-data-cleanup-paths h4 { margin: 0 0 6px; font-size: 12px; }
+.local-data-cleanup-paths ul { margin: 0; padding-left: 20px; }
+.local-data-cleanup-paths li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.local-data-cleanup-paths code { display: block; overflow-wrap: anywhere; white-space: pre-wrap; font: 11px/1.7 var(--radio-mono); }
+.local-data-cleanup-warnings { color: var(--radio-danger); padding-left: 20px; }
+.local-data-cleanup-phrase { display: grid; gap: 8px; margin-block: 16px; font-size: 12px; }
+.local-data-cleanup-phrase input { width: 100%; min-height: 38px; box-sizing: border-box; padding: 8px 10px; color: var(--radio-text); background: var(--radio-surface); border: 1px solid var(--radio-line); border-radius: 7px; font: inherit; }
+.local-data-cleanup-modal .confirmation-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.local-data-cleanup-result h3 { margin-top: 0; font-size: 16px; }

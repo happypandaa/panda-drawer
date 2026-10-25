@@ -868,6 +868,76 @@ pub(crate) fn info(paths: &RuntimePaths, store: &ProjectStore) -> Result<Value, 
     )
 }
 
+/// Roots owned by completed public migrations. This is deliberately separate
+/// from historical cleanup's narrower protection rules: explicit pre-uninstall
+/// cleanup may remove retained projects and recovery evidence, but must never
+/// infer ownership from a path alone or silently skip an unavailable disk.
+pub(crate) fn local_cleanup_roots(paths: &RuntimePaths) -> Result<Vec<PathBuf>, ApiError> {
+    paths.validate_cleanup_selection().map_err(ioerr)?;
+    let mut journals = Vec::new();
+    let mut cleaned = BTreeSet::new();
+    for entry in fs::read_dir(paths.migrations_dir())? {
+        let entry = entry?;
+        let id = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| ioerr("无法核对迁移记录名称，未开始清理。"))?;
+        let j = read_journal(paths, &id)?;
+        validate_journal(&j, &id).map_err(ioerr)?;
+        if !j.committed
+            || !j.published
+            || !j.resolved
+            || !j.epochs_applied
+            || j.phase != "completed"
+            || task(paths, &id)?.is_none_or(|task| !task.status.is_final())
+        {
+            return Err(ioerr(
+                "存在未完成或无法核对的迁移，请先处理后再清理全部本机数据。",
+            ));
+        }
+        check_no_symlinks(&j.stage_path, true)?;
+        if j.stage_path.try_exists()? {
+            return Err(ioerr("存在迁移暂存目录，不能猜测其身份后清理。"));
+        }
+        if crate::history_cleanup::retired_cleanup_status(paths, &id)?
+            .is_some_and(|receipt| receipt["completed"] == true)
+        {
+            cleaned.insert(j.source_path.clone());
+        }
+        journals.push(j);
+    }
+    let mut roots = BTreeSet::from([paths.workspace_root().to_path_buf()]);
+    for journal in journals {
+        let destination = journal
+            .destination_identity
+            .as_ref()
+            .ok_or_else(|| ioerr("迁移目标缺少身份记录，未开始清理。"))?;
+        for (path, expected) in [
+            (&journal.source_path, &journal.source_identity),
+            (&journal.destination_path, destination),
+        ] {
+            clean_absolute(path).map_err(ioerr)?;
+            check_no_symlinks(path, true)?;
+            match fs::symlink_metadata(path) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound && cleaned.contains(path) => {}
+                Ok(metadata)
+                    if metadata.is_dir() && expected.matches_path(path).unwrap_or(false) =>
+                {
+                    roots.insert(path.clone());
+                }
+                _ => {
+                    return Err(ioerr(format!(
+                        "工作区不可访问或身份已变化，请连接原磁盘并核对：{}",
+                        path.display()
+                    )))
+                }
+            }
+        }
+    }
+    Ok(roots.into_iter().collect())
+}
+
 #[cfg(test)]
 #[path = "workspace_tests.rs"]
 mod tests;

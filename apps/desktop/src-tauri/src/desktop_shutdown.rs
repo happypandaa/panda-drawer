@@ -266,6 +266,23 @@ impl DesktopShutdown {
     pub fn status(&self) -> Report {
         self.report.borrow().clone()
     }
+    /// Cleanup is stricter than normal Quit: all observed work must have
+    /// succeeded, including jobs whose error says its resources are closed.
+    pub fn cleanup_ready(&self) -> bool {
+        let meta = self.meta.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(backend) = meta.backend.as_ref() else {
+            return false;
+        };
+        let core = backend.core_state();
+        meta.started
+            && meta.sticky.is_empty()
+            && core.closed
+            && !core.blocked
+            && core.issues.is_empty()
+            && [&self.windows, &self.nodes, &self.sessions, &self.core]
+                .iter()
+                .all(|job| job.result() == Some(Ok(())))
+    }
     pub fn request(
         self: &Arc<Self>,
         backend: Arc<dyn Backend>,
