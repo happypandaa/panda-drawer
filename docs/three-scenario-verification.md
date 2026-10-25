@@ -517,3 +517,5 @@ SELF原始取证保存在 `.test-artifacts/three-scenario-2026-10-21/native-self
 随后只设置自有 runtime 子目录0555，正常 Quit 得到真实 retryable `SHUTDOWN_DISCOVERY_FAILED`。这次工具确实捕获附着的原生 alert sheet、标题“正在保护现有工作”和 `OK` 按钮，并立即通过按钮关闭；管理窗口保留，报告仍为Blocked。测试菜单只记录日志，没有再发说明弹窗。原生恢复0700后再次明确 Cmd+Q，程序正常结束，PID24911消失、60191拒绝连接，未强杀。证据 `native-observation-24911-0001.json`、`native-shutdown-report-24911-0003.json`、`runtime-permissions-restored-24911-0004.json` 及 `root-quiet-native-ui376-dialogaf59-final.json`。
 
 本轮完成了上述两个修后原生子项。新父窗提示没有重新覆盖 sticky 故障，sticky资源保护仍仅由E26原包证明；没有额外重做已通过的下载取消或写入原开发项目，不增加签名、公证或安装许可。因工具禁止操作 macOS系统通知中心，用户已看到的旧独立说明通知不能由工具代为关闭；已停止原产生程序并移除后续产生路径，不通过其他技术绕过该限制。
+
+E27结束后的原开发根再次离线扫描，与新Node复验后的20,620项完整记录逐项相等；本轮隔离host没有增加原根差异。对最初基准仍返回exit3及同一342项保护差异，不改为空白名单“全相同”。最终证据为 `.test-artifacts/core-native-20261024/after-native-exceptions-e27-final-20261025.json` 和 `preservation-e27-final-review.json`。
