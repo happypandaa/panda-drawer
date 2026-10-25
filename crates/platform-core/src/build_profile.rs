@@ -91,7 +91,7 @@ mod tests {
             assert_eq!(PROFILE_DIGEST.len(), 64);
         } else {
             assert_eq!(APP_VERSION, "0.0.0");
-            assert_eq!(APP_IDENTIFIER, "dev.localprojects.platform.m0");
+            assert_eq!(APP_IDENTIFIER, "dev.happypandaa.pandadrawer");
             assert_eq!(ENVIRONMENT, "development");
             assert_eq!(DISPLAY_NAME, "熊猫小抽屉 · 开发版");
             assert_eq!(DISTRIBUTION, "internal-development");

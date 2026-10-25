@@ -19,9 +19,9 @@ function cli(args, input) {
   return envelope.data;
 }
 const runtime = cli(['service', 'status']).runtime;
-assert.equal(runtime.identifier, 'dev.localprojects.platform.m0');
+assert.equal(runtime.identifier, 'dev.happypandaa.pandadrawer');
 assert.equal(runtime.environment, 'development');
-const expectedRoot = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0/workspace');
+const expectedRoot = join(homedir(), 'Library/Application Support/dev.happypandaa.pandadrawer/workspace');
 assert.equal(runtime.workspaceRoot, expectedRoot);
 assert.match(runtime.baseUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
 const origin = runtime.baseUrl;

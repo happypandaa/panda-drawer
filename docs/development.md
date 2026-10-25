@@ -4,7 +4,7 @@
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
 
-状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。产品名已确认为「熊猫小抽屉」；[名称与图标](branding.md)已接入内部代码，固定开发身份和数据根保持。
+状态：M5 功能与内部包已有交付，基础自动化、真实服务、进程重启及兼容结果见 [M5 原记录](m5-verification.md)。后续清理历史已通过[原生 GUI 验证](history-cleanup-gui-verification.md)；WKWebView 文件选择、原生保存框、剪贴板、真实录音拍照与持久回放、运行门槛和 HTTPS/CSP 通过的实际范围见 [M5 浏览器实测续记](m5-browser-real-verification.md)。Safari/Chrome、拒绝权限、独立系统设备释放测量和物理断网仍未完成，不将 M5 三端验收标为全部通过。历史验证见 [M0 记录](m0-verification.md)、[M1 记录](m1-verification.md)、[M2 记录](m2-verification.md)、[M3 记录](m3-verification.md)及 [M4 记录](m4-verification.md)。产品名已确认为「熊猫小抽屉」；[名称与图标](branding.md)已接入内部代码。2026-10-25 用户最终明确选择[清空旧开发环境并重新开始](development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`；旧验收记录保留原身份，实际清理与新环境验收另记。
 
 2026-10-19 新增方向：平台内置 Node，运行用户应用自己的 Node 后端，统一启动、停止及展示运行状态；总体方案见[受管 Node 运行时](node-app-runtime.md)，说明文件与协议见[启动规范草案](node-app-startup-spec.md)，小步安排见[实施计划](node-app-implementation-plan.md)。共享运行时资源，各应用独立受管进程；AI、TTS、音乐和业务 SDK 由应用实现，Claude Code 不是平台必需依赖。该方向取代固定 Claude Code／网易云连接器设想，本轮仅整理方案，未写运行代码；当前程序仍是静态网页与 Rust 核心，未内置 Node 或实现应用后端。现有静态 v1 格式、SDK/CLI/HTTP 和系统 Node 构建流程保持原语义，新类型及协议仍为草案。受管进程不是沙箱，平台密钥管理没有因此实现。
 
@@ -58,20 +58,20 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 ## 1 开发身份
 
-所有当前源码运行与内部打包产物均固定为：
+本轮用户确认后的源码运行与内部打包身份固定为下表；本次旧开发资料按[明确授权的重置](development-identity-reset.md)清空，以新身份建立空环境，表格不证明实际清理或新环境验收已经完成：
 
 | 项目 | 值 |
 | --- | --- |
 | 显示名称 | 熊猫小抽屉 / 熊猫小抽屉 · 开发版 |
-| 应用标识 | `dev.localprojects.platform.m0` |
+| 应用标识 | `dev.happypandaa.pandadrawer` |
 | 环境 | `development` |
 | CLI | `local-projects-dev` |
-| 数据根 | `~/Library/Application Support/dev.localprojects.platform.m0/` |
+| 数据根 | `~/Library/Application Support/dev.happypandaa.pandadrawer/` |
 | 工作区 | 初始为数据根下 `workspace/`；公开迁移后为固定设置中已提交的新位置 |
 | 服务发现 | 数据根下 `runtime/connection.json` |
 | 凭据 | 数据根下 `runtime/control-token`，仅当前用户可读写 |
 
-产品名称已经确认；上述应用标识、CLI 与数据根继续属于隔离的开发身份，不据此建立正式生产实例。当前暂不提供生产构建或根目录环境变量覆盖。用户通过公开工作区迁移选择新位置，不能直接编辑设置跳过迁移。CLI 编译时绑定相同身份，只查本开发环境，不回退连接其他平台实例；固定数据根、设置、凭据、发现文件及锁成套隔离。
+产品名称已经确认；上述应用标识、CLI 与数据根属于隔离的开发身份，不据此建立正式生产实例，也不提供根目录环境变量覆盖。2026-10-25 用户最终明确授权删除旧 `dev.localprojects.platform.m0` 平台管理的现有项目、业务数据、旧备份／回收／维护／恢复资料及三处旧系统状态，以新身份重新开始；不保留旧副本、校验清单或临时迁移证据，外部原作者源码和平台工程保留。范围与实际结果见[开发环境重置](development-identity-reset.md)，不交付身份迁移命令或旧路径兼容映射。该授权仅适用于本次重置，后续普通工作区位置变化仍使用公开迁移，普通升级不据此清空资料。CLI 编译时绑定相同身份，只查本开发环境，不回退连接其他平台实例；固定数据根、设置、凭据、发现文件及锁成套隔离。
 
 初始化验证开发环境标记和所选工作区；非默认位置必须有固定迁移日志、已发布的目标标记及匹配的目录身份。拒绝不明的已有非空目录、错误身份、符号链接和无依据的设置重定向；已提交目标缺失时拒绝启动业务，不重建为空目录或自动打开旧副本。回收站的显式永久清除只删除选中项目副本；没有通用清除全部数据的命令。旧迁移根的清理只接受已登记、可核对并明确确认的计划，见[历史清理补充](history-cleanup.md)。自动测试使用临时目录，真实实例脚本只修改明确新建的可丢弃项目。
 

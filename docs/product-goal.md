@@ -1,5 +1,7 @@
 # 熊猫小抽屉最终目标
 
+2026-10-25 开发环境更新：用户最终明确选择删除现有受管开发项目和业务数据，以 `dev.happypandaa.pandadrawer` 空环境重新开始，范围见[开发环境重置](development-identity-reset.md)。本次不保留旧副本、校验清单或临时迁移证据，保留外部原作者源码及平台工程；该授权覆盖此前固定旧身份、资料保留和迁移计划。普通工作区搬迁仍走公开流程。旧里程碑和实际验收中的身份、路径及完成状态保留当时原值，实际清理与新环境验收另记。
+
 确认日期：2026-10-21。
 
 2026-10-24 用户确认继续实施的顺序：先收尾制作、获取、定制三条完整流程，再补齐业务数据的 Git 版本管理及独立本地备份退役，然后完成 Mac 正式发行和平台自动升级；分享和 Windows 后置，不作为前三阶段的前置。平台升级采用自动检查、后台下载、用户明确选择安装并重启的默认体验，安全结束活动操作后才替换程序；保留现有项目、数据、固定应用身份和数据根。这是实施授权与目标更新，不代表上述工作已经完成。
@@ -75,4 +77,4 @@
 - [项目与应用包格式](project-and-app-format-v1.md)、[用户与 AI 文档分工](application-documentation.md)。
 - [主里程碑](development-milestones.md)、[外部包计划](app-package-implementation-plan.md)、[Node 计划](node-app-implementation-plan.md)、[Windows 计划](windows-support-plan.md)。
 
-最新实际能力从根 [README](../README.md)、[文档地图](documentation-map.md)及[本机 Node 配置与运行](node-native-configuration.md)进入。现有开发项目、源码、SDK、数据、附件、维护状态、备份、回收和恢复证据继续按 [AGENTS.md](../AGENTS.md) 保护；固定应用身份和数据根不变，工作区变化使用公开迁移流程。
+最新实际能力从根 [README](../README.md)、[文档地图](documentation-map.md)及[本机 Node 配置与运行](node-native-configuration.md)进入。普通开发工作按 [AGENTS.md](../AGENTS.md) 保护项目、源码、SDK、数据、附件、维护状态、备份、回收和恢复证据；2026-10-25 用户最终明确授权的[旧开发环境重置](development-identity-reset.md)仅覆盖本次旧受管资料的删除，外部原作者源码和平台工程仍保留。后续普通工作区变化使用公开迁移流程，不能从这次重置推导日后任意清空权限。

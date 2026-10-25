@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SDK_SHA256 = '334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9'
 const M4_SHA256 = 'a28f95e8a02e329cd3b48d6de0f7fbdc0a9cd02a020d06a4f7308ccd326953d6'
-const IDENTIFIER = 'dev.localprojects.platform.m0'
+const IDENTIFIER = 'dev.happypandaa.pandadrawer'
 const args = process.argv.slice(2)
 if (args.includes('--help')) {
   console.log('Usage: node scripts/m5-package-verify.mjs [--app ABSOLUTE_APP] [--dmg ABSOLUTE_DMG] [--output ABSOLUTE_NEW_DIRECTORY]')

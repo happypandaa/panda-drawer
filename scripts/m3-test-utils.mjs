@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 export const repository = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const artifactRoot = join(repository, '.test-artifacts');
 export const cliPath = process.env.M3_TEST_CLI || join(repository, 'target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
-export const expectedWorkspace = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0/workspace');
+export const expectedWorkspace = join(homedir(), 'Library/Application Support/dev.happypandaa.pandadrawer/workspace');
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export function invoke(args, input, allowError = false) {
@@ -28,7 +28,7 @@ export function invoke(args, input, allowError = false) {
 export const cli = (args, input) => invoke(args, input).data;
 export function runtime() {
   const current = cli(['service', 'status']).runtime;
-  assert.equal(current.identifier, 'dev.localprojects.platform.m0');
+  assert.equal(current.identifier, 'dev.happypandaa.pandadrawer');
   assert.equal(current.environment, 'development');
   assert.equal(current.workspaceRoot, expectedWorkspace);
   assert.equal(new URL(current.baseUrl).hostname, '127.0.0.1');

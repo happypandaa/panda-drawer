@@ -11,13 +11,13 @@ import { fileURLToPath } from 'node:url';
 export { inspectArchive, corruptArchivedDatabase } from './m3-test-utils.mjs';
 export const repository = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const artifactRoot = join(repository, '.test-artifacts');
-export const dataRoot = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0');
+export const dataRoot = join(homedir(), 'Library/Application Support/dev.happypandaa.pandadrawer');
 export const defaultWorkspace = join(dataRoot, 'workspace');
 export const cliPath = process.env.M4_TEST_CLI || join(repository, 'target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export function settings() {
   const value = JSON.parse(readFileSync(join(dataRoot, 'settings.json'), 'utf8'));
-  assert.equal(value.identifier, 'dev.localprojects.platform.m0');
+  assert.equal(value.identifier, 'dev.happypandaa.pandadrawer');
   assert.equal(value.environment, 'development');
   assert.ok(isAbsolute(value.workspaceRoot));
   return value;
@@ -36,7 +36,7 @@ export function runtime() {
   const selected = settings();
   const discovery = JSON.parse(readFileSync(join(dataRoot, 'runtime/connection.json'), 'utf8'));
   for (const value of [current, discovery]) {
-    assert.equal(value.identifier, 'dev.localprojects.platform.m0');
+    assert.equal(value.identifier, 'dev.happypandaa.pandadrawer');
     assert.equal(value.environment, 'development');
     assert.equal(value.workspaceRoot, selected.workspaceRoot);
     assert.equal(new URL(value.baseUrl).hostname, '127.0.0.1');

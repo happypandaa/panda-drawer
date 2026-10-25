@@ -69,7 +69,7 @@ test('generator rejects prereleases, build aliases and equal or older release pu
 });
 
 test('identity, profile, platform, repository, tag and path overrides are rejected', () => {
-  for (const overrides of [{ identifier: 'dev.localprojects.platform.m0' }, { profile: 'development' }, { target: 'darwin-x86_64' }, { releaseRepository: 'https://github.com/someone/else' }, { tag: 'latest' }, { artifactPath: '/private/file' }, { schemaVersion: 2 }]) assert.throws(() => generateStaticManifest(metadata(overrides)));
+  for (const overrides of [{ identifier: 'dev.happypandaa.pandadrawer' }, { profile: 'development' }, { target: 'darwin-x86_64' }, { releaseRepository: 'https://github.com/someone/else' }, { tag: 'latest' }, { artifactPath: '/private/file' }, { schemaVersion: 2 }]) assert.throws(() => generateStaticManifest(metadata(overrides)));
   for (const name of ['../bad.app.tar.gz', '/bad.app.tar.gz', 'bad\\app.app.tar.gz', 'bad.dmg', 'bad.app.tar.gz.sig', 'bad%2f.app.tar.gz', 'bad?token.app.tar.gz', 'bad#frag.app.tar.gz', 'x'.repeat(256) + '.app.tar.gz']) {
     assert.throws(() => generateStaticManifest(metadata({ artifact: { ...metadata().artifact, name } })));
   }
@@ -147,7 +147,7 @@ test('bounded JSON rejects duplicates, invalid UTF-8, trailing text and deep unk
 });
 
 test('development, unknown and caller-forged production metadata cannot enable automatic checking', () => {
-  for (const info of [undefined, {}, { profile: 'development', identifier: 'dev.localprojects.platform.m0', releaseReady: true }, { profile: 'production', identifier: UPDATE_POLICY.identifier, releaseReady: true, updaterEnabled: true }]) assert.equal(automaticCheckPolicy(info).enabled, false);
+  for (const info of [undefined, {}, { profile: 'development', identifier: 'dev.happypandaa.pandadrawer', releaseReady: true }, { profile: 'production', identifier: UPDATE_POLICY.identifier, releaseReady: true, updaterEnabled: true }]) assert.equal(automaticCheckPolicy(info).enabled, false);
 });
 
 test('CLI parsing rejects source/identity overrides, duplicate flags and wrong command options', () => {

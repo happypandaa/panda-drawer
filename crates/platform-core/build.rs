@@ -59,7 +59,7 @@ fn main() {
         values.extend([
             ("BUILD_PROFILE", "development".into()),
             ("APP_VERSION", env::var("CARGO_PKG_VERSION").unwrap()),
-            ("APP_IDENTIFIER", "dev.localprojects.platform.m0".into()),
+            ("APP_IDENTIFIER", "dev.happypandaa.pandadrawer".into()),
             ("ENVIRONMENT", "development".into()),
             ("DISPLAY_NAME", "熊猫小抽屉 · 开发版".into()),
             ("DISTRIBUTION", "internal-development".into()),

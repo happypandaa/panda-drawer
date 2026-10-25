@@ -30,18 +30,20 @@ Node 槽位于固定数据根的 `node-apps/`，不会随网页工作区迁移�
 
 把 `.app` 移到废纸篓不会自动删除下表中的程序外内容。本入口清理的是预览列出的受管项目与配置内容，**不承诺清除整台机器上与软件有关的全部残留**，也不代替系统网页存储的独立清理。
 
-当前开发机器的只读盘点确认以下位置存在；本次不读取或记录其中的用户内容，也不对这些真实目录执行清理：
+2026-10-25 用户最终明确选择[清空旧开发环境并重新开始](development-identity-reset.md)：旧平台管理的项目和业务资料、三处旧系统状态及临时身份切换证据全部删除，不保留旧副本或校验清单；新固定数据根为 `~/Library/Application Support/dev.happypandaa.pandadrawer/`。平台工程和外部原作者源码保留，实际清理与新环境验收另记。这次针对旧开发实例的独立授权不扩展本页正常清理入口的范围。
+
+下表是此次重置前、原清理功能说明中的历史只读盘点，确认的是当时存在的位置。本页原功能检查没有读取或记录其中的用户内容，也没有执行真实清理；不把当时的盘点改写为本次重置已经完成：
 
 | 位置 | 内容与本入口边界 |
 | --- | --- |
-| `~/Library/Application Support/dev.localprojects.platform.m0/` | 当前开发版的固定数据根。默认工作区和独立 Node 槽在此；工作区迁移后以设置中的实际位置为准。本入口清理其中受管业务内容，并保留前述最小控制记录 |
+| `~/Library/Application Support/dev.localprojects.platform.m0/` | 旧开发版固定数据根的历史位置，本次单独重置授权要求清空；新环境的固定根以运行程序实际返回为准 |
 | `~/Library/WebKit/dev.localprojects.platform.m0/` | WebKit 相关网页存储。本入口不删除；网页会话和 localStorage 等数据可能继续存在 |
 | `~/Library/Caches/dev.localprojects.platform.m0/` | 系统或网页引擎缓存。本入口不删除，不把未核对的内容统一宣称为无敏感临时文件 |
 | `~/Library/Preferences/dev.localprojects.platform.m0.plist` | macOS 的应用偏好文件。本入口不删除 |
 
 当前宿主使用 WebKit 的默认网页数据存储，主题偏好使用 localStorage。上述位置存在不证明每种数据都位于同一路径，也不能从目录名推导具体保存内容。系统可能生成其他记录，独立保存的 ZIP、导出包和下载的 DMG 也可能位于上述目录之外，均不由本入口搜索全盘删除。
 
-这里的 `dev.localprojects.platform.m0` 是开发身份。正式身份为 `com.happypandaa.pandadrawer`，使用独立数据位置；正式运行及安装验收尚未完成，不能把当前开发机器的目录观察写成正式版已经运行或正式残留检查已通过。
+当前固定开发身份为 `dev.happypandaa.pandadrawer`。本次单独重置授权包括删除上述旧身份的 WebKit／Caches／Preferences，并清空旧受管项目和业务资料；不保留或迁移旧网页会话、主题、业务数据或恢复证据。新环境以后产生的系统状态仍按正常清理边界处理，本页设置入口不会因此获得删除系统位置的能力。正式身份为 `com.happypandaa.pandadrawer`，使用独立数据位置；正式运行及安装验收尚未完成，不能把开发机器的目录观察写成正式版已经运行或正式残留检查已通过。
 
 ## 两次确认
 

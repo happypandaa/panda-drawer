@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, realpath, rm, symlink, ls
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { desktopPackagePlan, withDesktopPackageOutput } from './desktop-package-output.mjs';
+import { desktopPackagePlan, validateDesktopPackageIdentity, withDesktopPackageOutput } from './desktop-package-output.mjs';
 
 const configuration = {
-  productName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', bundle: { targets: ['app', 'dmg'] },
+  productName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.happypandaa.pandadrawer', bundle: { targets: ['app', 'dmg'] },
 };
 const planFor = (root, args = ['build', '--bundles', 'app']) => desktopPackagePlan({ root, args, configuration, environment: {}, platform: 'darwin', arch: 'arm64' });
 const appFile = app => path.join(app, 'Contents', 'identity.json');
@@ -36,12 +36,10 @@ async function fixture(t, args) {
   await writeFile(dmg, 'old-dmg');
   const verifiers = {
     processes: async () => [],
-    verifyApp: async (file, candidatePlan) => {
+    verifyApp: async (file, candidatePlan, { requireDevelopmentTools = true } = {}) => {
       assert.equal((await lstat(file)).isSymbolicLink(), false);
       const identity = JSON.parse(await readFile(appFile(file), 'utf8'));
-      assert.equal(identity.identifier, plan.identifier);
-      assert.equal(identity.bundleName, candidatePlan.productName);
-      assert.equal(identity.executable, 'local-projects-desktop-dev');
+      validateDesktopPackageIdentity({ CFBundleIdentifier: identity.identifier, CFBundleName: identity.bundleName, CFBundleExecutable: identity.executable }, candidatePlan, { allowLegacyIdentifier: !requireDevelopmentTools });
     },
     verifyDmg: async (file, candidatePlan) => {
       const info = await lstat(file);
@@ -65,6 +63,38 @@ test('standard plans recognize app, dmg and debug without changing application i
   assert.equal(planFor('/some/repository', ['build', '--help']), undefined);
   assert.equal(planFor('/some/repository', ['build', '--no-bundle']), undefined);
   assert.equal(desktopPackagePlan({ root: '/x', args: ['build'], configuration, platform: 'win32' }), undefined);
+});
+
+test('only previous generated outputs may retain the exact legacy development identity', () => {
+  const plan = planFor('/some/repository');
+  const info = { CFBundleIdentifier: plan.identifier, CFBundleName: plan.productName, CFBundleExecutable: 'local-projects-desktop-dev' };
+  validateDesktopPackageIdentity(info, plan);
+  const previous = { ...info, CFBundleIdentifier: 'dev.localprojects.platform.m0' };
+  validateDesktopPackageIdentity(previous, plan, { allowLegacyIdentifier: true });
+  assert.throws(() => validateDesktopPackageIdentity(previous, plan));
+  for (const modified of [
+    { ...previous, CFBundleIdentifier: 'com.happypandaa.pandadrawer' },
+    { ...previous, CFBundleName: 'Other' },
+    { ...previous, CFBundleExecutable: 'other' },
+  ]) assert.throws(() => validateDesktopPackageIdentity(modified, plan, { allowLegacyIdentifier: true }));
+  assert.throws(() => desktopPackagePlan({ root: '/x', args: ['build'], configuration: { ...configuration, identifier: previous.CFBundleIdentifier }, platform: 'darwin', arch: 'arm64', environment: {} }));
+});
+
+test('identity migration accepts the prior generated package and restores it on a failed new build', async t => {
+  const f = await fixture(t);
+  const previous = { ...JSON.parse(await readFile(appFile(f.app))), identifier: 'dev.localprojects.platform.m0' };
+  await writeFile(appFile(f.app), JSON.stringify(previous));
+  await assert.rejects(withDesktopPackageOutput(f.plan, async () => {
+    await f.writeApp('partial');
+    throw new Error('intentional identity migration build failure');
+  }, f.verifiers), /intentional identity migration build failure/);
+  assert.deepEqual(JSON.parse(await readFile(appFile(f.app))), previous);
+  assert.equal(await readFile(f.dmg, 'utf8'), 'old-dmg');
+  await noTransaction(f);
+  const report = await withDesktopPackageOutput(f.plan, async () => f.writeApp('new'), f.verifiers);
+  assert.equal(report.removedPrevious, 2);
+  assert.equal(JSON.parse(await readFile(appFile(f.app))).identifier, f.plan.identifier);
+  await noTransaction(f);
 });
 
 test('rejects custom output or identity overrides and unknown bundle types before mutation', () => {
@@ -216,7 +246,7 @@ test('symlink comparison does not match nearby app names or unknown executable n
 
 test('a legacy filename with a different bundle name or identity is preserved and blocks cleanup', async t => {
   for (const identity of [
-    { identifier: 'dev.localprojects.platform.m0', bundleName: '熊猫小抽屉' },
+    { identifier: 'dev.happypandaa.pandadrawer', bundleName: '熊猫小抽屉' },
     { identifier: 'foreign', bundleName: 'Local Projects Dev' },
   ]) {
     const f = await fixture(t);
