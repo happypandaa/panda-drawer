@@ -19,3 +19,29 @@
   .project-delete-modal .confirmation-actions { flex-direction: column-reverse; }
   .project-delete-modal .confirmation-actions button { width: 100%; }
 }
+
+/* Node delete: body scrolls, acknowledgement and actions stay pinned at the bottom. */
+.project-delete-modal.node-delete-modal .modal-content { display: flex; flex-direction: column; padding: 0; overflow: hidden; scrollbar-gutter: auto; }
+.project-delete-modal .node-delete-confirmation { flex: 1; min-height: 0; gap: 0; }
+.node-delete-modal .node-delete-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 24px; }
+.node-delete-modal .node-delete-footer { display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; padding: 14px 24px 18px; border-top: 1px solid var(--radio-line); background: var(--radio-surface, #fff); }
+:root[data-theme] .project-delete-modal .project-delete-warning { padding: 10px 12px; }
+.node-delete-modal .node-delete-scope { border: 1px solid var(--radio-line); border-radius: 10px; }
+.node-delete-modal .node-delete-scope > section { padding: 12px 14px; }
+.node-delete-modal .node-delete-scope > section + section { border-top: 1px solid var(--radio-line); }
+.node-delete-modal .node-delete-scope-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.node-delete-modal .node-delete-scope h4 { margin: 0; font-size: 13px; }
+.node-delete-modal .node-delete-recheck { padding: 0; font-size: 12px; color: var(--radio-secondary); }
+.node-delete-modal .node-delete-groups { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.node-delete-modal .node-delete-dir { display: block; color: var(--radio-secondary); font-size: 11px; line-height: 1.6; }
+.node-delete-modal .node-delete-names { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; padding: 0; list-style: none; }
+.node-delete-modal .node-delete-names code { display: inline-block; padding: 1px 8px; border-radius: 6px; background: var(--radio-subtle); font-size: 12px; line-height: 20px; }
+:root[data-theme] .node-delete-modal .node-delete-removed .node-delete-names code { color: var(--radio-danger); background: var(--radio-danger-surface); }
+.project-delete-modal p.node-delete-source { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-bottom: 8px; font-size: 12px; }
+.node-delete-modal .node-delete-source > span { color: var(--radio-secondary); }
+.project-delete-modal p.node-delete-footnote,
+.project-delete-modal p.node-delete-id { color: var(--radio-secondary); font-size: 12px; line-height: 1.6; }
+.project-delete-modal p.node-delete-footnote { margin-top: 8px; }
+.project-delete-modal .node-delete-footer .confirmation-actions { padding-top: 0; }
+.project-delete-modal p.node-delete-base { padding: 10px 14px; border-bottom: 1px solid var(--radio-line); border-radius: 10px 10px 0 0; background: var(--radio-subtle); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.project-delete-modal .node-delete-names code { overflow-wrap: anywhere; }
