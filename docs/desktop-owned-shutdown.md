@@ -62,10 +62,10 @@ Node 后台巡检保留实际 JoinHandle 和停止 watch。退出打断三秒 id
 
 ## 退出阻止提示的父窗口修正（2026-10-25）
 
-隔离原生 host 的可重试 discovery 清理故障已到达 `Blocked` 与提示调用日志，管理窗口保留、业务窗口已销毁，但当轮截图与辅助功能树没有出现退出阻止提示。另一个人工菜单消息同样不可见。不能以已调用 `show` 代替用户确实看到了提示，也没有捕获系统 API 的具体失败返回值。
+隔离原生 host 的可重试 discovery 清理故障已到达 `Blocked` 与提示调用日志，管理窗口保留、业务窗口已销毁，但当轮工具截图与辅助功能树没有捕获退出阻止提示。另一个人工菜单消息同样未被工具捕获。用户随后明确反馈反复看到“可丢弃原生验收”说明弹窗，因此此前“不可见”只描述工具观察，不能认定系统未展示，更不能从未捕获画面推断 CF API 失败；具体 OS 返回值仍未观测。
 
 本机锁定依赖是 `tauri-plugin-dialog 2.8.3` / `rfd 0.16.0`。插件的异步 `show` 自身投递主线程；rfd 对没有 parent 的 macOS 消息改用独立的 `CFUserNotificationDisplayAlert`，非零返回只转换为 Cancel。指定 parent 才走附着在该窗口的 `NSAlert` sheet。修正仅为保留的 manager 显式设置 parent，沿用异步调用和全部退出 gate；若 manager 缺失，仍请求原有无父窗 fallback，同时记录其展示尚未确认。Apple 的 [NSAlert sheet 契约](https://developer.apple.com/documentation/appkit/nsalert/beginsheetmodal(for:completionhandler:))说明了父窗的显示归属；[Tauri 消息 builder](https://docs.rs/tauri-plugin-dialog/2.8.3/tauri_plugin_dialog/struct.MessageDialogBuilder.html)提供对应 parent 接口。
 
-这是从实际不可见现象及锁定依赖源码得出的候选修正，尚未重新打包进行原生可见性验收。后续需在同一隔离 host 的可重试及 sticky 退出阻止中核对真实 manager sheet、确认按钮、错误现场保留与允许的显式重试；本段不宣称 NSAlert 已在真实窗口出现，不增加安装许可。
+这是为明确父窗归属所作的修正，不能称为已证实修复了 CF 系统通知失败。已打入独立验收 host，但尚未触发修后退出故障。后续需在同一隔离 host 的可重试及 sticky 退出阻止中核对真实 manager sheet、确认按钮、错误现场保留与允许的显式重试；本段不宣称 NSAlert 已在真实窗口出现，不增加安装许可。用户反馈后已先正常退出该 host；专用验收说明消息改为本地记录，生产退出保护提示另行保留。
 
 该修正的定点 Rust 格式检查、`CARGO_INCREMENTAL=0 cargo clippy --locked -p platform-desktop --all-targets -- -D warnings` 与补丁空白检查通过。未增加用 mock 声称原生可见的测试；仍需上述真实窗口验收。
