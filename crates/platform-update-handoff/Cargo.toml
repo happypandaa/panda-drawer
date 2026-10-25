@@ -1,0 +1,25 @@
+[package]
+name = "platform-update-handoff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+test-process-fixture = ["dep:tokio"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-update-witness = { path = "../platform-update-witness" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "update-handoff-test-fixture"
+path = "tests/fixtures/handoff.rs"
+required-features = ["test-process-fixture"]
+test = false
