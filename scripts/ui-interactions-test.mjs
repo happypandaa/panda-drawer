@@ -1509,8 +1509,8 @@ test('Automatic storage scans do not hide a failed build or replace the result o
   await setup();
   const project = appProject('prj_build_scan', 'Build scan fixture');
   const state = { projects: [project] };
-  const build = { taskId: 'task_build_failure', type: 'build', projectId: project.id, status: 'queued', final: false, phase: 'queued' };
-  const scan = { taskId: 'task_auto_scan', type: 'storageScan', projectId: project.id, status: 'running', final: false, phase: 'scan' };
+  const build = { taskId: 'task_build_failure', type: 'build', projectId: project.id, status: 'queued', final: false, phase: 'queued', result: null, error: null };
+  const scan = { taskId: 'task_auto_scan', type: 'storageScan', projectId: project.id, status: 'running', final: false, phase: 'scan', result: null, error: null };
   let submissions = 0;
   mockApp(state, async (command, args) => {
     if (command === 'project_build') {

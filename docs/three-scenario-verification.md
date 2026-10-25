@@ -450,3 +450,11 @@ SELF原始取证保存在 `.test-artifacts/three-scenario-2026-10-21/native-self
 原生观察来自本任务 CUA 的真实窗口和菜单；CLI 仅只读核对任务、服务、SQL 和恢复状态。原始构建、包摘要、SQL、任务、进程和离线比较保留于忽略目录 `.test-artifacts/core-native-20261024/`，主要为 `native-d4cc854-debug-package.json`、`native-d4cc854-web-cycle-summary.json`、`native-d4cc854-web-two-after-full-restart.json`、`native-d4cc854-firstquit-observation.json`、`native-d4cc854-secondquit-observation.json` 及 `after-native-d4cc854-secondquit.json`；本地证据和生成包不入仓。
 
 本步通过的是上述样本的正常数据往返、旧页面明确重载、Node 持久内容、管理页隐藏及两次正常退出／中间重开。数据取回中断后的原生继续／撤回、活动下载和其他 I/O 中退出、关闭故障／未知状态、公开仓库获取后完整安装仍未由本步证明；三流程异常矩阵继续未全部验收。该包为 ad-hoc 开发包，未公证；未覆盖 macOS 15、干净电脑、物理音视频、其他浏览器、Windows、正式安装或自动升级。证书和公证凭据仍由用户自行配置。
+
+### 构建中断结果的重开恢复修正（2026-10-25）
+
+后续可丢弃退出样本的实际构建在正常 Cmd+Q 中停止，后端持久返回 `interrupted`／`BUILD_INTERRUPTED`、`processResourceClosed:true`，旧产物和数据保持。整个平台重开后，详情却只显示自动空间扫描成功：管理状态的 `latestBuild` 已正确保留该构建，界面只取 `activeTask/lastTaskId`，忽略了独立构建回执。
+
+界面现读取并校验该独立回执，在无活动任务或显示自动扫描时恢复构建结果；真实活动构建和本轮新提交优先。同一任务随后读取到的终态优先于较早维护快照，同时保留回执中的问题提示。带 `latestBuild` 的快照必须提供与同批项目列表一致的非空字符串 `documentEpoch`，否则拒绝该批项目结果、清除旧构建缓存并在详情内提示重读；完全没有新字段的旧接口保留兼容。身份／格式不符或指针损坏时展示保留问题，不猜另一份历史任务为最近构建；旧修改时间选择明确说明顺序不确定。服务实例、工作区、项目根及页面代次变化清除旧缓存，读取结束再核对服务，迟到的读取、提交及轮询不能覆盖新代结果。
+
+初次新增回归在原代码上11项中7失败；交叉审查再复现上述同任务终态与代次竞态，补充7项回归在第一版修复上5失败。最终主工作区全部 UI 422项通过、0失败，TypeScript／Vite与差异空白检查通过，保留既有大于500kB体积提示。它们是模拟管理命令的界面测试；修复后的新包原生复验另记，不回填为旧 `d4cc854` 包已经正确显示中断。
