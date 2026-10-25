@@ -6,6 +6,7 @@ import { Modal } from './Modal';
 import { NodeAppDeleteDialog } from './NodeAppDeleteDialog';
 import { NodeConfigurationForm } from './NodeConfigurationForm';
 import type { NodeConfigurationDraft } from './node-configuration-validation';
+import { nodeConfigurationState } from './node-configuration-state';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
 import { NodeInstallPanel } from './NodeInstallPanel';
 import { NodeDataContractInfo } from './NodeDataContractInfo';
@@ -104,6 +105,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
   const base = useId();
   const configurationDirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
+  const configurationState = detail ? nodeConfigurationState(detail) : null;
   const dirty = configurationDirty || gitDraft.dirty;
   const blocked = !enabled || Boolean(pending) || installPending || directoryPending || developmentPending || gitDraft.pending || Boolean(deleteTarget);
 
@@ -128,7 +130,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
 
   const enterApp = useCallback(async (value: NodeAppDetail) => {
     if (operation.current || !enabled) return;
-    if (!value.configuration.canStart) { setModalOpen(true); setTab('configuration'); return; }
+    if (!value.configuration.canStart) { setModalOpen(true); setTab(nodeConfigurationState(value).blockedTab); return; }
     operation.current = true; setPending('enter'); setError(''); setNotice('');
     const appId = value.id;
     try {
@@ -156,7 +158,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
       if (value.id !== app.id) throw new Error('配置返回的应用身份不符，请重新读取。');
       accept(value, true);
       if (enter) {
-        if (!value.configuration.canStart) { setModalOpen(true); setTab('configuration'); }
+        if (!value.configuration.canStart) { setModalOpen(true); setTab(nodeConfigurationState(value).blockedTab); }
         else await enterApp(value);
       }
     } catch (cause) { if (current()) { setError(messageFrom(cause)); setModalOpen(true); } }
@@ -231,7 +233,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
       if (!current()) return;
       if (value.id !== appId) throw new Error('保存结果的应用身份不符，请重新读取配置后核对。');
       accept(value, true);
-      setNotice(value.configuration.canStart ? value.restartRequired ? '配置已保存。正在运行的应用仍使用旧配置；点击“重启并应用配置”后才生效。' : '配置已保存。下次启动使用这些设置。' : value.configuration.missingRequired.length ? '已保存，补齐标红项后才能启动。' : '配置已保存，暂时无法启动。请检查运行状态。');
+      setNotice(value.configuration.canStart ? value.restartRequired ? '配置已保存。正在运行的应用仍使用旧配置；点击“重启并应用配置”后才生效。' : '配置已保存。下次启动使用这些设置。' : nodeConfigurationState(value).needsAttention ? '配置已保存，请先核对应用配置后再启动。' : '配置已保存，暂时无法启动。请检查运行状态。');
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
     finally {
       // A workspace change revokes this response, while the pending write still
@@ -337,12 +339,12 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
         </div>
         {detail.lastError && <p className="task-error node-inline-message" role="alert">{detail.lastError}</p>}
         {statusError && <p className="task-error node-inline-message" role="alert">{statusError}</p>}
-        {detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : '先补齐必填项，再重启应用。'}</p>}
+        {detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : configurationState?.needsAttention ? '请先核对应用配置，再重启应用。' : '当前暂不能重启，请先查看运行状态。'}</p>}
         <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{([['overview', '概览', Info], ['configuration', '应用配置', KeyRound], ['runtime', '运行状态', Activity]] as const).map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
         <div className="detail-overview-body node-overview-body" role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}>
-          <dl className="detail-summary-facts"><div><dt>运行状态</dt><dd className={detail.state === 'running' ? 'detail-ready-text' : detail.state === 'failed' ? 'detail-error-text' : ''}>{stateLabels[detail.state]}{detail.restartRequired ? ' · 待重启' : ''}</dd></div><div><dt>应用配置</dt><dd className={detail.configuration.canStart ? '' : 'detail-warning-text'}>{detail.configuration.canStart ? `已完整${detail.fields.length ? `（${detail.fields.length} 项）` : ''}` : `缺少 ${detail.configuration.missingRequired.length} 项必填`}</dd></div><div><dt>程序来源</dt><dd>{detail.installation?.kind === 'managed' ? '平台安装副本' : '本机应用目录'}</dd></div></dl>
+          <dl className="detail-summary-facts"><div><dt>运行状态</dt><dd className={detail.state === 'running' ? 'detail-ready-text' : detail.state === 'failed' ? 'detail-error-text' : ''}>{stateLabels[detail.state]}{detail.restartRequired ? ' · 待重启' : ''}</dd></div><div><dt>应用配置</dt><dd className={configurationState?.kind === 'complete' ? '' : 'detail-warning-text'}>{configurationState?.overviewText}</dd></div><div><dt>程序来源</dt><dd>{detail.installation?.kind === 'managed' ? '平台安装副本' : '本机应用目录'}</dd></div></dl>
           <section className="detail-usage-section"><h3>配置与数据</h3>
-            <button className="detail-document-row" disabled={blocked || loading} onClick={() => changeTab('configuration')}><KeyRound size={24} /><span><strong>{detail.configuration.canStart ? '查看或修改应用配置' : '补齐应用配置'}</strong><small>{detail.fields.length ? `${detail.fields.slice(0, 3).map(field => field.label).join('、')}${detail.fields.length > 3 ? ` 等 ${detail.fields.length} 项` : ''}。` : '此应用未声明配置项。'}保存后不会自动打开或重启应用。</small></span><ChevronRight size={18} /></button>
+            <button className="detail-document-row" disabled={blocked || loading} onClick={() => changeTab('configuration')}><KeyRound size={24} /><span><strong>{configurationState?.actionLabel}</strong><small>{detail.fields.length ? `${detail.fields.slice(0, 3).map(field => field.label).join('、')}${detail.fields.length > 3 ? ` 等 ${detail.fields.length} 项` : ''}。` : '此应用未声明配置项。'}保存后不会自动打开或重启应用。</small></span><ChevronRight size={18} /></button>
             <div className="detail-data-row"><HardDrive size={24} /><span><strong>数据保存在本机</strong><small>业务数据、配置与密钥保存在本应用实例中，普通更新不会替换。</small></span></div>
           </section>
           <section className="detail-location-section"><h3>应用位置</h3><div className="detail-location-row"><FolderOpen size={22} /><span><strong>{detail.installation?.kind === 'managed' ? '安装副本来源目录' : '本机应用目录'}</strong><code>{detail.sourcePath}</code></span><button className="icon-button" aria-label="复制应用目录" onClick={() => { void navigator.clipboard?.writeText(detail.sourcePath).then(() => setNotice('路径已复制。'), () => setNotice('请选中完整路径后复制。')); }}><Copy size={20} /></button></div></section>
