@@ -110,7 +110,7 @@ export interface MaintenanceStatus {
   baselineBackupId: string | null;
   readyForChanges: boolean;
   recoveryRequired: boolean;
-  documentEpoch: string;
+  documentEpoch: string | null;
   lastTaskId?: string | null;
   activeTask: TaskRecord | { taskId: string } | string | null;
   latestBuild?: { task: TaskRecord | null; selection: 'recorded-submission' | 'legacy-modified-time' | 'none' | 'unavailable'; issues: { code: string; message: string }[] };
