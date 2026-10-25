@@ -16,7 +16,7 @@ function cli(args, input) {
 }
 const old = JSON.parse(await readFile(join(repository, 'artifacts/m1-old-sessions.json'), 'utf8'));
 const runtime = cli(['service', 'status']).runtime;
-assert.equal(runtime.identifier, 'dev.localprojects.platform.m0');
+assert.equal(runtime.identifier, 'dev.happypandaa.pandadrawer');
 assert.equal(runtime.environment, 'development');
 assert.notEqual(runtime.instanceId, old.instanceId, 'Quit and restart before this test');
 for (const project of old.projects) {

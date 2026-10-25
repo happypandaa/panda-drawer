@@ -50,8 +50,8 @@ assert.ok(evidenceRelative && !isAbsolute(evidenceRelative) && !evidenceRelative
 const cliPath = process.env.IDENTITY_TEST_CLI || process.env.M1_TEST_CLI
   || join(repository, 'target/release/bundle/macos/熊猫小抽屉.app/Contents/MacOS/local-projects-dev');
 assert.ok(isAbsolute(cliPath), 'Choose an absolute CLI path');
-const dataRoot = join(homedir(), 'Library/Application Support/dev.localprojects.platform.m0');
-const identifier = 'dev.localprojects.platform.m0';
+const dataRoot = join(homedir(), 'Library/Application Support/dev.happypandaa.pandadrawer');
+const identifier = 'dev.happypandaa.pandadrawer';
 const sampleName = 'M5 可丢弃 · 身份修复验收 · 20261019';
 const statePath = join(evidence, 'state.json');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');

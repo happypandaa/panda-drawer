@@ -55,16 +55,18 @@ description: 关于 AI 接手、构建重载、数据保存、配置、联网与
 
 如果准备连同受管项目一起清空，设置中的“清理所有本机项目内容”通常在卸载前使用。它需要两次明确确认，永久删除小抽屉管理的本机源码、数据库、附件、已安装应用、配置／Key 和旧备份、旧回收与恢复资料，无法从回收站撤销。外部原始源码目录、范围之外的独立 ZIP／导出包及平台程序保留；极少量实例锁和清理回执用于核对结果。
 
-当前 Mac 开发版的主要位置如下，删除 `.app` 后它们不会随之自动消失：
+当前开发标识为 `dev.happypandaa.pandadrawer`。2026-10-25 用户单独明确选择清空旧开发实例的项目、业务数据和旧系统状态，使用新身份重新开始；实际清理与新环境验收另记。这是针对旧开发环境的一次独立授权，普通升级和卸载仍按上文规则保留资料。
+
+新身份 Mac 开发版的主要位置如下，实际数据根和工作区以软件显示为准；删除 `.app` 不会自动移除以后保存在这些位置的资料：
 
 | 位置 | 保存内容及清理边界 |
 | --- | --- |
-| `~/Library/Application Support/dev.localprojects.platform.m0/` | 固定数据根，含默认工作区和已安装 Node 应用；受管业务内容属于设置清理范围，最小锁和回执保留。迁移后的工作区位置以设置显示为准 |
-| `~/Library/WebKit/dev.localprojects.platform.m0/` | 网页引擎相关存储，设置清理入口不删除 |
-| `~/Library/Caches/dev.localprojects.platform.m0/` | 系统或网页引擎缓存，设置清理入口不删除 |
-| `~/Library/Preferences/dev.localprojects.platform.m0.plist` | 系统应用偏好，设置清理入口不删除 |
+| `~/Library/Application Support/dev.happypandaa.pandadrawer/` | 固定数据根，含工作区和以后安装的 Node 应用；受管业务内容属于设置清理范围，最小锁和回执保留 |
+| `~/Library/WebKit/dev.happypandaa.pandadrawer/` | 新身份运行后可能生成的网页引擎存储，设置清理入口不删除 |
+| `~/Library/Caches/dev.happypandaa.pandadrawer/` | 新身份运行后可能生成的系统或网页引擎缓存，设置清理入口不删除 |
+| `~/Library/Preferences/dev.happypandaa.pandadrawer.plist` | 新身份运行后可能生成的系统应用偏好，设置清理入口不删除 |
 
-网页存储可能包含网页会话、localStorage 等数据，主题偏好也使用 localStorage，不能将它们一概当作没有敏感内容的临时缓存。设置清理只覆盖列出的受管项目和配置，**不保证整台机器零残留**；另存的 ZIP、导出包或下载的 DMG 同样保留。以上是当前开发身份的位置；未来正式版使用独立身份 `com.happypandaa.pandadrawer`，正式运行和安装验收尚未完成。
+网页存储可能包含网页会话、localStorage 等数据，主题偏好也使用 localStorage，不能将它们一概当作没有敏感内容的临时缓存。本次单独授权的旧开发环境重置会删除旧标识的三处系统状态，不将旧网页会话或主题带入新空环境；外部原作者源码和平台工程保留。正常设置清理仍只覆盖列出的受管项目和配置，**不保证整台机器零残留**；范围外系统记录、独立 ZIP、导出包或下载的 DMG 不会自动删除。以上是开发身份的位置；未来正式版使用独立身份 `com.happypandaa.pandadrawer`，正式运行和安装验收尚未完成。
 
 请先停止外部编辑器、AI 和数据库工具访问待清理目录，逐项核对提示。完整清理成功后退出软件，再自行卸载；若提示失败或结果未知，先查看剩余范围，不要当作全部完成。清理不会自动搜索全盘或删除用户其他开发目录。
 

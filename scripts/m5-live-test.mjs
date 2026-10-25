@@ -62,7 +62,7 @@ const permissions=response.headers.get('permissions-policy');assert.ok(permissio
 const oldPolicyContext=await business(current,document,'context');assert.equal(oldPolicyContext.status,200);assert.notEqual((await oldPolicyContext.json()).data.runtimePolicyFingerprint,/name="platform-runtime-policy" content="([^"]+)"/.exec(document.html)?.[1]);
 checks.push('declared HTTPS origins and camera/microphone requirements produce actual CSP/Permissions-Policy and a policy-change fingerprint without external requests');
 const workspace=cli(['workspace','storage']);assert.ok(workspace.platformProgram&&workspace.workspace&&workspace.otherLocalLocations);
-const about=cli(['service','status']).runtime.platform;assert.equal(about.identifier,'dev.localprojects.platform.m0');assert.ok(about.installationPath.endsWith('熊猫小抽屉.app'));
+const about=cli(['service','status']).runtime.platform;assert.equal(about.identifier,'dev.happypandaa.pandadrawer');assert.ok(about.installationPath.endsWith('熊猫小抽屉.app'));
 checks.push('actual installed app identity/location and workspace/other-local ranges exposed separately');
 metadata=cli(['project','metadata','get','--project',id]);
 await saveReport('m5-live-state.json',{projectId:id,root,instanceId:current.instanceId,oldRevision:metadata.metadataRevision,oldDocument:document,entryHash,sdkHash},true);

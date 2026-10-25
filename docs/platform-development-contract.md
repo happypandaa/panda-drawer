@@ -1,5 +1,7 @@
 # 本地应用平台开发约定
 
+2026-10-25 开发环境更新：用户最终明确选择删除现有受管开发项目和业务数据，以 `dev.happypandaa.pandadrawer` 空环境重新开始，范围见[开发环境重置](development-identity-reset.md)。本次不保留旧副本、校验清单或临时迁移证据，保留外部原作者源码及平台工程；该授权覆盖此前固定旧身份、资料保留和迁移计划。普通工作区搬迁仍走公开流程。旧里程碑和实际验收中的身份、路径及完成状态保留当时原值，实际清理与新环境验收另记。
+
 2026-10-23 删除规则更新：当前项目／应用确认后直接永久删除，不进入平台或系统回收站；外部目录引用只移除平台登记及私有配置／数据，外部文件夹保留。旧备份、旧回收项、历史记录和受保护恢复证据继续保留。完整范围、接口兼容与失败边界见[直接删除契约](application-deletion.md)。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
@@ -36,7 +38,7 @@
 
 用户已确认[用户说明与AI开发说明分开](application-documentation.md)：外部包的 `documentation.readme` 面向使用/配置，`documentation.development` 面向技术/架构/开发。当前项目根README/AGENTS/CLAUDE/skill与SDK文档不自动移动或覆盖；新增展示和交接按AP规划实施，正文大小及强制携带策略仍待定。
 
-本文定义完整首版目录、接口和流程。当前已实现 [M0 开发骨架](m0-verification.md)和 [M1 项目与数据核心](m1-verification.md)：项目创建、每项目 SQLite、附件、会话、CLI 与桌面／浏览器访问。M2 固定 SDK、模板、Node 检测与构建见 [M2 记录](m2-verification.md)，M3 完整备份维护恢复见 [M3 记录](m3-verification.md)。M4 导入导出、复制、回收站和工作区迁移的本轮实施与验证见 [M4 记录](m4-verification.md)。M5 概览、基本信息、空间及浏览器辅助能力见 [M5 记录](m5-verification.md)，后续真实 GUI/设备及剩余限制见[浏览器实测](m5-browser-real-verification.md)和[韧性实测](m5-resilience-real-verification.md)；历史清理按已确认补充执行。完整浏览器/设备验收和发行仍有后续工作，不能按全文理解为已完整验收，更不能将 Mac 记录视为 Windows 结果。`platform` 为正式命令名称占位符；临时开发 CLI 为 `local-projects-dev`，产品名已确认为「熊猫小抽屉」，首版图标已接内部代码；[品牌说明](branding.md)记录资源与边界，生产发行身份仍未确定。
+本文定义完整首版目录、接口和流程。当前已实现 [M0 开发骨架](m0-verification.md)和 [M1 项目与数据核心](m1-verification.md)：项目创建、每项目 SQLite、附件、会话、CLI 与桌面／浏览器访问。M2 固定 SDK、模板、Node 检测与构建见 [M2 记录](m2-verification.md)，M3 完整备份维护恢复见 [M3 记录](m3-verification.md)。M4 导入导出、复制、回收站和工作区迁移的本轮实施与验证见 [M4 记录](m4-verification.md)。M5 概览、基本信息、空间及浏览器辅助能力见 [M5 记录](m5-verification.md)，后续真实 GUI/设备及剩余限制见[浏览器实测](m5-browser-real-verification.md)和[韧性实测](m5-resilience-real-verification.md)；历史清理按已确认补充执行。完整浏览器/设备验收和发行仍有后续工作，不能按全文理解为已完整验收，更不能将 Mac 记录视为 Windows 结果。`platform` 为正式命令名称占位符；临时开发 CLI 为 `local-projects-dev`，产品名已确认为「熊猫小抽屉」，首版图标已接内部代码；[品牌说明](branding.md)记录资源与边界，正式身份已定为 `com.happypandaa.pandadrawer`，开发身份为 `dev.happypandaa.pandadrawer`；用户于 2026-10-25 最终明确选择[清空旧开发环境并重新开始](development-identity-reset.md)，实际结果另记，不作为普通升级清空资料的依据。
 
 本地服务与 AI 工具的已确认方案见[本地服务与 AI 工具接口](local-service-and-ai-tools.md)。核心技术、SDK 兼容、[备份维护](backup-and-maintenance.md)、[首版发行](release-and-updates.md)、[项目生命周期与工作区迁移](project-lifecycle-and-workspace.md)、[联网与浏览器能力](project-capabilities-and-secrets.md)、[空间占用与素材管理](project-storage-and-assets.md)、[项目基本信息与概览](project-metadata-and-overview.md)、构建输入检测及独立项目窗口均已确认。[技术决策与实施清单](remaining-technical-decisions.md)记录决定及尚需落实的参数、验证与发布准备。
 

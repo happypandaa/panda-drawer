@@ -1,6 +1,6 @@
 # 熊猫小抽屉
 
-Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、删除、旧回收站兼容和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码，固定开发身份和数据根不变。实际验收范围见各阶段记录，仍是隔离的内部开发版。
+Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、删除、旧回收站兼容和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码。2026-10-25 用户明确选择[清空旧开发环境并重新开始](docs/development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`，实际清理与新环境验收另记。实际验收范围见各阶段记录，仍是隔离的内部开发版。
 
 2026-10-24 已确认先收尾制作／获取／定制，再完成数据 Git 与旧备份退役，然后做 Mac 正式发行和自动更新；分享及 Windows 后置。[Node 开发与更新](docs/node-development-workflow.md)现已选择性接入：同一作者源码仓库用于本机 Git、隔离构建及显式更新，运行副本与源码分离；公开源码可明确选择分支，声明构建的来源须先明确构建。更新前保留当前数据契约检查，不引入其他分支的删除规则。当前真实工具及模拟界面证据见该页，不代表三场景原生、全部异常或正式发行已验收。
 
@@ -48,7 +48,7 @@ macOS 重启后的工作区设备号误判修复及旧迁移记录的离线预�
 
 ## 开发
 
-源码仓库：[happypandaa/panda-drawer](https://github.com/happypandaa/panda-drawer)。默认源码目录为 `/Users/ethan/dev/panda-drawer/`；该目录只保存平台工程，不是用户应用工作区。源码目录与仓库改名不改变固定开发应用身份、数据根或用户项目位置。
+源码仓库：[happypandaa/panda-drawer](https://github.com/happypandaa/panda-drawer)。默认源码目录为 `/Users/ethan/dev/panda-drawer/`；该目录只保存平台工程，不是用户应用工作区。本次[旧开发环境重置](docs/development-identity-reset.md)保留该工程和外部原作者源码，清空旧平台管理的项目及业务数据后使用新身份空环境。
 
 使用 macOS 15+、Apple Silicon、Node 22.12+（支持 Node 22/24，推荐 24 LTS）、npm、Rust 和 Xcode 工具链。
 

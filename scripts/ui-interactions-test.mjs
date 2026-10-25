@@ -1176,7 +1176,7 @@ test('A failed migration submission still settles after leaving and returning to
 const appProject = (id, name) => ({ ...project, id, name, description: '', projectRoot: `/disposable/workspace/projects/${id}`, manifest: metadata.manifest });
 function mockApp(state, custom = async (command) => { throw new Error(`Unexpected native request: ${command}`); }) {
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'bootstrap_info') return { displayName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.localprojects.platform.m0', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
+    if (command === 'bootstrap_info') return { displayName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.happypandaa.pandadrawer', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
     if (command === 'project_list') return state.projects;
     if (command === 'node_app_list') return state.nodeApps ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };

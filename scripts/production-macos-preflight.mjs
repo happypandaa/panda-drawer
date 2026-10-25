@@ -85,7 +85,7 @@ export function validateInputs(inputs) {
   }
   const base = strictJson(inputs.developmentConfiguration);
   fields(base, ['$schema', 'productName', 'version', 'identifier', 'build', 'app', 'bundle'], '开发 Tauri 配置');
-  if (base.$schema !== 'https://schema.tauri.app/config/2' || base.productName !== profile.displayName || base.identifier !== 'dev.localprojects.platform.m0' || base.version !== '0.0.0') fail('开发 Tauri 固定身份或版本发生变化。');
+  if (base.$schema !== 'https://schema.tauri.app/config/2' || base.productName !== profile.displayName || base.identifier !== 'dev.happypandaa.pandadrawer' || base.version !== '0.0.0') fail('开发 Tauri 固定身份或版本发生变化。');
   fields(base.build, ['beforeDevCommand', 'devUrl', 'beforeBuildCommand', 'frontendDist'], '开发构建配置');
   if (base.build.beforeDevCommand !== 'npm run dev' || base.build.beforeBuildCommand !== 'npm run build' || base.build.frontendDist !== '../dist' || base.build.devUrl !== 'http://127.0.0.1:1420') fail('开发构建入口发生变化，须先审查隔离规则。');
   fields(base.app, ['windows', 'security'], '开发 app 配置');

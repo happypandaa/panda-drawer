@@ -72,7 +72,7 @@ mod tests {
             ("version", serde_json::json!("0.2.0")),
             (
                 "identifier",
-                serde_json::json!("dev.localprojects.platform.m0"),
+                serde_json::json!("dev.happypandaa.pandadrawer"),
             ),
             ("environment", serde_json::json!("development")),
             ("displayName", serde_json::json!("Other")),

@@ -1,7 +1,7 @@
 # Project collaboration
 
-- Preserve existing development projects and their source, SDK, databases, attachments, maintenance state, backups, trash and recovery evidence. Use clearly named disposable projects for validation.
-- Keep the fixed development application identity and data root. Workspace changes must use the public migration workflow.
+- Preserve existing development projects and their source, SDK, databases, attachments, maintenance state, backups, trash and recovery evidence during ordinary work. Exception: on 2026-10-25 the user explicitly authorized deleting the old managed development projects and business data and starting fresh, as recorded in `docs/development-identity-reset.md`. This one-time reset includes the old platform data root, its three named system-state locations and temporary identity-transition evidence, without retaining old copies or checksum inventories; preserve external author source directories and this platform repository. Use clearly named disposable projects for validation.
+- Keep the fixed development application identity `dev.happypandaa.pandadrawer` and its data root. The authorized reset replaces the earlier preservation/migration plan; do not add identity-migration commands, legacy-reference mapping or arbitrary root overrides. Ordinary workspace changes must use the public migration workflow.
 - Follow the confirmed milestone and companion contracts in `docs/`; proposals remain proposals until the user confirms them.
 - After each coherent implementation step is complete and its relevant checks pass, commit that step and push it to the configured remote. This is the user's standing request. Do not commit unfinished parallel work, secrets, generated applications, DMGs, or local test evidence.
 - Record actual verification and limitations accurately. Mocked media tests do not prove physical camera/microphone, browser compatibility, or system permission behavior.

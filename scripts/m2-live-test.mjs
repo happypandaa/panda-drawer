@@ -9,8 +9,8 @@ const cliPath=resolve('target/release/bundle/macos/熊猫小抽屉.app/Contents/
 function invoke(args,input,allowError=false){const result=spawnSync(cliPath,[...args,'--json'],{input:input===undefined?undefined:JSON.stringify(input),encoding:'utf8',maxBuffer:10_000_000});assert.ifError(result.error);const wire=JSON.parse(result.stdout);if(!allowError)assert.equal(wire.ok,true,JSON.stringify(wire));return wire;}
 const cli=(args,input)=>invoke(args,input).data;
 const runtime=cli(['service','status']).runtime;
-assert.equal(runtime.identifier,'dev.localprojects.platform.m0');assert.equal(runtime.environment,'development');
-assert.equal(runtime.workspaceRoot,join(homedir(),'Library/Application Support/dev.localprojects.platform.m0/workspace'));
+assert.equal(runtime.identifier,'dev.happypandaa.pandadrawer');assert.equal(runtime.environment,'development');
+assert.equal(runtime.workspaceRoot,join(homedir(),'Library/Application Support/dev.happypandaa.pandadrawer/workspace'));
 const project=cli(['project','create','--input','-'],{name:'M2 构建边界验证',description:'自动创建的可丢弃开发测试项目；构建失败、来源检测与无 Node 验证。'});
 const id=project.id, root=project.projectRoot, origin=runtime.baseUrl;
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');

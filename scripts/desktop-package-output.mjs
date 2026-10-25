@@ -11,6 +11,8 @@ import { verifyDevelopmentGit } from './package-development-git.mjs';
 
 const execute = promisify(execFile);
 const productName = '熊猫小抽屉';
+const developmentIdentifier = 'dev.happypandaa.pandadrawer';
+const legacyDevelopmentIdentifier = 'dev.localprojects.platform.m0';
 // Historical outputs owned by this workflow retain their exact original names.
 const generatedProductNames = [productName, '熊猫应用小抽屉', 'Local Projects Dev'];
 const packagedExecutables = ['local-projects-desktop-dev', 'local-projects-dev'];
@@ -41,7 +43,7 @@ export function desktopPackagePlan({ root, args, configuration, environment = pr
   }
   if (arch !== 'arm64') throw new Error('标准 Mac 内部包当前只支持 arm64。');
   const { productName: configuredProductName, version, identifier } = configuration;
-  if (configuredProductName !== productName || identifier !== 'dev.localprojects.platform.m0' || !/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) {
+  if (configuredProductName !== productName || identifier !== developmentIdentifier || !/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) {
     throw new Error('打包清理拒绝未知应用身份或版本文件名。');
   }
   let bundles = configuration.bundle?.targets;
@@ -66,16 +68,23 @@ export function desktopPackagePlan({ root, args, configuration, environment = pr
   };
 }
 
-async function plistIdentity(app, plan) {
+export function validateDesktopPackageIdentity(info, plan, { allowLegacyIdentifier = false } = {}) {
+  const identifierMatches = info.CFBundleIdentifier === plan.identifier || (allowLegacyIdentifier && plan.identifier === developmentIdentifier && info.CFBundleIdentifier === legacyDevelopmentIdentifier);
+  if (!identifierMatches || info.CFBundleName !== plan.productName || info.CFBundleExecutable !== 'local-projects-desktop-dev') throw new Error('拒绝处理未知应用身份、名称或可执行文件。');
+}
+
+async function plistIdentity(app, plan, { allowLegacyIdentifier = false } = {}) {
   const { stdout } = await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(app, 'Contents/Info.plist')]);
   const info = JSON.parse(stdout);
-  if (info.CFBundleIdentifier !== plan.identifier || info.CFBundleName !== plan.productName || info.CFBundleExecutable !== 'local-projects-desktop-dev') throw new Error(`拒绝处理未知应用：${app}`);
+  validateDesktopPackageIdentity(info, plan, { allowLegacyIdentifier });
 }
 
 export async function verifyDesktopApp(app, plan, { requireDevelopmentTools = true } = {}) {
   const info = await lstat(app);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`应用输出必须是真实目录：${app}`);
-  await plistIdentity(app, plan);
+  // Existing generated outputs may have the preceding development identity.
+  // New build outputs always require the newly confirmed identity and tools.
+  await plistIdentity(app, plan, { allowLegacyIdentifier: !requireDevelopmentTools });
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { timeout: 60_000 });
   if (requireDevelopmentTools) {
     await verifyDevelopmentNode(path.join(app, 'Contents/Resources/resources/development-node'));
