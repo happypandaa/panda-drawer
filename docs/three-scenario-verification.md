@@ -519,3 +519,13 @@ SELF原始取证保存在 `.test-artifacts/three-scenario-2026-10-21/native-self
 本轮完成了上述两个修后原生子项。新父窗提示没有重新覆盖 sticky 故障，sticky资源保护仍仅由E26原包证明；没有额外重做已通过的下载取消或写入原开发项目，不增加签名、公证或安装许可。因工具禁止操作 macOS系统通知中心，用户已看到的旧独立说明通知不能由工具代为关闭；已停止原产生程序并移除后续产生路径，不通过其他技术绕过该限制。
 
 E27结束后的原开发根再次离线扫描，与新Node复验后的20,620项完整记录逐项相等；本轮隔离host没有增加原根差异。对最初基准仍返回exit3及同一342项保护差异，不改为空白名单“全相同”。最终证据为 `.test-artifacts/core-native-20261024/after-native-exceptions-e27-final-20261025.json` 和 `preservation-e27-final-review.json`。
+
+### E28：真实创建锁上排队打开与正常退出（2026-10-25）
+
+继续使用独立host，生产基准／UI／父窗提示来源与E27相同；只在私有 `main.rs` 和验收菜单模块加入观测，delta SHA `51fa803731b4bd28203a62af19d6a433ad4942ce6ba223b856e8075c6a360e84`。真实锁future的Poll原样转发，真实停止检查的结果原样返回，NativeBackend、generation registry reserve、原生命令身份校验及退出调度不变。私有任务持实际创建锁和JoinHandle，第二份在seal前接纳的observer lease保留到真实Join和证据fsync；另有明确abort/no-proof入口，没有自动超时释放或说明弹窗。包内主程序 SHA `d99e54d3f254e1a544e6fe58c13c2498264d0b3c75a192f07a4900f4c5020315`，CLI／独立身份／scope4c8d不变，构建与ad-hoc完整性通过。
+
+实际PID52117中，先仅持固定ready样本 `prj_3b5bf6f7ad6c4f22afc9c25cb3e1090d` 的真实project创建锁；目标原生窗口和generation receipt均不存在。原生点击该项目“进入”，界面显示“进入中…”，真实Mutex::lock future已返回Poll::Pending，记录 `queued-project-open-real-mutex-poll-pending-52117-0002.json`。随后Cmd+Q，真实shuttingDown=true、I/O closing/sealed、desktop Pending，锁仍持有，窗口表仍仅manager，receipt仍无；记录 `queued-project-open-observation-52117-0003.json`。
+
+通过静默原生菜单明确释放本测试自有锁后，实际holder已Join Ok且证据落盘，observer当时仍持有；原排队请求拿到原锁后，生产 `window_creation_allowed` 实际返回 `DESKTOP_STOPPING`，在maintenance、launch与builder之前拒绝，仍没有目标窗口或receipt。不是用测试状态替代原错误，也没有补造Destroyed。正常退出完成，PID消失、60191拒绝连接、发现和控制文件移除，无强杀、无abort、无说明弹窗。实际记录为 `queued-project-open-holder-joined-52117-0007.json`、`queued-project-open-actual-postlock-check-52117-0009.json` 及汇总 `root-native-queued-project-open-final.json`。
+
+本例完成“等待project创建锁期间发起正常退出”的真实原生子分支；不称已独立触发最终主线程闭包排队或generation reserve封闭分支，也不覆盖Node排队重启。所有接点、包和证据仅在忽略的独立host中，未引入产品测试菜单或改变原开发根。
