@@ -507,3 +507,13 @@ SELF原始取证保存在 `.test-artifacts/three-scenario-2026-10-21/native-self
 本节只补齐上述子分支，不把未观察的排队打开／重启、宿主任意崩溃、完整公开仓库安装、其他格式、最低系统、干净电脑、签名公证或自动更新安装写成通过。所有人工样本、旧失败现场及本地证据保留。
 
 **工具可见性更正及测试提示收敛。** 用户随后明确反馈频繁看到“可丢弃原生验收”说明消息，包括第四轮 PID19132 的一次性数据中断已设置提示。前述“未看到提示”只能表示工具未捕获，不能认定系统未显示。第四轮已完成双记录版本预览，尚未确认或提交取回；主任务清空未提交目标、关闭详情并正常退出 host，PID消失、监听拒绝。专用说明消息改为只写本地记录，生产退出保护不静默。该轮不计作待恢复诊断修后通过，证据 `root-ui376-preview-stopped-for-dialog-nuisance.json`。
+
+### E27：诊断修正与绑定父窗的退出提示原生复验（2026-10-25）
+
+同一独立 host 在离线后更新：Rust生产基准仍为 `cfe56d2`，前端来自干净 `37644a8`，仅生产退出提示文件来自 `af59c00`；另把私有测试菜单的说明弹窗改为固定日志输出。作用域 SHA `4c8d6111…`、所有测试动作／故障 guard与菜单定义不变，不含主工作树三份删除界面修改。44项针对性界面检查、TypeScript／Vite、增量打包和ad-hoc完整性通过。新主程序 SHA `50c7691216c9d6e355f7149031d01d497ecf1eb4adaab0dcdc9989b6f2b3ac8e`，CLI与前包相同。完整混合源码及身份回执在本地 `host-delivery-quiet-controls-review.json`；不能称为单一提交的正式包。
+
+实际 PID24911 中，通过静默测试菜单设置一次性中断，真实预览双记录版本 `dc15cfd81ac5dc1e0c17bda5b8ba59ee3572cb60`、核对两项确认并取回。任务 `task_02474dae1f3349d0857d6e04b719a5fa` 在同一真实交换点失败，`not_committed/pending=true`。原生详情及主动重新核对操作状态都显示真实 `PROJECT_DATA_RESTORE_PENDING`，没有旧的空代次竞态误报；普通进入／构建禁用，独立恢复确认初始未勾选。明确勾选并撤回的任务 `task_8f9a04cec2d94e3a9937dcf395c1cd0b` 成功，回执 `committed/pending=false`、dataState=undone。最终公开读回恢复clear、一条记录和一份附件，SQL逐值、附件摘要、HEAD／暂存区／清单与本轮故障前相同。完成后清空本轮未提交目标，正常进入／构建按钮恢复；这些操作只涉及专用样本。
+
+随后只设置自有 runtime 子目录0555，正常 Quit 得到真实 retryable `SHUTDOWN_DISCOVERY_FAILED`。这次工具确实捕获附着的原生 alert sheet、标题“正在保护现有工作”和 `OK` 按钮，并立即通过按钮关闭；管理窗口保留，报告仍为Blocked。测试菜单只记录日志，没有再发说明弹窗。原生恢复0700后再次明确 Cmd+Q，程序正常结束，PID24911消失、60191拒绝连接，未强杀。证据 `native-observation-24911-0001.json`、`native-shutdown-report-24911-0003.json`、`runtime-permissions-restored-24911-0004.json` 及 `root-quiet-native-ui376-dialogaf59-final.json`。
+
+本轮完成了上述两个修后原生子项。新父窗提示没有重新覆盖 sticky 故障，sticky资源保护仍仅由E26原包证明；没有额外重做已通过的下载取消或写入原开发项目，不增加签名、公证或安装许可。因工具禁止操作 macOS系统通知中心，用户已看到的旧独立说明通知不能由工具代为关闭；已停止原产生程序并移除后续产生路径，不通过其他技术绕过该限制。

@@ -69,3 +69,5 @@ Node 后台巡检保留实际 JoinHandle 和停止 watch。退出打断三秒 id
 这是为明确父窗归属所作的修正，不能称为已证实修复了 CF 系统通知失败。已打入独立验收 host，但尚未触发修后退出故障。后续需在同一隔离 host 的可重试及 sticky 退出阻止中核对真实 manager sheet、确认按钮、错误现场保留与允许的显式重试；本段不宣称 NSAlert 已在真实窗口出现，不增加安装许可。用户反馈后已先正常退出该 host；专用验收说明消息改为本地记录，生产退出保护提示另行保留。
 
 该修正的定点 Rust 格式检查、`CARGO_INCREMENTAL=0 cargo clippy --locked -p platform-desktop --all-targets -- -D warnings` 与补丁空白检查通过。未增加用 mock 声称原生可见的测试；仍需上述真实窗口验收。
+
+随后[E27](three-scenario-verification.md#e27诊断修正与绑定父窗的退出提示原生复验2026-10-25)在独立混合源码host中实际触发可重试discovery关闭失败。工具捕获到附着的alert sheet、完整保护文字和OK按钮，点击关闭后仍保留Blocked；恢复自有目录0700、再次明确正常Quit后完成，PID和监听结束。该结果证明这一可重试故障下父窗提示的真实呈现与关闭；不证明旧CF通知失败原因、修后sticky提示、最低系统或正式签名包。专用测试说明弹窗已经移除，只保留本地日志；生产保护提示继续保留。
