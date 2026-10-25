@@ -121,7 +121,10 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     const confirmation = document.querySelector('[aria-label="永久删除 Node 项目确认"]');
     assert.match(confirmation.textContent, /不会为本次删除保存可恢复副本/);
     assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本实例的程序、业务数据、应用配置与密钥/ : /原始应用目录及其中的全部文件保持原样/);
-    for (const path of [...preview.deletePaths, ...preview.preservedPaths]) assert.ok(confirmation.textContent.includes(path));
+    const listed = [...confirmation.querySelectorAll('[data-path]')].map(element => element.getAttribute('data-path'));
+    for (const path of [...preview.deletePaths, ...preview.preservedPaths]) assert.ok(listed.includes(path), `missing ${path}`);
+    assert.match(confirmation.querySelector('.node-delete-base').textContent, /\/disposable\//);
+    assert.ok(confirmation.querySelector('.node-delete-kept').textContent.includes(preview.sourcePath));
     assert.equal(byText('确认永久删除项目').disabled, true);
     assert.deepEqual(calls, [['node_app_delete_preview', { appId: value.id }]]);
     await click(confirmation.querySelector('input[type=checkbox]'));

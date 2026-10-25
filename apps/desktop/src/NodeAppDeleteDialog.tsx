@@ -13,6 +13,29 @@ function validPreview(value: NodeAppDeletePreview, appId: string): boolean {
     && Array.isArray(value.preservedPaths) && value.preservedPaths.every(path => typeof path === 'string' && path.startsWith('/')));
 }
 
+function trimSlash(path: string): string { return path.length > 1 ? path.replace(/\/+$/, '') : path; }
+function parentOf(path: string): string { const value = trimSlash(path); const index = value.lastIndexOf('/'); return index <= 0 ? '/' : value.slice(0, index); }
+function baseName(path: string): string { const value = trimSlash(path); return value.slice(value.lastIndexOf('/') + 1) || value; }
+
+function commonDir(paths: string[]): string {
+  const parts = paths.map(path => parentOf(path).split('/').filter(Boolean));
+  if (!parts.length) return '/';
+  let length = 0;
+  while (parts.every(segments => segments.length > length && segments[length] === parts[0][length])) length++;
+  return `/${parts[0].slice(0, length).join('/')}`;
+}
+
+/** Lists full paths grouped by parent directory, relative to a base directory shown once above the list. */
+function PathGroups({ paths, base }: { paths: string[]; base: string }) {
+  const groups = new Map<string, string[]>();
+  for (const path of new Set(paths)) { const dir = parentOf(path); groups.set(dir, [...(groups.get(dir) ?? []), path]); }
+  const relative = (dir: string) => dir === base ? '' : dir.startsWith(base === '/' ? '/' : `${base}/`) ? `${dir.slice(base === '/' ? 1 : base.length + 1)}/` : `${dir}/`;
+  return <ul className="node-delete-groups">{[...groups].map(([dir, items]) => <li key={dir}>
+    {relative(dir) && <code className="node-delete-dir" title={dir}>{relative(dir)}</code>}
+    <ul className="node-delete-names">{items.map(path => <li key={path} data-path={path} title={path}><code>{baseName(path)}</code></li>)}</ul>
+  </li>)}</ul>;
+}
+
 export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendingChange, onDeleted }: {
   app: { id: string; name: string };
   enabled: boolean;
@@ -88,22 +111,41 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
     }
   }, [enabled]);
 
-  return <Modal title="删除项目" titleIcon={<Trash2 size={22} aria-hidden="true" />} description={`核对「${app.name}」的永久删除范围`} className="project-delete-modal node-delete-modal" closeDisabled={pending !== null} onClose={close}>
+  const preserved = preview ? [...new Set(preview.preservedPaths)] : [];
+  const source = preview && preserved.includes(preview.sourcePath) ? preview.sourcePath : null;
+  const otherPreserved = preserved.filter(path => path !== source);
+  const base = preview ? commonDir([...preview.deletePaths, ...otherPreserved]) : '/';
+  const recheck = <button type="button" className="text-button node-delete-recheck" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>;
+
+  return <Modal title="删除项目" titleIcon={<Trash2 size={22} aria-hidden="true" />} className="project-delete-modal node-delete-modal" closeDisabled={pending !== null} onClose={close}>
     <section className="node-delete-confirmation" aria-label="永久删除 Node 项目确认" aria-busy={pending !== null}>
-      <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
-      <p className="project-delete-warning"><TriangleAlert size={18} />本次删除不进入平台或系统回收站，无法从回收站恢复。</p>
-      <p>请先正常关闭项目窗口，并保存需要的内容。平台不会为本次删除保存可恢复副本，也不会移入历史保留项目。</p>
-      {pending === 'preview' && <p role="status">正在核对本项目的删除范围…</p>}
-      {error && <p className="task-error" role="alert">{error}</p>}
-      {preview && <>
-        <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只永久删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
-        <p>项目 ID：<code>{preview.appId}</code></p>
-        <div className="project-delete-scope"><h4>本次删除</h4><ul className="node-delete-paths">{preview.deletePaths.map(path => <li key={path}><code>{path}</code></li>)}</ul></div>
-        <div className="project-delete-scope"><h4>继续保留</h4><ul className="node-delete-paths">{[...new Set(preview.preservedPaths)].map(path => <li key={path}><code>{path}</code></li>)}</ul></div>
-        <p>历史备份、旧版保留项目、迁移旧目录及操作与恢复证据不会自动清理。</p>
-      </>}
-      <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口，核对删除与保留目录，并理解永久删除无法撤销</label>
-      <div className="confirmation-actions"><button className="refresh-button" disabled={pending !== null} onClick={close}>取消，保留项目</button><button className="refresh-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button><button className="danger-button" disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+      <div className="node-delete-body">
+        <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
+        <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
+        {pending === 'preview' && <p role="status">正在核对本项目的删除范围…</p>}
+        {error && <p className="task-error" role="alert">{error}</p>}
+        {preview && <>
+          <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
+          <div className="node-delete-scope">
+            <p className="node-delete-base">平台目录 <code title={base}>{base === '/' ? '/' : `${base}/`}</code></p>
+            <section className="node-delete-removed">
+              <div className="node-delete-scope-heading"><h4>将删除</h4>{recheck}</div>
+              <PathGroups paths={preview.deletePaths} base={base} />
+            </section>
+            <section className="node-delete-kept">
+              <div className="node-delete-scope-heading"><h4>继续保留</h4></div>
+              {source && <p className="node-delete-source"><span>{preview.ownership === 'managed' ? '来源副本' : '原始应用目录'}</span><code data-path={source} title={source}>{source}</code></p>}
+              {otherPreserved.length > 0 && <PathGroups paths={otherPreserved} base={base} />}
+              <p className="node-delete-footnote">历史备份、旧版保留项目、迁移旧目录及操作与恢复证据也不会自动清理。</p>
+            </section>
+          </div>
+          <p className="node-delete-id">项目 ID：<code>{preview.appId}</code></p>
+        </>}
+      </div>
+      <div className="node-delete-footer">
+        <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
+        <div className="confirmation-actions">{!preview && recheck}<button className="refresh-button" disabled={pending !== null} onClick={close}>取消，保留项目</button><button className="danger-button" disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+      </div>
     </section>
   </Modal>;
 }
