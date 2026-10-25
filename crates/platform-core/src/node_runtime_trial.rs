@@ -397,7 +397,21 @@ fn verify_node_digest(path: &Path, expected: &str) -> TrialResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
 async fn verify_node_version(path: &Path, processes: &OwnedProcessRegistry) -> TrialResult<()> {
+    verify_node_version_with_receipt(
+        path,
+        processes,
+        &mut FailedLaunchCleanup::NoApplicationSpawned,
+    )
+    .await
+}
+
+async fn verify_node_version_with_receipt(
+    path: &Path,
+    processes: &OwnedProcessRegistry,
+    cleanup: &mut FailedLaunchCleanup,
+) -> TrialResult<()> {
     let mut command = Command::new(path);
     command
         .arg("--version")
@@ -405,52 +419,63 @@ async fn verify_node_version(path: &Path, processes: &OwnedProcessRegistry) -> T
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = processes
-        .start(
-            command,
-            ProcessOptions::new("node-runtime/version-probe", Duration::from_secs(3)),
-            (),
-            |pipes| {
-                drop(pipes.stdin);
-                IoPlan::new(async move {
-                    let mut stdout = pipes.stdout;
-                    let mut output = Vec::new();
-                    let mut buffer = [0u8; 65];
-                    loop {
-                        let count = stdout.read(&mut buffer).await?;
-                        if count == 0 {
-                            return Ok(output);
-                        }
-                        if output.len() + count > 64 {
-                            return Err(fail(
-                                "TRIAL_NODE_VERSION",
-                                "Private Node version output exceeded its budget",
-                            ));
-                        }
-                        output.extend_from_slice(&buffer[..count]);
+    let mut probe = processes.start(
+        command,
+        ProcessOptions::new("node-runtime/version-probe", Duration::from_secs(3)),
+        (),
+        |pipes| {
+            drop(pipes.stdin);
+            IoPlan::new(async move {
+                let mut stdout = pipes.stdout;
+                let mut output = Vec::new();
+                let mut buffer = [0u8; 65];
+                loop {
+                    let count = stdout.read(&mut buffer).await?;
+                    if count == 0 {
+                        return Ok(output);
                     }
-                })
-                .drain("stderr", async move {
-                    let mut stderr = pipes.stderr;
-                    let mut bytes = [0u8; 4096];
-                    let mut total = 0usize;
-                    loop {
-                        let count = stderr.read(&mut bytes).await?;
-                        if count == 0 {
-                            return Ok(());
-                        }
-                        total += count;
-                        if total > 16 * 1024 {
-                            return Err(fail(
-                                "TRIAL_NODE_VERSION",
-                                "Private Node version diagnostics exceeded their budget",
-                            ));
-                        }
+                    if output.len() + count > 64 {
+                        return Err(fail(
+                            "TRIAL_NODE_VERSION",
+                            "Private Node version output exceeded its budget",
+                        ));
                     }
-                })
-            },
-        )?
-        .await?;
+                    output.extend_from_slice(&buffer[..count]);
+                }
+            })
+            .drain("stderr", async move {
+                let mut stderr = pipes.stderr;
+                let mut bytes = [0u8; 4096];
+                let mut total = 0usize;
+                loop {
+                    let count = stderr.read(&mut bytes).await?;
+                    if count == 0 {
+                        return Ok(());
+                    }
+                    total += count;
+                    if total > 16 * 1024 {
+                        return Err(fail(
+                            "TRIAL_NODE_VERSION",
+                            "Private Node version diagnostics exceeded their budget",
+                        ));
+                    }
+                }
+            })
+        },
+    )?;
+    // Registry::start only returns Err before registration/spawn succeeds.
+    // Once admitted, both the probe and its real reader/driver handles need proof.
+    *cleanup = FailedLaunchCleanup::Unconfirmed;
+    let output = (&mut probe).await;
+    if probe.resource_closed().await {
+        *cleanup = FailedLaunchCleanup::NoApplicationSpawned;
+    } else {
+        return Err(fail(
+            "TRIAL_NODE_PROBE_CLEANUP_UNCONFIRMED",
+            "Private Node version probe did not confirm complete resource closure",
+        ));
+    }
+    let output = output?;
     if !output.status.success()
         || String::from_utf8_lossy(&output.value).trim() != format!("v{EXPECTED_NODE_VERSION}")
     {
@@ -500,6 +525,21 @@ async fn limited_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
+/// Only positive, local launch receipts permit clearing this launch's intent.
+/// An empty pending handle or an absent PID never establishes either receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FailedLaunchCleanup {
+    NoApplicationSpawned,
+    CleanlyStopped,
+    Unconfirmed,
+}
+
+impl FailedLaunchCleanup {
+    pub(crate) fn permits_intent_removal(self) -> bool {
+        matches!(self, Self::NoApplicationSpawned | Self::CleanlyStopped)
+    }
+}
+
 struct PreparedLaunch {
     node: PathBuf,
     cwd: PathBuf,
@@ -512,6 +552,7 @@ async fn prepare_launch(
     config: &RuntimeLaunchConfig,
     persistent: Option<(&Path, &Path)>,
     processes: &OwnedProcessRegistry,
+    cleanup: &mut FailedLaunchCleanup,
 ) -> TrialResult<PreparedLaunch> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(fail(
@@ -550,7 +591,7 @@ async fn prepare_launch(
         })
         .transpose()?;
     verify_node_digest(&node, &config.expected_node_sha256)?;
-    verify_node_version(&node, processes).await?;
+    verify_node_version_with_receipt(&node, processes, cleanup).await?;
     Ok(PreparedLaunch {
         node,
         cwd,
@@ -562,7 +603,14 @@ async fn prepare_launch(
 
 impl NodeRuntimeTrial {
     pub async fn launch(config: RuntimeLaunchConfig) -> TrialResult<Self> {
-        Self::launch_inner(config, None, None, &OwnedProcessRegistry::default()).await
+        Self::launch_inner(
+            config,
+            None,
+            None,
+            &OwnedProcessRegistry::default(),
+            &mut FailedLaunchCleanup::NoApplicationSpawned,
+        )
+        .await
     }
 
     /// Use caller-owned persistent data/cache while preserving a fresh run/tmp.
@@ -578,6 +626,7 @@ impl NodeRuntimeTrial {
             Some((data, cache)),
             None,
             &OwnedProcessRegistry::default(),
+            &mut FailedLaunchCleanup::NoApplicationSpawned,
         )
         .await
     }
@@ -589,11 +638,18 @@ impl NodeRuntimeTrial {
         data: PathBuf,
         cache: PathBuf,
         processes: &OwnedProcessRegistry,
-    ) -> (TrialResult<Self>, Option<Self>) {
+    ) -> (TrialResult<Self>, Option<Self>, FailedLaunchCleanup) {
         let mut pending = None;
-        let result =
-            Self::launch_inner(config, Some((data, cache)), Some(&mut pending), processes).await;
-        (result, pending)
+        let mut cleanup = FailedLaunchCleanup::NoApplicationSpawned;
+        let result = Self::launch_inner(
+            config,
+            Some((data, cache)),
+            Some(&mut pending),
+            processes,
+            &mut cleanup,
+        )
+        .await;
+        (result, pending, cleanup)
     }
 
     /// Read-only application preflight. Only the pinned private Node's version
@@ -612,9 +668,14 @@ impl NodeRuntimeTrial {
         cache: &Path,
         processes: &OwnedProcessRegistry,
     ) -> TrialResult<()> {
-        prepare_launch(config, Some((data, cache)), processes)
-            .await
-            .map(|_| ())
+        prepare_launch(
+            config,
+            Some((data, cache)),
+            processes,
+            &mut FailedLaunchCleanup::NoApplicationSpawned,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn launch_inner(
@@ -622,6 +683,7 @@ impl NodeRuntimeTrial {
         persistent: Option<(PathBuf, PathBuf)>,
         pending: Option<&mut Option<Self>>,
         processes: &OwnedProcessRegistry,
+        cleanup: &mut FailedLaunchCleanup,
     ) -> TrialResult<Self> {
         let PreparedLaunch {
             node,
@@ -635,6 +697,7 @@ impl NodeRuntimeTrial {
                 .as_ref()
                 .map(|(data, cache)| (data.as_path(), cache.as_path())),
             processes,
+            cleanup,
         )
         .await?;
         let instance_id = Uuid::new_v4().to_string();
@@ -687,6 +750,9 @@ impl NodeRuntimeTrial {
             .kill_on_drop(false);
         #[cfg(unix)]
         command.process_group(0);
+        // Tokio spawn can fail after OS work has begun. From this boundary on,
+        // only the runtime's verified normal stop may authorize intent removal.
+        *cleanup = FailedLaunchCleanup::Unconfirmed;
         let mut child = command.spawn().map_err(|_| {
             fail(
                 "TRIAL_PROCESS_FAILED",
@@ -798,10 +864,16 @@ impl NodeRuntimeTrial {
             Ok(())
         }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Trial was not ready within 10 seconds")));
         if let Err(error) = started {
-            if runtime.stop().await.is_err() {
-                if let Some(pending) = pending {
-                    *pending = Some(runtime);
+            match runtime.stop().await {
+                Ok(status) if status.process_group_exited && status.state == "stopped" => {
+                    *cleanup = FailedLaunchCleanup::CleanlyStopped;
                 }
+                Err(_) => {
+                    if let Some(pending) = pending {
+                        *pending = Some(runtime);
+                    }
+                }
+                _ => (),
             }
             return Err(error);
         }

@@ -32,6 +32,8 @@ pub use directory::DirectoryInitializeInput;
 pub(crate) mod development;
 pub use development::{NodeDevelopmentSource, NodeDevelopmentSourceLease};
 
+const START_INTENT_CLEANUP_PREFIX: &str = ".start-intent-cleanup-";
+
 type Result<T> = std::result::Result<T, ApiError>;
 fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_APP_ERROR", message)
@@ -80,6 +82,12 @@ struct Inner {
     shutting_down: bool,
 }
 
+#[cfg(test)]
+type StartIntentPause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
 pub struct NodeApps {
     root: PathBuf,
     data_root: PathBuf,
@@ -90,6 +98,8 @@ pub struct NodeApps {
     development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: std::sync::Mutex<()>,
     directory_stopping: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    start_intent_pause: std::sync::Mutex<Option<StartIntentPause>>,
 }
 
 impl NodeApps {
@@ -149,6 +159,8 @@ impl NodeApps {
             development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: std::sync::Mutex::new(()),
             directory_stopping: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            start_intent_pause: std::sync::Mutex::new(None),
         })
     }
 
@@ -297,11 +309,21 @@ impl NodeApps {
             .join(&record.id)
             .join("active.json")
             .try_exists()?;
-        let error = inner.errors.get(&record.id).cloned().or_else(|| {
-            (marker && running.is_none()).then(|| {
-                "上次运行未完成正常关闭，已阻止再次启动。请保留应用数据和运行记录以便恢复。".into()
+        let cleanup_pending = has_start_intent_cleanup(&self.root.join(&record.id))?;
+        let error = if cleanup_pending {
+            Some(if running.is_some() {
+                "应用仍在运行，启动收尾记录需要核对；已阻止再次启动，请保留运行记录。".into()
+            } else {
+                "上次启动标记清理尚未确认完成，已阻止再次启动。请保留清理记录以便恢复。".into()
             })
-        });
+        } else {
+            inner.errors.get(&record.id).cloned().or_else(|| {
+                (marker && running.is_none()).then(|| {
+                    "上次运行未完成正常关闭，已阻止再次启动。请保留应用数据和运行记录以便恢复。"
+                        .into()
+                })
+            })
+        };
         let state = if running.is_some() {
             "running"
         } else if error.is_some() {
@@ -361,7 +383,7 @@ impl NodeApps {
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
-                "missingRequired":view.missing_required,"canStart":view.can_start && (!marker || running.is_some()) && !inner.shutting_down},
+                "missingRequired":view.missing_required,"canStart":view.can_start && !cleanup_pending && (!marker || running.is_some()) && !inner.shutting_down},
             "fields":inspected["configuration"]["fields"]
         }))
     }
@@ -512,7 +534,7 @@ impl NodeApps {
         }
         let marker = self.root.join(id).join("active.json");
         crate::projects::check_no_symlinks(&marker, true)?;
-        if marker.try_exists()? {
+        if marker.try_exists()? || has_start_intent_cleanup(&self.root.join(id))? {
             return Err(ApiError::new(
                 "NODE_INSTALL_BUSY",
                 "运行记录尚未完成收尾，不能更新；请保留现场。",
@@ -735,6 +757,13 @@ impl NodeApps {
         let manifest = self.manifest(&record)?;
         let slot = self.root.join(id);
         let marker = slot.join("active.json");
+        // A failed/crashed intent cleanup is a persistent gate, including a
+        // malformed file or symlink in place of the private cleanup directory.
+        if has_start_intent_cleanup(&slot)? {
+            return Err(fail(
+                "上次启动标记清理尚未确认完成，已阻止再次启动。请保留清理记录以便恢复。",
+            ));
+        }
         if marker.try_exists()? {
             return Err(fail(
                 "上次运行没有正常关闭，已阻止再次启动。请保留运行记录以便恢复。",
@@ -767,11 +796,21 @@ impl NodeApps {
         )
         .await?;
         // Write intent before spawning. A host hard crash fails closed; no PID guessing.
-        write_new_json(
+        let intent = StartIntentOwnership::create(
             &marker,
             &json!({"version":1,"hostPid":std::process::id(),"runDirectory":trial_root}),
         )?;
-        let (launched, pending) = NodeRuntimeTrial::launch_retaining_failed(
+        #[cfg(test)]
+        {
+            let pause = self.start_intent_pause.lock().unwrap().take();
+            if let Some((entered, release)) = pause {
+                entered
+                    .send(())
+                    .expect("fixture observes owned start intent");
+                release.await.expect("fixture releases owned start intent");
+            }
+        }
+        let (launched, pending, cleanup) = NodeRuntimeTrial::launch_retaining_failed(
             config,
             slot.join("data"),
             slot.join("cache"),
@@ -792,8 +831,30 @@ impl NodeApps {
                         },
                     );
                 }
-                // launch has awaited owned-child cleanup before returning an error.
-                // Preserve intent on uncertainty rather than starting a second writer.
+                // Only a positive launch receipt and this exact intent's file
+                // identity/content permit removal. Never infer safety from an
+                // empty pending handle, an empty directory or an absent PID.
+                if cleanup.permits_intent_removal() {
+                    if let Err(ownership_error) = intent.remove_if_owned(&marker) {
+                        inner.errors.insert(
+                            id.into(),
+                            "启动标记归属发生变化，已保留记录并阻止再次启动。".into(),
+                        );
+                        return Err(ownership_error.detail("launchCauseCode", error.code));
+                    }
+                    inner.errors.insert(
+                        id.into(),
+                        format!(
+                            "启动未完成（{}），本次启动资源已确认关闭，可重试。",
+                            error.code
+                        ),
+                    );
+                    return Err(fail(
+                        "应用启动未完成，本次启动资源已确认关闭。请检查运行环境和应用入口后重试。",
+                    )
+                    .detail("launchCauseCode", error.code)
+                    .detail("launchCleanupConfirmed", true));
+                }
                 inner.errors.insert(
                     id.into(),
                     format!("启动未完成（{}），请保留运行记录。", error.code),
@@ -1076,6 +1137,26 @@ fn digest_manifest(source: &Path) -> Result<String> {
     ))
 }
 
+/// Presence alone is a fail-closed gate; never follow or classify its entries.
+/// Fresh installation IDs legitimately have no slot yet.
+pub(crate) fn has_start_intent_cleanup(slot: &Path) -> Result<bool> {
+    match fs::symlink_metadata(slot) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+        Ok(_) => ordinary_path(slot, true)?,
+    }
+    for entry in fs::read_dir(slot)? {
+        if entry?
+            .file_name()
+            .to_string_lossy()
+            .starts_with(START_INTENT_CLEANUP_PREFIX)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
     if !path.is_absolute()
         || path
@@ -1143,6 +1224,181 @@ fn read_small(path: &Path) -> Result<Vec<u8>> {
         return Err(fail("应用记录超出大小限制。"));
     }
     Ok(bytes)
+}
+
+#[derive(Clone, Copy)]
+enum IntentCleanupPoint {
+    BeforeCapture,
+    Captured,
+}
+
+/// This open file reserves the identity of precisely the intent we created.
+/// It has no automatic cleanup: uncertainty and host crashes stay fail-closed.
+struct StartIntentOwnership {
+    file: fs::File,
+    contents: Vec<u8>,
+}
+
+impl StartIntentOwnership {
+    fn create(path: &Path, value: &impl Serialize) -> Result<Self> {
+        ordinary_path(path.parent().ok_or_else(|| fail("记录目录无效。"))?, true)?;
+        let contents = serde_json::to_vec_pretty(value)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(path)?;
+        file.write_all(&contents)?;
+        file.sync_all()?;
+        fs::File::open(path.parent().unwrap())?.sync_all()?;
+        Ok(Self { file, contents })
+    }
+
+    fn remove_if_owned(&self, path: &Path) -> Result<()> {
+        self.remove_if_owned_with(path, |_| ())
+    }
+
+    fn remove_if_owned_with(
+        &self,
+        path: &Path,
+        mut observe: impl FnMut(IntentCleanupPoint),
+    ) -> Result<()> {
+        let changed = || fail("启动标记归属或内容发生变化，已保留记录，不能解除启动保护。");
+        ordinary_path(path, false).map_err(|_| changed())?;
+        let owned = self.file.metadata()?;
+        let check = |current: &fs::Metadata| -> Result<()> {
+            if !owned.is_file() || !current.is_file() || current.file_type().is_symlink() {
+                return Err(changed());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if owned.dev() != current.dev()
+                    || owned.ino() != current.ino()
+                    || owned.nlink() != 1
+                    || current.nlink() != 1
+                {
+                    return Err(changed());
+                }
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            Err(changed())
+        };
+        check(&fs::symlink_metadata(path)?)?;
+        if read_small(path).map_err(|_| changed())? != self.contents {
+            return Err(changed());
+        }
+        check(&fs::symlink_metadata(path)?)?;
+        observe(IntentCleanupPoint::BeforeCapture);
+        let parent = path.parent().ok_or_else(changed)?;
+        let cleanup = parent.join(format!("{START_INTENT_CLEANUP_PREFIX}{}", Uuid::new_v4()));
+        let mut directory = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory.mode(0o700);
+        }
+        // Persist the fail-closed gate before removing anything from active.
+        // A crash or any subsequent error leaves this evidence for recovery.
+        directory.create(&cleanup)?;
+        fs::File::open(&cleanup)?.sync_all()?;
+        fs::File::open(parent)?.sync_all()?;
+        let captured = cleanup.join("captured-intent");
+        move_start_intent_exclusive(path, &captured).map_err(|_| changed())?;
+        observe(IntentCleanupPoint::Captured);
+        let captured_is_owned = (|| -> Result<()> {
+            ordinary_path(&captured, false).map_err(|_| changed())?;
+            check(&fs::symlink_metadata(&captured)?)?;
+            if read_small(&captured).map_err(|_| changed())? != self.contents {
+                return Err(changed());
+            }
+            check(&fs::symlink_metadata(&captured)?)
+        })();
+        if captured_is_owned.is_err() {
+            // Restore only if active is still absent. A newer active marker is
+            // never overwritten; either way the captured foreign object and/or
+            // its restored active path survive, with the cleanup gate retained.
+            let _ = move_start_intent_exclusive(&captured, path);
+            return Err(changed());
+        }
+        // Unlink only the verified object inside our exclusive private slot.
+        // Never unlink the mutable public active path after a check.
+        fs::remove_file(&captured)?;
+        fs::File::open(&cleanup)?.sync_all()?;
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Err(changed()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        fs::remove_dir(&cleanup)?;
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    }
+}
+
+/// The same dirfd + exclusive rename primitive used by restoration transactions.
+/// Paths may be replaced at the active name; displaced objects are never overwritten.
+fn move_start_intent_exclusive(from: &Path, to: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::{
+            ffi::CString,
+            os::{
+                fd::AsRawFd,
+                unix::{
+                    ffi::OsStrExt,
+                    fs::{MetadataExt, OpenOptionsExt},
+                },
+            },
+        };
+        let open_parent = |path: &Path| -> Result<fs::File> {
+            let parent = path.parent().ok_or_else(|| fail("启动标记目录无效。"))?;
+            ordinary_path(parent, true)?;
+            Ok(OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(parent)?)
+        };
+        let left = open_parent(from)?;
+        let right = open_parent(to)?;
+        if left.metadata()?.dev() != right.metadata()?.dev() {
+            return Err(fail("启动标记清理必须留在原有数据卷。"));
+        }
+        let name = |path: &Path| -> Result<CString> {
+            CString::new(
+                path.file_name()
+                    .ok_or_else(|| fail("启动标记名称无效。"))?
+                    .as_bytes(),
+            )
+            .map_err(|_| fail("启动标记名称无效。"))
+        };
+        let from = name(from)?;
+        let to = name(to)?;
+        if unsafe {
+            libc::renameatx_np(
+                left.as_raw_fd(),
+                from.as_ptr(),
+                right.as_raw_fd(),
+                to.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        } != 0
+        {
+            return Err(fail("启动标记原子转移未完成，现有标记与清理记录均保留。"));
+        }
+        left.sync_all()?;
+        right.sync_all()?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (from, to);
+        Err(fail("启动标记清理目前仅验证 macOS。"))
+    }
 }
 
 fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {

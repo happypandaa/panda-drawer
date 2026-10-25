@@ -837,7 +837,9 @@ impl NodeAppInstaller {
     fn check_target(&self, target: &InstallTargetSnapshot) -> Result<()> {
         target.validate()?;
         let slot = self.slot(&target.app_id)?;
-        if slot.join("active.json").try_exists()? {
+        if slot.join("active.json").try_exists()?
+            || crate::node_apps::has_start_intent_cleanup(&slot)?
+        {
             return Err(failure(
                 "NODE_INSTALL_BUSY",
                 "请先正常关闭应用；运行记录未完成收尾时不能更新。",

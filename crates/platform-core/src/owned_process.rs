@@ -182,6 +182,12 @@ impl<T> ProcessRun<T> {
     pub fn snapshot(&self) -> ProcessSnapshot {
         self.owner.snapshot()
     }
+    /// A delivered operation result alone does not join the actual driver.
+    /// Pending or lost ownership remains unconfirmed; this never guesses by PID.
+    pub async fn resource_closed(&self) -> bool {
+        self.owner.clone().join_driver().await;
+        self.owner.snapshot().resource_closed()
+    }
 }
 impl<T> Future for ProcessRun<T> {
     type Output = ProcessResult<T>;

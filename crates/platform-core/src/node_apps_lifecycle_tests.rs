@@ -67,7 +67,8 @@ server = ThreadingHTTPServer(('127.0.0.1',0), Handler)
 with open(os.path.join(os.environ['APP_DATA_DIR'], 'artificial-port'), 'w') as output:
     output.write(str(server.server_address[1]))
 threading.Thread(target=server.serve_forever, daemon=True).start()
-print(json.dumps({'protocolVersion':1,'type':'ready','instanceId':instance,'host':'127.0.0.1','port':server.server_address[1]}),flush=True)
+ready_instance = instance + '-wrong' if os.environ['TRIAL_BEHAVIOR'].startswith('bad-ready') else instance
+print(json.dumps({'protocolVersion':1,'type':'ready','instanceId':ready_instance,'host':'127.0.0.1','port':server.server_address[1]}),flush=True)
 def graceful_term(*args):
     print(json.dumps({'protocolVersion':1,'type':'stopping','instanceId':instance}),flush=True)
     server.shutdown();server.server_close();sys.exit(0)
@@ -78,7 +79,8 @@ for line in sys.stdin:
         if os.environ['TRIAL_BEHAVIOR'] == 'hang-stop':
             signal.signal(signal.SIGTERM,signal.SIG_IGN)
             while True: time.sleep(1)
-        print(json.dumps({'protocolVersion':1,'type':'stopping','instanceId':instance}),flush=True)
+        if os.environ['TRIAL_BEHAVIOR'] != 'bad-ready-without-stopping':
+            print(json.dumps({'protocolVersion':1,'type':'stopping','instanceId':instance}),flush=True)
         break
     if command['type'] == 'ping':
         print(json.dumps({'protocolVersion':1,'type':'pong','instanceId':instance,'requestId':command['requestId']}),flush=True)
@@ -672,4 +674,423 @@ async fn losing_node_stop_waiter_preserves_running_and_proxy_until_actual_file_c
         .unwrap();
     assert!(manager.owned_process_ids().await.is_empty());
     assert!(!marker.exists());
+}
+
+#[tokio::test]
+async fn sealed_after_start_intent_confirms_no_spawn_and_allows_reopen() {
+    let fixture = Fixture::new("normal");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    let sentinel = fixture.slot(id).join("data/preserved-startup-record");
+    fs::write(&sentinel, "人工数据保持 🌱").unwrap();
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *fixture.manager.start_intent_pause.lock().unwrap() = Some((entered, resume));
+    let (result, ()) = tokio::join!(fixture.manager.start(id), async {
+        observed.await.unwrap();
+        assert!(marker.is_file());
+        assert!(!fixture.slot(id).join("data/artificial-pid").exists());
+        fixture.manager.processes.seal();
+        release.send(()).unwrap();
+    });
+    let error = result.unwrap_err();
+    assert_eq!(error.details["launchCauseCode"], "SERVICE_STOPPING");
+    assert_eq!(error.details["launchCleanupConfirmed"], true);
+    assert!(!marker.exists());
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(fixture
+        .manager
+        .processes
+        .snapshot()
+        .iter()
+        .all(|p| p.resource_closed()));
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "人工数据保持 🌱");
+    let mut reopened =
+        NodeApps::new(fixture.data.clone(), fixture.manager.node_path.clone()).unwrap();
+    reopened.digest = fixture.manager.digest.clone();
+    reopened.start(id).await.unwrap();
+    reopened.stop_runtime(id).await.unwrap();
+    assert!(!marker.exists());
+}
+
+#[tokio::test]
+async fn cancelled_admitted_second_probe_joins_real_resources_before_clearing_intent() {
+    let mut fixture = Fixture::new("normal");
+    let counter = fixture.manager.node_path.with_file_name("probe-count");
+    let admitted = fixture.manager.node_path.with_file_name("second-probe-pid");
+    let probe = fixture
+        .manager
+        .node_path
+        .with_file_name("disposable-version-probe.py");
+    fs::write(
+        &probe,
+        format!(
+            r#"import os,time,pathlib
+counter=pathlib.Path({counter:?})
+count=int(counter.read_text())+1 if counter.exists() else 1
+counter.write_text(str(count))
+if count==2:
+    pathlib.Path({admitted:?}).write_text(str(os.getpid()))
+    time.sleep(60)
+print('v24.22.0',flush=True)
+"#,
+            counter = counter.to_str().unwrap(),
+            admitted = admitted.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(&fixture.manager.node_path, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exec /usr/bin/python3 '{}' ; fi\nexec /usr/bin/python3 \"$@\"\n", probe.display())).unwrap();
+    fixture.manager.digest = format!(
+        "{:x}",
+        Sha256::digest(fs::read(&fixture.manager.node_path).unwrap())
+    );
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    let (result, ()) = tokio::join!(fixture.manager.start(id), async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !admitted.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "actual second probe must start"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(marker.is_file());
+        fixture.manager.processes.seal();
+    });
+    let error = result.unwrap_err();
+    assert_eq!(error.details["launchCauseCode"], "PROCESS_CANCELLED");
+    assert_eq!(error.details["launchCleanupConfirmed"], true);
+    let records = fixture.manager.processes.snapshot();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|p| p.resource_closed()));
+    let pid: i32 = fs::read_to_string(admitted).unwrap().parse().unwrap();
+    assert!(!process_is_live(pid));
+    assert!(!fixture.slot(id).join("data/artificial-pid").exists());
+    assert!(!marker.exists());
+    assert!(fixture.manager.processes.shutdown().await.is_empty());
+}
+
+#[tokio::test]
+async fn failed_ready_with_verified_normal_stop_clears_only_this_launch_intent() {
+    let fixture = Fixture::new("bad-ready");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    for _ in 0..2 {
+        let error = fixture.manager.start(id).await.unwrap_err();
+        assert_eq!(error.details["launchCauseCode"], "TRIAL_READY_INVALID");
+        assert_eq!(error.details["launchCleanupConfirmed"], true);
+        assert!(!process_is_live(fixture.pid(id) as i32));
+        assert!(!marker.exists());
+        assert!(fixture.manager.owned_process_ids().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn failed_ready_without_normal_stop_receipt_keeps_intent_even_without_pending_handle() {
+    let fixture = Fixture::new("bad-ready-without-stopping");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    fixture.manager.start(id).await.unwrap_err();
+    assert!(!process_is_live(fixture.pid(id) as i32));
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(
+        marker.is_file(),
+        "absence of a pending owner does not prove a normal stop"
+    );
+    let before = fs::read(&marker).unwrap();
+    assert!(fixture
+        .manager
+        .start(id)
+        .await
+        .unwrap_err()
+        .message
+        .contains("上次运行"));
+    assert_eq!(fs::read(marker).unwrap(), before);
+}
+
+#[tokio::test]
+async fn confirmed_no_spawn_never_removes_replaced_modified_or_retyped_intent() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+    for replacement in [
+        "same-content-new-inode",
+        "modified-in-place",
+        "hard-link",
+        "symlink",
+        "directory",
+    ] {
+        let fixture = Fixture::new("normal");
+        let registration = fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap();
+        let id = registration["id"].as_str().unwrap();
+        let marker = fixture.slot(id).join("active.json");
+        let retained = marker.with_file_name("preserved-original-intent.json");
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *fixture.manager.start_intent_pause.lock().unwrap() = Some((entered, resume));
+        let (result, identity) = tokio::join!(fixture.manager.start(id), async {
+            observed.await.unwrap();
+            let contents = fs::read(&marker).unwrap();
+            if replacement == "modified-in-place" {
+                fs::write(&marker, b"foreign-intent").unwrap();
+            } else if replacement == "hard-link" {
+                fs::hard_link(&marker, &retained).unwrap();
+            } else {
+                fs::rename(&marker, &retained).unwrap();
+                match replacement {
+                    "same-content-new-inode" => fs::write(&marker, contents).unwrap(),
+                    "symlink" => symlink(&retained, &marker).unwrap(),
+                    "directory" => fs::create_dir(&marker).unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+            let identity = fs::symlink_metadata(&marker).unwrap().ino();
+            fixture.manager.processes.seal();
+            release.send(()).unwrap();
+            identity
+        });
+        let error = result.unwrap_err();
+        assert!(error.message.contains("归属"), "{replacement}: {error}");
+        assert_eq!(error.details["launchCauseCode"], "SERVICE_STOPPING");
+        assert_eq!(fs::symlink_metadata(&marker).unwrap().ino(), identity);
+        if replacement == "modified-in-place" {
+            assert_eq!(fs::read(&marker).unwrap(), b"foreign-intent");
+        }
+        assert!(!fixture.slot(id).join("data/artificial-pid").exists());
+    }
+}
+
+#[tokio::test]
+async fn late_foreign_intent_is_atomically_captured_and_never_deleted_or_overwritten() {
+    use std::os::unix::fs::MetadataExt;
+    for race in [
+        "before-capture",
+        "before-and-after-capture",
+        "after-owned-capture",
+    ] {
+        let fixture = Fixture::new("normal");
+        let registration = fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap();
+        let id = registration["id"].as_str().unwrap();
+        let marker = fixture.slot(id).join("active.json");
+        let preserved = marker.with_file_name("preserved-original-intent.json");
+        let intent = StartIntentOwnership::create(&marker, &json!({"disposable":"owned"})).unwrap();
+        let mut first_foreign = None;
+        let mut new_active = None;
+        let error = intent
+            .remove_if_owned_with(&marker, |point| match point {
+                IntentCleanupPoint::BeforeCapture if race != "after-owned-capture" => {
+                    // Deterministic replacement after the final old-path check.
+                    fs::rename(&marker, &preserved).unwrap();
+                    fs::write(&marker, b"foreign-captured").unwrap();
+                    first_foreign = Some(fs::symlink_metadata(&marker).unwrap().ino());
+                }
+                IntentCleanupPoint::Captured if race != "before-capture" => {
+                    fs::write(&marker, b"new-foreign-active").unwrap();
+                    new_active = Some(fs::symlink_metadata(&marker).unwrap().ino());
+                }
+                _ => (),
+            })
+            .unwrap_err();
+        assert!(error.message.contains("归属"), "{race}: {error}");
+        let cleanup: Vec<_> = fs::read_dir(fixture.slot(id))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(START_INTENT_CLEANUP_PREFIX)
+            })
+            .collect();
+        assert_eq!(
+            cleanup.len(),
+            1,
+            "failed cleanup retains its persistent gate"
+        );
+        let captured = cleanup[0].join("captured-intent");
+        if race == "before-capture" {
+            assert_eq!(fs::read(&marker).unwrap(), b"foreign-captured");
+            assert_eq!(
+                fs::symlink_metadata(&marker).unwrap().ino(),
+                first_foreign.unwrap()
+            );
+            assert!(
+                !captured.exists(),
+                "foreign intent was restored with no overwrite"
+            );
+        } else {
+            assert_eq!(fs::read(&marker).unwrap(), b"new-foreign-active");
+            assert_eq!(
+                fs::symlink_metadata(&marker).unwrap().ino(),
+                new_active.unwrap()
+            );
+            if race == "before-and-after-capture" {
+                assert_eq!(fs::read(&captured).unwrap(), b"foreign-captured");
+                assert_eq!(
+                    fs::symlink_metadata(&captured).unwrap().ino(),
+                    first_foreign.unwrap()
+                );
+            } else {
+                assert!(
+                    !captured.exists(),
+                    "only the positively identified owned intent was removed"
+                );
+            }
+        }
+        assert!(fixture
+            .manager
+            .start(id)
+            .await
+            .unwrap_err()
+            .message
+            .contains("清理尚未确认"));
+        assert!(
+            fixture.manager.processes.snapshot().is_empty(),
+            "gate rejects before running any probe"
+        );
+    }
+}
+
+#[tokio::test]
+async fn residual_intent_cleanup_gate_blocks_reopen_even_without_an_active_marker() {
+    use std::os::unix::fs::symlink;
+    for kind in ["directory", "file", "symlink"] {
+        let fixture = Fixture::new("normal");
+        let registration = fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap();
+        let id = registration["id"].as_str().unwrap();
+        let preview = fixture.manager.delete_preview(id).await.unwrap();
+        let sentinel = fixture.slot(id).join("data/preserved-cleanup-record");
+        fs::write(&sentinel, b"preserve-runtime-data").unwrap();
+        let before = fixture.manager.configuration(id).await.unwrap();
+        assert_eq!(before["state"], "stopped");
+        assert_eq!(before["configuration"]["canStart"], true);
+        let gate = fixture
+            .slot(id)
+            .join(format!("{START_INTENT_CLEANUP_PREFIX}disposable-{kind}"));
+        let outside = fixture.source.join("preserved-outside-cleanup-gate");
+        fs::write(&outside, b"keep-external-evidence").unwrap();
+        match kind {
+            "directory" => fs::create_dir(&gate).unwrap(),
+            "file" => fs::write(&gate, b"unknown-cleanup-evidence").unwrap(),
+            "symlink" => symlink(&outside, &gate).unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(!fixture.slot(id).join("active.json").exists());
+        let detail = fixture.manager.configuration(id).await.unwrap();
+        assert_eq!(detail["state"], "failed");
+        assert_eq!(detail["configuration"]["canStart"], false);
+        assert!(detail["lastError"]
+            .as_str()
+            .unwrap()
+            .contains("清理尚未确认"));
+        let listed = fixture.manager.list().await.unwrap();
+        assert_eq!(listed[0]["state"], "failed");
+        assert_eq!(listed[0]["configuration"]["canStart"], false);
+        assert_eq!(
+            fixture
+                .manager
+                .install_target_snapshot(Some(id))
+                .await
+                .unwrap_err()
+                .code,
+            "NODE_INSTALL_BUSY"
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .development_build_source_lease(id)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "NODE_INSTALL_BUSY"
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .bind_development_source(id, fixture.source.clone())
+                .await
+                .unwrap_err()
+                .code,
+            "NODE_INSTALL_BUSY"
+        );
+        let delete_input =
+            serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
+                .unwrap();
+        assert!(fixture
+            .manager
+            .delete(id, delete_input)
+            .await
+            .unwrap_err()
+            .message
+            .contains("安全关闭"));
+        assert_eq!(fs::read(&sentinel).unwrap(), b"preserve-runtime-data");
+        assert!(fixture
+            .manager
+            .start(id)
+            .await
+            .unwrap_err()
+            .message
+            .contains("清理尚未确认"));
+        assert!(fs::symlink_metadata(&gate).is_ok());
+        assert_eq!(fs::read(outside).unwrap(), b"keep-external-evidence");
+        assert!(fixture.manager.processes.snapshot().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn cleanup_gate_keeps_an_actual_running_backend_visible_and_blocks_new_start() {
+    let fixture = Fixture::new("normal");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    let gate = fixture
+        .slot(id)
+        .join(format!("{START_INTENT_CLEANUP_PREFIX}disposable-running"));
+    fs::write(&gate, b"unconfirmed-cleanup-evidence").unwrap();
+    let detail = fixture.manager.status(id).await.unwrap();
+    assert_eq!(detail["state"], "running");
+    assert_eq!(detail["configuration"]["canStart"], false);
+    assert!(detail["lastError"].as_str().unwrap().contains("仍在运行"));
+    assert!(process_is_live(fixture.pid(id) as i32));
+    fixture.manager.stop_runtime(id).await.unwrap();
+    assert_eq!(fs::read(gate).unwrap(), b"unconfirmed-cleanup-evidence");
+    let stopped = fixture.manager.configuration(id).await.unwrap();
+    assert_eq!(stopped["state"], "failed");
+    assert_eq!(stopped["configuration"]["canStart"], false);
 }
