@@ -261,7 +261,7 @@ async fn owned_process_cleanup_timeout_delivers_error_but_never_drops_reader_own
     let registry = OwnedProcessRegistry::default();
     let dropped = Arc::new(AtomicBool::new(false));
     let (release, wait) = oneshot::channel::<()>();
-    let run = registry
+    let mut run = registry
         .start(
             command("/usr/bin/true", &[]),
             options(),
@@ -274,13 +274,21 @@ async fn owned_process_cleanup_timeout_delivers_error_but_never_drops_reader_own
             },
         )
         .unwrap();
-    assert_eq!(run.await.unwrap_err().code, "PROCESS_CLEANUP_PENDING");
+    assert_eq!(
+        (&mut run).await.unwrap_err().code,
+        "PROCESS_CLEANUP_PENDING"
+    );
+    assert!(
+        !run.resource_closed().await,
+        "a pending actual reader is not a closure receipt"
+    );
     assert!(!dropped.load(Ordering::Acquire));
     assert!(!shutdown(&registry).await.is_empty());
     release.send(()).unwrap();
     phase(&registry, ProcessPhase::Closed).await;
     assert!(shutdown(&registry).await.is_empty());
     assert!(dropped.load(Ordering::Acquire));
+    assert!(run.resource_closed().await);
 }
 
 #[tokio::test]
@@ -305,14 +313,21 @@ async fn owned_process_reader_panic_remains_sticky_after_later_success() {
         return;
     }
     let registry = OwnedProcessRegistry::default();
-    let run = registry
+    let mut run = registry
         .start(command("/bin/sleep", &["30"]), options(), (), |pipes| {
             io(pipes).drain("controlled-panic", async {
                 panic!("intentional disposable reader panic")
             })
         })
         .unwrap();
-    assert_eq!(run.await.unwrap_err().code, "PROCESS_DRAIN_UNCONFIRMED");
+    assert_eq!(
+        (&mut run).await.unwrap_err().code,
+        "PROCESS_DRAIN_UNCONFIRMED"
+    );
+    assert!(
+        !run.resource_closed().await,
+        "a failed actual reader stays unconfirmed"
+    );
     let success = registry
         .start(command("/usr/bin/true", &[]), options(), (), io)
         .unwrap()

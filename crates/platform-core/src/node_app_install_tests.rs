@@ -1145,3 +1145,45 @@ async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
 
 #[path = "node_app_install_policy_tests.rs"]
 mod policy;
+
+#[tokio::test]
+async fn late_start_cleanup_gate_blocks_pointer_publication_and_preserves_existing_data() {
+    let fixture = Fixture::new(NPM_OK);
+    let fresh = InstallTargetSnapshot::fresh();
+    let installed = fixture.apply(&fixture.prepare(fresh.clone()).await, &fresh);
+    let slot = fixture.installer.slot(&installed.app_id).unwrap();
+    let files = sentinels(&slot);
+    let registration = fs::read(slot.join("registration.json")).unwrap();
+    let target = fixture.update_target(&installed, 7);
+    let prepared = fixture.prepare(target.clone()).await;
+    let task = fixture
+        .tasks
+        .create_workspace_operation("nodeInstallApply")
+        .unwrap();
+    let mut journal = journal_for_commit(&fixture, &prepared, &task.task_id);
+    let gate = slot.join(".start-intent-cleanup-disposable-late-publication");
+    let error = fixture
+        .installer
+        .commit_files(&mut journal, |point| {
+            if matches!(point, CommitPoint::BeforePointer) {
+                fs::write(&gate, b"preserve-unconfirmed-intent-cleanup")?;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "NODE_INSTALL_BUSY");
+    assert_eq!(
+        fs::read(slot.join("registration.json")).unwrap(),
+        registration
+    );
+    assert_eq!(
+        fs::read(gate).unwrap(),
+        b"preserve-unconfirmed-intent-cleanup"
+    );
+    assert_preserved(&files);
+    assert_eq!(
+        fixture.installer.check_target(&target).unwrap_err().code,
+        "NODE_INSTALL_BUSY"
+    );
+    fixture.shutdown().await;
+}

@@ -170,7 +170,10 @@ impl NodeApps {
             ));
         }
         self.stop_locked(id, &mut inner).await?;
-        if inner.running.contains_key(id) || slot.join("active.json").try_exists()? {
+        if inner.running.contains_key(id)
+            || slot.join("active.json").try_exists()?
+            || has_start_intent_cleanup(&slot)?
+        {
             return Err(fail("应用尚未完成安全关闭，未删除文件；请保留运行现场。"));
         }
         let managed = record.managed.is_some();

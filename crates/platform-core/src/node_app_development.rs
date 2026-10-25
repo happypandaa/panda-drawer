@@ -195,6 +195,7 @@ impl NodeApps {
             || inner.shutting_down
             || inner.running.contains_key(id)
             || marker.try_exists()?
+            || has_start_intent_cleanup(&self.root.join(id))?
         {
             return Err(ApiError::new(
                 "NODE_SOURCE_RESTORE_RUNTIME_ACTIVE",

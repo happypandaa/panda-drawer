@@ -995,3 +995,48 @@ async fn retained_node_source_restore_blocks_new_build_binding_installation_and_
     assert!(interrupted.join("journal.json").is_file());
     fixture.shutdown().await;
 }
+
+#[tokio::test]
+async fn managed_source_restore_rejects_start_cleanup_gate_without_an_active_marker() {
+    let fixture = Fixture::new();
+    let installed = fixture.install().await;
+    let id = &installed.app_id;
+    fixture
+        .manager
+        .bind_development_source(id, fixture.source.clone())
+        .await
+        .unwrap();
+    let lease = fixture
+        .manager
+        .development_restore_source_lease(id)
+        .await
+        .unwrap();
+    assert!(!lease.source().runtime_is_source);
+    drop(lease);
+    let gate = fixture
+        .slot(id)
+        .join(".start-intent-cleanup-disposable-source-restore");
+    fs::write(&gate, b"preserve-unconfirmed-intent-cleanup").unwrap();
+    assert!(!fixture.slot(id).join("active.json").exists());
+    assert_eq!(
+        fixture
+            .manager
+            .development_restore_source_lease(id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "NODE_SOURCE_RESTORE_RUNTIME_ACTIVE"
+    );
+    assert_eq!(
+        fs::read(gate).unwrap(),
+        b"preserve-unconfirmed-intent-cleanup"
+    );
+    assert!(fixture
+        .manager
+        .development_active
+        .lock()
+        .unwrap()
+        .is_empty());
+    fixture.shutdown().await;
+}
