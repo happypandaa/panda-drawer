@@ -1037,6 +1037,67 @@ test('An unavailable recovery refresh revokes an earlier data recovery confirmat
   assert.match(document.body.textContent, /人工恢复读取失败/);
 });
 
+for (const changedSlots of [false, true]) {
+  test(`A successful data recovery refresh revokes confirmation with ${changedSlots ? 'changed' : 'identical'} slots and fixed journal digests`, async () => {
+    let refreshed = false;
+    const operation = dataRestoreOperation({ canUndo: true, dataState: 'before' });
+    const { calls } = await setup({ overrides: {
+      project_git_data_restore_status: () => ({ state: 'pending', businessBlocked: true, operations: [{ ...operation,
+        slots: [{ kind: 'database', path: 'data/main.sqlite', state: refreshed && changedSlots ? 'applied' : 'displaced' }],
+      }], issues: [] }),
+      project_git_data_restore_recover: ({ input }) => task({ type: input.action === 'undo' ? 'gitDataRestoreUndo' : 'gitDataRestoreContinue' }),
+    } });
+    await fill(); await change(targetField(), nextOid);
+    await click(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
+    assert.equal(byText('继续并核对数据取回').disabled, false);
+    assert.equal(byText('撤回本次数据取回').disabled, false);
+    refreshed = true; await click(refresh());
+    assert.equal(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]').checked, false);
+    assert.equal(byText('继续并核对数据取回').disabled, true);
+    assert.equal(byText('撤回本次数据取回').disabled, true);
+    await click(byText('继续并核对数据取回')); await click(byText('撤回本次数据取回'));
+    assert.equal(commandCalls(calls, 'project_git_data_restore_recover').length, 0);
+    assert.equal(targetField().value, nextOid); assert.equal(field('作者姓名').value, 'Disposable Author');
+    await click(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
+    await click(byText('撤回本次数据取回'));
+    assert.equal(commandCalls(calls, 'project_git_data_restore_recover')[0][1].input.action, 'undo');
+  });
+}
+
+test('A failed data recovery submission and explicit recheck cannot reuse its confirmation', async () => {
+  const operation = dataRestoreOperation({ canUndo: true });
+  const { calls } = await setup({ overrides: {
+    project_git_data_restore_status: () => ({ state: 'pending', businessBlocked: true, operations: [operation], issues: [] }),
+    project_git_data_restore_recover: () => { throw new Error('人工恢复提交结果未知，请重新核对'); },
+  } });
+  await change(targetField(), nextOid);
+  await click(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
+  await click(byText('继续并核对数据取回'));
+  assert.match(document.body.textContent, /人工恢复提交结果未知/);
+  assert.equal(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]').checked, false);
+  await click(refresh());
+  assert.equal(byText('继续并核对数据取回').disabled, true);
+  assert.equal(byText('撤回本次数据取回').disabled, true);
+  assert.equal(commandCalls(calls, 'project_git_data_restore_recover').length, 1);
+  assert.equal(targetField().value, nextOid);
+});
+
+test('A platform instance change discards data recovery confirmation while retaining project drafts', async () => {
+  const operation = dataRestoreOperation({ canUndo: true });
+  const { calls, render } = await setup({ overrides: {
+    project_git_data_restore_status: () => ({ state: 'pending', businessBlocked: true, operations: [operation], issues: [] }),
+  } });
+  await fill(); await change(targetField(), nextOid);
+  await click(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
+  assert.equal(byText('继续并核对数据取回').disabled, false);
+  await render({ instanceId: 'instance_after_restart' });
+  assert.equal(document.querySelector('section[aria-label="业务数据取回恢复"] input[type="checkbox"]').checked, false);
+  assert.equal(byText('继续并核对数据取回').disabled, true);
+  assert.equal(byText('撤回本次数据取回').disabled, true);
+  assert.equal(commandCalls(calls, 'project_git_data_restore_recover').length, 0);
+  assert.equal(targetField().value, nextOid); assert.equal(field('版本说明').value, '保存本机源码修改');
+});
+
 for (const outcome of ['not_committed', 'committed', 'unknown']) {
   test(`Failed data restore reports ${outcome} without claiming unchanged data or a saved source version`, async () => {
     const result = { operation: 'data-restore-apply', operationOutcome: outcome, dataState: 'unknown', pending: true, businessBlocked: true, retainedPath: '/disposable/retained-data', restoreTaskId: 'task_original_restore', targetCommit: nextOid };

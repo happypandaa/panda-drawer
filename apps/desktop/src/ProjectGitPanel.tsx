@@ -477,7 +477,8 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     {error && <p className="task-error" role="alert">{error}</p>}
     {readError && <p className="task-error" role="alert">{readError}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
-    <ProjectGitDataRecovery status={dataRestoreRecovery} fresh={dataRestoreRecoveryFresh} disabled={!idle || disabled} error={dataRestoreRecoveryError} onRecover={(operation, action) => void recoverDataRestore(operation, action)} />
+    {/* A journal digest is immutable; each observation or submission must revoke its previous confirmation. */}
+    <ProjectGitDataRecovery key={readSequence.current} status={dataRestoreRecovery} fresh={dataRestoreRecoveryFresh} disabled={!idle || disabled} error={dataRestoreRecoveryError} onRecover={(operation, action) => void recoverDataRestore(operation, action)} />
     {dataRecoveryError && <p className="task-error" role="alert">{dataRecoveryError}</p>}
     {dataRecovery && dataRecovery.state !== 'clear' && <section aria-label="数据版本保存收尾" className="operation-confirmation">
       <h4>数据版本保存需要核对</h4>
