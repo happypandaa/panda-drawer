@@ -27,6 +27,9 @@ serde_json = "1"
 base64 = "0.22"
 tokio = { version = "1", features = ["sync"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-update-handoff = { path = "../../../crates/platform-update-handoff" }
+
 [dev-dependencies]
 tempfile = "3"
 

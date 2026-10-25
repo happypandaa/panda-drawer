@@ -1,5 +1,7 @@
 //! Normal-Quit orchestration only. ReadyForNativeExit deliberately leaves the
 //! diagnostic manager to Tauri; it is never an installer/WebKit-complete permit.
+#[cfg(target_os = "macos")]
+use platform_update_handoff::{DrainProof, SessionBinding};
 use serde::Serialize;
 use std::{
     future::Future,
@@ -7,6 +9,22 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::{sync::watch, task::JoinHandle};
+
+/// Strict success of the four observed jobs and fresh core state, bound to one
+/// pre-armed session. This does not prove native manager/WebKit/process exit.
+/// Never construct this from a Report, Ready status, JSON or resource_closed.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)] // Internal adapter point; deliberately not runtime-wired.
+pub(super) struct CleanDrainReceipt {
+    binding: SessionBinding,
+    attempt: u64,
+}
+#[cfg(target_os = "macos")]
+impl DrainProof for CleanDrainReceipt {
+    fn binding(&self) -> &SessionBinding {
+        &self.binding
+    }
+}
 
 type Work<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub(super) type Guard = Box<dyn Send>;
@@ -76,6 +94,14 @@ struct Meta {
     scopes: Option<Arc<Scopes>>,
     started: bool,
     sticky: Vec<Issue>,
+    #[cfg(target_os = "macos")]
+    arm_attempted: bool,
+    #[cfg(target_os = "macos")]
+    handoff: Option<SessionBinding>,
+    #[cfg(target_os = "macos")]
+    clean_drain: Option<CleanDrainReceipt>,
+    #[cfg(target_os = "macos")]
+    coordinator_joined: bool,
 }
 #[derive(Default)]
 struct Job {
@@ -156,16 +182,18 @@ struct CoordinatorGuard(Option<Arc<DesktopShutdown>>);
 impl Drop for CoordinatorGuard {
     fn drop(&mut self) {
         if let Some(owner) = self.0.take() {
-            owner
-                .meta
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .sticky
-                .push(Issue::new(
+            {
+                let mut meta = owner.meta.lock().unwrap_or_else(|p| p.into_inner());
+                #[cfg(target_os = "macos")]
+                {
+                    meta.clean_drain = None;
+                }
+                meta.sticky.push(Issue::new(
                     "DESKTOP_SHUTDOWN_COORDINATOR_UNKNOWN",
                     false,
                     false,
                 ));
+            }
             let old = owner.status();
             // A Drop during unwinding must not call UI/backend code, which
             // might itself be the source of the panic. Publish only to our
@@ -187,6 +215,54 @@ impl Drop for CoordinatorGuard {
     }
 }
 impl DesktopShutdown {
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)] // Future trusted adapter, before requesting normal drain.
+    pub fn arm_handoff(&self, binding: SessionBinding) -> Result<(), Issue> {
+        let mut meta = self.meta.lock().unwrap_or_else(|p| p.into_inner());
+        if meta.started || meta.arm_attempted {
+            return Err(Issue::new("HANDOFF_ARM_REJECTED", false, false));
+        }
+        meta.arm_attempted = true;
+        if platform_update_handoff::current_parent_matches(&binding).is_err() {
+            return Err(Issue::new("HANDOFF_PARENT_MISMATCH", false, false));
+        }
+        meta.handoff = Some(binding);
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)] // Consumed once by a future typed ParentEndpoint adapter.
+    pub fn take_clean_drain_receipt(&self) -> Option<CleanDrainReceipt> {
+        // Poll and consume the actual owned JoinHandle, never is_finished or a
+        // serialized Ready report. Pending keeps the same owner reachable.
+        let joined = {
+            let mut coordinator = self.coordinator.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(handle) = coordinator.as_mut() {
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                match Pin::new(handle).poll(&mut context) {
+                    std::task::Poll::Pending => None,
+                    std::task::Poll::Ready(result) => {
+                        coordinator.take();
+                        Some(result.is_ok())
+                    }
+                }
+            } else {
+                None
+            }
+        };
+        let mut meta = self.meta.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(joined) = joined {
+            meta.coordinator_joined = joined;
+        }
+        if !meta.sticky.is_empty() || self.status().status != Status::ReadyForNativeExit {
+            meta.clean_drain = None;
+            return None;
+        }
+        if !meta.coordinator_joined {
+            return None;
+        }
+        meta.clean_drain.take()
+    }
+
     pub fn status(&self) -> Report {
         self.report.borrow().clone()
     }
@@ -353,7 +429,7 @@ impl DesktopShutdown {
                     }
                 }
                 if core.blocked {
-                    issues.extend(core.issues);
+                    issues.extend(core.issues.clone());
                 }
                 if core.closed
                     && self.windows.closed()
@@ -369,6 +445,34 @@ impl DesktopShutdown {
                         issues,
                     });
                     backend.ready();
+                    #[cfg(target_os = "macos")]
+                    {
+                        let armed = self
+                            .meta
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .handoff
+                            .is_some();
+                        if armed {
+                            // Re-read after observing confirm_core's actual Join.
+                            // Normal Quit may allow closed business errors; the
+                            // strict handoff receipt never inherits that allowance.
+                            let fresh = backend.core_state();
+                            let mut meta = self.meta.lock().unwrap_or_else(|p| p.into_inner());
+                            if meta.sticky.is_empty()
+                                && fresh.closed
+                                && !fresh.blocked
+                                && fresh.issues.is_empty()
+                                && [&self.windows, &self.nodes, &self.sessions, &self.core]
+                                    .iter()
+                                    .all(|job| job.result() == Some(Ok(())))
+                            {
+                                if let Some(binding) = meta.handoff.take() {
+                                    meta.clean_drain = Some(CleanDrainReceipt { binding, attempt });
+                                }
+                            }
+                        }
+                    }
                     return;
                 }
                 let blocked = core.blocked || issues.iter().any(|i| !i.resource_closed);

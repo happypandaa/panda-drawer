@@ -36,8 +36,13 @@ struct TestBackend {
     session_calls: AtomicUsize,
     core_calls: AtomicUsize,
     panic_on_start: AtomicBool,
+    panic_on_ready: AtomicBool,
+    panic_on_ready_report: AtomicBool,
+    ready_hold: AtomicBool,
+    ready_entered: AtomicBool,
     core_closed: Arc<AtomicBool>,
     core_blocked: AtomicBool,
+    unblocked_core_issue: AtomicBool,
     clear_core_on_retry: AtomicBool,
     core_worker: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
     core_joined: Arc<AtomicBool>,
@@ -58,8 +63,13 @@ impl TestBackend {
             session_calls: AtomicUsize::new(0),
             core_calls: AtomicUsize::new(0),
             panic_on_start: AtomicBool::new(false),
+            panic_on_ready: AtomicBool::new(false),
+            panic_on_ready_report: AtomicBool::new(false),
+            ready_hold: AtomicBool::new(false),
+            ready_entered: AtomicBool::new(false),
             core_closed: Arc::new(AtomicBool::new(false)),
             core_blocked: AtomicBool::new(false),
+            unblocked_core_issue: AtomicBool::new(false),
             clear_core_on_retry: AtomicBool::new(false),
             core_worker: Arc::new(tokio::sync::Mutex::new(None)),
             core_joined: Arc::new(AtomicBool::new(false)),
@@ -104,6 +114,8 @@ impl Backend for TestBackend {
             blocked,
             issues: if blocked {
                 vec![Issue::new("ARTIFICIAL_CORE_RETRYABLE", false, true)]
+            } else if self.unblocked_core_issue.load(Ordering::Acquire) {
+                vec![Issue::new("ARTIFICIAL_UNBLOCKED_CORE_ISSUE", true, false)]
             } else {
                 vec![]
             },
@@ -138,9 +150,22 @@ impl Backend for TestBackend {
         run_step(Self::step(&self.sessions))
     }
     fn changed(&self, report: &Report) {
+        assert!(
+            !(report.status == Status::ReadyForNativeExit
+                && self.panic_on_ready_report.load(Ordering::Acquire)),
+            "controlled ready report panic"
+        );
         self.history.lock().unwrap().push(report.clone());
     }
     fn ready(&self) {
+        self.ready_entered.store(true, Ordering::Release);
+        while self.ready_hold.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            !self.panic_on_ready.load(Ordering::Acquire),
+            "controlled ready callback panic"
+        );
         assert!(self.core_joined.load(Ordering::Acquire));
         self.ready.store(true, Ordering::Release);
     }
@@ -372,6 +397,8 @@ fn missing_executor_is_blocked_and_preserves_real_scopes_without_panicking() {
 #[tokio::test]
 async fn known_closed_business_error_can_exit_but_still_waits_for_core_driver_join() {
     let f = Fixture::new();
+    #[cfg(target_os = "macos")]
+    f.owner.arm_handoff(handoff_binding(&f)).unwrap();
     f.backend
         .nodes
         .lock()
@@ -391,6 +418,137 @@ async fn known_closed_business_error_can_exit_but_still_waits_for_core_driver_jo
         .iter()
         .any(|i| i.code == "ARTIFICIAL_UNCLEAN_BUT_CLOSED" && i.resource_closed));
     assert!(f.backend.core_joined.load(Ordering::Acquire));
+    #[cfg(target_os = "macos")]
+    assert!(f.owner.take_clean_drain_receipt().is_none());
+}
+
+#[cfg(target_os = "macos")]
+fn handoff_binding(f: &Fixture) -> SessionBinding {
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(f.root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    platform_update_handoff::SessionDirectory::create_in(
+        &std::fs::File::open(f.root.path()).unwrap(),
+    )
+    .unwrap()
+    .binding()
+    .clone()
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn strict_handoff_receipt_requires_actual_confirmation_join_and_is_consumed_once() {
+    let f = Fixture::new();
+    let binding = handoff_binding(&f);
+    f.owner.arm_handoff(binding.clone()).unwrap();
+    assert!(f.owner.arm_handoff(binding.clone()).is_err());
+    let (release, wait) = oneshot::channel();
+    f.backend
+        .confirm
+        .lock()
+        .unwrap()
+        .push_back(Step::Wait(wait));
+    f.request();
+    until(|| f.backend.core_closed.load(Ordering::Acquire)).await;
+    assert!(f.owner.take_clean_drain_receipt().is_none());
+    assert!(!f.backend.core_joined.load(Ordering::Acquire));
+    release.send(()).unwrap();
+    until(|| f.backend.ready.load(Ordering::Acquire)).await;
+    until(|| {
+        f.owner
+            .coordinator
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+    })
+    .await;
+    let receipt = f.owner.take_clean_drain_receipt().unwrap();
+    assert_eq!(receipt.binding(), &binding);
+    assert_eq!(receipt.attempt, 1);
+    assert!(f.owner.take_clean_drain_receipt().is_none());
+    assert!(f.owner.arm_handoff(binding).is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn ready_report_cannot_mint_receipt_late_or_hide_unblocked_core_issues() {
+    let f = Fixture::new();
+    f.backend
+        .unblocked_core_issue
+        .store(true, Ordering::Release);
+    f.owner.arm_handoff(handoff_binding(&f)).unwrap();
+    f.request();
+    until(|| f.backend.ready.load(Ordering::Acquire)).await;
+    assert_eq!(f.owner.status().status, Status::ReadyForNativeExit);
+    assert!(f.owner.status().issues.is_empty());
+    assert!(f.owner.take_clean_drain_receipt().is_none());
+    let late = Fixture::new();
+    late.request();
+    until(|| late.backend.ready.load(Ordering::Acquire)).await;
+    assert!(late.owner.arm_handoff(handoff_binding(&late)).is_err());
+    assert!(late.owner.take_clean_drain_receipt().is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn ready_callback_or_report_panic_cannot_leave_a_strict_receipt_after_unknown() {
+    for report_panic in [false, true] {
+        let f = Fixture::new();
+        f.owner.arm_handoff(handoff_binding(&f)).unwrap();
+        if report_panic {
+            f.backend
+                .panic_on_ready_report
+                .store(true, Ordering::Release);
+        } else {
+            f.backend.panic_on_ready.store(true, Ordering::Release);
+        }
+        f.request();
+        until(|| f.owner.status().phase == "coordinator-unknown").await;
+        assert!(f.owner.take_clean_drain_receipt().is_none());
+        assert!(f.owner.meta.lock().unwrap().clean_drain.is_none());
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn strict_receipt_waits_for_actual_coordinator_join_after_ready_callback_returns() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _entered = runtime.enter();
+    let wait = |check: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !check() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    let f = Fixture::new();
+    f.owner.arm_handoff(handoff_binding(&f)).unwrap();
+    f.backend.ready_hold.store(true, Ordering::Release);
+    struct ReleaseReady<'a>(&'a AtomicBool);
+    impl Drop for ReleaseReady<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _release_on_failure = ReleaseReady(&f.backend.ready_hold);
+    f.request();
+    wait(&|| f.backend.ready_entered.load(Ordering::Acquire));
+    assert_eq!(f.owner.status().status, Status::ReadyForNativeExit);
+    assert!(f.owner.take_clean_drain_receipt().is_none());
+    f.backend.ready_hold.store(false, Ordering::Release);
+    wait(&|| {
+        f.owner
+            .coordinator
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+    });
+    assert!(f.owner.take_clean_drain_receipt().is_some());
+    assert!(f.owner.meta.lock().unwrap().coordinator_joined);
+    assert!(f.owner.take_clean_drain_receipt().is_none());
 }
 #[tokio::test]
 async fn final_confirmation_panic_cannot_turn_a_core_closed_snapshot_into_exit_permission() {
