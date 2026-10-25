@@ -4,6 +4,7 @@ import { Globe, Info, Server, Trash2 } from 'lucide-react';
 import { bytesText } from './storage-utils';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
 import type { NodeAppDetail } from './node-app-types';
+import { nodeConfigurationState } from './node-configuration-state';
 
 const labels: Record<ProjectInfo['state'], string> = {
   ready: '可进入', unbuilt: '等待构建', missing: '文件缺失', error: '需要检查', maintenance: '维护中', recoveryRequired: '恢复待处理',
@@ -202,18 +203,20 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
 export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onDelete }: {
   app: NodeAppDetail; blocked: boolean; opening: boolean; onEnter: () => void; onDetails: () => void; onDelete: () => void;
 }) {
-  const needsConfiguration = !app.configuration.canStart;
+  const configuration = nodeConfigurationState(app);
+  const runtimeBlocked = !app.configuration.canStart && configuration.blockedTab === 'runtime';
   const runtimeState = app.state === 'running' ? '运行中' : app.state === 'starting' ? '打开中' : app.state === 'stopping' ? '关闭中' : app.state === 'failed' ? '需要检查' : null;
   const launcherState: LauncherState = app.state === 'failed' ? { label: '需要检查', tone: 'error' }
     : app.state === 'starting' || app.state === 'stopping' || opening ? { label: runtimeState ?? '进入中…', tone: 'busy' }
-    : needsConfiguration ? { label: '需要配置', tone: 'attention' }
+    : configuration.attentionLabel ? { label: configuration.attentionLabel, tone: 'attention' }
+    : runtimeBlocked ? { label: '需要检查', tone: 'attention' }
     : app.state === 'running' ? { label: app.restartRequired ? '运行中 · 待重启' : '运行中', tone: 'running' }
     : app.restartRequired ? { label: '待重启', tone: 'attention' }
     : { label: 'Node 服务', tone: 'idle' };
   return <LauncherTile id={app.id} name={app.name} runtime="node-service" launcherState={launcherState} disabled={blocked || opening} opening={opening} onEnter={onEnter}
-    description={app.lastError ?? (needsConfiguration ? '进入前请先完成应用配置。' : undefined)}
-    metadata={app.restartRequired ? '已保存配置' : needsConfiguration ? undefined : '配置完整'}
-    statuses={[runtimeState, needsConfiguration ? '需要配置' : null, app.restartRequired ? '待重启' : null, opening && !['starting', 'stopping'].includes(app.state) ? '进入中…' : null].filter((value): value is string => Boolean(value))}
+    description={app.lastError ?? (configuration.needsAttention ? '进入前请先核对应用配置。' : runtimeBlocked ? '暂时无法启动，请查看运行状态。' : undefined)}
+    metadata={app.restartRequired ? '已保存配置' : configuration.kind === 'complete' ? '配置完整' : undefined}
+    statuses={[runtimeState, configuration.attentionLabel, app.restartRequired ? '待重启' : null, opening && !['starting', 'stopping'].includes(app.state) ? '进入中…' : null].filter((value): value is string => Boolean(value))}
     actions={[
       { label: '查看详情', accessibleLabel: `查看项目「${app.name}」的详情`, disabled: opening, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
       { label: '删除项目', accessibleLabel: `删除项目「${app.name}」`, disabled: blocked || opening, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },

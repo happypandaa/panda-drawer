@@ -268,7 +268,7 @@ test('Node tiles name their type in the status line when stopped or failed; miss
 });
 
 test('Pending Node entry disables opening and details while keeping accessible configuration status', async () => {
-  await render(NodeProjectCard, { opening: true, app: { ...nodeFixture, configuration: { ...nodeFixture.configuration, canStart: false } } });
+  await render(NodeProjectCard, { opening: true, app: { ...nodeFixture, configuration: { ...nodeFixture.configuration, canStart: false, missingRequired: ['KEY'] } } });
   assert.equal(enter().disabled, true);
   assert.equal(tile().tabIndex, -1);
   assert.match(description(), /需要配置/);
