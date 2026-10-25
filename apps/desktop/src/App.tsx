@@ -42,6 +42,18 @@ function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo)
     || status.documentEpoch !== project.documentEpoch)) throw new Error('项目数据代次已变化或无法核对，请刷新项目列表后重新读取构建结果。');
 }
 
+// Pending data exchange intentionally makes store.project unavailable. This
+// diagnostic maintenance snapshot cannot establish an epoch for build results.
+function hasDataRecoveryGate(project: ProjectInfo) {
+  return project.state === 'error' && typeof project.documentEpoch === 'string' && Boolean(project.documentEpoch)
+    && project.buildInfo?.dataRecoveryRequired === true
+    && ['pending', 'blocked'].includes(project.buildInfo.dataRecoveryState ?? '');
+}
+
+function isDataRecoveryDiagnostic(status: MaintenanceStatus, project: ProjectInfo) {
+  return Object.hasOwn(status, 'latestBuild') && status.documentEpoch === null && hasDataRecoveryGate(project);
+}
+
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -94,6 +106,7 @@ function App() {
   const buildPending = useRef(new Set<string>());
   const buildRevisions = useRef<Record<string, number>>({});
   const projectScopes = useRef<Record<string, string>>({});
+  const dataRecoveryGates = useRef<Record<string, string>>({});
   const requestId = useRef(0);
   const createPending = useRef(false);
   const openPending = useRef(false);
@@ -197,9 +210,20 @@ function App() {
       const scopes = Object.fromEntries(list.map(project => [project.id, JSON.stringify([runtime.instanceId, runtime.workspaceRoot, project.projectRoot, project.documentEpoch])]));
       projectScopes.current = scopes;
       const kept = <T,>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).filter(([id]) => scopes[id] && scopes[id] === previousScopes[id]));
-      setBuildResults(kept); setTasks(kept);
-      for (const id of buildPending.current) if (scopes[id] !== previousScopes[id]) buildPending.current.delete(id);
-      setBuilding(values => values.filter(id => scopes[id] === previousScopes[id]));
+      const recoveryGates = Object.fromEntries(list.filter(hasDataRecoveryGate).map(project => [project.id, JSON.stringify([scopes[project.id], project.buildInfo?.dataRecoveryState])]));
+      // Invalidate unverified build/scan work as soon as the list reports the
+      // gate. Accepted recovery tasks keep their ordinary project identity.
+      for (const [id, gate] of Object.entries(recoveryGates)) if (gate !== dataRecoveryGates.current[id]) buildRevisions.current[id] = (buildRevisions.current[id] ?? 0) + 1;
+      dataRecoveryGates.current = recoveryGates;
+      setBuildResults(values => Object.fromEntries(Object.entries(kept(values)).filter(([id]) => !recoveryGates[id])));
+      setTasks(values => {
+        const next = kept(values);
+        for (const id of Object.keys(recoveryGates)) if (next[id] && ['build', 'storageScan'].includes(next[id].type)) delete next[id];
+        return next;
+      });
+      setMaintenance(values => Object.fromEntries(Object.entries(kept(values)).filter(([id]) => !recoveryGates[id])));
+      for (const id of buildPending.current) if (scopes[id] !== previousScopes[id] || recoveryGates[id]) buildPending.current.delete(id);
+      setBuilding(values => values.filter(id => scopes[id] === previousScopes[id] && !recoveryGates[id]));
       setWorkspace(currentWorkspace);
       if (currentWorkspace.cleanupTask) acceptLifecycleTask(currentWorkspace.cleanupTask);
       const workspaceTaskId = (typeof currentWorkspace.activeTask === 'string' ? currentWorkspace.activeTask : currentWorkspace.activeTask?.taskId) ?? currentWorkspace.lastTaskId;
@@ -216,13 +240,16 @@ function App() {
         const revision = revisions[project.id];
         const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
         if (status.projectId !== undefined && status.projectId !== project.id) throw new Error('维护状态项目身份不符。');
+        if (isDataRecoveryDiagnostic(status, project)) return { projectId: project.id, status, task: null, activeReference: null,
+          revision, build: { issues: [] } as BuildResultView, dataRecoveryDiagnostic: true };
         verifyMaintenanceEpoch(status, project);
         const activeReference = typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId;
         const activeId = activeReference ?? status.lastTaskId;
         const task = activeId ? await invoke<TaskRecord>('task_get', { taskId: activeId }) : null;
         if (task && !matchingProjectTask(task, project.id, activeId ?? undefined)) throw new Error('项目任务身份或格式不符。');
         return { projectId: project.id, status, task, activeReference, revision,
-          build: Object.hasOwn(status, 'latestBuild') ? recoverBuildResult(status.latestBuild ?? null, project.id) : null };
+          build: Object.hasOwn(status, 'latestBuild') ? recoverBuildResult(status.latestBuild ?? null, project.id) : null,
+          dataRecoveryDiagnostic: false };
       }));
       if (current !== requestId.current) return;
       const confirmedRuntime = await invoke<BootstrapInfo>('bootstrap_info');
@@ -234,13 +261,21 @@ function App() {
       const next: Record<string, MaintenanceStatus> = {};
       const activeTasks: Record<string, TaskRecord> = {};
       const recovered: Record<string, BuildResultView> = {};
+      const dataRecoveryDiagnostics = new Set<string>();
       for (const project of list) { const scanning = project.storage?.activeTask; if (matchingProjectTask(scanning, project.id) && scanning.type === 'storageScan') activeTasks[project.id] = scanning; }
       for (const [index, result] of statuses.entries()) {
         const projectId = list[index].id;
         if (result.status === 'fulfilled') {
           recover(`maintenance:${projectId}`);
-          next[result.value.projectId] = result.value.status;
+          // Null-epoch diagnostics must not enable ordinary management actions.
+          if (!result.value.dataRecoveryDiagnostic) next[result.value.projectId] = result.value.status;
           if (result.value.revision === (buildRevisions.current[projectId] ?? 0) && scopes[projectId] === projectScopes.current[projectId]) {
+            if (result.value.dataRecoveryDiagnostic) {
+              dataRecoveryDiagnostics.add(projectId);
+              recovered[projectId] = { issues: [] };
+              delete activeTasks[projectId];
+              continue;
+            }
             if (result.value.task) activeTasks[projectId] = result.value.task;
             if (result.value.build) recovered[projectId] = result.value.build;
             if (result.value.task?.type === 'build') {
@@ -261,7 +296,7 @@ function App() {
       setBuildResults((previous) => ({ ...previous, ...Object.fromEntries(Object.entries(recovered).filter(([id]) => currentResult(id))) }));
       setTasks((previous) => {
         const next = { ...previous };
-        for (const id of Object.keys(recovered)) if (currentResult(id) && next[id]?.type === 'build') delete next[id];
+        for (const id of Object.keys(recovered)) if (currentResult(id) && (next[id]?.type === 'build' || dataRecoveryDiagnostics.has(id) && next[id]?.type === 'storageScan')) delete next[id];
         return { ...next, ...Object.fromEntries(Object.entries(activeTasks).filter(([id]) => currentResult(id))) };
       });
       setRefreshVersion((version) => version + 1);
@@ -354,6 +389,7 @@ function App() {
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
           if (cancelled || !previous.projectId || scopes[previous.projectId] !== projectScopes.current[previous.projectId]) return;
+          if (['build', 'storageScan'].includes(previous.type) && dataRecoveryGates.current[previous.projectId]) return;
           if (previous.type === 'build' && revisions[previous.projectId] !== buildRevisions.current[previous.projectId]) return;
           if (!matchingProjectTask(task, previous.projectId, previous.taskId) || task.type !== previous.type) throw new Error('任务身份或类型不符，请刷新核对。');
           recover(`task:${previous.taskId}`);

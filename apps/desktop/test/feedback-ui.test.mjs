@@ -556,3 +556,114 @@ for (const type of ['workspaceMigration', 'workspaceCleanup']) {
     assert.doesNotMatch(document.querySelector('.radio-notices').textContent, phrase);
   });
 }
+
+const dataRecoveryProject = (state = 'pending') => ({ ...web(), state: 'error', issues: ['Artificial data recovery pending'],
+  buildInfo: { sourceState: 'unknown', stale: true, dataRecoveryRequired: true, dataRecoveryState: state } });
+const dataRecoveryMaintenance = () => ({ mode: 'ready', recoveryRequired: false, documentEpoch: null, activeTask: buildTask().taskId,
+  lastTaskId: scanTask().taskId, latestBuild: latestBuild(buildTask(), { issues: [{ code: 'DO_NOT_READ_OLD_SCOPE', message: 'Artificial unverified old build' }] }) });
+
+test('Expected pending or blocked data recovery keeps diagnostic maintenance without consuming tasks or build results', async () => {
+  for (const state of ['pending', 'blocked']) {
+    const calls = await setup({ projects: [dataRecoveryProject(state)], overrides: { maintenance_status: dataRecoveryMaintenance,
+      task_get: () => assert.fail('diagnostic null epoch must not read a task') } });
+    await details();
+    assert.doesNotMatch(document.body.textContent, /维护状态读取失败|项目数据代次已变化或无法核对|Artificial retained interrupted build|Artificial unverified old build/);
+    assert.match(dialog().textContent, /数据取回尚未处理完成/);
+    assert.equal(byText('构建更新', dialog()).disabled, true);
+    assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
+    await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
+  }
+});
+
+test('Entering data recovery clears earlier same-scope build and scan display then reloads a verified new epoch', async () => {
+  let recovery = false;
+  let completed = false;
+  const current = () => completed ? { ...web(), documentEpoch: '22222222-2222-4222-8222-222222222222' } : recovery ? dataRecoveryProject() : web();
+  const calls = await setup({ projects: [web()], overrides: {
+    project_list: () => [current()],
+    maintenance_status: () => recovery ? dataRecoveryMaintenance() : ({ mode: 'ready', recoveryRequired: false, documentEpoch: current().documentEpoch,
+      activeTask: null, lastTaskId: completed ? null : scanTask().taskId, latestBuild: latestBuild(completed ? buildTask({ error: { code: 'NEW_VERIFIED_EPOCH', message: 'Artificial verified later build' } }) : buildTask()) }),
+    task_get: () => scanTask(),
+  } });
+  await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/); await closeDialog();
+  recovery = true;
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|Artificial unverified old build|BUILD_INTERRUPTED|空间扫描 · 已完成|维护状态读取失败/);
+  assert.match(dialog().textContent, /数据取回尚未处理完成/);
+  assert.equal(calls.filter(([command]) => command === 'task_get').length, 1);
+  await closeDialog(); recovery = false; completed = true;
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  assert.match(dialog().textContent, /Artificial verified later build/);
+  assert.doesNotMatch(dialog().textContent, /维护状态读取失败|项目数据代次已变化或无法核对/);
+});
+
+test('Only the complete explicit data recovery diagnostic permits a null epoch and malformed epochs remain rejected', async () => {
+  const bad = [web(), { ...dataRecoveryProject(), state: 'ready' }, { ...dataRecoveryProject(), documentEpoch: '' },
+    { ...dataRecoveryProject(), buildInfo: { sourceState: 'unknown', dataRecoveryRequired: false, dataRecoveryState: 'pending' } }, dataRecoveryProject('clear')];
+  const cases = [...bad.map(project => [project, null]), ...[undefined, 17, '', '22222222-2222-4222-8222-222222222222'].map(epoch => [dataRecoveryProject(), epoch])];
+  for (const [project, epoch] of cases) {
+    const calls = await setup({ projects: [project], overrides: {
+      maintenance_status: () => { const status = dataRecoveryMaintenance(); if (epoch === undefined) delete status.documentEpoch; else status.documentEpoch = epoch; return status; },
+      task_get: () => assert.fail('unmatched epoch must not read tasks'),
+    } });
+    await details(); assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+    assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
+    await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
+  }
+});
+
+test('Build preflight continues to reject a null epoch before submitting any build', async () => {
+  let reads = 0;
+  const calls = await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, documentEpoch: ++reads === 1 ? web().documentEpoch : null,
+      activeTask: null, latestBuild: latestBuild() }),
+    project_build: () => assert.fail('null epoch must not submit a build'),
+  } });
+  await details(); await click(byText('构建更新', dialog()));
+  assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
+});
+
+test('A late old build poll cannot repopulate while a pending diagnostic maintenance read waits', async () => {
+  const poll = deferred(); const diagnostic = deferred(); let pending = false; let gets = 0;
+  const active = buildTask({ status: 'running', final: false, phase: 'artificial-old-build-running', error: null });
+  const calls = await setup({ projects: [web()], overrides: {
+    project_list: () => [pending ? dataRecoveryProject() : web()],
+    maintenance_status: () => pending ? diagnostic.promise : ({ mode: 'ready', recoveryRequired: false, documentEpoch: web().documentEpoch, activeTask: active.taskId, latestBuild: latestBuild(active) }),
+    task_get: () => ++gets === 1 ? active : poll.promise,
+  } });
+  await advance(1000); assert.equal(gets, 2);
+  pending = true; await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  await act(async () => poll.resolve(active));
+  await act(async () => diagnostic.resolve(dataRecoveryMaintenance()));
+  await details();
+  assert.doesNotMatch(dialog().textContent, /artificial-old-build-running|维护状态读取失败/);
+  assert.match(dialog().textContent, /数据取回尚未处理完成/);
+  const count = calls.filter(([command]) => command === 'task_get').length;
+  await advance(2000);
+  assert.equal(calls.filter(([command]) => command === 'task_get').length, count, 'old build no longer polls');
+  await click([...dialog().querySelectorAll('[role="tab"]')].find(button => button.textContent.includes('更多操作')));
+  assert.equal(byText('导出 ZIP', dialog()).disabled, true);
+  assert.equal(byText('删除应用', dialog()).disabled, true);
+});
+
+for (const operation of ['gitDataRestoreContinue', 'gitDataRestoreUndo']) {
+test(`Diagnostic refresh keeps an already accepted ${operation} task visible and polling`, async () => {
+  let pending = false; let gets = 0;
+  const recovery = buildTask({ type: operation, status: 'running', final: false, phase: 'artificial-real-data-recovery-running', error: null });
+  await setup({ projects: [web()], overrides: {
+    project_list: () => [pending ? dataRecoveryProject() : web()],
+    maintenance_status: () => pending ? dataRecoveryMaintenance() : ({ mode: 'ready', recoveryRequired: false, documentEpoch: web().documentEpoch,
+      activeTask: recovery.taskId, latestBuild: latestBuild(null, { selection: 'none' }) }),
+    task_get: () => { gets++; return recovery; },
+  } });
+  assert.equal(gets, 1);
+  pending = true; await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  assert.match(dialog().textContent, /artificial-real-data-recovery-running/);
+  const beforePoll = gets;
+  await advance(1000);
+  assert.ok(gets > beforePoll, 'accepted recovery task still polls');
+  assert.match(dialog().textContent, /artificial-real-data-recovery-running/);
+  assert.equal(byText('构建更新', dialog()).disabled, true);
+});
+}
