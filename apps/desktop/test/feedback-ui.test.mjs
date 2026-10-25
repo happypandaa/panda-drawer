@@ -134,6 +134,214 @@ async function details(name = 'Fixture Web A') {
 }
 async function closeDialog() { await click(dialog().querySelector('[aria-label^="关闭"]')); }
 
+const buildTask = (extra = {}) => task({ taskId: `task_${'a'.repeat(32)}`, projectId: 'prj_feedback_a', type: 'build', status: 'interrupted', final: true, phase: 'build', error: { code: 'BUILD_INTERRUPTED', message: 'Artificial retained interrupted build', details: { processResourceClosed: true } }, ...extra });
+const scanTask = () => task({ taskId: `task_${'c'.repeat(32)}`, projectId: 'prj_feedback_a', type: 'storageScan', status: 'succeeded', final: true, phase: 'completed' });
+const latestBuild = (build = buildTask(), extra = {}) => ({ task: build, selection: 'recorded-submission', issues: [], ...extra });
+
+test('Reopening restores the persisted interrupted build even when the last task is a successful automatic scan', async () => {
+  await setup({ overrides: {
+    maintenance_status: () => ({ projectId: web().id, mode: 'ready', recoveryRequired: false, activeTask: null, lastTaskId: scanTask().taskId, documentEpoch: web().documentEpoch, latestBuild: latestBuild() }),
+    task_get: () => scanTask(),
+  } });
+  await details();
+  assert.match(dialog().textContent, /构建 · 已中断/); assert.match(dialog().textContent, /BUILD_INTERRUPTED/);
+  assert.match(dialog().textContent, new RegExp(buildTask().taskId));
+  assert.doesNotMatch(dialog().querySelector('.build-task').textContent, /扫描已完成/);
+  await closeDialog(); await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  assert.match(dialog().textContent, /Artificial retained interrupted build/);
+});
+
+test('A recovered build remains visible without an active or last maintenance task', async () => {
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: latestBuild() }),
+  } });
+  await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/);
+});
+
+test('An active build takes precedence over both a retained older result and an automatic scan', async () => {
+  const active = buildTask({ taskId: `task_${'b'.repeat(32)}`, status: 'running', final: false, error: null });
+  await setup({ projects: [{ ...web(), storage: { activeTask: scanTask() } }], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: active.taskId, documentEpoch: web().documentEpoch, latestBuild: latestBuild() }),
+    task_get: () => active,
+  } });
+  await details(); assert.match(dialog().textContent, /构建 · 正在执行/);
+  assert.match(dialog().querySelector('.build-task').textContent, new RegExp(active.taskId));
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build/);
+});
+
+test('Legacy recovery always explains uncertain submission order instead of claiming the latest build', async () => {
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: latestBuild(buildTask(), { selection: 'legacy-modified-time' }) }),
+  } });
+  await details(); assert.match(dialog().textContent, /不代表最新提交顺序/); assert.match(dialog().textContent, /BUILD_INTERRUPTED/);
+});
+
+test('A damaged persistent pointer exposes its issue and clears the cached build instead of guessing a different task', async () => {
+  let damaged = false;
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, lastTaskId: scanTask().taskId,
+      documentEpoch: web().documentEpoch, latestBuild: damaged ? latestBuild(null, { selection: 'unavailable', issues: [{ code: 'BUILD_RESULT_UNAVAILABLE', message: 'Artificial damaged pointer preserved' }] }) : latestBuild() }),
+    task_get: () => scanTask(),
+  } });
+  await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/); await closeDialog();
+  damaged = true; await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  assert.match(dialog().textContent, /Artificial damaged pointer preserved/); assert.match(dialog().textContent, /BUILD_RESULT_UNAVAILABLE/);
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build/);
+});
+
+test('An unavailable build pointer cannot fall back to a historical build referenced as the last maintenance task', async () => {
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, lastTaskId: buildTask().taskId,
+      documentEpoch: web().documentEpoch, latestBuild: latestBuild(null, { selection: 'unavailable', issues: [{ code: 'BUILD_RESULT_ORDER_UNKNOWN', message: 'Artificial ambiguous historical order' }] }) }),
+    task_get: () => buildTask(),
+  } });
+  await details(); assert.match(dialog().textContent, /Artificial ambiguous historical order/);
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
+});
+
+test('Foreign, mismatched, malformed and unknown recovered build records are never rendered as project results', async () => {
+  for (const recovered of [latestBuild(buildTask({ projectId: 'prj_other' })), latestBuild(buildTask({ type: 'storageScan' })), latestBuild(buildTask({ taskId: '../task' })), latestBuild(buildTask({ final: false })), latestBuild(buildTask({ status: ['interrupted'] })), latestBuild(buildTask(), { selection: 'guess' }), latestBuild(buildTask(), { selection: ['recorded-submission'] }), latestBuild(buildTask(), { issues: ['untyped issue'] }), latestBuild(buildTask(), { selection: 'none' })]) {
+    await setup({ projects: [web()], overrides: { maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: recovered }) } });
+    await details(); assert.match(dialog().textContent, /构建结果身份或格式不符/); assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build/);
+    await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
+  }
+});
+
+test('A refresh started before a new build cannot replace its accepted result with an older persisted build', async () => {
+  const reading = deferred(); let reads = 0;
+  const status = () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, lastTaskId: scanTask().taskId, documentEpoch: web().documentEpoch, latestBuild: latestBuild() });
+  const accepted = buildTask({ taskId: `task_${'d'.repeat(32)}`, status: 'failed', error: { code: 'NEW_BUILD_FAILURE', message: 'Artificial newer accepted build' } });
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ++reads === 2 ? reading.promise : status(), task_get: () => scanTask(), project_build: () => accepted,
+  } });
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  await click(byText('构建更新', dialog())); assert.match(dialog().textContent, /Artificial newer accepted build/);
+  await act(async () => reading.resolve(status()));
+  assert.match(dialog().textContent, /Artificial newer accepted build/); assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build/);
+});
+
+test('A build acceptance from a previous service cannot populate the replacement project result', async () => {
+  const accepted = deferred(); let old = true;
+  await setup({ projects: [web()], overrides: {
+    bootstrap_info: () => ({ ...bootstrap, instanceId: old ? bootstrap.instanceId : 'replacement-before-build-reply' }),
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: latestBuild(null, { selection: 'none' }) }),
+    project_build: () => accepted.promise,
+  } });
+  await details(); await click(byText('构建更新', dialog())); await closeDialog(); old = false;
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  await act(async () => accepted.resolve(buildTask())); await details();
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
+  assert.equal(byText('构建更新', dialog()).disabled, false);
+});
+
+for (const changeInstance of [false, true]) {
+  test(`A late build poll cannot publish after ${changeInstance ? 'service instance' : 'project root'} replacement`, async () => {
+    const reading = deferred(); let old = true; let gets = 0;
+    const active = buildTask({ status: 'running', final: false, error: null });
+    const runtime = () => ({ ...bootstrap, instanceId: old || !changeInstance ? bootstrap.instanceId : 'replacement-service' });
+    const project = () => ({ ...web(), projectRoot: old || changeInstance ? web().projectRoot : '/disposable/replaced-project' });
+    await setup({ projects: [web()], overrides: {
+      bootstrap_info: runtime, project_list: () => [project()],
+      maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: old ? active.taskId : null, documentEpoch: web().documentEpoch, latestBuild: old ? latestBuild(active) : latestBuild(null, { selection: 'none' }) }),
+      task_get: () => ++gets === 1 ? active : reading.promise,
+    } });
+    await details(); await advance(1000); await closeDialog(); old = false;
+    await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+    await act(async () => reading.resolve(buildTask())); await details();
+    assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
+  });
+}
+
+test('A service switch during one recovery read invalidates the result before it reaches the details', async () => {
+  const reading = deferred(); let reads = 0; let switched = false;
+  const ready = () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: latestBuild() });
+  await setup({ projects: [web()], overrides: {
+    bootstrap_info: () => ({ ...bootstrap, instanceId: switched ? 'replacement-during-read' : bootstrap.instanceId }),
+    maintenance_status: () => ++reads === 2 ? reading.promise : ready(),
+  } });
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); switched = true;
+  await act(async () => reading.resolve(ready()));
+  assert.match(document.body.textContent, /读取构建结果时工作区服务已切换/);
+  await details();
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
+});
+
+for (const activeReference of [true, false]) {
+  test(`A later task_get terminal result supersedes the same build in the earlier ${activeReference ? 'active' : 'last-task'} snapshot and retains its issues`, async () => {
+    const running = buildTask({ status: 'running', final: false, error: null });
+    await setup({ projects: [web()], overrides: {
+      maintenance_status: () => ({ projectId: web().id, documentEpoch: web().documentEpoch, mode: 'ready', recoveryRequired: false,
+        activeTask: activeReference ? running.taskId : null, lastTaskId: activeReference ? null : running.taskId,
+        latestBuild: latestBuild(running, { issues: [{ code: 'BUILD_RESULT_LEGACY_ORDER', message: 'Artificial retained selection uncertainty' }] }) }),
+      task_get: () => buildTask(),
+    } });
+    await details();
+    assert.match(dialog().querySelector('.build-task').textContent, /构建 · 已中断/);
+    assert.match(dialog().textContent, /BUILD_INTERRUPTED/); assert.match(dialog().textContent, /Artificial retained selection uncertainty/);
+    assert.doesNotMatch(dialog().querySelector('.build-task').textContent, /构建 · 正在执行/);
+  });
+}
+
+test('New recovery snapshots require a present string epoch matching the same project-list batch', async () => {
+  for (const epoch of [undefined, null, 17, '', '22222222-2222-4222-8222-222222222222']) {
+    const calls = await setup({ projects: [web()], overrides: {
+      maintenance_status: () => ({ projectId: web().id, ...(epoch === undefined ? {} : { documentEpoch: epoch }), mode: 'ready', recoveryRequired: false,
+        activeTask: buildTask().taskId, latestBuild: latestBuild() }),
+      task_get: () => buildTask(),
+    } });
+    await details();
+    assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+    assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
+    assert.equal(byText('构建更新', dialog()).disabled, true);
+    assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
+    await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
+  }
+});
+
+test('A changed maintenance epoch invalidates a previously cached build and keeps a readable recheck issue', async () => {
+  let epoch = web().documentEpoch;
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ projectId: web().id, documentEpoch: epoch, mode: 'ready', recoveryRequired: false, activeTask: null, latestBuild: latestBuild() }),
+  } });
+  await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/); await closeDialog();
+  epoch = '22222222-2222-4222-8222-222222222222';
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]')); await details();
+  assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
+});
+
+test('An old snapshot without the latestBuild field keeps its earlier epoch-free command compatibility', async () => {
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: buildTask().taskId }),
+    task_get: () => buildTask(),
+  } });
+  await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/);
+  assert.doesNotMatch(dialog().textContent, /项目数据代次已变化或无法核对/);
+});
+
+test('An active maintenance operation keeps display precedence over recovered build history', async () => {
+  const active = buildTask({ type: 'maintenanceEnd', status: 'running', final: false, error: null });
+  await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ projectId: web().id, documentEpoch: web().documentEpoch, mode: 'maintenance', recoveryRequired: false,
+      activeTask: active.taskId, latestBuild: latestBuild() }),
+    task_get: () => active,
+  } });
+  await details(); assert.match(dialog().querySelector('.build-task').textContent, /结束维护 · 正在执行/);
+  assert.doesNotMatch(dialog().querySelector('.build-task').textContent, /Artificial retained interrupted build/);
+});
+
+test('A new epoch seen by build preflight blocks submission from the older project view', async () => {
+  let reads = 0;
+  const calls = await setup({ projects: [web()], overrides: {
+    maintenance_status: () => ({ projectId: web().id, documentEpoch: ++reads === 1 ? web().documentEpoch : '22222222-2222-4222-8222-222222222222',
+      mode: 'ready', recoveryRequired: false, activeTask: null, latestBuild: latestBuild() }),
+    project_build: () => assert.fail('a stale project view submitted a build'),
+  } });
+  await details(); await click(byText('构建更新', dialog()));
+  assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
+});
+
 test('An ordinary global success expires after five controlled seconds', async () => {
   await setup(); await enter();
   assert.match(success().textContent, /Fixture Web A/);

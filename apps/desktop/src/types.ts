@@ -113,6 +113,7 @@ export interface MaintenanceStatus {
   documentEpoch: string;
   lastTaskId?: string | null;
   activeTask: TaskRecord | { taskId: string } | string | null;
+  latestBuild?: { task: TaskRecord | null; selection: 'recorded-submission' | 'legacy-modified-time' | 'none' | 'unavailable'; issues: { code: string; message: string }[] };
   pendingBuild?: boolean;
   pendingBuildReason?: string | null;
   lastError?: { code?: string; message?: string } | string | null;

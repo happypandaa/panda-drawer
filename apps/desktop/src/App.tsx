@@ -26,6 +26,8 @@ import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
+import { matchingProjectTask, recoverBuildResult } from './build-result-state';
+import type { BuildResultView } from './build-result-state';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
@@ -34,6 +36,11 @@ const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
 };
 type AppPage = 'projects' | 'storage';
 
+function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo) {
+  // Only snapshots without the new field use the legacy command contract.
+  if (Object.hasOwn(status, 'latestBuild') && (typeof status.documentEpoch !== 'string' || !status.documentEpoch
+    || status.documentEpoch !== project.documentEpoch)) throw new Error('项目数据代次已变化或无法核对，请刷新项目列表后重新读取构建结果。');
+}
 
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
@@ -69,7 +76,7 @@ function App() {
   const [tasks, setTasks] = useState<Record<string, TaskRecord>>({});
   // Space scans run automatically after builds. Keep the user's build result
   // visible while still polling the scan for its actual busy state.
-  const [buildResults, setBuildResults] = useState<Record<string, TaskRecord>>({});
+  const [buildResults, setBuildResults] = useState<Record<string, BuildResultView>>({});
   const [maintenance, setMaintenance] = useState<Record<string, MaintenanceStatus>>({});
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
@@ -85,6 +92,8 @@ function App() {
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
   const [handoffAction, setHandoffAction] = useState<HandoffAction | null>(null);
   const buildPending = useRef(new Set<string>());
+  const buildRevisions = useRef<Record<string, number>>({});
+  const projectScopes = useRef<Record<string, string>>({});
   const requestId = useRef(0);
   const createPending = useRef(false);
   const openPending = useRef(false);
@@ -184,6 +193,13 @@ function App() {
       selectedOverviewRoot.current = selectedProject?.projectRoot ?? null;
       instanceId.current = runtime.instanceId;
       serviceWorkspaceRoot.current = runtime.workspaceRoot;
+      const previousScopes = projectScopes.current;
+      const scopes = Object.fromEntries(list.map(project => [project.id, JSON.stringify([runtime.instanceId, runtime.workspaceRoot, project.projectRoot, project.documentEpoch])]));
+      projectScopes.current = scopes;
+      const kept = <T,>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).filter(([id]) => scopes[id] && scopes[id] === previousScopes[id]));
+      setBuildResults(kept); setTasks(kept);
+      for (const id of buildPending.current) if (scopes[id] !== previousScopes[id]) buildPending.current.delete(id);
+      setBuilding(values => values.filter(id => scopes[id] === previousScopes[id]));
       setWorkspace(currentWorkspace);
       if (currentWorkspace.cleanupTask) acceptLifecycleTask(currentWorkspace.cleanupTask);
       const workspaceTaskId = (typeof currentWorkspace.activeTask === 'string' ? currentWorkspace.activeTask : currentWorkspace.activeTask?.taskId) ?? currentWorkspace.lastTaskId;
@@ -195,27 +211,59 @@ function App() {
       nodeListRevision.current++;
       if (nodeResult.error) showError(origin, nodeResult.error, 'node-list', { backgroundKey: 'node-list' });
       else recover('node-list');
+      const revisions = Object.fromEntries(list.map(project => [project.id, buildRevisions.current[project.id] ?? 0]));
       const statuses = await Promise.allSettled(list.map(async (project) => {
+        const revision = revisions[project.id];
         const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
-        const activeId = (typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId) ?? status.lastTaskId;
+        if (status.projectId !== undefined && status.projectId !== project.id) throw new Error('维护状态项目身份不符。');
+        verifyMaintenanceEpoch(status, project);
+        const activeReference = typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId;
+        const activeId = activeReference ?? status.lastTaskId;
         const task = activeId ? await invoke<TaskRecord>('task_get', { taskId: activeId }) : null;
-        return { projectId: project.id, status, task };
+        if (task && !matchingProjectTask(task, project.id, activeId ?? undefined)) throw new Error('项目任务身份或格式不符。');
+        return { projectId: project.id, status, task, activeReference, revision,
+          build: Object.hasOwn(status, 'latestBuild') ? recoverBuildResult(status.latestBuild ?? null, project.id) : null };
       }));
       if (current !== requestId.current) return;
+      const confirmedRuntime = await invoke<BootstrapInfo>('bootstrap_info');
+      if (current !== requestId.current) return;
+      if (confirmedRuntime.instanceId !== runtime.instanceId || confirmedRuntime.workspaceRoot !== runtime.workspaceRoot) {
+        projectScopes.current = {}; setBuildResults({}); setTasks({}); setMaintenance({});
+        throw new Error('读取构建结果时工作区服务已切换，请刷新后重新核对。');
+      }
       const next: Record<string, MaintenanceStatus> = {};
       const activeTasks: Record<string, TaskRecord> = {};
-      for (const project of list) { const scanning = project.storage?.activeTask; if (scanning && typeof scanning === 'object' && 'status' in scanning) activeTasks[project.id] = scanning as TaskRecord; }
+      const recovered: Record<string, BuildResultView> = {};
+      for (const project of list) { const scanning = project.storage?.activeTask; if (matchingProjectTask(scanning, project.id) && scanning.type === 'storageScan') activeTasks[project.id] = scanning; }
       for (const [index, result] of statuses.entries()) {
         const projectId = list[index].id;
         if (result.status === 'fulfilled') {
           recover(`maintenance:${projectId}`);
           next[result.value.projectId] = result.value.status;
-          if (result.value.task) activeTasks[result.value.projectId] = result.value.task;
-        } else { showError(origin, `维护状态读取失败：${messageFrom(result.reason)}。请刷新状态后再操作。`, `task:${projectId}`, { backgroundKey: `maintenance:${projectId}` }); }
+          if (result.value.revision === (buildRevisions.current[projectId] ?? 0) && scopes[projectId] === projectScopes.current[projectId]) {
+            if (result.value.task) activeTasks[projectId] = result.value.task;
+            if (result.value.build) recovered[projectId] = result.value.build;
+            if (result.value.task?.type === 'build') {
+              if (result.value.build?.task?.taskId === result.value.task.taskId || result.value.activeReference && !result.value.task.final || result.value.build === null) recovered[projectId] = { task: result.value.task, issues: result.value.build?.issues ?? [] };
+              else if (result.value.build.task) activeTasks[projectId] = result.value.build.task;
+              else delete activeTasks[projectId]; // A bad pointer never falls back to another historical build.
+            } else if (!result.value.task && result.value.build?.task && !result.value.build.task.final) activeTasks[projectId] = result.value.build.task;
+          }
+        } else {
+          const issue = `维护状态读取失败：${messageFrom(result.reason)}。请刷新状态后再操作。`;
+          recovered[projectId] = { issues: [issue] };
+          delete activeTasks[projectId];
+          showError(origin, issue, `task:${projectId}`, { backgroundKey: `maintenance:${projectId}` });
+        }
       }
       setMaintenance(next);
-      setBuildResults((previous) => ({ ...previous, ...Object.fromEntries(Object.entries(activeTasks).filter(([, task]) => task.type === 'build')) }));
-      setTasks((previous) => ({ ...previous, ...activeTasks }));
+      const currentResult = (id: string) => scopes[id] === projectScopes.current[id] && revisions[id] === (buildRevisions.current[id] ?? 0) && !buildPending.current.has(id);
+      setBuildResults((previous) => ({ ...previous, ...Object.fromEntries(Object.entries(recovered).filter(([id]) => currentResult(id))) }));
+      setTasks((previous) => {
+        const next = { ...previous };
+        for (const id of Object.keys(recovered)) if (currentResult(id) && next[id]?.type === 'build') delete next[id];
+        return { ...next, ...Object.fromEntries(Object.entries(activeTasks).filter(([id]) => currentResult(id))) };
+      });
       setRefreshVersion((version) => version + 1);
       setCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
     } catch (cause) {
@@ -296,6 +344,8 @@ function App() {
     if (!pending.length) return;
     let cancelled = false;
     let polling = false;
+    const scopes = { ...projectScopes.current };
+    const revisions = { ...buildRevisions.current };
     const timer = window.setInterval(() => {
       if (polling) return;
       polling = true;
@@ -303,10 +353,15 @@ function App() {
         const origin = capture();
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
-          if (cancelled) return;
+          if (cancelled || !previous.projectId || scopes[previous.projectId] !== projectScopes.current[previous.projectId]) return;
+          if (previous.type === 'build' && revisions[previous.projectId] !== buildRevisions.current[previous.projectId]) return;
+          if (!matchingProjectTask(task, previous.projectId, previous.taskId) || task.type !== previous.type) throw new Error('任务身份或类型不符，请刷新核对。');
           recover(`task:${previous.taskId}`);
           if (task.projectId) setTasks((current) => ({ ...current, [task.projectId!]: task }));
-          if (task.projectId && task.type === 'build') setBuildResults((current) => ({ ...current, [task.projectId!]: task }));
+          if (task.projectId && task.type === 'build') {
+            buildRevisions.current[task.projectId] = (buildRevisions.current[task.projectId] ?? 0) + 1;
+            setBuildResults((current) => ({ ...current, [task.projectId!]: { task, issues: current[task.projectId!]?.issues ?? [] } }));
+          }
           if (task.final) {
             setBuilding((current) => current.filter((id) => id !== task.projectId));
             if (task.projectId) buildPending.current.delete(task.projectId);
@@ -344,15 +399,25 @@ function App() {
   async function buildProject(project: ProjectInfo) {
     if (buildPending.current.has(project.id)) return;
     buildPending.current.add(project.id);
+    let revision = (buildRevisions.current[project.id] ?? 0) + 1;
+    buildRevisions.current[project.id] = revision;
+    const scope = projectScopes.current[project.id];
+    const current = () => scope !== undefined && projectScopes.current[project.id] === scope && buildRevisions.current[project.id] === revision;
     setBuilding((current) => [...current, project.id]);
     const origin = capture();
     try {
       const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
+      if (!current()) return;
+      verifyMaintenanceEpoch(status, project);
       const task = await invoke<TaskRecord>('project_build', { projectId: project.id, input: status.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {} });
+      if (!current()) return;
+      if (!matchingProjectTask(task, project.id) || task.type !== 'build') throw new Error('构建任务身份或类型不符，请刷新核对。');
+      buildRevisions.current[project.id] = ++revision;
       setTasks((current) => ({ ...current, [project.id]: task }));
-      setBuildResults((current) => ({ ...current, [project.id]: task }));
+      setBuildResults((current) => ({ ...current, [project.id]: { task, issues: [] } }));
       if (task.final) { buildPending.current.delete(project.id); setBuilding((current) => current.filter((id) => id !== project.id)); }
     } catch (cause) {
+      if (!current()) return;
       buildPending.current.delete(project.id);
       setBuilding((current) => current.filter((id) => id !== project.id));
       showError(origin, messageFrom(cause), `task:${project.id}`);
@@ -595,7 +660,8 @@ function App() {
             <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onClick={() => { const origin = capture(); void invoke('project_reveal', { projectId: overviewProject.id, target: 'root' }).catch(cause => showError(origin, messageFrom(cause))); }}><FolderOpen size={20} />打开本地目录</button>
           </CodexHandoffPanel>
           <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
-          <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' && buildResults[overviewProject.id] ? buildResults[overviewProject.id] : tasks[overviewProject.id]} />
+          {buildResults[overviewProject.id]?.issues.map(issue => <p className="task-error" role="alert" key={issue}>{issue}</p>)}
+          <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' ? buildResults[overviewProject.id]?.task ?? tasks[overviewProject.id] : tasks[overviewProject.id] ?? buildResults[overviewProject.id]?.task} />
           <ProjectOverview key={overviewProject.id} project={overviewProject} instanceId={info?.instanceId} technicalDetails={<> <BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />
             {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />重新加载项目窗口</button>}
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
