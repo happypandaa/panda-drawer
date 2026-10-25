@@ -218,6 +218,17 @@ impl RuntimePaths {
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
+    /// Whole-installation cleanup must bind the selected workspace through the
+    /// same public-migration evidence used by startup, never an arbitrary path.
+    pub(crate) fn validate_cleanup_selection(&self) -> Result<()> {
+        self.validate_existing()?;
+        let settings = self.read_settings()?;
+        crate::workspace::validate_selection(
+            self.data_root(),
+            self.workspace_root(),
+            settings.migration_id.as_deref(),
+        )
+    }
     pub fn runtime_dir(&self) -> PathBuf {
         self.data_root.join("runtime")
     }

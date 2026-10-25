@@ -157,9 +157,25 @@ impl Backend for NativeBackend {
         })
     }
     fn changed(&self, report: &Report) {
+        if self
+            .app
+            .state::<AppState>()
+            .local_data_cleanup
+            .shutdown_changed(report)
+        {
+            return;
+        }
         show_blocked(&self.app, report);
     }
     fn ready(&self) {
+        if self
+            .app
+            .state::<AppState>()
+            .local_data_cleanup
+            .drained(&self.app)
+        {
+            return;
+        }
         // Normal Quit only. The diagnostic manager remains alive until Tauri's
         // final native exit; no installer permit or all-WebKit Complete exists.
         eprintln!("Desktop ReadyForNativeExit: business windows/core closed; manager closes in final native exit; no installer permit");
@@ -171,6 +187,15 @@ impl Backend for NativeBackend {
     }
 }
 pub(super) fn request(app: &tauri::AppHandle) {
+    if app
+        .try_state::<AppState>()
+        .is_some_and(|state| state.local_data_cleanup.intercept_quit(app))
+    {
+        return;
+    }
+    request_for_cleanup(app);
+}
+pub(super) fn request_for_cleanup(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         request_partial_startup(app);
         return;

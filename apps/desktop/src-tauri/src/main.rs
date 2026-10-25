@@ -8,6 +8,7 @@ mod desktop_partial_startup;
 mod desktop_shutdown;
 mod desktop_shutdown_native;
 mod engine_downloads;
+mod local_data_cleanup;
 mod local_directory;
 mod native_process;
 mod node_development;
@@ -64,6 +65,7 @@ struct AppState {
     handle: RuntimeHandle,
     runtime: std::sync::Arc<RuntimeService>,
     desktop_shutdown: std::sync::Arc<desktop_shutdown::DesktopShutdown>,
+    local_data_cleanup: local_data_cleanup::LocalDataCleanup,
     window_lifetimes: business_window_lifetime::WindowLifetimes,
     engine_downloads: std::sync::Arc<engine_downloads::EngineDownloads>,
     project_windows: tokio::sync::Mutex<()>,
@@ -2437,6 +2439,10 @@ fn main() {
             show_manager(app)
         }))
         .invoke_handler(tauri::generate_handler![
+            local_data_cleanup::local_data_cleanup_preview,
+            local_data_cleanup::local_data_cleanup_start,
+            local_data_cleanup::local_data_cleanup_status,
+            local_data_cleanup::local_data_cleanup_quit,
             bootstrap_info,
             source_list,source_info,source_inspect,source_acquire,source_cancel,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
@@ -2548,6 +2554,7 @@ fn main() {
                 handle: runtime.handle(),
                 runtime,
                 desktop_shutdown: std::sync::Arc::new(desktop_shutdown::DesktopShutdown::default()),
+                local_data_cleanup: local_data_cleanup::LocalDataCleanup::default(),
                 window_lifetimes: business_window_lifetime::WindowLifetimes::default(),
                 engine_downloads: std::sync::Arc::new(engine_downloads::EngineDownloads::default()),
                 project_windows: tokio::sync::Mutex::new(()),
@@ -2613,6 +2620,9 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "manager" {
                     api.prevent_close();
+                    if window.app_handle().try_state::<AppState>().is_some_and(|state| state.local_data_cleanup.active()) {
+                        return;
+                    }
                     // On macOS, closing the manager keeps the application and
                     // its managed services in the Dock. Reopen restores this
                     // same window; only an explicit quit runs safe shutdown.

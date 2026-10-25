@@ -17,6 +17,7 @@ mod history_cleanup;
 mod identity_upgrade;
 pub mod io_lifetime;
 mod lifecycle;
+pub mod local_cleanup;
 mod maintenance;
 mod managed_git;
 mod managed_toolchain;

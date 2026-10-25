@@ -239,6 +239,50 @@ async fn until(check: impl Fn() -> bool) {
     .unwrap();
 }
 #[tokio::test]
+async fn cleanup_requires_all_actual_jobs_and_a_fresh_clean_core() {
+    let f = Fixture::new();
+    assert!(!f.owner.cleanup_ready());
+    let (release, wait) = oneshot::channel();
+    f.backend
+        .windows
+        .lock()
+        .unwrap()
+        .push_back(Step::Wait(wait));
+    f.request();
+    until(|| f.backend.node_calls.load(Ordering::Acquire) > 0).await;
+    assert!(!f.owner.cleanup_ready());
+    release.send(()).unwrap();
+    until(|| f.backend.ready.load(Ordering::Acquire)).await;
+    assert!(f.owner.cleanup_ready());
+    f.backend
+        .unblocked_core_issue
+        .store(true, Ordering::Release);
+    assert!(!f.owner.cleanup_ready());
+    f.backend
+        .unblocked_core_issue
+        .store(false, Ordering::Release);
+    f.backend.core_closed.store(false, Ordering::Release);
+    assert!(!f.owner.cleanup_ready());
+}
+
+#[tokio::test]
+async fn normal_quit_closed_resource_errors_never_authorize_cleanup() {
+    let f = Fixture::new();
+    f.backend
+        .nodes
+        .lock()
+        .unwrap()
+        .push_back(Step::Reply(Err(Issue::new(
+            "artificial-closed-business-error",
+            true,
+            false,
+        ))));
+    f.request();
+    until(|| f.backend.ready.load(Ordering::Acquire)).await;
+    assert_eq!(f.owner.status().status, Status::ReadyForNativeExit);
+    assert!(!f.owner.cleanup_ready());
+}
+#[tokio::test]
 async fn aggregate_scopes_block_real_io_drain_and_do_not_serialize_node_stop_behind_windows() {
     let f = Fixture::new();
     let (release, wait) = oneshot::channel();

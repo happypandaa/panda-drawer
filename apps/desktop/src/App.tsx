@@ -10,6 +10,7 @@ import { ProjectTask } from './ProjectTask';
 import { ImportPanel } from './LifecyclePanels';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
+import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import type { OverviewTab } from './ProjectOverview';
 import { WorkspaceHub } from './WorkspaceHub';
 import { Modal } from './Modal';
@@ -65,7 +66,10 @@ function App() {
   const [showManagementTasks, setShowManagementTasks] = useState(false);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [gitEnvironmentBusy, setGitEnvironmentBusy] = useState(false);
-  const settingsBusy = environmentBusy || gitEnvironmentBusy;
+  const [localDataPending, setLocalDataPending] = useState(false);
+  const [localDataLocked, setLocalDataLocked] = useState(false);
+  const localDataLock = useRef(false);
+  const settingsBusy = environmentBusy || gitEnvironmentBusy || localDataPending || localDataLocked;
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
   const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
@@ -125,7 +129,7 @@ function App() {
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
   const reportOverviewDevelopment = useCallback((state: { dirty: boolean; pending: boolean }) => { setOverviewVersionDraft(state); }, []);
   function navigatePage(value: AppPage) {
-    if (value === page || nodeDraft.pending || nodeModalOpen || deleteProject) return;
+    if (localDataLock.current || value === page || nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setPage(value);
   }
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
@@ -170,13 +174,14 @@ function App() {
     setDeleteProject(project);
   }
   const { migrating, paused, cleanupTask, cleanupBusy } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
-  const workspaceBusy = migrating || paused || cleanupBusy;
+  const workspaceBusy = migrating || paused || cleanupBusy || localDataLocked;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
     setLifecycleTasks((current) => mergeLifecycleTask(current, task));
   }, []);
 
   const refresh = useCallback(async () => {
+    if (localDataLock.current) return;
     const current = ++requestId.current;
     let origin = capture();
     setLoading(true);
@@ -188,6 +193,7 @@ function App() {
       // Read bootstrap first so an unavailable committed workspace reports its
       // concrete startup error, rather than a missing native command state.
       let runtime = await invoke<BootstrapInfo>('bootstrap_info');
+      if (localDataLock.current || current !== requestId.current) return;
       const [list, currentWorkspace, nodeResult] = await Promise.all([
         invoke<ProjectInfo[]>('project_list'), invoke<WorkspaceInfo>('workspace_info'),
         invoke<NodeAppDetail[]>('node_app_list').then((value) => ({ value, error: '' })).catch(() => ({ value: null, error: '带本地服务的项目暂时无法读取，请刷新后核对。已有项目保留。' })),
@@ -314,10 +320,10 @@ function App() {
   }, [refresh]);
 
   useEffect(() => {
-    if (!info || page !== 'projects' || workspaceBusy || !nodeApps.length) return;
+    if (localDataLocked || !info || page !== 'projects' || workspaceBusy || !nodeApps.length) return;
     let cancelled = false; let polling = false;
     const timer = window.setInterval(() => {
-      if (polling || nodeInteraction.current.pending || nodeInteraction.current.modal) return;
+      if (localDataLock.current || polling || nodeInteraction.current.pending || nodeInteraction.current.modal) return;
       polling = true;
       const revision = nodeListRevision.current;
       const generation = requestId.current;
@@ -327,7 +333,7 @@ function App() {
       }).catch(() => { if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) showError(origin, '带本地服务的项目状态暂未更新，请刷新后核对。', 'node-list', { backgroundKey: 'node-list' }); }).finally(() => { polling = false; });
     }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [Boolean(info), page, workspaceBusy, nodeApps.length, capture, showError, recover]);
+  }, [Boolean(info), page, workspaceBusy, nodeApps.length, capture, showError, recover, localDataLocked]);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -357,7 +363,7 @@ function App() {
   }
 
   async function openProject(project: ProjectInfo, target: 'desktop' | 'browser', reload = false) {
-    if (openPending.current) return;
+    if (localDataLock.current || openPending.current) return;
     openPending.current = true;
     setOpening(`${project.id}:${target}`);
     const origin = capture();
@@ -375,6 +381,7 @@ function App() {
   }
 
   useEffect(() => {
+    if (localDataLocked) return;
     const pending = Object.values(tasks).filter((task) => !task.final);
     if (!pending.length) return;
     let cancelled = false;
@@ -382,7 +389,7 @@ function App() {
     const scopes = { ...projectScopes.current };
     const revisions = { ...buildRevisions.current };
     const timer = window.setInterval(() => {
-      if (polling) return;
+      if (localDataLock.current || polling) return;
       polling = true;
       void Promise.all(pending.map(async (previous) => {
         const origin = capture();
@@ -409,14 +416,15 @@ function App() {
       })).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [tasks, refresh, capture, showError, recover]);
+  }, [tasks, refresh, capture, showError, recover, localDataLocked]);
 
   useEffect(() => {
+    if (localDataLocked) return;
     const pending = Object.values(lifecycleTasks).filter((task) => !task.final);
     if (!pending.length) return;
     let cancelled = false; let polling = false;
     const timer = window.setInterval(() => {
-      if (polling) return;
+      if (localDataLock.current || polling) return;
       polling = true;
       void Promise.all(pending.map(async (previous) => {
         const origin = capture();
@@ -430,7 +438,7 @@ function App() {
       })).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [lifecycleTasks, acceptLifecycleTask, refresh, capture, showError, recover]);
+  }, [lifecycleTasks, acceptLifecycleTask, refresh, capture, showError, recover, localDataLocked]);
 
   async function buildProject(project: ProjectInfo) {
     if (buildPending.current.has(project.id)) return;
@@ -582,7 +590,15 @@ function App() {
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
-  const openSettings = () => { if (!nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
+  const openSettings = () => { if (!localDataLock.current && !nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
+  const lockLocalData = useCallback(() => {
+    localDataLock.current = true;
+    requestId.current++; nodeListRevision.current++; handoffRequest.current++;
+    setLocalDataLocked(true); setLoading(false); clearHandoff();
+  }, [clearHandoff]);
+  const localDataUnavailable = !inDesktop || !info || workspaceBusy || environmentBusy || gitEnvironmentBusy
+    || nodeDraft.pending || nodeDraft.dirty || nodeModalOpen || Boolean(overview) || Boolean(deleteProject) || deletePending
+    || creating || Boolean(opening) || building.length > 0 || activeLifecycleTasks.length > 0 || Object.values(tasks).some(task => !task.final);
   const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending || deletePending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending || deletePending} detailsDisabled={nodeDraft.pending || deletePending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openDelete(project)} />;
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
@@ -594,18 +610,18 @@ function App() {
           <strong className="radio-brand-name">熊猫小抽屉</strong>
         </div>
         <nav className="radio-primary-nav" aria-label="工作台导航">
-          <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending} onClick={() => navigatePage('projects')}>我的项目</button>
-          <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending} onClick={() => navigatePage('storage')}>空间与工作区</button>
+          <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('projects')}>我的项目</button>
+          <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('storage')}>空间与工作区</button>
         </nav>
         <div className="radio-header-actions">
           <div className="radio-theme-switch" role="group" aria-label="外观主题">
             <button aria-label="切换亮色主题" title="浅色" aria-pressed={theme === 'light'} onClick={() => setTheme('light')}><Sun size={15} aria-hidden="true" /></button>
             <button aria-label="切换暗色主题" title="深色" aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}><Moon size={15} aria-hidden="true" /></button>
           </div>
-          <button className="radio-settings-button" aria-label="设置" title="运行环境与关于" disabled={nodeDraft.pending} onClick={openSettings}><Settings size={17} /></button>
+          <button className="radio-settings-button" aria-label="设置" title="运行环境与关于" disabled={nodeDraft.pending || localDataLocked} onClick={openSettings}><Settings size={17} /></button>
         </div>
       </header>
-      {page === 'projects' && <div className="radio-toolbar">
+      {page === 'projects' && !localDataLocked && <div className="radio-toolbar">
         <label className="project-search"><Search size={16} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目…" /></label>
         <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
         <div className="radio-toolbar-spacer" />
@@ -625,7 +641,7 @@ function App() {
           {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>工作区已暂停，需要查看处理</strong><p>请查看迁移任务结果并刷新状态；已有窗口的草稿保留。</p></div></div>}
           {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" disabled={nodeDraft.pending || nodeModalOpen} onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowManagementTasks(true); setSettingsOpen(true); }}>查看任务</button></div>}
         </div>
-          {page === 'projects' ? <>
+          {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
             {showSources && <SourceAcquisitionPanel instanceId={info?.instanceId} onInstalled={() => void refresh()} onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
@@ -645,6 +661,7 @@ function App() {
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `显示 ${filteredCount} / 共 ${totalProjects} 个应用` : `共 ${totalProjects} 个应用`}{runningCount > 0 ? ` · ${runningCount} 个运行中` : ''}</span><span title={info?.workspaceRoot}><ShieldCheck size={12} aria-hidden="true" />数据保存在本机</span></footer>
       {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={settingsBusy} onClose={() => setSettingsOpen(false)}>
         {feedback}
+        {!localDataLocked && <>
         <section className="runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">运行环境</h3>
           <dl className="radio-settings-summary"><div><dt>平台服务</dt><dd>{info ? '已就绪' : loading ? '读取中…' : '未连接'}</dd></div><div><dt>包内资源</dt><dd>{info ? resourcesReady ? '读取正常' : '需要检查' : '尚未读取'}</dd></div></dl>
@@ -672,11 +689,15 @@ function App() {
           <p>项目数据保存在本机；联网功能由具体应用决定。</p>
           <details className="radio-about-details"><summary>程序信息与更新状态</summary><AboutPlatform info={info} /></details>
         </section>
+        </>}
+        <LocalDataCleanupPanel instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={localDataUnavailable} onPendingChange={setLocalDataPending} onTerminalLock={lockLocalData} />
+        {!localDataLocked && <>
         <details className="radio-settings-tasks recent-tasks" open={showManagementTasks} onToggle={(event) => setShowManagementTasks(event.currentTarget.open)}><summary>管理任务 <span>{activeLifecycleTasks.length + completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{activeLifecycleTasks.length > 0 && <div aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{completedLifecycleTasks.length > 0 && <div aria-label="最近的管理任务">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{activeLifecycleTasks.length + completedLifecycleTasks.length === 0 && <p className="radio-tasks-empty">暂无管理任务。</p>}</div></details>
         <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} onCreate={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (settingsBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
         <div className="radio-settings-footer"><span>熊猫小抽屉</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
+        </>}
       </Modal>}
-        <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />
+        {!localDataLocked && <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
