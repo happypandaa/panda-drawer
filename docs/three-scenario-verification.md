@@ -541,3 +541,13 @@ E27结束后的原开发根再次离线扫描，与新Node复验后的20,620项�
 明确静默释放菜单先落盘意图，再释放真实guard；`queued-node-restart-holder-joined-71863-0007.json`记录真实Join Ok、Handle已消费、observer lease仍持有。排队请求获得原锁后，原`alive`实际返回`NODE_APP_WINDOW_ERROR`及“平台正在退出，暂时不能打开应用。”，`actualOriginalAliveOk=false`；同一session Arc仍Running、receipt仍generation=1，此检查位于blank、Restarting与stop/start之前。之后原生产窗口／session收尾与正常退出完成；日志出现ReadyForNativeExit，CUA返回App quit，PID71863／71885均消失，60191／50750／50755全部拒绝连接，发现、控制文件和此新实例active.json均移除。启动计数仍1，安装代目录未新增，八文件作者源摘要全部相同。没有强杀、abort或说明弹窗，也没有获取并宣称CUA启动进程的OS wait退出码。
 
 原始十份`queued-node-restart-*-71863-*.json`、OS事前交叉核验 `root-native-queued-node-before-quit.json` 和汇总 `root-native-queued-node-restart-final.json`保留在同一忽略的evidence目录。记录内`normalQueuedNodeProofPassed`始终是保守阶段标记false；验收结论依赖真实Poll、Join、原错误、源码位置与实际退出证据，不改写该字段制造通过。本例只完成等待Node操作锁时退出的子分支，不外推到blank后重启、主线程排队、`restart_allowed`／reserve竞态、完整自动更新或签名公证；cfe基准已知启动失败receipt问题也不在本例复验范围。原开发身份、根和旧E21失败现场均未操作。
+
+### 用户手动复验材料准备（2026-10-25）
+
+用户要求自行手动测试，已准备[操作手册](manual-acceptance.md)和独占资料夹 `/Users/ethan/dev/disposable-manual-acceptance-20261025-8fc838aa`。包含当前源码`13535bc`的0.0.0开发包快照、真空目录／普通非空目录、新身份人工Node源码、兼容及数据声明不兼容材料、依赖失败／大材料取消材料、本机Git A/B历史、两份人工附件和初始全部“未测试”的12项CSV。没有为用户执行平台打开、登记、安装或本次原生操作。
+
+标准debug构建实际退出0，固定开发身份不变；原376包完整保留在忽略证据槽。新包及资料夹副本主程序SHA均为`674e93b8e4db12c2692f039b14679823fdcd2cc04e663dd264f19b865664e5f2`，CLI仍为`11fdee5d04cc2c075f6b08a294f5fc1a26ecb4b057faf24734a3b6d6dfb6fec6`。标准资源、深度严格ad-hoc完整性和复制后离线build-info核对通过；未生成DMG、未配置正式签名或启动平台服务。构建／包／复制回执在`.test-artifacts/manual-acceptance-20261025-8fc838aa/`。
+
+03–06新源码的语法／声明规则及独立人工协议、自有临时数据、兼容字节保持和短构建检查另记`source-materials-ledger.json`，不代替核心parser或平台原生验收。最初07将padding放在未分类的根目录，已原样归档保留；修订07将8,000份1KiB人工文本放入`src/web/manual-cancel-padding/`，8014文件／8,223,507字节均在源码范围内。临时完整副本构建成功，产物保留全部padding；原材料没有生成release。新台账`source-materials-v2-ledger.json`与只读复核一致，用户只有实际触达取消并等到终态后才能勾选取消通过。
+
+用户随后明确授权新建独立公开演示仓库，已发布[人工Node演示项目](https://github.com/happypandaa/panda-drawer-demo-node)。默认分支`codex/manual-demo`、提交与`manual-A`均为`4333ffc2087064a2310f00ba4a5f682fbd7d190b`，只含14个新人工源码文件；远端树逐文件、raw声明、匿名HTTPS读取及公开性已核对。原平台仓库仍私有，发行仓库仍只放原说明，没有上传程序或真实项目。发布回执在资料夹根`public-demo-publication-receipt.json`；源码的公开可读性不等于用户已完成第4项安装验收。
