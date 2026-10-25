@@ -1,0 +1,17 @@
+[package]
+name = "platform-update-witness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+test-process-fixture = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "update-witness-test-fixture"
+path = "tests/fixtures/witness.rs"
+required-features = ["test-process-fixture"]
