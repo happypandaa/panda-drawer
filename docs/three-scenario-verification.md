@@ -529,3 +529,15 @@ E27结束后的原开发根再次离线扫描，与新Node复验后的20,620项�
 通过静默原生菜单明确释放本测试自有锁后，实际holder已Join Ok且证据落盘，observer当时仍持有；原排队请求拿到原锁后，生产 `window_creation_allowed` 实际返回 `DESKTOP_STOPPING`，在maintenance、launch与builder之前拒绝，仍没有目标窗口或receipt。不是用测试状态替代原错误，也没有补造Destroyed。正常退出完成，PID消失、60191拒绝连接、发现和控制文件移除，无强杀、无abort、无说明弹窗。实际记录为 `queued-project-open-holder-joined-52117-0007.json`、`queued-project-open-actual-postlock-check-52117-0009.json` 及汇总 `root-native-queued-project-open-final.json`。
 
 本例完成“等待project创建锁期间发起正常退出”的真实原生子分支；不称已独立触发最终主线程闭包排队或generation reserve封闭分支，也不覆盖Node排队重启。所有接点、包和证据仅在忽略的独立host中，未引入产品测试菜单或改变原开发根。
+
+### E29：真实操作锁上排队重启 Node 与正常退出（2026-10-25）
+
+继续使用同一隔离身份、scope4c8d及E28混合源码基准，仅在私有副本增加五文件Node准备／观测接点，delta SHA `9a5cef865bf466893249e344bdc2aacc5ec44cc9a419c988fae0b465e622893b`，完整source patch SHA `788d4e9b9acce18f94e0ef32f91489b540c25f76c5f6a53f9096d933c3e7e944`。真实restart操作锁future的Poll及原`alive`结果原样传播，NativeBackend、`restart_allowed`、generation registry与生产身份检查不变。双份seal前lease、实际holder Join、持久证据屏障及明确abort/no-proof沿用E28；无自动释放或说明弹窗。新包主程序 SHA `5ec3d1ae54b60459c34cd78cd3c83c87398e7973b75c91b824dfe6e9055d09b1`，CLI SHA `381b301d629444a20c2a25445708e4be1f5648bca3499d2c961240edbaddfe72`，构建和ad-hoc完整性通过，不是正式签名包或当前root HEAD。
+
+八文件人工Node作者样本位于host自己的fixtures目录，固定为无依赖／无配置字段／无秘密，只在自身APP_DATA_DIR记录启动计数及白名单PID、instanceId、state。独立Node-only准备器通过真实capture→prepare→apply安装新实例 `5d03d03e-c04f-4ac6-aab8-e569d1c8215e`，安装代 `gen_81d8bc1574fa4e9085823d2bd75e6f65`；未手写登记、未自动启动、未重备原六个恢复样本。准备器PID69026实际退出0且真实quiesce Complete/resourceClosed=true/issues=[]，不单凭提前落盘的preparation标记认定关闭。
+
+实际宿主PID71863中，原生进入该样本，业务窗口真实HTTP连通并显示包内Node24.22.0、启动次数1。app声明PID71885经独立`ps`及`lsof`交叉核对：父进程为71863，实际可执行文件为此包内Node，参数指向该新实例固定安装代；业务监听50750、平台代理50755。只取端口，不读取或记录token、完整入口URL或配置凭据。静默菜单持有真实`NodeWindows.operations`锁时，实际session Arc处于Running、窗口receipt generation=1且未Destroyed。管理页“运行状态→重启并应用配置”发出真实请求，实际Mutex future Poll::Pending，界面进入忙状态；随后正常Cmd+Q，shuttingDown、I/O closing/sealed及desktop Pending成立，原session／窗口代仍保留，应用自报进入stopping；进程关闭由最终独立OS观察确认，不能仅从该自报字段推导。
+
+明确静默释放菜单先落盘意图，再释放真实guard；`queued-node-restart-holder-joined-71863-0007.json`记录真实Join Ok、Handle已消费、observer lease仍持有。排队请求获得原锁后，原`alive`实际返回`NODE_APP_WINDOW_ERROR`及“平台正在退出，暂时不能打开应用。”，`actualOriginalAliveOk=false`；同一session Arc仍Running、receipt仍generation=1，此检查位于blank、Restarting与stop/start之前。之后原生产窗口／session收尾与正常退出完成；日志出现ReadyForNativeExit，CUA返回App quit，PID71863／71885均消失，60191／50750／50755全部拒绝连接，发现、控制文件和此新实例active.json均移除。启动计数仍1，安装代目录未新增，八文件作者源摘要全部相同。没有强杀、abort或说明弹窗，也没有获取并宣称CUA启动进程的OS wait退出码。
+
+原始十份`queued-node-restart-*-71863-*.json`、OS事前交叉核验 `root-native-queued-node-before-quit.json` 和汇总 `root-native-queued-node-restart-final.json`保留在同一忽略的evidence目录。记录内`normalQueuedNodeProofPassed`始终是保守阶段标记false；验收结论依赖真实Poll、Join、原错误、源码位置与实际退出证据，不改写该字段制造通过。本例只完成等待Node操作锁时退出的子分支，不外推到blank后重启、主线程排队、`restart_allowed`／reserve竞态、完整自动更新或签名公证；cfe基准已知启动失败receipt问题也不在本例复验范围。原开发身份、根和旧E21失败现场均未操作。
