@@ -49,4 +49,6 @@ node --test scripts/update-manifest-test.mjs
 
 **以上仅为签名格式检查，尚无密码学验签。** 结果始终声明 `cryptographicSignatureVerified:false`、`artifactBytesVerified:false`、`installAuthorized:false`。trusted comment 在完成密码学验证前也是未认证输入；单靠 tag 和文本不能证明发行身份或阻止恶意重放。后续运行实现须用编译绑定的公钥、实际产物和 `requireSignedVersion` 完成验证，依据 [Tauri updater 的版本验证代码](https://github.com/tauri-apps/plugins-workspace/blob/v2/plugins/updater/src/updater.rs)，再独立满足关闭、安装和恢复条件。
 
-验证只使用临时目录、人工格式字节和本地 CLI；不生成密钥，不声称人工签名能验证，不发布 `latest.json`，不扩大正式发行或原生升级的完成范围。
+新增独立的[实际产物离线验签](update-artifact-verification.md)通过同一 CLI 的 `verify` 命令，读取明确指定的公开公钥和产物，验证真实字节、key ID及完整 trusted comment 的密码学签名。这里的 `generate`/`validate` 及其格式判断保持原范围；新命令也不配置生产信任根、联网或授权安装。
+
+上述格式检查只使用临时目录、人工格式字节和本地 CLI；该组验证不生成密钥、不声称人工格式签名能通过密码学验证，不发布 `latest.json`，不扩大正式发行或原生升级的完成范围。新实际验签测试另使用临时人工密钥，范围见独立记录。

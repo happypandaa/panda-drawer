@@ -8,6 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { UPDATE_POLICY, assessStableUpdate, automaticCheckPolicy, compareVersions, generateStaticManifest, parseProtocolJson, parseVersion, releaseAssetUrl, validateSignatureFormat, validateStaticManifest } from './update-manifest-protocol.mjs';
 import { parseManifestArguments, runManifestCommand } from './update-manifest.mjs';
 
+test('verify arguments require explicit artifact and public-key inputs without adding identity or source overrides', () => {
+  const args = ['verify', '--input', '/tmp/latest.json', '--artifact', '/tmp/app.app.tar.gz', '--public-key', '/tmp/operator.pub'];
+  assert.deepEqual(parseManifestArguments(args), { command: 'verify', input: '/tmp/latest.json', artifact: '/tmp/app.app.tar.gz', publicKeyPath: '/tmp/operator.pub' });
+  for (const invalid of [args.slice(0, -2), [...args, '--public-key', '/tmp/other.pub'], [...args, '--url', 'https://example.invalid'], [...args, '--identifier', 'other'], [...args, '--output', '/tmp/result.json']]) assert.throws(() => parseManifestArguments(invalid));
+});
+
 // Artificial format-only bytes, never a valid signature, executable or key.
 // No keys are generated or loaded by any test.
 function signature(version = '0.1.0', name = '熊猫小抽屉.app.tar.gz') {

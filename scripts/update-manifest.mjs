@@ -3,22 +3,25 @@ import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { UPDATE_POLICY, assessStableUpdate, generateStaticManifest, parseProtocolJson, validateStaticManifest } from './update-manifest-protocol.mjs';
+import { verifyUpdateArtifact } from './update-artifact-verification.mjs';
 
 export function parseManifestArguments(args) {
   const [command, ...flags] = args;
   if (command === '--help' && flags.length === 0) return { command: 'help' };
-  if (!['generate', 'validate'].includes(command)) throw new Error('Use generate or validate; --help shows the offline interface.');
+  if (!['generate', 'validate', 'verify'].includes(command)) throw new Error('Use generate, validate or verify; --help shows the offline interface.');
   const values = {};
-  const allowed = command === 'generate' ? ['--input', '--output', '--previous-version'] : ['--input', '--current-version'];
+  const allowed = command === 'generate' ? ['--input', '--output', '--previous-version'] : command === 'verify' ? ['--input', '--artifact', '--public-key', '--current-version'] : ['--input', '--current-version'];
   for (let i = 0; i < flags.length; i += 2) {
     const flag = flags[i]; const value = flags[i + 1];
     if (!allowed.includes(flag) || values[flag] !== undefined || !value || value.startsWith('--')) throw new Error('Missing, duplicate or unsupported manifest option.');
     values[flag] = value;
   }
   if (!values['--input'] || command === 'generate' && !values['--output']) throw new Error('An explicit input and, for generate, a new output are required.');
+  if (command === 'verify' && (!values['--artifact'] || !values['--public-key'])) throw new Error('Verification requires an explicit artifact and public-key file.');
   return { command, input: values['--input'], ...(values['--output'] ? { output: values['--output'] } : {}),
     ...(values['--previous-version'] ? { previousVersion: values['--previous-version'] } : {}),
-    ...(values['--current-version'] ? { currentVersion: values['--current-version'] } : {}) };
+    ...(values['--current-version'] ? { currentVersion: values['--current-version'] } : {}),
+    ...(values['--artifact'] ? { artifact: values['--artifact'] } : {}), ...(values['--public-key'] ? { publicKeyPath: values['--public-key'] } : {}) };
 }
 
 async function checkedPath(value, output = false) {
@@ -40,10 +43,12 @@ async function checkedPath(value, output = false) {
 
 async function readDocument(input) {
   const target = await checkedPath(input);
-  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const initialNamed = await lstat(target, { bigint: true });
+  if (!initialNamed.isFile() || initialNamed.isSymbolicLink() || initialNamed.nlink !== 1n || initialNamed.size > BigInt(UPDATE_POLICY.maxDocumentBytes)) throw new Error('Manifest input is invalid or too large.');
+  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    const before = await file.stat();
-    if (!before.isFile() || before.nlink !== 1 || before.size > UPDATE_POLICY.maxDocumentBytes) throw new Error('Manifest input is invalid or too large.');
+    const before = await file.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size > BigInt(UPDATE_POLICY.maxDocumentBytes) || !initialNamed.isFile() || initialNamed.isSymbolicLink() || initialNamed.dev !== before.dev || initialNamed.ino !== before.ino) throw new Error('Manifest input is invalid, changed or too large.');
     const buffer = Buffer.alloc(UPDATE_POLICY.maxDocumentBytes + 1);
     let length = 0;
     while (length < buffer.length) {
@@ -51,8 +56,9 @@ async function readDocument(input) {
       if (!bytesRead) break;
       length += bytesRead;
     }
-    const after = await file.stat();
-    if (length > UPDATE_POLICY.maxDocumentBytes || length !== before.size || ['dev', 'ino', 'mode', 'size', 'mtimeMs', 'ctimeMs', 'nlink'].some(key => before[key] !== after[key])) throw new Error('Manifest input changed during its bounded read.');
+    const after = await file.stat({ bigint: true });
+    const finalNamed = await lstat(target, { bigint: true });
+    if (length > UPDATE_POLICY.maxDocumentBytes || BigInt(length) !== before.size || ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs', 'nlink', 'uid', 'gid'].some(key => before[key] !== after[key]) || !finalNamed.isFile() || finalNamed.isSymbolicLink() || finalNamed.dev !== after.dev || finalNamed.ino !== after.ino || finalNamed.nlink !== 1n) throw new Error('Manifest input changed during its bounded read.');
     return parseProtocolJson(buffer.subarray(0, length));
   } finally { await file.close(); }
 }
@@ -62,9 +68,12 @@ export async function runManifestCommand(options) {
     'Offline only: no signing, network, publishing, runtime admission or installation.',
     'generate --input /absolute/signed-artifact-metadata.json --output /new/latest.json [--previous-version 0.1.0]',
     'validate --input /absolute/latest.json [--current-version 0.1.0]',
+    'verify --input /absolute/latest.json --artifact /absolute/name.app.tar.gz --public-key /absolute/operator.pub [--current-version 0.1.0]',
     'Validation checks signature format only; it does not authenticate the artifact or its metadata.',
+    'Verification checks actual bytes with the explicit public key; it does not configure production trust or authorize installation.',
   ].join('\n') };
   const document = await readDocument(options.input);
+  if (options.command === 'verify') return verifyUpdateArtifact({ manifest: document, artifact: options.artifact, publicKeyPath: options.publicKeyPath, currentVersion: options.currentVersion });
   const manifest = options.command === 'generate'
     ? generateStaticManifest(document, { previousVersion: options.previousVersion }) : validateStaticManifest(document);
   let output;
