@@ -1347,18 +1347,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .radio-refresh-button { width: 32px; height: 32px; border-color: transparent; color: var(--radio-secondary); }
 .radio-refresh-button:hover:not(:disabled) { color: var(--radio-text); }
 
-/* New project + "more ways to add" read as one split control. */
-.radio-create-group { display: inline-flex; align-items: stretch; flex-shrink: 0; }
-.radio-create-group > .primary-button { min-height: 34px; padding: 7px 14px 7px 12px; border-radius: 999px 0 0 999px; gap: 6px; }
-.radio-create-group .radio-add-menu > summary {
-  min-height: 34px; height: 100%; padding: 0 11px 0 9px;
-  border: 1px solid var(--radio-active); border-left-color: color-mix(in srgb, var(--radio-active-text) 25%, var(--radio-active));
-  border-radius: 0 999px 999px 0;
-  color: var(--radio-active-text); background: var(--radio-active);
-}
-.radio-create-group .radio-add-menu > summary:hover, .radio-create-group .radio-add-menu[open] > summary { color: var(--radio-active-text); background: var(--radio-active); filter: brightness(.88); }
-.radio-create-group .radio-add-menu > summary[aria-disabled='true'] { border-color: var(--radio-line); color: var(--radio-muted); background: var(--radio-subtle); filter: none; cursor: default; }
-.radio-create-group .radio-add-menu > div { right: 0; left: auto; min-width: 180px; }
+/* Three add actions shown side by side; Git import is the primary path. */
+.radio-add-actions, .empty-add-actions { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.radio-add-actions > button { min-height: 34px; padding: 7px 14px; gap: 6px; border-radius: 999px; font-size: 13px; }
+.empty-add-actions { flex-wrap: wrap; margin-top: 20px; }
+.empty-add-actions > button { gap: 6px; }
+.workspace-message .empty-add-actions .primary-button { margin-top: 0; }
 
 /* Launcher tiles: icon, up to two lines of name, then a type/status line. */
 .radio-project-grid, .radio-main > .project-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 136px)); justify-content: start; gap: 10px 14px; padding: 14px 26px 28px; }
@@ -1399,9 +1393,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-toolbar { flex-wrap: wrap; padding: 10px 20px 4px; }
   .radio-toolbar .project-search { flex-basis: 100%; max-width: none; order: -1; }
   .project-filter-chips button { padding-inline: 10px; }
-  .radio-create-group > .primary-button { min-height: 32px; padding-inline: 11px; }
-  .radio-create-group .radio-add-menu > summary { min-height: 32px; }
-  .radio-create-group { margin-left: auto; }
+  .radio-add-actions { margin-left: auto; }
+  .radio-add-actions > button { min-height: 32px; padding-inline: 11px; }
   .radio-project-grid, .radio-main > .project-grid { padding-inline: 14px; }
 }
 

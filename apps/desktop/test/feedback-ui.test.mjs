@@ -520,7 +520,7 @@ test('Node and local-directory errors remain in their original panels and never 
   await details(node.name); await click(byText('进入项目', dialog()));
   assert.match(dialog().textContent, /Artificial local Node error/); assert.equal(failure(), null);
   await closeDialog(); assert.equal(failure(), null);
-  await click(document.querySelector('.radio-add-menu summary')); await click(byText('添加本地应用'));
+  await click(byText('添加本地应用'));
   await click(byText('选择本地项目文件夹'));
   assert.match(dialog().textContent, /Artificial local directory error/); assert.equal(failure(), null); assert.equal(success(), null);
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
@@ -538,7 +538,7 @@ test('Local Node and directory success messages remain local instead of entering
   assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
   await advance(6000); assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
   await closeDialog();
-  await click(document.querySelector('.radio-add-menu summary')); await click(byText('添加本地应用')); await click(byText('选择本地项目文件夹')); await click(byText('复制给 AI 检查'));
+  await click(byText('添加本地应用')); await click(byText('选择本地项目文件夹')); await click(byText('复制给 AI 检查'));
   assert.match(dialog().textContent, /完整检查说明已复制/); assert.equal(success(), null);
   await closeDialog(); assert.equal(success(), null);
 });

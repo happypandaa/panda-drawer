@@ -1496,7 +1496,6 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   });
   await setup(async (command, args) => { calls.push([command, args]); return mock(command, args); }, {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 0);
-  await click(document.querySelector('.radio-add-menu summary'));
   await click(byText('添加本地应用')); await click(byText('选择本地项目文件夹'));
   await change(document.querySelector('.local-directory-empty input'), value.name);
   await click(byText('生成并添加项目'));
@@ -1674,14 +1673,10 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   const staticTile = document.querySelector('[aria-label="进入项目「Static fixture」"]').closest('article');
   assert.equal(document.querySelector('.launcher-more'), null);
   assert.equal(byText('新建项目').disabled, true);
-  const addMenu = document.querySelector('.radio-add-menu');
-  const addTrigger = addMenu.querySelector('summary');
-  assert.equal(addTrigger.getAttribute('aria-disabled'), 'true');
-  assert.equal(byText('导入项目').disabled, true);
-  await click(addTrigger);
-  assert.equal(addMenu.open, false);
+  assert.equal(byText('添加本地应用').disabled, true);
+  assert.equal(byText('从 Git 导入应用').disabled, true);
   await act(async () => staticTile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-  await click(byText('新建项目')); await click(byText('导入项目'));
+  await click(byText('新建项目')); await click(byText('添加本地应用')); await click(byText('从 Git 导入应用'));
   assert.equal(document.querySelector('[role=menu]'), null);
   assert.equal(document.querySelector('[role=dialog]'), null);
   await act(async () => configuration.reject(new Error('Artificial configuration read failure')));

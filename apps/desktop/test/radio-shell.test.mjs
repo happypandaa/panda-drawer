@@ -91,8 +91,7 @@ async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
 }
 const byText = (text, scope = document, selector = 'button') => [...scope.querySelectorAll(selector)].find(element => element.textContent === text);
 const dialog = () => document.querySelector('[role="dialog"]');
-const addDisclosure = () => document.querySelector('.radio-add-menu');
-const addTrigger = () => addDisclosure().querySelector('summary');
+const addGroup = () => document.querySelector('.radio-toolbar [aria-label="添加项目"]');
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function key(element, value, extra = {}) { assert.ok(element); await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...extra }))); }
 async function change(element, value) {
@@ -207,68 +206,31 @@ test('Unavailable browser storage falls back to light and still permits both the
   assert.equal(document.documentElement.dataset.theme, 'light');
 });
 
-test('The add disclosure closes on Escape with focus return and on outside pointers', async () => {
+test('The toolbar shows new, local and Git add actions side by side, separate from filtering and refresh', async () => {
   const calls = await setup();
-  await click(addTrigger());
-  assert.equal(addDisclosure().open, true);
-  const importButton = byText('导入项目', addDisclosure());
-  await act(async () => importButton.focus());
-  await key(importButton, 'Escape');
-  assert.equal(addDisclosure().open, false);
-  assert.equal(document.activeElement, addTrigger());
-  await click(addTrigger());
-  assert.equal(addDisclosure().open, true);
-  await act(async () => document.querySelector('.radio-brand').dispatchEvent(new window.Event('pointerdown', { bubbles: true })));
-  assert.equal(addDisclosure().open, false);
-  assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
-});
-
-test('The toolbar separates filtering and refresh from the source, local and import actions', async () => {
-  const calls = await setup();
-  const filter = document.querySelector('[aria-label="筛选项目状态"], .project-filter select');
+  const filter = document.querySelector('[aria-label="筛选项目状态"]');
   const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
   assert.ok(filter.closest('.radio-toolbar'));
   assert.ok(refresh.closest('.radio-toolbar'));
-  assert.equal(filter.closest('.radio-add-menu'), null);
-  assert.equal(refresh.closest('.radio-add-menu'), null);
-  await click(addTrigger());
-  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['从 Git 导入应用', '添加本地应用', '导入项目']);
+  assert.equal(filter.closest('[aria-label="添加项目"]'), null);
+  assert.equal(refresh.closest('[aria-label="添加项目"]'), null);
+  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['新建项目', '添加本地应用', '从 Git 导入应用']);
+  assert.ok(byText('从 Git 导入应用', addGroup()).classList.contains('primary-button'));
+  assert.equal(document.querySelector('.radio-add-menu'), null);
+  assert.equal(byText('导入项目'), undefined, 'ZIP import has no home entry');
   const before = calls.filter(([command]) => command === 'project_list').length;
   await click(refresh);
   assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);
 });
 
-for (const label of ['添加本地应用', '导入项目']) {
-  test(`A null-target blur before the ${label} click keeps the action available`, async () => {
+for (const [label, title] of [['新建项目', '新建项目'], ['添加本地应用', '添加本地应用'], ['从 Git 导入应用', '从 Git 导入应用']]) {
+  test(`The ${label} action opens its own dialog without running a native command`, async () => {
     const calls = await setup();
-    await act(async () => addTrigger().focus());
-    await click(addTrigger());
-    const action = byText(label, addDisclosure());
-    await act(async () => {
-      action.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
-      addTrigger().dispatchEvent(new window.FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
-    });
-    assert.equal(addDisclosure().open, true);
-    assert.equal(dialog(), null);
-    await click(action);
-    assert.equal(addDisclosure().open, false);
-    if (label === '添加本地应用') assert.equal(dialog().querySelector('h2').textContent, label);
-    else assert.equal(dialog().querySelector('h2').textContent, '导入完整项目');
-    assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
+    await click(byText(label, addGroup()));
+    assert.equal(dialog().querySelector('h2').textContent, title);
+    assert.equal(calls.some(([command]) => /choose_path|project_import|project_create|node_app_register|source_/.test(command)), false);
   });
 }
-
-test('The add disclosure still closes when keyboard focus moves to an outside control', async () => {
-  await setup();
-  await act(async () => addTrigger().focus());
-  await click(addTrigger());
-  await act(async () => byText('导入项目', addDisclosure()).focus());
-  assert.equal(addDisclosure().open, true);
-  const refresh = document.querySelector('[aria-label="刷新项目和运行状态"]');
-  await act(async () => refresh.focus());
-  assert.equal(addDisclosure().open, false);
-  assert.equal(document.activeElement, refresh);
-});
 
 test('Completed management history lives in the header task popover without occupying the home notice area', async () => {
   const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
@@ -303,24 +265,22 @@ test('Active management work keeps a compact home indicator that opens the task 
   assert.equal(dialog(), null);
 });
 
-test('The add disclosure cannot open before bootstrap, and closes when Node entry becomes pending', async () => {
+test('Add actions stay disabled before bootstrap and while a Node entry is pending', async () => {
   const bootstrapRead = deferred();
   await setup({ overrides: { bootstrap_info: () => bootstrapRead.promise } });
-  assert.equal(addTrigger().getAttribute('aria-disabled'), 'true');
-  await click(addTrigger());
-  assert.equal(addDisclosure().open, false);
+  const disabled = () => [...addGroup().querySelectorAll('button')].map(element => element.disabled);
+  assert.deepEqual(disabled(), [true, true, true]);
+  await click(byText('从 Git 导入应用', addGroup()));
+  assert.equal(dialog(), null);
   await act(async () => bootstrapRead.resolve(bootstrap));
-  assert.equal(addTrigger().getAttribute('aria-disabled'), 'false');
+  assert.deepEqual(disabled(), [false, false, false]);
   await unmount();
   const nodeRead = deferred();
   await setup({ nodes: [nodeFixture], overrides: { node_app_configuration: () => nodeRead.promise } });
-  await click(addTrigger());
-  assert.equal(addDisclosure().open, true);
   await click(document.querySelector('[aria-label="进入项目「Disposable shell Node」"]'));
-  assert.equal(addTrigger().getAttribute('aria-disabled'), 'true');
-  assert.equal(addDisclosure().open, false);
-  await click(addTrigger());
-  assert.equal(addDisclosure().open, false);
+  assert.deepEqual(disabled(), [true, true, true]);
+  await click(byText('添加本地应用', addGroup()));
+  assert.equal(dialog(), null);
   await act(async () => nodeRead.resolve(nodeFixture));
   assert.ok(dialog());
 });
