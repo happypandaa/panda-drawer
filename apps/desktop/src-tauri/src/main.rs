@@ -1047,6 +1047,23 @@ async fn project_import(
 }
 
 #[tauri::command]
+async fn project_import_cleanup(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.project_import_cleanup(task_id).await
+        })
+        .await?
+}
+
+#[tauri::command]
 async fn workspace_migrate(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -2294,7 +2311,7 @@ fn main() {
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,
-            project_import,
+            project_import,project_import_cleanup,
             project_copy,
             project_delete,
             workspace_info,

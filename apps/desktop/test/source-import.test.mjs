@@ -65,7 +65,7 @@ test('One import binds the acquired source, verifies the prepared candidate, and
   const { session, calls } = fixture();
   assert.deepEqual(await session.acquire(input), source);
   assert.deepEqual(await session.install(false), installed);
-  assert.equal(session.phase, 'done');
+  assert.equal(session.phase, 'cleanup');
   assert.equal(session.sourceTaskId, 'task_source');
   assert.deepEqual(commands(calls), ['source_acquire', 'node_install_prepare', 'node_install_candidate', 'node_install_apply']);
   assert.deepEqual(calls[1][1], { input: { sourceId, expectedSourceDigest: digest, targetAppId: null } });

@@ -96,21 +96,27 @@ test('Project import defaults to a new identity and preserves the original only 
   await setup(); const calls = []; const tasks = [];
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     assert.equal(command, 'project_import'); calls.push(args);
-    return { taskId: `task_disposable_import_${calls.length}`, type: 'import', status: 'queued', final: false };
+    const projectId = `prj_disposable_${calls.length}`;
+    return { taskId: `task_disposable_import_${calls.length}`, projectId, type: 'import', status: 'succeeded', final: true, phase: 'completed', result: { projectId, targetProjectId: projectId, operationOutcome: 'imported', cleanupPending: false, cleanup: { completed: true } }, error: null };
   };
-  await render(h(ImportPanel, { disabled: false, onTask(value) { tasks.push(value); }, onClose() {} }));
+  const props = { disabled: false, onTask(value) { tasks.push(value); }, onClose() {} };
+  await render(h(ImportPanel, props));
   assert.equal(document.querySelector('input[name="import-mode"]:checked').value, 'copy');
   assert.match(document.querySelector('.project-help').textContent, /重复导入可以并存/);
   await inputValue(document.querySelector('.path-input input'), '/disposable/shared-project.zip');
   await inputValue(document.querySelector('form > label input'), 'My independent project');
   await click(buttonNamed('校验并导入'));
-  assert.deepEqual(calls, [{ input: { archivePath: '/disposable/shared-project.zip', mode: 'copy', name: 'My independent project' } }]);
+  assert.deepEqual(calls, [{ input: { archivePath: '/disposable/shared-project.zip', mode: 'copy', cleanupTemporaryFiles: true, name: 'My independent project' } }]);
+  assert.match(dialog().textContent, /导入成功/);
+  await act(async () => root.unmount()); root = null;
+  await setup(); await render(h(ImportPanel, props));
+  await inputValue(document.querySelector('.path-input input'), '/disposable/shared-project.zip');
   await click(document.querySelector('input[value="original"]'));
   assert.equal(document.querySelector('input[name="import-mode"]:checked').value, 'original');
   assert.match(document.querySelector('.project-help').textContent, /拒绝导入，不会覆盖或合并/);
   assert.equal(document.querySelector('form > label input'), null);
   await click(buttonNamed('校验并导入'));
-  assert.deepEqual(calls[1], { input: { archivePath: '/disposable/shared-project.zip', mode: 'original' } });
+  assert.deepEqual(calls[1], { input: { archivePath: '/disposable/shared-project.zip', mode: 'original', cleanupTemporaryFiles: true } });
   assert.equal(tasks.length, 2);
 });
 

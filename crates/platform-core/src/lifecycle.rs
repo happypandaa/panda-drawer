@@ -38,6 +38,8 @@ struct Input {
     name: Option<String>,
     maintenance_id: Option<String>,
     expected_document_epoch: Option<String>,
+    #[serde(default)]
+    cleanup_temporary_files: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -61,6 +63,10 @@ struct Journal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     directory_name: Option<String>,
     directory_identity: Option<PersistedIdentity>,
+    #[serde(default)]
+    cleanup_temporary_files: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import_temporary_identity: Option<PersistedIdentity>,
     control: Option<ControlState>,
     destination: Option<PathBuf>,
     published_sha256: Option<String>,
@@ -81,6 +87,13 @@ pub(crate) struct LifecycleManager {
         Option<(
             tokio::sync::oneshot::Sender<()>,
             std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    import_cleanup_pause: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
     stopping: AtomicBool,
@@ -236,6 +249,8 @@ impl LifecycleManager {
             running: Mutex::new(vec![]),
             #[cfg(test)]
             import_inspection_pause: Mutex::new(None),
+            #[cfg(test)]
+            import_cleanup_pause: Mutex::new(None),
             stopping: AtomicBool::new(false),
             events,
         });
@@ -358,6 +373,8 @@ impl LifecycleManager {
             phase: "intent".into(),
             directory_name: None,
             directory_identity: None,
+            cleanup_temporary_files: false,
+            import_temporary_identity: None,
             control: None,
             destination: None,
             published_sha256: None,
@@ -376,6 +393,12 @@ impl LifecycleManager {
         let mut running = self.running.lock().unwrap();
         self.check_running()?;
         let input = Self::input(value)?;
+        if input.cleanup_temporary_files {
+            return Err(ApiError::new(
+                "INVALID_INPUT",
+                "Temporary import cleanup is only available for import",
+            ));
+        }
         if !matches!(kind, "export" | "copy" | "delete") {
             return Err(ApiError::new(
                 "INVALID_INPUT",
@@ -570,6 +593,7 @@ impl LifecycleManager {
         let (mut record, lease) = self.tasks.create_operation(&target, "import")?;
         let mut journal = Self::journal(&record, "import", &target);
         journal.source_project_id = Some(metadata.project_id);
+        journal.cleanup_temporary_files = input.cleanup_temporary_files;
         let prepared = self
             .save(&journal)
             .and_then(|()| self.store.reserve_identity(&target, &record.task_id));
@@ -578,6 +602,19 @@ impl LifecycleManager {
             return Err(error);
         }
         record.result = Some(json!({"targetProjectId":target}));
+        if journal.cleanup_temporary_files {
+            let temporary = self.import_temporary(&journal);
+            let prepared = (|| {
+                check_no_symlinks(&temporary, true)?;
+                fs::create_dir(&temporary)?;
+                journal.import_temporary_identity = Some(persistent_identity(&temporary)?);
+                self.save(&journal)
+            })();
+            if let Err(error) = prepared {
+                self.tasks.finish(&record.task_id, Err(error.clone()))?;
+                return Err(error.detail("taskId", record.task_id.clone()));
+            }
+        }
         self.launch(&mut running, journal, input, vec![lease]);
         Ok(record)
     }
@@ -791,14 +828,19 @@ impl LifecycleManager {
     }
     async fn import(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
         self.phase(journal, "archive-copy")?;
-        let archived = self.operation(&journal.task_id).join("source.zip");
+        let payload = if journal.cleanup_temporary_files {
+            self.import_temporary(journal)
+        } else {
+            self.operation(&journal.task_id)
+        };
+        let archived = payload.join("source.zip");
         let from = input.archive_path.unwrap();
         let to = archived.clone();
         tokio::task::spawn_blocking(move || copy_verified(&from, &to))
             .await
             .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         self.phase(journal, "archive-validate")?;
-        let candidate = self.operation(&journal.task_id).join("candidate");
+        let candidate = payload.join("candidate");
         let path = archived.clone();
         let destination = candidate.clone();
         let original_id = journal.source_project_id.clone().unwrap();
@@ -817,7 +859,23 @@ impl LifecycleManager {
             builds::atomic_json(&candidate.join("project.json"), &manifest)?;
         }
         self.prepare_install(journal, candidate, manifest, validated.manifest)
-            .await
+            .await?;
+        if journal.cleanup_temporary_files {
+            self.phase(journal, "cleanup")?;
+            #[cfg(test)]
+            {
+                let pause = self.import_cleanup_pause.lock().unwrap().take();
+                if let Some((entered, release)) = pause {
+                    let _ = entered.send(());
+                    let _ = release.await;
+                }
+            }
+            let cleanup = self.cleanup_import_payload(journal)?;
+            journal.result["cleanupPending"] = json!(cleanup["completed"] != true);
+            journal.result["cleanup"] = cleanup;
+            self.save(journal)?;
+        }
+        Ok(journal.result.clone())
     }
     async fn prepare_install(
         &self,
@@ -1192,6 +1250,128 @@ impl LifecycleManager {
         Ok(
             json!({"projectId":journal.project_id,"operationOutcome":"needs_attention","error":error}),
         )
+    }
+    fn import_temporary(&self, journal: &Journal) -> PathBuf {
+        self.operation(&journal.task_id).join("import-temporary")
+    }
+    fn cleanup_import_payload(&self, journal: &Journal) -> Result<Value, ApiError> {
+        if journal.kind != "import"
+            || !journal.cleanup_temporary_files
+            || journal.import_temporary_identity.is_none()
+            || !journal.resolved
+            || !matches!(
+                journal.result["operationOutcome"].as_str(),
+                Some("imported" | "not_registered" | "not_started")
+            )
+        {
+            return Err(ApiError::new(
+                "IMPORT_CLEANUP_BLOCKED",
+                "导入结果尚未确认，未清理临时材料。",
+            ));
+        }
+        if journal.result["operationOutcome"] == "imported" {
+            let root = journal_project_root(
+                self.paths.workspace_root(),
+                &journal.project_id,
+                journal.directory_name.as_deref(),
+            )?;
+            if !journal.committed
+                || !journal
+                    .directory_identity
+                    .as_ref()
+                    .is_some_and(|expected| matches_identity(expected, &root).unwrap_or(false))
+                || !self
+                    .store
+                    .project_root(&journal.project_id)
+                    .is_ok_and(|registered| registered == root)
+                || self.store.registered_epoch(&journal.project_id)?.as_deref()
+                    != Some(journal.target_epoch.as_str())
+                || self
+                    .store
+                    .control(&journal.project_id)?
+                    .get()
+                    .recovery_required
+            {
+                return Err(ApiError::new(
+                    "IMPORT_CLEANUP_BLOCKED",
+                    "已导入项目的登记仍需核对，未清理恢复依据。",
+                ));
+            }
+            self.check_protection(&journal.project_id, Some(&journal.task_id))?;
+        } else if journal.committed {
+            return Err(ApiError::new(
+                "IMPORT_CLEANUP_BLOCKED",
+                "安装提交和结果记录不一致，未删除文件。",
+            ));
+        }
+        let temporary = self.import_temporary(journal);
+        check_no_symlinks(&temporary, true)?;
+        let mut removed = vec![];
+        let mut failures = vec![];
+        if temporary.try_exists()? {
+            let expected = journal.import_temporary_identity.as_ref().ok_or_else(|| {
+                ApiError::new(
+                    "IMPORT_CLEANUP_BLOCKED",
+                    "缺少本次临时目录的归属记录，未删除文件。",
+                )
+            })?;
+            let progress = self
+                .operation(&journal.task_id)
+                .join(format!("import-cleanup-{}.jsonl", Uuid::new_v4().simple()));
+            match crate::history_cleanup::remove_owned_directory(&temporary, expected, &progress) {
+                Ok(_) => removed.push(temporary.clone()),
+                Err(error) => failures.push(json!({"path":temporary,"error":error})),
+            }
+        }
+        let result = json!({"completed":failures.is_empty() && !temporary.exists(),"projectId":journal.project_id,"operationOutcome":journal.result["operationOutcome"],"removedPaths":removed,"failures":failures});
+        builds::atomic_json(
+            &self.operation(&journal.task_id).join("import-cleanup.json"),
+            &result,
+        )?;
+        Ok(result)
+    }
+    /// Only the exact opt-in import's process files are removable. Lifecycle
+    /// journals and the caller's archive remain outside this bound directory.
+    pub async fn cleanup_import(self: &Arc<Self>, task_id: String) -> Result<Value, ApiError> {
+        if !valid_id(&task_id) {
+            return Err(ApiError::new(
+                "IMPORT_CLEANUP_BLOCKED",
+                "导入任务编号无效。",
+            ));
+        }
+        self.owned_operation(move |manager| async move {
+            let task = manager.tasks.task(&task_id)?;
+            if task.task_type != "import" || !task.status.is_final() {
+                return Err(ApiError::new(
+                    "IMPORT_CLEANUP_BLOCKED",
+                    "导入任务尚未结束，请等待后再清理。",
+                ));
+            }
+            let mut journal: Journal = read_json(&manager.journal_path(&task_id))?;
+            if journal.schema_version != 1
+                || journal.task_id != task_id
+                || Some(journal.project_id.as_str()) != task.project_id.as_deref()
+            {
+                return Err(ApiError::new(
+                    "IMPORT_CLEANUP_BLOCKED",
+                    "导入记录身份不符，未删除文件。",
+                ));
+            }
+            let _lease = manager
+                .store
+                .reserve_transient_operation(&journal.project_id, "import temporary cleanup")?;
+            let worker = manager.clone();
+            tokio::task::spawn_blocking(move || {
+                let cleanup = worker.cleanup_import_payload(&journal)?;
+                journal.result["cleanupPending"] = json!(cleanup["completed"] != true);
+                journal.result["cleanup"] = cleanup.clone();
+                worker.save(&journal)?;
+                Ok(cleanup)
+            })
+            .await
+            .map_err(|error| ApiError::new("IMPORT_CLEANUP_FAILED", error.to_string()))?
+        })
+        .await
     }
     pub(crate) fn request_stop(&self) {
         let _submission = self.running.lock().unwrap();

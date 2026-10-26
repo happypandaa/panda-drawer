@@ -1063,3 +1063,210 @@ async fn final_lifecycle_journal_failure_blocks_in_memory_and_reconciles_its_own
     control.check(true, None, false).unwrap();
     fixture.stop().await;
 }
+
+#[tokio::test]
+async fn opt_in_import_reports_cleanup_before_success_and_preserves_original_archive() {
+    let fixture = Fixture::new().await;
+    let archive = fixture.export_path("disposable-progress.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let before = sha256(&archive).unwrap();
+    let (entered, arrived) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *fixture.lifecycle.import_cleanup_pause.lock().unwrap() = Some((entered, resume));
+    let submitted = fixture
+        .lifecycle
+        .submit_import(json!({"archivePath":archive,"cleanupTemporaryFiles":true}))
+        .await
+        .unwrap();
+    arrived.await.unwrap();
+    let active = fixture.tasks.task(&submitted.task_id).unwrap();
+    assert_eq!(active.phase, "cleanup");
+    assert!(!active.status.is_final());
+    let id = submitted.result.as_ref().unwrap()["targetProjectId"]
+        .as_str()
+        .unwrap();
+    assert!(fixture
+        .store
+        .project(id)
+        .unwrap()
+        .root
+        .join("data/main.sqlite")
+        .is_file());
+    let temporary = fixture
+        .lifecycle
+        .operation(&submitted.task_id)
+        .join("import-temporary");
+    assert!(temporary.join("source.zip").is_file());
+    assert!(!temporary.join("candidate").exists());
+    release.send(()).unwrap();
+    let completed = fixture.wait(&submitted).await;
+    assert_eq!(good(&completed)["operationOutcome"], "imported");
+    assert_eq!(good(&completed)["cleanupPending"], false);
+    assert_eq!(good(&completed)["cleanup"]["completed"], true);
+    assert!(!temporary.exists());
+    assert!(fixture.lifecycle.journal_path(&submitted.task_id).is_file());
+    assert_eq!(sha256(&archive).unwrap(), before);
+    let retried = fixture
+        .lifecycle
+        .cleanup_import(submitted.task_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(retried["completed"], true);
+    assert_eq!(retried["projectId"], id);
+    assert_eq!(retried["operationOutcome"], "imported");
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn import_cleanup_failure_keeps_committed_project_and_retries_only_bound_material() {
+    let fixture = Fixture::new().await;
+    let archive = fixture.export_path("disposable-cleanup-retry.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let before = sha256(&archive).unwrap();
+    let (entered, arrived) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *fixture.lifecycle.import_cleanup_pause.lock().unwrap() = Some((entered, resume));
+    let submitted = fixture
+        .lifecycle
+        .submit_import(json!({"archivePath":archive,"cleanupTemporaryFiles":true}))
+        .await
+        .unwrap();
+    arrived.await.unwrap();
+    let operation = fixture.lifecycle.operation(&submitted.task_id);
+    let temporary = operation.join("import-temporary");
+    let bound = operation.join("disposable-held-temporary");
+    fs::rename(&temporary, &bound).unwrap();
+    fs::create_dir(&temporary).unwrap();
+    fs::write(temporary.join("unrelated.txt"), "replacement directory").unwrap();
+    release.send(()).unwrap();
+    let completed = fixture.wait(&submitted).await;
+    let result = good(&completed);
+    assert_eq!(result["cleanupPending"], true);
+    assert_eq!(result["cleanup"]["completed"], false);
+    assert_eq!(result["operationOutcome"], "imported");
+    let id = result["projectId"].as_str().unwrap().to_owned();
+    let installed = fixture.store.project(&id).unwrap().root;
+    assert!(installed.join("data/main.sqlite").is_file());
+    assert!(temporary.join("unrelated.txt").is_file());
+    fs::remove_file(temporary.join("unrelated.txt")).unwrap();
+    fs::remove_dir(&temporary).unwrap();
+    fs::rename(&bound, &temporary).unwrap();
+    for _ in 0..2 {
+        let cleaned = fixture
+            .lifecycle
+            .cleanup_import(submitted.task_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(cleaned["completed"], true);
+        assert_eq!(cleaned["operationOutcome"], "imported");
+        assert_eq!(cleaned["projectId"], id);
+    }
+    assert!(!temporary.exists());
+    assert!(installed.join("data/main.sqlite").is_file());
+    assert_eq!(sha256(&archive).unwrap(), before);
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn failed_opt_in_import_cleanup_refuses_unknown_result_then_removes_only_temporary_copy() {
+    let fixture = Fixture::new().await;
+    let source = fixture.store.project(&fixture.id).unwrap();
+    let snapshot = backups::prepare_snapshot(
+        &source.root,
+        &source.manifest,
+        &fixture
+            .paths
+            .data_root()
+            .join("disposable-unknown-snapshot"),
+        SnapshotOptions {
+            backup_id: format!("backup_{}", Uuid::new_v4().simple()),
+            kind: "manual".into(),
+            note: None,
+            snapshot_state: SnapshotState::Unknown,
+            pending_build: PendingBuild::default(),
+            build_provenance: None,
+        },
+    )
+    .unwrap();
+    let archive = fixture.export_path("disposable-unsupported.zip");
+    backups::publish_snapshot(&snapshot, &archive).unwrap();
+    let before = sha256(&archive).unwrap();
+    let submitted = fixture
+        .lifecycle
+        .submit_import(json!({"archivePath":archive,"cleanupTemporaryFiles":true}))
+        .await
+        .unwrap();
+    let failed = fixture.wait(&submitted).await;
+    assert_eq!(failed.status, TaskStatus::Failed);
+    assert_eq!(
+        failed.error.as_ref().unwrap().details["operationOutcome"],
+        "not_registered"
+    );
+    let path = fixture.lifecycle.journal_path(&submitted.task_id);
+    let mut journal: Journal = read_json(&path).unwrap();
+    let saved = journal.result.clone();
+    let temporary = fixture.lifecycle.import_temporary(&journal);
+    assert!(temporary.join("source.zip").is_file());
+    assert!(temporary.join("candidate/data/main.sqlite").is_file());
+    journal.result["operationOutcome"] = json!("needs_attention");
+    fixture.lifecycle.save(&journal).unwrap();
+    let blocked = fixture
+        .lifecycle
+        .cleanup_import(submitted.task_id.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(blocked.code, "IMPORT_CLEANUP_BLOCKED");
+    assert!(temporary.join("candidate/data/main.sqlite").is_file());
+    journal.result = saved;
+    fixture.lifecycle.save(&journal).unwrap();
+    let cleaned = fixture
+        .lifecycle
+        .cleanup_import(submitted.task_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(cleaned["completed"], true);
+    assert_eq!(cleaned["operationOutcome"], "not_registered");
+    assert!(!temporary.exists());
+    assert!(source.root.join("data/main.sqlite").is_file());
+    assert_eq!(sha256(&archive).unwrap(), before);
+    assert!(path.is_file());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn import_cleanup_does_not_adopt_default_or_legacy_import_materials() {
+    let fixture = Fixture::new().await;
+    let archive = fixture.export_path("disposable-legacy-import.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let submitted = fixture
+        .lifecycle
+        .submit_import(json!({"archivePath":archive}))
+        .await
+        .unwrap();
+    good(&fixture.wait(&submitted).await);
+    let retained = fixture
+        .lifecycle
+        .operation(&submitted.task_id)
+        .join("source.zip");
+    let before = sha256(&retained).unwrap();
+    let blocked = fixture
+        .lifecycle
+        .cleanup_import(submitted.task_id)
+        .await
+        .unwrap_err();
+    assert_eq!(blocked.code, "IMPORT_CLEANUP_BLOCKED");
+    assert_eq!(sha256(&retained).unwrap(), before);
+    fixture.stop().await;
+}

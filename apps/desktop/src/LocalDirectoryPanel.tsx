@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Copy, FolderOpen, RefreshCw, Server } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
+import { ImportProgress } from './ImportProgress';
 import { NodeDataContractInfo } from './NodeDataContractInfo';
 import type { NodeAppDetail, NodeDirectoryReview } from './node-app-types';
 import { messageFrom } from './ui-utils';
@@ -21,17 +22,21 @@ function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDire
 }
 
 function checkedAddedApp(value: NodeAppDetail, sourcePath: string): NodeAppDetail {
-  if (!value || !value.id || value.sourcePath !== sourcePath || value.runtime !== 'node-service' || !Array.isArray(value.fields) || !value.configuration) throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');
+  if (!value || !value.id || value.sourcePath !== sourcePath || value.runtime !== 'node-service' || !Array.isArray(value.fields) || !value.configuration || typeof value.configuration.canStart !== 'boolean') throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');
   return value;
 }
 
-export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAdded }: {
+export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAdded, onEnter, onClose }: {
   enabled: boolean;
   instanceId?: string;
   onPendingChange: (pending: boolean) => void;
   onAdded: (app: NodeAppDetail) => void;
+  onEnter?: (app: NodeAppDetail) => void;
+  onClose?: () => void;
 }) {
   const [sourcePath, setSourcePath] = useState('');
+  const [phase, setPhase] = useState(0);
+  const [completed, setCompleted] = useState<NodeAppDetail | null>(null);
   const [name, setName] = useState('');
   const [review, setReview] = useState<NodeDirectoryReview | null>(null);
   const [reviewPrompt, setReviewPrompt] = useState('');
@@ -40,13 +45,14 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
   const [notice, setNotice] = useState('');
   const [copyNotice, setCopyNotice] = useState('');
   const promptField = useRef<HTMLTextAreaElement>(null);
+  const resultHeading = useRef<HTMLHeadingElement>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const focusPreview = useRef(false);
   const alive = useRef(true);
   const operation = useRef(false);
   const sequence = useRef(0);
   const context = useRef({ enabled, instanceId }); context.current = { enabled, instanceId };
-  const callbacks = useRef({ onPendingChange, onAdded }); callbacks.current = { onPendingChange, onAdded };
+  const callbacks = useRef({ onPendingChange, onAdded, onEnter, onClose }); callbacks.current = { onPendingChange, onAdded, onEnter, onClose };
   const id = useId();
   const blocked = !enabled || pending !== null;
 
@@ -60,7 +66,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
   }, []);
   useEffect(() => {
     sequence.current++; operation.current = false; setPending(null); callbacks.current.onPendingChange(false);
-    revokeReview(); setCopyNotice('');
+    revokeReview(); setCopyNotice(''); setCompleted(null); setPhase(sourcePath ? 1 : 0);
     if (sourcePath) setNotice('接入状态已变化，请重新检查目录后继续。');
   }, [instanceId, enabled]);
   useEffect(() => {
@@ -70,10 +76,13 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     }
   }, [enabled, pending, review]);
 
+  useEffect(() => { if (completed && !pending) resultHeading.current?.focus(); }, [completed, pending]);
+
   async function run(kind: Exclude<Operation, null>, perform: (current: () => boolean) => Promise<void>) {
     if (operation.current || !context.current.enabled) return;
     operation.current = true; setPending(kind); callbacks.current.onPendingChange(true);
     setError(''); setNotice(''); setCopyNotice('');
+    if (kind !== 'copy') setCompleted(null);
     const request = ++sequence.current; const service = context.current.instanceId;
     const current = () => alive.current && sequence.current === request && context.current.enabled && context.current.instanceId === service;
     try { await perform(current); }
@@ -86,16 +95,18 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     finally { if (current()) { operation.current = false; setPending(null); callbacks.current.onPendingChange(false); } }
   }
   async function inspect(source: string, current: () => boolean) {
+    setPhase(1);
     const value = await invoke<NodeDirectoryReview>('node_app_directory_inspect', { sourcePath: source });
     if (!current()) return;
     const checked = checkedReview(value, source);
     focusPreview.current = checked.state === 'ready';
-    setReview(checked); setReviewPrompt(checked.reviewPrompt);
+    setReview(checked); setReviewPrompt(checked.reviewPrompt); setPhase(checked.state === 'needs-review' ? 1 : 2);
   }
   function choose() {
     if (blocked || operation.current) return;
     revokeReview();
     void run('choose', async current => {
+      setPhase(0);
       const source = await invoke<string | null>('choose_path', { kind: 'nodeapp' });
       if (!current()) return;
       if (!source) { setNotice('已取消选择。已选目录仍保留，重新检查后才能继续。'); return; }
@@ -111,20 +122,22 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
   }
   function initializeAndRegister() {
     if (blocked || !review || review.state !== 'empty' || !name.trim() || operation.current) return;
-    const selected = review; revokeReview();
+    const selected = review; revokeReview(); setPhase(2);
     void run('initialize', async current => {
       const value = await invoke<NodeAppDetail>('node_app_directory_initialize_and_register', { sourcePath: selected.sourcePath, input: { expectedRevision: selected.expectedRevision, name: name.trim() } });
       if (!current()) return;
-      callbacks.current.onAdded(checkedAddedApp(value, selected.sourcePath));
+      const added = checkedAddedApp(value, selected.sourcePath);
+      setCompleted(added); setPhase(3); callbacks.current.onAdded(added);
     });
   }
   function register() {
     if (blocked || !review || review.state !== 'ready' || operation.current) return;
-    const selected = review; revokeReview();
+    const selected = review; revokeReview(); setPhase(2);
     void run('register', async current => {
       const value = await invoke<NodeAppDetail>('node_app_directory_register', { sourcePath: selected.sourcePath, expectedRevision: selected.expectedRevision });
       if (!current()) return;
-      callbacks.current.onAdded(checkedAddedApp(value, selected.sourcePath));
+      const added = checkedAddedApp(value, selected.sourcePath);
+      setCompleted(added); setPhase(3); callbacks.current.onAdded(added);
     });
   }
   function copy(value: string, prompt: boolean) {
@@ -142,6 +155,13 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
 
   const inspection = review?.state === 'ready' ? review.inspection : null;
   return <div className="node-add-dialog local-directory-panel" aria-label="本地项目文件夹接入" aria-busy={pending !== null}>
+    <ImportProgress steps={['选择目录', '检查项目', '添加应用', '完成']} currentStep={phase} state={completed ? 'succeeded' : error ? 'failed' : review?.state === 'needs-review' ? 'warning' : pending && pending !== 'copy' ? 'running' : 'paused'} />
+    {completed ? <section className="import-result">
+      <h3 ref={resultHeading} tabIndex={-1}>添加成功</h3>
+      <p>{completed.name}</p><p role="status">已添加到应用列表。{completed.configuration.canStart ? '现在可以打开使用。' : '完成必要配置后即可使用。'}</p>
+      <p className="project-help">此应用使用所选本机目录，没有临时下载文件需要清理。源码和目录仍由你管理。</p>
+      <div className="confirmation-actions">{onEnter && <button type="button" className="primary-button" disabled={blocked} onClick={() => callbacks.current.onEnter?.(completed)}>{completed.configuration.canStart ? '打开应用' : '去配置'}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>完成</button>}</div>
+    </section> : <>
     <p>选择本机项目文件夹。空目录可直接生成并添加项目；已有项目检查后预览添加。</p>
     <div className="local-directory-actions"><button className="refresh-button" disabled={blocked} onClick={choose}><FolderOpen size={16} />{pending === 'choose' ? '正在选择与检查…' : sourcePath ? '重新选择文件夹' : '选择本地项目文件夹'}</button><button className="refresh-button" disabled={blocked || !sourcePath} onClick={recheck}><RefreshCw size={14} />{pending === 'inspect' ? '正在检查…' : '重新检查'}</button></div>
     {sourcePath && <div className="local-directory-path"><label htmlFor={`${id}-path`}>本地项目目录</label><input id={`${id}-path`} className="node-selected-source" readOnly value={sourcePath} /><button className="text-button" disabled={blocked} onClick={() => copy(sourcePath, false)}><Copy size={13} />复制目录路径</button></div>}
@@ -163,5 +183,6 @@ export function LocalDirectoryPanel({ enabled, instanceId, onPendingChange, onAd
     {review?.state === 'needs-review' && <section className="local-directory-review"><h3>需要进一步检查</h3><p>平台尚未判断这个目录是否适配。可把下方完整说明交给能读取本机目录的 AI，请它先检查再建议下一步。</p><p>复制说明不会发送给 AI，也不会初始化、修改或运行这个目录。处理后请回到这里重新检查。</p></section>}
     {reviewPrompt && pending !== 'initialize' && pending !== 'register' && (review?.state === 'needs-review' || !review) && <section className="local-directory-prompt"><label htmlFor={`${id}-prompt`}>{review ? '给 AI 的完整检查说明' : '上次保留的检查说明（重新检查后更新）'}</label><textarea ref={promptField} id={`${id}-prompt`} aria-label="给 AI 的检查说明" readOnly rows={9} value={reviewPrompt} /><div className="local-directory-actions"><button className="refresh-button" disabled={blocked} onClick={() => copy(reviewPrompt, true)}><Copy size={14} />复制给 AI 检查</button><button className="text-button" onClick={() => { promptField.current?.focus(); promptField.current?.select(); }}>选择完整说明</button></div></section>}
     {copyNotice && <p className="workspace-inline-notice" role="status">{copyNotice}</p>}
+    </>}
   </div>;
 }

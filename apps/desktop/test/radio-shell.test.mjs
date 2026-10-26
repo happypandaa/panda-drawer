@@ -253,7 +253,7 @@ for (const label of ['添加本地应用', '导入项目']) {
     await click(action);
     assert.equal(addDisclosure().open, false);
     if (label === '添加本地应用') assert.equal(dialog().querySelector('h2').textContent, label);
-    else assert.equal(document.querySelector('[aria-labelledby="import-title"] h2').textContent, '导入完整项目');
+    else assert.equal(dialog().querySelector('h2').textContent, '导入完整项目');
     assert.equal(calls.some(([command]) => /choose_path|project_import|node_app_register/.test(command)), false);
   });
 }

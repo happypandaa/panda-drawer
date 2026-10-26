@@ -31,7 +31,7 @@ export class SourceImportSession {
   candidate: PreparedNodeInstall | null = null;
   installed: InstalledNodeResult | null = null;
   task: TaskRecord | null = null;
-  phase: 'download' | 'check' | 'prepare' | 'install' | 'done' = 'download';
+  phase: 'download' | 'check' | 'prepare' | 'install' | 'cleanup' | 'done' = 'download';
   warning = '';
   cancelled = false;
   private cancelRequested = false;
@@ -151,7 +151,7 @@ export class SourceImportSession {
   private acceptInstalled(result: InstalledNodeResult, needsAttention = false) {
     const candidate = this.candidate;
     if (!candidate || result.candidateId !== candidate.candidateId || result.appId !== candidate.appId || result.generation !== candidate.generation) throw new SourceImportError('安装结果身份不符，请核对记录。', true);
-    this.installed = result; this.uncertain = false; this.phase = 'done';
+    this.installed = result; this.uncertain = false; this.phase = 'cleanup';
     this.warning = needsAttention ? '应用已经导入，安装收尾需要检查。请保留记录，勿重复导入。' : '';
     this.changed(); return result;
   }
@@ -175,11 +175,13 @@ export class SourceImportSession {
   async cleanup(): Promise<ImportCleanupResult> {
     if (this.uncertain || this.task && !this.task.final) throw new SourceImportError('任务结果尚未确认，暂不能清理。', true);
     if (!this.sourceTaskId) throw new SourceImportError('没有本次下载任务可供清理。');
+    if (this.installed) { this.phase = 'cleanup'; this.changed(); }
     const value = await this.call<ImportCleanupResult>('source_import_cleanup', { sourceTaskId: this.sourceTaskId });
     if (!value || typeof value.completed !== 'boolean' || typeof value.sourceId !== 'string' || this.source && value.sourceId !== this.source.sourceId || typeof value.sourceRetained !== 'boolean' || !Array.isArray(value.removedPaths) || !Array.isArray(value.failures) || typeof value.receiptPath !== 'string') {
       throw new SourceImportError('清理结果不完整，请重试清理并核对记录。');
     }
     if (!value.completed) throw new SourceImportError(`部分临时文件未清理：${value.failures.map(item => messageFrom(item.error)).join('；') || '请重试清理。'}`);
+    if (this.installed) { this.phase = 'done'; this.changed(); }
     return value;
   }
 }
