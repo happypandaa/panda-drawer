@@ -6,6 +6,10 @@ import { messageFrom } from './ui-utils';
 import { bytesText } from './storage-utils';
 import type { ByteCount } from './types';
 
+const labels: Record<string, string> = { nodeDevelopmentBuild: '构建应用', gitSourceRestoreApply: '取回已保存源码', gitSourceRestoreContinue: '继续源码取回', gitSourceRestoreUndo: '撤回源码取回', gitBranchCreate: '创建定制分支', nodeInstallPrepare: '准备应用安装', nodeInstallApply: '安装或更新应用', sourceCapture: '接入本机源码', gitInitialize: '初始化源码版本', gitSave: '保存源码版本', gitDataSave: '保存源码和数据版本', gitDataSaveFinalize: '完成数据版本保存', sourceAcquire: '获取源码', build: '构建', export: '导出项目', import: '导入项目', copy: '复制项目', delete: '永久删除项目', workspaceMigration: '迁移工作区', workspaceCleanupPreview: '扫描历史资料', workspaceCleanup: '清理历史资料', storageScan: '统计项目占用', storageCleanup: '清理可重新生成文件' };
+Object.assign(labels, { gitDataRestoreApply: '取回业务数据', gitDataRestoreContinue: '继续数据取回', gitDataRestoreUndo: '撤回数据取回' });
+export const taskLabel = (type: string) => labels[type] ?? '项目任务';
+
 export function ProjectTask({ task }: { task: TaskRecord }) {
   const [logs, setLogs] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -14,9 +18,7 @@ export function ProjectTask({ task }: { task: TaskRecord }) {
   const [reading, setReading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const pending = useRef(false);
-  const labels: Record<string, string> = { nodeDevelopmentBuild: '构建应用', gitSourceRestoreApply: '取回已保存源码', gitSourceRestoreContinue: '继续源码取回', gitSourceRestoreUndo: '撤回源码取回', gitBranchCreate: '创建定制分支', nodeInstallPrepare: '准备应用安装', nodeInstallApply: '安装或更新应用', sourceCapture: '接入本机源码', gitInitialize: '初始化源码版本', gitSave: '保存源码版本', gitDataSave: '保存源码和数据版本', gitDataSaveFinalize: '完成数据版本保存', sourceAcquire: '获取源码', build: '构建', export: '导出项目', import: '导入项目', copy: '复制项目', delete: '永久删除项目', workspaceMigration: '迁移工作区', workspaceCleanupPreview: '检查历史清理范围', workspaceCleanup: '清理历史', storageScan: '扫描项目空间', storageCleanup: '清理可再生成文件' };
-  Object.assign(labels, { gitDataRestoreApply: '取回业务数据', gitDataRestoreContinue: '继续数据取回', gitDataRestoreUndo: '撤回数据取回' });
-  const label = labels[task.type] ?? '项目任务';
+  const label = taskLabel(task.type);
   const outcome = task.result?.operationOutcome ?? task.error?.details?.operationOutcome;
   const gitOperations: Record<string, string> = { gitInitialize: 'initialize', gitSave: 'save', gitDataSave: 'save-data', gitDataSaveFinalize: 'save-data-finalize', gitBranchCreate: 'create-branch', gitSourceRestoreApply: 'source-restore', gitSourceRestoreContinue: 'source-restore-continue', gitSourceRestoreUndo: 'source-restore-undo' };
   Object.assign(gitOperations, { gitDataRestoreApply: 'data-restore-apply', gitDataRestoreContinue: 'data-restore-continue', gitDataRestoreUndo: 'data-restore-undo' });

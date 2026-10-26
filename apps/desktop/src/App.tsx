@@ -1,20 +1,22 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
-  Activity, ArrowUpRight, BookOpen, Check, CircleAlert, Play,
-  Database, Folder, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Terminal, Hammer, Trash2, Search, Settings, Sun, Moon, ChevronRight,
+  ArrowUpRight, BookOpen, CircleAlert, Play,
+  FolderOpen, Monitor, Package, Plus,
+  RefreshCw, ShieldCheck, Hammer, Trash2, Search, Settings, ChevronRight,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent } from 'react';
 import { ProjectTask } from './ProjectTask';
 import { ImportPanel } from './LifecyclePanels';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
-import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import type { OverviewTab } from './ProjectOverview';
 import { WorkspaceHub } from './WorkspaceHub';
+import type { SpaceTab } from './WorkspaceHub';
+import { SettingsDialog } from './SettingsDialog';
+import type { SettingsSection } from './SettingsDialog';
+import { TaskCenter } from './TaskCenter';
 import { Modal } from './Modal';
-import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { NodeProjectCard, ProjectCard } from './ProjectCard';
 import { NodeAppsPanel } from './NodeAppsPanel';
 import type { NodeAppRequest } from './NodeAppsPanel';
@@ -23,18 +25,14 @@ import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { ProjectAddMenu } from './ProjectAddMenu';
 import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
-import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 import { matchingProjectTask, recoverBuildResult } from './build-result-state';
 import type { BuildResultView } from './build-result-state';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
-import type { BootstrapInfo, EnvironmentInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
+import type { BootstrapInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
 
-const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
-  sdk: 'SDK 0.1.0', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
-};
 type AppPage = 'projects' | 'storage';
 
 function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo) {
@@ -61,9 +59,11 @@ function App() {
   const [page, setPage] = useState<AppPage>('projects');
   const { theme, setTheme } = useAppearance();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
+  const [spaceTab, setSpaceTab] = useState<SpaceTab>('overview');
+  const [tasksOpen, setTasksOpen] = useState(false);
   const [showDisposable, setShowDisposable] = useState(() => { try { return window.localStorage.getItem('panda-drawer:show-disposable:v1') === '1'; } catch { return false; } });
   useEffect(() => { try { window.localStorage.setItem('panda-drawer:show-disposable:v1', showDisposable ? '1' : '0'); } catch { /* Grouping still works without storage. */ } }, [showDisposable]);
-  const [showManagementTasks, setShowManagementTasks] = useState(false);
   const [environmentBusy, setEnvironmentBusy] = useState(false);
   const [gitEnvironmentBusy, setGitEnvironmentBusy] = useState(false);
   const [localDataPending, setLocalDataPending] = useState(false);
@@ -542,7 +542,7 @@ function App() {
         const matchesOverview = Boolean(selectedOverviewId.current === requestedDelete.projectId && overview && matchesTarget(projects.find(project => project.id === overview.project.id) ?? overview.project));
         if (matchesDialog) setDeleteProject(null);
         if (matchesOverview) dismissOverview();
-        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；已有旧备份、操作证据和外部导出文件另行保留。', 'main', `${page}:page`);
+        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；操作记录和外部导出文件另行保留。', 'main', `${page}:page`);
       }
     }
     setRequestedDelete(null);
@@ -589,8 +589,10 @@ function App() {
   const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
-  const resourcesReady = info && Object.values(info.resources).every(Boolean);
-  const openSettings = () => { if (!localDataLock.current && !nodeDraft.pending && !nodeModalOpen) setSettingsOpen(true); };
+  const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
+  const openSpace = (tab?: SpaceTab) => { if (tab) setSpaceTab(tab); navigatePage('storage'); };
+  const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter((task) => !lifecycleTasks[task.taskId])].reverse().slice(0, 20);
+  const projectName = (projectId: string | null) => projectId ? projects.find((project) => project.id === projectId)?.name ?? null : null;
   const lockLocalData = useCallback(() => {
     localDataLock.current = true;
     requestId.current++; nodeListRevision.current++; handoffRequest.current++;
@@ -611,14 +613,11 @@ function App() {
         </div>
         <nav className="radio-primary-nav" aria-label="工作台导航">
           <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('projects')}>我的项目</button>
-          <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('storage')}>空间与工作区</button>
+          <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('storage')}>空间</button>
         </nav>
         <div className="radio-header-actions">
-          <div className="radio-theme-switch" role="group" aria-label="外观主题">
-            <button aria-label="切换亮色主题" title="浅色" aria-pressed={theme === 'light'} onClick={() => setTheme('light')}><Sun size={15} aria-hidden="true" /></button>
-            <button aria-label="切换暗色主题" title="深色" aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}><Moon size={15} aria-hidden="true" /></button>
-          </div>
-          <button className="radio-settings-button" aria-label="设置" title="运行环境与关于" disabled={nodeDraft.pending || localDataLocked} onClick={openSettings}><Settings size={17} /></button>
+          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} open={tasksOpen} onOpenChange={setTasksOpen} />}
+          <button className="radio-settings-button" aria-label="设置" title="设置" disabled={nodeDraft.pending || localDataLocked} onClick={() => openSettings()}><Settings size={17} /></button>
         </div>
       </header>
       {page === 'projects' && !localDataLocked && <div className="radio-toolbar">
@@ -632,14 +631,14 @@ function App() {
         </div>
       </div>}
       <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
-        <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间与工作区'}</h1>
+        <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间'}</h1>
         <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
           {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>工作区已暂停，需要查看处理</strong><p>请查看迁移任务结果并刷新状态；已有窗口的草稿保留。</p></div></div>}
-          {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" disabled={nodeDraft.pending || nodeModalOpen} onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowManagementTasks(true); setSettingsOpen(true); }}>查看任务</button></div>}
+          {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" onClick={() => setTasksOpen(true)}>查看任务</button></div>}
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
             {showImport && <ImportPanel onTask={acceptLifecycleTask} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
@@ -656,47 +655,10 @@ function App() {
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
             </section>}
-          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info)} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} onTask={acceptLifecycleTask} onRefresh={refresh} onSelect={(projectId) => { const project = projects.find((value) => value.id === projectId); if (project) openOverview(project, 'storage'); }} />}
+          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={nodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
       </main>
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `显示 ${filteredCount} / 共 ${totalProjects} 个应用` : `共 ${totalProjects} 个应用`}{runningCount > 0 ? ` · ${runningCount} 个运行中` : ''}</span><span title={info?.workspaceRoot}><ShieldCheck size={12} aria-hidden="true" />数据保存在本机</span></footer>
-      {settingsOpen && <Modal title="设置" className="radio-settings-modal" closeDisabled={settingsBusy} onClose={() => setSettingsOpen(false)}>
-        {feedback}
-        {!localDataLocked && <>
-        <section className="runtime-view" aria-labelledby="settings-runtime-title">
-          <h3 id="settings-runtime-title">运行环境</h3>
-          <dl className="radio-settings-summary"><div><dt>平台服务</dt><dd>{info ? '已就绪' : loading ? '读取中…' : '未连接'}</dd></div><div><dt>包内资源</dt><dd>{info ? resourcesReady ? '读取正常' : '需要检查' : '尚未读取'}</dd></div></dl>
-          <details className="radio-runtime-details"><summary>检测与配置 Node · 查看运行详情</summary>
-            <section className="status-grid" aria-label="运行状态">
-              <StatusCard icon={<Activity size={18} />} label="本地服务" value={info ? '已启动' : loading ? '读取中' : '未读取'} detail={info ? info.baseUrl : '由 Rust 提供本机服务'} good={Boolean(info)} />
-              <StatusCard icon={<Database size={18} />} label="内置 SQLite" value={info ? `SQLite ${info.sqliteVersion}` : loading ? '读取中' : '未读取'} detail="每个项目使用独立数据库文件" good={Boolean(info)} />
-              <StatusCard icon={<Package size={18} />} label="包内资源" value={info ? resourcesReady ? '读取正常' : '需要检查' : loading ? '读取中' : '未读取'} detail="CLI、SDK 发布包与 React 模板" good={Boolean(resourcesReady)} />
-            </section>
-            <BuildEnvironment enabled={Boolean(info)} onPendingChange={setEnvironmentBusy} />
-            <section className="diagnostics-card" aria-labelledby="diagnostics-title">
-              <div className="section-heading"><div><h2 id="diagnostics-title">运行环境</h2><p>实际目录与实例信息，供开发和打包验证使用。</p></div><span className="updated-at">{checkedAt ? `读取于 ${checkedAt}` : '等待桌面连接'}</span></div>
-              <dl className="path-list"><PathRow icon={<Folder size={16} />} label="开发数据目录" value={info?.dataRoot} /><PathRow icon={<FolderOpen size={16} />} label="项目工作区" value={info?.workspaceRoot} /><PathRow icon={<Terminal size={16} />} label="CLI 路径" value={info ? info.cliPath ?? '未找到包内 CLI' : undefined} /></dl>
-              <div className="runtime-details"><div><span>运行程序</span><code>{info?.displayName ?? '尚未读取'}</code></div><div><span>应用标识</span><code>{info?.identifier ?? '尚未读取'}</code></div><div><span>实例 ID</span><code>{info?.instanceId ?? '尚未读取'}</code></div><div><span>接口版本</span><code>{info ? `v${info.apiVersion}` : '尚未读取'}</code></div></div>
-              <div className="resource-strip"><span>资源探测</span>{(Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => <span className={`resource-item ${info ? info.resources[key] ? 'resource-ok' : 'resource-missing' : ''}`} key={key}>{info ? info.resources[key] ? <Check size={13} /> : <CircleAlert size={13} /> : <span className="unknown-dot" />}{label}</span>)}</div>
-            </section>
-            <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用上方的专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。</p></div>
-
-          </details>
-          <details className="radio-runtime-details radio-git-details"><summary>检测与配置 Git · 查看 SSH 状态</summary><GitEnvironmentPanel enabled={Boolean(info)} onPendingChange={setGitEnvironmentBusy} /></details>
-        </section>
-        <section className="radio-settings-about" aria-labelledby="settings-about-title">
-          <h3 id="settings-about-title">关于</h3>
-          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>
-          <p>项目数据保存在本机；联网功能由具体应用决定。</p>
-          <details className="radio-about-details"><summary>程序信息与更新状态</summary><AboutPlatform info={info} /></details>
-        </section>
-        </>}
-        <LocalDataCleanupPanel instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={localDataUnavailable} onPendingChange={setLocalDataPending} onTerminalLock={lockLocalData} />
-        {!localDataLocked && <>
-        <details className="radio-settings-tasks recent-tasks" open={showManagementTasks} onToggle={(event) => setShowManagementTasks(event.currentTarget.open)}><summary>管理任务 <span>{activeLifecycleTasks.length + completedLifecycleTasks.length}</span></summary><div className="lifecycle-tasks">{activeLifecycleTasks.length > 0 && <div aria-label="进行中的管理任务">{activeLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{completedLifecycleTasks.length > 0 && <div aria-label="最近的管理任务">{completedLifecycleTasks.map((task) => <ProjectTask key={task.taskId} task={task} />)}</div>}{activeLifecycleTasks.length + completedLifecycleTasks.length === 0 && <p className="radio-tasks-empty">暂无管理任务。</p>}</div></details>
-        <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} onCreate={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironment={() => { document.querySelector<HTMLDetailsElement>('.radio-runtime-details')?.setAttribute('open', ''); document.querySelector<HTMLElement>('#build-environment-title')?.scrollIntoView({ block: 'nearest' }); }} onStorage={() => { if (settingsBusy) return; setSettingsOpen(false); navigatePage('storage'); }} /></details>
-        <div className="radio-settings-footer"><span>熊猫小抽屉</span><button className="refresh-button" disabled={settingsBusy} onClick={() => setSettingsOpen(false)}>完成</button></div>
-        </>}
-      </Modal>}
+      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onOpenHistory={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('history'); }} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onOpenSpace={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('overview'); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} />}
         {!localDataLocked && <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
@@ -752,70 +714,4 @@ function BuildState({ project }: { project: ProjectInfo }) {
 }
 
 
-function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPendingChange?: (pending: boolean) => void }) {
-  const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
-  const [nodePath, setNodePath] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const pending = useRef(false);
-  const request = useRef(0);
-  const probe = useCallback(async () => {
-    if (!enabled || pending.current) return;
-    const id = ++request.current;
-    pending.current = true;
-    onPendingChange?.(true);
-    setLoading(true);
-    try {
-      const value = await invoke<EnvironmentInfo>('environment_doctor');
-      if (id !== request.current) return;
-      setEnvironment(value);
-      setNodePath(value.configuredNodePath ?? '');
-      setError(null);
-    } catch (cause) { if (id === request.current) setError(messageFrom(cause)); }
-    finally { pending.current = false; onPendingChange?.(false); if (id === request.current) setLoading(false); }
-  }, [enabled, onPendingChange]);
-  useEffect(() => { void probe(); }, [probe]);
-  async function configure(path: string | null) {
-    if (pending.current) return;
-    pending.current = true;
-    onPendingChange?.(true);
-    setLoading(true);
-    try {
-      const value = await invoke<EnvironmentInfo>('environment_node_set', { nodePath: path });
-      setEnvironment(value);
-      setNodePath(value.configuredNodePath ?? '');
-      setError(null);
-    } catch (cause) { setError(messageFrom(cause)); }
-    finally { pending.current = false; onPendingChange?.(false); setLoading(false); }
-  }
-  return <section className="diagnostics-card build-environment" aria-labelledby="build-environment-title">
-    <div className="section-heading"><div><h2 id="build-environment-title">项目构建环境</h2><p>构建使用配套 Node/npm，可明确选择兼容的本机环境。应用运行 Node 不受这里的构建选择影响。</p></div><button className="refresh-button" onClick={() => void probe()} disabled={!enabled || loading}><RefreshCw size={14} />{loading ? '检测中…' : '重新检测'}</button></div>
-    <div className="environment-status"><span className={`project-state state-${environment?.ready ? 'ready' : 'unbuilt'}`}><span />{environment ? environment.ready ? '可以构建' : '构建环境需要配置' : loading ? '正在检测' : '尚未检测'}</span><span>最低 22.12 · 支持 22 / 24 · 推荐 24 LTS</span></div>
-    <p>当前来源：{environment ? ({ managed: '平台受管 Node/npm', explicit: '明确选择的本机 Node/npm', detected: '本机自动探测' })[environment.selection] : '尚未读取'}。</p>
-    <dl className="path-list">
-      <PathRow icon={<Terminal size={16} />} label={`Node ${environment?.node?.version ?? ''}`} value={environment ? environment.node?.path ?? '未找到可用 Node' : undefined} />
-      <PathRow icon={<Terminal size={16} />} label={`npm ${environment?.npm?.version ?? ''}`} value={environment ? environment.npm?.path ?? '未找到配套 npm' : undefined} />
-      {environment?.managedNodePath && <PathRow icon={<Terminal size={16} />} label="默认受管 Node 位置" value={environment.managedNodePath} />}
-    </dl>
-    {environment?.managedNodePath && <p>默认受管位置只说明工具所在位置；是否可用以本次检测结果为准。</p>}
-    {environment?.issues.map((issue) => <p key={issue.code} className="environment-issue">{issue.message} ({issue.code})</p>)}
-    {environment && !environment.ready && (environment.selection === 'managed'
-      ? <p className="environment-issue">平台配套 Node/npm 暂不可用。请修复或重新安装平台，或明确选择兼容的本机 Node/npm。</p>
-      : <p className="environment-issue">如需安装兼容的本机 Node/npm，可参考：<code>{environment.downloadUrl}</code></p>)}
-    {environment?.selection === 'explicit' && !environment.ready && <p className="environment-issue">已保留你明确选择的路径，失效时不会自动改用其他工具。请修正路径，或点击“恢复默认工具”。</p>}
-    <form className="node-path-form" onSubmit={(event) => { event.preventDefault(); void configure(nodePath.trim()); }}>
-      <label htmlFor="node-path">指定本机 Node 可执行文件的绝对路径<span className="optional-label">可选</span></label>
-      <div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder="例如 /opt/homebrew/bin/node" disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !nodePath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>恢复默认工具</button></div>
-      <p>{environment ? environment.managedNodePath ? '恢复默认工具会清除显式路径，使用平台配套 Node/npm。' : '此环境没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境。' : '读取环境后可查看默认工具来源。'} 路径只保存在此开发版的本机设置中。</p>
-    </form>
-    {error && <p role="alert" className="environment-issue">{error}</p>}
-  </section>;
-}
-
-function StatusCard({ icon, label, value, detail, good }: { icon: ReactNode; label: string; value: string; detail: string; good: boolean }) {
-  return <div className="status-card"><div className="status-card-label">{icon}<span>{label}</span>{good && <Check size={14} className="status-check" aria-label="已验证" />}</div><strong>{value}</strong><p>{detail}</p></div>;
-}
-function PathRow({ icon, label, value }: { icon: ReactNode; label: string; value: string | undefined }) {
-  return <div className="path-row"><dt>{icon}{label}</dt><dd><code>{value ?? '尚未读取'}</code></dd></div>;
-}
 export default App;

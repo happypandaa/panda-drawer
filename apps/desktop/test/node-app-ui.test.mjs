@@ -1495,7 +1495,7 @@ test('All project types share My Projects, counts and search without a separate 
   await setup(shellMock(state), {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 2);
   assert.match(document.querySelector('.radio-footer').textContent, /共 2 个应用/);
-  assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(value => value.textContent), ['我的项目', '空间与工作区']);
+  assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(value => value.textContent), ['我的项目', '空间']);
   assert.match(document.querySelector('.project-grid').textContent, /网页项目/);
   assert.match(document.querySelector('.project-grid').textContent, /Node 服务项目/);
   await change(document.querySelector('input[type="search"]'), 'Disposable');

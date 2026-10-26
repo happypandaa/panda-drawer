@@ -116,7 +116,7 @@ const remoteCalls = calls => calls.filter(([command]) => command === 'environmen
 async function openSettings(options) {
   const calls = await setup(options);
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   return calls;
 }
 async function submitRemote() {

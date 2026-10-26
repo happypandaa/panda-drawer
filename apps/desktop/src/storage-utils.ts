@@ -26,3 +26,10 @@ export function exactBytes(value: ByteCount | undefined): string {
   if (value === null || value === undefined) return '尚未统计';
   try { return `${typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64)} 字节`; } catch { return '未知'; }
 }
+
+// Exact non-negative byte counts for sums; null means unknown.
+export function bigBytes(value: ByteCount | undefined): bigint | null {
+  try { if (value === null || value === undefined) return null; const bytes = typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64); return bytes >= 0n ? bytes : null; } catch { return null; }
+}
+export const byteCount = (value: bigint | null): ByteCount => value === null ? null : { $int64: value.toString() };
+export const bigText = (value: bigint | null) => bytesText(byteCount(value));
