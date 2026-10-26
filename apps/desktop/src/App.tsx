@@ -1,13 +1,12 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   ArrowUpRight, BookOpen, CircleAlert, Play,
-  FolderOpen, Monitor, Package, Plus,
+  Download, FolderOpen, Monitor, Package, Plus,
   RefreshCw, ShieldCheck, Hammer, Trash2, Search, Settings, ChevronRight,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ProjectTask } from './ProjectTask';
-import { ImportPanel } from './LifecyclePanels';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
 import type { OverviewTab } from './ProjectOverview';
@@ -23,7 +22,6 @@ import type { NodeAppRequest } from './NodeAppsPanel';
 import type { NodeAppDeleteResult, NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
-import { ProjectAddMenu } from './ProjectAddMenu';
 import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
@@ -96,7 +94,6 @@ function App() {
   const [maintenance, setMaintenance] = useState<Record<string, MaintenanceStatus>>({});
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
-  const [showImport, setShowImport] = useState(false);
   const [showSources, setShowSources] = useState(false);
   const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
   const [overviewVersionDraft, setOverviewVersionDraft] = useState({ dirty: false, pending: false });
@@ -123,7 +120,7 @@ function App() {
   const selectedOverviewId = useRef<string | null>(null);
   const selectedOverviewRoot = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
-  const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : showImport ? 'import' : deleteProject ? `delete:${deleteProject.id}` : overview ? `project:${overview.project.id}` : 'page'}`;
+  const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : deleteProject ? `delete:${deleteProject.id}` : overview ? `project:${overview.project.id}` : 'page'}`;
   const { capture, isCurrent, error: showError, success: showSuccess, recover, reset, dismiss, messages } = useManagementFeedback(feedbackScope);
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
@@ -586,9 +583,15 @@ function App() {
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
   const failedLifecycleTasks = completedLifecycleTasks.filter((task) => task.status === 'failed' || task.status === 'interrupted');
-  const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources || showImport;
+  const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
+  const addBlocked = !info || workspaceBusy || nodeDraft.pending || nodeModalOpen;
+  const addActions = (className: string) => <div className={className} role="group" aria-label="添加项目">
+    <button className="refresh-button" disabled={addBlocked || creating} onClick={() => { if (!addBlocked) setShowCreate(true); }}><Plus size={15} aria-hidden="true" />新建项目</button>
+    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setNodeAddRequest((value) => value + 1); }}><FolderOpen size={15} aria-hidden="true" />添加本地应用</button>
+    <button className="primary-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setShowSources(true); }}><Download size={15} aria-hidden="true" />从 Git 导入应用</button>
+  </div>;
   const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
   const openSpace = (tab?: SpaceTab) => { if (tab) setSpaceTab(tab); navigatePage('storage'); };
   const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter((task) => !lifecycleTasks[task.taskId])].reverse().slice(0, 20);
@@ -625,10 +628,7 @@ function App() {
         <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
         <div className="radio-toolbar-spacer" />
         <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'rotating' : undefined} /></button>
-        <div className="radio-create-group">
-          <button className="primary-button" onClick={() => { if (nodeDraft.pending || nodeModalOpen) return; setShowCreate(true); }} disabled={!info || creating || workspaceBusy || nodeDraft.pending}><Plus size={15} aria-hidden="true" />新建项目</button>
-          <ProjectAddMenu disabled={!info || workspaceBusy || nodeDraft.pending || nodeModalOpen} onAdd={() => setNodeAddRequest((value) => value + 1)} onImport={() => setShowImport(true)} onAcquire={() => setShowSources(true)} />
-        </div>
+        {addActions('radio-add-actions')}
       </div>}
       <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
         <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间'}</h1>
@@ -641,7 +641,6 @@ function App() {
           {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" onClick={() => setTasksOpen(true)}>查看任务</button></div>}
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
-            {showImport && <ImportPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} onCompleted={() => void refresh()} onImported={(project) => openOverview(project, 'overview')} onClose={() => setShowImport(false)} disabled={!info || workspaceBusy} />}
             {showSources && <SourceAcquisitionPanel instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
@@ -653,7 +652,7 @@ function App() {
               {disposableCount > 0 && showDisposable && <>{disposableProjects.map(renderProjectCard)}{disposableNodeApps.map(renderNodeCard)}</>}
             </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
-              <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '创建自己的项目，即可进入初始应用。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && <button className="primary-button" disabled={workspaceBusy} onClick={() => setShowCreate(true)}><Plus size={16} />新建项目</button>}</div>
+              <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && addActions('empty-add-actions')}</div>
             </section>}
           </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={nodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
       </main>
