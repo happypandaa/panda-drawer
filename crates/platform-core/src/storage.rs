@@ -1593,6 +1593,9 @@ fn workspace_scan(
         let value = scope_scan(root, json!({"kind":kind}), &exclusions, |p| {
             if kind == "workspace" {
                 workspace_category(p)
+            } else if kind == "applicationData" && in_root(p, "node-apps") {
+                // Installed Node apps are user projects, not platform settings.
+                "nodeApps".into()
             } else {
                 kind.clone()
             }
@@ -1647,6 +1650,40 @@ fn workspace_scan(
             .then_with(|| a["root"].as_str().cmp(&b["root"].as_str()))
     });
     current["projects"] = json!(project_rows);
+    // Per-app references into the application-data scope, never added again.
+    let mut node_rows = vec![];
+    let node_root = paths.data_root().join("node-apps");
+    if node_root.is_dir() {
+        for entry in fs::read_dir(&node_root)? {
+            let entry = entry?;
+            let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if Uuid::parse_str(&id).is_err()
+                || !entry.file_type()?.is_dir()
+                || !entry.path().join("registration.json").is_file()
+            {
+                continue;
+            }
+            let mut row = scope_scan(
+                &entry.path(),
+                json!({"kind":"nodeApp","appId":id}),
+                &[],
+                |p| {
+                    if in_root(p, "generations") {
+                        "program".into()
+                    } else if in_root(p, "data") {
+                        "data".into()
+                    } else {
+                        "other".into()
+                    }
+                },
+            );
+            row["referenceOnly"] = true.into();
+            node_rows.push(row);
+        }
+    }
+    node_rows.sort_by(|a, b| numeric(&b["totalBytes"]).cmp(&numeric(&a["totalBytes"])));
     let mut total = 0u64;
     let mut complete = true;
     for value in std::iter::once(&current)
@@ -1682,7 +1719,7 @@ fn workspace_scan(
         )?;
     }
     Ok(
-        json!({"platformProgram":program,"workspace":current,"otherLocalLocations":other,"knownLocalTotal":{"totalBytes":int(total),"complete":complete,"nonAtomic":true,"description":"Known disjoint locations measured at their stated times"},"disks":disks.into_values().collect::<Vec<_>>()}),
+        json!({"platformProgram":program,"workspace":current,"nodeApps":node_rows,"otherLocalLocations":other,"knownLocalTotal":{"totalBytes":int(total),"complete":complete,"nonAtomic":true,"description":"Known disjoint locations measured at their stated times"},"disks":disks.into_values().collect::<Vec<_>>()}),
     )
 }
 

@@ -405,7 +405,7 @@ test('Dismissing a polled error does not let the next identical poll immediately
 test('Leaving a management page discards its old success and error instead of showing them on return', async () => {
   await setup({ overrides: { project_open: ({ projectId }) => { if (projectId === 'prj_feedback_a') throw new Error('Artificial old-page error'); return { projectId, target: 'desktop', reused: false }; } } });
   await enter(); await enter('Fixture Web B'); assert.ok(failure()); assert.ok(success());
-  await navigate('空间与工作区'); assert.equal(failure(), null); assert.equal(success(), null);
+  await navigate('空间'); assert.equal(failure(), null); assert.equal(success(), null);
   await navigate('我的项目'); assert.equal(failure(), null); assert.equal(success(), null);
 });
 
@@ -458,7 +458,7 @@ test('A late Web-open success or error does not flow into another page or return
   for (const rejected of [false, true]) {
     const opening = deferred();
     await setup({ overrides: { project_open: () => opening.promise } });
-    await enter(); await navigate('空间与工作区');
+    await enter(); await navigate('空间');
     await act(async () => rejected ? opening.reject(new Error('Artificial late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
     assert.equal(failure(), null); assert.equal(success(), null);
     await navigate('我的项目'); assert.equal(failure(), null); assert.equal(success(), null);
@@ -470,7 +470,7 @@ test('Returning to the same page before an old Web-open settles does not restore
   for (const rejected of [false, true]) {
     const opening = deferred();
     await setup({ overrides: { project_open: () => opening.promise } });
-    await enter(); await navigate('空间与工作区'); await navigate('我的项目');
+    await enter(); await navigate('空间'); await navigate('我的项目');
     await act(async () => rejected ? opening.reject(new Error('Artificial returned-page late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
     assert.equal(failure(), null); assert.equal(success(), null);
     await unmount(); timers.clear(); timerHistory.clear(); clock = 0;

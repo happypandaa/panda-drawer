@@ -106,12 +106,12 @@ async function change(element, value) {
 test('The real shell has two navigation choices, with runtime and about in a single settings portal', async () => {
   const calls = await setup();
   const navigation = document.querySelector('[aria-label="工作台导航"]');
-  assert.deepEqual([...navigation.querySelectorAll('button')].map(element => element.textContent), ['我的项目', '空间与工作区']);
+  assert.deepEqual([...navigation.querySelectorAll('button')].map(element => element.textContent), ['我的项目', '空间']);
   assert.equal(navigation.querySelector('[aria-current="page"]').textContent, '我的项目');
   assert.equal(document.querySelector('.build-environment'), null);
   assert.equal(document.querySelector('.about-platform'), null);
-  await click(byText('空间与工作区', navigation));
-  assert.equal(navigation.querySelector('[aria-current="page"]').textContent, '空间与工作区');
+  await click(byText('空间', navigation));
+  assert.equal(navigation.querySelector('[aria-current="page"]').textContent, '空间');
   assert.ok(document.querySelector('.workspace-hub'));
   assert.equal(document.querySelector('.radio-toolbar'), null);
   await click(document.querySelector('[aria-label="设置"]'));
@@ -127,7 +127,7 @@ test('The real shell has two navigation choices, with runtime and about in a sin
   assert.match(dialog().textContent, /0\.0\.0-fixture/);
   await click(byText('完成', dialog()));
   assert.equal(dialog(), null);
-  assert.equal(navigation.querySelector('[aria-current="page"]').textContent, '空间与工作区');
+  assert.equal(navigation.querySelector('[aria-current="page"]').textContent, '空间');
   await click(byText('我的项目', navigation));
   assert.ok(document.querySelector('.radio-toolbar'));
   assert.equal(calls.some(([command]) => /project_create|workspace_migrate|environment_node_set/.test(command)), false);
@@ -138,6 +138,9 @@ test('Light and dark choices persist and apply to html so body-level settings po
   await setup();
   assert.equal(document.documentElement.dataset.theme, 'dark');
   assert.equal(document.querySelector('.radio-shell').dataset.theme, 'dark');
+  assert.equal(document.querySelector('[aria-label="切换暗色主题"]'), null, 'Appearance lives in settings, not the header');
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.equal(document.querySelector('#settings-general-tab').getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('[aria-label="切换暗色主题"]').getAttribute('aria-pressed'), 'true');
   await click(document.querySelector('[aria-label="切换亮色主题"]'));
   assert.equal(document.documentElement.dataset.theme, 'light');
@@ -145,9 +148,9 @@ test('Light and dark choices persist and apply to html so body-level settings po
   await unmount();
   await setup();
   assert.equal(document.documentElement.dataset.theme, 'light');
+  await click(document.querySelector('[aria-label="设置"]'));
   await click(document.querySelector('[aria-label="切换暗色主题"]'));
   assert.equal(window.localStorage.getItem(APPEARANCE_KEY), 'dark');
-  await click(document.querySelector('[aria-label="设置"]'));
   assert.equal(dialog().closest('.radio-shell'), null);
   assert.equal(document.documentElement.dataset.theme, 'dark');
   await click(document.querySelector('[aria-label="关闭设置"]'));
@@ -196,12 +199,12 @@ test('Unavailable browser storage falls back to light and still permits both the
   Object.defineProperty(storagePrototype, 'setItem', { configurable: true, value() { throw new Error('Artificial storage write failure'); } });
   await setup();
   assert.equal(document.documentElement.dataset.theme, 'light');
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.ok(dialog());
   await click(document.querySelector('[aria-label="切换暗色主题"]'));
   assert.equal(document.documentElement.dataset.theme, 'dark');
   await click(document.querySelector('[aria-label="切换亮色主题"]'));
   assert.equal(document.documentElement.dataset.theme, 'light');
-  await click(document.querySelector('[aria-label="设置"]'));
-  assert.ok(dialog());
 });
 
 test('The add disclosure closes on Escape with focus return and on outside pointers', async () => {
@@ -267,30 +270,37 @@ test('The add disclosure still closes when keyboard focus moves to an outside co
   assert.equal(document.activeElement, refresh);
 });
 
-test('Completed management history lives in settings without occupying the home notice area', async () => {
+test('Completed management history lives in the header task popover without occupying the home notice area', async () => {
   const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
   await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_logs: () => ({ nextCursor: 1, text: 'Disposable completed task log', gaps: [], eof: true, truncated: false }) } });
   assert.equal(document.querySelector('.radio-main .recent-tasks'), null);
   assert.equal(document.querySelector('.radio-main .build-task'), null);
   assert.equal(document.querySelector('.radio-notices').childElementCount, 0);
-  await click(document.querySelector('[aria-label="设置"]'));
-  const history = dialog().querySelector('.radio-settings-tasks');
-  assert.ok(history.querySelector('[aria-label="最近的管理任务"]'));
+  const trigger = document.querySelector('.radio-task-button');
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  await click(trigger);
+  const history = document.querySelector('.task-center-panel [aria-label="最近完成的任务"]');
+  assert.ok(history);
   await click(history.querySelector('summary'));
-  assert.match(history.textContent, /清理历史 · 已完成/);
+  assert.match(history.textContent, /清理历史资料 · 已完成/);
   await click(byText('查看任务日志', history));
   assert.equal(history.querySelector('.task-logs').textContent, 'Disposable completed task log');
+  await key(trigger, 'Escape');
+  assert.equal(document.querySelector('.task-center-panel'), null);
+  assert.equal(dialog(), null, 'Tasks never open the settings window');
 });
 
-test('Active management work keeps a compact home indicator that opens its full task in settings', async () => {
+test('Active management work keeps a compact home indicator that opens the task popover', async () => {
   const task = { taskId: 'disposable_pending_task', projectId: null, type: 'workspaceCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
   await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_get: () => task } });
   assert.match(document.querySelector('.radio-task-indicator').textContent, /1 项管理任务正在进行/);
   assert.equal(document.querySelector('.radio-main .build-task'), null);
+  assert.match(document.querySelector('.radio-task-button').getAttribute('aria-label'), /1 项进行中/);
   await click(byText('查看任务'));
-  const history = dialog().querySelector('.radio-settings-tasks');
-  assert.equal(history.open, true);
-  assert.match(history.querySelector('[aria-label="进行中的管理任务"]').textContent, /清理历史 · 正在执行/);
+  const active = document.querySelector('.task-center-panel [aria-label="进行中的任务"]');
+  await click(active.querySelector('summary'));
+  assert.match(active.textContent, /清理历史资料 · 正在执行/);
+  assert.equal(dialog(), null);
 });
 
 test('The add disclosure cannot open before bootstrap, and closes when Node entry becomes pending', async () => {
@@ -319,7 +329,7 @@ test('Managed build tools show their verified paths separately from the default 
   const managed = { ...environment, selection: 'managed', managedNodePath: '/disposable/platform/node/bin/node', node: { path: '/disposable/platform/node/bin/node', version: 'v24.0.0' }, npm: { path: '/disposable/platform/node/lib/node_modules/npm/bin/npm-cli.js', version: '11.0.0' } };
   await setup({ overrides: { environment_doctor: () => managed } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-runtime-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.build-environment');
   assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
   assert.match(panel.textContent, /应用运行 Node 不受这里的构建选择影响/);
@@ -334,7 +344,7 @@ test('Managed build tools show their verified paths separately from the default 
 test('An invalid managed location stays unavailable and recommends repairing the platform or selecting local tools', async () => {
   await setup({ overrides: { environment_doctor: () => ({ ...environment, ready: false, node: null, npm: null, selection: 'managed', managedNodePath: '/disposable/missing-managed-node', issues: [{ code: 'NODE_NOT_FOUND', message: '人工受管工具缺失' }] }) } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-runtime-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.build-environment');
   assert.match(panel.textContent, /当前来源：平台受管 Node\/npm/);
   assert.match(panel.textContent, /构建环境需要配置/);
@@ -350,7 +360,7 @@ test('A failed explicit build tool choice persists until restoring the managed d
   const explicit = { ...environment, ready: false, node: null, npm: null, selection: 'explicit', configuredNodePath: '/disposable/old-explicit-node', managedNodePath, issues: [{ code: 'NODE_NOT_FOUND', message: '人工显式路径失效' }] };
   const calls = await setup({ overrides: { environment_doctor: () => explicit, environment_node_set: () => ({ ...environment, selection: 'managed', managedNodePath }) } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-runtime-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.build-environment');
   assert.match(panel.textContent, /当前来源：明确选择的本机 Node\/npm/);
   assert.match(panel.textContent, /失效时不会自动改用其他工具/);
@@ -368,7 +378,7 @@ test('A failed explicit build tool choice persists until restoring the managed d
 test('A development service without managed tools describes automatic detection and clears the explicit choice', async () => {
   const calls = await setup({ overrides: { environment_node_set: () => environment } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-runtime-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.build-environment');
   assert.match(panel.textContent, /当前来源：本机自动探测/);
   assert.match(panel.textContent, /没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境/);
@@ -380,7 +390,7 @@ test('A development service without managed tools describes automatic detection 
 test('Available Git and SSH tools keep authentication explicitly unverified and do not access a repository', async () => {
   const calls = await setup();
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.git-environment');
   assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具可用');
   assert.match(panel.textContent, /当前来源：平台受管 Git/);
@@ -396,7 +406,7 @@ test('Available Git and SSH tools keep authentication explicitly unverified and 
 test('Missing SSH does not hide a usable Git tool or suggest authentication succeeded', async () => {
   await setup({ overrides: { environment_git_doctor: () => ({ ...gitEnvironment, ssh: { ready: false, selection: 'system', executable: null, issues: [{ code: 'SSH_NOT_FOUND', message: '人工系统 SSH 缺失' }] } }) } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.git-environment');
   assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具可用');
   assert.match(panel.textContent, /系统 SSH 工具暂不可用/);
@@ -411,7 +421,7 @@ test('A failed explicit Git choice remains selected until an explicit clear send
   const explicit = { ...gitEnvironment, ready: false, git: null, selection: 'explicit', configuredGitPath: '/disposable/missing-explicit-git', issues: [{ code: 'GIT_NOT_FOUND', message: '人工显式 Git 缺失' }] };
   const calls = await setup({ overrides: { environment_git_doctor: () => explicit, environment_git_set: () => gitEnvironment } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.git-environment');
   assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具不可用');
   assert.match(panel.textContent, /当前来源：明确选择的本机 Git/);
@@ -432,7 +442,7 @@ test('Unreadable Git settings keep the source unresolved and allow an explicit r
     environment_git_set: ({ gitPath }) => gitPath === null ? gitEnvironment : ({ ...gitEnvironment, selection: 'explicit', configuredGitPath: gitPath, git: { ...gitEnvironment.git, path: gitPath } }),
   } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.git-environment');
   const input = document.getElementById('git-path');
   assert.equal(panel.querySelector('.project-state').textContent, 'Git 工具尚未核验');
@@ -460,7 +470,7 @@ test('Concurrent Git saves and Node probes keep settings blocked until both fini
     const gitSave = deferred();
     const calls = await setup({ overrides: { environment_doctor: () => nodeRead.promise, environment_git_set: () => gitSave.promise } });
     await click(document.querySelector('[aria-label="设置"]'));
-    await click(document.querySelector('.radio-git-details summary'));
+    await click(document.querySelector('#settings-tools-tab'));
     const panel = document.querySelector('.git-environment');
     await change(document.getElementById('git-path'), '/disposable/selected-git');
     await click(byText('保存路径', panel));
@@ -493,7 +503,7 @@ test('A failed Git save keeps its draft, rejects repeated pending submissions an
   const save = deferred();
   const calls = await setup({ overrides: { environment_git_set: () => save.promise } });
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const panel = document.querySelector('.git-environment');
   const input = document.getElementById('git-path');
   await change(input, '/disposable/git-draft');
@@ -507,8 +517,8 @@ test('A failed Git save keeps its draft, rejects repeated pending submissions an
   assert.match(panel.querySelector('[role="alert"]').textContent, /Artificial Git configuration failure/);
   assert.equal(input.disabled, false);
   assert.equal(byText('完成', dialog()).disabled, false);
-  await click(document.querySelector('.radio-git-details summary'));
-  await click(document.querySelector('.radio-git-details summary'));
+  await click(document.querySelector('#settings-general-tab'));
+  await click(document.querySelector('#settings-tools-tab'));
   assert.equal(input.value, '/disposable/git-draft');
   assert.equal(calls.filter(([command]) => command === 'environment_git_set').length, 1);
   assert.equal(calls.filter(([command]) => command === 'environment_git_doctor').length, 1);
@@ -520,7 +530,7 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   const settings = document.querySelector('[aria-label="设置"]');
   await act(async () => settings.focus());
   await click(settings);
-  await click(document.querySelector('.radio-runtime-details summary'));
+  await click(document.querySelector('#settings-tools-tab'));
   const input = document.getElementById('node-path');
   await change(input, '/disposable/custom-node');
   await click(byText('保存路径', dialog()));
@@ -537,7 +547,7 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   assert.equal(byText('创建第一个项目', dialog()).disabled, true);
   // This guide action has no disabled attribute; the parent callback must
   // independently preserve the settings window while configuration is pending.
-  await click(byText('查看空间与工作区', dialog()));
+  await click(byText('查看空间', dialog()));
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
   assert.equal(document.querySelector('[aria-label="工作台导航"] [aria-current="page"]').textContent, '我的项目');
   await act(async () => document.querySelector('.node-path-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));

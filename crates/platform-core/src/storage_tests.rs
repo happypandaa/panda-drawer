@@ -591,6 +591,42 @@ async fn workspace_ranges_are_disjoint_include_retained_copy_and_exclude_program
     f.stop().await;
 }
 
+#[tokio::test]
+async fn installed_node_apps_are_reported_per_app_inside_application_data() {
+    let f = Fixture::new().await;
+    let node_root = f.paths.data_root().join("node-apps");
+    let id = Uuid::new_v4().to_string();
+    let app = node_root.join(&id);
+    fs::create_dir_all(app.join("generations/gen_a")).unwrap();
+    fs::create_dir_all(app.join("data")).unwrap();
+    fs::write(app.join("registration.json"), b"{}").unwrap();
+    fs::write(app.join("generations/gen_a/main.js"), vec![0; 30]).unwrap();
+    fs::write(app.join("data/db"), vec![0; 20]).unwrap();
+    // Unregistered or non-app directories are not listed as apps.
+    fs::create_dir_all(node_root.join(".installations/install_a")).unwrap();
+    fs::write(node_root.join(".installations/install_a/file"), b"12345").unwrap();
+    fs::create_dir_all(node_root.join(Uuid::new_v4().to_string())).unwrap();
+    let result = workspace_scan(&f.paths, None, "node-apps-test").unwrap();
+    let rows = result["nodeApps"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["scope"]["appId"], json!(id));
+    assert_eq!(rows[0]["referenceOnly"], true);
+    assert_eq!(
+        numeric(&rows[0]["categories"]["program"]["bytes"]),
+        Some(30)
+    );
+    assert_eq!(numeric(&rows[0]["categories"]["data"]["bytes"]), Some(20));
+    let data = result["otherLocalLocations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["scope"]["kind"] == "applicationData")
+        .unwrap();
+    // The whole node-apps tree, including installation material, is one category.
+    assert!(numeric(&data["categories"]["nodeApps"]["bytes"]).unwrap() >= 57);
+    f.stop().await;
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn retained_workspace_accounting_uses_persisted_identity_without_weakening_runtime_scans() {

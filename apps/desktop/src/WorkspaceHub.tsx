@@ -1,14 +1,20 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Archive, ArrowRight, Copy, FolderOpen, HardDrive, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { ProjectSpaceRanking, WorkspaceStorageSummary } from './StoragePanels';
+import { SpaceProjects, nodeRowFor, projectRegenerable, projectTotal } from './SpaceProjects';
+import { StorageScopeDetails } from './StoragePanels';
+import type { WorkspaceStorage } from './StoragePanels';
 import { WorkspaceCleanupPanel } from './WorkspaceCleanupPanel';
-import { timeText } from './storage-utils';
+import { useHistoryScan } from './history-scan-store';
+import type { HistoryScanSummary } from './history-scan-store';
+import type { NodeAppDetail } from './node-app-types';
+import { bigBytes, bigText, partBytes, percentOf, timeText } from './storage-utils';
 import type { ProjectInfo, RetainedWorkspaceRoot, TaskRecord, WorkspaceInfo } from './types';
 import { messageFrom } from './ui-utils';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 
+export type SpaceTab = 'overview' | 'projects' | 'history';
 interface WorkspaceHubProps {
   workspace: WorkspaceInfo | null;
   revision: number;
@@ -17,19 +23,35 @@ interface WorkspaceHubProps {
   paused?: boolean;
   cleanupTask?: TaskRecord | null;
   projects: ProjectInfo[];
+  nodeApps?: NodeAppDetail[];
+  tab?: SpaceTab;
+  onTabChange?: (tab: SpaceTab) => void;
+  isProjectBusy?: (project: ProjectInfo) => boolean;
   onTask: (task: TaskRecord) => void;
+  onProjectTask?: (task: TaskRecord, project: ProjectInfo) => void;
   onRefresh: () => Promise<void>;
-  onSelect: (projectId: string) => void;
+  onProjectDetails?: (project: ProjectInfo) => void;
+  onProjectDelete?: (project: ProjectInfo) => void;
+  onNodeDetails?: (app: NodeAppDetail) => void;
+  onNodeDelete?: (app: NodeAppDetail) => void;
+  onOpenSettings?: (section: 'uninstall') => void;
 }
-type HubTab = 'overview' | 'location' | 'cleanup';
 const hubTabs = [
-  { id: 'overview' as const, label: '空间总览', icon: HardDrive },
-  { id: 'location' as const, label: '工作区位置', icon: FolderOpen },
-  { id: 'cleanup' as const, label: '清理历史', icon: Archive },
+  { id: 'overview' as const, label: '概览' },
+  { id: 'projects' as const, label: '按项目' },
+  { id: 'history' as const, label: '历史资料' },
 ];
+const ignore = () => {};
 
 export function WorkspaceHub(props: WorkspaceHubProps) {
-  const [tab, setTab] = useState<HubTab>('overview');
+  const [ownTab, setOwnTab] = useState<SpaceTab>('overview');
+  const tab = props.tab ?? ownTab;
+  const setTab = (value: SpaceTab) => { setOwnTab(value); props.onTabChange?.(value); };
+  const [storage, setStorage] = useState<WorkspaceStorage | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [storageError, setStorageError] = useState('');
+  const [bulkRequest, setBulkRequest] = useState(0);
+  const storageRequest = useRef(0);
   const [knownCleanupTasks, setKnownCleanupTasks] = useState<Record<string, TaskRecord>>(() => {
     const task = props.cleanupTask ?? props.workspace?.cleanupTask;
     return task ? { [task.taskId]: task } : {};
@@ -38,7 +60,7 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
   const alive = useRef(true);
   const taskCallback = useRef(props.onTask); taskCallback.current = props.onTask;
   const taskFromWorkspace = props.cleanupTask ?? props.workspace?.cleanupTask;
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; storageRequest.current++; }; }, []);
   useEffect(() => { if (taskFromWorkspace) {
     setKnownCleanupTasks((current) => mergeLifecycleTask(current, taskFromWorkspace));
   } }, [taskFromWorkspace]);
@@ -55,7 +77,17 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
   const workspaceBlocked = migrating || paused;
   const root = props.workspace?.workspaceRoot ?? 'disconnected';
   const cleanupBusy = cleanupPending || taskState.cleanupBusy;
-  function activateTab(value: HubTab) {
+  const storageEnabled = props.enabled && !workspaceBlocked;
+  const readStorage = useCallback(async () => {
+    if (!storageEnabled) return;
+    const sequence = ++storageRequest.current; setStorageBusy(true);
+    try { const value = await invoke<WorkspaceStorage>('workspace_storage'); if (sequence === storageRequest.current) { setStorage(value); setStorageError(''); } }
+    catch (cause) { if (sequence === storageRequest.current) setStorageError(messageFrom(cause)); }
+    finally { if (sequence === storageRequest.current) setStorageBusy(false); }
+  }, [storageEnabled]);
+  useEffect(() => { void readStorage(); }, [readStorage, props.revision, root]);
+  const history = useHistoryScan(props.workspace?.workspaceRoot ?? null);
+  function activateTab(value: SpaceTab) {
     setTab(value);
     document.getElementById(`${id}-${value}-tab`)?.focus();
   }
@@ -67,120 +99,90 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
     event.preventDefault();
     activateTab(hubTabs[next].id);
   }
+  const retained = (props.workspace?.retainedRoots ?? []).map((value): RetainedWorkspaceRoot => typeof value === 'string' ? { path: value } : value);
+  const historyBadge = history && history.itemCount > 0 && !history.stale ? `${history.totalComplete ? '' : '至少 '}${bigText(history.totalBytes)}` : null;
   return <div className="workspace-hub">
-    <div className="workspace-hub-tabs" role="tablist" aria-label="空间与工作区">
-      {hubTabs.map(({ id: value, label, icon: Icon }, index) => <button key={value} id={`${id}-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`${id}-${value}-panel`} tabIndex={tab === value ? 0 : -1} className={tab === value ? 'selected' : ''} onClick={() => setTab(value)} onKeyDown={(event) => navigateTabs(event, index)}><Icon size={16} />{label}</button>)}
+    <div className="workspace-hub-tabs" role="tablist" aria-label="空间">
+      {hubTabs.map(({ id: value, label }, index) => <button key={value} id={`${id}-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`${id}-${value}-panel`} tabIndex={tab === value ? 0 : -1} className={tab === value ? 'selected' : ''} onClick={() => setTab(value)} onKeyDown={(event) => navigateTabs(event, index)}>{label}{value === 'history' && historyBadge && <span className="history-chip is-warning" aria-label={`，共 ${historyBadge}`}>{historyBadge}</span>}</button>)}
     </div>
     {migrating && <p className="workspace-operation-status" role="status">工作区正在迁移，新操作暂时停用。请等待任务最终结果；已有窗口的草稿会保留。</p>}
     {paused && <p className="workspace-operation-status" role="status">工作区已暂停，请查看迁移任务结果并刷新状态；已有窗口的草稿会保留。</p>}
-    {cleanupBusy && <p className="workspace-operation-status" role="status">历史清理正在进行，管理写操作暂时停用。可在“清理历史”查看任务与实际结果。</p>}
+    {cleanupBusy && <p className="workspace-operation-status" role="status">正在清理历史资料。完成前，删除、迁移和其他清理操作暂时不可用；项目可以正常打开。</p>}
     <div className="workspace-hub-panel" id={`${id}-overview-panel`} role="tabpanel" aria-labelledby={`${id}-overview-tab`} hidden={tab !== 'overview'}>
-      <WorkspaceStorageSummary key={root} revision={props.revision} enabled={props.enabled && !workspaceBlocked && tab === 'overview'} compact />
-      <ProjectSpaceRanking projects={props.projects} onSelect={props.onSelect} />
-      <div className="workspace-quick-actions"><button className="text-button" onClick={() => activateTab('location')}><FolderOpen size={14} />查看工作区位置<ArrowRight size={14} /></button><button className="text-button" onClick={() => activateTab('cleanup')}><Archive size={14} />查看历史清理范围<ArrowRight size={14} /></button></div>
+      <SpaceOverview storage={storage} busy={storageBusy} error={storageError} enabled={storageEnabled} history={history} projects={props.projects} nodeApps={props.nodeApps ?? []} workspaceRoot={props.workspace?.workspaceRoot ?? null} onRescan={() => void readStorage()} onTab={activateTab} onRelease={() => { setTab('projects'); setBulkRequest((value) => value + 1); }} onOpenSettings={props.onOpenSettings} />
     </div>
-    <div className="workspace-hub-panel" id={`${id}-location-panel`} role="tabpanel" aria-labelledby={`${id}-location-tab`} hidden={tab !== 'location'}>
-      <WorkspaceLocation key={root} workspace={props.workspace} enabled={props.enabled && !cleanupBusy} active={tab === 'location'} migrating={workspaceBlocked} onTask={props.onTask} onRefresh={props.onRefresh} />
+    <div className="workspace-hub-panel" id={`${id}-projects-panel`} role="tabpanel" aria-labelledby={`${id}-projects-tab`} hidden={tab !== 'projects'}>
+      <SpaceProjects projects={props.projects} nodeApps={props.nodeApps ?? []} nodeRows={storage?.nodeApps} enabled={props.enabled && !workspaceBlocked && !cleanupBusy} isProjectBusy={props.isProjectBusy} bulkRequest={bulkRequest} onProjectTask={props.onProjectTask ?? ignore} onProjectDetails={props.onProjectDetails ?? ignore} onProjectDelete={props.onProjectDelete ?? ignore} onNodeDetails={props.onNodeDetails ?? ignore} onNodeDelete={props.onNodeDelete ?? ignore} />
     </div>
-    <div className="workspace-hub-panel" id={`${id}-cleanup-panel`} role="tabpanel" aria-labelledby={`${id}-cleanup-tab`} hidden={tab !== 'cleanup'}>
-      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'cleanup'} migrating={workspaceBlocked} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
+    <div className="workspace-hub-panel" id={`${id}-history-panel`} role="tabpanel" aria-labelledby={`${id}-history-tab`} hidden={tab !== 'history'}>
+      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'history'} autoScan migrating={workspaceBlocked} cleanedRecords={retained} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
     </div>
   </div>;
 }
 
-// A submitted operation stays pending until its durable task reaches a final state.
-function useTrackedTask(onTask: (task: TaskRecord) => void, onFinished: () => Promise<void>) {
-  const [task, setTask] = useState<TaskRecord | null>(null);
-  const [error, setError] = useState('');
-  const callbacks = useRef({ onTask, onFinished }); callbacks.current = { onTask, onFinished };
-  const completed = useRef(new Set<string>());
-  const mounted = useRef(true);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const track = useCallback((value: TaskRecord) => {
-    if (!mounted.current) return;
-    setTask(value); setError(''); callbacks.current.onTask(value);
-    if (value.final && !completed.current.has(value.taskId)) {
-      completed.current.add(value.taskId);
-      void callbacks.current.onFinished().catch((cause) => { if (mounted.current) setError(`刷新操作结果失败：${messageFrom(cause)}`); });
-    }
-  }, []);
-  useEffect(() => {
-    if (!task || task.final) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function poll() {
-      try {
-        const value = await invoke<TaskRecord>('task_get', { taskId: task!.taskId });
-        if (cancelled) return;
-        track(value);
-        if (!value.final) timer = setTimeout(() => void poll(), 1000);
-      } catch (cause) {
-        if (cancelled) return;
-        setError(`任务状态暂未读取，操作仍可能进行中：${messageFrom(cause)}`);
-        timer = setTimeout(() => void poll(), 2000);
-      }
-    }
-    timer = setTimeout(() => void poll(), 500);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [task?.taskId, task?.final, track]);
-  return { task, track, error, running: Boolean(task && !task.final) };
-}
-
-function WorkspaceLocation({ workspace, enabled, active, migrating, onTask, onRefresh }: {
-  workspace: WorkspaceInfo | null; enabled: boolean; active: boolean; migrating: boolean;
-  onTask: (task: TaskRecord) => void; onRefresh: () => Promise<void>;
+interface Group { key: string; label: string; badge: string; description: string; bytes: bigint | null; color: string }
+function SpaceOverview({ storage, busy, error, enabled, history, projects, nodeApps, workspaceRoot, onRescan, onTab, onRelease, onOpenSettings }: {
+  storage: WorkspaceStorage | null; busy: boolean; error: string; enabled: boolean; history: HistoryScanSummary | null;
+  projects: ProjectInfo[]; nodeApps: NodeAppDetail[]; workspaceRoot: string | null;
+  onRescan: () => void; onTab: (tab: SpaceTab) => void; onRelease: () => void; onOpenSettings?: (section: 'uninstall') => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [destination, setDestination] = useState('');
-  const [confirmedPath, setConfirmedPath] = useState<string | null>(null);
-  const [acknowledged, setAcknowledged] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [choosing, setChoosing] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const operation = useRef(false);
-  const generation = useRef(0);
-  const mounted = useRef(true);
-  const inputId = useId();
-  const tracker = useTrackedTask(onTask, onRefresh);
-  const blocked = !enabled || !active || migrating || pending || choosing || tracker.running;
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
-  useEffect(() => { if (!active) { generation.current++; setChoosing(false); setConfirmedPath(null); setAcknowledged(false); } }, [active]);
-  function editDestination(value: string) { setDestination(value); setConfirmedPath(null); setAcknowledged(false); }
-  async function choose() {
-    if (blocked || operation.current) return;
-    const sequence = ++generation.current; setChoosing(true); setError('');
-    try { const value = await invoke<string | null>('choose_path', { kind: 'workspace' }); if (sequence === generation.current && value) editDestination(value); }
-    catch (cause) { if (sequence === generation.current) setError(`路径选择失败，可直接填写绝对路径：${messageFrom(cause)}`); }
-    finally { if (sequence === generation.current) setChoosing(false); }
-  }
-  async function migrate() {
-    if (blocked || operation.current || !acknowledged || confirmedPath !== destination.trim() || !confirmedPath?.startsWith('/')) return;
-    operation.current = true; setPending(true); setError('');
-    try { const task = await invoke<TaskRecord>('workspace_migrate', { input: { destinationPath: confirmedPath } }); if (mounted.current) tracker.track(task); else onTask(task); }
-    catch (cause) { if (mounted.current) setError(messageFrom(cause)); }
-    finally { operation.current = false; if (mounted.current) setPending(false); }
-  }
-  async function refresh() { setRefreshing(true); setError(''); try { await onRefresh(); } catch (cause) { setError(messageFrom(cause)); } finally { setRefreshing(false); } }
-  async function copyPath() { try { await navigator.clipboard.writeText(workspace!.workspaceRoot); setNotice('工作区路径已复制。'); } catch { setError('无法复制，请选择下方路径手动复制。'); } }
-  return <section className="lifecycle-card workspace-location-card" aria-labelledby="workspace-location-title">
-    <div className="section-heading"><div><h2 id="workspace-location-title">工作区位置</h2><p>网页项目的源码、数据库和文件集中保存在当前工作区。</p></div><button className="refresh-button" disabled={!enabled || refreshing || pending} onClick={() => void refresh()}><RefreshCw size={14} />{refreshing ? '刷新中…' : '刷新状态'}</button></div>
-    <div className="workspace-current-location"><span>当前工作区</span><code>{workspace?.workspaceRoot ?? '尚未读取'}</code><div className="workspace-location-actions"><button className="refresh-button" disabled={!workspace} onClick={() => void copyPath()}><Copy size={14} />复制路径</button><button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起迁移设置' : '迁移工作区'}</button></div></div>
-    <details className="workspace-disclosure"><summary>工作区格式与原目录记录</summary><div className="workspace-disclosure-body"><dl className="path-list"><div className="path-row"><dt>工作区格式</dt><dd>{workspace?.formatVersion ?? '未知'}</dd></div><div className="path-row"><dt>文件系统</dt><dd>{workspace?.filesystem ?? '尚未读取'}</dd></div></dl>{workspace?.retainedRoots?.length ? <div className="retained-roots"><h3>迁移原目录记录</h3><p>这里记录迁移前的位置及后续清理状态。平台使用上方当前工作区，不会自动切回原目录。</p>{workspace.retainedRoots.map((value, index) => {
-      const record: RetainedWorkspaceRoot = typeof value === 'string' ? { path: value } : value;
-      const cleaned = record.cleaned === true;
-      return <article className={`retained-root-record${cleaned ? ' is-cleaned' : ''}`} key={record.taskId ?? index}><strong>{cleaned ? '已清理' : '保留未清理'}</strong><code>{record.path ?? record.sourcePath ?? '原目录路径未记录'}</code><p>{cleaned ? '这里只保留原路径和清理回执，不表示该目录仍存在或仍占用空间。' : record.available === false ? '当前无法读取此原目录，请在“清理历史”检查目录状态；这条记录本身不能证明目录仍然存在或占用空间。' : '此历史目录尚未登记为已清理。可在“清理历史”扫描并核对可处理范围。'}</p>{Boolean(cleaned && record.cleanup?.completedAt) && <small>清理完成：{timeText(record.cleanup?.completedAt)}</small>}{record.cleanup?.receiptPath && <div className="retained-root-receipt"><span>清理回执</span><code>{record.cleanup.receiptPath}</code></div>}{record.reason && <details><summary>查看记录说明</summary><p>{record.reason}</p></details>}</article>;
-    })}</div> : <p>没有迁移原目录记录。</p>}</div></details>
-    {expanded && <div className="workspace-migration-form" id={`${inputId}-migration`}>
-      <form onSubmit={(event) => { event.preventDefault(); if (!blocked && destination.trim().startsWith('/')) { setConfirmedPath(destination.trim()); setAcknowledged(false); } }}>
-        <h3>迁移整个工作区</h3><div className="path-input"><label htmlFor={inputId}>新的工作区目录</label><div className="path-input-controls"><input id={inputId} value={destination} disabled={blocked} onChange={(event) => editDestination(event.target.value)} placeholder="/Volumes/磁盘/新工作区" autoComplete="off" /><button className="refresh-button" type="button" disabled={blocked} onClick={() => void choose()}><FolderOpen size={14} />{choosing ? '选择中…' : '选择路径'}</button></div></div>
-        <p className="project-help">选择本机或直连外置磁盘上的独立、可写、为空的 APFS 目录。迁移会短暂暂停服务，并保留原目录。请先保存或复制各窗口的草稿，并结束外部 AI / 编辑器对工作区的写入。</p>
-        <button className="refresh-button" type="submit" disabled={blocked || !destination.trim().startsWith('/')}>核对迁移范围<ArrowRight size={14} /></button>
-      </form>
-      {confirmedPath && <div className="operation-confirmation workspace-migration-confirmation"><strong>确认迁移整个工作区</strong><p>来源：<code>{workspace?.workspaceRoot}</code><br />目标：<code>{confirmedPath}</code></p><p>迁移包含所有网页项目；原目录会保留。成功后需要从平台重新进入项目，并重新复制 AI 路径。</p><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对来源和目标，并处理各窗口草稿与外部写入</label><div className="confirmation-actions"><button className="primary-button" disabled={blocked || !acknowledged} onClick={() => void migrate()}>{pending ? '提交中…' : '确认开始迁移'}</button><button className="refresh-button" disabled={pending || tracker.running} onClick={() => { setConfirmedPath(null); setAcknowledged(false); }}>取消</button></div></div>}
-    </div>}
-    {tracker.running && <p className="workspace-operation-status" role="status">迁移任务已提交，正在等待最终结果。请勿重复提交。</p>}
-    {(error || tracker.error) && <p role="alert" className="task-error">{error || tracker.error}</p>}{notice && <p role="status" className="workspace-inline-notice">{notice}</p>}
-  </section>;
+  const total = bigBytes(partBytes(storage?.knownLocalTotal));
+  const webBytes = bigBytes(partBytes((storage?.workspace.categories as Record<string, import('./types').StoragePart> | undefined)?.projects));
+  const nodeRows = storage?.nodeApps ?? [];
+  const nodeBytes = nodeRows.reduce<bigint | null>((sum, row) => { const bytes = bigBytes(partBytes(row)); return sum === null || bytes === null ? null : sum + bytes; }, 0n);
+  const regenerableValues = projects.map(projectRegenerable);
+  const regenerable = regenerableValues.reduce<bigint>((sum, value) => sum + (value ?? 0n), 0n);
+  const unscanned = regenerableValues.filter((value) => value === null).length;
+  const usableHistory = history && !history.stale ? history : null;
+  const historyBytes = usableHistory ? usableHistory.totalBytes : null;
+  // Old Node versions sit inside app folders, so they move from projects to history.
+  const projectBytes = webBytes === null || nodeBytes === null ? null : clamp(webBytes + nodeBytes - regenerable - (usableHistory?.nodeGenerationBytes ?? 0n));
+  const software = total === null || projectBytes === null ? null : clamp(total - projectBytes - regenerable - (historyBytes ?? 0n));
+  const releasable = regenerable + (usableHistory?.cleanableBytes ?? 0n);
+  const disk = storage?.disks?.find((value) => workspaceRoot && String(value.exampleRoot ?? '').startsWith(workspaceRoot)) ?? storage?.disks?.[0];
+  const groups: Group[] = [
+    { key: 'projects', label: '我的项目', badge: '正在使用', description: `${projects.length} 个网页项目和 ${nodeApps.length} 个 Node 应用的当前内容`, bytes: projectBytes, color: 'mine' },
+    { key: 'regenerable', label: '可重新生成', badge: '可直接释放', description: `开发依赖、构建缓存和日志，下次构建会自动重新生成。${unscanned ? `另有 ${unscanned} 个项目尚未统计。` : ''}`, bytes: regenerable, color: 'regenerable' },
+    { key: 'history', label: '历史资料', badge: '确认后可释放', description: usableHistory ? '迁移前的旧工作区、取回前的原件、Node 旧版本与安装现场、未使用的源码副本。删除项目不会自动清理这些资料。' : history?.stale ? '清理后数字已变化，请在“历史资料”重新扫描。' : '尚未扫描。打开“历史资料”会自动扫描，扫描不会删除文件。', bytes: historyBytes, color: 'history' },
+    { key: 'software', label: '软件本身与记录', badge: '不在这里处理', description: `程序文件、软件设置、运行记录与共享缓存${usableHistory ? '' : '（含尚未扫描的历史资料）'}。`, bytes: software, color: 'software' },
+  ];
+  // Unscanned history stays inside the software remainder, so the bar is still whole.
+  const ratios = total !== null && total > 0n && groups.every((group) => group.bytes !== null || group.key === 'history');
+  const barLabel = `占用分布：${groups.filter((group) => group.bytes !== null).map((group) => `${group.label} ${bigText(group.bytes)}`).join('，')}`;
+  const ranked = [
+    ...projects.map((project) => ({ key: `web:${project.id}`, name: project.name, kind: '网页项目', total: projectTotal(project), regenerable: projectRegenerable(project) })),
+    ...nodeApps.map((app) => ({ key: `node:${app.id}`, name: app.name, kind: 'Node 应用', total: bigBytes(partBytes(nodeRowFor(nodeRows, app.id))), regenerable: null as bigint | null })),
+  ].filter((row) => row.total !== null).sort((left, right) => left.total! > right.total! ? -1 : left.total! < right.total! ? 1 : 0).slice(0, 3);
+  const scannedAt = storage?.workspace.completedAt ?? storage?.knownLocalTotal?.completedAt;
+  return <>
+    <section className="lifecycle-card space-summary" aria-labelledby="space-summary-total">
+      <div className="space-summary-heading">
+        <dl className="space-totals">
+          <div><dt>共占用</dt><dd id="space-summary-total">{bigText(total)}</dd>{storage?.knownLocalTotal && !storage.knownLocalTotal.complete && <small>部分统计</small>}</div>
+          <div><dt>可释放</dt><dd className="is-releasable">约 {bigText(releasable)}</dd><small>{bigText(regenerable)} 可直接释放 · {usableHistory ? `${bigText(usableHistory.cleanableBytes)} 需确认` : '历史资料尚未扫描'}</small></div>
+          <div><dt>磁盘剩余</dt><dd>{bigText(bigBytes((disk?.availableBytes ?? null) as import('./types').ByteCount))}</dd></div>
+        </dl>
+        <div className="space-scan-status">{busy ? <span role="status">正在统计…</span> : scannedAt ? <span>统计于 {timeText(scannedAt as string | number)}</span> : null}<button className="refresh-button" disabled={!enabled || busy} onClick={onRescan}><RefreshCw size={14} />{busy ? '统计中…' : '重新统计'}</button></div>
+      </div>
+      <div className={`space-bar${ratios ? '' : ' is-incomplete'}`} role="img" aria-label={ratios ? barLabel : '占用分布暂不可用，需要完整的统计结果'}>{ratios && groups.filter((group) => group.bytes !== null).map((group) => <span key={group.key} className={`space-color-${group.color}`} style={{ width: `${percentOf({ $int64: group.bytes!.toString() }, { $int64: total!.toString() }) ?? 0}%` }} />)}</div>
+      <div className="space-groups">{groups.map((group) => <div className="space-group" key={group.key}>
+        <i aria-hidden="true" className={`space-color-${group.color}`} />
+        <div><div className="space-group-title"><strong>{group.label}</strong><span className={`history-chip is-${group.color}`}>{group.badge}</span></div><p>{group.description}</p></div>
+        <strong className="space-number">{group.key === 'history' ? usableHistory ? `${usableHistory.totalComplete ? '' : '至少 '}${bigText(group.bytes)}` : '尚未扫描' : bigText(group.bytes)}</strong>
+        <div className="space-group-action">
+          {group.key === 'projects' && <button className="refresh-button" onClick={() => onTab('projects')}>查看项目</button>}
+          {group.key === 'regenerable' && <button className="primary-button" disabled={!enabled || regenerable === 0n} onClick={onRelease}>{regenerable === 0n ? '暂无可释放' : `释放 ${bigText(regenerable)}`}</button>}
+          {group.key === 'history' && <button className="refresh-button" onClick={() => onTab('history')}>查看并清理</button>}
+          {group.key === 'software' && onOpenSettings && <button className="text-button" onClick={() => onOpenSettings('uninstall')}>卸载时处理</button>}
+        </div>
+      </div>)}</div>
+    </section>
+    <section className="lifecycle-card space-top-projects" aria-labelledby="space-top-title">
+      <div className="space-top-heading"><h2 id="space-top-title">占用最多的项目</h2><button className="text-button" onClick={() => onTab('projects')}>查看全部 {projects.length + nodeApps.length} 个</button></div>
+      {ranked.length ? ranked.map((row) => <div className="space-top-row" key={row.key}><span><strong>{row.name}</strong> <span className="history-chip">{row.kind}</span></span><span className="space-top-regen">{row.regenerable ? `可释放 ${bigText(row.regenerable)}` : ''}</span><strong className="space-number">{bigText(row.total)}</strong></div>) : <p>还没有统计结果。可在“按项目”中统计全部项目。</p>}
+    </section>
+    <details className="workspace-disclosure space-measurement"><summary>统计说明与各位置明细</summary><div className="workspace-disclosure-body"><p>按文件大小统计，可能与磁盘实际占用略有差异。“可释放”只是估计；实际释放量以清理任务结果为准。</p><StorageScopeDetails data={storage} /></div></details>
+    {error && <p role="alert" className="environment-issue">{error}</p>}
+  </>;
 }
+const clamp = (value: bigint) => value < 0n ? 0n : value;
