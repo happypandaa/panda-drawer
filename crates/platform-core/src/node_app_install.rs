@@ -305,6 +305,25 @@ struct Journal {
     error: Option<ApiError>,
 }
 
+/// One retained `.installations/install_*` directory as seen by history cleanup.
+pub(crate) struct InstallationState {
+    pub candidate_id: String,
+    pub path: PathBuf,
+    pub state: Option<String>,
+    pub app_id: Option<String>,
+    pub app_name: Option<String>,
+    pub source_id: Option<String>,
+}
+impl InstallationState {
+    /// Only these states can never be continued or applied again.
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(
+            self.state.as_deref(),
+            Some("committed" | "failed" | "interrupted")
+        )
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct NodeAppInstaller {
     root: PathBuf,
@@ -318,6 +337,54 @@ impl NodeAppInstaller {
     }
     fn operations(&self) -> PathBuf {
         self.root.join(".installations")
+    }
+    /// Read-only states of retained installation directories for history
+    /// cleanup. An unreadable journal reports `state: None` and stays protected.
+    pub(crate) fn installation_states(&self) -> Result<Vec<InstallationState>> {
+        let root = self.operations();
+        check_no_symlinks(&root, true)?;
+        if !root.try_exists()? {
+            return Ok(vec![]);
+        }
+        let mut states = vec![];
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !identifier(&id, "install_") || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let journal = self.journal(&id).ok();
+            states.push(InstallationState {
+                path: entry.path(),
+                state: journal.as_ref().map(|value| value.state.clone()),
+                app_id: journal.as_ref().map(|value| value.target.app_id.clone()),
+                app_name: journal.as_ref().and_then(|value| {
+                    value
+                        .prepared
+                        .as_ref()
+                        .map(|prepared| &prepared.manifest)
+                        .or(value.target.manifest.as_ref())
+                        .and_then(|manifest| manifest["name"].as_str())
+                        .map(str::to_owned)
+                }),
+                source_id: journal.as_ref().and_then(|value| {
+                    value
+                        .prepared
+                        .as_ref()
+                        .map(|prepared| prepared.provenance.source_id.clone())
+                }),
+                candidate_id: id,
+            });
+        }
+        states.sort_by(|a, b| a.candidate_id.cmp(&b.candidate_id));
+        Ok(states)
+    }
+    /// The same exclusive lock a commit holds; history cleanup takes it while
+    /// removing installation material so no commit can race the removal.
+    pub(crate) fn commit_lock(&self) -> Result<File> {
+        self.lock()
     }
     fn operation(&self, id: &str) -> Result<PathBuf> {
         if !identifier(id, "install_") {

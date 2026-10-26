@@ -49,6 +49,11 @@ fn receipt(root: &Path, id: &str) -> Result<Option<Receipt>> {
     Ok(Some(value))
 }
 
+/// Any deletion receipt, finished or not, keeps the slot out of history cleanup.
+pub(super) fn recorded(root: &Path, id: &str) -> Result<bool> {
+    Ok(receipt(root, id)?.is_some())
+}
+
 pub(super) fn completed(root: &Path, id: &str) -> Result<bool> {
     Ok(receipt(root, id)?.is_some_and(|value| value.phase == "deleted"))
 }

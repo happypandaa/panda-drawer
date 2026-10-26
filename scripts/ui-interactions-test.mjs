@@ -850,6 +850,25 @@ async function acknowledgeCleanup() {
   await click(cleanupConfirmation().querySelector('input[type="checkbox"]'));
 }
 
+test('Cleanup lists every history category and shows protected reasons without internal codes', async () => {
+  await setup();
+  const items = [
+    { id: 'datarestore_task_a', kind: 'restoreOriginal', label: '数据取回前的原件', name: 'Fixture project', projectId: 'prj_a', path: '/disposable/workspace/.platform/project-state/data-restore/prj_a/task_a', totalBytes: 10, fileCount: 1, canClean: true, blockedReasons: [] },
+    { id: 'install_a', kind: 'nodeInstallation', label: 'Node 安装现场', name: 'Fixture app', path: '/disposable/node-apps/.installations/install_a', totalBytes: 20, fileCount: 2, canClean: false, blockedReasons: ['CLEANUP_ITEM_PROTECTED: 这个安装候选还可以继续安装，保留'] },
+    { id: 'gen_a', kind: 'nodeGeneration', label: 'Node 旧程序版本', name: 'Fixture app', path: '/disposable/node-apps/app/generations/gen_a', totalBytes: 30, fileCount: 3, canClean: true, blockedReasons: [] },
+    { id: 'src_a', kind: 'sourceCopy', label: '未被使用的源码副本', name: 'Fixture source', path: '/disposable/workspace/.platform/sources/src_a', totalBytes: 40, fileCount: 4, canClean: true, blockedReasons: [] },
+  ];
+  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan({ items })); };
+  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
+  const rows = [...document.querySelectorAll('.workspace-cleanup-item')];
+  assert.equal(rows.length, 4);
+  for (const label of ['取回前的原件', 'Node 安装现场', 'Node 旧程序版本', '未被使用的源码副本']) assert.ok(rows.some((row) => row.textContent.includes(label)), label);
+  const blocked = rows.find((row) => row.textContent.includes('Node 安装现场'));
+  assert.match(blocked.textContent, /这个安装候选还可以继续安装/);
+  assert.doesNotMatch(blocked.textContent, /CLEANUP_ITEM_PROTECTED/);
+  assert.equal(blocked.querySelector('input').disabled, true);
+});
+
 test('Cleanup controls identify same-name projects and copy or submit only the associated scope', async () => {
   await setup(); const copied = []; const submissions = [];
   const items = ['kept', 'disposable'].map((suffix) => ({ id: `retained_${suffix}`, kind: 'retainedWorkspace', label: '迁移前的旧工作区', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/old-workspace-${suffix}`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));

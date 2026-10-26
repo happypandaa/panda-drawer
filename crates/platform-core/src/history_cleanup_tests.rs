@@ -508,3 +508,294 @@ fn malformed_manifests_and_large_byte_counts_are_never_silently_coerced() {
     )
     .is_err());
 }
+
+fn hex32() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+fn plan_item<'a>(plan: &'a Value, id: &str) -> &'a Value {
+    plan["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == id)
+        .unwrap_or_else(|| panic!("{id} missing from {plan}"))
+}
+fn blocked_text(plan: &Value, id: &str) -> String {
+    plan_item(plan, id)["blockedReasons"].to_string()
+}
+impl Fixture {
+    fn source(&self, status: &str) -> (String, PathBuf) {
+        let id = format!("src_{}", hex32());
+        let slot = self
+            .paths
+            .workspace_root()
+            .join(".platform/sources")
+            .join(&id);
+        fs::create_dir_all(slot.join("repository/src")).unwrap();
+        fs::write(slot.join("repository/src/app.js"), "disposable source copy").unwrap();
+        builds::atomic_json(
+            &slot.join("source.json"),
+            &json!({"schemaVersion":1,"sourceId":id,"name":"Disposable source","status":status}),
+        )
+        .unwrap();
+        (id, slot)
+    }
+    fn node_root(&self) -> PathBuf {
+        self.paths.data_root().join("node-apps")
+    }
+    fn installation(&self, state: &str, app: &str) -> (String, PathBuf) {
+        let id = format!("install_{}", hex32());
+        let root = self.node_root().join(".installations").join(&id);
+        fs::create_dir_all(root.join("npm-cache")).unwrap();
+        fs::write(root.join("npm-cache/package.tgz"), "disposable cache").unwrap();
+        let generation = format!("gen_{}", hex32());
+        let provenance = json!({"sourceId":format!("src_{}", hex32()),"sourceDigest":"c".repeat(64),
+            "sourceCommit":null,"node":{"path":"/disposable/node","version":"v24.0.0"},
+            "npm":{"path":"/disposable/npm","version":"10.0.0"},"preparedAt":1});
+        let prepared = matches!(state, "prepared" | "committing" | "committed").then(|| {
+            json!({"candidateId":id,"appId":app,"generation":generation,
+                "manifest":{"name":"Disposable Node app"},"programDigest":"b".repeat(64),
+                "provenance":provenance})
+        });
+        let registration = matches!(state, "committing" | "committed").then(|| {
+            json!({"version":2,"id":app,"kind":"managed","generation":generation,
+                "manifestDigest":"a".repeat(64),"programDigest":"b".repeat(64),"provenance":provenance})
+        });
+        builds::atomic_json(
+            &root.join("install.json"),
+            &json!({"version":1,"candidateId":id,"prepareTaskId":format!("task_{}", hex32()),
+                "applyTaskId":null,"state":state,
+                "target":{"appId":app,"registrationDigest":null,"generation":null,"manifest":null,"configurationRevision":0},
+                "prepared":prepared,"registration":registration,"error":null}),
+        )
+        .unwrap();
+        (id, root)
+    }
+    /// A managed v2 app with its current generation and one replaced generation.
+    fn managed_app(&self, source: &str) -> (String, PathBuf, String, PathBuf) {
+        let app = Uuid::new_v4().to_string();
+        let slot = self.node_root().join(&app);
+        let current = format!("gen_{}", hex32());
+        let old = format!("gen_{}", hex32());
+        for generation in [&current, &old] {
+            let program = slot.join("generations").join(generation);
+            fs::create_dir_all(program.join("server")).unwrap();
+            fs::write(program.join("server/main.mjs"), "disposable program").unwrap();
+            builds::atomic_json(
+                &program.join("local-app.json"),
+                &json!({"name":"Disposable Node app"}),
+            )
+            .unwrap();
+        }
+        builds::atomic_json(
+            &slot.join("registration.json"),
+            &json!({"version":2,"id":app,"kind":"managed","generation":current,
+                "manifestDigest":"a".repeat(64),"programDigest":"b".repeat(64),
+                "provenance":{"sourceId":source,"sourceDigest":"c".repeat(64),"sourceCommit":null,
+                    "node":{"path":"/disposable/node","version":"v24.0.0"},
+                    "npm":{"path":"/disposable/npm","version":"10.0.0"},"preparedAt":1}}),
+        )
+        .unwrap();
+        (
+            app.clone(),
+            slot.join("generations").join(&current),
+            old.clone(),
+            slot.join("generations").join(&old),
+        )
+    }
+    fn source_restore(&self, task: &str, phase: &str) -> PathBuf {
+        let root = self
+            .paths
+            .workspace_root()
+            .join(".platform/project-state/source-restore")
+            .join(&self.project)
+            .join(task);
+        fs::create_dir_all(root.join("original")).unwrap();
+        fs::write(root.join("original/App.tsx"), "source before restore").unwrap();
+        builds::atomic_json(
+            &root.join("journal.json"),
+            &json!({"schemaVersion":1,"operation":"sourceRestore","projectId":self.project,
+                "taskId":task,"phase":phase,"planDigest":"a".repeat(64)}),
+        )
+        .unwrap();
+        root
+    }
+    async fn clean(&self, plan: &Value, ids: Vec<String>) -> TaskRecord {
+        self.wait(self.cleanup.submit(input(plan, ids)).unwrap())
+            .await
+    }
+}
+
+#[tokio::test]
+async fn source_copies_are_cleanable_only_when_finished_and_unused() {
+    let fixture = Fixture::new().await;
+    let (unused, unused_slot) = fixture.source("ready");
+    let (acquiring, acquiring_slot) = fixture.source("acquiring");
+    let (installed, installed_slot) = fixture.source("ready");
+    let (_app, current, _, _) = fixture.managed_app(&installed);
+    let plan = fixture.preview().await;
+    assert_eq!(plan_item(&plan, &unused)["canClean"], true, "{plan}");
+    assert_eq!(plan_item(&plan, &unused)["kind"], "sourceCopy");
+    assert_eq!(plan_item(&plan, &unused)["name"], "Disposable source");
+    assert_eq!(plan_item(&plan, &acquiring)["canClean"], false);
+    assert!(blocked_text(&plan, &acquiring).contains("仍在获取中"));
+    assert_eq!(plan_item(&plan, &installed)["canClean"], false);
+    assert!(blocked_text(&plan, &installed).contains("已安装的应用仍在使用"));
+
+    // An installation whose source is not yet recorded protects every copy.
+    let (_, preparing) = fixture.installation("preparing", &Uuid::new_v4().to_string());
+    let guarded = fixture.preview().await;
+    assert_eq!(plan_item(&guarded, &unused)["canClean"], false);
+    assert!(blocked_text(&guarded, &unused).contains("可能使用这份源码"));
+    fs::remove_dir_all(&preparing).unwrap();
+
+    let plan = fixture.preview().await;
+    let task = fixture.clean(&plan, vec![unused.clone()]).await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
+    assert!(!unused_slot.exists());
+    assert!(acquiring_slot.join("repository/src/app.js").is_file());
+    assert!(installed_slot.join("repository/src/app.js").is_file());
+    assert!(current.join("server/main.mjs").is_file());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn node_installations_and_replaced_generations_follow_install_state() {
+    let fixture = Fixture::new().await;
+    let (source, _) = fixture.source("ready");
+    let (app, current, old, old_path) = fixture.managed_app(&source);
+    let (failed, failed_path) = fixture.installation("failed", &app);
+    let (prepared, prepared_path) = fixture.installation("prepared", &app);
+    let plan = fixture.preview().await;
+    assert_eq!(plan_item(&plan, &failed)["canClean"], true, "{plan}");
+    assert_eq!(plan_item(&plan, &failed)["kind"], "nodeInstallation");
+    assert_eq!(plan_item(&plan, &prepared)["canClean"], false);
+    assert!(blocked_text(&plan, &prepared).contains("还可以继续安装"));
+    assert_eq!(plan_item(&plan, &old)["canClean"], true);
+    assert_eq!(plan_item(&plan, &old)["name"], "Disposable Node app");
+    let current_name = current.file_name().unwrap().to_str().unwrap();
+    assert!(!plan["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == current_name));
+
+    // An unfinished commit for the same app protects every program version.
+    let (committing, committing_path) = fixture.installation("committing", &app);
+    let busy = fixture.preview().await;
+    assert_eq!(plan_item(&busy, &old)["canClean"], false);
+    assert!(blocked_text(&busy, &old).contains("正在进行或需要处理的安装"));
+    assert_eq!(plan_item(&busy, &committing)["canClean"], false);
+    fs::remove_dir_all(&committing_path).unwrap();
+
+    let plan = fixture.preview().await;
+    let task = fixture
+        .clean(&plan, vec![failed.clone(), old.clone()])
+        .await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
+    assert!(!failed_path.exists());
+    assert!(!old_path.exists());
+    assert!(current.join("server/main.mjs").is_file());
+    assert!(prepared_path.join("install.json").is_file());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn finished_source_restore_original_is_cleanable_until_a_pending_one_appears() {
+    let fixture = Fixture::new().await;
+    let finished = format!("task_{}", hex32());
+    let finished_path = fixture.source_restore(&finished, "completed");
+    let id = format!("sourcerestore_{finished}");
+    let plan = fixture.preview().await;
+    assert_eq!(plan_item(&plan, &id)["canClean"], true, "{plan}");
+    assert_eq!(plan_item(&plan, &id)["kind"], "restoreOriginal");
+    assert_eq!(plan_item(&plan, &id)["projectId"], fixture.project);
+
+    let pending = format!("task_{}", hex32());
+    let pending_path = fixture.source_restore(&pending, "applying");
+    let guarded = fixture.preview().await;
+    assert_eq!(plan_item(&guarded, &id)["canClean"], false);
+    assert!(blocked_text(&guarded, &id).contains("未完成或无法核对"));
+    let pending_id = format!("sourcerestore_{pending}");
+    assert_eq!(plan_item(&guarded, &pending_id)["canClean"], false);
+    // The earlier plan is still bound to its preview; execution revalidates.
+    let task = fixture.clean(&plan, vec![id.clone()]).await;
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.error.unwrap().code, "CLEANUP_PLAN_CHANGED");
+    assert!(finished_path.join("original/App.tsx").is_file());
+    assert!(pending_path.join("original/App.tsx").is_file());
+
+    fs::remove_dir_all(&pending_path).unwrap();
+    let plan = fixture.preview().await;
+    let task = fixture.clean(&plan, vec![id]).await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
+    assert!(!finished_path.exists());
+    assert!(fixture
+        .store
+        .project(&fixture.project)
+        .unwrap()
+        .root
+        .join("data/main.sqlite")
+        .is_file());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn plan_expiry_runtime_change_invalid_selection_and_active_operations_do_not_delete() {
+    let fixture = Fixture::new().await;
+    let (source, slot) = fixture.source("ready");
+    let plan = fixture.preview().await;
+    let request = input(&plan, vec![source.clone()]);
+    let path = fixture
+        .cleanup
+        .root()
+        .join("plans")
+        .join(format!("{}.json", plan["planId"].as_str().unwrap()));
+    let original: Plan = serde_json::from_value(read_json(&path).unwrap()).unwrap();
+    let mut expired = original.clone();
+    expired.expires_at = 0;
+    builds::atomic_json(&path, &expired).unwrap();
+    assert_eq!(
+        fixture.cleanup.submit(request.clone()).unwrap_err().code,
+        "CLEANUP_PLAN_EXPIRED"
+    );
+    let mut other_instance = original.clone();
+    other_instance.instance_id = "other".into();
+    builds::atomic_json(&path, &other_instance).unwrap();
+    assert_eq!(
+        fixture.cleanup.submit(request.clone()).unwrap_err().code,
+        "CLEANUP_PLAN_EXPIRED"
+    );
+    builds::atomic_json(&path, &original).unwrap();
+    let lease = fixture.store.reserve_task("prj_busy", "task_busy").unwrap();
+    assert_eq!(
+        fixture.cleanup.submit(request.clone()).unwrap_err().code,
+        "WORKSPACE_BUSY"
+    );
+    drop(lease);
+    assert!(fixture
+        .cleanup
+        .submit(input(&plan, vec!["unconfirmed".into()]))
+        .is_err());
+    let mut missing_confirm = request;
+    missing_confirm["confirmation"] = json!("yes");
+    assert!(fixture.cleanup.submit(missing_confirm).is_err());
+    assert!(slot.join("repository/src/app.js").is_file());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn changed_preview_and_new_protection_block_deletion() {
+    let fixture = Fixture::new().await;
+    let (source, slot) = fixture.source("ready");
+    let plan = fixture.preview().await;
+    fs::write(slot.join("repository/new-user-file"), "draft").unwrap();
+    let task = fixture.clean(&plan, vec![source.clone()]).await;
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.error.unwrap().code, "CLEANUP_PLAN_CHANGED");
+    assert!(slot.join("repository/new-user-file").is_file());
+    let (_app, _, _, _) = fixture.managed_app(&source);
+    let plan = fixture.preview().await;
+    assert_eq!(plan_item(&plan, &source)["canClean"], false);
+    fixture.stop().await;
+}

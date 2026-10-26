@@ -6,7 +6,7 @@ import { bytesText, exactBytes, timeText } from './storage-utils';
 import type { ByteCount, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
-type CleanupKind = 'retainedWorkspace';
+type CleanupKind = 'retainedWorkspace' | 'restoreOriginal' | 'nodeInstallation' | 'nodeGeneration' | 'sourceCopy';
 interface CleanupItem {
   id: string;
   kind: CleanupKind;
@@ -38,7 +38,9 @@ interface CleanupPanelProps {
   onRefresh: () => Promise<void>;
   onPendingChange?: (pending: boolean) => void;
 }
-const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移前的旧工作区' };
+const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移前的旧工作区', restoreOriginal: '取回前的原件', nodeInstallation: 'Node 安装现场', nodeGeneration: 'Node 旧程序版本', sourceCopy: '未被使用的源码副本' };
+// Protected items carry a user-facing reason after a stable code prefix.
+const reasonText = (reason: string) => reason.startsWith('CLEANUP_ITEM_PROTECTED: ') ? reason.slice('CLEANUP_ITEM_PROTECTED: '.length) : reason;
 const confirmationPhrase = '永久清理所选内容';
 function readPlan(result: Record<string, unknown> | null): CleanupPlan {
   if (!result || typeof result.planId !== 'string' || !result.planId || typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt) || typeof result.workspaceRoot !== 'string' || !Array.isArray(result.items) || !Array.isArray(result.preserved) || result.confirmationText !== confirmationPhrase) throw new Error('清理范围返回不完整，请重新扫描；未提交任何清理操作。');
@@ -184,7 +186,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       {plan.items.length ? <div className="workspace-cleanup-items" aria-label="历史清理候选范围">{plan.items.map((item) => <article className={`workspace-cleanup-item${item.canClean && !item.blockedReasons.length ? '' : ' is-blocked'}`} key={item.id}>
         <div className="workspace-cleanup-item-heading"><label className="checkbox-label"><input type="checkbox" aria-label={`选择${itemDescription(item)}`} checked={selected.includes(item.id)} disabled={planBlocked || !item.canClean || Boolean(item.blockedReasons.length)} onChange={(event) => { setSelected((current) => event.target.checked ? [...current.filter((value) => value !== item.id), item.id] : current.filter((value) => value !== item.id)); clearConfirmation(); }} /><span><strong>{item.label || item.name || kinds[item.kind]}</strong><small>{kinds[item.kind]}</small></span></label><strong title={exactBytes(item.totalBytes)}>{bytesText(item.totalBytes)}</strong></div>
         <code className="workspace-cleanup-path">{item.path}</code><div className="workspace-cleanup-item-meta"><span>{countText(item.fileCount)}</span>{item.projectId && <span>项目 ID：<code>{item.projectId}</code></span>}{item.name && <span>项目名称：{item.name}</span>}<button className="text-button" aria-label={`复制${itemDescription(item)}的目录`} onClick={() => void copyPath(item.path)}><Copy size={13} />复制目录</button></div>
-        {(!item.canClean || item.blockedReasons.length > 0) && <div className="workspace-cleanup-blocked"><strong>暂不可清理</strong>{item.blockedReasons.length ? item.blockedReasons.map((reason, index) => <p key={index}>{reason}</p>) : <p>此条目未获得清理许可，请检查关联任务与恢复状态。</p>}</div>}
+        {(!item.canClean || item.blockedReasons.length > 0) && <div className="workspace-cleanup-blocked"><strong>暂不可清理</strong>{item.blockedReasons.length ? item.blockedReasons.map((reason, index) => <p key={index}>{reasonText(reason)}</p>) : <p>此条目未获得清理许可，请检查关联任务与恢复状态。</p>}</div>}
       </article>)}</div> : <div className="workspace-empty-state"><Trash2 size={26} /><p>本次没有发现可列出的历史清理范围</p><span>无需为了让空间数字归零而删除平台程序或当前项目。</span></div>}
       <div className="workspace-cleanup-preserved"><h3>本次始终保留</h3>{plan.preserved.length ? <ul>{plan.preserved.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>扫描未列出可删除的其他位置。范围之外的文件保持原样。</p>}</div>
       <div className="workspace-cleanup-review-action"><p>已选择 {selectedItems.length} 项。每项均会删除显示目录中的完整历史副本。</p><button ref={reviewButton} className="danger-button" disabled={planBlocked || !selectedItems.length || selectedItems.some((item) => !item.canClean || item.blockedReasons.length)} onClick={beginReview}><ArrowRight size={14} />核对所选清理范围</button></div>
