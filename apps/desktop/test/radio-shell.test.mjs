@@ -232,7 +232,7 @@ test('The toolbar separates filtering and refresh from the source, local and imp
   assert.equal(filter.closest('.radio-add-menu'), null);
   assert.equal(refresh.closest('.radio-add-menu'), null);
   await click(addTrigger());
-  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['获取项目源码', '添加本地应用', '导入项目']);
+  assert.deepEqual([...addDisclosure().querySelectorAll('button')].map(element => element.textContent), ['从 Git 导入应用', '添加本地应用', '导入项目']);
   const before = calls.filter(([command]) => command === 'project_list').length;
   await click(refresh);
   assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);

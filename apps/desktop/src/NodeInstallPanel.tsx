@@ -62,7 +62,7 @@ function cancelledPreparationRecord(item: InstallRecord) {
   return item.state === 'failed' && Boolean(item.prepareTaskId) && item.applyTaskId === null
     && record(item.error) && item.error.code === 'NODE_INSTALL_CANCELLED';
 }
-function preparedResult(value: unknown): PreparedNodeInstall | null {
+export function preparedResult(value: unknown): PreparedNodeInstall | null {
   if (!record(value) || typeof value.candidateId !== 'string' || !candidatePattern.test(value.candidateId)
     || typeof value.appId !== 'string' || !appPattern.test(value.appId)
     || typeof value.generation !== 'string' || !generationPattern.test(value.generation)
@@ -79,7 +79,7 @@ function preparedResult(value: unknown): PreparedNodeInstall | null {
     || ![source.node, source.npm].every(tool => record(tool) && typeof tool.path === 'string' && typeof tool.version === 'string')) return null;
   return value as unknown as PreparedNodeInstall;
 }
-function installedResult(value: unknown): InstalledNodeResult | null {
+export function installedResult(value: unknown): InstalledNodeResult | null {
   if (!record(value) || value.operationOutcome !== 'committed'
     || typeof value.candidateId !== 'string' || !candidatePattern.test(value.candidateId)
     || typeof value.appId !== 'string' || !appPattern.test(value.appId)

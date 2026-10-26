@@ -2124,3 +2124,6 @@ pub(crate) fn retired_cleanup_status(
 #[cfg(test)]
 #[path = "history_cleanup_tests.rs"]
 mod tests;
+
+#[path = "source_import_cleanup.rs"]
+mod source_import;

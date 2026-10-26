@@ -202,6 +202,24 @@ impl NodeInstallTasks {
                 return Err(error.detail("taskId", task.task_id));
             }
         };
+        // Persist ownership before any environment/build work. A preparation can
+        // fail before the installer creates its candidate journal.
+        let binding = self
+            .paths
+            .workspace_root()
+            .join(".platform/sources")
+            .join(&input.source_id)
+            .join("install-tasks")
+            .join(format!("{}.json", task.task_id));
+        let saved = crate::projects::check_no_symlinks(&binding, true).and_then(|()| {
+            crate::builds::atomic_json(&binding, &json!({
+                "sourceId":input.source_id,"prepareTaskId":task.task_id,"targetAppId":input.target_app_id
+            }))
+        });
+        if let Err(error) = saved {
+            self.tasks.finish(&task.task_id, Err(error.clone()))?;
+            return Err(error.detail("taskId", task.task_id));
+        }
         let (sender, cancel) = watch::channel(false);
         self.active
             .lock()

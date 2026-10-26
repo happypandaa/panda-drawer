@@ -208,11 +208,11 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 ### 公开源码获取
 
-管理页“添加 → 获取项目源码”和 CLI `source acquire --url URL --json` 接受标准 GitHub/Gitee 公开 HTTPS 仓库。任务只获取当前提交的浅克隆并还原普通文件，不安装依赖或执行项目。`source list/get` 查看记录，`source inspect --path /绝对路径 --json` 只读本机声明，`source cancel --task ID --json` 请求取消后仍须等待最终任务。管理接口为 `GET /api/v1/sources`、`GET /api/v1/sources/:id`、`POST /api/v1/sources/acquisitions`（`url`、可选 `name`）、`POST /api/v1/sources/inspect`（`sourcePath`）、`POST /api/v1/sources/tasks/:id/cancel`；仅管理身份可用。
+管理页普通入口现按[从 Git 导入应用](git-app-import.md)的已确认流程串联获取、检测、准备、核验与安装提交；“源码记录与恢复”保留独立来源操作。CLI `source acquire --url URL --json` 接受标准 GitHub/Gitee 公开 HTTPS 仓库；该底层任务仍只获取当前提交的浅克隆并还原普通文件，不安装依赖或执行项目。`source list/get` 查看记录，`source inspect --path /绝对路径 --json` 只读本机声明，`source cancel --task ID --json` 请求取消后仍须等待最终任务。管理接口为 `GET /api/v1/sources`、`GET /api/v1/sources/:id`、`POST /api/v1/sources/acquisitions`（`url`、可选 `name`）、`POST /api/v1/sources/inspect`（`sourcePath`）、`POST /api/v1/sources/tasks/:id/cancel`；仅管理身份可用。
 
-记录和候选位于工作区 `.platform/sources/src_<UUID>/`，随公开工作区迁移；失败／取消／中断保留现场，重试新建目录，不注册业务项目。版本、工具及内容摘要单独记录，后续接入前需重新校验；普通声明、需适配源码和可运行安装不是同一状态。本步没有私有仓库认证、标准成品安装或删除候选入口。
+记录和候选位于工作区 `.platform/sources/src_<UUID>/`，随公开工作区迁移。独立来源操作的失败／取消／中断保留现场，重试新建目录，不注册业务项目；新统一导入流程另按本次任务提供受范围约束的临时材料清理，成功安装引用的正式源码和既有历史证据保留。版本、工具及内容摘要单独记录，安装前需重新校验；下载完成和应用登记完成是不同结果。没有私有仓库认证，也不把任意仓库当成可安装应用。
 
-2026-10-22 新增本机源码副本接入和 Node 受管安装。`source capture --path /绝对路径 [--name 名称] --json` 与管理 `POST /api/v1/sources/captures`（`sourcePath`、可选 `name`）创建独立来源副本，不执行代码；排除已知数据、配置、凭据、依赖及 Git 控制路径。Node 安装使用独立原生管理入口，先准备生产依赖，再明确提交，更新前核对窗口已关闭、程序和配置修订未变化；没有绕过原生窗口锁的 HTTP／CLI 安装提交入口。具体范围、位置和限制见[源码副本、安装与更新](node-managed-installation.md)。
+2026-10-22 新增本机源码副本接入和 Node 受管安装。`source capture --path /绝对路径 [--name 名称] --json` 与管理 `POST /api/v1/sources/captures`（`sourcePath`、可选 `name`）创建独立来源副本，不执行代码；排除已知数据、配置、凭据、依赖及 Git 控制路径。Node 安装使用独立原生管理入口，先准备生产依赖，再提交；统一新实例导入以开始时的明确操作授权自动衔接，声明构建另行确认，已有更新流程仍需明确确认。更新前核对窗口已关闭、程序和配置修订未变化；没有绕过原生窗口锁的 HTTP／CLI 安装提交入口。具体范围、位置和限制见[源码副本、安装与更新](node-managed-installation.md)。
 
 构建脚本及 npm 生命周期脚本是具有当前用户权限的普通本机代码，**不是沙盒**。只运行用户信任的项目；脚本不得启动后台服务、脱离进程组的子进程，或写入用户数据。平台在正常结束、超时及退出时清理普通构建进程组；这不构成隔离任意本机代码的保证。
 

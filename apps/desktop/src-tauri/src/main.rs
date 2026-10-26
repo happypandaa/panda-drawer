@@ -1454,6 +1454,23 @@ async fn source_cancel(
 }
 
 #[tauri::command]
+async fn source_import_cleanup(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    source_task_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            let state = io_app.state::<AppState>();
+            state.handle.source_import_cleanup(source_task_id).await
+        })
+        .await?
+}
+
+#[tauri::command]
 async fn source_capture(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -2270,7 +2287,7 @@ fn main() {
             local_data_cleanup::local_data_cleanup_status,
             local_data_cleanup::local_data_cleanup_quit,
             bootstrap_info,
-            source_list,source_info,source_inspect,source_acquire,source_cancel,
+            source_list,source_info,source_inspect,source_acquire,source_cancel,source_import_cleanup,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
