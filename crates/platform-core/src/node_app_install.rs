@@ -297,6 +297,10 @@ struct Journal {
     version: u32,
     candidate_id: String,
     prepare_task_id: String,
+    // Bind failed preparation material to its exact source too; prepared
+    // provenance is not available when dependency preparation fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_id: Option<String>,
     apply_task_id: Option<String>,
     state: String,
     target: InstallTargetSnapshot,
@@ -370,10 +374,12 @@ impl NodeAppInstaller {
                         .map(str::to_owned)
                 }),
                 source_id: journal.as_ref().and_then(|value| {
-                    value
-                        .prepared
-                        .as_ref()
-                        .map(|prepared| prepared.provenance.source_id.clone())
+                    value.source_id.clone().or_else(|| {
+                        value
+                            .prepared
+                            .as_ref()
+                            .map(|prepared| prepared.provenance.source_id.clone())
+                    })
                 }),
                 candidate_id: id,
             });
@@ -411,6 +417,10 @@ impl NodeAppInstaller {
             || journal.candidate_id != id
             || !identifier(&journal.prepare_task_id, "task_")
             || journal
+                .source_id
+                .as_deref()
+                .is_some_and(|id| !identifier(id, "src_"))
+            || journal
                 .apply_task_id
                 .as_deref()
                 .is_some_and(|s| !identifier(s, "task_"))
@@ -430,6 +440,10 @@ impl NodeAppInstaller {
         journal.target.validate()?;
         if let Some(prepared) = &journal.prepared {
             if prepared.candidate_id != id
+                || journal
+                    .source_id
+                    .as_deref()
+                    .is_some_and(|id| id != prepared.provenance.source_id)
                 || prepared.app_id != journal.target.app_id
                 || !identifier(&prepared.generation, "gen_")
                 || !hex(&prepared.program_digest, 64)
@@ -560,6 +574,7 @@ impl NodeAppInstaller {
             version: 1,
             candidate_id: candidate_id.clone(),
             prepare_task_id: task_id.into(),
+            source_id: Some(source.source_id.clone()),
             apply_task_id: None,
             state: "preparing".into(),
             target,

@@ -47,7 +47,7 @@ const { createRoot } = await import('react-dom/client');
 
 const { NodeDevelopmentPanel } = await component('NodeDevelopmentPanel.tsx');
 const { NodeGitPanel } = await component('NodeGitPanel.tsx');
-const { SourceAcquisitionPanel } = await component('SourceAcquisitionPanel.tsx');
+const { SourceLibraryPanel: SourceAcquisitionPanel } = await component('SourceLibraryPanel.tsx');
 let root;
 const timers = new Map(); let timerId = 0;
 window.setInterval = callback => { const id = ++timerId; timers.set(id, callback); return id; };

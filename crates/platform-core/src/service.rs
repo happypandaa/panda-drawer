@@ -1092,6 +1092,25 @@ impl RuntimeHandle {
             .map_err(Clone::clone)?
             .cancel(id)?))
     }
+    /// Explicit cleanup of one import. Native-only like installation; no
+    /// arbitrary path or HTTP cleanup endpoint is exposed.
+    pub async fn source_import_cleanup(
+        &self,
+        source_task_id: String,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.node_install.require_idle()?;
+        state.node_development.require_idle()?;
+        let cleanup = state.history_cleanup.clone();
+        tokio::task::spawn_blocking(move || cleanup.source_import_cleanup(&source_task_id))
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    "SOURCE_IMPORT_CLEANUP_INTERRUPTED",
+                    "导入清理未完成，请重试清理。",
+                )
+            })?
+    }
     pub async fn handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.store.check_development_available(id)?;

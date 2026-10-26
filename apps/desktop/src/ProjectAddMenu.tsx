@@ -32,9 +32,9 @@ export function ProjectAddMenu({ disabled, onAdd, onImport, onAcquire }: Props) 
       event.preventDefault(); event.stopPropagation(); close(); trigger.current?.focus();
     }
   }}>
-    <summary ref={trigger} aria-disabled={disabled} aria-label="更多添加方式" title="获取源码、添加本地应用或导入" onClick={(event) => { if (disabled) event.preventDefault(); }}><ChevronDown size={15} aria-hidden="true" /></summary>
+    <summary ref={trigger} aria-disabled={disabled} aria-label="更多添加方式" title="从 Git 导入应用、添加本地应用或导入" onClick={(event) => { if (disabled) event.preventDefault(); }}><ChevronDown size={15} aria-hidden="true" /></summary>
     <div className="radio-add-menu-content" aria-label="项目操作">
-      {onAcquire && <button disabled={disabled} onClick={() => run(onAcquire)}><Download size={15} />获取项目源码</button>}
+      {onAcquire && <button disabled={disabled} onClick={() => run(onAcquire)}><Download size={15} />从 Git 导入应用</button>}
       <button disabled={disabled} onClick={() => run(onAdd)}><FolderOpen size={15} />添加本地应用</button>
       <button disabled={disabled} onClick={() => run(onImport)}><Upload size={15} />导入项目</button>
     </div>
