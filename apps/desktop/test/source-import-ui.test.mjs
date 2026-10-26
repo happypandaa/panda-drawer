@@ -224,3 +224,52 @@ test('Unknown installation offers result verification, and reconciliation never 
   assert.equal(fixture.registered, 1);
   assert.equal(fixture.entered.length, 0);
 });
+
+
+test('Installed applications stay in the cleanup progress stage until temporary removal is confirmed', async () => {
+  const removal = deferred();
+  const fixture = await setup({ source_import_cleanup: () => removal.promise });
+  await begin();
+  assert.equal(document.querySelector('.git-import-result h3').textContent, '清理临时文件');
+  const stages = [...document.querySelectorAll('.import-progress li')];
+  assert.deepEqual(stages.map(item => item.textContent.replace(/^\d/, '')), ['下载源码', '检查兼容性', '准备应用', '安装应用', '清理临时文件']);
+  assert.equal(stages[4].getAttribute('aria-current'), 'step');
+  assert.equal(stages[4].classList.contains('is-complete'), false);
+  assert.equal(stages.slice(0, 4).every(item => item.classList.contains('is-complete')), true);
+  assert.equal(byText('完成'), undefined);
+  assert.equal(byText('去配置'), undefined);
+  await escape(); assert.equal(fixture.closed, 0);
+  assert.equal(document.querySelector('.modal-close').disabled, true);
+  await act(async () => removal.resolve(cleaned));
+  assert.equal(document.querySelector('.git-import-result h3').textContent, '导入成功');
+  assert.equal([...document.querySelectorAll('.import-progress li')].every(item => item.classList.contains('is-complete')), true);
+  assert.equal(fixture.registered, 1);
+});
+
+test('A cleanup failure after installation retries only cleanup and never reports premature success', async () => {
+  let removals = 0;
+  const removal = deferred();
+  const fixture = await setup({ source_import_cleanup: () => ++removals === 1 ? { ...cleaned, completed: false, failures: [{ path: '/disposable/tmp', error: { message: 'Removal needs retry' } }] } : removal.promise });
+  await begin();
+  assert.equal(document.querySelector('.git-import-result h3').textContent, '应用已添加，清理未完成');
+  assert.equal(byText('完成'), undefined);
+  assert.equal(byText('重试导入'), undefined);
+  assert.equal(document.querySelector('.import-progress li:last-child').classList.contains('is-complete'), false);
+  await click(byText('重试清理'));
+  assert.equal(document.querySelector('.git-import-result h3').textContent, '清理临时文件');
+  await act(async () => removal.resolve(cleaned));
+  assert.equal(document.querySelector('.git-import-result h3').textContent, '导入成功');
+  assert.equal(commands(fixture).filter(name => name === 'node_install_apply').length, 1);
+  assert.equal(fixture.registered, 1);
+});
+
+test('Cleanup after a failed download does not mark skipped installation stages as completed', async () => {
+  const removal = deferred();
+  const fixture = await setup({ source_acquire: () => task('sourceAcquire', { status: 'failed', result: null, error: { code: 'SOURCE_GIT_FAILED', message: 'Download failed' } }), source_import_cleanup: () => removal.promise });
+  await begin(); await click(byText('清理并关闭'));
+  const stages = [...document.querySelectorAll('.import-progress li')];
+  assert.equal(stages[4].getAttribute('aria-current'), 'step');
+  assert.equal(stages.slice(0, 4).some(item => item.classList.contains('is-complete')), false);
+  await act(async () => removal.resolve({ ...cleaned, sourceRetained: false }));
+  assert.equal(fixture.closed, 1);
+});

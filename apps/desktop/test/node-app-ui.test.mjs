@@ -998,8 +998,90 @@ test('Adding a ready local folder previews first and binds registration to the r
   await click(byText('确认添加此项目'));
   assert.deepEqual(calls.at(-1), ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'directory-revision-1' }]);
   assert.ok(document.querySelector('[role="dialog"]'));
+  assert.match(document.querySelector('[role="dialog"]').textContent, /添加成功/);
+  assert.ok(document.querySelector('.local-directory-panel'), 'Adding keeps the result in the original progress dialog');
+  assert.equal(document.querySelector('[role=tab]'), null);
+  assert.equal(calls.some(([command]) => command === 'node_app_start' || command === 'node_app_configuration'), false, 'Adding does not silently navigate to configuration or open the app');
+});
+
+test('Local folder progress follows actual read and add operations, then waits for explicit configuration navigation', async () => {
+  const reading = deferred(); const adding = deferred(); const enters = []; const completions = []; const registered = [];
+  const value = app({ sourcePath: '/artificial/node-source', configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['AI_KEY'], canStart: false } });
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return reading.promise;
+    if (command === 'node_app_directory_register') return adding.promise;
+    throw new Error(command);
+  }, { onAdded: item => registered.push(item), onEnter: item => enters.push(item), onClose: () => completions.push(true) });
+  const activeStep = () => document.querySelector('[aria-label="导入进度"] [aria-current=step]')?.textContent;
+  assert.match(activeStep(), /选择目录/);
+  await click(byText('选择本地项目文件夹'));
+  assert.match(activeStep(), /检查项目/);
+  await act(async () => reading.resolve(directoryReview()));
+  assert.match(activeStep(), /添加应用/);
+  assert.deepEqual(registered, []);
+  await click(byText('确认添加此项目'));
+  assert.match(activeStep(), /添加应用/);
+  assert.deepEqual(enters, []);
+  await act(async () => adding.resolve(value));
+  assert.deepEqual(registered, [value]);
+  assert.match(document.body.textContent, /添加成功/);
+  assert.equal(document.querySelectorAll('[aria-label="导入进度"] .is-complete').length, 4);
+  assert.deepEqual(enters, []); assert.deepEqual(completions, []);
+  assert.equal(document.activeElement, document.querySelector('.import-result h3'));
+  await click(byText('去配置'));
+  assert.deepEqual(enters, [value]); assert.deepEqual(completions, []);
+});
+
+test('Local folder success is revoked after the platform instance changes and cannot open the old app', async () => {
+  const enters = [];
+  const props = { enabled: true, instanceId: 'old-directory-service', onPendingChange() {}, onAdded() {}, onEnter: value => enters.push(value), onClose() {} };
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview();
+    if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
+    throw new Error(command);
+  }, props);
+  await click(byText('选择本地项目文件夹')); await click(byText('确认添加此项目'));
+  assert.ok(byText('打开应用'));
+  await act(async () => root.render(h(LocalDirectoryPanel, { ...props, instanceId: 'new-directory-service' })));
+  assert.equal(byText('打开应用'), undefined); assert.doesNotMatch(document.body.textContent, /添加成功/);
+  assert.deepEqual(enters, []);
+  assert.ok(byText('重新检查'));
+});
+
+test('Choosing configuration from a local add result never starts the app even if its fresh configuration is now complete', async () => {
+  const calls = [];
+  const ready = app({ sourcePath: '/artificial/node-source' });
+  const missing = { ...ready, configuration: { ...ready.configuration, missingRequired: ['AI_KEY'], canStart: false } };
+  await setup(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview();
+    if (command === 'node_app_directory_register') return missing;
+    if (command === 'node_app_configuration') return ready;
+    throw new Error(command);
+  }, { request: null, addRequest: 1 });
+  await click(byText('选择本地项目文件夹')); await click(byText('确认添加此项目'));
+  assert.ok(byText('去配置')); assert.equal(calls.some(([command]) => command === 'node_app_configuration'), false);
+  await click(byText('去配置'));
+  assert.equal(document.querySelector('.local-directory-panel'), null);
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
-  assert.equal(calls.some(([command]) => command === 'node_app_start'), false);
+  assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 1);
+  assert.equal(calls.some(([command]) => command === 'node_app_start' || command === 'node_app_open'), false);
+});
+
+test('An explicit configure request opens configuration without starting a ready application', async () => {
+  const value = app(); const calls = [];
+  await setup(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'node_app_configuration') return value;
+    throw new Error(command);
+  }, { request: { app: value, intent: 'configure', token: 1 } });
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 1);
+  assert.equal(calls.some(([command]) => command === 'node_app_start' || command === 'node_app_open'), false);
+  assert.ok(byText('进入项目'));
 });
 
 test('An empty folder uses one explicit generate-and-add action with its reviewed revision and name', async () => {
@@ -1432,13 +1514,14 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.equal(document.querySelectorAll('.project-card').length, 1, 'The registration callback must update the real App list immediately');
   assert.ok(byLabel(`进入项目「${value.name}」`));
   assert.match(document.querySelector('.radio-footer').textContent, /共 1 个应用/);
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
-  assert.equal(document.querySelector('.local-directory-panel'), null, 'A successful combined command must close the add step');
+  assert.ok(document.querySelector('.local-directory-panel'), 'A successful combined command keeps the completion step visible');
+  assert.match(document.querySelector('[role=dialog]').textContent, /添加成功/);
+  assert.equal(document.querySelector('[role=tab]'), null);
   assert.equal(byText('确认添加此项目'), undefined);
-  assert.match(document.querySelector('[role=dialog]').textContent, /此应用无需配置/);
-  assert.equal(byText('进入项目').disabled, false);
-  assert.equal(byText('保存配置').disabled, true);
-  await click(document.querySelector('[role="dialog"] [aria-label^="关闭"]'));
+  assert.equal(byText('打开应用').disabled, false);
+  assert.equal(byText('完成').disabled, false);
+  assert.match(document.querySelector('[role=dialog]').textContent, /没有临时下载文件需要清理/);
+  await click(byText('完成'));
   assert.equal(document.querySelector('[role="dialog"]'), null);
   assert.equal(document.querySelectorAll('.project-card').length, 1);
   const listReads = calls.filter(([command]) => command === 'node_app_list').length;

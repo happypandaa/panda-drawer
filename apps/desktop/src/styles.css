@@ -1632,17 +1632,27 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .git-import-options input { width: 100%; box-sizing: border-box; border: 1px solid var(--radio-line); border-radius: 8px; padding: 10px 12px; background: var(--radio-surface); color: var(--radio-text); font: inherit; }
 .git-import-library { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--radio-line); }
 .git-import-library p { margin: 0; }
-.git-import-steps { display: flex; list-style: none; padding: 0; margin: 0 0 28px; gap: 12px; color: var(--radio-muted); font-size: 12px; }
-.git-import-steps li { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 2px solid var(--radio-line); }
-.git-import-steps li > span { display: flex; align-items: center; height: 18px; font-variant-numeric: tabular-nums; }
-.git-import-steps li[aria-current='step'] { border-color: var(--radio-active); color: var(--radio-text); font-weight: 600; }
-.git-import-steps li.is-complete { border-color: var(--radio-success); color: var(--radio-success); }
-.git-import-result h3 { margin: 0 0 12px; font-size: 19px; }
-.git-import-result p { line-height: 1.65; overflow-wrap: anywhere; }
-.git-import-result p[role='status'] { display: flex; align-items: center; gap: 8px; }
-.git-import-result .confirmation-actions { margin: 20px 0 12px; }
-.git-import-task { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--radio-line); }
-.git-import-task summary { cursor: pointer; font-size: 13px; color: var(--radio-muted); }
-.git-import-spinner { flex-shrink: 0; animation: git-import-spin 1.2s linear infinite; }
-@keyframes git-import-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .git-import-spinner { animation: none; } }
+@keyframes import-spin { to { transform: rotate(360deg); } }
+
+/* Shared import progress for Git, archives and local folders. */
+.import-dialog { max-width: 680px; }
+.import-progress { display: flex; list-style: none; padding: 0; margin: 0 0 28px; gap: 12px; color: var(--radio-muted); font-size: 12px; }
+.import-progress li { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 2px solid var(--radio-line); overflow-wrap: anywhere; }
+.import-progress li > span { display: flex; align-items: center; height: 18px; font-variant-numeric: tabular-nums; }
+.import-progress li[aria-current='step'] { border-color: var(--radio-active); color: var(--radio-text); font-weight: 600; }
+.import-progress li.is-complete { border-color: var(--radio-success); color: var(--radio-success); }
+.import-progress li.needs-attention { border-color: var(--radio-warning); color: var(--radio-warning); }
+.import-result h3 { margin: 0 0 12px; font-size: 19px; }
+.import-result p { line-height: 1.65; overflow-wrap: anywhere; }
+.import-result p[role='status'] { display: flex; align-items: center; gap: 8px; }
+.import-result .confirmation-actions { margin: 20px 0 12px; }
+.import-task { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--radio-line); }
+.import-task summary { cursor: pointer; font-size: 13px; color: var(--radio-muted); }
+.import-spinner { flex-shrink: 0; animation: import-spin 1.2s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .import-spinner { animation: none; } }
+@media (max-width: 720px) { .import-progress { gap: 8px; font-size: 11px; } }
+.import-dialog .path-input label { display: block; font-size: 13px; }
+.import-dialog .path-input input, .import-dialog .create-project-form > label input { display: block; width: 100%; min-width: 0; margin-top: 7px; padding: 10px 12px; border: 1px solid var(--radio-line); border-radius: 8px; background: var(--radio-surface); color: var(--radio-text); font: inherit; }
+.import-dialog .path-input input:focus-visible, .import-dialog .create-project-form > label input:focus-visible { outline: 2px solid var(--radio-active); outline-offset: 2px; }
+.import-dialog .choice-group { flex-wrap: wrap; gap: 8px 24px; }
+.import-dialog input[type='radio'] { accent-color: var(--radio-active); }

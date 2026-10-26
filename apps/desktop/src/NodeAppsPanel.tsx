@@ -54,7 +54,7 @@ export function nodeConfigurationInput(app: NodeAppDetail, draft: Draft): NodeCo
   return { revision: app.configuration.revision, values, secrets };
 }
 
-export interface NodeAppRequest { app: NodeAppDetail; intent: 'enter' | 'details' | 'delete'; token: number }
+export interface NodeAppRequest { app: NodeAppDetail; intent: 'enter' | 'configure' | 'details' | 'delete'; token: number }
 export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, onAppChanged, onAppDeleted, onModalStateChange, onDraftStateChange, onTask }: {
   enabled: boolean; request?: NodeAppRequest | null; addRequest?: number;
   instanceId?: string; onTask?: (task: TaskRecord) => void;
@@ -179,7 +179,7 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
     seenRequest.current = request.token;
     if (request.intent === 'delete') { openDeletion(request.app); return; }
     if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
-    void select(request.app, request.intent === 'enter' ? 'configuration' : 'overview', request.intent === 'enter');
+    void select(request.app, request.intent === 'enter' || request.intent === 'configure' ? 'configuration' : 'overview', request.intent === 'enter');
   }, [request, select, openDeletion, pending, directoryPending, developmentPending, gitDraft.pending]);
   useEffect(() => {
     if (!addRequest || addRequest === seenAdd.current || operation.current || directoryPending || !enabled) return;
@@ -212,9 +212,13 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
   }, [enabled, detail?.id, pending, installPending, developmentPending, gitDraft.pending, loading, modalOpen, instanceId, Boolean(deleteTarget)]);
 
   function acceptDirectory(value: NodeAppDetail) {
-    selected.current = value.id; sequence.current++;
-    accept(value, true); setAddOpen(false); setModalOpen(true); setTab('configuration'); setError('');
-    setNotice('项目已添加，尚未运行。请核对配置；需要填写时保存，再明确点击“进入项目”。');
+    // Keep the add result visible until the user chooses its next action.
+    changedCallback.current?.(value);
+  }
+  function enterDirectory(value: NodeAppDetail) {
+    if (directoryPending || operation.current || !enabled) return;
+    setAddOpen(false); setError('');
+    void select(value, 'configuration', value.configuration.canStart);
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -363,8 +367,8 @@ export function NodeAppsPanel({ enabled, instanceId, request, addRequest = 0, on
         {deleteDialog}
       </section></Modal>}
     {(!modalOpen || !detail) && deleteDialog}
-    {addOpen && <Modal title="添加本地应用" description="选择本地项目文件夹。空目录可生成并添加，已有项目先检查预览。" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); }}>
-      <LocalDirectoryPanel enabled={enabled && !pending && !installPending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} />
+    {addOpen && <Modal title="添加本地应用" description="选择目录、检查并添加到应用列表。" className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); }}>
+      <LocalDirectoryPanel enabled={enabled && !pending && !installPending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); }} />
     </Modal>}
   </>;
 }

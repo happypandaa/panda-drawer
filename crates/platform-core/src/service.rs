@@ -1174,6 +1174,12 @@ impl RuntimeHandle {
     pub async fn project_import(&self, input: Value) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().lifecycle.submit_import(input).await?))
     }
+    pub async fn project_import_cleanup(
+        &self,
+        task_id: String,
+    ) -> std::result::Result<Value, ApiError> {
+        self.current().lifecycle.cleanup_import(task_id).await
+    }
     pub async fn project_copy(
         &self,
         id: &str,
