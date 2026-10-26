@@ -14,6 +14,8 @@ Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据�
 
 2026-10-23 用户确认[直接删除规则](docs/application-deletion.md)：平台新建／导入的项目与已安装应用，确认范围后直接永久删除，不进入平台或系统回收站。外部目录引用只删除平台登记及本机私有配置／数据，外部文件夹完整保留。旧备份、旧回收项和恢复证据不随规则变更清理；旧回收 API 仅兼容既有历史。
 
+2026-10-26 用户确认[移除旧版回收站、旧备份与维护](docs/legacy-backup-trash-removal.md)：开发环境已于 10-25 重置，旧资料不存在，也不会再产生；回收站、备份列表／恢复、进入／结束维护的服务、CLI、原生命令和界面全部删除，项目导出／导入／复制所用的 ZIP 能力保留。下文 M3／M4 段落为历史记录。
+
 本轮新增[Node 源码副本、安装与更新](docs/node-managed-installation.md)：获取或接入源码后，先准备独立运行材料，再确认安装；同实例更新保留数据和配置。旧外部目录登记保持不变，实际原生通过范围持续登记在[三场景记录](docs/three-scenario-verification.md)。
 
 2026-10-23 已确认[本地目录接入三条路径](docs/local-directory-onboarding.md)：“添加本地应用”遇到空目录时，先确认生成零第三方依赖的 Node 起始项目，再预览添加；已有有效 Node 声明时先预览确认；其他目录提供包含目录、要求和独立 skill 全文的“复制给 AI 检查”，不推断一定兼容、不自动改造或发送。已有目录检查不写入 skill，也不安装、启动或读取密钥／业务数据库；project-v1 仍使用原有完整 ZIP 等入口。
@@ -133,25 +135,22 @@ npm run cli -- project build --project prj_实际项目ID --json
 npm run cli -- task wait --task task_实际任务ID --timeout 30 --json
 npm run cli -- task logs --task task_实际任务ID --json
 npm run cli -- project url --project prj_实际项目ID --json
-npm run cli -- backup create --project prj_实际项目ID --json
-npm run cli -- backup list --project prj_实际项目ID --json
 npm run cli -- maintenance status --project prj_实际项目ID --json
 npm run cli -- project export --project prj_实际项目ID --input export.json --json
 npm run cli -- project import --input import.json --json
 npm run cli -- project copy --project prj_实际项目ID --input copy.json --json
 npm run cli -- project delete --project prj_实际项目ID --json
-npm run cli -- trash list --json
 npm run cli -- workspace info --json
 ```
 
-`export.json` 使用 `destinationPath`（可选 `overwrite`），`import.json` 使用 `archivePath`，省略 `mode` 时默认 `"copy"`，每次生成新实例 ID；仅显式 `mode: "original"` 保留归档身份，冲突时仍拒绝覆盖。`copy.json` 可指定 `name`；维护中的项目操作携带本轮 `maintenanceId`。`project delete` 直接永久删除选中项目，调用前须核对目标和范围；`trash` 命令仅管理旧回收项。归档路径使用绝对路径。迁移请求及旧回收站恢复/永久清除详见[开发说明](docs/development.md)。写入超时或服务切换后查询原任务，不自动重发。
+`export.json` 使用 `destinationPath`（可选 `overwrite`），`import.json` 使用 `archivePath`，省略 `mode` 时默认 `"copy"`，每次生成新实例 ID；仅显式 `mode: "original"` 保留归档身份，冲突时仍拒绝覆盖。`copy.json` 可指定 `name`；维护中的项目操作携带本轮 `maintenanceId`。`project delete` 直接永久删除选中项目，调用前须核对目标和范围。归档路径使用绝对路径。迁移请求详见[开发说明](docs/development.md)。写入超时或服务切换后查询原任务，不自动重发。
 
 运行 `npm run prepare:desktop` 并启动开发应用后，`npm run test:m1:live` 会明确新建两个可丢弃验证项目、安装 `examples/m1-runtime` 受控产物并检查接口。随后完整退出并重启，再运行 `npm run test:m1:restart` 验证数据保留和旧会话失效。测试不会清空已有工作区，也不把受控产物称为 AI 构建。
 
 SDK 测试运行 `npm run test:sdk`。M2 的独立 AI、桌面与浏览器完整流程结果以验证记录为准；编译通过不替代这些验收。构建脚本是普通本机代码，不是沙盒：只运行可信项目，禁止启动后台或脱离进程组子进程，平台清理普通构建进程组。
 
-M3 的新项目实际实例验证使用 `node scripts/m3-live-test.mjs`。维护重启验证先执行 `node scripts/m3-restart-test.mjs prepare`，完整退出并重启开发包后执行 `verify`。测试只写新建的 `M3 可丢弃` 项目，报告在 `.test-artifacts/`；运行脚本不等于所有验收已通过，以 [M3 记录](docs/m3-verification.md)为准。
+M3 的备份、维护与恢复已于 2026-10-26 移除，其 live／重启／兼容脚本随之删除；历史结果见 [M3 记录](docs/m3-verification.md)。
 
-M4 使用 `node scripts/m4-live-test.mjs` 创建新的 `M4 可丢弃` 样本。`m4-compatibility-test.mjs` 核对升级前 17 个已有项目；`m4-migration-test.mjs prepare|verify` 配合公开迁移和完整重启验证全工作区。132 项 Rust、12 项 SDK、8 组运行提示回归和真实服务 live、公开迁移及进程重启验证已通过。原 17 个项目兼容核对通过，M4 验收时工作区已迁至开发数据根下 `workspaces/current/`，源 `workspace/` 当时完整保留；后续旧根的显式清理状态见[历史清理验证](docs/history-cleanup-verification.md)。M4 生命周期 GUI 全流程因工具访问限制未完成，实际证据、最终包摘要与边界见 [M4 记录](docs/m4-verification.md)。
+M4 的旧版软删除 live 与迁移脚本（`m4-live-test.mjs`、`m4-migration-test.mjs`）已随回收站移除；`m4-compatibility-test.mjs` 保留。以下为当时的历史结果：132 项 Rust、12 项 SDK、8 组运行提示回归和真实服务 live、公开迁移及进程重启验证已通过。原 17 个项目兼容核对通过，M4 验收时工作区已迁至开发数据根下 `workspaces/current/`，源 `workspace/` 当时完整保留；后续旧根的显式清理状态见[历史清理验证](docs/history-cleanup-verification.md)。M4 生命周期 GUI 全流程因工具访问限制未完成，实际证据、最终包摘要与边界见 [M4 记录](docs/m4-verification.md)。
 
 M5 已通过 164 项 Rust（147 core、12 CLI、5 desktop）、Clippy/fmt、12 项 SDK、9 组运行提示及 15 项媒体助手模拟测试；真实服务 7 组、109 附件分页、元数据和附件重启保留、原有 26 项目兼容及坏库诊断通过。最终 app/DMG 的签名、架构、媒体权限、54 条目一致性与 8 处 SDK 摘要校验通过。管理 GUI、真实录音拍照、Safari/Chrome 和原生保存框尚未实测；工具访问限制没有通过其他方式绕过。实际证据与交付边界见 [M5 记录](docs/m5-verification.md)。

@@ -21,7 +21,7 @@ const CLI_LONG_ABOUT: &str = if platform_core::production_resources::COMPILED_RE
 } else if platform_core::build_profile::PRODUCTION_PROFILE {
     "Inspect the fixed production candidate with build-info. Signed resource anchors are not configured, so every runtime command is rejected before reading inputs, data roots, discovery or credentials. This metadata foundation is not a released, signed or notarized application."
 } else {
-    "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, manage complete backups and maintenance, export/import/copy projects, permanently delete selected projects, restore or purge legacy trash, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, export/import/copy projects, permanently delete selected projects, clean registered history, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
 };
 
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
@@ -69,20 +69,10 @@ enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    /// Create, inspect, and restore complete project snapshots.
-    Backup {
-        #[command(subcommand)]
-        command: BackupCommand,
-    },
-    /// Explicitly prepare and end persistent project maintenance.
+    /// Inspect a project's control status (busy, recovery and pending build).
     Maintenance {
         #[command(subcommand)]
         command: MaintenanceCommand,
-    },
-    /// Inspect and explicitly restore or purge legacy trash entries.
-    Trash {
-        #[command(subcommand)]
-        command: TrashCommand,
     },
     /// Inspect project files, measured storage, and explicit safe cleanup.
     Storage {
@@ -262,7 +252,7 @@ enum ProjectCommand {
     Copy(ProjectMutationOptions),
     /// Permanently delete this project's files without using platform or system trash.
     ///
-    /// This cannot be undone. Historical backups and recovery evidence are retained.
+    /// This cannot be undone. Retained recovery evidence and other projects are unaffected.
     /// Omitted expectedDocumentEpoch is read from current project info before submission.
     Delete(ProjectMutationOptions),
 }
@@ -323,23 +313,6 @@ struct ProjectGitInputOptions {
 }
 
 #[derive(Subcommand)]
-enum TrashCommand {
-    List(OutputOptions),
-    Info(TrashOptions),
-    Restore(TrashOptions),
-    /// Permanently remove this trash entry's project files. Does not remove historical backups or exported ZIPs.
-    Purge(TrashOptions),
-}
-
-#[derive(Args)]
-struct TrashOptions {
-    #[arg(long)]
-    trash: String,
-    #[command(flatten)]
-    output: OutputOptions,
-}
-
-#[derive(Subcommand)]
 enum WorkspaceCommand {
     Info(OutputOptions),
     Storage(OutputOptions),
@@ -369,27 +342,8 @@ enum StorageCommand {
 }
 
 #[derive(Subcommand)]
-enum BackupCommand {
-    List(ProjectOptions),
-    Info {
-        #[command(flatten)]
-        project: ProjectOptions,
-        #[arg(long)]
-        backup: String,
-    },
-    /// Submit a complete snapshot task. Wait for its final result before editing files.
-    Create(ProjectMutationOptions),
-    /// Restore the explicit backupId in JSON. The project remains in maintenance.
-    Restore(ProjectInputOptions),
-}
-
-#[derive(Subcommand)]
 enum MaintenanceCommand {
     Status(ProjectOptions),
-    /// Enter maintenance and prepare a complete baseline before allowing changes.
-    Begin(ProjectInputOptions),
-    /// Check the project, end this maintenance, and require old pages to reload.
-    End(ProjectInputOptions),
 }
 
 #[derive(Subcommand)]
@@ -504,9 +458,7 @@ fn main() -> ExitCode {
         Command::Task { command } => task_command(command),
         Command::Project { command } => project_command(command),
         Command::Db { command } => database_command(command),
-        Command::Backup { command } => backup_command(command),
         Command::Maintenance { command } => maintenance_command(command),
-        Command::Trash { command } => trash_command(command),
         Command::Workspace { command } => workspace_command(command),
         Command::Storage { command } => storage_command(command),
         Command::Source { command } => source_command(command),
@@ -723,31 +675,6 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
     }
 }
 
-fn trash_command(command: TrashCommand) -> (bool, Result<Value>) {
-    let (options, method, suffix) = match command {
-        TrashCommand::List(options) => {
-            return (
-                options.json,
-                business_request("GET", "/api/v1/trash", None, None),
-            )
-        }
-        TrashCommand::Info(options) => (options, "GET", ""),
-        TrashCommand::Restore(options) => (options, "POST", "/restore"),
-        TrashCommand::Purge(options) => (options, "POST", "/purge"),
-    };
-    (
-        options.output.json,
-        validate_reference_id(&options.trash, "trash").and_then(|()| {
-            business_request(
-                method,
-                &format!("/api/v1/trash/{}{suffix}", options.trash),
-                None,
-                (method == "POST").then(|| json!({})),
-            )
-        }),
-    )
-}
-
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
         WorkspaceCommand::IdentityRepairPlan(options) => (
@@ -902,41 +829,11 @@ fn database_command(command: DatabaseCommand) -> (bool, Result<Value>) {
     }
 }
 
-fn backup_command(command: BackupCommand) -> (bool, Result<Value>) {
-    match command {
-        BackupCommand::List(options) => (
-            options.output.json,
-            project_request(&options.project, "GET", "/backups", None),
-        ),
-        BackupCommand::Info { project, backup } => (
-            project.output.json,
-            validate_reference_id(&backup, "backup").and_then(|()| {
-                project_request(&project.project, "GET", &format!("/backups/{backup}"), None)
-            }),
-        ),
-        BackupCommand::Create(options) => {
-            (options.output.json, mutation_request(options, "/backups"))
-        }
-        BackupCommand::Restore(options) => (
-            options.input.output.json,
-            input_request(options, "/restore"),
-        ),
-    }
-}
-
 fn maintenance_command(command: MaintenanceCommand) -> (bool, Result<Value>) {
     match command {
         MaintenanceCommand::Status(options) => (
             options.output.json,
             project_request(&options.project, "GET", "/maintenance", None),
-        ),
-        MaintenanceCommand::Begin(options) => (
-            options.input.output.json,
-            input_request(options, "/maintenance"),
-        ),
-        MaintenanceCommand::End(options) => (
-            options.input.output.json,
-            input_request(options, "/maintenance/end"),
         ),
     }
 }
@@ -1041,21 +938,6 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
     )?;
     if route == "/exports" {
         validate_path_field(&input, "destinationPath")?;
-    }
-    if route == "/restore" {
-        let backup = input["backupId"].as_str().ok_or_else(|| {
-            CliError::new(
-                "INPUT_INVALID",
-                "Restore requires an explicit backupId in JSON input.",
-            )
-        })?;
-        validate_reference_id(backup, "backupId")?;
-    }
-    if route == "/maintenance/end" && input.get("maintenanceId").is_none() {
-        return Err(CliError::new(
-            "INPUT_INVALID",
-            "Ending maintenance requires the current maintenanceId.",
-        ));
     }
     project_request(&options.project, "POST", route, Some(input))
 }
@@ -2004,49 +1886,15 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_and_backup_commands_parse_without_changing_existing_forms() {
+    fn retired_backup_and_trash_commands_are_gone_and_maintenance_status_remains() {
         for args in [
-            vec!["cli", "backup", "list", "--project", "p_test", "--json"],
-            vec![
-                "cli",
-                "backup",
-                "info",
-                "--project",
-                "p_test",
-                "--backup",
-                "backup_a",
-            ],
-            vec!["cli", "backup", "create", "--project", "p_test"],
-            vec![
-                "cli",
-                "backup",
-                "restore",
-                "--project",
-                "p_test",
-                "--input",
-                "-",
-                "--maintenance",
-                "maintenance_a",
-            ],
             vec![
                 "cli",
                 "maintenance",
-                "begin",
+                "status",
                 "--project",
                 "p_test",
-                "--input",
-                "-",
-            ],
-            vec![
-                "cli",
-                "maintenance",
-                "end",
-                "--project",
-                "p_test",
-                "--input",
-                "-",
-                "--maintenance",
-                "maintenance_a",
+                "--json",
             ],
             vec!["cli", "project", "build", "--project", "p_test"],
             vec![
@@ -2072,7 +1920,32 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
-        assert!(Cli::try_parse_from(["cli", "backup", "restore", "--project", "p_test"]).is_err());
+        for args in [
+            vec!["cli", "backup", "list", "--project", "p_test"],
+            vec!["cli", "backup", "create", "--project", "p_test"],
+            vec![
+                "cli",
+                "maintenance",
+                "begin",
+                "--project",
+                "p_test",
+                "--input",
+                "-",
+            ],
+            vec![
+                "cli",
+                "maintenance",
+                "end",
+                "--project",
+                "p_test",
+                "--input",
+                "-",
+            ],
+            vec!["cli", "trash", "list", "--json"],
+            vec!["cli", "trash", "purge", "--trash", "trash_a"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]
@@ -2252,10 +2125,6 @@ mod tests {
                 "--maintenance",
                 "maintenance_a",
             ],
-            vec!["cli", "trash", "list", "--json"],
-            vec!["cli", "trash", "info", "--trash", "trash_a"],
-            vec!["cli", "trash", "restore", "--trash", "trash_a"],
-            vec!["cli", "trash", "purge", "--trash", "trash_a"],
             vec!["cli", "workspace", "info", "--json"],
             vec!["cli", "workspace", "identity-repair-plan", "--json"],
             vec![
@@ -2273,7 +2142,6 @@ mod tests {
         for args in [
             vec!["cli", "project", "export", "--project", "p_test"],
             vec!["cli", "project", "import"],
-            vec!["cli", "trash", "purge"],
             vec!["cli", "workspace", "migrate"],
             vec!["cli", "workspace", "identity-repair"],
         ] {
@@ -2296,11 +2164,6 @@ mod tests {
             "archivePath"
         )
         .is_ok());
-        let (_, result) = trash_command(TrashCommand::Purge(TrashOptions {
-            trash: "../project".into(),
-            output: OutputOptions { json: true },
-        }));
-        assert_eq!(result.unwrap_err().code, "INPUT_INVALID");
     }
 
     #[test]

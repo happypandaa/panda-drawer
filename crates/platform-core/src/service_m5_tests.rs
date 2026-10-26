@@ -176,22 +176,6 @@ async fn runtime_declarations_control_resource_policy_and_native_device_gate() {
         .await
         .unwrap()
         .contains("platform-runtime-policy"));
-    // Keep testing the real legacy device gate without reopening new baseline
-    // admission, which remains retired even in test builds.
-    let prepared = crate::maintenance::legacy_test_fixtures::historical_operation(
-        &service.shared.snapshot().maintenance,
-        &project.id,
-        "maintenanceBegin",
-        crate::maintenance::OperationInput {
-            reason: Some("Historical M5 device gate fixture".into()),
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(prepared.status, TaskStatus::Succeeded, "{prepared:?}");
-    assert!(!service
-        .handle()
-        .device_permission_declared(&project.id, "camera"));
     service.shutdown().await.unwrap();
 }
 

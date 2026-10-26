@@ -959,77 +959,6 @@ async fn project_build(
 }
 
 #[tauri::command]
-async fn backup_list(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.backup_list(&project_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn backup_info(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    backup_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.backup_info(&project_id, &backup_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn backup_create(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.backup_create(&project_id, input).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn backup_restore(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.backup_restore(&project_id, input).await
-        })
-        .await?
-}
-
-#[tauri::command]
 async fn maintenance_status(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1042,42 +971,6 @@ async fn maintenance_status(
         .run(async move {
             let state = io_app.state::<AppState>();
             state.handle.maintenance_status(&project_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn maintenance_begin(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.maintenance_begin(&project_id, input).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn maintenance_end(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.maintenance_end(&project_id, input).await
         })
         .await?
 }
@@ -2064,73 +1957,6 @@ async fn node_app_open_help(
 }
 
 #[tauri::command]
-async fn trash_info(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    trash_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.trash_info(&trash_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn trash_restore(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    trash_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.trash_restore(&trash_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn trash_purge(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    trash_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.trash_purge(&trash_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn trash_list(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.trash_list().await
-        })
-        .await?
-}
-
-#[tauri::command]
 async fn workspace_info(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -2454,10 +2280,6 @@ fn main() {
             project_import,
             project_copy,
             project_delete,
-            trash_list,
-            trash_info,
-            trash_restore,
-            trash_purge,
             workspace_info,
             workspace_migrate,
             project_list,
@@ -2466,13 +2288,7 @@ fn main() {
             storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,workspace_cleanup_preview,workspace_cleanup,
             project_open,
             project_build,
-            backup_list,
-            backup_info,
-            backup_create,
-            backup_restore,
             maintenance_status,
-            maintenance_begin,
-            maintenance_end,
             task_get,
             task_logs,
             environment_doctor,

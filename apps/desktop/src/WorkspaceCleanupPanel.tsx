@@ -6,7 +6,7 @@ import { bytesText, exactBytes, timeText } from './storage-utils';
 import type { ByteCount, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
-type CleanupKind = 'retainedWorkspace' | 'recoveryOriginal' | 'trash';
+type CleanupKind = 'retainedWorkspace';
 interface CleanupItem {
   id: string;
   kind: CleanupKind;
@@ -38,7 +38,7 @@ interface CleanupPanelProps {
   onRefresh: () => Promise<void>;
   onPendingChange?: (pending: boolean) => void;
 }
-const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移保留目录', recoveryOriginal: '已完成恢复的原现场', trash: '旧版保留项目' };
+const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移前的旧工作区' };
 const confirmationPhrase = '永久清理所选内容';
 function readPlan(result: Record<string, unknown> | null): CleanupPlan {
   if (!result || typeof result.planId !== 'string' || !result.planId || typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt) || typeof result.workspaceRoot !== 'string' || !Array.isArray(result.items) || !Array.isArray(result.preserved) || result.confirmationText !== confirmationPhrase) throw new Error('清理范围返回不完整，请重新扫描；未提交任何清理操作。');
@@ -46,7 +46,7 @@ function readPlan(result: Record<string, unknown> | null): CleanupPlan {
   for (const value of result.items) {
     if (!value || typeof value !== 'object') throw new Error('清理范围中的条目无效，请重新扫描。');
     const item = value as Record<string, unknown>;
-    if (typeof item.id !== 'string' || !item.id || ids.has(item.id) || !['retainedWorkspace', 'recoveryOriginal', 'trash'].includes(String(item.kind)) || typeof item.label !== 'string' || typeof item.path !== 'string' || !item.path.startsWith('/') || typeof item.canClean !== 'boolean' || !Array.isArray(item.blockedReasons) || !item.blockedReasons.every((reason) => typeof reason === 'string')) throw new Error('清理范围中的条目不完整，请重新扫描。');
+    if (typeof item.id !== 'string' || !item.id || ids.has(item.id) || !Object.prototype.hasOwnProperty.call(kinds, String(item.kind)) || typeof item.label !== 'string' || typeof item.path !== 'string' || !item.path.startsWith('/') || typeof item.canClean !== 'boolean' || !Array.isArray(item.blockedReasons) || !item.blockedReasons.every((reason) => typeof reason === 'string')) throw new Error('清理范围中的条目不完整，请重新扫描。');
     ids.add(item.id);
   }
   if (!result.preserved.every((value) => typeof value === 'string')) throw new Error('清理范围缺少明确的保留内容，请重新扫描。');
@@ -176,16 +176,16 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   async function copyPath(value: string) { try { await navigator.clipboard.writeText(value); if (alive.current) setNotice('目录路径已复制。'); } catch { if (alive.current) setNotice('无法自动复制，请选中显示的完整目录路径手动复制。'); } }
   return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-title`}>
     <div className="section-heading"><div><h2 id={`${id}-title`}>清理历史</h2><p>先扫描并查看目录，再选择明确不再需要的历史副本。扫描本身不会删除文件。</p></div><button className="refresh-button" disabled={blocked} onClick={() => void preview()}><RefreshCw size={14} />{pending === 'preview' || previewRunning ? '正在扫描…' : plan ? '重新扫描范围' : '扫描可清理范围'}</button></div>
-    <div className="workspace-cleanup-intro"><ShieldCheck size={19} /><p>当前工作区的活跃项目、全部历史备份和未解决的恢复现场会保留。没有默认勾选；永久清理无法撤销。可清理状态以扫描结果和提交时的再次核对为准。</p></div>
+    <div className="workspace-cleanup-intro"><ShieldCheck size={19} /><p>当前工作区的项目和未解决的恢复现场会保留。没有默认勾选；永久清理无法撤销。可清理状态以扫描结果和提交时的再次核对为准。</p></div>
     {previewTask && (!previewTask.final || previewTask.status !== 'succeeded') && <ProjectTask task={previewTask} />}
     {plan && <>
-      <div className="workspace-cleanup-plan"><span>本次扫描工作区</span><code>{plan.workspaceRoot}</code><p>确认有效至 {timeText(plan.expiresAt)} · 计划 {plan.planId}</p><p>以下大小为普通文件的逻辑字节，不等于实际可释放的物理磁盘空间。</p>{plan.items.some((item) => item.kind === 'retainedWorkspace') && <p>迁移保留目录是迁移时点的完整副本，可能包含后来已删除的项目及当时的备份副本。选择清理会删除该目录中的全部文件；当前工作区的历史备份保留。</p>}</div>
+      <div className="workspace-cleanup-plan"><span>本次扫描工作区</span><code>{plan.workspaceRoot}</code><p>确认有效至 {timeText(plan.expiresAt)} · 计划 {plan.planId}</p><p>以下大小为普通文件的逻辑字节，不等于实际可释放的物理磁盘空间。</p>{plan.items.some((item) => item.kind === 'retainedWorkspace') && <p>迁移前的旧工作区是迁移时点的完整副本。选择清理会删除该目录中的全部文件；当前工作区不受影响。</p>}</div>
       {(expired || wrongWorkspace || consumed) && <p className="workspace-operation-status" role="status">{wrongWorkspace ? '工作区已改变，请重新扫描。' : consumed ? '本次范围已经提交过，请等待最终结果后重新扫描核对，不能直接重复提交。' : '本次范围已过期，请重新扫描后再选择和确认。'}</p>}
       {plan.items.length ? <div className="workspace-cleanup-items" aria-label="历史清理候选范围">{plan.items.map((item) => <article className={`workspace-cleanup-item${item.canClean && !item.blockedReasons.length ? '' : ' is-blocked'}`} key={item.id}>
         <div className="workspace-cleanup-item-heading"><label className="checkbox-label"><input type="checkbox" aria-label={`选择${itemDescription(item)}`} checked={selected.includes(item.id)} disabled={planBlocked || !item.canClean || Boolean(item.blockedReasons.length)} onChange={(event) => { setSelected((current) => event.target.checked ? [...current.filter((value) => value !== item.id), item.id] : current.filter((value) => value !== item.id)); clearConfirmation(); }} /><span><strong>{item.label || item.name || kinds[item.kind]}</strong><small>{kinds[item.kind]}</small></span></label><strong title={exactBytes(item.totalBytes)}>{bytesText(item.totalBytes)}</strong></div>
         <code className="workspace-cleanup-path">{item.path}</code><div className="workspace-cleanup-item-meta"><span>{countText(item.fileCount)}</span>{item.projectId && <span>项目 ID：<code>{item.projectId}</code></span>}{item.name && <span>项目名称：{item.name}</span>}<button className="text-button" aria-label={`复制${itemDescription(item)}的目录`} onClick={() => void copyPath(item.path)}><Copy size={13} />复制目录</button></div>
         {(!item.canClean || item.blockedReasons.length > 0) && <div className="workspace-cleanup-blocked"><strong>暂不可清理</strong>{item.blockedReasons.length ? item.blockedReasons.map((reason, index) => <p key={index}>{reason}</p>) : <p>此条目未获得清理许可，请检查关联任务与恢复状态。</p>}</div>}
-      </article>)}</div> : <div className="workspace-empty-state"><Trash2 size={26} /><p>本次没有发现可列出的历史清理范围</p><span>无需为了让空间数字归零而删除平台程序、备份或当前项目。</span></div>}
+      </article>)}</div> : <div className="workspace-empty-state"><Trash2 size={26} /><p>本次没有发现可列出的历史清理范围</p><span>无需为了让空间数字归零而删除平台程序或当前项目。</span></div>}
       <div className="workspace-cleanup-preserved"><h3>本次始终保留</h3>{plan.preserved.length ? <ul>{plan.preserved.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>扫描未列出可删除的其他位置。范围之外的文件保持原样。</p>}</div>
       <div className="workspace-cleanup-review-action"><p>已选择 {selectedItems.length} 项。每项均会删除显示目录中的完整历史副本。</p><button ref={reviewButton} className="danger-button" disabled={planBlocked || !selectedItems.length || selectedItems.some((item) => !item.canClean || item.blockedReasons.length)} onClick={beginReview}><ArrowRight size={14} />核对所选清理范围</button></div>
       {confirmationCurrent && <div className="operation-confirmation workspace-cleanup-confirmation" aria-label="历史清理范围确认"><h3 ref={reviewHeading} tabIndex={-1}>永久清理以下 {selectedItems.length} 项？</h3><p>所选目录会直接永久删除。其中全部文件，包括源码、数据库、附件、网页、说明和历史副本，都将无法恢复。</p><ul>{selectedItems.map((item) => <li key={item.id}><strong>{item.label}</strong><code>{item.path}</code><span>{bytesText(item.totalBytes)}{item.projectId ? ` · 项目 ${item.projectId}` : ''}</span></li>)}</ul><p>当前工作区：<code>{plan.workspaceRoot}</code>。上方“本次始终保留”范围不会删除。</p><label htmlFor={`${id}-confirmation`}>输入“{plan.confirmationText}”确认<input id={`${id}-confirmation`} value={typedConfirmation} disabled={planBlocked} autoComplete="off" onChange={(event) => setTypedConfirmation(event.target.value)} /></label><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={planBlocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对全部目录及保留内容，并已停止外部 AI、编辑器和工具使用或写入这些历史目录</label><div className="confirmation-actions"><button className="danger-button" disabled={planBlocked || typedConfirmation !== plan.confirmationText || !acknowledged} onClick={() => void submit()}>{pending === 'cleanup' ? '正在提交…' : '确认永久清理所选内容'}</button><button className="refresh-button" disabled={pending === 'cleanup' || cleanupRunning} onClick={cancelReview}>取消，继续保留</button></div></div>}
@@ -205,7 +205,6 @@ function CleanupResult({ task }: { task: TaskRecord }) {
     {itemResults.length > 0 && <div className="workspace-cleanup-item-results" aria-label="逐项清理结果">{itemResults.map((entry, index) => <CleanupItemResult key={objectValue(entry)?.id as string ?? index} value={entry} />)}</div>}
     {task.final && itemResults.length === 0 && result.completed !== true && <p>{objectValue(result.error)?.code === 'CLEANUP_PLAN_CHANGED' ? '执行前的范围校验未通过，尚未开始删除。请重新扫描后核对。' : '本任务缺少完整的逐项删除汇总，实际删除数量尚未确认。请查看持久回执与日志核对，不能把未知数量视为零。'}</p>}
     {groups.map(([label, value]) => Array.isArray(value) && value.length > 0 ? <section key={label}><h4>{label}</h4><ul>{value.map((entry, index) => { const item = objectValue(entry); return <li key={index}>{item ? <><code>{String(item.path ?? item.label ?? item.id ?? '记录')}</code>{(item.logicalBytes ?? item.totalBytes) != null && <span>{bytesText((item.logicalBytes ?? item.totalBytes) as ByteCount)}</span>}<p>{messageFrom(item.message ?? item.reason ?? item.error ?? item.status ?? '')}</p></> : <span>{String(entry)}</span>}</li>; })}</ul></section> : null)}
-    {result.historicalBackupsRetained === true && <p>当前工作区的历史备份已保留。</p>}
     {typeof result.receiptPath === 'string' && <div className="workspace-cleanup-receipt"><strong>本次清理回执</strong><code>{result.receiptPath}</code><p>回执用于核对实际结果，会保留在固定开发数据目录中。</p></div>}
     <details className="workspace-disclosure"><summary>查看完整结构化结果</summary><pre tabIndex={0}>{JSON.stringify(result, null, 2)}</pre></details>
     {task.final && (task.status !== 'succeeded' || result.completed === false) && <p>任务未完整成功。记录中已删除的内容无法恢复；修复失败原因后，重新扫描并核对剩余范围，不自动重试。</p>}

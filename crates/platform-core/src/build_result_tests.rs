@@ -267,18 +267,12 @@ async fn recorded_build_survives_restart_and_unrelated_maintenance_tasks() {
     for _ in 0..2 {
         let manager =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
-        let maintenance = crate::maintenance::MaintenanceManager::new(
-            paths.clone(),
-            store.clone(),
-            manager.clone(),
-        )
-        .unwrap();
+        let maintenance = crate::maintenance::MaintenanceManager::new(store.clone(), manager.clone());
         let status = maintenance.status(&project.manifest.id).unwrap();
         assert_eq!(status["latestBuild"]["selection"], "recorded-submission");
         assert_eq!(status["latestBuild"]["task"]["taskId"], build.task_id);
         assert_eq!(status["latestBuild"]["task"]["status"], "succeeded");
         assert_eq!(status["activeTask"], Value::Null);
-        maintenance.shutdown().await;
         manager.shutdown().await;
     }
     store.shutdown().await;

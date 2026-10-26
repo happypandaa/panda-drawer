@@ -182,17 +182,14 @@ async fn data_restore_guard_blocks_cached_business_diagnostics_deletion_migratio
         .is_err());
     assert!(fixture
         .store
-        .reserve_identity(id, "task_forbidden_identity", None)
+        .reserve_identity(id, "task_forbidden_identity")
         .is_err());
     assert!(fixture.store.begin_workspace_migration().is_err());
     assert!(fixture.store.begin_workspace_cleanup().is_err());
     assert!(crate::workspace::validate_idle(&fixture.paths).is_err());
     let epoch = Uuid::new_v4().to_string();
     for error in [
-        fixture
-            .store
-            .unregister_lifecycle(id, &epoch, None)
-            .unwrap_err(),
+        fixture.store.unregister_lifecycle(id, &epoch).unwrap_err(),
         fixture
             .store
             .register_lifecycle(id, &epoch, "task_foreign", true)

@@ -3,7 +3,6 @@
 use crate::{
     builds::{self, BuildManager},
     file_identity::PersistedIdentity,
-    lifecycle::LifecycleManager,
     projects::{check_no_symlinks, valid_id},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord, APP_IDENTIFIER, ENVIRONMENT,
 };
@@ -161,7 +160,6 @@ pub(crate) struct CleanupManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
-    lifecycle: Arc<LifecycleManager>,
     instance_id: String,
     admission: Mutex<()>,
     running: Mutex<Vec<JoinHandle<()>>>,
@@ -482,7 +480,6 @@ impl CleanupManager {
         paths: RuntimePaths,
         store: Arc<ProjectStore>,
         tasks: Arc<BuildManager>,
-        lifecycle: Arc<LifecycleManager>,
         instance_id: String,
     ) -> Result<Arc<Self>, ApiError> {
         let root = paths.data_root().join("cleanup");
@@ -513,7 +510,6 @@ impl CleanupManager {
             paths,
             store,
             tasks,
-            lifecycle,
             instance_id,
             admission: Mutex::new(()),
             running: Mutex::new(vec![]),
@@ -756,52 +752,6 @@ impl CleanupManager {
             });
             items.push(item);
         }
-        let operations = self.paths.workspace_root().join(".platform/operations");
-        for directory in fs::read_dir(&operations)? {
-            let directory = directory?;
-            let id = directory.file_name().to_string_lossy().into_owned();
-            if !valid_id(&id) || !directory.path().join("original").try_exists()? {
-                continue;
-            }
-            let mut item = Candidate::new(
-                format!("original_{id}"),
-                "recoveryOriginal",
-                "已完成恢复保留的原现场",
-                directory.path().join("original"),
-            );
-            self.inspect(&mut item, |item| self.validate_original(item, &id));
-            items.push(item);
-        }
-        let legacy_trash = match fs::read_dir(self.paths.workspace_root().join(".platform/trash")) {
-            Ok(entries) => Some(entries),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        for directory in legacy_trash.into_iter().flatten() {
-            let directory = directory?;
-            let id = directory.file_name().to_string_lossy().into_owned();
-            if !id.starts_with("trash_") || !valid_id(&id) {
-                continue;
-            }
-            let record_path = directory.path().join("record.json");
-            let record = read_json(&record_path)?;
-            if !matches!(
-                record["state"].as_str(),
-                Some("trashed" | "purgeIncomplete" | "purging" | "needsAttention")
-            ) {
-                continue;
-            }
-            let mut item = Candidate::new(
-                format!("trash_{id}"),
-                "trash",
-                "旧版保留项目文件（保留历史备份）",
-                directory.path().join("project"),
-            );
-            self.inspect(&mut item, |item| {
-                self.validate_trash(item, &id, &record_path, &record)
-            });
-            items.push(item);
-        }
         items.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
         Ok(items)
     }
@@ -864,14 +814,7 @@ impl CleanupManager {
                 }
             }
         } else {
-            let allowed = if item.kind == "trash" {
-                ".platform/trash"
-            } else {
-                ".platform/operations"
-            };
-            if !path.starts_with(self.paths.workspace_root().join(allowed)) {
-                return Err(error("Payload is outside its recorded owner directory"));
-            }
+            return Err(error("Unknown historical cleanup category"));
         }
         check_no_symlinks(path, false)
     }
@@ -936,132 +879,6 @@ impl CleanupManager {
         }
         Ok(())
     }
-    fn validate_original(&self, item: &mut Candidate, task: &str) -> Result<(), ApiError> {
-        let path = item.path.parent().unwrap().join("journal.json");
-        let journal = Self::guard_file(item, &path)?;
-        let id = journal["projectId"]
-            .as_str()
-            .filter(|id| valid_id(id))
-            .ok_or_else(|| error("Restore journal has no valid project identity"))?;
-        item.project_id = Some(id.into());
-        if journal["taskId"] != task || journal["committed"] != true || journal["resolved"] != true
-        {
-            return Err(error("Restore operation is not committed and resolved"));
-        }
-        let _: PersistedIdentity = serde_json::from_value(journal["candidateIdentity"].clone())
-            .map_err(|_| error("Unrecognized restore candidate identity"))?;
-        let _: crate::control::ControlState = validated_control(journal["previousControl"].clone())
-            .map_err(|_| error("Unrecognized previous restore control state"))?;
-        let _: crate::control::ControlState = validated_control(journal["finalControl"].clone())
-            .map_err(|_| error("Committed restore has no final control state"))?;
-        let backup = journal["backupId"]
-            .as_str()
-            .filter(|id| valid_id(id))
-            .ok_or_else(|| error("Unrecognized restore backup reference"))?;
-        let archive = self
-            .paths
-            .workspace_root()
-            .join("backups")
-            .join(id)
-            .join(format!("{backup}.zip"));
-        let backup_info = crate::backups::read_info(&archive)?;
-        if backup_info.manifest.project_id != id || backup_info.manifest.backup_id != backup {
-            return Err(error("Restore backup identity is unavailable"));
-        }
-        let control = self.store.control(id)?.get();
-        if control.mode == "maintenance" || control.recovery_required {
-            return Err(error(
-                "Current maintenance or recovery still protects the original",
-            ));
-        }
-        self.check_references(Some(id), Some(task))?;
-        let expected: PersistedIdentity =
-            serde_json::from_value(journal["originalIdentity"].clone())?;
-        if !matches_persisted_root(&expected, item)? {
-            self.validate_migrated_original(item, task, &path)?;
-        }
-        let record = self.tasks.task(task)?;
-        if !record.status.is_final()
-            || record.task_type != "restore"
-            || record.project_id.as_deref() != Some(id)
-        {
-            return Err(error(
-                "Original payload has no matching completed restore task",
-            ));
-        }
-        Ok(())
-    }
-    fn validate_migrated_original(
-        &self,
-        item: &mut Candidate,
-        task: &str,
-        journal_path: &Path,
-    ) -> Result<(), ApiError> {
-        let relative = PathBuf::from(".platform/operations")
-            .join(task)
-            .join("original");
-        let journal_relative = format!(".platform/operations/{task}/journal.json");
-        let journal_digest = hash_file(journal_path)?;
-        for directory in fs::read_dir(self.paths.migrations_dir())? {
-            let directory = directory?;
-            let migration_id = directory.file_name().to_string_lossy().into_owned();
-            let migration_path = directory.path().join("journal.json");
-            if !migration_path.is_file() {
-                continue;
-            }
-            let migration = read_json(&migration_path)?;
-            if self
-                .validate_migration_chain(&migration_id, &migration)
-                .is_err()
-            {
-                continue;
-            }
-            let manifest_path = directory.path().join("target-manifest.json");
-            let manifest = read_json(&manifest_path)?;
-            let entries = manifest
-                .as_array()
-                .ok_or_else(|| error("Migration target inventory is invalid"))?;
-            let journal_matches = entries.iter().any(|entry| {
-                entry["path"] == journal_relative
-                    && entry["kind"] == "file"
-                    && entry["digest"] == journal_digest
-            });
-            let removed = self.known_removals(item)?;
-            let remaining = without_removed(entries, Some(&relative), &removed)?;
-            if journal_matches && content_matches(&item.entries, &remaining, Some(&relative))? {
-                Self::guard_file(item, &migration_path)?;
-                Self::guard_file(item, &manifest_path)?;
-                return Ok(());
-            }
-        }
-        Err(error(
-            "Original identity changed without a matching committed migration inventory",
-        ))
-    }
-    fn validate_trash(
-        &self,
-        item: &mut Candidate,
-        trash: &str,
-        path: &Path,
-        record: &Value,
-    ) -> Result<(), ApiError> {
-        Self::guard_file(item, path)?;
-        let id = record["projectId"]
-            .as_str()
-            .filter(|id| valid_id(id))
-            .ok_or_else(|| error("Trash project identity is invalid"))?;
-        item.project_id = Some(id.into());
-        item.name = record["name"].as_str().map(str::to_owned);
-        if record["trashId"] != trash || record["schemaVersion"] != 1 {
-            return Err(error("Trash record identity is invalid"));
-        }
-        let expected: PersistedIdentity = serde_json::from_value(record["rootIdentity"].clone())?;
-        if !matches_persisted_root(&expected, item)? {
-            return Err(error("Trash root identity changed"));
-        }
-        self.store.check_identity_available(id, Some(trash), None)?;
-        self.check_references(Some(id), None)
-    }
     fn validate_retained(
         &self,
         item: &mut Candidate,
@@ -1103,9 +920,7 @@ impl CleanupManager {
         let copied = target
             .as_array()
             .ok_or_else(|| error("Migration target inventory is missing"))?;
-        let rebindings_path = path.parent().unwrap().join("trash-rebindings.json");
-        let rebindings = Self::guard_file(item, &rebindings_path)?;
-        validate_copy_evidence(entries, copied, &rebindings)?;
+        validate_copy_evidence(entries, copied)?;
         let excluded = migration_exclusions(&item.path)?;
         let persistent = item
             .entries
@@ -1121,17 +936,15 @@ impl CleanupManager {
         if !content_matches(&persistent, &remaining, None)? {
             return Err(ApiError::new("OLD_WORKSPACE_MODIFIED", "Retained persistent files differ from the migration inventory; preserve and inspect changes"));
         }
-        // Every source backup must still have an accessible identical archive in
-        // the selected workspace. This also preserves protected and broken backups.
-        for entry in &persistent {
-            if entry.kind == "file" && entry.path.starts_with("backups") {
-                let current = self.paths.workspace_root().join(&entry.path);
-                if hash_file(&current).ok() != entry.digest {
-                    return Err(error(
-                        "A historical backup no longer has an identical current-workspace copy",
-                    ));
-                }
-            }
+        // Retired backup archives and recycle-bin entries are not interpreted
+        // here. Their presence keeps the whole old workspace for manual review.
+        if persistent.iter().any(|entry| {
+            entry.kind == "file"
+                && (entry.path.starts_with("backups") || entry.path.starts_with(".platform/trash"))
+        }) {
+            return Err(error(
+                "The old workspace contains content from a retired backup or recycle-bin version",
+            ));
         }
         self.check_current_protection()?;
         self.check_retained_owners(item, entries)?;
@@ -1178,84 +991,14 @@ impl CleanupManager {
                     .ok_or_else(|| error("Unknown historical project directory owner"))?;
                 projects.insert(id.clone());
             }
-            if components.len() == 4
-                && components[0] == ".platform"
-                && components[1] == "trash"
-                && components[3] == "record.json"
-            {
-                let source = item.path.join(path);
-                let record = if source.exists() {
-                    read_json(&source)?
-                } else {
-                    read_json(&self.paths.workspace_root().join(path))?
-                };
-                let id = record["projectId"]
-                    .as_str()
-                    .filter(|id| valid_id(id))
-                    .ok_or_else(|| error("Unknown historical trash owner"))?;
-                projects.insert(id.into());
-            }
         }
         for id in projects {
-            let retirement = self.store.is_retired(&id)?;
-            if let Some(retired) = retirement {
-                if let Some(trash) = retired["trashId"].as_str().filter(|id| valid_id(id)) {
-                    let directory = self
-                        .paths
-                        .workspace_root()
-                        .join(".platform/trash")
-                        .join(trash);
-                    let record = read_json(&directory.join("record.json"))?;
-                    if record["trashId"] != trash
-                        || record["projectId"] != id
-                        || !matches!(
-                            record["state"].as_str(),
-                            Some("trashed" | "purgeIncomplete" | "purging" | "needsAttention")
-                        )
-                    {
-                        return Err(error("Current trash ownership is not safely resolved"));
-                    }
-                    let expected: PersistedIdentity =
-                        serde_json::from_value(record["rootIdentity"].clone())?;
-                    let root = directory.join("project");
-                    directory_identity(&root)?;
-                    if !expected.matches_path(&root).map_err(error)? {
-                        return Err(error(
-                            "Current retained trash payload is missing or replaced",
-                        ));
-                    }
-                    let manifest: ProjectManifest =
-                        serde_json::from_value(read_json(&root.join("project.json"))?)?;
-                    crate::projects::validate_manifest(&manifest, &id, &root)?;
-                    self.check_database_copy(&root.join(&manifest.database))?;
-                    directory_identity(&root.join(&manifest.attachments_dir))?;
-                } else {
-                    // A null trash owner only counts as deliberate permanent
-                    // removal when the matching public purge journal committed.
-                    let mut purged = false;
-                    for directory in
-                        fs::read_dir(self.paths.workspace_root().join(".platform/operations"))?
-                    {
-                        let path = directory?.path().join("lifecycle.json");
-                        if !path.exists() {
-                            continue;
-                        }
-                        let journal = read_json(&path)?;
-                        if journal["kind"] == "trashPurge"
-                            && journal["projectId"] == id
-                            && journal["committed"] == true
-                            && journal["resolved"] == true
-                            && journal["targetEpoch"] == retired["documentEpoch"]
-                            && journal["result"]["operationOutcome"] == "purged"
-                        {
-                            purged = true;
-                            break;
-                        }
-                    }
-                    if !purged {
-                        return Err(error("Historical owner has no accessible current copy or committed purge evidence"));
-                    }
-                }
+            if self.store.is_retired(&id)?.is_some() {
+                // A permanently deleted project has no current copy. Its files
+                // in the old workspace are the only remaining copy; keep them.
+                return Err(error(
+                    "The old workspace holds the only copy of a project deleted after migration",
+                ));
             } else {
                 let project = self.store.project(&id)?;
                 self.check_database_copy(&project.root.join(&project.manifest.database))?;
@@ -1501,8 +1244,7 @@ impl CleanupManager {
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let id = path
-                .file_stem()
+            path.file_stem()
                 .and_then(|name| name.to_str())
                 .filter(|id| valid_id(id))
                 .ok_or_else(|| error("Invalid maintenance owner"))?;
@@ -1516,24 +1258,6 @@ impl CleanupManager {
                 return Err(error(
                     "Unresolved current recovery protects historical workspace evidence",
                 ));
-            }
-            let mut ids = control.protected_backup_ids;
-            if control.mode == "maintenance" {
-                if let Some(baseline) = control.baseline_backup_id {
-                    ids.push(baseline);
-                }
-            }
-            for backup in ids {
-                if !valid_id(&backup) {
-                    return Err(error("Invalid protected backup reference"));
-                }
-                let archive = self
-                    .paths
-                    .workspace_root()
-                    .join("backups")
-                    .join(id)
-                    .join(format!("{backup}.zip"));
-                crate::backups::read_info(&archive)?;
             }
         }
         Ok(())
@@ -1573,19 +1297,7 @@ impl CleanupManager {
             }
             self.tasks.phase(task, &format!("cleaning-{}", item.kind))?;
             let log = receipt.join(format!("{}.progress.jsonl", item.id));
-            let operation = if item.kind == "trash" {
-                let trash = item.id.strip_prefix("trash_").unwrap();
-                self.lifecycle.cleanup_trash_with(trash, task, |path| {
-                    if path != item.path {
-                        return Err(error(
-                            "Lifecycle trash path differs from the confirmed plan",
-                        ));
-                    }
-                    remove_tree(item, &log)
-                })
-            } else {
-                remove_tree(item, &log)
-            };
+            let operation = remove_tree(item, &log);
             let result = match operation {
                 Ok(removed) => {
                     json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"progressPath":log,"migrationId":item.id.strip_prefix("retained_")})
@@ -1600,7 +1312,7 @@ impl CleanupManager {
             builds::atomic_json(&receipt.join(format!("{}.json", item.id)), &result)?;
             results.push(result);
         }
-        let result = json!({"planId":plan.plan_id,"workspaceRoot":plan.workspace_root,"completed":!stopped,"items":results,"receiptPath":receipt,"completedAt":now_ms(),"historicalBackupsRetained":true});
+        let result = json!({"planId":plan.plan_id,"workspaceRoot":plan.workspace_root,"completed":!stopped,"items":results,"receiptPath":receipt,"completedAt":now_ms()});
         builds::atomic_json(&receipt.join("result.json"), &result)?;
         Ok(result)
     }
@@ -1701,11 +1413,7 @@ fn without_removed(
     }
     Ok(remaining)
 }
-fn validate_copy_evidence(
-    source: &[Value],
-    target: &[Value],
-    rebindings: &Value,
-) -> Result<(), ApiError> {
+fn validate_copy_evidence(source: &[Value], target: &[Value]) -> Result<(), ApiError> {
     validate_manifest_entries(source)?;
     validate_manifest_entries(target)?;
     let index = |entries: &[Value]| -> Result<BTreeMap<String, Value>, ApiError> {
@@ -1734,27 +1442,9 @@ fn validate_copy_evidence(
         let to = target
             .get(&path)
             .ok_or_else(|| error("Migration copy path is missing"))?;
-        if &from == to {
-            continue;
-        }
-        let recognized = rebindings["entries"].as_array().is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                entry["status"] == "rebound"
-                    && entry["recordPath"] == path
-                    && entry["sourceRecordSha256"] == from["digest"]
-                    && entry["targetRecordSha256"] == to["digest"]
-            })
-        });
-        if !recognized
-            || !path.starts_with(".platform/trash/")
-            || !path.ends_with("/record.json")
-            || from["kind"] != "file"
-            || to["kind"] != "file"
-            || from["mode"] != to["mode"]
-            || from["target"] != to["target"]
-        {
+        if &from != to {
             return Err(error(
-                "Migration target differs without verified platform rebinding evidence",
+                "Migration target differs from its verified source copy",
             ));
         }
     }

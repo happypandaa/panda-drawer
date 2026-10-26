@@ -515,7 +515,6 @@ pub(super) fn signal_state(state: &Arc<HttpState>) {
     signal("storage", &|| state.storage.request_stop());
     signal("historyCleanup", &|| state.history_cleanup.request_stop());
     signal("lifecycle", &|| state.lifecycle.request_stop());
-    signal("maintenance", &|| state.maintenance.request_stop());
     signal("nodeDevelopment", &|| state.node_development.request_stop());
     signal("nodeInstall", &|| state.node_install.request_stop());
     if let Ok(manager) = &state.source_acquisition {
@@ -550,7 +549,6 @@ pub(super) async fn drain_managers(state: &Arc<HttpState>) -> Vec<ShutdownIssue>
     drain!("storage", state.storage);
     drain!("historyCleanup", state.history_cleanup);
     drain!("lifecycle", state.lifecycle);
-    drain!("maintenance", state.maintenance);
     drain!("nodeDevelopment", state.node_development);
     drain!("nodeInstall", state.node_install);
     if let Ok(manager) = &state.source_acquisition {

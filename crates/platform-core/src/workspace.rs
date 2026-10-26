@@ -623,16 +623,8 @@ pub(crate) fn copy_and_commit(
         }
         // Preserve all control data, including damaged protected originals. Only
         // active registrations are rebound later; no project scripts run here.
-        let rebound = crate::lifecycle::rebind_migrated_trash(&j.source_path, &j.stage_path)?;
-        builds::atomic_json(
-            &paths
-                .migrations_dir()
-                .join(id)
-                .join("trash-rebindings.json"),
-            &rebound,
-        )?;
-        // The verified copy is unchanged except explicitly rebound platform
-        // identities. Keep the resulting target inventory beside the journal.
+        // The verified copy is unchanged. Keep its target inventory beside the
+        // journal for later history-cleanup ownership checks.
         builds::atomic_json(
             &paths.migrations_dir().join(id).join("target-manifest.json"),
             &collect(&j.stage_path, &excluded)?,

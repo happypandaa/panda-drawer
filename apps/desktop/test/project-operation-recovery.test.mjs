@@ -46,7 +46,7 @@ async function unmount() { if (root) await act(async () => root.unmount()); root
 afterEach(async () => { await unmount(); timers.clear(); });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
-const status = (overrides = {}) => ({ projectId: 'prj_a', mode: 'ready', maintenanceId: null, reason: null, startedAt: null, baselineBackupId: null, readyForChanges: false, recoveryRequired: false, documentEpoch: 'disposable_epoch', activeTask: null, ...overrides });
+const status = (overrides = {}) => ({ projectId: 'prj_a', mode: 'ready', maintenanceId: null, reason: null, startedAt: null, readyForChanges: false, recoveryRequired: false, documentEpoch: 'disposable_epoch', activeTask: null, ...overrides });
 const operation = (overrides = {}) => ({ restoreTaskId: 'restore_original', targetCommit: 'a'.repeat(40), phase: 'applying', planDigest: 'd'.repeat(64), journalDigest: 'e'.repeat(64), canContinue: true, canUndo: true, changes: [{ path: 'app/index.ts', kind: 'modify', state: 'after' }], issues: [], ...overrides });
 const recovery = (overrides = {}) => ({ state: 'clear', operations: [], issues: [], database: { state: 'not-supported' }, ...overrides });
 const pendingRecovery = (overrides = {}) => recovery({ state: 'pending', operations: [operation()], ...overrides });
@@ -90,18 +90,17 @@ test('An unknown state stays visible, requires an explicit recheck and never sta
   assert.equal(commandCalls(calls, 'project_git_source_restore_recover').length, 0);
 });
 
-test('Maintenance can only end after explicit confirmation with its current ID; recoveryRequired blocks it', async () => {
-  const { calls, tasks, render } = await setup({ props: { status: status({ mode: 'maintenance', maintenanceId: 'maintenance_a' }) }, overrides: { maintenance_end: () => task({ type: 'maintenanceEnd' }), task_get: () => task({ type: 'maintenanceEnd' }) } });
-  await open(); await click(byText('检查并结束维护'));
+test('A retired maintenance state offers no end action, and recoveryRequired shows the recovery note', async () => {
+  const { calls } = await setup({ props: { status: status({ mode: 'maintenance', maintenanceId: 'maintenance_a' }) } });
+  await open();
+  assert.equal(byText('检查并结束维护'), undefined);
+  assert.match(document.body.textContent, /已停用的维护状态/);
   assert.equal(commandCalls(calls, 'maintenance_end').length, 0);
-  await render({ status: status({ mode: 'maintenance', maintenanceId: 'maintenance_b' }) });
-  assert.equal(byText('确认检查并结束'), undefined, 'A changed session expires the old confirmation');
-  await click(byText('检查并结束维护')); await click(byText('确认检查并结束'));
-  assert.deepEqual(commandCalls(calls, 'maintenance_end'), [['maintenance_end', { projectId: 'prj_a', input: { maintenanceId: 'maintenance_b' } }]]);
-  assert.equal(tasks[0].type, 'maintenanceEnd');
   await unmount();
   await setup({ props: { status: status({ mode: 'maintenance', maintenanceId: 'maintenance_a', recoveryRequired: true }) } });
-  await open(); assert.equal(byText('检查并结束维护'), undefined); assert.match(document.body.textContent, /暂时不能结束维护/);
+  await open();
+  assert.doesNotMatch(document.body.textContent, /已停用的维护状态/);
+  assert.match(document.body.textContent, /有尚未核对完成的恢复操作/);
 });
 
 test('Recovery actions use the rechecked digests and require external editing to stop plus action confirmation', async () => {

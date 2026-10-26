@@ -220,7 +220,7 @@ async fn a_missing_directory_owned_by_another_registration_stays_occupied() {
     record["projectRoot"] = json!(store.workspace_root().join("projects").join(&candidate));
     save_state(&store, &owner.id, &record);
     let allocated = store
-        .reserve_named_identity(id, "task_missing_owner", name, None)
+        .reserve_named_identity(id, "task_missing_owner", name)
         .unwrap();
     assert_ne!(allocated.file_name().unwrap().to_str().unwrap(), candidate);
     assert_eq!(
@@ -239,7 +239,7 @@ async fn a_same_task_reservation_survives_restart_and_does_not_admit_a_crash_can
     let source = create_fixture(&store, "Disposable candidate source").await;
     let id = "prj_1123456789abcdef0123456789abcdef";
     let reserved = store
-        .reserve_named_identity(id, "task_candidate_mapping", "Candidate project", None)
+        .reserve_named_identity(id, "task_candidate_mapping", "Candidate project")
         .unwrap();
     copy_tree(&source.project_root, &reserved);
     let mut manifest: Value = read_json(&reserved.join("project.json")).unwrap();
@@ -257,12 +257,12 @@ async fn a_same_task_reservation_survives_restart_and_does_not_admit_a_crash_can
     let reopened = ProjectStore::new(store.workspace_root().to_owned()).unwrap();
     assert_eq!(
         reopened
-            .reserve_named_identity(id, "task_candidate_mapping", "Changed display name", None)
+            .reserve_named_identity(id, "task_candidate_mapping", "Changed display name")
             .unwrap(),
         reserved
     );
     reopened
-        .reserve_identity(id, "task_candidate_mapping", None)
+        .reserve_identity(id, "task_candidate_mapping")
         .unwrap();
     assert_eq!(reopened.project_root(id).unwrap(), reserved);
     assert_eq!(
@@ -275,7 +275,7 @@ async fn a_same_task_reservation_survives_restart_and_does_not_admit_a_crash_can
     assert!(reserved.join("project.json").is_file());
     assert_eq!(
         reopened
-            .reserve_named_identity(id, "task_different_owner", "Other project", None)
+            .reserve_named_identity(id, "task_different_owner", "Other project")
             .unwrap_err()
             .code,
         "PROJECT_ID_CONFLICT"
@@ -288,7 +288,7 @@ async fn a_new_same_id_import_reservation_overrides_retired_registration_and_com
     let project = create_fixture(&store, "Disposable old binding").await;
     let retired_epoch = Uuid::new_v4().to_string();
     store
-        .unregister_lifecycle(&project.id, &retired_epoch, None)
+        .unregister_lifecycle(&project.id, &retired_epoch)
         .unwrap();
     fs::remove_dir_all(&project.project_root).unwrap();
     let root = store
@@ -296,7 +296,6 @@ async fn a_new_same_id_import_reservation_overrides_retired_registration_and_com
             &project.id,
             "task_same_id_import",
             "Entirely different new name",
-            None,
         )
         .unwrap();
     assert_ne!(root, project.project_root);
@@ -346,7 +345,7 @@ async fn partial_deletion_retains_the_readable_target_even_after_files_disappear
     );
     assert_eq!(
         store
-            .reserve_named_identity(&project.id, "task_reuse_deleted", "New application", None)
+            .reserve_named_identity(&project.id, "task_reuse_deleted", "New application")
             .unwrap_err()
             .code,
         "PROJECT_ID_CONFLICT"
@@ -408,9 +407,7 @@ async fn migrated_retired_bindings_rebase_only_the_path_without_reviving_the_pro
             original_root = root;
         }
         let epoch = Uuid::new_v4().to_string();
-        source
-            .unregister_lifecycle(&project.id, &epoch, Some("trash_retired_mapping"))
-            .unwrap();
+        source.unregister_lifecycle(&project.id, &epoch).unwrap();
         let retained = source.workspace_root().join("retained-trash-project");
         fs::rename(&original_root, &retained).unwrap();
         let mut original = state(&source, &project.id);
@@ -530,7 +527,7 @@ async fn stale_migrated_retired_registration_does_not_block_unrelated_create_or_
                 record.as_object_mut().unwrap().remove("directoryName");
                 save_state(&old, &project.id, &record);
             }
-            old.unregister_lifecycle(&project.id, &Uuid::new_v4().to_string(), None)
+            old.unregister_lifecycle(&project.id, &Uuid::new_v4().to_string())
                 .unwrap();
             let registration = fs::read(state_path(&old, &project.id)).unwrap();
             let retired = fs::read(old.retirement_path(&project.id)).unwrap();
@@ -593,7 +590,7 @@ async fn safe_conflicting_directory_claims_both_remain_reserved_without_adopting
         (first_id, "First candidate", &first, "task_first_claim"),
         (second_id, "Second candidate", &second, "task_second_claim"),
     ] {
-        let allocated = store.reserve_named_identity(id, task, name, None).unwrap();
+        let allocated = store.reserve_named_identity(id, task, name).unwrap();
         assert_eq!(
             allocated.file_name().unwrap().to_str().unwrap(),
             format!("{base}-2")
@@ -626,7 +623,7 @@ async fn stale_claim_does_not_resolve_old_absolute_path_or_a_claimed_current_sym
     let claimed = store.workspace_root().join("projects").join(&candidate);
     std::os::unix::fs::symlink(&external, &claimed).unwrap();
     let allocated = store
-        .reserve_named_identity(id, "task_symlink_claim", "Symlink claim", None)
+        .reserve_named_identity(id, "task_symlink_claim", "Symlink claim")
         .unwrap();
     assert_eq!(
         allocated.file_name().unwrap().to_str().unwrap(),
@@ -663,7 +660,7 @@ async fn orphan_retirement_deletion_and_reservation_markers_keep_their_names_aft
         let original = fs::read(&path).unwrap();
         let reopened = ProjectStore::new(store.workspace_root().to_owned()).unwrap();
         let allocated = reopened
-            .reserve_named_identity(id, "task_after_restart", "Retained marker", None)
+            .reserve_named_identity(id, "task_after_restart", "Retained marker")
             .unwrap();
         assert_eq!(
             allocated.file_name().unwrap().to_str().unwrap(),
@@ -714,7 +711,7 @@ async fn ambiguous_or_unsafe_history_still_rejects_allocation_before_any_new_wri
             .count();
         assert!(
             store
-                .reserve_named_identity(id, "task_unknown_claim", "Disposable new project", None)
+                .reserve_named_identity(id, "task_unknown_claim", "Disposable new project")
                 .is_err(),
             "{damage}"
         );
@@ -777,12 +774,7 @@ async fn malformed_retained_name_markers_never_make_a_protected_name_reusable() 
             fs::write(&path, &bytes).unwrap();
             assert!(
                 store
-                    .reserve_named_identity(
-                        id,
-                        "task_new_marker_claim",
-                        "Disposable new project",
-                        None
-                    )
+                    .reserve_named_identity(id, "task_new_marker_claim", "Disposable new project")
                     .is_err(),
                 "{kind}/{damage}"
             );

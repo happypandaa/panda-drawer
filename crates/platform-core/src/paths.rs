@@ -182,7 +182,6 @@ impl RuntimePaths {
             for dir in [
                 paths.workspace_root.clone(),
                 paths.workspace_root.join("projects"),
-                paths.workspace_root.join("backups"),
                 paths.workspace_root.join(".platform"),
             ] {
                 ensure_directory_tree(&dir)?;
@@ -267,7 +266,6 @@ impl RuntimePaths {
             self.runtime_dir(),
             self.workspace_root.clone(),
             self.workspace_root.join("projects"),
-            self.workspace_root.join("backups"),
             self.workspace_root.join(".platform"),
         ] {
             reject_symlink_components(&dir)?;

@@ -522,7 +522,7 @@ impl ProjectStore {
         self.check_workspace_available()?;
         let id = format!("prj_{}", Uuid::new_v4().simple());
         let creation_task = format!("task_create_{}", Uuid::new_v4().simple());
-        let root = self.reserve_named_identity_locked(&id, &creation_task, name, None)?;
+        let root = self.reserve_named_identity_locked(&id, &creation_task, name)?;
         let staging = self
             .workspace
             .join("projects")
@@ -1178,7 +1178,11 @@ impl ProjectStore {
         self.shutdown_issues.lock().unwrap().extend(issues.clone());
         issues
     }
-    /// Only maintenance orchestration calls this while holding the exclusive project gate.
+    /// Re-register a project whose root or database identity changed. The
+    /// retired maintenance workflow was its only caller; an explicit
+    /// re-registration entry has not been designed yet, so keep the checked
+    /// primitive instead of inventing an implicit recovery path.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn rebind(&self, id: &str, advance: bool) -> Result<String, ApiError> {
         crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
@@ -1474,7 +1478,7 @@ impl ProjectStore {
                 "A later deletion owns the retained marker",
             ));
         }
-        self.unregister_lifecycle(&marker.project_id, &marker.target_epoch, None)
+        self.unregister_lifecycle(&marker.project_id, &marker.target_epoch)
     }
     pub(crate) fn finish_deletion_marker(
         &self,
@@ -1588,12 +1592,7 @@ impl ProjectStore {
         let manifest = read_json::<ProjectManifest>(&root.join("project.json")).ok();
         Ok((root, manifest))
     }
-    fn check_identity_locked(
-        &self,
-        id: &str,
-        except_trash: Option<&str>,
-        except_task: Option<&str>,
-    ) -> Result<(), ApiError> {
+    fn check_identity_locked(&self, id: &str, except_task: Option<&str>) -> Result<(), ApiError> {
         if !valid_id(id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
@@ -1611,35 +1610,6 @@ impl ProjectStore {
                     "Project ID is reserved by an unfinished operation",
                 )
                 .detail("conflict", record));
-            }
-        }
-        let trash = self.workspace.join(".platform/trash");
-        check_no_symlinks(&trash, true)?;
-        if trash.is_dir() {
-            for entry in fs::read_dir(trash)? {
-                let entry = entry?;
-                let tid = entry.file_name().to_string_lossy().into_owned();
-                if except_trash == Some(tid.as_str()) {
-                    continue;
-                }
-                let path = entry.path().join("record.json");
-                check_no_symlinks(&path, true)?;
-                if !path.is_file() {
-                    continue;
-                }
-                let record: Value = read_json(&path)?;
-                if record["projectId"] == id
-                    && !matches!(
-                        record["state"].as_str(),
-                        Some("restored" | "purged" | "cancelled")
-                    )
-                {
-                    return Err(ApiError::new(
-                        "PROJECT_ID_CONFLICT",
-                        "Project ID is occupied in the recycle bin",
-                    )
-                    .detail("conflict", record));
-                }
             }
         }
         let root = self.project_root(id)?;
@@ -1663,18 +1633,12 @@ impl ProjectStore {
     pub(crate) fn check_identity_available(
         &self,
         id: &str,
-        except_trash: Option<&str>,
         except_task: Option<&str>,
     ) -> Result<(), ApiError> {
         let _lock = self.registration_lock.lock().unwrap();
-        self.check_identity_locked(id, except_trash, except_task)
+        self.check_identity_locked(id, except_task)
     }
-    pub(crate) fn reserve_identity(
-        &self,
-        id: &str,
-        task: &str,
-        except_trash: Option<&str>,
-    ) -> Result<(), ApiError> {
+    pub(crate) fn reserve_identity(&self, id: &str, task: &str) -> Result<(), ApiError> {
         let _lock = self.registration_lock.lock().unwrap();
         self.check_workspace_available()?;
         if !valid_id(task) {
@@ -1693,7 +1657,7 @@ impl ProjectStore {
                 return Ok(());
             }
         }
-        self.check_identity_locked(id, except_trash, Some(task))?;
+        self.check_identity_locked(id, Some(task))?;
         crate::builds::atomic_json(
             &self.reservation_path(id),
             &json!({"projectId":id,"taskId":task}),
@@ -1704,10 +1668,9 @@ impl ProjectStore {
         id: &str,
         task: &str,
         name: &str,
-        except_trash: Option<&str>,
     ) -> Result<PathBuf, ApiError> {
         let _lock = self.registration_lock.lock().unwrap();
-        self.reserve_named_identity_locked(id, task, name, except_trash)
+        self.reserve_named_identity_locked(id, task, name)
     }
     fn retained_directory_names(
         &self,
@@ -1787,7 +1750,6 @@ impl ProjectStore {
         id: &str,
         task: &str,
         name: &str,
-        except_trash: Option<&str>,
     ) -> Result<PathBuf, ApiError> {
         self.check_workspace_available()?;
         if !valid_id(id) || !valid_id(task) {
@@ -1813,25 +1775,11 @@ impl ProjectStore {
                 return self.project_root(id);
             }
         }
-        self.check_identity_locked(id, except_trash, Some(task))?;
-        let registration = registration_path(&self.workspace, id);
-        let retained = self.retirement_path(id);
-        // A historical trash restore keeps its actual previous directory;
-        // a fresh same-ID import may receive a new readable directory name.
-        let has_binding =
-            except_trash.is_some() && (registration.try_exists()? || retained.try_exists()?);
-        let base = if has_binding {
-            self.project_root(id)?
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            crate::project_directory_name::readable_directory_name(name, id)
-        };
+        self.check_identity_locked(id, Some(task))?;
+        // A fresh same-ID import may receive a new readable directory name.
+        let base = crate::project_directory_name::readable_directory_name(name, id);
         checked_directory_name(&base)?;
-        let retained_names =
-            self.retained_directory_names(has_binding.then_some(id), &reservation_path)?;
+        let retained_names = self.retained_directory_names(None, &reservation_path)?;
         let mut directory_name = base.clone();
         let mut suffix = 1u32;
         loop {
@@ -1846,9 +1794,6 @@ impl ProjectStore {
                     &json!({"projectId":id,"taskId":task,"directoryName":directory_name}),
                 )?;
                 return Ok(root);
-            }
-            if has_binding {
-                return Err(ApiError::new("PROJECT_ID_CONFLICT", "The retained project directory is occupied; no existing directory was replaced"));
             }
             suffix += 1;
             if suffix > 10_000 {
@@ -1886,12 +1831,7 @@ impl ProjectStore {
         }
         Ok(())
     }
-    pub(crate) fn unregister_lifecycle(
-        &self,
-        id: &str,
-        epoch: &str,
-        trash_id: Option<&str>,
-    ) -> Result<(), ApiError> {
+    pub(crate) fn unregister_lifecycle(&self, id: &str, epoch: &str) -> Result<(), ApiError> {
         crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
         if !valid_id(id) || Uuid::parse_str(epoch).is_err() {
@@ -1909,7 +1849,7 @@ impl ProjectStore {
             .into_owned();
         crate::builds::atomic_json(
             &self.retirement_path(id),
-            &json!({"projectId":id,"documentEpoch":epoch,"trashId":trash_id,"retired":true,"directoryName":directory_name}),
+            &json!({"projectId":id,"documentEpoch":epoch,"retired":true,"directoryName":directory_name}),
         )?;
         let path = self
             .workspace
@@ -2346,16 +2286,11 @@ fn check_deletion_marker(path: &Path) -> Result<(), ApiError> {
     }
     Ok(())
 }
-pub(crate) fn project_removed_error(record: &Value) -> ApiError {
-    if record["trashId"].as_str().is_some() {
-        ApiError::new("PROJECT_TRASHED", "This historical project is retained outside the active workspace; reopen through the platform after restoring it")
-            .detail("trashId", record["trashId"].clone())
-    } else {
-        ApiError::new(
-            "PROJECT_DELETED",
-            "This project has been permanently deleted; this window can no longer save",
-        )
-    }
+pub(crate) fn project_removed_error(_record: &Value) -> ApiError {
+    ApiError::new(
+        "PROJECT_DELETED",
+        "This project has been permanently deleted; this window can no longer save",
+    )
 }
 pub(crate) fn check_pending_deletions(workspace: &Path) -> Result<(), ApiError> {
     let deleting = workspace.join(".platform/project-state/deleting");

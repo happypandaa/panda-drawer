@@ -290,31 +290,9 @@ Git 版本管理由 AI 先读取范围和改动，再明确初始化或保存，
 
 检查在隔离临时目录执行匿名 `ls-remote`，20 秒执行预算内只返回精确的 `HEAD`、其可选符号引用与提交 ID；同名尾部引用不当作 HEAD。返回 `readable-no-head` 仅说明未取得 HEAD，不表示仓库为空。结果另含规范仓库 URL、实际 Git 路径／版本与检查时间，不改变 `doctor` 的 `authentication.state: not-checked`。没有 clone、fetch、push 或项目写入，也不验证账号或写入权限。界面只在点击检查后联网，修改地址或刷新／改变 Git 工具后旧结果作废，等待期间保护设置关闭；没有用户取消接口，服务退出会终止检查。接口字段与失败语义见[本地服务说明](local-service-and-ai-tools.md)。
 
-## 8 M3 备份、维护与恢复
+## 8 M3 备份、维护与恢复（已移除）
 
-基础入口为 `backup create/list/info/restore` 与 `maintenance status/begin/end`，均显式指定 `--project ID`。创建备份、进入/结束维护和恢复复用任务提交、`task wait` 和 `task logs`；超时后继续查同一任务，不重发写入请求。维护请求及恢复请求通过 `--input` 传 JSON；`begin` 需要原因，准备失败重试携带原 `maintenanceId`，`end` 需要该 ID，`restore` 必须指定 `backupId`。
-
-维护中的 SQL、事务、构建和备份使用 `--maintenance ID` 或输入 JSON 的 `maintenanceId`，两者同时提供必须一致。进入任务成功且 `readyForChanges` 为 true 后才允许修改；基线失败和平台重启都保留维护。结束检查数据库、网页和构建输入；已知待构建要求不能通过重复进入或恢复抹掉。恢复后仍须明确结束维护，旧页面必须由用户决定重载，失败的请求不会自动重放。
-
-```sh
-npm run cli -- backup create --project prj_实际ID --json
-npm run cli -- backup list --project prj_实际ID --json
-npm run cli -- backup info --project prj_实际ID --backup backup_实际ID --json
-npm run cli -- maintenance begin --project prj_实际ID --input maintenance.json --json
-npm run cli -- maintenance status --project prj_实际ID --json
-npm run cli -- backup restore --project prj_实际ID --input restore.json --json
-npm run cli -- maintenance end --project prj_实际ID --input end-maintenance.json --json
-```
-
-归档在 `workspace/backups/{projectId}/{backupId}.zip`，包含 `backup.json` 与 `project/`。数据库通过 SQLite Backup API 生成独立一致性副本，关闭副本后校验；不复制源 WAL/SHM 拼库。文件清单包含路径、字节数和 SHA-256。快照保留源码、固定 SDK、skill、隐藏资料、清单、图标、网页、附件；排除按已识别根路径进行，附件中的同名 `node_modules`、`.git`、`.platform` 不被递归误删。
-
-可移植 `buildProvenance` 保留 `bundledTemplate` 或 `projectBuild`、输入与产物摘要、规则及工具版本，去除本机执行路径、任务 ID 和凭据。恢复将网页安装为新的不可变资源代并重建来源，不依赖原来被排除的 `.platform/starter.json` 或原任务日志。已有可复用网页的恢复不运行 Node/npm；合法无产物项目仍可为 `unbuilt`，已登记产物缺失则报告异常。
-
-持久维护记录在工作区 `.platform/project-state/maintenance/{projectId}.json`，与旧项目登记、构建来源分开保存；升级读取默认 ready 状态，不重写已有项目文件。操作暂存、恢复候选、日志和原现场在 `.platform/operations/{taskId}/`。恢复先验证候选，再停止业务、保留完整原目录并切换；原库损坏时也保留 WAL/SHM。未解决现场不作为缓存清除，重启根据日志和目录身份核对完成、回退或待处理结果。
-
-现存兼容实现中，手动备份不自动清理；普通自动备份在新备份成功后保留最近 10 份可清理项，基线与恢复来源受保护。2026-10-23 的详情改造移除了常驻备份列表和旧维护中心，只在存在未完成操作时提供核对与处理入口；既有旧 ZIP、维护／恢复现场与记录继续保留，CLI／兼容逻辑未因撤下 UI 而删除。迁移旧根等已确认的范围清理另见“空间与工作区 → 清理历史”。M5 已实现统一空间扫描和白名单清理；其当前用法见第 10 节。
-
-M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建可丢弃项目；`m3-restart-test.mjs prepare|verify` 在真正退出重启前后检查维护保留。`m3-compatibility-test.mjs prepare|verify` 只读核对升级前已有项目持久文件，不因 SQLite checkpoint 改变数据库字节而误判为平台覆盖。执行结果、故障模拟与交互证据见 [M3 验证记录](m3-verification.md)。
+2026-10-26 起，`backup create/list/info/restore`、`maintenance begin/end` 和 `trash list/info/restore/purge` 命令及对应 HTTP 路由、原生命令全部删除，见[旧版回收站、旧备份与维护的移除](legacy-backup-trash-removal.md)。保留 `maintenance status --project ID`：它读取项目当前的忙碌、恢复门禁和待构建状态，与备份无关。`--maintenance` 参数与 `maintenanceId` 字段仍被接受，用于兼容既有项目控制状态；新环境中不会再出现维护会话。
 
 ## 9 M4 生命周期与工作区迁移
 
@@ -322,7 +300,7 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 
 2026-10-22 用户确认普通下载后安装、完整 ZIP 导入和复制均生成新本机实例 ID，允许重复获取并独立并存。编辑既有实例保留 ID；显式同实例更新、备份／回收站恢复和公开工作区迁移保留原身份。作者 `app.id` 与本机实例 ID 分开；本轮不增加自动去重、派生或合并，不重新分配既有项目 ID、不改动既有用户数据。完整 ZIP 的实际入口与原身份兼容规则如下；该确认不扩展旧备份体系，也不开放尚未实现的安装格式。
 
-早期 `m4-live-test.mjs`、`m4-migration-test.mjs` 与 `workspace-identity-live-test.mjs` 的软删除流程仅对应旧版本，默认在任何服务查询或样本创建前直接拒绝运行。只有明确连接旧版 CLI／服务时才可设置 `LEGACY_SOFT_DELETE_REGRESSION=1`；不能用该开关对当前永久删除版本运行。其历史逻辑与证据保留，不把旧脚本转换为新的破坏性验收；本轮仅检查语法，没有执行这些 live 脚本。
+早期 `m4-live-test.mjs`、`m4-migration-test.mjs` 与 `workspace-identity-live-test.mjs` 只对应旧版软删除流程，已于 2026-10-26 随回收站一起删除；其历史证据仍在各验证记录中。
 
 以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。普通应用详情只提供导出与删除，不再提供直接创建独立副本的表单；需要独立副本时，可导出完整项目 ZIP，再按默认新 ID 导入。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
 
@@ -332,9 +310,6 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 | `project import --input import.json` | `archivePath` 为绝对路径，`mode` 可省略，默认 `copy`，可选 `name`；显式 `original` 保留归档身份和名称 |
 | `project copy --project ID --input copy.json` | 可选 `name`、`maintenanceId`；创建独立新平台 ID，保留业务主键 |
 | `project delete --project ID` | 直接永久删除，无平台／系统回收站；省略 `expectedDocumentEpoch` 时先读取当前项目身份并绑定提交，显式值不替换；保留历史备份和恢复证据；维护中通过 `--maintenance ID` 或 `--input` 传本轮 ID |
-| `trash list` / `trash info --trash ID` | 仅历史兼容：旧回收项状态、原项目、路径和恢复可用性 |
-| `trash restore --trash ID` | 仅历史兼容：旧回收项原 ID 恢复并推进文档身份；坏库保留原字节，转维护待处理 |
-| `trash purge --trash ID` | 仅历史兼容：永久删除选中旧回收项的项目文件，保留历史备份、外部导出和受保护现场 |
 | `workspace info` | 当前根目录、文件系统、迁移任务及保留旧根；未知统计为 `null` |
 | `workspace migrate --input migration.json` | `destinationPath` 为已存在、空、可写且独立的本机 APFS 目录 |
 
@@ -342,7 +317,7 @@ M3 验收脚本在 `.test-artifacts/` 保存报告。`m3-live-test.mjs` 新建�
 
 维护快照与来源不明的快照登记为新的本机维护会话，建立对应目标 ID 的完整基线；已知待构建要求继续保留。若登记成功而基线失败，任务会返回 `registered_maintenance_not_ready`，项目已经存在但 `readyForChanges: false`；先查询项目/维护状态，以该会话重试基线，不自动再次导入或复制。回收站恢复遇到坏库也不创建空库；恢复字节保留并阻断业务，修复或再次删除均按当前维护 ID 操作。清除部分失败时为 `purgeIncomplete`，不能承诺仍完整可恢复；按原回收项明确重试。
 
-迁移覆盖全部项目、历史备份、回收站、维护状态、身份注销记录、日志和受保护恢复现场。活跃项目的可重建依赖及指定空间缓存可以排除；受保护现场和回收站内部不按目录名递归过滤，符号链接保留为链接、不追随到树外。迁移前停止外部编辑器与 SQLite 工具写入，平台等待已接受任务并关闭业务连接后复制和校验，不运行项目脚本。
+迁移覆盖全部项目、身份注销记录、日志和受保护恢复现场（旧版遗留的备份或回收站目录若存在也原样复制）。活跃项目的可重建依赖及指定空间缓存可以排除；受保护现场和回收站内部不按目录名递归过滤，符号链接保留为链接、不追随到树外。迁移前停止外部编辑器与 SQLite 工具写入，平台等待已接受任务并关闭业务连接后复制和校验，不运行项目脚本。
 
 固定 `dataRoot/migrations/{taskId}/` 保存迁移日志与任务，不在被复制树中写入进度。目标安置并验证后原子更新固定 settings，作为提交点；提交前失败可继续使用源，提交后只初始化目标。新位置重新生成服务实例和管理凭据，保持维护状态并推进活跃项目代次；旧 Cookie、旧管理凭据和旧页面不能恢复写入。目标缺失、身份不符或提交无法核实时保留两边并报告错误；不自动切回旧副本。旧源离线不阻止已验证的新根启动。
 
