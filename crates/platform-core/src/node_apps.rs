@@ -32,6 +32,11 @@ pub use directory::DirectoryInitializeInput;
 pub(crate) mod development;
 pub use development::{NodeDevelopmentSource, NodeDevelopmentSourceLease};
 
+/// Whether a Node app slot has a deletion receipt (in progress or finished).
+pub(crate) fn deletion_recorded(node_apps_root: &Path, id: &str) -> Result<bool> {
+    deletion::recorded(node_apps_root, id)
+}
+
 const START_INTENT_CLEANUP_PREFIX: &str = ".start-intent-cleanup-";
 
 type Result<T> = std::result::Result<T, ApiError>;

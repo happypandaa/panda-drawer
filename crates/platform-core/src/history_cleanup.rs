@@ -131,8 +131,8 @@ impl Plan {
     fn public(&self) -> Value {
         json!({"planId":self.plan_id,"expiresAt":self.expires_at,"workspaceRoot":self.workspace_root,
             "confirmationText":CONFIRMATION,"items":self.items.iter().map(Candidate::public).collect::<Vec<_>>(),
-            "preserved":["当前项目及其源码、数据库、附件和发布版本","当前工作区全部历史备份","维护基线、未解决恢复现场和操作日志","固定应用身份、设置、运行记录、迁移记录及清理回执"],
-            "warning":"旧工作区是迁移时点的完整副本，可能包含后来已删除的项目。永久清理不能撤销；请先停止外部 AI、编辑器或数据库工具对所选旧目录的访问。"})
+            "preserved":["当前项目及其源码、数据库、附件和发布版本","已安装 Node 应用当前使用的程序、数据、配置及其源码副本","未完成的取回、安装和恢复现场以及操作日志","固定应用身份、设置、运行记录、迁移记录及清理回执"],
+            "warning":"永久清理不能撤销。旧工作区是迁移时点的完整副本，可能包含后来已删除的项目；取回前的原件清理后无法再找回那次取回之前的数据。请先停止外部 AI、编辑器或数据库工具对所选目录的访问。"})
     }
 }
 #[derive(Deserialize)]
@@ -173,6 +173,21 @@ fn now_ms() -> u64 {
 }
 fn error(message: impl std::fmt::Display) -> ApiError {
     ApiError::new("WORKSPACE_CLEANUP_BLOCKED", message.to_string())
+}
+/// A user-facing reason for keeping an item; it is shown verbatim.
+fn protected(message: &str) -> ApiError {
+    ApiError::new("CLEANUP_ITEM_PROTECTED", message)
+}
+/// Whether a persisted record names this source ID or any path inside its slot.
+fn references_source(value: &Value, id: &str, slot: &Path) -> bool {
+    match value {
+        Value::String(text) => text == id || Path::new(text).starts_with(slot),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| references_source(value, id, slot)),
+        Value::Object(map) => map.values().any(|value| references_source(value, id, slot)),
+        _ => false,
+    }
 }
 fn wire_u64(value: Option<u64>) -> Value {
     match value {
@@ -752,8 +767,299 @@ impl CleanupManager {
             });
             items.push(item);
         }
+        self.restore_candidates(&mut items)?;
+        self.node_candidates(&mut items)?;
+        self.source_candidates(&mut items)?;
         items.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
         Ok(items)
+    }
+    fn node_root(&self) -> PathBuf {
+        self.paths.data_root().join("node-apps")
+    }
+    fn sources_root(&self) -> PathBuf {
+        self.paths.workspace_root().join(".platform/sources")
+    }
+    fn installer(&self) -> Result<crate::node_app_install::NodeAppInstaller, ApiError> {
+        crate::node_app_install::NodeAppInstaller::new(self.paths.data_root().into())
+    }
+    /// Retained originals of finished Git data/source restores. Unfinished
+    /// operations are listed as protected so the user can see why they stay.
+    fn restore_candidates(&self, items: &mut Vec<Candidate>) -> Result<(), ApiError> {
+        let workspace = self.paths.workspace_root();
+        for scope in ["data", "source"] {
+            let projects = if scope == "data" {
+                crate::data_restore_guard::operation_projects(workspace)?
+            } else {
+                crate::source_restore_guard::operation_projects(workspace)?
+            };
+            for project in projects {
+                let name = self
+                    .store
+                    .project(&project)
+                    .ok()
+                    .map(|handle| handle.manifest.name.clone());
+                let directory = workspace
+                    .join(format!(".platform/project-state/{scope}-restore"))
+                    .join(&project);
+                let mut tasks = vec![];
+                for entry in fs::read_dir(&directory)? {
+                    let entry = entry?;
+                    if let Some(task) = entry.file_name().to_str() {
+                        if task.starts_with("task_") && valid_id(task) {
+                            tasks.push((task.to_owned(), entry.path()));
+                        }
+                    }
+                }
+                tasks.sort();
+                for (task, path) in tasks {
+                    let label = if scope == "data" {
+                        "数据取回前的原件"
+                    } else {
+                        "源码取回前的原件"
+                    };
+                    let mut item = Candidate::new(
+                        format!("{scope}restore_{task}"),
+                        "restoreOriginal",
+                        label,
+                        path,
+                    );
+                    item.project_id = Some(project.clone());
+                    item.name = name.clone();
+                    self.inspect(&mut item, |item| {
+                        self.validate_restore(item, scope, &project)
+                    });
+                    items.push(item);
+                }
+            }
+        }
+        Ok(())
+    }
+    fn validate_restore(
+        &self,
+        item: &mut Candidate,
+        scope: &str,
+        project: &str,
+    ) -> Result<(), ApiError> {
+        let workspace = self.paths.workspace_root();
+        let terminal = if scope == "data" {
+            crate::data_restore_guard::terminal_operations(workspace, project)
+        } else {
+            crate::source_restore_guard::terminal_operations(workspace, project)
+        }
+        .map_err(|_| protected("这个项目还有未完成或无法核对的取回操作，全部取回现场继续保留"))?;
+        if !terminal.contains(&item.path) {
+            return Err(protected("这次取回尚未结束，原件仍用于继续或撤回"));
+        }
+        self.check_references(Some(project), None)
+            .map_err(|_| protected("这个项目还有未完成的操作，取回现场继续保留"))
+    }
+    /// Retained installation material and replaced program generations of
+    /// managed Node apps. Current generations and resumable candidates are never listed as cleanable.
+    fn node_candidates(&self, items: &mut Vec<Candidate>) -> Result<(), ApiError> {
+        let root = self.node_root();
+        check_no_symlinks(&root, true)?;
+        if !root.try_exists()? {
+            return Ok(());
+        }
+        let installer = self.installer()?;
+        let installations = installer.installation_states()?;
+        for state in &installations {
+            let mut item = Candidate::new(
+                state.candidate_id.clone(),
+                "nodeInstallation",
+                "Node 安装现场",
+                state.path.clone(),
+            );
+            item.name = state.app_name.clone();
+            let candidate = state.candidate_id.clone();
+            self.inspect(&mut item, |_| self.validate_installation(&candidate));
+            items.push(item);
+        }
+        let mut apps = vec![];
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            if let Some(id) = entry.file_name().to_str() {
+                if Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
+                    && entry.file_type()?.is_dir()
+                {
+                    apps.push(id.to_owned());
+                }
+            }
+        }
+        apps.sort();
+        for app in apps {
+            // An unreadable or external registration lists nothing here; its
+            // slot stays untouched rather than failing the whole preview.
+            let Ok(Some(registration)) = self.managed_registration(&app) else {
+                continue;
+            };
+            let generations = root.join(&app).join("generations");
+            check_no_symlinks(&generations, true)?;
+            if !generations.try_exists()? {
+                continue;
+            }
+            let name = read_json(
+                &generations
+                    .join(&registration.generation)
+                    .join("local-app.json"),
+            )
+            .ok()
+            .and_then(|manifest| manifest["name"].as_str().map(str::to_owned));
+            let mut found = vec![];
+            for entry in fs::read_dir(&generations)? {
+                let entry = entry?;
+                if let Some(generation) = entry.file_name().to_str() {
+                    if generation.starts_with("gen_")
+                        && valid_id(generation)
+                        && generation != registration.generation
+                    {
+                        found.push((generation.to_owned(), entry.path()));
+                    }
+                }
+            }
+            found.sort();
+            for (generation, path) in found {
+                let mut item = Candidate::new(
+                    generation.clone(),
+                    "nodeGeneration",
+                    "Node 旧程序版本",
+                    path,
+                );
+                item.name = name.clone();
+                self.inspect(&mut item, |_| self.validate_generation(&app, &generation));
+                items.push(item);
+            }
+        }
+        Ok(())
+    }
+    fn managed_registration(
+        &self,
+        app: &str,
+    ) -> Result<Option<crate::node_app_install::ManagedNodeRegistration>, ApiError> {
+        let path = self.node_root().join(app).join("registration.json");
+        check_no_symlinks(&path, true)?;
+        if !path.try_exists()? || crate::node_apps::deletion_recorded(&self.node_root(), app)? {
+            return Ok(None);
+        }
+        let value = read_json(&path)?;
+        if value["version"].as_u64() != Some(2) {
+            return Ok(None);
+        }
+        let record: crate::node_app_install::ManagedNodeRegistration =
+            serde_json::from_value(value)?;
+        if record.id != app {
+            return Err(protected("Node 应用登记与目录不一致，现场保留"));
+        }
+        Ok(Some(record))
+    }
+    fn validate_installation(&self, candidate: &str) -> Result<(), ApiError> {
+        let states = self.installer()?.installation_states()?;
+        let state = states
+            .iter()
+            .find(|state| state.candidate_id == candidate)
+            .ok_or_else(|| protected("安装记录已变化，请重新扫描"))?;
+        if state.is_terminal() {
+            return Ok(());
+        }
+        Err(protected(match state.state.as_deref() {
+            None => "安装记录无法读取，现场保留",
+            Some("preparing") => "安装正在准备中",
+            Some("prepared") => "这个安装候选还可以继续安装，保留",
+            _ => "安装提交需要先核对处理",
+        }))
+    }
+    fn validate_generation(&self, app: &str, generation: &str) -> Result<(), ApiError> {
+        let registration = self
+            .managed_registration(app)?
+            .ok_or_else(|| protected("Node 应用登记已变化，请重新扫描"))?;
+        if registration.generation == generation {
+            return Err(protected("这是应用当前使用的程序版本"));
+        }
+        let states = self.installer()?.installation_states()?;
+        if states.iter().any(|state| {
+            !state.is_terminal()
+                && state.state.as_deref() != Some("prepared")
+                && state.app_id.as_deref().is_none_or(|id| id == app)
+        }) {
+            return Err(protected(
+                "这个应用有正在进行或需要处理的安装，程序版本继续保留",
+            ));
+        }
+        Ok(())
+    }
+    /// Acquired or captured source copies that no installed app, development
+    /// binding or unfinished installation references.
+    fn source_candidates(&self, items: &mut Vec<Candidate>) -> Result<(), ApiError> {
+        let root = self.sources_root();
+        check_no_symlinks(&root, true)?;
+        if !root.try_exists()? {
+            return Ok(());
+        }
+        let mut sources = vec![];
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            if let Some(id) = entry.file_name().to_str() {
+                if id.starts_with("src_") && valid_id(id) && entry.file_type()?.is_dir() {
+                    sources.push((id.to_owned(), entry.path()));
+                }
+            }
+        }
+        sources.sort();
+        for (id, path) in sources {
+            let record = read_json(&path.join("source.json")).ok();
+            let mut item = Candidate::new(id.clone(), "sourceCopy", "未被使用的源码副本", path);
+            item.name = record
+                .as_ref()
+                .and_then(|record| record["name"].as_str().map(str::to_owned));
+            self.inspect(&mut item, |item| self.validate_source(item, &id));
+            items.push(item);
+        }
+        Ok(())
+    }
+    fn validate_source(&self, item: &mut Candidate, id: &str) -> Result<(), ApiError> {
+        let record = Self::guard_file(item, &item.path.join("source.json"))
+            .map_err(|_| protected("源码记录无法读取，现场保留"))?;
+        if record["sourceId"] != id {
+            return Err(protected("源码记录与目录不一致，现场保留"));
+        }
+        if !matches!(
+            record["status"].as_str(),
+            Some("ready" | "failed" | "cancelled" | "interrupted")
+        ) {
+            return Err(protected("源码仍在获取中"));
+        }
+        let states = self.installer()?.installation_states()?;
+        if states.iter().any(|state| {
+            !state.is_terminal()
+                && (state.source_id.is_none() || state.source_id.as_deref() == Some(id))
+        }) {
+            return Err(protected("有安装正在使用或可能使用这份源码"));
+        }
+        let root = self.node_root();
+        if root.try_exists()? {
+            for entry in fs::read_dir(&root)? {
+                let entry = entry?;
+                let Some(app) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if Uuid::parse_str(&app).is_err() || !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                for file in ["registration.json", "development-source.json"] {
+                    let path = entry.path().join(file);
+                    check_no_symlinks(&path, true)?;
+                    if !path.try_exists()? {
+                        continue;
+                    }
+                    let value = read_json(&path)
+                        .map_err(|_| protected("Node 应用记录无法读取，源码副本继续保留"))?;
+                    if references_source(&value, id, &item.path) {
+                        return Err(protected("已安装的应用仍在使用这份源码"));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     fn inspect(
         &self,
@@ -814,7 +1120,28 @@ impl CleanupManager {
                 }
             }
         } else {
-            return Err(error("Unknown historical cleanup category"));
+            let workspace = self.paths.workspace_root();
+            let allowed: Vec<PathBuf> = match item.kind.as_str() {
+                "restoreOriginal" => vec![
+                    workspace.join(".platform/project-state/data-restore"),
+                    workspace.join(".platform/project-state/source-restore"),
+                ],
+                "nodeInstallation" => vec![self.node_root().join(".installations")],
+                "nodeGeneration" => vec![self.node_root()],
+                "sourceCopy" => vec![self.sources_root()],
+                _ => return Err(error("Unknown historical cleanup category")),
+            };
+            if !allowed
+                .iter()
+                .any(|root| path.starts_with(root) && path != root)
+            {
+                return Err(error("Payload is outside its recorded owner directory"));
+            }
+            if item.kind == "nodeGeneration"
+                && path.parent().and_then(Path::file_name) != Some("generations".as_ref())
+            {
+                return Err(error("Program generation is outside a managed app slot"));
+            }
         }
         check_no_symlinks(path, false)
     }
@@ -855,7 +1182,13 @@ impl CleanupManager {
                 crate::data_restore_guard::check_workspace_available(self.paths.workspace_root())?
             }
         }
-        for directory in fs::read_dir(self.paths.workspace_root().join(".platform/operations"))? {
+        let operations =
+            match fs::read_dir(self.paths.workspace_root().join(".platform/operations")) {
+                Ok(entries) => Some(entries),
+                Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => None,
+                Err(failure) => return Err(failure.into()),
+            };
+        for directory in operations.into_iter().flatten() {
             let directory = directory?;
             if directory.file_name().to_str() == except {
                 continue;
@@ -1288,6 +1621,18 @@ impl CleanupManager {
             selected.push(planned);
         }
         let receipt = self.receipt(task);
+        // Node installs commit under this lock; holding it keeps a commit from
+        // adopting or replacing material while it is being removed.
+        let _node_lock = if selected.iter().any(|item| {
+            matches!(
+                item.kind.as_str(),
+                "nodeInstallation" | "nodeGeneration" | "sourceCopy"
+            )
+        }) {
+            Some(self.installer()?.commit_lock()?)
+        } else {
+            None
+        };
         let mut results = vec![];
         let mut stopped = false;
         for item in selected {

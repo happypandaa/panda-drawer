@@ -4004,6 +4004,10 @@ mod m4_tests;
 mod m5_tests;
 
 #[cfg(test)]
+#[path = "service_history_cleanup_tests.rs"]
+mod history_cleanup_tests;
+
+#[cfg(test)]
 #[path = "service_object_layout_tests.rs"]
 mod object_layout_tests;
 

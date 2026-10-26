@@ -226,6 +226,10 @@ pub struct PendingSourceRestore {
 pub struct SourceRestoreState {
     pub pending: Vec<PendingSourceRestore>,
     pub issues: Vec<ApiError>,
+    /// Operations whose journal reached a terminal phase. Their retained
+    /// originals are no longer needed to continue or undo anything.
+    #[serde(skip)]
+    pub terminal: Vec<String>,
 }
 impl SourceRestoreState {
     pub(crate) fn check(&self) -> Result<(), ApiError> {
@@ -304,6 +308,43 @@ pub(crate) fn check_development_available(
     project_id: &str,
 ) -> Result<(), ApiError> {
     inspect(workspace, project_id).check()
+}
+
+/// Projects that have retained source-restore operation directories.
+pub(crate) fn operation_projects(workspace: &Path) -> Result<Vec<String>, ApiError> {
+    let root = workspace.join(ROOT);
+    if !directory_present(&root)? {
+        return Ok(vec![]);
+    }
+    let mut ids = vec![];
+    for entry in fs::read_dir(&root).map_err(|_| invalid())? {
+        let id = entry
+            .map_err(|_| invalid())?
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid())?;
+        if !valid_id(&id) {
+            return Err(invalid());
+        }
+        ids.push(id);
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+/// Directories of this project's terminal operations. Any pending or
+/// unreadable operation of the same project keeps all of them protected.
+pub(crate) fn terminal_operations(
+    workspace: &Path,
+    project_id: &str,
+) -> Result<Vec<PathBuf>, ApiError> {
+    let state = inspect(workspace, project_id);
+    state.check()?;
+    Ok(state
+        .terminal
+        .iter()
+        .map(|task| workspace.join(ROOT).join(project_id).join(task))
+        .collect())
 }
 
 pub(crate) fn inspect(workspace: &Path, project_id: &str) -> SourceRestoreState {
@@ -404,7 +445,7 @@ fn inspect_project(
         })();
         match result {
             Ok(Some(pending)) => state.pending.push(pending),
-            Ok(None) => (),
+            Ok(None) => state.terminal.push(task_id),
             Err(error) if error.code == "PROJECT_SOURCE_RESTORE_LIMIT" => return Err(error),
             Err(error) => state.issues.push(error.detail("taskId", task_id)),
         }
