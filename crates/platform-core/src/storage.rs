@@ -687,18 +687,6 @@ impl StorageManager {
         let mut entries = vec![];
         let mut issues = vec![];
         let workspace = self.paths.workspace_root();
-        let backup = workspace.join("backups").join(id);
-        if backup.exists() {
-            let mut result = scope_scan(
-                &backup,
-                json!({"kind":"backups","projectId":id}),
-                &[],
-                |_| "backups".into(),
-            );
-            result["protected"] = true.into();
-            result["protectionReason"] = "Use the backup management retention rules".into();
-            entries.push(result);
-        }
         let operations = workspace.join(".platform/operations");
         if let Ok(dirs) = fs::read_dir(&operations) {
             for entry in dirs.flatten() {
@@ -1497,10 +1485,6 @@ fn decode_cursor(text: &str) -> Result<Cursor, ApiError> {
 fn workspace_category(path: &str) -> String {
     if in_root(path, "projects") {
         "projects"
-    } else if in_root(path, "backups") {
-        "backups"
-    } else if in_root(path, ".platform/trash") {
-        "trash"
     } else if in_root(path, ".platform/operations") {
         "operations"
     } else if in_root(path, ".platform/cache") {

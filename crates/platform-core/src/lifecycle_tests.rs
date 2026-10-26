@@ -39,8 +39,7 @@ impl Fixture {
         builds::atomic_json(&root.join("project.json"), &manifest).unwrap();
         let tasks =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
-        let maintenance =
-            MaintenanceManager::new(paths.clone(), store.clone(), tasks.clone()).unwrap();
+        let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
         let lifecycle = LifecycleManager::new(
             paths.clone(),
             store.clone(),
@@ -85,23 +84,13 @@ impl Fixture {
             .unwrap();
         self.wait(&task).await
     }
-    async fn legacy_delete(&self, input: Value) -> TaskRecord {
-        let task = self
-            .lifecycle
-            .submit_legacy_trash_for_test(&self.id, input)
-            .await
-            .unwrap();
-        self.wait(&task).await
-    }
     async fn stop(self) {
         self.lifecycle.shutdown().await;
-        self.maintenance.shutdown().await;
         self.tasks.shutdown().await;
         self.store.shutdown().await;
     }
     async fn restart_task(self, mut task: TaskRecord) -> Self {
         self.lifecycle.shutdown().await;
-        self.maintenance.shutdown().await;
         self.tasks.shutdown().await;
         self.store.shutdown().await;
         task.status = TaskStatus::Running;
@@ -124,8 +113,7 @@ impl Fixture {
             "http://127.0.0.1:9".into(),
         )
         .unwrap();
-        let maintenance =
-            MaintenanceManager::new(self.paths.clone(), store.clone(), tasks.clone()).unwrap();
+        let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
         let lifecycle = LifecycleManager::new(
             self.paths.clone(),
             store.clone(),
@@ -376,353 +364,6 @@ async fn compatible_journal_fields_do_not_relax_schema_identity_or_type_validati
 #[path = "direct_delete_tests.rs"]
 mod direct_delete;
 
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn trash_stable_identity_accepts_renumbering_and_legacy_device_changes_fail_closed() {
-    for legacy in [false, true] {
-        let fixture = Fixture::new().await;
-        let deleted = fixture.legacy_delete(json!({})).await;
-        let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-        let directory = fixture.lifecycle.trash_root(&trash).unwrap();
-        let root = directory.join("project");
-        let attachment = fs::read(root.join("data/attachments/original.txt")).unwrap();
-        let mut record = fixture.lifecycle.read_trash(&trash).unwrap();
-        assert!(!record.root_identity.is_legacy());
-        if legacy {
-            record.root_identity.volume_uuid = None;
-        }
-        record.root_identity.device = record.root_identity.device.wrapping_add(1);
-        fixture.lifecycle.save_trash(&record).unwrap();
-        let request = fixture
-            .lifecycle
-            .submit_trash(&trash, "restore")
-            .await
-            .unwrap();
-        let restored = fixture.wait(&request).await;
-        if legacy {
-            assert_eq!(restored.status, TaskStatus::Failed, "{restored:?}");
-            assert_eq!(restored.error.unwrap().code, "TRASH_IDENTITY_CHANGED");
-            assert_eq!(
-                fs::read(root.join("data/attachments/original.txt")).unwrap(),
-                attachment
-            );
-            assert!(!fixture.store.project_root(&fixture.id).unwrap().exists());
-        } else {
-            good(&restored);
-            assert_eq!(
-                fs::read(
-                    fixture
-                        .store
-                        .project(&fixture.id)
-                        .unwrap()
-                        .root
-                        .join("data/attachments/original.txt")
-                )
-                .unwrap(),
-                attachment,
-            );
-        }
-        fixture.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn legacy_tuple_trash_record_remains_restorable_on_its_verified_device() {
-    let fixture = Fixture::new().await;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let directory = fixture.lifecycle.trash_root(&trash).unwrap();
-    let mut record: Value = read_json(&directory.join("record.json")).unwrap();
-    record["rootIdentity"] = json!(identity(&directory.join("project")).unwrap());
-    builds::atomic_json(&directory.join("record.json"), &record).unwrap();
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "restore")
-        .await
-        .unwrap();
-    good(&fixture.wait(&request).await);
-    fixture.stop().await;
-}
-
-async fn migrate_fixture(fixture: Fixture) -> (Fixture, PathBuf, String) {
-    fixture.lifecycle.shutdown().await;
-    fixture.maintenance.shutdown().await;
-    fixture.tasks.shutdown().await;
-    let source = fixture.paths.workspace_root().to_path_buf();
-    let destination = fixture
-        ._temporary
-        .path()
-        .canonicalize()
-        .unwrap()
-        .join("migrated-workspace");
-    fs::create_dir(&destination).unwrap();
-    fixture.store.begin_workspace_migration().unwrap();
-    let task = crate::workspace::create(&fixture.paths, &destination).unwrap();
-    fixture.store.pause_workspace().await.unwrap();
-    let (paths, mut journal) =
-        crate::workspace::copy_and_commit(&fixture.paths, &fixture.store, &task.task_id).unwrap();
-    let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
-    crate::workspace::initialize_selected(&paths, &store, &mut journal).unwrap();
-    crate::workspace::mark_old_retired(&paths, &journal).unwrap();
-    assert_eq!(
-        paths.reinitialize_for_test().unwrap().workspace_root(),
-        destination
-    );
-    fixture.store.shutdown().await;
-    let tasks =
-        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
-    let maintenance = MaintenanceManager::new(paths.clone(), store.clone(), tasks.clone()).unwrap();
-    let lifecycle = LifecycleManager::new(
-        paths.clone(),
-        store.clone(),
-        tasks.clone(),
-        maintenance.clone(),
-    )
-    .unwrap();
-    (
-        Fixture {
-            _temporary: fixture._temporary,
-            paths,
-            store,
-            tasks,
-            maintenance,
-            lifecycle,
-            id: fixture.id,
-        },
-        source,
-        task.task_id,
-    )
-}
-
-#[tokio::test]
-async fn migration_rebinds_verified_trash_and_real_restore_keeps_source_unchanged() {
-    let fixture = Fixture::new().await;
-    let old_epoch = fixture.store.project(&fixture.id).unwrap().document_epoch;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let trash_root = fixture.lifecycle.trash_root(&trash).unwrap();
-    let record_bytes = fs::read(trash_root.join("record.json")).unwrap();
-    let old_record: Value = serde_json::from_slice(&record_bytes).unwrap();
-    let database = sha256(&trash_root.join("project/data/main.sqlite")).unwrap();
-    let links = trash_root.join("project/app/node_modules/.bin");
-    fs::create_dir_all(&links).unwrap();
-    std::os::unix::fs::symlink("../package/command", links.join("command")).unwrap();
-    let (fixture, source, migration) = migrate_fixture(fixture).await;
-    let copied_root = fixture.lifecycle.trash_root(&trash).unwrap();
-    let copied_record: Value = read_json(&copied_root.join("record.json")).unwrap();
-    let new_identity = persistent_identity(&copied_root.join("project")).unwrap();
-    assert_ne!(old_record["rootIdentity"], json!(new_identity));
-    let mut expected = old_record.clone();
-    expected["rootIdentity"] = json!(new_identity);
-    assert_eq!(copied_record, expected);
-    assert_eq!(
-        fs::read(
-            source
-                .join(".platform/trash")
-                .join(&trash)
-                .join("record.json")
-        )
-        .unwrap(),
-        record_bytes
-    );
-    let evidence: Value = read_json(
-        &fixture
-            .paths
-            .migrations_dir()
-            .join(migration)
-            .join("trash-rebindings.json"),
-    )
-    .unwrap();
-    assert!(evidence["entries"].as_array().unwrap().iter().any(|entry| {
-        entry["trashId"] == trash && entry["targetIdentity"] == json!(new_identity)
-    }));
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "restore")
-        .await
-        .unwrap();
-    let restored = fixture.wait(&request).await;
-    assert_eq!(good(&restored)["operationOutcome"], "restored");
-    let root = fixture.store.project(&fixture.id).unwrap();
-    assert_ne!(root.document_epoch, old_epoch);
-    assert_eq!(
-        sha256(&root.root.join("data/main.sqlite")).unwrap(),
-        database
-    );
-    assert_eq!(
-        fs::read_link(root.root.join("app/node_modules/.bin/command")).unwrap(),
-        PathBuf::from("../package/command")
-    );
-    assert_eq!(
-        sha256(
-            &source
-                .join(".platform/trash")
-                .join(&trash)
-                .join("project/data/main.sqlite")
-        )
-        .unwrap(),
-        database
-    );
-    fixture.stop().await;
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn migration_rebinds_partial_purge_residue_and_only_explicit_retry_deletes_copy() {
-    let fixture = Fixture::new().await;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let trash_root = fixture.lifecycle.trash_root(&trash).unwrap();
-    let database_path = trash_root.join("project/data/main.sqlite");
-    let database = sha256(&database_path).unwrap();
-    let guard = ImmutableFile::new(&database_path);
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap();
-    let failed = fixture.wait(&request).await;
-    assert_eq!(failed.status, TaskStatus::Failed);
-    assert_eq!(
-        failed.error.unwrap().details["operationOutcome"],
-        "purge_incomplete"
-    );
-    drop(guard);
-    let record_bytes = fs::read(trash_root.join("record.json")).unwrap();
-    let (fixture, source, _) = migrate_fixture(fixture).await;
-    let copied_root = fixture
-        .lifecycle
-        .trash_root(&trash)
-        .unwrap()
-        .join("project");
-    assert_eq!(
-        sha256(&copied_root.join("data/main.sqlite")).unwrap(),
-        database
-    );
-    let info = fixture.lifecycle.trash_info(&trash).await.unwrap();
-    assert_eq!(info["state"], "purgeIncomplete");
-    assert_eq!(info["restoreAvailable"], false);
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap();
-    assert_eq!(
-        good(&fixture.wait(&request).await)["operationOutcome"],
-        "purged"
-    );
-    assert!(!copied_root.exists());
-    let retained = source.join(".platform/trash").join(&trash);
-    assert_eq!(
-        fs::read(retained.join("record.json")).unwrap(),
-        record_bytes
-    );
-    assert_eq!(
-        sha256(&retained.join("project/data/main.sqlite")).unwrap(),
-        database
-    );
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn migration_preserves_unverified_trash_identity_and_malformed_metadata() {
-    let fixture = Fixture::new().await;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let record_path = fixture
-        .lifecycle
-        .trash_root(&trash)
-        .unwrap()
-        .join("record.json");
-    let mut record: Value = read_json(&record_path).unwrap();
-    record["rootIdentity"] = json!([0, 0]);
-    builds::atomic_json(&record_path, &record).unwrap();
-    let original_bytes = fs::read(&record_path).unwrap();
-    let malformed = fixture
-        .paths
-        .workspace_root()
-        .join(".platform/trash/trash_invalid");
-    fs::create_dir_all(malformed.join("project")).unwrap();
-    fs::write(malformed.join("record.json"), b"preserve invalid metadata").unwrap();
-    let (fixture, source, migration) = migrate_fixture(fixture).await;
-    let copied = fixture.lifecycle.trash_root(&trash).unwrap();
-    assert_eq!(
-        fs::read(copied.join("record.json")).unwrap(),
-        original_bytes
-    );
-    assert_eq!(
-        fs::read(
-            fixture
-                .paths
-                .workspace_root()
-                .join(".platform/trash/trash_invalid/record.json")
-        )
-        .unwrap(),
-        b"preserve invalid metadata"
-    );
-    let evidence: Value = read_json(
-        &fixture
-            .paths
-            .migrations_dir()
-            .join(migration)
-            .join("trash-rebindings.json"),
-    )
-    .unwrap();
-    assert!(evidence["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|entry| entry["trashId"] == trash && entry["reason"] == "source_identity_unverified"));
-    assert!(
-        evidence["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["trashId"] == "trash_invalid"
-                && entry["reason"] == "unreadable_record")
-    );
-    // An unreadable record could claim any project ID, so registration correctly
-    // refuses it. Quarantine only this disposable target fixture to independently
-    // exercise the other entry's preexisting identity rejection.
-    assert_eq!(
-        fixture
-            .lifecycle
-            .submit_trash(&trash, "restore")
-            .await
-            .unwrap_err()
-            .code,
-        "INVALID_JSON"
-    );
-    fs::rename(
-        fixture
-            .paths
-            .workspace_root()
-            .join(".platform/trash/trash_invalid"),
-        fixture.paths.data_root().join("retained-malformed-record"),
-    )
-    .unwrap();
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "restore")
-        .await
-        .unwrap();
-    let task = fixture.wait(&request).await;
-    assert_eq!(task.status, TaskStatus::Failed);
-    assert_eq!(task.error.unwrap().code, "TRASH_IDENTITY_CHANGED");
-    assert!(copied.join("project/data/main.sqlite").exists());
-    assert_eq!(
-        fs::read(
-            source
-                .join(".platform/trash")
-                .join(&trash)
-                .join("record.json")
-        )
-        .unwrap(),
-        original_bytes
-    );
-    fixture.stop().await;
-}
-
 #[tokio::test]
 async fn export_copy_import_preserve_data_metadata_and_independent_files_without_node() {
     let fixture = Fixture::new().await;
@@ -946,165 +587,6 @@ async fn export_collision_and_project_destination_leave_original_files_unchanged
 }
 
 #[tokio::test]
-async fn delete_restore_and_purge_preserve_epochs_backups_and_corrupt_database_bytes() {
-    let fixture = Fixture::new().await;
-    let original = fixture.store.project(&fixture.id).unwrap();
-    let epoch = original.document_epoch.clone();
-    let archive = fixture.export_path("healthy.zip");
-    good(
-        &fixture
-            .project("export", json!({"destinationPath":archive}))
-            .await,
-    );
-    let backup_dir = fixture
-        .paths
-        .workspace_root()
-        .join("backups")
-        .join(&fixture.id);
-    fs::create_dir_all(&backup_dir).unwrap();
-    let history = backup_dir.join("backup_history.zip");
-    fs::copy(&archive, &history).unwrap();
-    let digest = sha256(&history).unwrap();
-    let broken = b"intentionally corrupt sqlite bytes retained by lifecycle";
-    fs::write(original.root.join("data/main.sqlite"), broken).unwrap();
-    fs::write(
-        original.root.join("data/main.sqlite-wal"),
-        b"retained external WAL bytes",
-    )
-    .unwrap();
-    fs::write(
-        original.root.join("data/main.sqlite-shm"),
-        b"retained external SHM bytes",
-    )
-    .unwrap();
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    assert_eq!(
-        fixture.store.project(&fixture.id).err().unwrap().code,
-        "PROJECT_TRASHED"
-    );
-    assert_eq!(
-        fixture
-            .lifecycle
-            .submit_import(json!({"archivePath":archive,"mode":"original"}))
-            .await
-            .unwrap_err()
-            .code,
-        "PROJECT_ID_CONFLICT"
-    );
-    let retained = fixture
-        .lifecycle
-        .trash_root(&trash)
-        .unwrap()
-        .join("project");
-    assert_eq!(fs::read(retained.join("data/main.sqlite")).unwrap(), broken);
-    assert!(retained.join("data/main.sqlite-wal").is_file());
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "restore")
-        .await
-        .unwrap();
-    let restored = fixture.wait(&request).await;
-    assert_eq!(good(&restored)["mode"], "maintenance");
-    assert_eq!(good(&restored)["readyForChanges"], false);
-    let restored = fixture.store.project(&fixture.id).unwrap();
-    assert_ne!(restored.document_epoch, epoch);
-    assert_eq!(
-        fs::read(restored.root.join("data/main.sqlite")).unwrap(),
-        broken
-    );
-    let state = fixture.store.control(&fixture.id).unwrap().get();
-    assert!(fixture
-        .store
-        .control(&fixture.id)
-        .unwrap()
-        .check(false, state.maintenance_id.as_deref(), false)
-        .is_err());
-    assert!(original.check().is_err());
-    let deleted = fixture
-        .legacy_delete(json!({"maintenanceId":state.maintenance_id}))
-        .await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap();
-    let request = fixture
-        .lifecycle
-        .submit_trash(trash, "purge")
-        .await
-        .unwrap();
-    let purged = fixture.wait(&request).await;
-    assert_eq!(good(&purged)["operationOutcome"], "purged");
-    assert!(!fixture
-        .lifecycle
-        .trash_root(trash)
-        .unwrap()
-        .join("project")
-        .exists());
-    assert_eq!(sha256(&history).unwrap(), digest);
-    assert_eq!(
-        fixture.lifecycle.trash_info(trash).await.unwrap()["restoreAvailable"],
-        false
-    );
-    let request = fixture
-        .lifecycle
-        .submit_import(json!({"archivePath":archive,"mode":"original"}))
-        .await
-        .unwrap();
-    let imported = fixture.wait(&request).await;
-    assert_eq!(good(&imported)["mode"], "ready");
-    assert_ne!(
-        fixture.store.project(&fixture.id).unwrap().document_epoch,
-        epoch
-    );
-    assert!(original.check().is_err());
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn maintenance_copy_is_rejected_before_install_and_preserves_pending_source() {
-    let fixture = Fixture::new().await;
-    let project = fixture.store.project(&fixture.id).unwrap();
-    let control = fixture.store.control(&fixture.id).unwrap();
-    let mut state = control
-        .begin(
-            "Unfinished source work".into(),
-            Some(builds::input_digest(&project).unwrap()),
-            false,
-        )
-        .unwrap();
-    state.pending_build = true;
-    state.pending_build_reason = Some("Known source work".into());
-    let maintenance_id = state.maintenance_id.clone().unwrap();
-    control.set(state.clone()).unwrap();
-    let submitted = fixture
-        .lifecycle
-        .submit_project(&fixture.id, "copy", json!({"maintenanceId":maintenance_id}))
-        .await
-        .unwrap();
-    let target = submitted.result.as_ref().unwrap()["targetProjectId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let failed = fixture.wait(&submitted).await;
-    let error = failed.error.unwrap();
-    assert_eq!(error.code, "LEGACY_ARCHIVE_REQUIRES_REVIEW");
-    assert_eq!(error.details["operationOutcome"], "not_registered");
-    assert_eq!(error.details["pendingBuild"]["required"], true);
-    let candidate = PathBuf::from(error.details["candidatePath"].as_str().unwrap());
-    assert!(candidate.join("data/main.sqlite").is_file());
-    assert_eq!(
-        fs::read_dir(fixture.paths.workspace_root().join("backups"))
-            .unwrap()
-            .count(),
-        0
-    );
-    assert!(fixture.store.project(&target).is_err());
-    assert_eq!(
-        serde_json::to_value(control.get()).unwrap(),
-        serde_json::to_value(state).unwrap()
-    );
-    fixture.stop().await;
-}
-
-#[tokio::test]
 async fn installed_copy_restart_recovers_response_without_replaying_registration_or_control() {
     for resolved in [false, true] {
         let fixture = Fixture::new().await;
@@ -1142,53 +624,6 @@ async fn installed_copy_restart_recovers_response_without_replaying_registration
         );
         restarted.stop().await;
     }
-}
-
-#[tokio::test]
-async fn delete_and_restore_restart_reconcile_completed_moves_with_lost_task_response() {
-    let fixture = Fixture::new().await;
-    let old = fixture.store.project(&fixture.id).unwrap();
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let path = fixture.lifecycle.journal_path(&deleted.task_id);
-    let mut journal: Journal = read_json(&path).unwrap();
-    journal.committed = false;
-    journal.resolved = false;
-    builds::atomic_json(&path, &journal).unwrap();
-    let task_id = deleted.task_id.clone();
-    let fixture = fixture.restart_task(deleted).await;
-    let task = fixture.tasks.task(&task_id).unwrap();
-    assert_eq!(task.status, TaskStatus::Interrupted);
-    assert_eq!(task.result.unwrap()["operationOutcome"], "trashed");
-    assert!(fixture.store.project(&fixture.id).is_err());
-    let submitted = fixture
-        .lifecycle
-        .submit_trash(&trash, "restore")
-        .await
-        .unwrap();
-    let restored = fixture.wait(&submitted).await;
-    let epoch = good(&restored)["documentEpoch"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert_ne!(epoch, old.document_epoch);
-    let path = fixture.lifecycle.journal_path(&restored.task_id);
-    let mut journal: Journal = read_json(&path).unwrap();
-    journal.committed = false;
-    journal.resolved = false;
-    builds::atomic_json(&path, &journal).unwrap();
-    let task_id = restored.task_id.clone();
-    let fixture = fixture.restart_task(restored).await;
-    let task = fixture.tasks.task(&task_id).unwrap();
-    assert_eq!(task.status, TaskStatus::Interrupted);
-    assert_eq!(task.result.unwrap()["operationOutcome"], "restored");
-    assert_eq!(
-        fixture.store.project(&fixture.id).unwrap().document_epoch,
-        epoch
-    );
-    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
-    assert!(old.check().is_err());
-    fixture.stop().await;
 }
 
 #[tokio::test]
@@ -1385,7 +820,7 @@ async fn pending_import_reservation_is_released_when_no_directory_was_committed(
     fixture.lifecycle.save(&journal).unwrap();
     fixture
         .store
-        .reserve_identity(&target, &task.task_id, None)
+        .reserve_identity(&target, &task.task_id)
         .unwrap();
     let candidate = fixture.lifecycle.operation(&task.task_id).join("candidate");
     fs::create_dir_all(&candidate).unwrap();
@@ -1403,7 +838,7 @@ async fn pending_import_reservation_is_released_when_no_directory_was_committed(
     );
     fixture
         .store
-        .check_identity_available(&target, None, None)
+        .check_identity_available(&target, None)
         .unwrap();
     assert!(!fixture
         .paths
@@ -1415,92 +850,6 @@ async fn pending_import_reservation_is_released_when_no_directory_was_committed(
         fs::read(candidate.join("retained.txt")).unwrap(),
         b"unvalidated temporary content"
     );
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn interrupted_purge_keeps_retryable_residual_record_and_never_replays_deletion() {
-    let fixture = Fixture::new().await;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let root = fixture
-        .lifecycle
-        .trash_root(&trash)
-        .unwrap()
-        .join("project");
-    let (task, lease) = fixture
-        .tasks
-        .create_operation(&fixture.id, "trashPurge")
-        .unwrap();
-    let mut journal = LifecycleManager::journal(&task, "trashPurge", &fixture.id);
-    journal.trash_id = Some(trash.clone());
-    journal.directory_identity = Some(persistent_identity(&root).unwrap());
-    journal.phase = "purge-intent".into();
-    fixture.lifecycle.save(&journal).unwrap();
-    let mut record = fixture.lifecycle.read_trash(&trash).unwrap();
-    record.state = "purging".into();
-    record.last_task_id = task.task_id.clone();
-    fixture.lifecycle.save_trash(&record).unwrap();
-    fs::remove_file(root.join("data/attachments/original.txt")).unwrap();
-    drop(lease);
-    let task_id = task.task_id.clone();
-    let fixture = fixture.restart_task(task).await;
-    assert_eq!(
-        fixture.tasks.task(&task_id).unwrap().result.unwrap()["operationOutcome"],
-        "purge_incomplete"
-    );
-    assert!(
-        root.join("data/main.sqlite").is_file(),
-        "restart must not resume permanent deletion"
-    );
-    assert_eq!(
-        fixture.lifecycle.trash_info(&trash).await.unwrap()["state"],
-        "purgeIncomplete"
-    );
-    assert_eq!(
-        fixture
-            .lifecycle
-            .submit_trash(&trash, "restore")
-            .await
-            .unwrap_err()
-            .code,
-        "TRASH_INCOMPLETE"
-    );
-    let request = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap();
-    assert_eq!(
-        good(&fixture.wait(&request).await)["operationOutcome"],
-        "purged"
-    );
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn unrelated_unresolved_recovery_reference_blocks_permanent_purge() {
-    let fixture = Fixture::new().await;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let other = format!("task_{}", Uuid::new_v4().simple());
-    builds::atomic_json(
-        &fixture.lifecycle.operation(&other).join("journal.json"),
-        &json!({"taskId":other,"projectId":fixture.id,"resolved":false}),
-    )
-    .unwrap();
-    let error = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "TRASH_PROTECTED");
-    assert!(fixture
-        .lifecycle
-        .trash_root(&trash)
-        .unwrap()
-        .join("project/data/main.sqlite")
-        .is_file());
     fixture.stop().await;
 }
 
@@ -1601,12 +950,7 @@ async fn unknown_and_foreign_key_archives_are_retained_without_registering_new_i
         assert!(candidate.join("data/main.sqlite").is_file());
         assert!(candidate.parent().unwrap().join("source.zip").is_file());
         assert!(fixture.store.project(&target).is_err());
-        assert_eq!(
-            fs::read_dir(fixture.paths.workspace_root().join("backups"))
-                .unwrap()
-                .count(),
-            0
-        );
+        assert!(!fixture.paths.workspace_root().join("backups").exists());
         assert_eq!(
             !error.details["diagnostics"]["foreignKeyViolations"]
                 .as_array()
@@ -1641,12 +985,7 @@ async fn ready_snapshot_with_pending_build_is_rejected_without_clearing_requirem
             .join("data/main.sqlite")
             .is_file()
     );
-    assert_eq!(
-        fs::read_dir(fixture.paths.workspace_root().join("backups"))
-            .unwrap()
-            .count(),
-        0
-    );
+    assert!(!fixture.paths.workspace_root().join("backups").exists());
     assert_eq!(
         serde_json::to_value(control.get()).unwrap(),
         serde_json::to_value(state).unwrap()
@@ -1674,100 +1013,6 @@ impl Drop for ImmutableFile {
     fn drop(&mut self) {
         assert_eq!(unsafe { libc::chflags(self.0.as_ptr(), 0) }, 0);
     }
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn real_purge_failure_reports_residue_and_explicit_retry_finishes() {
-    let fixture = Fixture::new().await;
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let root = fixture
-        .lifecycle
-        .trash_root(&trash)
-        .unwrap()
-        .join("project");
-    let guard = ImmutableFile::new(&root.join("data/main.sqlite"));
-    let submitted = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap();
-    let task = fixture.wait(&submitted).await;
-    assert_eq!(task.status, TaskStatus::Failed);
-    assert_eq!(
-        task.error.unwrap().details["operationOutcome"],
-        "purge_incomplete"
-    );
-    let info = fixture.lifecycle.trash_info(&trash).await.unwrap();
-    assert_eq!(info["state"], "purgeIncomplete");
-    assert_eq!(info["restoreAvailable"], false);
-    assert!(root.join("data/main.sqlite").exists());
-    drop(guard);
-    let submitted = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap();
-    assert_eq!(
-        good(&fixture.wait(&submitted).await)["operationOutcome"],
-        "purged"
-    );
-    assert!(!root.exists());
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn committed_purge_response_lost_cannot_retire_a_later_same_id_import() {
-    let fixture = Fixture::new().await;
-    let archive = fixture.export_path("reimport-after-purge.zip");
-    good(
-        &fixture
-            .project("export", json!({"destinationPath":archive}))
-            .await,
-    );
-    let deleted = fixture.legacy_delete(json!({})).await;
-    let trash = good(&deleted)["trashId"].as_str().unwrap().to_owned();
-    let submitted = fixture
-        .lifecycle
-        .submit_trash(&trash, "purge")
-        .await
-        .unwrap();
-    let purged = fixture.wait(&submitted).await;
-    good(&purged);
-    let path = fixture.lifecycle.journal_path(&purged.task_id);
-    let mut journal: Journal = read_json(&path).unwrap();
-    journal.resolved = false;
-    journal.committed = false;
-    builds::atomic_json(&path, &journal).unwrap();
-    let submitted = fixture
-        .lifecycle
-        .submit_import(json!({"archivePath":archive,"mode":"original"}))
-        .await
-        .unwrap();
-    good(&fixture.wait(&submitted).await);
-    let project = fixture.store.project(&fixture.id).unwrap();
-    let epoch = project.document_epoch.clone();
-    let root_identity = identity(&project.root).unwrap();
-    let control = fixture.store.control(&fixture.id).unwrap();
-    let mut later = control.get();
-    later.pending_build = true;
-    later.pending_build_reason = Some("Newly imported project owns this state".into());
-    control.set(later.clone()).unwrap();
-    let task_id = purged.task_id.clone();
-    let fixture = fixture.restart_task(purged).await;
-    assert_eq!(
-        fixture.tasks.task(&task_id).unwrap().result.unwrap()["operationOutcome"],
-        "purged"
-    );
-    let current = fixture.store.project(&fixture.id).unwrap();
-    assert_eq!(current.document_epoch, epoch);
-    assert_eq!(identity(&current.root).unwrap(), root_identity);
-    assert_eq!(
-        json!(fixture.store.control(&fixture.id).unwrap().get()),
-        json!(later)
-    );
-    fixture.stop().await;
 }
 
 #[cfg(target_os = "macos")]

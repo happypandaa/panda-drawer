@@ -8,7 +8,6 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export { inspectArchive, corruptArchivedDatabase } from './m3-test-utils.mjs';
 export const repository = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const artifactRoot = join(repository, '.test-artifacts');
 export const dataRoot = join(homedir(), 'Library/Application Support/dev.happypandaa.pandadrawer');
@@ -66,20 +65,12 @@ export const info = id => cli(['project', 'info', '--project', id]);
 export const maintenance = id => cli(['maintenance', 'status', '--project', id]);
 export function sql(id, statement, params = [], maintenanceId) { return cli(['db', 'execute', '--project', id, '--input', '-'], { sql: statement, params, ...(maintenanceId ? { maintenanceId } : {}) }); }
 export function operation(command, id, input, records) { return waitTask(cli(['project', command, ...(id ? ['--project', id] : []), '--input', '-'], input ?? {}), records); }
-export function begin(id, records) { return waitTask(cli(['maintenance', 'begin', '--project', id, '--input', '-'], { reason: 'M4 可丢弃项目生命周期验收' }), records); }
-export function end(id, maintenanceId, records) { return waitTask(cli(['maintenance', 'end', '--project', id, '--input', '-'], { maintenanceId }), records); }
-export function restore(id, backupId, records, maintenanceId) { return waitTask(cli(['backup', 'restore', '--project', id, '--input', '-'], { backupId, ...(maintenanceId ? { maintenanceId } : {}) }), records); }
-export function backup(id, records, maintenanceId) { return waitTask(cli(['backup', 'create', '--project', id, ...(maintenanceId ? ['--maintenance', maintenanceId] : [])]), records); }
-export function trash(command, trashId, records) { return waitTask(cli(['trash', command, '--trash', trashId]), records); }
 export function expectFailure(args, input, records) {
   const wire = invoke(args, input, true);
   if (!wire.ok) return wire.error;
   const task = waitTask(wire.data, records); assert.equal(task.status, 'failed', JSON.stringify(task)); return task.error;
 }
-export const backupIdOf = task => { const value = (task.result ?? task).backupId; assert.equal(typeof value, 'string'); return value; };
 export const projectIdOf = task => { const data = task.result ?? task; const value = data.projectId ?? data.project?.id ?? data.id; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
-export const trashIdOf = task => { const data = task.result ?? task; const value = data.trashId ?? data.trash?.trashId; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
-export const archivePath = (id, backupId) => join(settings().workspaceRoot, 'backups', id, `${backupId}.zip`);
 export async function session(current, id) {
   const launch = cli(['project', 'url', '--project', id]);
   const ticket = new URLSearchParams(new URL(launch.launchUrl).hash.slice(1)).get('ticket'); assert.ok(ticket);

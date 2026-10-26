@@ -17,7 +17,7 @@ interface Props {
   onPendingChange?: (pending: boolean) => void;
 }
 
-const recoveryTaskTypes = ['maintenanceBegin', 'maintenanceEnd', 'restore', ...sourceRestoreTaskTypes];
+const recoveryTaskTypes = [...sourceRestoreTaskTypes];
 function relevantTask(task: TaskRecord | null | undefined, projectId: string): task is TaskRecord {
   return Boolean(task && task.projectId === projectId && recoveryTaskTypes.includes(task.type));
 }
@@ -46,7 +46,7 @@ function OperationRecoveryInstance({ projectId, status, task: externalTask, disa
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
   const [stopped, setStopped] = useState(false);
-  const [confirmation, setConfirmation] = useState<{ operation: SourceRestoreOperation; action: 'continue' | 'undo' } | 'maintenance' | null>(null);
+  const [confirmation, setConfirmation] = useState<{ operation: SourceRestoreOperation; action: 'continue' | 'undo' } | null>(null);
   const [task, setTask] = useState<TaskRecord | null>(() => relevantTask(externalTask, projectId) ? externalTask : null);
   const alive = useRef(false);
   const generation = useRef(0);
@@ -157,14 +157,11 @@ function OperationRecoveryInstance({ projectId, status, task: externalTask, disa
   async function submit() {
     if (submitting.current || readPending.current || blocked || !confirmation) return;
     const selected = confirmation;
-    if (selected === 'maintenance' ? !maintenance || !knownStatus?.maintenanceId || needsRecovery
-      : !fresh || !stopped || !recovery?.operations.includes(selected.operation) || !(selected.action === 'continue' ? selected.operation.canContinue : selected.operation.canUndo)) return;
+    if (!fresh || !stopped || !recovery?.operations.includes(selected.operation) || !(selected.action === 'continue' ? selected.operation.canContinue : selected.operation.canUndo)) return;
     const lifetime = generation.current;
-    const expectedType = selected === 'maintenance' ? 'maintenanceEnd' : selected.action === 'continue' ? 'gitSourceRestoreContinue' : 'gitSourceRestoreUndo';
-    const command = selected === 'maintenance' ? 'maintenance_end' : 'project_git_source_restore_recover';
-    const args = selected === 'maintenance'
-      ? { projectId, input: { maintenanceId: knownStatus!.maintenanceId } }
-      : { id: projectId, input: { restoreTaskId: selected.operation.restoreTaskId, expectedPlanDigest: selected.operation.planDigest, expectedJournalDigest: selected.operation.journalDigest, action: selected.action } };
+    const expectedType = selected.action === 'continue' ? 'gitSourceRestoreContinue' : 'gitSourceRestoreUndo';
+    const command = 'project_git_source_restore_recover';
+    const args = { id: projectId, input: { restoreTaskId: selected.operation.restoreTaskId, expectedPlanDigest: selected.operation.planDigest, expectedJournalDigest: selected.operation.journalDigest, action: selected.action } };
     submitting.current = true; setBusy(true); setFresh(false); setError(''); setConfirmation(null);
     try {
       const value = await invoke<TaskRecord>(command, args);
@@ -187,11 +184,11 @@ function OperationRecoveryInstance({ projectId, status, task: externalTask, disa
       {(unknown || !fresh) && <p>操作状态尚未核实或已过期，请重新核对后再处理。</p>}
       {readError && <p role="alert" className="task-error">{readError}</p>}
       <button type="button" className="refresh-button" disabled={busy || reading || active} onClick={() => void refresh()}>重新核对操作状态</button>
-      {maintenance && <div className="operation-recovery-item"><h4>应用仍在维护中</h4><p>{knownStatus.reason || '这是尚未结束的维护状态。'}检查并结束维护会保留当前修改；已有应用页面需处理未保存内容后重新加载。</p>{lastError && <p className="task-error">{lastError}</p>}{needsRecovery ? <p>恢复结果尚未核对完成，暂时不能结束维护。请保留原现场和操作记录，由 AI 根据记录处理。</p> : <button type="button" className="refresh-button" disabled={blocked || !knownStatus.maintenanceId} onClick={() => setConfirmation('maintenance')}>检查并结束维护</button>}</div>}
-      {!maintenance && needsRecovery && <p>有尚未核对完成的恢复操作，请保留原现场和操作记录，由 AI 根据记录处理。</p>}
+      {maintenance && !needsRecovery && <div className="operation-recovery-item"><h4>应用处于已停用的维护状态</h4><p>当前版本不再提供备份与维护流程。请保留现场和操作记录，由 AI 根据记录处理。</p>{lastError && <p className="task-error">{lastError}</p>}</div>}
+      {needsRecovery && <p>有尚未核对完成的恢复操作，请保留原现场和操作记录，由 AI 根据记录处理。</p>}
       {recovery?.issues.map((issue, index) => <p role="alert" className="task-error" key={`issue-${index}`}>{messageFrom(issue)}</p>)}
       {unresolved && <><p>源码取回尚未完成。请先停止 Codex、其他编辑器和 Git 对本应用的修改，并保持停止直至处理结束。</p><label><input type="checkbox" checked={stopped} disabled={busy || reading || active} onChange={event => { setStopped(event.target.checked); setConfirmation(null); }} />我已停止本应用的外部编辑和 Git 操作</label>{recovery.operations.map(operation => <div className="operation-recovery-item" key={operation.restoreTaskId}><h4>未完成的源码取回</h4><code>{operation.restoreTaskId}</code><details><summary>查看涉及文件（{operation.changes.length}）</summary><ul>{operation.changes.map(change => <li key={change.path}><code>{change.path}</code> · {change.state === 'unknown' ? '内容尚不能确认' : change.state === 'after' ? '已取回的内容' : '操作前内容'}</li>)}</ul></details>{operation.issues.map((issue, index) => <p role="alert" className="task-error" key={index}>{messageFrom(issue)}</p>)}<div className="confirmation-actions">{operation.canContinue && <button type="button" className="refresh-button" disabled={blocked || !fresh || !stopped} onClick={() => setConfirmation({ operation, action: 'continue' })}>继续这次取回</button>}{operation.canUndo && <button type="button" className="refresh-button" disabled={blocked || !fresh || !stopped} onClick={() => setConfirmation({ operation, action: 'undo' })}>撤回这次取回</button>}</div>{!operation.canContinue && !operation.canUndo && <p>目前没有已核验可执行的操作，请保留现场并处理上方问题。</p>}</div>)}</>}
-      {confirmation && <div className="operation-confirmation" role="group" aria-label="处理操作确认"><p>{confirmation === 'maintenance' ? '检查通过后结束维护，保留当前源码和数据；已有页面需要明确重新加载。' : confirmation.action === 'continue' ? '确认完成这次源码取回。文件会成为待保存修改；不会自动提交版本或构建。' : '确认撤回这次源码取回，恢复操作前的源码。数据库、附件和当前程序保持不变。'}</p><div className="confirmation-actions"><button type="button" className="primary-button" disabled={blocked || confirmation !== 'maintenance' && (!fresh || !stopped)} onClick={() => void submit()}>{confirmation === 'maintenance' ? '确认检查并结束' : confirmation.action === 'continue' ? '确认继续取回' : '确认撤回这次取回'}</button><button type="button" className="refresh-button" disabled={busy} onClick={() => setConfirmation(null)}>取消</button></div></div>}
+      {confirmation && <div className="operation-confirmation" role="group" aria-label="处理操作确认"><p>{confirmation.action === 'continue' ? '确认完成这次源码取回。文件会成为待保存修改；不会自动提交版本或构建。' : '确认撤回这次源码取回，恢复操作前的源码。数据库、附件和当前程序保持不变。'}</p><div className="confirmation-actions"><button type="button" className="primary-button" disabled={blocked || !fresh || !stopped} onClick={() => void submit()}>{confirmation.action === 'continue' ? '确认继续取回' : '确认撤回这次取回'}</button><button type="button" className="refresh-button" disabled={busy} onClick={() => setConfirmation(null)}>取消</button></div></div>}
       {error && <p role="alert" className="task-error">{error}</p>}{pollError && <p role="alert" className="task-error">{pollError}</p>}
       {active && <p role="status">处理仍在进行，请等待最终结果后再关闭详情。</p>}
       {task && <ProjectTask key={task.taskId} task={task} />}

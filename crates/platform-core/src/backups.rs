@@ -1,4 +1,7 @@
-//! Portable complete-project archives. The caller owns the project operation gate and
+//! Portable complete-project archives used by explicit export, import and copy.
+//! The retired backup history (listing, retention and ZIP restore) is gone; these
+//! archive primitives remain for the ZIP files a user explicitly exports.
+//! The caller owns the project operation gate and
 //! freezes business operations only while `prepare_snapshot` reads the live project.
 //! Compression, verification and publication exclusively read the prepared snapshot.
 use crate::{
@@ -27,7 +30,6 @@ const FORMAT_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 1_000_000;
 const MAX_EXPANDED_BYTES: u64 = 16 * 1024 * 1024 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
-const AUTOMATIC_KEEP: usize = 10;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -133,18 +135,6 @@ pub struct BackupInfo {
     pub path: PathBuf,
     pub bytes: u64,
     pub database: DatabaseDiagnostics,
-}
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BackupListIssue {
-    pub path: PathBuf,
-    pub error: ApiError,
-}
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BackupList {
-    pub backups: Vec<BackupInfo>,
-    pub issues: Vec<BackupListIssue>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1215,101 +1205,6 @@ fn validate_project(
     Ok((manifest, diagnostics))
 }
 
-/// Re-check the already extracted project after a root switch, before committing
-/// the operation journal. No local registration or build task history is needed.
-pub fn validate_candidate(
-    root: &Path,
-    manifest: &BackupManifest,
-) -> Result<ValidatedArchive, ApiError> {
-    let actual = inventory(root, &[".platform".into()])?;
-    let mut expected_files = manifest.files.clone();
-    expected_files.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut expected_directories = manifest.directories.clone();
-    expected_directories.sort();
-    if actual.files != expected_files
-        || (!expected_directories.is_empty() && actual.directories != expected_directories)
-    {
-        return Err(invalid(
-            "Candidate files changed after archive verification",
-        ));
-    }
-    let (project_manifest, database) = validate_project(root, manifest)?;
-    Ok(ValidatedArchive {
-        manifest: manifest.clone(),
-        project_manifest,
-        database,
-    })
-}
-
-pub fn list_backups(directory: &Path) -> Result<BackupList, ApiError> {
-    check_no_symlinks(directory, true)?;
-    let mut result = BackupList {
-        backups: vec![],
-        issues: vec![],
-    };
-    if !directory.exists() {
-        return Ok(result);
-    }
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("zip") {
-            continue;
-        }
-        match read_info(&path) {
-            Ok(info)
-                if path.file_stem().and_then(|s| s.to_str()) == Some(&info.manifest.backup_id) =>
-            {
-                result.backups.push(info)
-            }
-            Ok(_) => result.issues.push(BackupListIssue {
-                path,
-                error: invalid("Archive filename and backup identity differ"),
-            }),
-            Err(error) => result.issues.push(BackupListIssue { path, error }),
-        }
-    }
-    result.backups.sort_by(|a, b| {
-        b.manifest
-            .created_at
-            .cmp(&a.manifest.created_at)
-            .then(b.manifest.backup_id.cmp(&a.manifest.backup_id))
-    });
-    Ok(result)
-}
-
-/// Call only after a new archive was successfully published. Manual and explicitly
-/// protected archives do not count toward the ten removable automatic archives.
-pub fn apply_retention(
-    directory: &Path,
-    protected: &HashSet<String>,
-) -> Result<Vec<String>, ApiError> {
-    let listed = list_backups(directory)?;
-    let mut valid_remaining = listed.backups.len();
-    let mut kept = 0;
-    let mut removed = vec![];
-    for info in &listed.backups {
-        let id = &info.manifest.backup_id;
-        if !matches!(
-            info.manifest.kind.as_str(),
-            "maintenanceBaseline" | "preRestore"
-        ) || protected.contains(id)
-        {
-            continue;
-        }
-        kept += 1;
-        if kept > AUTOMATIC_KEEP && valid_remaining > 1 {
-            check_no_symlinks(&info.path, false)?;
-            fs::remove_file(&info.path)?;
-            removed.push(id.clone());
-            valid_remaining -= 1;
-        }
-    }
-    if !removed.is_empty() {
-        File::open(directory)?.sync_all()?;
-    }
-    Ok(removed)
-}
-
 fn validate_portable(provenance: &PortableBuildProvenance) -> Result<(), ApiError> {
     if !matches!(
         provenance.origin.as_str(),
@@ -1649,13 +1544,6 @@ mod tests {
         assert!(candidate.join("data/attachments").is_dir());
         assert!(validated.database.integrity_ok);
         assert!(validated.database.foreign_key_violations.is_empty());
-        assert_eq!(
-            list_backups(backup.path.parent().unwrap())
-                .unwrap()
-                .backups
-                .len(),
-            1
-        );
     }
 
     #[tokio::test]
@@ -1722,7 +1610,6 @@ mod tests {
             ))
             .is_file());
         assert!(!candidate.join(".platform/starter.json").exists());
-        validate_candidate(&candidate, &valid.manifest).unwrap();
         assert_eq!(
             builds::tree_digest(&candidate.join("dist"), false).unwrap(),
             portable.artifact_digest
@@ -2065,54 +1952,6 @@ mod tests {
             read_info(&path).unwrap().manifest.backup_id,
             original.manifest.backup_id
         );
-    }
-
-    #[tokio::test]
-    async fn retention_keeps_ten_automatic_plus_manual_and_protected_archives() {
-        let (temporary, _store, project) = fixture().await;
-        let mut prepared = prepare_snapshot(
-            &project.root,
-            &project.manifest,
-            &temporary.path().join("retention-snapshot"),
-            options(&project),
-        )
-        .unwrap();
-        let directory = temporary.path().join("retention");
-        let mut protected = HashSet::new();
-        for number in 0..14 {
-            prepared.manifest.backup_id = format!("backup_{number:032x}");
-            prepared.manifest.created_at = format!("2026-10-15T00:00:{number:02}Z");
-            prepared.manifest.kind = if number == 0 {
-                "manual"
-            } else {
-                "maintenanceBaseline"
-            }
-            .into();
-            publish_snapshot(
-                &prepared,
-                &directory.join(format!("{}.zip", prepared.manifest.backup_id)),
-            )
-            .unwrap();
-            if number == 1 {
-                protected.insert(prepared.manifest.backup_id.clone());
-            }
-        }
-        let removed = apply_retention(&directory, &protected).unwrap();
-        assert_eq!(removed.len(), 2);
-        let listed = list_backups(&directory).unwrap();
-        assert_eq!(listed.backups.len(), 12);
-        assert!(listed
-            .backups
-            .iter()
-            .any(|info| info.manifest.kind == "manual"));
-        assert!(listed
-            .backups
-            .iter()
-            .any(|info| protected.contains(&info.manifest.backup_id)));
-        put(&directory, "backup_broken.zip", b"not a zip");
-        let listed = list_backups(&directory).unwrap();
-        assert_eq!(listed.backups.len(), 12);
-        assert_eq!(listed.issues.len(), 1);
     }
 
     #[tokio::test]

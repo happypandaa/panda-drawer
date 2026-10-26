@@ -164,11 +164,7 @@ pub(crate) fn preview(paths: &RuntimePaths, migration: Option<&str>) -> Result<V
         .context("Legacy identity repair requires an explicitly selected completed migration")?;
     let root = paths.workspace_root();
     check_no_symlinks(root, false)?;
-    for directory in [
-        root.join("projects"),
-        root.join("backups"),
-        root.join(".platform"),
-    ] {
+    for directory in [root.join("projects"), root.join(".platform")] {
         check_no_symlinks(&directory, false)?;
         if !directory.is_dir() {
             bail!("Required workspace directory is missing")

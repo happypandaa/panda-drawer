@@ -73,7 +73,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       <p className="project-delete-warning"><TriangleAlert size={18} />本次删除不进入平台或系统回收站，无法从回收站恢复。</p>
       <p>项目 ID：<code>{project.id}</code></p>
       <div className="project-delete-scope"><h4>本次删除</h4><p>将永久删除此项目目录内的源码、数据库、附件、图标、当前网页和说明，并从项目列表移除。</p><code className="workspace-scope-path">{project.projectRoot}</code></div>
-      <div className="project-delete-scope"><h4>继续保留</h4><p>历史备份、旧版保留项目、迁移旧目录、操作与恢复证据和外部导出的 ZIP 不会自动删除。</p></div>
+      <div className="project-delete-scope"><h4>继续保留</h4><p>迁移前的旧工作区、操作与恢复记录、其他项目和外部导出的 ZIP 不会自动删除。</p></div>
       <p>已有项目窗口将无法继续保存。请先处理未保存内容；详情页的草稿不会因删除而自动保存。</p>
       {!status && <p className="project-help">维护状态尚未读取，请先刷新状态再删除。</p>}
       {!project.documentEpoch && <p className="project-help" role="status">项目身份尚未读取，不能确认删除。请关闭弹窗并刷新项目列表，重新核对后再删除。</p>}

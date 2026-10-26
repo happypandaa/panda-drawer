@@ -55,7 +55,6 @@ dom.window.HTMLElement.prototype.scrollIntoView = function () {};
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { Modal } = await component('Modal.tsx');
-const { BackupMaintenancePanel } = await component('BackupMaintenancePanel.tsx');
 const { ProjectOverview } = await component('ProjectOverview.tsx');
 const { WorkspaceHub } = await component('WorkspaceHub.tsx');
 const { WorkspaceStorageSummary } = await component('StoragePanels.tsx');
@@ -419,9 +418,6 @@ test('Modal pending gate blocks every close path and uses current props without 
 
 const project = { id: 'prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
 const normalStatus = { mode: 'ready', readyForChanges: false, recoveryRequired: false };
-function backupProps(extra = {}) {
-  return { project, status: normalStatus, embedded: true, active: true, onTask() {}, onChanged: async () => {}, onClose() {}, ...extra };
-}
 async function inputValue(input, value) {
   assert.ok(input);
   await act(async () => {
@@ -438,63 +434,6 @@ function deferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-
-test('Legacy backup compatibility exposes no new backup or maintenance creation', async () => {
-  await setup(); const states = []; const calls = [];
-  globalThis.__UI_TEST_INVOKE__ = async command => { calls.push(command); assert.equal(command, 'backup_list'); return []; };
-  const view = active => h('div', { hidden: !active }, h(BackupMaintenancePanel, backupProps({ active, onDraftStateChange: state => states.push(state) })));
-  await render(view(true));
-  assert.equal(document.getElementById('backup-note'), null);
-  assert.equal(document.getElementById('maintenance-reason'), null);
-  assert.equal(document.querySelector('.backup-create-form'), null);
-  assert.equal(document.querySelector('.maintenance-form'), null);
-  assert.match(document.body.textContent, /新建备份与新维护基线已退役/);
-  assert.deepEqual(states.at(-1), { dirty: false, pending: false });
-  await render(view(false)); await render(view(true));
-  assert.ok(calls.every(command => command === 'backup_list'));
-});
-
-test('Legacy maintenance end reports pending and rejects duplicate confirmation', async () => {
-  await setup(); const accepted = deferred(); const states = []; const tasks = []; let submissions = 0;
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'backup_list') return [];
-    assert.equal(command, 'maintenance_end'); assert.equal(args.input.maintenanceId, 'maintenance_fixture'); submissions++;
-    return accepted.promise;
-  };
-  await render(h(BackupMaintenancePanel, backupProps({ status: { mode: 'maintenance', readyForChanges: false, maintenanceId: 'maintenance_fixture' }, onDraftStateChange: state => states.push(state), onTask: task => tasks.push(task) })));
-  assert.doesNotMatch(document.body.textContent, /重试准备基线|进入维护并备份/);
-  await click([...document.querySelectorAll('button')].find(button => button.textContent.trim() === '检查并结束维护'));
-  const confirm = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '检查并结束');
-  await click(confirm); await click(confirm);
-  assert.equal(submissions, 1); assert.deepEqual(states.at(-1), { dirty: false, pending: true });
-  await act(async () => accepted.resolve({ taskId: 'task_fixture', projectId: project.id, final: false }));
-  assert.equal(tasks.length, 1);
-  assert.deepEqual(states.at(-1), { dirty: false, pending: false });
-});
-
-test('Leaving the backup tab revokes restore/end confirmations while keeping the selected snapshot', async () => {
-  await setup();
-  const snapshot = { backupId: 'backup_fixture', verified: true, kind: 'manual', createdAt: 1, files: [], snapshotState: 'ready' };
-  globalThis.__UI_TEST_INVOKE__ = async (command) => {
-    if (command === 'backup_list') return [snapshot];
-    assert.equal(command, 'backup_info'); return snapshot;
-  };
-  const view = (active) => h('div', { hidden: !active }, h(BackupMaintenancePanel, backupProps({ active, status: { mode: 'maintenance', readyForChanges: true, maintenanceId: 'maintenance_fixture' } })));
-  await render(view(true));
-  await click(document.querySelector('.backup-row'));
-  const named = (name) => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === name);
-  await click(named('恢复这份备份'));
-  await click(document.querySelector('.restore-acknowledgement input'));
-  await click(named('检查并结束维护'));
-  assert.ok(document.querySelector('[aria-label="恢复备份确认"]'));
-  assert.ok(document.querySelector('[aria-label="结束维护确认"]'));
-  await render(view(false)); await render(view(true));
-  assert.equal(document.querySelector('[aria-label="恢复备份确认"]'), null);
-  assert.equal(document.querySelector('[aria-label="结束维护确认"]'), null);
-  assert.match(document.querySelector('.backup-detail-column').textContent, /backup_fixture/);
-  await click(named('恢复这份备份'));
-  assert.equal(document.querySelector('.restore-acknowledgement input').checked, false);
-});
 
 const clearRecovery = { state: 'clear', operations: [], issues: [] };
 const emptyProjectStorage = { currentProject: { status: 'not_scanned', complete: false, stale: false, categories: {}, totalBytes: null }, activeTask: null };
@@ -851,7 +790,6 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     requests.push(command);
     if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return [];
     throw new Error(`Navigation must not mutate or open a native chooser: ${command}`);
   };
   await render(h(WorkspaceHub, hubProps()));
@@ -861,11 +799,9 @@ test('Workspace opens with read-only summary and quick actions focus the newly s
   assert.equal(document.activeElement, hubTab('工作区位置'));
   assert.equal(hubTab('工作区位置').getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('.workspace-migration-form'), null);
-  await click(hubTab('空间总览')); await click(buttonNamed('查看历史保留项目'));
-  assert.equal(document.activeElement, hubTab('历史保留项目'));
-  assert.equal(hubTab('历史保留项目').getAttribute('aria-selected'), 'true');
-  assert.deepEqual([...new Set(requests)], ['workspace_storage', 'trash_list']);
-  assert.equal(document.querySelector('.purge-confirmation'), null);
+  assert.equal(hubTab('历史保留项目'), undefined);
+  assert.deepEqual([...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent), ['空间总览', '工作区位置', '清理历史']);
+  assert.deepEqual([...new Set(requests)], ['workspace_storage']);
 });
 
 test('Storage explains retained sizes within their scopes, aggregates old roots, and preserves unknown measurements', async () => {
@@ -873,7 +809,7 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   let data = {
     platformProgram: { totalBytes: 100, complete: true },
     workspace: { totalBytes: 2000, complete: true, categories: {
-      trash: { totalBytes: 0 }, backups: { totalBytes: null }, operations: { totalBytes: 1500 }, sharedCache: { totalBytes: 500 },
+      operations: { totalBytes: 1500 }, sharedCache: { totalBytes: null },
     } },
     otherLocalLocations: [
       { scope: { kind: 'retainedWorkspace' }, totalBytes: 1000, complete: true },
@@ -885,24 +821,24 @@ test('Storage explains retained sizes within their scopes, aggregates old roots,
   await render(h(WorkspaceStorageSummary, { revision: 1, enabled: true }));
   const rows = () => [...document.querySelectorAll('.workspace-retention-list > div')];
   const row = (prefix) => rows().find((element) => element.querySelector('dt').textContent.startsWith(prefix));
-  assert.equal(row('历史保留项目'), undefined, 'A known complete zero category should not imply retained content');
-  assert.match(row('历史备份').textContent, /尚未统计/);
-  assert.equal(row('操作现场').querySelector('strong').title, '1500 字节');
-  assert.equal(row('共享缓存').querySelector('strong').title, '500 字节');
-  assert.equal(row('迁移保留目录').querySelector('strong').title, '3000 字节');
+  assert.equal(row('历史保留项目'), undefined);
+  assert.equal(row('历史备份'), undefined);
+  assert.match(row('共享缓存').textContent, /尚未统计/);
+  assert.equal(row('操作记录').querySelector('strong').title, '1500 字节');
+  assert.equal(row('迁移前的旧工作区').querySelector('strong').title, '3000 字节');
   assert.equal(row('应用设置').querySelector('strong').title, '321 字节');
-  assert.equal(rows().filter((element) => element.querySelector('dt').textContent.startsWith('迁移保留目录')).length, 1);
+  assert.equal(rows().filter((element) => element.querySelector('dt').textContent.startsWith('迁移前的旧工作区')).length, 1);
   assert.match(document.querySelector('.workspace-retention-explanation').textContent, /不再与上方数字相加|不等于可以释放/);
   data = { ...data, workspace: { ...data.workspace, complete: false, stale: true }, otherLocalLocations: [...data.otherLocalLocations, { scope: { kind: 'retainedWorkspace' }, totalBytes: null, complete: false }] };
   await render(h(WorkspaceStorageSummary, { revision: 2, enabled: true }));
-  assert.match(row('历史保留项目').textContent, /0 B.*已过期/);
-  assert.match(row('迁移保留目录').textContent, /尚未统计.*部分统计/);
+  assert.match(row('操作记录').textContent, /已过期/);
+  assert.match(row('迁移前的旧工作区').textContent, /尚未统计.*部分统计/);
 });
 
 function cleanupPlan(extra = {}) {
-  return { planId: 'cleanup_plan_dom', expiresAt: Date.now() + 60000, workspaceRoot: '/disposable/workspace', confirmationText: '永久清理所选内容', preserved: ['当前项目和全部当前备份'], items: [
+  return { planId: 'cleanup_plan_dom', expiresAt: Date.now() + 60000, workspaceRoot: '/disposable/workspace', confirmationText: '永久清理所选内容', preserved: ['当前项目'], items: [
     { id: 'retained_fixture', kind: 'retainedWorkspace', label: 'Old disposable snapshot', path: '/disposable/old-workspace', totalBytes: 1234, fileCount: 4, canClean: true, blockedReasons: [] },
-    { id: 'original_protected', kind: 'recoveryOriginal', label: 'Protected recovery fixture', path: '/disposable/workspace/.platform/operations/task_fixture/original', totalBytes: null, fileCount: null, canClean: false, blockedReasons: ['Unresolved recovery still references this copy'] },
+    { id: 'retained_protected', kind: 'retainedWorkspace', label: 'Protected old workspace fixture', path: '/disposable/older-workspace', totalBytes: null, fileCount: null, canClean: false, blockedReasons: ['Unresolved recovery still references this copy'] },
   ], ...extra };
 }
 const cleanupPreview = (plan) => ({ taskId: `task_preview_${plan.planId}`, type: 'workspaceCleanupPreview', projectId: null, final: true, status: 'succeeded', phase: 'completed', result: plan });
@@ -916,7 +852,7 @@ async function acknowledgeCleanup() {
 
 test('Cleanup controls identify same-name projects and copy or submit only the associated scope', async () => {
   await setup(); const copied = []; const submissions = [];
-  const items = ['kept', 'disposable'].map((suffix) => ({ id: `trash_${suffix}`, kind: 'trash', label: '回收站完整项目', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/workspace/.platform/trash/trash_${suffix}`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));
+  const items = ['kept', 'disposable'].map((suffix) => ({ id: `retained_${suffix}`, kind: 'retainedWorkspace', label: '迁移前的旧工作区', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/old-workspace-${suffix}`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));
   const plan = cleanupPlan({ items });
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
@@ -932,7 +868,7 @@ test('Cleanup controls identify same-name projects and copy or submit only the a
     const checkbox = row.querySelector('input'); const copy = row.querySelector('button');
     for (const control of [checkbox, copy]) {
       const name = control.getAttribute('aria-label');
-      assert.ok(name.includes('旧版保留项目')); assert.ok(name.includes(items[index].name));
+      assert.ok(name.includes('迁移前的旧工作区')); assert.ok(name.includes(items[index].name));
       assert.ok(name.includes(items[index].projectId)); assert.ok(name.includes(items[index].path));
     }
     await click(copy);
@@ -941,7 +877,7 @@ test('Cleanup controls identify same-name projects and copy or submit only the a
   await click(rows[1].querySelector('input')); await acknowledgeCleanup();
   assert.equal(rows[0].querySelector('input').checked, false);
   await click(buttonNamed('确认永久清理所选内容'));
-  assert.deepEqual(submissions, [{ planId: plan.planId, itemIds: ['trash_disposable'], confirmation: plan.confirmationText }]);
+  assert.deepEqual(submissions, [{ planId: plan.planId, itemIds: ['retained_disposable'], confirmation: plan.confirmationText }]);
 });
 
 test('Cleanup review reveals its heading, keeps typing focus and restores the review action on cancel', async () => {
@@ -992,7 +928,7 @@ test('Cleanup acceptance and its first final transition reveal results without o
     assert.equal(document.activeElement, resultHeading); assert.equal(scrolled.at(-1), resultHeading);
     const acceptedScrollCount = scrolled.length;
     document.getElementById('trigger').focus();
-    props = { ...props, cleanupTask: { ...running, status: 'running', phase: 'cleaning-trash' } };
+    props = { ...props, cleanupTask: { ...running, status: 'running', phase: 'cleaning-retainedWorkspace' } };
     await render(h(WorkspaceCleanupPanel, props));
     assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, acceptedScrollCount);
     const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
@@ -1007,7 +943,7 @@ test('Cleanup completion in a hidden tab does not move focus then or when return
   await setup(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
   HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this); };
   try {
-    const running = { taskId: 'task_cleanup_hidden', type: 'workspaceCleanup', projectId: null, final: false, status: 'running', phase: 'cleaning-trash', result: null };
+    const running = { taskId: 'task_cleanup_hidden', type: 'workspaceCleanup', projectId: null, final: false, status: 'running', phase: 'cleaning-retainedWorkspace', result: null };
     const props = cleanupProps({ active: false, cleanupTask: running });
     await render(h(WorkspaceCleanupPanel, props));
     const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
@@ -1085,9 +1021,9 @@ test('Expired cleanup plans and plans for a different workspace cannot submit de
 test('Historical cleanup shows per-item results, uncertain deletion lower bounds and the durable receipt', async () => {
   await setup();
   const task = { taskId: 'task_cleanup_results', type: 'workspaceCleanup', projectId: null, final: true, status: 'failed', phase: 'failed', result: {
-    completed: false, historicalBackupsRetained: true, receiptPath: '/disposable/development/cleanup/receipts/task_cleanup_results', items: [
-      { id: 'one', kind: 'trash', path: '/disposable/trash/project', status: 'removed', completed: true, removed: { removedLogicalBytes: 1234, removedFileCount: 5, completed: true } },
-      { id: 'two', kind: 'recoveryOriginal', path: '/disposable/recovery/original', status: 'failed', completed: false, error: { code: 'TARGET_CHANGED', message: 'Disposable partial fixture', details: { cleanupResult: { removedLogicalBytes: 42, removedFileCount: 1, accountingComplete: false, countsAreLowerBounds: true, remainingPath: '/disposable/recovery/original' } } } },
+    completed: false, receiptPath: '/disposable/development/cleanup/receipts/task_cleanup_results', items: [
+      { id: 'one', kind: 'retainedWorkspace', path: '/disposable/old-one', status: 'removed', completed: true, removed: { removedLogicalBytes: 1234, removedFileCount: 5, completed: true } },
+      { id: 'two', kind: 'retainedWorkspace', path: '/disposable/old-two', status: 'failed', completed: false, error: { code: 'TARGET_CHANGED', message: 'Disposable partial fixture', details: { cleanupResult: { removedLogicalBytes: 42, removedFileCount: 1, accountingComplete: false, countsAreLowerBounds: true, remainingPath: '/disposable/old-two' } } } },
       { id: 'three', kind: 'retainedWorkspace', path: '/disposable/retained', status: 'skipped', completed: false, reason: 'A preceding item needs attention' },
     ],
   } };
@@ -1097,7 +1033,6 @@ test('Historical cleanup shows per-item results, uncertain deletion lower bounds
   assert.match(results[0].textContent, /已清理.*实际删除.*5 个/);
   assert.match(results[1].textContent, /已确认至少删除.*42 B.*下限.*待核对的残留目录/);
   assert.match(results[2].textContent, /未处理.*没有继续处理/);
-  assert.match(document.querySelector('.workspace-cleanup-result-details').textContent, /历史备份已保留/);
   assert.equal(document.querySelector('.workspace-cleanup-receipt code').textContent, task.result.receiptPath);
 });
 
@@ -1112,50 +1047,10 @@ test('A cleaned retired workspace remains an explicit historical record instead 
   assert.match(record.textContent, /disposable\/old-workspace/);
 });
 
-test('Trash ignores out-of-order details, keeps confirmation bound to its selected ID, and resets it after tab changes', async () => {
-  await setup(); const first = deferred(); const second = deferred();
-  const entries = ['A', 'B'].map((id) => ({ trashId: `trash_${id}`, projectId: `prj_${id}`, name: 'Same display name', state: 'trashed', restoreAvailable: true, issues: [] }));
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return entries;
-    if (command === 'trash_info') return args.trashId === 'trash_A' ? first.promise : second.promise;
-    throw new Error(`Unexpected mutation/request: ${command}`);
-  };
-  await render(h(WorkspaceHub, hubProps()));
-  await click(hubTab('历史保留项目'));
-  const rows = [...document.querySelectorAll('.trash-row')];
-  await click(rows[0]); await click(rows[1]);
-  await act(async () => second.resolve(entries[1]));
-  await click(buttonNamed('永久删除…'));
-  await inputValue(document.querySelector('.purge-confirmation input:not([type="checkbox"])'), 'Same display name');
-  await click(document.querySelector('.purge-confirmation input[type="checkbox"]'));
-  assert.equal(buttonNamed('确认永久删除完整项目').disabled, false);
-  await act(async () => first.resolve(entries[0]));
-  assert.match(document.querySelector('.workspace-trash-details').textContent, /trash_B/);
-  assert.doesNotMatch(document.querySelector('.workspace-trash-details').textContent, /trash_A/);
-  await click(hubTab('工作区位置')); await click(hubTab('历史保留项目'));
-  assert.equal(document.querySelector('.purge-confirmation'), null);
-});
-
-test('Trash refuses restore for a record explicitly marked unavailable', async () => {
-  await setup();
-  const entry = { trashId: 'trash_unavailable', projectId: 'prj_unavailable', name: 'Needs review', state: 'needsAttention', restoreAvailable: false, issues: ['Identity mismatch'] };
-  globalThis.__UI_TEST_INVOKE__ = async (command) => {
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return [entry];
-    if (command === 'trash_info') return entry;
-    throw new Error(`Unexpected request: ${command}`);
-  };
-  await render(h(WorkspaceHub, hubProps())); await click(hubTab('历史保留项目')); await click(document.querySelector('.trash-row'));
-  assert.equal(buttonNamed('恢复项目').disabled, true);
-  assert.match(document.querySelector('.workspace-trash-details').textContent, /Identity mismatch/);
-});
-
 test('A failed migration submission still settles after leaving and returning to its tab', async () => {
   await setup(); const result = deferred(); let submissions = 0;
   globalThis.__UI_TEST_INVOKE__ = async (command) => {
     if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'trash_list') return [];
     assert.equal(command, 'workspace_migrate'); submissions++; return result.promise;
   };
   await render(h(WorkspaceHub, hubProps())); await click(hubTab('工作区位置')); await click(buttonNamed('迁移工作区'));
@@ -1164,7 +1059,7 @@ test('A failed migration submission still settles after leaving and returning to
   await click(document.querySelector('.workspace-migration-confirmation input[type="checkbox"]'));
   await click(buttonNamed('确认开始迁移'));
   assert.equal(submissions, 1);
-  await click(hubTab('历史保留项目'));
+  await click(hubTab('空间总览'));
   await act(async () => result.reject(new Error('Migration fixture rejected')));
   await click(hubTab('工作区位置'));
   assert.equal(document.querySelector('.workspace-migration-form input:not([type="checkbox"])').disabled, false);
@@ -1182,7 +1077,6 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (command === 'maintenance_status') return normalStatus;
     if (command === 'project_metadata') return { ...metadata, name: state.projects.find((item) => item.id === args.projectId)?.name ?? 'Removed fixture' };
-    if (command === 'backup_list') return [];
     if (command === 'project_git_source_restore_status') return clearRecovery;
     if (command === 'storage_info') return emptyProjectStorage;
     if (command === 'storage_files') return emptyStorageFiles;
@@ -1538,13 +1432,12 @@ test('Automatic storage scans do not hide a failed build or replace the result o
   assert.match(dialog().querySelector('.project-last-task').textContent, /新网页已发布/);
 });
 
-test('Delete task results distinguish permanent deletion, partial deletion, no deletion and legacy retention', async () => {
+test('Delete task results distinguish permanent deletion, partial deletion and no deletion', async () => {
   await setup();
   for (const [operationOutcome, expected, rejected] of [
     ['deleted', /项目文件已永久删除/, /可从.*恢复|完整项目已移入回收站/],
     ['delete_incomplete', /部分项目文件可能已删除/, /项目文件已永久删除/],
     ['not_deleted', /尚未执行删除/, /项目文件已永久删除/],
-    ['trashed', /旧版移入回收站.*历史保留项目/, /项目文件已永久删除/],
   ]) {
     await render(h(ProjectTask, { task: { taskId: `task_delete_${operationOutcome}`, type: 'delete', projectId: 'prj_fixture', status: operationOutcome === 'delete_incomplete' ? 'failed' : 'succeeded', final: true, phase: 'completed', error: null, result: { operationOutcome } } }));
     const result = document.querySelector('.build-task').textContent;
@@ -1571,7 +1464,7 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.equal(dialog().querySelector('[role="tablist"]'), null);
   assert.doesNotMatch(dialog().textContent, /复制提示词|在 Codex 打开|构建更新/);
   assert.match(dialog().textContent, /永久删除.*无法撤销/);
-  assert.match(dialog().textContent, /历史备份.*不会自动删除/);
+  assert.match(dialog().textContent, /迁移前的旧工作区.*不会自动删除/);
   assert.ok(dialog().textContent.includes(state.projects[0].projectRoot));
   assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(document.querySelector('.project-delete-confirmation input'));

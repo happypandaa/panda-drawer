@@ -73,52 +73,6 @@ async fn browser_sql(base: &str, id: &str, cookie: &str, epoch: &str, sql: &str)
         .unwrap()
 }
 #[tokio::test]
-async fn trash_restore_requires_new_session_and_old_document_remains_rejected_with_new_cookie() {
-    let (_temp, _paths, service, id) = fixture().await;
-    let handle = service.handle();
-    let base = service.info().base_url;
-    let (old_cookie, old_epoch) = browser(&service, &id).await;
-    let deleted = wait(
-        &handle,
-        json!(handle
-            .current()
-            .lifecycle
-            .submit_legacy_trash_for_test(&id, json!({}))
-            .await
-            .unwrap()),
-    )
-    .await;
-    assert_eq!(deleted["status"], "succeeded", "{deleted}");
-    let trash = deleted["result"]["trashId"].as_str().unwrap();
-    let wire = browser_sql(&base, &id, &old_cookie, &old_epoch, "SELECT * FROM notes").await;
-    assert_eq!(wire["error"]["code"], "PROJECT_TRASHED");
-    let restored = wait(&handle, handle.trash_restore(trash).await.unwrap()).await;
-    assert_eq!(restored["status"], "succeeded", "{restored}");
-    // Reusing the old Cookie to fetch a new document is also forbidden.
-    let response = reqwest::Client::new()
-        .get(format!("{base}/p/{id}/"))
-        .header("cookie", &old_cookie)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let (new_cookie, new_epoch) = browser(&service, &id).await;
-    assert_ne!(new_epoch, old_epoch);
-    let rejected = browser_sql(
-        &base,
-        &id,
-        &new_cookie,
-        &old_epoch,
-        "INSERT INTO notes VALUES('late','bad')",
-    )
-    .await;
-    assert_eq!(rejected["error"]["code"], "PROJECT_RELOAD_REQUIRED");
-    let current = browser_sql(&base, &id, &new_cookie, &new_epoch, "SELECT * FROM notes").await;
-    assert_eq!(current["ok"], true);
-    assert_eq!(current["data"]["rows"].as_array().unwrap().len(), 1);
-    service.shutdown().await.unwrap();
-}
-#[tokio::test]
 async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archives() {
     let (_temp, paths, service, id) = fixture().await;
     let handle = service.handle();
@@ -151,7 +105,7 @@ async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archive
         .unwrap();
     assert!(!old.status().is_success());
     let old: Value = old.json().await.unwrap();
-    assert_eq!(old["error"]["code"], "PROJECT_TRASH_RETIRED");
+    assert_eq!(old["error"]["code"], "NOT_FOUND");
     assert!(root.is_dir());
     let missing = client
         .post(format!(

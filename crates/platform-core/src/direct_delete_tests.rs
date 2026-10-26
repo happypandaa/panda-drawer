@@ -27,30 +27,6 @@ async fn permanent_delete_removes_only_owned_payload_and_preserves_historical_ev
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, b"preserve independently owned evidence").unwrap();
     }
-    let legacy = fixture
-        .store
-        .create(CreateProjectInput {
-            name: "Disposable legacy trash".into(),
-            description: None,
-        })
-        .await
-        .unwrap();
-    let legacy_task = fixture
-        .lifecycle
-        .submit_legacy_trash_for_test(&legacy.id, json!({}))
-        .await
-        .unwrap();
-    let legacy_task = fixture.wait(&legacy_task).await;
-    let trash_id = good(&legacy_task)["trashId"].as_str().unwrap();
-    let trash_record_path = fixture
-        .lifecycle
-        .trash_root(trash_id)
-        .unwrap()
-        .join("record.json");
-    let trash_record = fs::read(&trash_record_path).unwrap();
-    let trash_count = fs::read_dir(fixture.paths.workspace_root().join(".platform/trash"))
-        .unwrap()
-        .count();
     let deleted = fixture.project("delete", json!({})).await;
     assert_eq!(good(&deleted)["operationOutcome"], "deleted");
     assert_eq!(good(&deleted)["restoreAvailable"], false);
@@ -70,13 +46,11 @@ async fn permanent_delete_removes_only_owned_payload_and_preserves_historical_ev
         .unwrap()
         .is_none());
     assert_eq!(fs::read(&archive).unwrap(), archive_bytes);
-    assert_eq!(fs::read(trash_record_path).unwrap(), trash_record);
-    assert_eq!(
-        fs::read_dir(fixture.paths.workspace_root().join(".platform/trash"))
-            .unwrap()
-            .count(),
-        trash_count
-    );
+    assert!(!fixture
+        .paths
+        .workspace_root()
+        .join(".platform/trash")
+        .exists());
     for path in [&history, &recovery, &external] {
         assert_eq!(
             fs::read(path).unwrap(),
@@ -96,7 +70,6 @@ async fn permanent_delete_accepts_a_corrupt_database_and_unlinks_external_symlin
     let fixture = Fixture::new().await;
     let legacy_trash = fixture.paths.workspace_root().join(".platform/trash");
     assert!(!legacy_trash.exists());
-    assert_eq!(fixture.lifecycle.trash_list().await.unwrap(), json!([]));
     let root = fixture.store.project(&fixture.id).unwrap().root;
     fs::write(
         root.join("data/main.sqlite"),
@@ -262,7 +235,7 @@ async fn interrupted_direct_delete_quarantines_residue_without_replaying_removal
     assert_eq!(
         fixture
             .store
-            .check_identity_available(&fixture.id, None, None)
+            .check_identity_available(&fixture.id, None)
             .unwrap_err()
             .code,
         "PROJECT_ID_CONFLICT"

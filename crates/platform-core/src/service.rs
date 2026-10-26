@@ -497,66 +497,8 @@ impl RuntimeHandle {
                 .await?
         ))
     }
-    pub async fn backup_list(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        self.current().maintenance.list(id).await
-    }
-    pub async fn backup_info(
-        &self,
-        id: &str,
-        backup_id: &str,
-    ) -> std::result::Result<Value, ApiError> {
-        self.current().maintenance.info(id, backup_id).await
-    }
     pub async fn maintenance_status(&self, id: &str) -> std::result::Result<Value, ApiError> {
         self.current().maintenance.status(id)
-    }
-    pub async fn backup_create(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current()
-                .maintenance
-                .submit(id, "backup", serde_json::from_value(input)?)
-                .await?
-        ))
-    }
-    pub async fn backup_restore(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current()
-                .maintenance
-                .submit(id, "restore", serde_json::from_value(input)?)
-                .await?
-        ))
-    }
-    pub async fn maintenance_begin(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current()
-                .maintenance
-                .submit(id, "maintenanceBegin", serde_json::from_value(input)?)
-                .await?
-        ))
-    }
-    pub async fn maintenance_end(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current()
-                .maintenance
-                .submit(id, "maintenanceEnd", serde_json::from_value(input)?)
-                .await?
-        ))
     }
     pub async fn task(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
@@ -1237,22 +1179,6 @@ impl RuntimeHandle {
                 .await?
         ))
     }
-    pub async fn trash_list(&self) -> std::result::Result<Value, ApiError> {
-        self.current().lifecycle.trash_list().await
-    }
-    pub async fn trash_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        self.current().lifecycle.trash_info(id).await
-    }
-    pub async fn trash_restore(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current().lifecycle.submit_trash(id, "restore").await?
-        ))
-    }
-    pub async fn trash_purge(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current().lifecycle.submit_trash(id, "purge").await?
-        ))
-    }
     pub async fn workspace_info(&self) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         let mut value = crate::workspace::info(&state.paths, &state.store)?;
@@ -1460,8 +1386,7 @@ fn make_state(
             .as_ref()
             .map(|resources| resources.development_git_root()),
     )?;
-    let maintenance =
-        crate::maintenance::MaintenanceManager::new(paths.clone(), store.clone(), builds.clone())?;
+    let maintenance = crate::maintenance::MaintenanceManager::new(store.clone(), builds.clone());
     let lifecycle = crate::lifecycle::LifecycleManager::new(
         paths.clone(),
         store.clone(),
@@ -1479,7 +1404,6 @@ fn make_state(
         paths.clone(),
         store.clone(),
         builds.clone(),
-        lifecycle.clone(),
         info.instance_id.clone(),
     )?;
     let (events, _) = broadcast::channel(128);
@@ -2189,20 +2113,8 @@ async fn management(
     let is_build_submission = method == Method::POST
         && matches!(
             segments.as_slice(),
-            [
-                "projects",
-                _,
-                "builds"
-                    | "backups"
-                    | "restore"
-                    | "maintenance"
-                    | "exports"
-                    | "copies"
-                    | "trash"
-                    | "deletions"
-            ] | ["projects", _, "maintenance", "end"]
+            ["projects", _, "builds" | "exports" | "copies" | "deletions"]
                 | ["projects", "imports"]
-                | ["trash", _, "restore" | "purge"]
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | ["sources", "acquisitions"]
@@ -2324,20 +2236,42 @@ async fn management(
                     .await
             }
             (Method::POST, ["projects", id, "git", "data-saves"]) => {
-                handle.project_git_data_save(id, input(request).await?).await
+                handle
+                    .project_git_data_save(id, input(request).await?)
+                    .await
             }
-            (Method::POST,["projects",id,"git","data-restores"])=>handle.project_git_data_restore_apply(id,input(request).await?).await,
-            (Method::GET,["projects",id,"git","data-recovery"])=>{
-                if !query(&request)?.is_empty(){return Err(ApiError::new("INVALID_INPUT","Data recovery status does not accept query parameters."));}
+            (Method::POST, ["projects", id, "git", "data-restores"]) => {
+                handle
+                    .project_git_data_restore_apply(id, input(request).await?)
+                    .await
+            }
+            (Method::GET, ["projects", id, "git", "data-recovery"]) => {
+                if !query(&request)?.is_empty() {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Data recovery status does not accept query parameters.",
+                    ));
+                }
                 handle.project_git_data_restore_status(id).await
-            },
-            (Method::POST,["projects",id,"git","data-recoveries"])=>handle.project_git_data_restore_recover(id,input(request).await?).await,
+            }
+            (Method::POST, ["projects", id, "git", "data-recoveries"]) => {
+                handle
+                    .project_git_data_restore_recover(id, input(request).await?)
+                    .await
+            }
             (Method::GET, ["projects", id, "git", "data-save-recovery"]) => {
-                if !query(&request)?.is_empty() { return Err(ApiError::new("INVALID_INPUT", "Data save recovery does not accept query parameters.")); }
+                if !query(&request)?.is_empty() {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Data save recovery does not accept query parameters.",
+                    ));
+                }
                 handle.project_git_data_save_status(id).await
             }
             (Method::POST, ["projects", id, "git", "data-save-finalizations"]) => {
-                handle.project_git_data_save_finalize(id, input(request).await?).await
+                handle
+                    .project_git_data_save_finalize(id, input(request).await?)
+                    .await
             }
             (Method::POST, ["projects", id, "git", "tasks", task_id, "cancel"]) => {
                 handle.project_git_cancel(id, task_id).await
@@ -2446,10 +2380,6 @@ async fn management(
                     .workspace_migrate(input::<Value>(request).await?)
                     .await
             }
-            (Method::GET, ["trash"]) => handle.trash_list().await,
-            (Method::GET, ["trash", id]) => handle.trash_info(id).await,
-            (Method::POST, ["trash", id, "restore"]) => handle.trash_restore(id).await,
-            (Method::POST, ["trash", id, "purge"]) => handle.trash_purge(id).await,
             (Method::POST, ["projects", "imports"]) => {
                 handle.project_import(input::<Value>(request).await?).await
             }
@@ -2461,10 +2391,6 @@ async fn management(
             (Method::POST, ["projects", id, "copies"]) => {
                 handle.project_copy(id, optional_json(request).await?).await
             }
-            (Method::POST, ["projects", _, "trash"]) => Err(ApiError::new(
-                "PROJECT_TRASH_RETIRED",
-                "Creating recycle-bin entries is retired. Permanent deletion requires the explicit projects/{id}/deletions endpoint; existing recycle-bin contents remain available.",
-            )),
             (Method::POST, ["projects", id, "deletions"]) => {
                 handle
                     .project_delete(id, optional_json(request).await?)
@@ -2482,31 +2408,7 @@ async fn management(
                     .build_project_with_input(id, optional_json(request).await?)
                     .await
             }
-            (Method::GET, ["projects", id, "backups"]) => handle.backup_list(id).await,
-            (Method::POST, ["projects", id, "backups"]) => {
-                handle
-                    .backup_create(id, optional_json(request).await?)
-                    .await
-            }
-            (Method::GET, ["projects", id, "backups", backup]) => {
-                handle.backup_info(id, backup).await
-            }
-            (Method::POST, ["projects", id, "restore"]) => {
-                handle
-                    .backup_restore(id, input::<Value>(request).await?)
-                    .await
-            }
             (Method::GET, ["projects", id, "maintenance"]) => handle.maintenance_status(id).await,
-            (Method::POST, ["projects", id, "maintenance"]) => {
-                handle
-                    .maintenance_begin(id, input::<Value>(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "maintenance", "end"]) => {
-                handle
-                    .maintenance_end(id, input::<Value>(request).await?)
-                    .await
-            }
             (Method::GET, ["projects", id, "handoff"]) => handle.handoff(id).await,
             (Method::GET, ["tasks", id]) => handle.task(id).await,
             (Method::GET, ["tasks", id, "logs"]) => {
@@ -4100,10 +4002,6 @@ mod m4_tests;
 #[cfg(test)]
 #[path = "service_m5_tests.rs"]
 mod m5_tests;
-
-#[cfg(test)]
-#[path = "service_history_cleanup_tests.rs"]
-mod history_cleanup_tests;
 
 #[cfg(test)]
 #[path = "service_object_layout_tests.rs"]

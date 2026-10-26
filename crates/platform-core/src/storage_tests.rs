@@ -25,8 +25,7 @@ impl Fixture {
             .unwrap();
         let tasks =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
-        let maintenance =
-            MaintenanceManager::new(paths.clone(), store.clone(), tasks.clone()).unwrap();
+        let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
         let storage = StorageManager::new(
             paths.clone(),
             store.clone(),
@@ -69,7 +68,6 @@ impl Fixture {
     }
     async fn stop(self) {
         self.storage.shutdown().await;
-        self.maintenance.shutdown().await;
         self.tasks.shutdown().await;
         self.store.shutdown().await;
     }
@@ -515,7 +513,6 @@ async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
     };
     builds::atomic_json(&f.storage.cleanup_journal(&task.task_id), &journal).unwrap();
     f.storage.shutdown().await;
-    f.maintenance.shutdown().await;
     f.tasks.shutdown().await;
     let tasks = BuildManager::new(
         f.paths.clone(),
@@ -523,8 +520,7 @@ async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
         "http://127.0.0.1:9".into(),
     )
     .unwrap();
-    let maintenance =
-        MaintenanceManager::new(f.paths.clone(), f.store.clone(), tasks.clone()).unwrap();
+    let maintenance = MaintenanceManager::new(f.store.clone(), tasks.clone());
     let restarted = StorageManager::new(
         f.paths.clone(),
         f.store.clone(),
@@ -544,7 +540,6 @@ async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
         b"do not replay"
     );
     restarted.shutdown().await;
-    maintenance.shutdown().await;
     tasks.shutdown().await;
     f.stop().await;
 }

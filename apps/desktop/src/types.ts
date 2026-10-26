@@ -107,7 +107,6 @@ export interface MaintenanceStatus {
   maintenanceId: string | null;
   reason: string | null;
   startedAt: string | number | null;
-  baselineBackupId: string | null;
   readyForChanges: boolean;
   recoveryRequired: boolean;
   documentEpoch: string | null;
@@ -119,44 +118,8 @@ export interface MaintenanceStatus {
   lastError?: { code?: string; message?: string } | string | null;
 }
 
-export interface BackupSummary {
-  backupId: string;
-  projectId?: string;
-  createdAt: string | number | null;
-  kind: string;
-  sizeBytes: number;
-  verified: boolean;
-  protectionReasons: string[];
-  note?: string | null;
-  issues?: string[];
-}
 
-export interface BackupDetails extends BackupSummary {
-  formatVersion?: number;
-  platformVersion?: string;
-  sqliteVersion?: string;
-  sdkApiVersion?: number;
-  snapshotState?: string;
-  hasArtifact?: boolean;
-  pendingBuild?: { required: boolean; reason?: string | null };
-  buildProvenance?: Record<string, unknown> | null;
-  files?: { path: string; sizeBytes?: number; bytes?: number; sha256: string }[];
-  excludedPaths?: string[];
-}
 
-export interface TrashEntry {
-  trashId: string;
-  projectId: string;
-  name: string;
-  deletedAt: string | number | null;
-  sizeBytes: number | null;
-  mode: string;
-  state: 'trashed' | 'purgeIncomplete' | 'needsAttention';
-  path?: string;
-  issues?: string[];
-  lastTaskId?: string | null;
-  activeTask?: string | { taskId: string } | null;
-}
 export interface RetainedWorkspaceRoot {
   path?: string;
   sourcePath?: string;

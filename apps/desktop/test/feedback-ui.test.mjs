@@ -319,14 +319,14 @@ test('An old snapshot without the latestBuild field keeps its earlier epoch-free
   assert.doesNotMatch(dialog().textContent, /项目数据代次已变化或无法核对/);
 });
 
-test('An active maintenance operation keeps display precedence over recovered build history', async () => {
-  const active = buildTask({ type: 'maintenanceEnd', status: 'running', final: false, error: null });
+test('An active project operation keeps display precedence over recovered build history', async () => {
+  const active = buildTask({ type: 'export', status: 'running', final: false, error: null });
   await setup({ projects: [web()], overrides: {
-    maintenance_status: () => ({ projectId: web().id, documentEpoch: web().documentEpoch, mode: 'maintenance', recoveryRequired: false,
+    maintenance_status: () => ({ projectId: web().id, documentEpoch: web().documentEpoch, mode: 'ready', recoveryRequired: false,
       activeTask: active.taskId, latestBuild: latestBuild() }),
     task_get: () => active,
   } });
-  await details(); assert.match(dialog().querySelector('.build-task').textContent, /结束维护 · 正在执行/);
+  await details(); assert.match(dialog().querySelector('.build-task').textContent, /导出项目 · 正在执行/);
   assert.doesNotMatch(dialog().querySelector('.build-task').textContent, /Artificial retained interrupted build/);
 });
 

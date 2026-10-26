@@ -576,9 +576,6 @@ impl BuildManager {
         record.error = Some(error);
         atomic_json(&self.task_dir(id).join("task.json"), record)
     }
-    pub(crate) fn reconcile_operation(&self, id: &str, outcome: &str) -> Result<(), ApiError> {
-        self.reconcile_operation_result(id, json!({"operationOutcome":outcome,"recovered":true}))
-    }
     pub(crate) fn reconcile_operation_result(
         &self,
         id: &str,

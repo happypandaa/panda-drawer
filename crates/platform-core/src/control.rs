@@ -13,7 +13,6 @@ use std::{
         Arc, Mutex,
     },
 };
-use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -159,31 +158,6 @@ impl ProjectControl {
         }
         Ok(())
     }
-    pub fn begin(
-        &self,
-        reason: String,
-        digest: Option<String>,
-        had_artifact: bool,
-    ) -> Result<ControlState, ApiError> {
-        let mut state = self.get();
-        state.mode = "maintenance".into();
-        state.maintenance_id = Some(format!("maintenance_{}", Uuid::new_v4().simple()));
-        state.reason = Some(reason);
-        state.started_at = Some(now_ms());
-        state.ready_for_changes = false;
-        state.baseline_backup_id = None;
-        state.baseline_input_digest = digest;
-        state.had_artifact = had_artifact;
-        state.last_error = None;
-        self.set(state.clone())?;
-        Ok(state)
-    }
-}
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 pub(crate) struct Freeze(pub Arc<ProjectControl>);
 impl Freeze {
