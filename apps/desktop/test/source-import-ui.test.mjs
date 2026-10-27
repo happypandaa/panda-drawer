@@ -90,7 +90,8 @@ test('The Git form explains all three file locations and validates supported rep
   assert.equal(document.querySelector('[role=dialog] h2').textContent, '从 Git 添加项目');
   assert.equal(byText('开始添加').disabled, true);
   assert.equal(document.querySelector('.git-import-options').open, false);
-  assert.equal(document.querySelectorAll('.add-project-storage-cards > div').length, 3);
+  assert.deepEqual([...document.querySelectorAll('.add-project-after dt')].map(item => item.textContent), ['源码', '应用', '应用数据']);
+  assert.equal(document.querySelectorAll('.git-import-modal .import-progress li').length, 5);
   assert.deepEqual(fixture.calls, []);
   await change(document.getElementById('git-import-url'), 'https://github.com/disposable/source/issues');
   assert.equal(byText('开始添加').disabled, true);
@@ -215,7 +216,7 @@ test('Cancellation is confirmed separately and waits for the exact backend stop 
 
 test('Historical sources stay behind an explicit advanced action and never auto install', async () => {
   const fixture = await setup(); assert.deepEqual(fixture.calls, []);
-  await click(byText('查看源码记录与恢复'));
+  await click(byText('源码记录与恢复'));
   assert.deepEqual(commands(fixture), ['source_list']);
   assert.ok(document.body.textContent.includes('检查本机源码目录'));
   assert.ok(!commands(fixture).some(name => name === 'node_install_prepare' || name === 'node_install_apply'));

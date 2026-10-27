@@ -4,10 +4,7 @@
 }
 .add-project-location strong, .local-directory-location > strong { display: block; font-size: 12px; color: var(--radio-secondary); margin-bottom: 8px; }
 .add-project-location code, .local-directory-location code, .project-ai-target-summary code, .settings-project-directory code { display: block; overflow-wrap: anywhere; line-height: 1.7; color: var(--radio-text); }
-.add-project-location p, .add-project-storage-cards p, .local-directory-location p { margin: 7px 0 0; font-size: 12px; color: var(--radio-muted); line-height: 1.8; }
-.add-project-storage-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 18px 0; }
-.add-project-storage-cards > div { padding: 14px; border: 1px solid var(--radio-line); border-radius: 10px; }
-.add-project-storage-cards strong { font-size: 13px; }
+.add-project-location p, .local-directory-location p { margin: 7px 0 0; font-size: 12px; color: var(--radio-muted); line-height: 1.8; }
 .add-project-ai-footer { border-top: 1px solid var(--radio-line); padding-top: 17px; margin-top: 22px; }
 .add-project-ai-footer > button { white-space: normal; text-align: left; font-size: 12px; }
 .local-directory-dropzone { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 20px; border: 1px dashed var(--radio-line); border-radius: 12px; background: var(--radio-subtle); text-align: center; }
@@ -17,17 +14,11 @@
 .local-directory-guarantees[hidden] { display: none; }
 .git-import-modal .create-project-form > input { margin-bottom: 10px; }
 .git-import-modal .add-project-location { padding: 12px 14px; margin: 10px 0; }
-.git-import-modal .add-project-storage-cards { margin: 12px 0; }
 .git-import-modal .create-project-form > .confirmation-actions { position: sticky; bottom: -24px; z-index: 2; background: var(--radio-surface); border-top: 1px solid var(--radio-line); padding: 12px 0; }
 .local-directory-dropzone p { margin: 0; font-size: 13px; color: var(--radio-muted); }
 .local-directory-guarantees { list-style: none; margin: 18px 0; padding: 0; display: grid; gap: 8px; color: var(--radio-secondary); font-size: 12px; line-height: 1.7; }
 .local-directory-guarantees li::before { content: '✓'; margin-right: 9px; color: var(--radio-success); }
-.local-directory-recents { border-top: 1px solid var(--radio-line); padding-top: 16px; margin-top: 20px; }
 .local-directory-recents h3 { display: flex; gap: 7px; align-items: center; font-size: 13px; margin: 0; }
-.local-directory-recent { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--radio-line); }
-.local-directory-recent > button:first-child { display: grid; gap: 5px; min-width: 0; text-align: left; }
-.local-directory-recent span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 450px; }
-.local-directory-recent small { color: var(--radio-muted); font-size: 11px; }
 .local-directory-result { margin-top: 22px; }
 .local-directory-result h3 { margin: 12px 0; font-size: 19px; line-height: 1.5; }
 .local-directory-result-label { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 6px; font-size: 11px; color: var(--radio-warning); background: var(--radio-warning-surface); }
@@ -61,4 +52,33 @@
 .node-launch-error p { font-size: 12px; line-height: 1.8; }
 .node-launch-error code { overflow-wrap: anywhere; }
 .task-center-import { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; margin-bottom: 14px; border-radius: 9px; background: var(--radio-subtle); font-size: 12px; }
-@media (max-width: 700px) { .add-project-storage-cards { grid-template-columns: 1fr; } .project-ai-target { flex-wrap: wrap; } .project-ai-target input { flex-basis: 100%; } .local-directory-recent span { max-width: 300px; } }
+@media (max-width: 700px) { .project-ai-target { flex-wrap: wrap; } .project-ai-target input { flex-basis: 100%; } .add-project-after dl { grid-template-columns: 1fr; } .local-directory-recent small { display: none; } }
+
+/* Git form: one compact "after adding" block instead of a path box plus three cards. */
+.add-project-after { margin: 14px 0; padding: 14px 16px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-subtle); }
+.add-project-after > strong { display: block; margin-bottom: 8px; font-size: 12px; color: var(--radio-secondary); }
+.add-project-after dl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: 12px; line-height: 1.7; }
+.add-project-after dt { color: var(--radio-muted); }
+.add-project-after dd { margin: 0; min-width: 0; color: var(--radio-secondary); }
+.add-project-after dd code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--radio-text); }
+.add-project-link, .git-import-records { font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.add-project-link { margin-top: 10px; }
+.git-import-records { color: var(--radio-muted); }
+.git-import-modal .create-project-form > .import-progress { margin-bottom: 18px; }
+.create-project-location { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; font-size: 12px; color: var(--radio-muted); }
+/* Local dialog: recent folders first, named by folder, whole row opens a fresh check. */
+.local-directory-recents { margin: 0 0 16px; }
+.local-directory-recents h3 { margin-bottom: 8px; }
+.local-directory-recents .project-help { margin: 8px 0 0; font-size: 11px; color: var(--radio-muted); }
+.local-directory-recent { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-right: 8px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-surface); }
+.local-directory-recent-open { flex: 1; min-width: 0; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--radio-text); font: inherit; text-align: left; cursor: pointer; }
+.local-directory-recent-open:hover:not(:disabled) { background: var(--radio-selected); }
+.local-directory-recent-open > svg { color: var(--radio-muted); }
+.local-directory-recent-text { display: grid; gap: 2px; min-width: 0; }
+.local-directory-recent-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.local-directory-recent-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--radio-muted); }
+.local-directory-recent small { white-space: nowrap; font-size: 11px; color: var(--radio-secondary); }
+.local-directory-recent-check { padding: 3px 10px; border: 1px solid var(--radio-line); border-radius: 999px; font-size: 12px; }
+.local-directory-recent-remove { font-size: 12px; color: var(--radio-muted); }
+.local-directory-dropzone.is-compact { flex-direction: row; justify-content: center; gap: 10px; padding: 14px 16px; }
+.local-directory-dropzone.is-compact p { display: none; }
