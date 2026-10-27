@@ -246,17 +246,62 @@ async fn existing_or_overlapping_operation_never_overwrites_files() {
 async fn failed_or_mismatched_build_never_returns_installable_program() {
     let mut fixture = Fixture::new();
     fixture.npm();
-    fs::write(&fixture.tools.npm.path, "exit 3\n").unwrap();
-    assert_eq!(
-        fixture.build().await.unwrap_err().code,
-        "NODE_DEVELOPMENT_BUILD_FAILED"
-    );
+    fs::write(
+        &fixture.tools.npm.path,
+        "printf 'npm ERR! code E404\\nnpm ERR! disposable download failure\\n' >&2\nexit 3\n",
+    )
+    .unwrap();
+    let error = fixture.build().await.unwrap_err();
+    assert_eq!(error.code, "NODE_DEVELOPMENT_BUILD_FAILED");
+    let diagnostics = &error.details["processDiagnostics"];
+    assert_eq!(diagnostics["command"], "npm ci");
+    assert_eq!(diagnostics["exitCode"], 3);
+    assert!(diagnostics["signal"].is_null());
+    assert!(diagnostics["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("npm ERR! code E404"));
+    assert_eq!(diagnostics["nodeVersion"], fixture.tools.node.version);
+    assert_eq!(diagnostics["npmVersion"], fixture.tools.npm.version);
     assert!(fixture.operation.is_dir());
     assert!(!fixture.operation.join("program").exists());
     let mut fixture = Fixture::new();
     fixture.npm();
     fs::write(&fixture.tools.npm.path, "set -eu\nif [ \"$1\" = --logs-dir ]; then [ \"$#\" -ge 3 ]; [ -n \"$2\" ]; [ \"$3\" = --logs-max=0 ]; shift 3; fi\nif [ \"$1\" = run ]; then mkdir release; cp local-app.json package.json package-lock.json release/; cp -R public server release/; sed 's/disposable.node.build/other.node/' release/local-app.json > release/changed; mv release/changed release/local-app.json; fi\n").unwrap();
     assert!(fixture.build().await.is_err());
+}
+
+#[tokio::test]
+async fn npm_failure_reports_signal_and_successful_warnings_do_not_fail_the_build() {
+    let mut fixture = Fixture::new();
+    fixture.npm();
+    fs::write(
+        &fixture.tools.npm.path,
+        "printf 'disposable npm interrupted\\n' >&2\nkill -TERM $$\n",
+    )
+    .unwrap();
+    let error = fixture.build().await.unwrap_err();
+    assert_eq!(error.code, "NODE_DEVELOPMENT_BUILD_FAILED");
+    let diagnostics = &error.details["processDiagnostics"];
+    assert!(diagnostics["exitCode"].is_null());
+    assert_eq!(diagnostics["signal"], libc::SIGTERM);
+    assert!(diagnostics["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("disposable npm interrupted"));
+
+    let mut fixture = Fixture::new();
+    fixture.npm();
+    let script = fs::read_to_string(&fixture.tools.npm.path).unwrap();
+    fs::write(
+        &fixture.tools.npm.path,
+        format!("printf 'npm warn deprecated disposable warning\\n' >&2\n{script}"),
+    )
+    .unwrap();
+    assert!(fixture.build().await.is_ok());
+    for name in ["head.log", "tail.log", "log.json", "npm-logs"] {
+        assert!(!fixture.operation.join(name).exists());
+    }
 }
 
 #[tokio::test]

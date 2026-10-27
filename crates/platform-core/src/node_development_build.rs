@@ -6,6 +6,7 @@ use crate::{
     environment::Toolchain,
     node_app_manifest::{NodeDevelopmentBuild, TrialManifest, TrialRuntime},
     owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
+    process_diagnostics::ProcessDiagnostics,
     projects::check_no_symlinks,
     ApiError,
 };
@@ -20,7 +21,6 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncReadExt,
     process::Command,
     sync::watch,
     time::{sleep, Instant},
@@ -668,29 +668,44 @@ async fn run_npm(
     command.args(args);
     let reader_scope = processes.clone();
     let step = args.first().copied().unwrap_or_default().to_owned();
-    let mut run = processes.processes.start(
-        command,
-        ProcessOptions::new(
-            "node-development/npm",
-            control.deadline.saturating_duration_since(Instant::now()),
-        ),
-        processes.owner,
-        move |pipes| {
-            let ProcessPipes {
-                stdin,
-                stdout,
-                stderr,
-                stop: _,
-            } = pipes;
-            drop(stdin);
-            IoPlan::new(async move {
-                reader_scope
-                    .finish_reader("node-development/npm", &step, drain_output(stdout))
-                    .await
-            })
-            .drain("build-stderr", drain_output(stderr))
-        },
-    )?;
+    let diagnostics = ProcessDiagnostics::default();
+    let stdout_diagnostics = diagnostics.clone();
+    let stderr_diagnostics = diagnostics.clone();
+    let command_label = if args.first().copied() == Some("run") {
+        format!("npm run {}", args.get(1).copied().unwrap_or_default())
+    } else {
+        format!("npm {}", args.first().copied().unwrap_or_default())
+    };
+    let mut run = processes
+        .processes
+        .start(
+            command,
+            ProcessOptions::new(
+                "node-development/npm",
+                control.deadline.saturating_duration_since(Instant::now()),
+            ),
+            processes.owner,
+            move |pipes| {
+                let ProcessPipes {
+                    stdin,
+                    stdout,
+                    stderr,
+                    stop: _,
+                } = pipes;
+                drop(stdin);
+                IoPlan::new(async move {
+                    reader_scope
+                        .finish_reader("node-development/npm", &step, async move {
+                            stdout_diagnostics.read(stdout, "stdout", None).await
+                        })
+                        .await
+                })
+                .drain("build-stderr", async move {
+                    stderr_diagnostics.read(stderr, "stderr", None).await
+                })
+            },
+        )
+        .map_err(|error| diagnostics.attach(error, &command_label, tools, None))?;
     let mut interruption = None;
     let result = loop {
         if let Err(error) = control
@@ -729,12 +744,22 @@ async fn run_npm(
                 "构建进程归属未确认，不能发布；现场及租约保留。",
             )
         });
-        return Err(error
-            .detail("processResourceClosed", false)
-            .outcome("unknown"));
+        return Err(diagnostics.attach(
+            error
+                .detail("processResourceClosed", false)
+                .outcome("unknown"),
+            &command_label,
+            tools,
+            None,
+        ));
     }
     if let Some(error) = interruption {
-        return Err(error.detail("processResourceClosed", true));
+        return Err(diagnostics.attach(
+            error.detail("processResourceClosed", true),
+            &command_label,
+            tools,
+            None,
+        ));
     }
     let result = result.map_err(|error| {
         let code = match error.code.as_str() {
@@ -742,27 +767,29 @@ async fn run_npm(
             "PROCESS_CANCELLED" => "NODE_DEVELOPMENT_INTERRUPTED",
             _ => "NODE_DEVELOPMENT_BUILD_FAILED",
         };
-        ApiError::new(code, "构建未完成；进程和输出已收尾，当前程序未改变。")
-            .detail("processCauseCode", error.code)
-            .detail("processResourceClosed", true)
+        diagnostics.attach(
+            ApiError::new(code, "构建未完成；进程和输出已收尾，当前程序未改变。")
+                .detail("processCauseCode", error.code)
+                .detail("processResourceClosed", true),
+            &command_label,
+            tools,
+            None,
+        )
     })?;
     if !result.status.success() {
-        return Err(ApiError::new(
-            "NODE_DEVELOPMENT_BUILD_FAILED",
-            "构建未完成，当前程序未改变；请检查构建脚本和依赖。",
-        )
-        .detail("processResourceClosed", true));
+        return Err(diagnostics.attach(
+            ApiError::new(
+                "NODE_DEVELOPMENT_BUILD_FAILED",
+                "构建未完成，当前程序未改变；请检查构建脚本和依赖。",
+            )
+            .detail("processResourceClosed", true),
+            &command_label,
+            tools,
+            Some(&result.status),
+        ));
     }
     Ok(())
 }
-async fn drain_output(mut output: impl tokio::io::AsyncRead + Unpin) -> Result<()> {
-    // Do not surface arbitrary build diagnostics; trusted scripts can print
-    // private information. The registry owns and joins the actual OS reader.
-    let mut bytes = [0u8; 8192];
-    while output.read(&mut bytes).await? != 0 {}
-    Ok(())
-}
-
 fn scan_operation_budget(root: &Path) -> Result<()> {
     fn visit(path: &Path, budget: &mut (usize, u64), depth: usize) -> Result<()> {
         if depth > 128 {

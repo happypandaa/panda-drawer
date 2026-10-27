@@ -38,6 +38,7 @@ mod owned_process;
 mod paths;
 mod platform_info;
 pub mod platform_support;
+mod process_diagnostics;
 pub mod production_resources;
 mod project_directory_name;
 pub mod project_git;

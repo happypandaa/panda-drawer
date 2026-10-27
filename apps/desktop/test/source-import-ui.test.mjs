@@ -236,8 +236,42 @@ test('A failed preparation automatically cleans its stopped material and gives a
   assert.ok(byText('复制说明给 AI'));
   assert.equal(byText('重试下载'), undefined);
   assert.equal(fixture.registered, 0);
+  assert.equal(document.querySelector('.process-failure-details'), null);
   assert.ok(!commands(fixture).includes('node_install_apply'));
   assert.equal(commands(fixture).filter(name => name === 'source_import_cleanup').length, 1);
+});
+
+test('A failed Git dependency install directly shows and copies the actual process error into the AI handoff', async () => {
+  const copies = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { copies.push(value); } } });
+  const processDiagnostics = {
+    command: 'npm ci', exitCode: 42, signal: null, nodeVersion: '24.22.0', npmVersion: '11.19.1',
+    stdout: `${'ordinary output\n'.repeat(130)}last-output-beyond-issue-limit`,
+    stderr: 'npm error code E404\nnpm error package unavailable\nAPI_KEY=synthetic-npm-key\n<img data-diagnostic-injection src=x onerror="alert(1)">', truncated: false,
+  };
+  const fixture = await setup({
+    node_install_prepare: () => task('nodeInstallPrepare', { status: 'failed', result: null, error: { code: 'NODE_INSTALL_NPM_FAILED', message: '依赖下载或准备失败；当前程序、配置及数据未改变。', details: { processResourceClosed: true, processDiagnostics } } }),
+    source_import_cleanup: () => ({ ...cleaned, sourceRetained: false }),
+  });
+  await begin();
+  const visible = document.querySelector('.git-import-result > .process-failure-details');
+  assert.ok(visible);
+  assert.match(visible.textContent, /退出码 42/);
+  assert.match(visible.textContent, /Node 24\.22\.0 · npm 11\.19\.1/);
+  assert.match(visible.querySelector('pre').textContent, /npm error code E404\nnpm error package unavailable/);
+  assert.ok(!document.querySelector('.import-task').open);
+  assert.equal(document.querySelector('[data-diagnostic-injection]'), null);
+  assert.doesNotMatch(visible.textContent, /synthetic-npm-key/);
+  await click([...visible.querySelectorAll('button')].find(button => button.textContent === '复制错误详情'));
+  assert.match(copies[0], /执行结果：退出码 42/);
+  assert.match(copies[0], /last-output-beyond-issue-limit/);
+  await click(byText('复制说明给 AI'));
+  assert.match(copies[1], /"processDiagnostics"/);
+  assert.match(copies[1], /npm error code E404/);
+  assert.match(copies[1], /last-output-beyond-issue-limit/);
+  assert.doesNotMatch(copies[1], /synthetic-npm-key/);
+  assert.equal(fixture.registered, 0);
+  assert.ok(!commands(fixture).includes('node_install_apply'));
 });
 
 test('Unknown installation offers verification, and reconciliation publishes once without applying twice', async () => {

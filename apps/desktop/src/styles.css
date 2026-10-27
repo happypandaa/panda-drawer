@@ -227,6 +227,11 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid #77776e; outlin
 .task-id { display:block; margin:8px 0; font-size:9px; word-break:break-all; color:#888; }
 .build-task p { color:#74716c; font-size:11px; line-height:1.7; }
 .build-task .task-error { color:#9b3c32; }
+.process-failure-details { margin: 16px 0; padding: 16px; border: 1px solid var(--radio-line, #e4dfd8); border-radius: 10px; background: var(--radio-subtle, #f7f6f3); min-width: 0; }
+.process-failure-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.process-failure-details p { margin: 8px 0; overflow-wrap: anywhere; }
+.process-failure-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; user-select: text; font-size: 12px; line-height: 1.65; }
+.process-output-label { display: block; margin-top: 12px; font-size: 12px; }
 .handoff-card { background:white; border:1px solid #e5e3df; border-radius:10px; padding:24px; margin-bottom:24px; }
 .handoff-card textarea { width:100%; box-sizing:border-box; border:1px solid #ddd; border-radius:7px; padding:12px; resize:vertical; font:11px/1.7 ui-monospace, monospace; color:#444; background:#faf9f7; }
 .build-environment { margin-bottom:22px; }

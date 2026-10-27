@@ -41,6 +41,7 @@ const { createRoot } = await import('react-dom/client');
 const { AiProjectHelp } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/AiProjectHelp.tsx'))).href);
 const { buildProjectAiPrompt, checkedProjectReviewExcerpt, MAX_REVIEW_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-help.ts'))).href);
 const { PROJECT_AI_REQUIREMENTS } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
+const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -76,6 +77,24 @@ test('A Git failure prompt preserves source identity and delivery while removing
   assert.match(prompt, /不假设失败下载文件仍存在/); assert.match(prompt, /添加本地项目/);
   assert.match(prompt, /删除或清空应用数据.*取得用户明确同意/);
   assert.doesNotMatch(prompt, /synthetic-key-never-use|synthetic-control-token|synthetic-json-password|synthetic-cookie-one|synthetic-cookie-two/);
+});
+
+test('Process diagnostics retain useful errors beyond the issue limit and bound untrusted UTF-8 output', () => {
+  const processDiagnostics = { command: 'npm ci', exitCode: 1, signal: null, nodeVersion: '24.22.0', npmVersion: '11.19.1', stdout: '界'.repeat(3000), stderr: `${'context '.repeat(250)}npm error EAI_AGAIN\nAuthorization: Bearer synthetic-process-token`, truncated: false };
+  const checked = checkedProcessDiagnostics(processDiagnostics);
+  assert.ok(checked);
+  assert.ok(new TextEncoder().encode(checked.stdout).byteLength <= MAX_PROCESS_DIAGNOSTIC_BYTES);
+  assert.equal(checked.stdout.includes('\ufffd'), false);
+  assert.equal(checked.truncated, true);
+  const prompt = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'git', processDiagnostics });
+  assert.match(prompt, /"exitCode": 1/);
+  assert.match(prompt, /npm error EAI_AGAIN/);
+  assert.match(prompt, /"truncated": true/);
+  assert.doesNotMatch(prompt, /synthetic-process-token/);
+  for (const change of [{ exitCode: NaN }, { signal: -1 }, { stdout: {} }, { truncated: 'yes' }]) {
+    assert.equal(checkedProcessDiagnostics({ ...processDiagnostics, ...change }), null);
+  }
+  assert.equal(checkedProcessDiagnostics(undefined), null);
 });
 
 test('Update and external-start requests use the matching next action without performing a Git rollback', () => {

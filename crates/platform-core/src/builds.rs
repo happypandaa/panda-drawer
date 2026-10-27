@@ -3,6 +3,7 @@ use crate::{
     environment::{EnvironmentManager, Toolchain},
     git_environment::GitEnvironmentManager,
     owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
+    process_diagnostics::ProcessDiagnostics,
     project_git::BuildGitGuard,
     projects::{check_no_symlinks, checked_relative},
     tasks::{TaskRecord, TaskStatus},
@@ -25,7 +26,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::AsyncReadExt,
     process::Command,
     sync::{broadcast, mpsc, watch, OwnedRwLockReadGuard},
     task::JoinHandle,
@@ -1004,6 +1004,14 @@ impl BuildManager {
             .env("npm_config_update_notifier", "false")
             .env("NO_COLOR", "1");
         candidate::isolate_git_environment(&mut command, cwd)?;
+        let diagnostics = ProcessDiagnostics::default();
+        let stdout_diagnostics = diagnostics.clone();
+        let stderr_diagnostics = diagnostics.clone();
+        let command_label = if args.first().copied() == Some("run") {
+            format!("npm run {}", args.get(1).copied().unwrap_or_default())
+        } else {
+            format!("npm {}", args.first().copied().unwrap_or_default())
+        };
         let remaining = BUILD_TIMEOUT.saturating_sub(start.elapsed());
         let mut stopped = self.git_stop.subscribe();
         #[cfg(test)]
@@ -1012,33 +1020,39 @@ impl BuildManager {
             .lock()
             .unwrap()
             .take_if(|fixture| args.first().copied() == Some(fixture.operation.as_str()));
-        let mut run = self.store.processes().start(
-            command,
-            ProcessOptions::new("web-build/npm", remaining),
-            keep_alive,
-            move |pipes| {
-                let ProcessPipes {
-                    stdin,
-                    stdout,
-                    stderr,
-                    stop: _,
-                } = pipes;
-                drop(stdin);
-                IoPlan::new(async move {
-                    read_output(stdout).await?;
-                    #[cfg(test)]
-                    if let Some(fixture) = reader_fixture {
-                        let _ = fixture.entered.send(());
-                        assert!(!fixture.panic, "controlled disposable build reader panic");
-                        if let Some(release) = fixture.release {
-                            let _ = release.await;
+        let mut run = self
+            .store
+            .processes()
+            .start(
+                command,
+                ProcessOptions::new("web-build/npm", remaining),
+                keep_alive,
+                move |pipes| {
+                    let ProcessPipes {
+                        stdin,
+                        stdout,
+                        stderr,
+                        stop: _,
+                    } = pipes;
+                    drop(stdin);
+                    IoPlan::new(async move {
+                        stdout_diagnostics.read(stdout, "stdout", None).await?;
+                        #[cfg(test)]
+                        if let Some(fixture) = reader_fixture {
+                            let _ = fixture.entered.send(());
+                            assert!(!fixture.panic, "controlled disposable build reader panic");
+                            if let Some(release) = fixture.release {
+                                let _ = release.await;
+                            }
                         }
-                    }
-                    Ok(())
-                })
-                .drain("npm-stderr", read_output(stderr))
-            },
-        )?;
+                        Ok(())
+                    })
+                    .drain("npm-stderr", async move {
+                        stderr_diagnostics.read(stderr, "stderr", None).await
+                    })
+                },
+            )
+            .map_err(|error| diagnostics.attach(error, &command_label, tools, None))?;
         if *stopped.borrow() {
             run.cancel();
         }
@@ -1067,26 +1081,30 @@ impl BuildManager {
                 "PROCESS_CLEANUP_PENDING" if resource_closed => "BUILD_PROCESS_FAILED".into(),
                 _ => original.clone(),
             };
-            error
-                .detail("processCauseCode", original)
-                .detail("processResourceClosed", resource_closed)
+            diagnostics.attach(
+                error
+                    .detail("processCauseCode", original)
+                    .detail("processResourceClosed", resource_closed),
+                &command_label,
+                tools,
+                None,
+            )
         })?;
         let status = output.status;
         if !status.success() {
-            return Err(ApiError::new(
-                "BUILD_FAILED",
-                format!("npm {} exited with {status}", args.first().unwrap_or(&"")),
+            return Err(diagnostics.attach(
+                ApiError::new(
+                    "BUILD_FAILED",
+                    format!("npm {} exited with {status}", args.first().unwrap_or(&"")),
+                ),
+                &command_label,
+                tools,
+                Some(&status),
             ));
         }
         Ok(())
     }
 }
-async fn read_output<R: tokio::io::AsyncRead + Unpin>(mut reader: R) -> Result<(), ApiError> {
-    let mut bytes = [0u8; 8192];
-    while reader.read(&mut bytes).await? != 0 {}
-    Ok(())
-}
-
 pub(crate) fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), ApiError> {
     check_no_symlinks(path, true)?;
     let parent = path
@@ -2058,7 +2076,10 @@ mod tests {
             serde_json::to_string(&project.root.join("dist/index.html")).unwrap()
         );
         let cases = [
-            ("process.exit(2);", "BUILD_FAILED"),
+            (
+                "console.error('disposable actual npm build error');process.exit(2);",
+                "BUILD_FAILED",
+            ),
             (
                 "const fs=require('fs');fs.appendFileSync('build.cjs','\\n// changed');",
                 "BUILD_INPUT_CHANGED",
@@ -2074,7 +2095,18 @@ mod tests {
             let task = manager.submit(&project.manifest.id).await.unwrap();
             let done = wait(&manager, &task.task_id).await;
             assert_eq!(done.status, TaskStatus::Failed, "{:?}", done);
-            assert_eq!(done.error.unwrap().code, code);
+            let error = done.error.unwrap();
+            assert_eq!(error.code, code);
+            if code == "BUILD_FAILED" {
+                let diagnostics = &error.details["processDiagnostics"];
+                assert_eq!(diagnostics["command"], "npm run build");
+                assert_eq!(diagnostics["exitCode"], 2);
+                assert!(diagnostics["signal"].is_null());
+                assert!(diagnostics["stderr"]
+                    .as_str()
+                    .unwrap()
+                    .contains("disposable actual npm build error"));
+            }
             assert_eq!(
                 fs::read(project.root.join("dist/index.html")).unwrap(),
                 previous
