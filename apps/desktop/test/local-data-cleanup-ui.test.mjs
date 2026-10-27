@@ -51,7 +51,7 @@ afterEach(async () => {
 });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 const phrase = '删除全部本机数据';
-function plan(overrides = {}) { return { planId: 'disposable-plan', instanceId: 'disposable-instance', expiresAt: Date.now() + 60_000, confirmationText: phrase, deletePaths: [{ path: '/disposable/data', label: '本机数据根' }, { path: '/disposable/migrated-workspace', label: '迁移工作区' }], preservedPaths: ['外部原作者源码、独立导出包及必要清理回执'], warnings: ['包括旧备份、旧回收项与恢复现场。'], ...overrides }; }
+function plan(overrides = {}) { return { planId: 'disposable-plan', instanceId: 'disposable-instance', expiresAt: Date.now() + 60_000, confirmationText: phrase, deletePaths: [{ path: '/disposable/data', label: '本机数据根' }, { path: '/disposable/migrated-workspace', label: '迁移工作区' }], preservedPaths: ['外部原作者源码、独立导出包及必要环境身份文件'], warnings: ['包括旧备份、旧回收项与恢复现场。'], ...overrides }; }
 function state(status = 'stopping', extra = {}) { return { operationId: 'disposable-plan', status, ...extra }; }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const button = text => [...document.querySelectorAll('button')].find(element => element.textContent === text);
@@ -192,12 +192,11 @@ test('A pending submission blocks duplicate writes, Escape, background and close
 
 test('Failed and blocked results keep the ordinary UI locked and show remaining paths without retrying', async () => {
   for (const terminalStatus of ['blocked', 'failed']) {
-    const { calls, locks } = await render({}, { local_data_cleanup_start: () => state(terminalStatus, { remainingPaths: ['/disposable/remaining'], receiptPath: '/disposable/cleanup/receipt.json', error: { message: 'Artificial retained content' } }) });
+    const { calls, locks } = await render({}, { local_data_cleanup_start: () => state(terminalStatus, { remainingPaths: ['/disposable/remaining'], error: { message: 'Artificial retained content' } }) });
     await confirmAll();
     assert.match(activeDialog().textContent, /\/disposable\/remaining/);
     assert.match(activeDialog().textContent, /Artificial retained content/);
-    assert.match(activeDialog().textContent, /清理回执/);
-    assert.match(activeDialog().textContent, /\/disposable\/cleanup\/receipt.json/);
+    assert.doesNotMatch(activeDialog().textContent, /清理回执|receipt.json/);
     assert.equal(button('退出软件').disabled, false);
     await click(button('查看清理状态'));
     assert.equal(writeCalls(calls).length, 1); assert.deepEqual(locks, [true]);

@@ -123,7 +123,7 @@ impl NodeDevelopmentSourceLease<'_> {
             .join("source-restore.json")
     }
     pub fn validate(&self) -> Result<()> {
-        self.apps.require_no_pending_delete(&self.source.app_id)?;
+        self.apps.require_not_removing(&self.source.app_id)?;
         if node_app_install::registration_digest(&self.apps.root.join(&self.source.app_id))?
             .as_deref()
             != Some(&self.registration_digest)
@@ -293,7 +293,7 @@ impl NodeApps {
         if inner.shutting_down {
             return Err(fail("平台正在关闭，不能开始开发操作。"));
         }
-        self.require_no_pending_delete(id)?;
+        self.require_not_removing(id)?;
         self.require_no_development_operation(id)?;
         if require_stopped {
             self.require_install_stopped(id, &inner)?;
@@ -352,6 +352,7 @@ impl NodeApps {
         expected_generation: &str,
     ) -> Result<Value> {
         let inner = self.inner.lock().await;
+        self.require_not_removing(id)?;
         let record = self.registration(id)?;
         let managed = record.managed.as_ref().ok_or_else(development_changed)?;
         if managed.provenance.source_id != expected_source_id

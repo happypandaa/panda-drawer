@@ -155,7 +155,7 @@ impl ProjectGitManager {
         tools: &GitToolchain,
         context: &mut Context,
     ) -> Result<Snapshot, ApiError> {
-        let mut snapshot = inspect(project, Some(tools), context, None).await?;
+        let mut snapshot = inspect(project, Some(tools), context).await?;
         self.add_recovery_issue(&project.manifest.id, &mut snapshot.view)?;
         snapshot.view.source_restore =
             crate::source_restore_guard::inspect(self.paths.workspace_root(), &project.manifest.id);

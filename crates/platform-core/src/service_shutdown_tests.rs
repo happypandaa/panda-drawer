@@ -402,7 +402,7 @@ async fn http_shutdown_request_returns_pending_without_waiting_for_its_own_lease
 }
 
 #[tokio::test]
-async fn finished_panic_survives_later_project_git_submission_and_shutdown() {
+async fn finished_panic_survives_later_read_only_git_request_and_shutdown() {
     let (_temporary, paths, service, _client) = super::super::tests::start().await;
     let project = super::super::tests::create(&service, "Disposable shutdown task fault").await;
     let manager = service.shared.snapshot().project_git.clone().unwrap();
@@ -413,22 +413,11 @@ async fn finished_panic_survives_later_project_git_submission_and_shutdown() {
         tokio::task::yield_now().await;
     }
     manager.fixture_shutdown_runner(fault);
-    manager
-        .save(
-            &project.id,
-            crate::project_git::GitSaveInput {
-                expected_head: None,
-                expected_snapshot: "a".repeat(64),
-                message: "Artificial follow-up task".into(),
-                author: crate::project_git::GitAuthor {
-                    name: "Artificial".into(),
-                    email: "fixture@example.invalid".into(),
-                },
-            },
-            service.shared.snapshot().stop.subscribe(),
-        )
+    let view = manager
+        .status(&project.id, service.shared.snapshot().stop.subscribe())
         .await
         .unwrap();
+    assert!(!view.can_save);
     let report = service.quiesce().await;
     assert_eq!(report.status, ShutdownStatus::Blocked);
     assert!(report

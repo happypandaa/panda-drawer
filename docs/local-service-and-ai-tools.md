@@ -1,5 +1,7 @@
 # 本地服务与 AI 工具接口
 
+2026-10-27 最新确认：[操作记录精简与外部 AI 分工](operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
+
 2026-10-23 当前删除按[直接删除契约](application-deletion.md)：`project delete` 使用 `POST /api/v1/projects/{id}/deletions`，直接永久删除所选项目，不进入平台或系统回收站。旧 `POST .../{id}/trash` 已退役并拒绝新请求，不能把旧客户端的可恢复删除静默升级为永久删除。`/api/v1/trash` 与 `trash` CLI 仅兼容旧回收项，旧备份和恢复证据继续保留。Node 独立槽的预览／删除仅开放给原生管理窗口，无新增 HTTP 或 CLI 删除入口。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
@@ -378,7 +380,6 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform db transaction --project ID --input request.json --json` | 执行有序事务语句 |
 | `platform task get --task ID --json` | 获取任务状态 |
 | `platform task wait --task ID --timeout 30 --json` | 有界等待任务结束，超时返回当前状态 |
-| `platform task logs --task ID --cursor CURSOR --json` | 增量读取日志，首批不传 cursor |
 | `platform backup create --project ID --json` | 提交整项目备份任务 |
 | `platform backup list --project ID --json` | 列出备份及保护原因 |
 | `platform backup info --project ID --backup ID --json` | 查看备份内容与诊断 |
@@ -402,7 +403,7 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform storage cleanup --project ID --input request.json --json` | 清理明确类别，保护素材及恢复现场 |
 | `platform workspace storage --json` | 查看平台程序、工作区与已知其他本机占用 |
 
-当前可调用命令包括 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait/logs`；M3 的 `backup create/list/info/restore`、`maintenance status/begin/end`；M4 的 `project export/import/copy/delete`、`trash list/info/restore/purge`、`workspace info/migrate`；M5 的 `project metadata get/set`、`storage info/scan/files/cleanup` 和 `workspace storage`。`service start`、历史备份另存/删除及旧根清理没有因此加入。
+当前可调用命令包括 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait`；M3 的 `backup create/list/info/restore`、`maintenance status/begin/end`；M4 的 `project export/import/copy/delete`、`trash list/info/restore/purge`、`workspace info/migrate`；M5 的 `project metadata get/set`、`storage info/scan/files/cleanup` 和 `workspace storage`。`service start`、历史备份另存/删除及旧根清理没有因此加入。
 
 对既有项目的操作显式指定项目 ID，不依赖当前目录猜测目标。创建项目请求至少包含 `name`，可包含 `description`；平台生成稳定 ID 和标准目录。恢复请求必须包含明确的 `backupId`，不能默认恢复某个未知备份。
 

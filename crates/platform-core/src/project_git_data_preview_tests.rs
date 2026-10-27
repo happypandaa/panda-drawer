@@ -99,7 +99,7 @@ impl Fixture {
         let (sender, receiver) = watch::channel(false);
         let status = manager.status(&info.id, receiver.clone()).await.unwrap();
         let task = manager
-            .initialize(
+            .fixture_initialize(
                 &info.id,
                 GitInitInput {
                     expected_snapshot: status.snapshot_digest,
@@ -147,7 +147,7 @@ impl Fixture {
             .unwrap();
         let task = self
             .manager
-            .save_data(
+            .fixture_save_data(
                 &self.project.manifest.id,
                 GitDataSaveInput {
                     expected_head: head_oid(&status).map(str::to_string),
@@ -185,7 +185,7 @@ impl Fixture {
         let mut command = git_command(&self.tools, context.root(), Some(&self.project));
         command.args(args);
         // For fixture-created commits only. No hooks or identity discovery.
-        author_environment(
+        crate::project_git::fixture::fixture_author_environment(
             &mut command,
             &GitAuthor {
                 name: "Preview fixture".into(),

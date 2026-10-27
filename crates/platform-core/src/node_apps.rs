@@ -31,15 +31,6 @@ pub use directory::DirectoryInitializeInput;
 #[path = "node_app_development.rs"]
 pub(crate) mod development;
 pub use development::{NodeDevelopmentSource, NodeDevelopmentSourceLease};
-#[path = "node_app_rollback.rs"]
-pub(crate) mod rollback;
-pub use rollback::RollbackNodeProgramInput;
-
-/// Whether a Node app slot has a deletion receipt (in progress or finished).
-pub(crate) fn deletion_recorded(node_apps_root: &Path, id: &str) -> Result<bool> {
-    deletion::recorded(node_apps_root, id)
-}
-
 const START_INTENT_CLEANUP_PREFIX: &str = ".start-intent-cleanup-";
 
 type Result<T> = std::result::Result<T, ApiError>;
@@ -65,6 +56,7 @@ struct Registration {
     source_path: PathBuf,
     manifest_digest: String,
     managed: Option<ManagedNodeRegistration>,
+    removal_pending: bool,
 }
 impl From<ExternalRegistration> for Registration {
     fn from(record: ExternalRegistration) -> Self {
@@ -73,6 +65,7 @@ impl From<ExternalRegistration> for Registration {
             source_path: record.source_path,
             manifest_digest: record.manifest_digest,
             managed: None,
+            removal_pending: false,
         }
     }
 }
@@ -102,7 +95,7 @@ pub struct NodeApps {
     node_path: PathBuf,
     digest: String,
     processes: crate::owned_process::OwnedProcessRegistry,
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
     development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: std::sync::Mutex<()>,
     directory_stopping: std::sync::atomic::AtomicBool,
@@ -166,7 +159,7 @@ impl NodeApps {
             node_path,
             digest,
             processes,
-            inner: Mutex::new(Inner::default()),
+            inner: Arc::new(Mutex::new(Inner::default())),
             development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: std::sync::Mutex::new(()),
             directory_stopping: std::sync::atomic::AtomicBool::new(false),
@@ -241,33 +234,47 @@ impl NodeApps {
                 continue;
             }
             ordinary_path(&entry.path(), true)?;
-            if deletion::completed(&self.root, &name)? {
-                continue;
-            }
             let path = entry.path().join("registration.json");
             // An interrupted registration remains preserved, never executed.
             if !path.try_exists()? {
                 continue;
             }
             let bytes = read_small(&path)?;
-            let version = serde_json::from_slice::<Value>(&bytes)?["version"].as_u64();
-            let record = match version {
+            let mut value: Value = serde_json::from_slice(&bytes)?;
+            let removal_pending = match value
+                .as_object_mut()
+                .and_then(|record| record.remove("removalPending"))
+            {
+                None => false,
+                Some(Value::Bool(value)) => value,
+                Some(_) => return Err(fail("项目当前移除状态无效。")),
+            };
+            // Older releases used a separate deletion receipt. Never interpret
+            // its retained slot as a fresh app after an interrupted deletion.
+            // This only checks the old marker; new deletions never create one.
+            let legacy_deletion = self.root.join(".deletions").join(format!("{name}.json"));
+            crate::projects::check_no_symlinks(&legacy_deletion, true)?;
+            let removal_pending = removal_pending || legacy_deletion.try_exists()?;
+            let version = value["version"].as_u64();
+            let mut record = match version {
                 Some(1) => {
-                    let record: ExternalRegistration = serde_json::from_slice(&bytes)?;
+                    let record: ExternalRegistration = serde_json::from_value(value)?;
                     Registration::from(record)
                 }
                 Some(2) => {
-                    let record: ManagedNodeRegistration = serde_json::from_slice(&bytes)?;
+                    let record: ManagedNodeRegistration = serde_json::from_value(value)?;
                     let source_path = node_app_install::managed_program_path(&self.root, &record)?;
                     Registration {
                         id: record.id.clone(),
                         source_path,
                         manifest_digest: record.manifest_digest.clone(),
                         managed: Some(record),
+                        removal_pending,
                     }
                 }
                 _ => return Err(fail("Node 应用登记版本无效，请保留现场。")),
             };
+            record.removal_pending = removal_pending;
             if record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
             }
@@ -287,7 +294,33 @@ impl NodeApps {
             .ok_or_else(|| fail("找不到 Node 应用登记。"))
     }
 
+    fn require_not_removing(&self, id: &str) -> Result<()> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("应用标识无效。"));
+        }
+        let path = self.root.join(id).join("registration.json");
+        crate::projects::check_no_symlinks(&path, true)?;
+        // Fresh installation checks the empty slot before publishing its first
+        // registration. Callers that require an existing app read it separately.
+        if !path.try_exists()? {
+            return Ok(());
+        }
+        if self.registration(id)?.removal_pending {
+            return Err(ApiError::new(
+                "NODE_APP_REMOVAL_PENDING",
+                "项目已开始移除，不能运行或重新创建配置。请重新核对范围后完成移除。",
+            ));
+        }
+        Ok(())
+    }
+
     fn manifest(&self, record: &Registration) -> Result<TrialManifest> {
+        if record.removal_pending {
+            return Err(ApiError::new(
+                "NODE_APP_REMOVAL_PENDING",
+                "项目已开始移除，请核对范围后完成移除。",
+            ));
+        }
         let manifest = if let Some(managed) = &record.managed {
             let program = node_app_install::verify_managed_program(&self.root, managed)?;
             let manifest =
@@ -309,7 +342,7 @@ impl NodeApps {
     }
 
     fn store(&self, id: &str) -> Result<NodeConfigurationStore> {
-        deletion::require_available(&self.root, id)?;
+        self.require_not_removing(id)?;
         let directory = self.root.join(id).join("configuration");
         let instance = Uuid::parse_str(id).map_err(|_| fail("应用标识无效。"))?;
         let vault = LocalFileVault::new(directory.join("credentials"), instance)
@@ -404,7 +437,7 @@ impl NodeApps {
                     .clone();
                 object_layout["versioning"]["state"] = json!("source-git");
                 object_layout["versioning"]["reason"] =
-                    json!("在“源码版本”中查看与保存；尚未核实远端同步。");
+                    json!("在“源码版本”中查看，保存版本和分支由外部 AI 管理；尚未核实远端同步。");
             }
         }
         Ok(json!({
@@ -551,13 +584,9 @@ impl NodeApps {
         )
     }
 
-    fn require_no_pending_delete(&self, id: &str) -> Result<()> {
-        deletion::require_available(&self.root, id)
-    }
-
     fn require_install_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
+        self.require_not_removing(id)?;
         self.require_no_source_restore(id)?;
-        self.require_no_pending_delete(id)?;
         self.require_no_development_operation(id)?;
         if inner.shutting_down || inner.running.contains_key(id) {
             return Err(ApiError::new(
@@ -695,8 +724,7 @@ impl NodeApps {
 
     fn available_detail(&self, record: &Registration, inner: &Inner) -> Value {
         let result = self
-            .require_no_pending_delete(&record.id)
-            .and_then(|()| self.manifest(record))
+            .manifest(record)
             .and_then(|manifest| self.detail(record, &manifest, inner));
         match result {
             Ok(detail) => detail,
@@ -705,6 +733,7 @@ impl NodeApps {
                 // first managed publication. Show the registered configuration
                 // snapshot, while keeping launch blocked until explicit apply.
                 let previous = (|| -> Result<Value> {
+                    self.require_not_removing(&record.id)?;
                     if record.managed.is_some() {
                         return Err(error.clone());
                     }
@@ -740,6 +769,7 @@ impl NodeApps {
 
     pub async fn configuration(&self, id: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
+        self.require_not_removing(id)?;
         let record = self.registration(id)?;
         Ok(self.available_detail(&record, &inner))
     }

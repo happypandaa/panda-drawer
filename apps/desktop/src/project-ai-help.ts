@@ -10,7 +10,6 @@ export interface ProjectAiHelpContext {
   branch?: string;
   commit?: string;
   issues?: string[];
-  logs?: string | string[];
   checkedAt?: string;
   platformVersion?: string;
   appName?: string;
@@ -34,7 +33,7 @@ const encoder = new TextEncoder();
 export const MAX_REVIEW_BYTES = 20 * 1024;
 
 // This is a conservative treatment of known diagnostic formats, not a general
-// guarantee that arbitrary source code or third-party logs contain no secrets.
+// guarantee that arbitrary source code or diagnostic messages contain no secrets.
 export function redactProjectDiagnostic(value: string): string {
   return value
     .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
@@ -77,7 +76,6 @@ export function buildProjectAiPrompt(context: ProjectAiHelpContext, options: Pro
     platformVersion: context.platformVersion || '未核对，请以用户实际安装版为准',
     checkedAt: context.checkedAt || undefined,
     issues: context.issues?.map(value => redactProjectDiagnostic(value).slice(0, 1500)),
-    logTail: context.logs ? redactProjectDiagnostic(Array.isArray(context.logs) ? context.logs.join('\n') : context.logs).slice(-6000) : undefined,
   };
   const instruction = context.mode === 'evaluation'
     ? '本次先只读评估。读取公开源码和配置结构，不修改、安装、构建、测试、启动或登记应用；需要适配时先给方案，等用户明确同意后再修改。'

@@ -4,9 +4,6 @@ use crate::node_apps::{NodeApps, NodeDevelopmentSource};
 pub enum NodeGitAction {
     Status,
     Versions(u32),
-    Initialize(crate::project_git::GitInitInput),
-    Save(crate::project_git::GitSaveInput),
-    Branch(crate::project_git::GitCreateBranchInput),
     RestorePreview(crate::node_development_git::NodeRestorePreviewInput),
     RestoreApply(crate::node_development_git::NodeRestoreApplyInput),
     RestoreStatus,
@@ -141,11 +138,10 @@ impl RuntimeHandle {
                 | NodeGitAction::RestoreStatus
                 | NodeGitAction::RestoreRecover(_)
         );
-        let editable = matches!(action, NodeGitAction::Branch(_));
         let lease = if restore {
             self.node_source_restore_lease(apps, app_id).await?
         } else {
-            self.node_development_lease(apps, app_id, editable).await?
+            self.node_development_lease(apps, app_id, false).await?
         };
         let git = crate::node_development_git::NodeGit::new(lease.active.0.git_environment.clone())
             .with_stop(lease.active.0.stop.subscribe())
@@ -156,13 +152,7 @@ impl RuntimeHandle {
             registration_digest: lease._source_lease.registration_digest().into(),
             control_path: lease._source_lease.source_restore_control_path(),
         };
-        if matches!(
-            action,
-            NodeGitAction::Versions(_)
-                | NodeGitAction::Initialize(_)
-                | NodeGitAction::Save(_)
-                | NodeGitAction::Branch(_)
-        ) {
+        if matches!(action, NodeGitAction::Versions(_)) {
             apps.require_no_source_restore(app_id)?;
         }
         // Keep native requests bounded even when a source transaction is
@@ -173,17 +163,11 @@ impl RuntimeHandle {
                 if let Err(issue) = apps.require_no_source_restore(app_id) {
                     status.source_restore.issues.push(issue.clone());
                     status.issues.push(issue);
-                    status.can_initialize = false;
-                    status.can_save = false;
-                    status.can_create_branch = false;
                     status.can_list_versions = false;
                 }
                 json!(status)
             }
             NodeGitAction::Versions(limit) => json!(Box::pin(git.versions(root, limit)).await?),
-            NodeGitAction::Initialize(input) => Box::pin(git.initialize(root, input)).await?,
-            NodeGitAction::Save(input) => Box::pin(git.save(root, input)).await?,
-            NodeGitAction::Branch(input) => Box::pin(git.create_branch(root, input)).await?,
             NodeGitAction::RestorePreview(input) => {
                 Box::pin(git.restore_preview(root, &scope, input)).await?
             }

@@ -25,8 +25,6 @@ pub(super) struct Context {
     retained: Vec<Owner>,
     #[cfg(test)]
     pub(super) writer_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
-    #[cfg(test)]
-    pub(super) commit_ack_observed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl Context {
     pub(super) fn new(
@@ -58,8 +56,6 @@ impl Context {
             retained: vec![],
             #[cfg(test)]
             writer_pause: None,
-            #[cfg(test)]
-            commit_ack_observed: None,
         })
     }
     pub(super) fn bind(
@@ -206,163 +202,6 @@ impl Context {
             stdout: output.value,
         })
     }
-    pub(super) async fn commit_ref(
-        &mut self,
-        command: Command,
-        new_head: &str,
-        old_head: Option<&str>,
-        validate: impl FnOnce() -> Result<(), ApiError> + Send,
-    ) -> Result<(), ApiError> {
-        let commands = format!(
-            "start\0update HEAD\0{new_head}\0{}\0prepare\0",
-            old_head.unwrap_or("0000000000000000000000000000000000000000")
-        )
-        .into_bytes();
-        self.commit_transaction(command, commands, validate).await
-    }
-    pub(super) async fn commit_transaction(
-        &mut self,
-        command: Command,
-        commands: Vec<u8>,
-        validate: impl FnOnce() -> Result<(), ApiError> + Send,
-    ) -> Result<(), ApiError> {
-        self.checkpoint().map_err(|error| {
-            closure(error, true)
-                .detail("safeAbort", true)
-                .detail("commitSent", false)
-                .detail("commitAcknowledged", false)
-        })?;
-        let progress = Arc::new(CommitProgress::default());
-        let session_progress = progress.clone();
-        #[cfg(test)]
-        let commit_ack_observed = self.commit_ack_observed.take();
-        let (prepared_sender, mut prepared) = tokio::sync::oneshot::channel();
-        let (authorize, authorization) = tokio::sync::oneshot::channel::<Result<(), ApiError>>();
-        let mut run = self
-            .start(command, move |pipes| {
-                let mut stdin = pipes.stdin;
-                let mut stdout = pipes.stdout;
-                IoPlan::new(async move {
-                    stdin.write_all(&commands).await.map_err(|_| git_failed())?;
-                    stdin.flush().await.map_err(|_| git_failed())?;
-                    expect_line(&mut stdout, b"start: ok\n").await?;
-                    expect_line(&mut stdout, b"prepare: ok\n").await?;
-                    let _ = prepared_sender.send(());
-                    let validation = authorization.await.unwrap_or_else(|_| Err(interrupted()));
-                    if let Err(error) = validation {
-                        stdin
-                            .write_all(b"abort\0")
-                            .await
-                            .map_err(|_| git_failed())?;
-                        stdin.shutdown().await.map_err(|_| git_failed())?;
-                        drop(stdin);
-                        expect_line(&mut stdout, b"abort: ok\n").await?;
-                        if !read_output(stdout, true, 1024).await?.is_empty() {
-                            return Err(git_failed());
-                        }
-                        return Ok(Err(error));
-                    }
-                    // Store before the first byte: any partial commit write is unknown.
-                    session_progress.sent.store(true, Ordering::Release);
-                    stdin
-                        .write_all(b"commit\0")
-                        .await
-                        .map_err(|_| git_failed())?;
-                    stdin.shutdown().await.map_err(|_| git_failed())?;
-                    drop(stdin);
-                    expect_line(&mut stdout, b"commit: ok\n").await?;
-                    session_progress.acknowledged.store(true, Ordering::Release);
-                    #[cfg(test)]
-                    if let Some(observed) = commit_ack_observed {
-                        let _ = observed.send(());
-                    }
-                    if !read_output(stdout, true, 1024).await?.is_empty() {
-                        return Err(git_failed());
-                    }
-                    Ok(Ok(()))
-                })
-                .drain("stderr", async move {
-                    read_output(pipes.stderr, false, 64 * 1024)
-                        .await
-                        .map(|_| ())
-                })
-            })
-            .map_err(|error| {
-                error
-                    .detail("safeAbort", true)
-                    .detail("commitSent", false)
-                    .detail("commitAcknowledged", false)
-            })?;
-        let mut authorize = Some(authorize);
-        let mut validate = Some(validate);
-        let mut prepared_observed = false;
-        let mut delivered = false;
-        let result = loop {
-            tokio::select! {
-                biased;
-                _ = watch_stop(&mut self.stop) => break Err(interrupted()),
-                _ = watch_stop(&mut self.cancel) => break Err(interrupted()),
-                _ = tokio::time::sleep_until(self.deadline) => break Err(timeout()),
-                receipt = &mut prepared, if !prepared_observed => {
-                    prepared_observed = true;
-                    if receipt.is_ok() {
-                        let validation = validate.take().expect("single validation")();
-                        let _ = authorize.take().expect("single authorization").send(validation);
-                    } else {
-                        authorize.take();
-                    }
-                },
-                output = &mut run => {
-                    delivered = true;
-                    break match output {
-                        Ok(output) if output.status.success() => output.value,
-                        Ok(_) => Err(git_failed()),
-                        Err(error) => Err(error),
-                    };
-                },
-            }
-        };
-        // A dropped authorization aborts the prepared transaction inside its
-        // owned session. That session/stdio/G continue to be retained by registry.
-        drop(authorize);
-        let result = if !delivered {
-            run.cancel();
-            let cleanup = (&mut run).await;
-            match cleanup {
-                Err(error)
-                    if error.code != "PROCESS_CANCELLED"
-                        && error.code != "PROCESS_WORK_TIMEOUT" =>
-                {
-                    Err(error)
-                }
-                _ => result,
-            }
-        } else {
-            result
-        };
-        let closed = io_closed(&run);
-        let acknowledged = progress.acknowledged.load(Ordering::Acquire);
-        let sent = acknowledged || progress.sent.load(Ordering::Acquire);
-        result.map_err(|error| {
-            let resource_closed = resources_closed(&error, closed);
-            closure(error, resource_closed)
-                .detail("safeAbort", resource_closed && !sent)
-                .detail("commitSent", sent)
-                .detail("commitAcknowledged", acknowledged)
-                .outcome(if acknowledged {
-                    "committed"
-                } else if resource_closed && !sent {
-                    "not_committed"
-                } else {
-                    "unknown"
-                })
-        })
-    }
-}
-#[derive(Default)]
-struct CommitProgress {
-    sent: AtomicBool,
-    acknowledged: AtomicBool,
 }
 fn io_closed<T>(run: &ProcessRun<T>) -> bool {
     let state = run.snapshot();

@@ -116,11 +116,12 @@ Bundled CLI for this installation (rediscover after moving/reinstalling the app)
 {cli} project build --project {id} --json
 # Use the taskId from the response. Repeat wait if waitTimedOut is true.
 {cli} task wait --task TASK_ID --json
-{cli} task logs --task TASK_ID --json
 {cli} project url --project {id} --json
 ```
 
-Verify the result in the platform's native application window. The returned fresh `launchUrl` is only for necessary HTTP/browser diagnostics, not the standard application entry or a substitute for native-window acceptance. It is short lived; never save it or any credentials in source or documentation. After a platform restart, obtain a new URL if diagnostics are needed. `task wait` timing out does not cancel a build. A failed build keeps the previous webpage and saved data. Check task status and logs before claiming success.
+Verify the result in the platform's native application window. The returned fresh `launchUrl` is only for necessary HTTP/browser diagnostics, not the standard application entry or a substitute for native-window acceptance. It is short lived; never save it or any credentials in source or documentation. After a platform restart, obtain a new URL if diagnostics are needed. `task wait` timing out does not cancel a build. A failed build keeps the previous webpage and saved data. Check the final task status and its error before claiming success; detailed build/npm output is not retained.
+
+The platform no longer exposes task logs or platform Git init/save/save-data/branch-create commands, and it has no program rollback button. Use ordinary Git in the author repository for source versions. Platform builds, publication, installation and explicit updates remain available. If an older project-owned skill recommends a retired command, follow these current installed rules without overwriting the project documentation.
 
 SQL input examples (save the JSON to the `--input` file):
 
@@ -276,11 +277,12 @@ Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包�
 {cli} project build --project {project_id} --json
 # 使用返回的 taskId；若 waitTimedOut 为 true，继续等待，不代表失败或取消。
 {cli} task wait --task TASK_ID --json
-{cli} task logs --task TASK_ID --json
 {cli} project url --project {project_id} --json
 ```
 
-SQL 输入格式以当前 CLI 帮助为准；不要直接写入或替换运行中的 SQLite 文件或 WAL/SHM。修改前核对 Git 状态并保存当前版本，确认保存范围是否包括数据；Git 不可用时如实说明，不生成替代 ZIP。普通源码、SQL 和候选构建不要求新维护基线；优先采用兼容的数据事务，由平台的具体操作负责必要停写与失败保留。新的 backup create 和 maintenance begin 已退役，会返回 BACKUP_WORKFLOW_RETIRED；旧项目自带 skill 若仍要求创建 ZIP 或进入新维护，以本段当前规则为准，不覆盖旧文档。已有旧维护或恢复现场先查询 maintenance status，保留 maintenanceId、readyForChanges、待构建要求和原现场，只在检查通过后显式 maintenance end；recoveryRequired 时不得强行结束或重试新建基线。
+平台已移除任务日志查询、Git 初始化／保存源码或数据版本／创建分支写入口和程序退回按钮。源码版本由外部 AI 使用作者仓库的标准 Git 管理；平台构建、发布、安装和明确更新继续提供。旧项目自带说明若推荐这些已退役入口，以本次安装版交接说明和 CLI 帮助为准，不覆盖作者文档。
+
+SQL 输入格式以当前 CLI 帮助为准；不要直接写入或替换运行中的 SQLite 文件或 WAL/SHM。修改前由外部 AI 使用作者仓库的标准 Git 核对改动并保存源码版本，确认保存范围是否包括数据；Git 不可用时如实说明，不生成替代 ZIP。普通源码、SQL 和候选构建不要求新维护基线；优先采用兼容的数据事务，由平台的具体操作负责必要停写与失败保留。新的 backup create 和 maintenance begin 已退役，会返回 BACKUP_WORKFLOW_RETIRED；旧项目自带 skill 若仍要求创建 ZIP 或进入新维护，以本段当前规则为准，不覆盖旧文档。已有旧维护或恢复现场先查询 maintenance status，保留 maintenanceId、readyForChanges、待构建要求和原现场，只在检查通过后显式 maintenance end；recoveryRequired 时不得强行结束或重试新建基线。
 
 project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库和附件；源码取回与数据取回是两项独立操作。只有用户明确要求取回数据时才使用 project git data-restore-preview 并核对当前 CLI 的全部新鲜绑定，再明确提交 data-restore；预览不自动执行。先查 project git data-recovery；pending 或 blocked 时保留原件、日志和候选，仅按核实后的允许方向继续或撤回同一操作，不删除现场、不重新登记、不直接替换 SQLite。not_committed 也可能已有部分文件移动，不能据此说数据未变。完成后页面代次已更新，先处理草稿再从平台明确重新打开。任意 Node 应用自己的数据库不适用这一流程。
 

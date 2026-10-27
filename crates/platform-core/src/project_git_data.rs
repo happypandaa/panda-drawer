@@ -2,6 +2,7 @@
 //! operation's unfinished publication and displaced current snapshot evidence.
 use super::*;
 
+#[cfg(test)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitDataSaveInput {
@@ -11,6 +12,7 @@ pub struct GitDataSaveInput {
     pub message: String,
     pub author: GitAuthor,
 }
+#[cfg(test)]
 impl From<GitDataSaveInput> for GitSaveInput {
     fn from(input: GitDataSaveInput) -> Self {
         Self {
@@ -41,45 +43,6 @@ pub(super) struct DataPublication {
 }
 
 impl ProjectGitManager {
-    pub async fn save_data(
-        self: &Arc<Self>,
-        id: &str,
-        input: GitDataSaveInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        // Apply the exact existing validation without starting a source-only task.
-        let candidate: GitSaveInput = input.clone().into();
-        validate_digest(&candidate.expected_snapshot)?;
-        if candidate
-            .expected_head
-            .as_deref()
-            .is_some_and(|head| !valid_oid(head))
-            || candidate.message.trim().is_empty()
-            || candidate.message.len() > 4000
-            || candidate
-                .message
-                .chars()
-                .any(|c| c.is_control() && c != '\n' && c != '\t')
-            || candidate.author.name.trim().is_empty()
-            || candidate.author.name.len() > 200
-            || candidate
-                .author
-                .name
-                .chars()
-                .any(|c| c.is_control() || "<>".contains(c))
-            || candidate.author.email.len() > 254
-            || !candidate.author.email.contains('@')
-            || candidate
-                .author
-                .email
-                .chars()
-                .any(|c| c.is_control() || c.is_whitespace() || "<>".contains(c))
-        {
-            return Err(input_error());
-        }
-        self.submit(id, Operation::SaveData(input), stop)
-    }
-
     /// Deliberately bypass ordinary Git inspection so damaged publication remains
     /// inspectable. This never creates a lock, repairs an index, or adopts files.
     pub async fn data_save_status(
@@ -638,7 +601,7 @@ pub(super) fn data_status(
     snapshot: Option<&version_data::PreparedDataSnapshot>,
     scope: &str,
 ) -> Value {
-    json!({"state":if scope=="project-root"{"supported"}else if scope=="source-only"{"source-only"}else{"not-supported"},"canSave":false,"currentSavedSnapshot":snapshot.map(|data|json!({"manifestDigest":data.manifest_digest,"databaseBytes":data.manifest.database.bytes,"attachmentCount":data.manifest.attachments.len()})),"reason":if scope=="project-root"{"主动保存源码和数据时，在业务操作结束后生成SQLite一致性快照及完整附件；状态预览不读取当前活库。只在本机Git保存，不自动推送。"}else if scope=="source-only"{"现有Git仅覆盖源码目录，不能纳入项目数据库；未移动Git根或创建第二个仓库。"}else{"数据保存需要项目根的标准Git仓库；Node自有数据库不在本步范围。"}})
+    json!({"state":if scope=="project-root"{"supported"}else if scope=="source-only"{"source-only"}else{"not-supported"},"canSave":false,"currentSavedSnapshot":snapshot.map(|data|json!({"manifestDigest":data.manifest_digest,"databaseBytes":data.manifest.database.bytes,"attachmentCount":data.manifest.attachments.len()})),"reason":if scope=="project-root"{"平台可以核对和取回已有的一致性数据版本，不再提供 Git 保存入口。普通源码提交不会自动保存或恢复业务数据库与附件。"}else if scope=="source-only"{"现有Git仅覆盖源码目录，不能纳入项目数据库；未移动Git根或创建第二个仓库。"}else{"数据版本取回需要项目根的标准Git仓库；Node自有数据库不在本步范围。"}})
 }
 pub(super) fn data_result(snapshot: Option<&version_data::PreparedDataSnapshot>) -> Value {
     match snapshot {
@@ -753,16 +716,6 @@ fn content_digest(path: &Path) -> Result<Option<String>, ApiError> {
     Ok(Some(sha256(&read_file(path, MAX_METADATA)?)))
 }
 
-pub(crate) fn check_combined_entry_budget(count: usize) -> Result<(), ApiError> {
-    if count > MAX_FILES {
-        Err(error(
-            "PROJECT_GIT_COMBINED_LIMIT",
-            "源码和数据快照合计超过当前Git条目预算；没有提交平台无法再次读取的版本。",
-        ))
-    } else {
-        Ok(())
-    }
-}
 fn data_pending_error() -> ApiError {
     error(
         "PROJECT_GIT_DATA_RECOVERY_REQUIRED",
@@ -853,27 +806,3 @@ pub(crate) fn check_data_recovery_record(
 #[cfg(test)]
 #[path = "project_git_data_tests.rs"]
 mod tests;
-
-pub(super) fn recheck_current_data(
-    project: &ProjectHandle,
-    expected: Option<&version_data::PreparedDataSnapshot>,
-) -> Result<(), ApiError> {
-    let (_stop_sender, stop) = watch::channel(false);
-    let (_cancel_sender, cancel) = watch::channel(false);
-    let root = project.root.join(version_data::DIRECTORY);
-    if let Some(expected) = expected {
-        let current = version_data::validate_snapshot(
-            &root,
-            &project.manifest,
-            version_data::SnapshotLimits::default(),
-            &stop,
-            &cancel,
-        )?;
-        if current.manifest_digest != expected.manifest_digest {
-            return Err(stale());
-        }
-    } else if root.try_exists()? {
-        return Err(stale());
-    }
-    Ok(())
-}

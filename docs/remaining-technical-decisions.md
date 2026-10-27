@@ -215,7 +215,7 @@ M0 已落实 `dev.localprojects.platform.m0` 开发身份，其设置、工作�
 
 本轮已实现内部固定 SDK `@local-projects/sdk 0.1.0`、模板 `react-ts-vite-0.1.0`、真实项目说明和 CLI 路径，以及系统 Node/npm 检测、显式路径选择、依赖准备、持久构建任务、日志分页、输入与产物摘要、发布来源和中断核对。模板使用 React 19.3.1、TypeScript 5.9.3、Vite 8.3.4；初始数据库仍为空，基础黑白灰组件可复用，扩展建议 shadcn/ui。
 
-管理界面已接入构建、阶段/日志、源码匹配状态、复制给 AI、明确重载与 Node 设置。SDK 提供 SQL/事务/schema、附件与通知，固定文档代次，不自动重试写入或刷新未保存表单。CLI 接入 `project build/handoff`、`task get/wait/logs`、`env doctor` 及 `env node set/clear`；完整字段和当前可调用列表见[服务接口](local-service-and-ai-tools.md)。
+管理界面已接入构建、阶段/日志、源码匹配状态、复制给 AI、明确重载与 Node 设置。SDK 提供 SQL/事务/schema、附件与通知，固定文档代次，不自动重试写入或刷新未保存表单。CLI 接入 `project build/handoff`、`task get/wait`、`env doctor` 及 `env node set/clear`；完整字段和当前可调用列表见[服务接口](local-service-and-ai-tools.md)。
 
 每代网页资源保存在项目 `.platform/artifacts/{buildId}/dist/`，当前 `dist/` 与工作区构建来源协调提交，入口按不可变代寻址。这是运行时资源保留，不是用户可选择的版本管理、Git 或备份。现阶段暂不自动删除旧代、任务及发布现场；正式保留期、配额、空间扫描和清理仍待后续落实。
 

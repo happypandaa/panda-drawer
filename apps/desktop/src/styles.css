@@ -227,7 +227,6 @@ input:focus-visible, textarea:focus-visible { outline: 2px solid #77776e; outlin
 .task-id { display:block; margin:8px 0; font-size:9px; word-break:break-all; color:#888; }
 .build-task p { color:#74716c; font-size:11px; line-height:1.7; }
 .build-task .task-error { color:#9b3c32; }
-.task-logs { max-height:280px; overflow:auto; padding:12px; background:#f4f3f1; border:1px solid #e6e4e0; border-radius:6px; color:#444; white-space:pre-wrap; overflow-wrap:anywhere; font:10px/1.65 ui-monospace, monospace; }
 .handoff-card { background:white; border:1px solid #e5e3df; border-radius:10px; padding:24px; margin-bottom:24px; }
 .handoff-card textarea { width:100%; box-sizing:border-box; border:1px solid #ddd; border-radius:7px; padding:12px; resize:vertical; font:11px/1.7 ui-monospace, monospace; color:#444; background:#faf9f7; }
 .build-environment { margin-bottom:22px; }
@@ -571,7 +570,6 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
 .build-task-heading { font-size: 13px; }
 .build-task p { font-size: 12px; }
 .task-error { overflow-wrap: anywhere; }
-.task-logs { font-size: 11px; }
 .build-environment .environment-status, .build-environment .environment-issue, .build-environment .node-path-form { margin-inline: 24px; }
 .build-environment .node-path-form { margin-bottom: 24px; }
 .node-path-form label, .node-path-form p { font-size: 12px; }
@@ -1185,10 +1183,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(h2, h3, h4, dt, label, summary) { color: var(--radio-text); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(p, dd, small, code) { color: var(--radio-secondary); }
 :root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(section, article, dl, details, form, li) { border-color: var(--radio-line); }
-:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .task-logs, .about-grid dt, .about-grid dd, .node-runtime-label, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
+:root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .about-grid dt, .about-grid dd, .node-runtime-label, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
 :root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
 :root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .trash-details, .history-storage-row, .attachment-row, .workspace-trash-summary) { border-color: var(--radio-line); }
-:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .workspace-trash-details, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .task-logs, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
+:root[data-theme] :is(.notice, .maintenance-summary, .backup-row, .overview-status-grid, .storage-category, .attachment-preview, .first-start-guide, .guide-disclosure .first-start-guide, .handoff-card, .modal-content .handoff-card, .handoff-card textarea, .workspace-retention-explanation, .project-last-task, .workspace-scope-card, .workspace-current-location, .workspace-trash-details, .retained-root-record, .workspace-cleanup-plan, .workspace-cleanup-item.is-blocked, .workspace-cleanup-preserved, .workspace-cleanup-result-details pre, .workspace-cleanup-item-result, .node-apps-intro, .node-process-state, .node-selected-source, .retained-original code, .resource-strip, .status-check, .subtle-tag) { color: var(--radio-secondary); border-color: var(--radio-line); background: var(--radio-subtle); }
 :root[data-theme] :is(.backup-row:hover, .backup-row-selected, .trash-row.selected, .project-size-row:hover, .node-app-list-item.selected) { border-color: var(--radio-focus); color: var(--radio-text); background: var(--radio-selected); box-shadow: none; }
 :root[data-theme] :is(.workspace-hub-tabs) { border-color: var(--radio-line); background: var(--radio-subtle); }
 :root[data-theme] :is(.workspace-hub-tabs button, .overview-tabs button) { color: var(--radio-muted); }

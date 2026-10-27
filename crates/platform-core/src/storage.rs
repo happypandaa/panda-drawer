@@ -450,7 +450,6 @@ impl StorageManager {
             generations: Mutex::new(HashMap::new()),
             readers: Arc::new(tokio::sync::RwLock::new(())),
         });
-        manager.recover_cleanup()?;
         Ok(manager)
     }
     fn cache(&self, id: &str) -> PathBuf {
@@ -691,12 +690,7 @@ impl StorageManager {
         if let Ok(dirs) = fs::read_dir(&operations) {
             for entry in dirs.flatten() {
                 let mut metadata = None;
-                for name in [
-                    "journal.json",
-                    "lifecycle.json",
-                    "snapshot.json",
-                    "cleanup.json",
-                ] {
+                for name in ["journal.json", "snapshot.json"] {
                     let path = entry.path().join(name);
                     if path.is_file() {
                         match read_json::<Value>(&path) {
@@ -829,8 +823,8 @@ impl StorageManager {
                 if path.file_name().and_then(|n| n.to_str()) == except {
                     continue;
                 }
-                for name in ["journal.json", "lifecycle.json"] {
-                    let file = path.join(name);
+                {
+                    let file = path.join("journal.json");
                     if file.exists() {
                         let value: Value = read_json(&file)?;
                         if value["resolved"] != true
@@ -1007,123 +1001,55 @@ impl StorageManager {
             .map(String::as_str)
             .collect::<Vec<_>>();
         let (candidates, skipped) = self.cleanup_candidates(id, &binding, &selected)?;
-        let mut journal = CleanupJournal {
-            schema_version: SCHEMA,
-            project_id: id.into(),
-            task_id: task.into(),
-            resolved: false,
-            result: json!({"deleted":[],"skipped":skipped,"failures":[],"logicalBytes":0,"fileCount":0,"operationOutcome":"in_progress"}),
-            in_flight: None,
-        };
-        let path = self.cleanup_journal(task);
-        check_no_symlinks(&path, true)?;
-        builds::atomic_json(&path, &journal)?;
+        let mut result = json!({"deleted":[],"skipped":skipped,"failures":[],"logicalBytes":0,"fileCount":0,"operationOutcome":"in_progress"});
         let mut bytes = 0u64;
         let mut count = 0u64;
         for (category, target) in candidates {
             if self.binding(id).map(|v| v.0).ok() != Some(binding.clone()) {
-                journal.result["failures"]
-                    .as_array_mut()
-                    .unwrap()
-                    .push(problem(
-                        &target,
-                        "root_changed",
-                        "Cleanup root or classification changed",
-                    ));
+                result["failures"].as_array_mut().unwrap().push(problem(
+                    &target,
+                    "root_changed",
+                    "Cleanup root or classification changed",
+                ));
                 break;
             }
             self.store
                 .control(id)?
                 .check(false, input.maintenance_id.as_deref(), false)
-                .map_err(|e| e.detail("partialResult", journal.result.clone()))?;
+                .map_err(|e| e.detail("partialResult", result.clone()))?;
             self.protection(id, Some(task))
-                .map_err(|e| e.detail("partialResult", journal.result.clone()))?;
-            journal.in_flight = Some(target.clone());
-            builds::atomic_json(&path, &journal)
-                .map_err(|e| e.detail("partialResult", journal.result.clone()))?;
+                .map_err(|e| e.detail("partialResult", result.clone()))?;
             let mut removed = Deletion::default();
             delete_whitelisted(&target, &mut removed);
             bytes = bytes.saturating_add(removed.bytes);
             count = count.saturating_add(removed.files);
             if removed.files > 0 || removed.links > 0 {
-                journal.result["deleted"].as_array_mut().unwrap().push(json!({"category":category,"path":target,"fileCount":int(removed.files),"logicalBytes":int(removed.bytes),"linkCount":removed.links}));
+                result["deleted"].as_array_mut().unwrap().push(json!({"category":category,"path":target,"fileCount":int(removed.files),"logicalBytes":int(removed.bytes),"linkCount":removed.links}));
             }
-            journal.result["failures"]
+            result["failures"]
                 .as_array_mut()
                 .unwrap()
                 .extend(removed.issues);
-            journal.result["logicalBytes"] = int(bytes);
-            journal.result["fileCount"] = int(count);
-            journal.in_flight = None;
-            builds::atomic_json(&path, &journal)
-                .map_err(|e| e.detail("partialResult", journal.result.clone()))?;
+            result["logicalBytes"] = int(bytes);
+            result["fileCount"] = int(count);
         }
-        let failed = !journal.result["failures"].as_array().unwrap().is_empty();
-        journal.result["operationOutcome"] = if failed {
+        let failed = !result["failures"].as_array().unwrap().is_empty();
+        result["operationOutcome"] = if failed {
             "partial".into()
         } else {
             "completed".into()
         };
-        journal.result["measurement"] = "removedLogicalFileBytes".into();
-        journal.result["physicalBytesFreed"] = Value::Null;
-        journal.resolved = true;
-        builds::atomic_json(&path, &journal)
-            .map_err(|e| e.detail("partialResult", journal.result.clone()))?;
+        result["measurement"] = "removedLogicalFileBytes".into();
+        result["physicalBytesFreed"] = Value::Null;
         if failed {
             Err(ApiError::new(
                 "STORAGE_CLEANUP_PARTIAL",
                 "Some objects were retained; inspect the completed deletions and errors",
             )
-            .detail("partialResult", journal.result))
+            .detail("partialResult", result))
         } else {
-            Ok(journal.result)
+            Ok(result)
         }
-    }
-    fn cleanup_journal(&self, task: &str) -> PathBuf {
-        self.paths
-            .workspace_root()
-            .join(".platform/operations")
-            .join(task)
-            .join("cleanup.json")
-    }
-    fn recover_cleanup(&self) -> Result<(), ApiError> {
-        let root = self.paths.workspace_root().join(".platform/operations");
-        check_no_symlinks(&root, true)?;
-        if root.is_dir() {
-            for dir in fs::read_dir(root)? {
-                let path = dir?.path().join("cleanup.json");
-                if !path.is_file() {
-                    continue;
-                }
-                let mut journal: CleanupJournal = read_json(&path)?;
-                if journal.schema_version != SCHEMA
-                    || !valid_id(&journal.project_id)
-                    || !valid_id(&journal.task_id)
-                    || path
-                        .parent()
-                        .and_then(Path::file_name)
-                        .and_then(|v| v.to_str())
-                        != Some(&journal.task_id)
-                {
-                    return Err(ApiError::new(
-                        "STORAGE_CLEANUP_JOURNAL_INVALID",
-                        "Cleanup journal identity is invalid",
-                    ));
-                }
-                if !journal.resolved {
-                    journal.result["operationOutcome"] = "interrupted".into();
-                    journal.result["automaticRetry"] = false.into();
-                    if let Some(p) = &journal.in_flight {
-                        journal.result["failures"].as_array_mut().ok_or_else(||ApiError::new("STORAGE_CLEANUP_JOURNAL_INVALID","Missing cleanup results"))?.push(problem(p,"interrupted_object","This object may have been partially deleted; inspect it before an explicit retry"));
-                    }
-                    journal.resolved = true;
-                    builds::atomic_json(&path, &journal)?;
-                }
-                self.tasks
-                    .reconcile_operation_result(&journal.task_id, journal.result)?;
-            }
-        }
-        Ok(())
     }
     pub async fn workspace_info(&self) -> Result<Value, ApiError> {
         let reader = self.readers.clone().read_owned().await;
@@ -1168,16 +1094,6 @@ type CleanupCandidates = (Vec<(String, PathBuf)>, Vec<Value>);
 struct CleanupInput {
     categories: Vec<String>,
     maintenance_id: Option<String>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CleanupJournal {
-    schema_version: u32,
-    project_id: String,
-    task_id: String,
-    resolved: bool,
-    result: Value,
-    in_flight: Option<PathBuf>,
 }
 #[derive(Default)]
 struct Deletion {
@@ -1536,8 +1452,8 @@ fn workspace_scan(
                         if record["sourcePath"].as_str().is_some_and(|source| {
                             matches!(fs::symlink_metadata(source), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
                         }) {
-                            // A durable cleanup receipt explains the missing old copy.
-                            // Keep the migration proof; do not count an unknown phantom root.
+                            // Current volume inspection confirms that the old path is absent.
+                            // Preserve migration proof without claiming a past deletion.
                             continue;
                         }
                     }

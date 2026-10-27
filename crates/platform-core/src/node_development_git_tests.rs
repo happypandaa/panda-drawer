@@ -146,258 +146,59 @@ async fn runtime_stop_prevents_git_resolution_or_source_operation() {
     drop(stop);
 }
 
-async fn fixture_git(temp: &Path) -> (NodeGit, GitToolchain) {
-    let git_root = std::env::var_os("LOCAL_PROJECTS_TEST_GIT_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../apps/desktop/src-tauri/resources/development-git")
-        });
-    let environment = GitEnvironmentManager::new(
-        temp.canonicalize().unwrap(),
-        Some(git_root.canonicalize().unwrap()),
-    );
-    let tools = environment.resolve().await.unwrap();
-    (NodeGit::new(environment), tools)
-}
-
-fn save_input(view: &ProjectGitStatus) -> GitSaveInput {
-    GitSaveInput {
-        expected_head: head_oid(view).map(str::to_owned),
-        expected_snapshot: view.snapshot_digest.clone(),
-        message: "Save disposable Node source".into(),
-        author: GitAuthor {
-            name: "Disposable Node Test".into(),
-            email: "disposable@example.invalid".into(),
-        },
+// Restore fixtures emulate an external author using ordinary Git commands.
+impl NodeGit {
+    pub(crate) async fn fixture_command(&self, root: &Path, args: &[&str]) -> Value {
+        let tools = self.environment.resolve().await.unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let mut command = node_command(&tools, temporary.path(), Some(root));
+        command
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Disposable external author")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Disposable external author")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid");
+        let output = command.output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "external Git fixture command failed: {args:?}"
+        );
+        json!({"stdout":String::from_utf8(output.stdout).unwrap()})
     }
-}
-
-async fn initialize(manager: &NodeGit, root: &Path) -> ProjectGitStatus {
-    let view = manager.status(root).await.unwrap();
-    assert!(view.can_initialize, "{view:?}");
-    let done = manager
-        .initialize(
+    pub(crate) async fn fixture_initialize(
+        &self,
+        root: &Path,
+        _input: GitInitInput,
+    ) -> Result<Value, ApiError> {
+        self.fixture_command(root, &["init", "--quiet", "--initial-branch=main"])
+            .await;
+        fs::write(root.join(".git/info/exclude"),"/data/\n/configuration/\n/credentials/\n/release/\n**/node_modules/\n**/.env*\n!**/.env.example\n**/.npmrc\n").unwrap();
+        Ok(json!({"operationOutcome":"committed","status":self.status(root).await?}))
+    }
+    pub(crate) async fn fixture_save(
+        &self,
+        root: &Path,
+        input: GitSaveInput,
+    ) -> Result<Value, ApiError> {
+        self.fixture_command(root, &["add", "--all", "--", "."])
+            .await;
+        self.fixture_command(
             root,
-            GitInitInput {
-                expected_snapshot: view.snapshot_digest,
-                initial_branch: "main".into(),
-            },
+            &[
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "--no-gpg-sign",
+                "-m",
+                &input.message,
+            ],
         )
-        .await
-        .unwrap();
-    serde_json::from_value(done["status"].clone()).unwrap()
-}
-
-/// Uses only the explicit verified private Git payload and disposable sources.
-#[tokio::test]
-#[ignore = "requires the packaged private Git payload; set LOCAL_PROJECTS_TEST_GIT_ROOT when elsewhere"]
-async fn local_versions_preserve_existing_history_remotes_data_and_never_run_hooks() {
-    let (temp, root) = source();
-    let (manager, tools) = fixture_git(temp.path()).await;
-    let initial = initialize(&manager, &root).await;
-    assert!(initial.can_save);
-    fs::create_dir(root.join(".git/hooks")).unwrap();
-    fs::write(
-        root.join(".git/hooks/pre-commit"),
-        "#!/bin/sh\ntouch ../hook-ran\n",
-    )
-    .unwrap();
-    fs::set_permissions(
-        root.join(".git/hooks/pre-commit"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
-    fs::write(
-        root.join(".git/hooks/reference-transaction"),
-        "#!/bin/sh\ntouch ../reference-hook-ran\n",
-    )
-    .unwrap();
-    fs::set_permissions(
-        root.join(".git/hooks/reference-transaction"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
-    // A user's remote configuration remains byte-for-byte intact. No operation
-    // below invokes fetch, push, SSH, credential helpers or commit hooks.
-    let config = root.join(".git/config");
-    let mut bytes = fs::read(&config).unwrap();
-    bytes.extend_from_slice(b"\n[remote \"origin\"]\n\turl = https://example.invalid/disposable-node.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n");
-    fs::write(&config, &bytes).unwrap();
-    fs::create_dir(root.join("data")).unwrap();
-    fs::write(root.join("data/database.db"), b"disposable database bytes").unwrap();
-    fs::write(root.join(".env"), b"SYNTHETIC_SECRET=must-not-save").unwrap();
-    fs::write(root.join("yarn.lock"), "# Disposable lockfile\n").unwrap();
-    fs::write(root.join(".env.example"), "EXAMPLE_API_KEY=fill-your-own\n").unwrap();
-    fs::create_dir(root.join("work")).unwrap();
-    fs::write(
-        root.join("work/disposable-private-note.md"),
-        "do not include",
-    )
-    .unwrap();
-    fs::write(root.join(".gitignore"), "work/\n").unwrap();
-    let preview = manager.status(&root).await.unwrap();
-    assert!(preview
-        .scope
-        .excluded
-        .iter()
-        .any(|entry| entry.path == "work"));
-    assert!(preview
-        .scope
-        .included_paths
-        .contains(&".env.example".to_owned()));
-    assert!(!preview
-        .scope
-        .included_paths
-        .contains(&"work/disposable-private-note.md".to_owned()));
-    let done = manager.save(&root, save_input(&preview)).await.unwrap();
-    let first = done["commit"].as_str().unwrap().to_owned();
-    let clean = manager.status(&root).await.unwrap();
-    assert!(clean.changes.is_empty(), "{clean:?}");
-    assert!(!root.join("hook-ran").exists());
-    assert!(!root.join("reference-hook-ran").exists());
-    assert_eq!(fs::read(&config).unwrap(), bytes);
-    assert_eq!(
-        fs::read(root.join("data/database.db")).unwrap(),
-        b"disposable database bytes"
-    );
-    let history = manager.versions(&root, 10).await.unwrap();
-    assert_eq!(history.versions.len(), 1);
-    assert_eq!(history.versions[0].oid, first);
-    fs::write(root.join("src/server.mjs"), "console.log('second');\n").unwrap();
-    assert_eq!(
-        manager
-            .save(&root, save_input(&clean))
-            .await
-            .unwrap_err()
-            .code,
-        "PROJECT_GIT_STALE_PREVIEW"
-    );
-    let second = manager.status(&root).await.unwrap();
-    manager.save(&root, save_input(&second)).await.unwrap();
-    let history = manager.versions(&root, 1).await.unwrap();
-    assert!(history.has_more);
-    assert_eq!(history.versions[0].parents, [first]);
-    let clean = manager.status(&root).await.unwrap();
-    assert_eq!(
-        clean.can_create_branch,
-        branch_version_supported(&tools.git.version)
-    );
-    if clean.can_create_branch {
-        let head = clean.repository.head.as_ref().unwrap();
-        let index = fs::read(root.join(".git/index")).unwrap();
-        let branch = manager
-            .create_branch(
-                &root,
-                GitCreateBranchInput {
-                    name: "custom/disposable".into(),
-                    expected_head: head.oid.clone().unwrap(),
-                    expected_branch: head.branch.clone().unwrap(),
-                    expected_snapshot: clean.snapshot_digest.clone(),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(branch["branch"], "refs/heads/custom/disposable");
-        assert_eq!(branch["status"]["canSave"], true);
-        assert_eq!(branch["status"]["canCreateBranch"], true);
-        assert!(!root.join(".git/index.lock").exists());
-        assert!(!root.join(".git/refs/heads/main.lock").exists());
-        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
-        assert!(!root.join("reference-hook-ran").exists());
+        .await;
+        let status = self.status(root).await?;
+        Ok(
+            json!({"operationOutcome":"committed","commit":status.repository.head.as_ref().and_then(|head|head.oid.clone()),"status":status}),
+        )
     }
-}
-
-#[tokio::test]
-#[ignore = "requires the packaged private Git payload"]
-async fn protection_filters_nested_repositories_and_stale_head_fail_closed() {
-    let (temp, root) = source();
-    let (manager, tools) = fixture_git(temp.path()).await;
-    let initial = initialize(&manager, &root).await;
-    manager.save(&root, save_input(&initial)).await.unwrap();
-    let clean = manager.status(&root).await.unwrap();
-    let mut stale_input = save_input(&clean);
-    stale_input.expected_head = Some("1".repeat(40));
-    assert_eq!(
-        manager.save(&root, stale_input).await.unwrap_err().code,
-        "PROJECT_GIT_STALE_PREVIEW"
-    );
-    fs::write(root.join(".gitattributes"), "*.mjs filter=unsafe\n").unwrap();
-    let config = root.join(".git/config");
-    let mut text = fs::read_to_string(&config).unwrap();
-    text.push_str("\n[filter \"unsafe\"]\n\tclean = touch filter-ran\n\trequired = true\n");
-    fs::write(config, text).unwrap();
-    let filtered = manager.status(&root).await.unwrap();
-    assert!(!filtered.can_save);
-    assert!(filtered
-        .issues
-        .iter()
-        .any(|e| e.code == "PROJECT_GIT_ATTRIBUTES_UNSUPPORTED"));
-    assert!(!root.join("filter-ran").exists());
-    fs::remove_file(root.join(".gitattributes")).unwrap();
-    // Deliberately stage a synthetic protected path using the already-isolated
-    // low-level test command; no real application source is involved.
-    fs::create_dir(root.join("data")).unwrap();
-    fs::write(root.join("data/sample.json"), "{}").unwrap();
-    let (mut context, _senders) = node_context().unwrap();
-    let mut command = node_command(&tools, context.root(), Some(&root));
-    command.args(["add", "--force", "--", "data/sample.json"]);
-    context
-        .run(command, vec![])
-        .await
-        .unwrap()
-        .success()
-        .unwrap();
-    let protected = manager.status(&root).await.unwrap();
-    assert!(!protected.can_save);
-    assert_eq!(
-        protected.scope.protected_tracked_paths,
-        ["data/sample.json"]
-    );
-    fs::create_dir(root.join("src/.git")).unwrap();
-    let nested = manager.status(&root).await.unwrap();
-    assert_eq!(nested.repository.state, "ambiguous");
-    assert!(!nested.can_save);
-}
-
-#[tokio::test]
-#[ignore = "requires the packaged private Git payload"]
-async fn initialization_rejects_changed_preview_and_never_wraps_an_ancestor_repo() {
-    let (temp, root) = source();
-    let (manager, _) = fixture_git(temp.path()).await;
-    let preview = manager.status(&root).await.unwrap();
-    fs::write(root.join("src/server.mjs"), "changed after preview").unwrap();
-    let issue = manager
-        .initialize(
-            &root,
-            GitInitInput {
-                expected_snapshot: preview.snapshot_digest,
-                initial_branch: "main".into(),
-            },
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(issue.code, "PROJECT_GIT_STALE_PREVIEW");
-    assert!(!root.join(".git").exists());
-    fs::create_dir(temp.path().join(".git")).unwrap();
-    let ancestor = manager.status(&root).await.unwrap();
-    assert!(!ancestor.can_initialize);
-    assert_eq!(ancestor.repository.state, "unsupported");
-    assert!(!root.join(".git").exists());
-    fs::remove_dir(temp.path().join(".git")).unwrap();
-    initialize(&manager, &root).await;
-    fs::create_dir(temp.path().join(".git")).unwrap();
-    let explicit = manager.status(&root).await.unwrap();
-    assert_eq!(explicit.repository.state, "project-root");
-    assert!(
-        explicit.can_save,
-        "a bound own repository must not inherit an outer repository: {explicit:?}"
-    );
-    fs::create_dir(root.join("src/.git")).unwrap();
-    assert_eq!(
-        manager.status(&root).await.unwrap().repository.state,
-        "ambiguous"
-    );
 }
 
 #[path = "node_git_owned_process_tests.rs"]

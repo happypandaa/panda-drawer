@@ -1,6 +1,7 @@
 //! Artificial TempDir roots only. These tests never resolve the installed app's
 //! default data root or touch existing development projects.
 use super::*;
+const CONTROL: &str = ".local-cleanup";
 use crate::{CreateProjectInput, TaskStatus};
 use std::os::unix::{fs::symlink, fs::MetadataExt};
 
@@ -128,11 +129,7 @@ async fn cleanup_removes_project_code_data_node_configuration_and_history_but_pr
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(names, RETAINED.into_iter().map(String::from).collect());
-    let control_names = fs::read_dir(paths.data_root().join(CONTROL))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(control_names, ["receipt.json"]);
+    assert!(!paths.data_root().join(CONTROL).exists());
     let reinitialized = paths.reinitialize_for_test().unwrap();
     assert_eq!(
         reinitialized.workspace_root(),
@@ -320,7 +317,7 @@ async fn cleanup_includes_current_and_retained_completed_migration_roots() {
 }
 
 #[tokio::test]
-async fn missing_or_replaced_retained_workspace_refuses_all_cleanup() {
+async fn absent_same_volume_root_is_rescanned_but_replaced_or_offline_root_blocks_cleanup() {
     let (temporary, paths, service) = fixture().await;
     let destination = temporary
         .path()
@@ -328,13 +325,27 @@ async fn missing_or_replaced_retained_workspace_refuses_all_cleanup() {
         .unwrap()
         .join("migrated-workspace");
     let selected = migrate(&paths, &service, &destination).await;
-    fs::rename(
-        paths.workspace_root(),
-        temporary.path().join("saved-retained-source"),
-    )
-    .unwrap();
+    let saved = temporary.path().join("saved-retained-source");
+    fs::rename(paths.workspace_root(), &saved).unwrap();
+    let plan = LocalCleanupPlan::prepare(&selected, &service).unwrap();
+    assert!(!plan.targets.iter().any(|target| target.path == saved));
+    assert!(saved.exists());
+    fs::create_dir(paths.workspace_root()).unwrap();
+    assert!(LocalCleanupPlan::prepare(&selected, &service).is_err());
+    fs::remove_dir(paths.workspace_root()).unwrap();
+    let journal_path = fs::read_dir(selected.migrations_dir())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("journal.json");
+    let mut journal: Value = serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
+    journal["sourceIdentity"]["volumeUuid"] = json!(Uuid::new_v4().to_string());
+    crate::builds::atomic_json(&journal_path, &journal).unwrap();
     assert!(LocalCleanupPlan::prepare(&selected, &service).is_err());
     assert!(destination.exists());
+    assert!(saved.exists());
     assert!(!selected.data_root().join(CONTROL).exists());
     assert!(service.quiesce().await.is_complete());
 }
@@ -457,7 +468,7 @@ async fn original_source_capture_and_separate_development_bindings_are_preserved
 }
 
 #[tokio::test]
-async fn partial_cleanup_reports_remaining_paths_and_preserves_failure_receipt() {
+async fn partial_cleanup_reports_remaining_paths_without_writing_failure_records() {
     let (_temporary, paths, service) = fixture().await;
     let bad = paths.workspace_root().join("special-unhandled-file");
     let name = CString::new(bad.as_os_str().as_bytes()).unwrap();
@@ -473,44 +484,22 @@ async fn partial_cleanup_reports_remaining_paths_and_preserves_failure_receipt()
         .iter()
         .any(|path| path == &json!(paths.workspace_root())));
     assert!(bad.exists());
-    let receipt: Value = serde_json::from_slice(
-        &fs::read(paths.data_root().join(CONTROL).join("receipt.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(receipt["phase"], "incomplete");
+    assert!(!paths.data_root().join(CONTROL).exists());
     assert!(paths.data_root().join("instance.lock").exists());
     fs::remove_file(bad).unwrap();
 }
 
 #[tokio::test]
-async fn old_completed_progress_is_removed_but_unknown_cleanup_control_content_is_never_ignored() {
-    for unknown in [false, true] {
-        let (_temporary, paths, service) = fixture().await;
-        let control = paths.data_root().join(CONTROL);
-        fs::create_dir(&control).unwrap();
-        fs::write(
-            control.join("receipt.json"),
-            b"{\"schemaVersion\":1,\"phase\":\"completed\"}",
-        )
-        .unwrap();
-        let progress = control.join(if unknown {
-            "unknown-original-code".to_string()
-        } else {
-            format!("local_cleanup_{}-0.ndjson", Uuid::new_v4().simple())
-        });
-        fs::write(&progress, b"old per-file project names").unwrap();
-        let plan = LocalCleanupPlan::prepare(&paths, &service);
-        assert!(service.quiesce().await.is_complete());
-        if unknown {
-            assert!(plan.is_err());
-            assert!(progress.exists());
-            assert!(paths.workspace_root().exists());
-        } else {
-            plan.unwrap().execute_after_shutdown(&service).unwrap();
-            assert!(!progress.exists());
-            assert_eq!(fs::read_dir(control).unwrap().count(), 1);
-        }
-    }
+async fn explicitly_reviewed_legacy_cleanup_folder_is_removed_without_creating_a_new_receipt() {
+    let (_temporary, paths, service) = fixture().await;
+    let control = paths.data_root().join(CONTROL);
+    fs::create_dir(&control).unwrap();
+    fs::write(control.join("receipt.json"), b"legacy cleanup receipt").unwrap();
+    fs::write(control.join("old.ndjson"), b"old per-file project names").unwrap();
+    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    assert!(service.quiesce().await.is_complete());
+    plan.execute_after_shutdown(&service).unwrap();
+    assert!(!control.exists());
 }
 
 #[tokio::test]

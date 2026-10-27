@@ -70,7 +70,7 @@ test('The bundled platform requirements exactly match the maintained copyable do
 });
 
 test('A Git failure prompt preserves source identity and delivery while removing known secret log formats', () => {
-  const prompt = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', branch: 'example', commit: 'a'.repeat(40), checkedAt: '2026-10-26T00:00:00Z', platformVersion: 'disposable-test', issues: ['缺少应用声明'], logs: ['API_KEY=synthetic-key-never-use', 'Authorization: Bearer synthetic-control-token', '{"password":"synthetic-json-password"}', 'Cookie: first=synthetic-cookie-one; next=synthetic-cookie-two', 'download failed'] });
+  const prompt = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', branch: 'example', commit: 'a'.repeat(40), checkedAt: '2026-10-26T00:00:00Z', platformVersion: 'disposable-test', issues: ['缺少应用声明', 'API_KEY=synthetic-key-never-use', 'Authorization: Bearer synthetic-control-token', '{"password":"synthetic-json-password"}', 'Cookie: first=synthetic-cookie-one; next=synthetic-cookie-two', 'download failed'] });
   assert.match(prompt, /https:\/\/github.com\/disposable\/artificial\.git/);
   assert.match(prompt, /disposable-test/); assert.match(prompt, /缺少应用声明/);
   assert.match(prompt, /不假设失败下载文件仍存在/); assert.match(prompt, /添加本地项目/);

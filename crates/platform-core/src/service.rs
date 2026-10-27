@@ -507,13 +507,6 @@ impl RuntimeHandle {
         }
         Ok(json!(state.builds.task(id)?))
     }
-    pub async fn task_logs(&self, id: &str, cursor: u64) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        if let Some(logs) = crate::workspace::logs(&state.paths, id, cursor)? {
-            return Ok(logs);
-        }
-        Ok(json!(state.builds.logs(id, cursor)?))
-    }
     pub async fn environment(&self) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().builds.environment().doctor().await))
     }
@@ -611,29 +604,6 @@ impl RuntimeHandle {
                 .await?
         ))
     }
-    pub async fn project_git_create_branch(
-        &self,
-        id: &str,
-        input: crate::project_git::GitCreateBranchInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .create_branch(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
     pub async fn project_git_source_restore_preview(
         &self,
         id: &str,
@@ -722,52 +692,6 @@ impl RuntimeHandle {
                 .as_ref()
                 .map_err(Clone::clone)?
                 .source_restore_recover(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_initialize(
-        &self,
-        id: &str,
-        input: crate::project_git::GitInitInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .initialize(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_save(
-        &self,
-        id: &str,
-        input: crate::project_git::GitSaveInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .save(id, input, state.stop.subscribe())
                 .await?
         ))
     }
@@ -860,29 +784,6 @@ impl RuntimeHandle {
         ))
     }
 
-    pub async fn project_git_data_save(
-        &self,
-        id: &str,
-        input: crate::project_git::GitDataSaveInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .save_data(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
     pub async fn project_git_data_save_status(
         &self,
         id: &str,
@@ -2218,11 +2119,6 @@ async fn management(
                 }
                 handle.project_git_versions(id, limit).await
             }
-            (Method::POST, ["projects", id, "git", "branches"]) => {
-                handle
-                    .project_git_create_branch(id, input(request).await?)
-                    .await
-            }
             (Method::POST, ["projects", id, "git", "source-restore-preview"]) => {
                 handle
                     .project_git_source_restore_preview(id, input(request).await?)
@@ -2247,22 +2143,9 @@ async fn management(
                     .project_git_source_restore_recover(id, input(request).await?)
                     .await
             }
-            (Method::POST, ["projects", id, "git", "initialize"]) => {
-                handle
-                    .project_git_initialize(id, input(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "git", "saves"]) => {
-                handle.project_git_save(id, input(request).await?).await
-            }
             (Method::POST, ["projects", id, "git", "data-restore-preview"]) => {
                 handle
                     .project_git_data_restore_preview(id, input(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "git", "data-saves"]) => {
-                handle
-                    .project_git_data_save(id, input(request).await?)
                     .await
             }
             (Method::POST, ["projects", id, "git", "data-restores"]) => {
@@ -2436,21 +2319,6 @@ async fn management(
             (Method::GET, ["projects", id, "maintenance"]) => handle.maintenance_status(id).await,
             (Method::GET, ["projects", id, "handoff"]) => handle.handoff(id).await,
             (Method::GET, ["tasks", id]) => handle.task(id).await,
-            (Method::GET, ["tasks", id, "logs"]) => {
-                let query: HashMap<String, String> =
-                    url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
-                        .into_owned()
-                        .collect();
-                let cursor = query
-                    .get("offset")
-                    .map(|s| s.parse::<u64>())
-                    .transpose()
-                    .map_err(|_| {
-                        ApiError::new("INVALID_INPUT", "offset must be an unsigned byte cursor")
-                    })?
-                    .unwrap_or(0);
-                handle.task_logs(id, cursor).await
-            }
             (Method::GET, ["projects", id, "db", "schema"]) => {
                 Ok(json!(state.store.schema(id, None).await?))
             }

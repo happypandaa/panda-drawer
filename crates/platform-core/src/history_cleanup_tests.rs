@@ -1,6 +1,6 @@
 //! All destructive tests use uniquely owned TempDir data, never development data.
 use super::*;
-use crate::{maintenance::MaintenanceManager, CreateProjectInput, TaskStatus};
+use crate::{builds, maintenance::MaintenanceManager, CreateProjectInput, TaskStatus};
 
 struct Fixture {
     temporary: tempfile::TempDir,
@@ -127,7 +127,7 @@ fn candidate(root: &Path) -> Candidate {
         root.into(),
     );
     item.root_identity = Some(directory_identity(root).unwrap());
-    item.persistent_root_identity = Some(persistent_identity(root).unwrap());
+
     item.parents = parent_identities(root).unwrap();
     item.entries = scan(root).unwrap();
     item.can_clean = true;
@@ -167,7 +167,7 @@ fn safe_unlink_never_follows_symlinks_and_reports_actual_bytes() {
     fs::write(root.join("nested/file"), b"12345").unwrap();
     std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
     let item = candidate(&root);
-    let removed = remove_tree(&item, &temporary.path().join("receipt.jsonl")).unwrap();
+    let removed = remove_tree(&item).unwrap();
     assert_eq!(removed["completed"], true);
     assert_eq!(removed["removedLogicalBytes"], 5);
     assert_eq!(removed["removedFileCount"], 2);
@@ -183,12 +183,12 @@ fn changed_content_and_replaced_ancestors_are_retained() {
     fs::write(root.join("a"), "original").unwrap();
     let item = candidate(&root);
     fs::write(root.join("a"), "modified").unwrap();
-    assert!(remove_tree(&item, &temporary.path().join("receipt")).is_err());
+    assert!(remove_tree(&item).is_err());
     assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "modified");
     fs::rename(&parent, temporary.path().join("old-parent")).unwrap();
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("replacement"), "retain").unwrap();
-    assert!(remove_tree(&item, &temporary.path().join("receipt2")).is_err());
+    assert!(remove_tree(&item).is_err());
     assert_eq!(
         fs::read_to_string(root.join("replacement")).unwrap(),
         "retain"
@@ -201,7 +201,7 @@ fn new_unplanned_files_survive_partial_deletion_with_an_honest_receipt() {
     fs::create_dir(&root).unwrap();
     fs::write(root.join("a"), "abc").unwrap();
     let item = candidate(&root);
-    let failure = remove_tree_with_hook(&item, &temporary.path().join("receipt"), |_, path| {
+    let failure = remove_tree_with_hook(&item, |_, path| {
         fs::write(path.join("new-user-file"), "new draft")?;
         Ok(())
     })
@@ -263,12 +263,11 @@ async fn migrated_workspace_cleanup_survives_restart_without_phantom_storage() {
         "instance-restarted".into(),
     )
     .unwrap();
-    assert_eq!(
-        restarted.latest_task().unwrap().unwrap().task_id,
-        task.task_id
-    );
+    assert!(restarted.latest_task().unwrap().is_none());
+    assert!(!fixture.paths.data_root().join("cleanup/plans").exists());
+    assert!(!fixture.paths.data_root().join("cleanup/receipts").exists());
     let info = crate::workspace::info(&fixture.paths, &fixture.store).unwrap();
-    assert_eq!(info["retainedRoots"][0]["cleaned"], true);
+    assert_eq!(info["retainedRoots"][0]["absent"], true);
     let storage = crate::storage::StorageManager::new(
         fixture.paths.clone(),
         fixture.store.clone(),
@@ -341,152 +340,48 @@ async fn modified_old_source_and_wrong_selection_marker_block_cleanup() {
 }
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn explicit_repreview_after_partial_marker_removal_uses_only_accepted_unlink_progress() {
+async fn explicit_repreview_after_partial_marker_removal_uses_fresh_owned_inventory() {
     let fixture = Fixture::new().await;
     let (fixture, source, migration) = fixture.migrate().await;
     let preview = fixture.preview().await;
-    let plan_path = fixture
-        .cleanup
-        .root()
-        .join("plans")
-        .join(format!("{}.json", preview["planId"].as_str().unwrap()));
-    let mut plan: Plan = serde_json::from_value(read_json(&plan_path).unwrap()).unwrap();
     let id = format!("retained_{migration}");
-    let item = plan
-        .items
-        .iter()
-        .find(|item| item.id == id)
-        .unwrap()
-        .clone();
+    let plan = fixture.cleanup.plans.lock().unwrap()[preview["planId"].as_str().unwrap()].clone();
+    let item = plan.items.iter().find(|item| item.id == id).unwrap();
     assert!(item.can_clean);
-    let task = fixture
-        .tasks
-        .create_workspace_operation("workspaceCleanup")
-        .unwrap();
-    plan.task_id = Some(task.task_id.clone());
-    plan.selected_ids = vec![id.clone()];
-    builds::atomic_json(&plan_path, &plan).unwrap();
-    let receipt = fixture.cleanup.receipt(&task.task_id);
-    builds::atomic_json(
-        &receipt.join("selection.json"),
-        &json!({"planId":plan.plan_id,"itemIds":plan.selected_ids}),
-    )
-    .unwrap();
-    builds::atomic_json(&receipt.join("task.json"), &task).unwrap();
     fixture.store.begin_workspace_cleanup().unwrap();
-    let failure = remove_tree_with_hook(
-        &item,
-        &receipt.join(format!("{id}.progress.jsonl")),
-        |progress, _| {
-            if progress
-                .removed_paths
-                .iter()
-                .any(|path| path == Path::new(RETIRED))
-            {
-                return Err(ApiError::new(
-                    "TEST_AFTER_MARKER",
-                    "Disposable failure after marker unlink",
-                ));
-            }
-            Ok(())
-        },
-    )
+    let failure = remove_tree_with_hook(item, |progress, _| {
+        if progress
+            .removed_paths
+            .iter()
+            .any(|path| path == Path::new(RETIRED))
+        {
+            return Err(ApiError::new(
+                "TEST_AFTER_MARKER",
+                "Disposable failure after marker unlink",
+            ));
+        }
+        Ok(())
+    })
     .unwrap_err();
     fixture.store.resume_workspace();
     assert_eq!(failure.code, "TEST_AFTER_MARKER");
-    fixture
-        .tasks
-        .finish_partial(&task.task_id, json!({"completed":false}), failure)
-        .unwrap();
-    assert!(source.exists());
     assert!(!source.join(RETIRED).exists());
-    // This old plan remains unexecutable. Only its confirmed unlink progress is
-    // reusable after a simulated reboot changes runtime device numbers.
-    let prior = plan.items.iter_mut().find(|item| item.id == id).unwrap();
-    prior.root_identity.as_mut().unwrap().device =
-        prior.root_identity.as_ref().unwrap().device.wrapping_add(1);
-    let durable = prior.persistent_root_identity.as_mut().unwrap();
-    assert!(!durable.is_legacy());
-    durable.device = durable.device.wrapping_add(1);
-    let valid_inode = durable.inode;
-    durable.inode = durable.inode.wrapping_add(1);
-    plan.instance_id = "prior-runtime".into();
-    builds::atomic_json(&plan_path, &plan).unwrap();
-    let blocked = fixture.preview().await;
+    assert!(!fixture.paths.data_root().join("cleanup/receipts").exists());
+    let fresh = fixture.preview().await;
     assert_eq!(
-        blocked["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["canClean"],
-        false
+        plan_item(&fresh, &id)["canClean"],
+        true,
+        "{}",
+        plan_item(&fresh, &id)
     );
-    plan.items
-        .iter_mut()
-        .find(|item| item.id == id)
-        .unwrap()
-        .persistent_root_identity
-        .as_mut()
-        .unwrap()
-        .inode = valid_inode;
-    builds::atomic_json(&plan_path, &plan).unwrap();
-    // Old plans without the companion keep their strict same-device behavior.
-    let saved = plan
-        .items
-        .iter()
-        .find(|item| item.id == id)
-        .unwrap()
-        .clone();
-    plan.items
-        .iter_mut()
-        .find(|item| item.id == id)
-        .unwrap()
-        .persistent_root_identity = None;
-    builds::atomic_json(&plan_path, &plan).unwrap();
-    let unbound = fixture.preview().await;
-    assert_eq!(
-        unbound["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["canClean"],
-        false
-    );
-    plan.items
-        .iter_mut()
-        .find(|item| item.id == id)
-        .unwrap()
-        .root_identity = Some(directory_identity(&source).unwrap());
-    builds::atomic_json(&plan_path, &plan).unwrap();
-    let legacy = fixture.preview().await;
-    assert_eq!(
-        legacy["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["canClean"],
-        true
-    );
-    *plan.items.iter_mut().find(|item| item.id == id).unwrap() = saved;
-    builds::atomic_json(&plan_path, &plan).unwrap();
-    let retry = fixture.preview().await;
-    let item = retry["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["id"] == id)
-        .unwrap();
-    assert_eq!(item["canClean"], true, "{item}");
     let task = fixture
-        .wait(fixture.cleanup.submit(input(&retry, vec![id])).unwrap())
+        .wait(fixture.cleanup.submit(input(&fresh, vec![id])).unwrap())
         .await;
     assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
     assert!(!source.exists());
     fixture.stop().await;
 }
+
 #[test]
 fn malformed_manifests_and_large_byte_counts_are_never_silently_coerced() {
     assert_eq!(
@@ -746,27 +641,33 @@ async fn plan_expiry_runtime_change_invalid_selection_and_active_operations_do_n
     let (source, slot) = fixture.source("ready");
     let plan = fixture.preview().await;
     let request = input(&plan, vec![source.clone()]);
-    let path = fixture
-        .cleanup
-        .root()
-        .join("plans")
-        .join(format!("{}.json", plan["planId"].as_str().unwrap()));
-    let original: Plan = serde_json::from_value(read_json(&path).unwrap()).unwrap();
+    let key = plan["planId"].as_str().unwrap().to_owned();
+    let original = fixture.cleanup.plans.lock().unwrap()[&key].clone();
     let mut expired = original.clone();
     expired.expires_at = 0;
-    builds::atomic_json(&path, &expired).unwrap();
+    fixture
+        .cleanup
+        .plans
+        .lock()
+        .unwrap()
+        .insert(key.clone(), expired);
     assert_eq!(
         fixture.cleanup.submit(request.clone()).unwrap_err().code,
         "CLEANUP_PLAN_EXPIRED"
     );
     let mut other_instance = original.clone();
     other_instance.instance_id = "other".into();
-    builds::atomic_json(&path, &other_instance).unwrap();
+    fixture
+        .cleanup
+        .plans
+        .lock()
+        .unwrap()
+        .insert(key.clone(), other_instance);
     assert_eq!(
         fixture.cleanup.submit(request.clone()).unwrap_err().code,
         "CLEANUP_PLAN_EXPIRED"
     );
-    builds::atomic_json(&path, &original).unwrap();
+    fixture.cleanup.plans.lock().unwrap().insert(key, original);
     let lease = fixture.store.reserve_task("prj_busy", "task_busy").unwrap();
     assert_eq!(
         fixture.cleanup.submit(request.clone()).unwrap_err().code,
@@ -798,4 +699,40 @@ async fn changed_preview_and_new_protection_block_deletion() {
     let plan = fixture.preview().await;
     assert_eq!(plan_item(&plan, &source)["canClean"], false);
     fixture.stop().await;
+}
+
+#[test]
+fn owned_dependency_removal_is_log_free_and_does_not_read_payload_contents() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-node-modules");
+    fs::create_dir_all(root.join("icons")).unwrap();
+    for index in 0..4_000 {
+        fs::write(
+            root.join("icons").join(format!("icon-{index}.svg")),
+            b"<svg/>",
+        )
+        .unwrap();
+    }
+    let unreadable = root.join("unreadable.js");
+    fs::write(
+        &unreadable,
+        b"need not hash a dependency being permanently removed",
+    )
+    .unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+    let expected = PersistedIdentity::capture(&root).unwrap();
+    let started = std::time::Instant::now();
+    let result = remove_owned_directory(&root, &expected).unwrap();
+    eprintln!(
+        "log-free permanent removal: 4001 files in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(result["removedFileCount"], 4_001);
+    assert_eq!(result["completed"], true);
+    assert!(!root.exists());
+    assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 0);
 }

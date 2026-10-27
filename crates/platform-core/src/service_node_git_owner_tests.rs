@@ -343,14 +343,13 @@ async fn service_node_git_real_commands_pending_and_caller_loss_keep_actual_scop
             .node_development_git(&f.apps, &f.id, NodeGitAction::Status)
             .await
             .unwrap();
-        f.handle
-            .node_development_git(
-                &f.apps,
-                &f.id,
-                NodeGitAction::Initialize(crate::project_git::GitInitInput {
+        crate::node_development_git::NodeGit::new(f.handle.current().git_environment.clone())
+            .fixture_initialize(
+                &f.source,
+                crate::project_git::GitInitInput {
                     expected_snapshot: status["snapshotDigest"].as_str().unwrap().into(),
                     initial_branch: "main".into(),
-                }),
+                },
             )
             .await
             .unwrap();
@@ -414,7 +413,7 @@ async fn service_node_git_post_validation_preserves_actual_commit_receipt_withou
     let status = git.status(&lease.source.source_root).await.unwrap();
     let read_receipt = json!(status);
     let committed = git
-        .initialize(
+        .fixture_initialize(
             &lease.source.source_root,
             crate::project_git::GitInitInput {
                 expected_snapshot: read_receipt["snapshotDigest"].as_str().unwrap().into(),

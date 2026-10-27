@@ -1,5 +1,6 @@
-//! Single-project lifecycle transactions. Candidate directories and durable
-//! intent live in the workspace; external ZIPs are never modified by import.
+//! Single-project import/export/delete operations. Process-local ownership is
+//! retained only while this service is alive; no lifecycle history is written.
+//! External ZIPs are never modified by import.
 use crate::{
     backups::{
         self, BackupManifest, PendingBuild, PreparedSnapshot, SnapshotOptions, SnapshotState,
@@ -11,10 +12,11 @@ use crate::{
     projects::{check_no_symlinks, valid_id, validate_manifest, ProjectTaskLease},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -42,30 +44,17 @@ struct Input {
     cleanup_temporary_files: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Journal {
-    schema_version: u32,
+#[derive(Clone)]
+struct Operation {
     task_id: String,
     kind: String,
     project_id: String,
     source_project_id: Option<String>,
-    // Retired recycle-bin and operating-system trash journals are recognized
-    // only so a foreign record is reported instead of misread. This manager
-    // never creates, restores, purges or adopts them.
-    trash_id: Option<String>,
-    #[serde(default)]
-    system_trash: bool,
-    #[serde(default)]
-    system_trash_path: Option<PathBuf>,
     target_epoch: String,
     phase: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     directory_name: Option<String>,
     directory_identity: Option<PersistedIdentity>,
-    #[serde(default)]
     cleanup_temporary_files: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     import_temporary_identity: Option<PersistedIdentity>,
     control: Option<ControlState>,
     destination: Option<PathBuf>,
@@ -73,7 +62,6 @@ struct Journal {
     committed: bool,
     resolved: bool,
     result: Value,
-    error: Option<ApiError>,
 }
 
 pub(crate) struct LifecycleManager {
@@ -82,6 +70,7 @@ pub(crate) struct LifecycleManager {
     tasks: Arc<BuildManager>,
     maintenance: Arc<MaintenanceManager>,
     running: Mutex<Vec<JoinHandle<()>>>,
+    operations: Mutex<HashMap<String, Operation>>,
     #[cfg(test)]
     import_inspection_pause: Mutex<
         Option<(
@@ -122,9 +111,9 @@ fn matches_identity(expected: &PersistedIdentity, path: &Path) -> Result<bool, A
         .matches_path(path)
         .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))
 }
-/// Journals bind the target before publication. Older journals retain their
+/// Operations bind the target before publication. Older operations retain their
 /// original ID directory even if a later project has a different registration.
-fn journal_project_root(
+fn operation_project_root(
     workspace: &Path,
     id: &str,
     directory: Option<&str>,
@@ -144,7 +133,7 @@ fn journal_project_root(
     {
         return Err(ApiError::new(
             "RECOVERY_REQUIRED",
-            "Invalid journal project directory binding",
+            "Invalid operation project directory binding",
         ));
     }
     let root = workspace.join("projects").join(directory);
@@ -247,6 +236,7 @@ impl LifecycleManager {
             tasks,
             maintenance,
             running: Mutex::new(vec![]),
+            operations: Mutex::new(HashMap::new()),
             #[cfg(test)]
             import_inspection_pause: Mutex::new(None),
             #[cfg(test)]
@@ -254,7 +244,6 @@ impl LifecycleManager {
             stopping: AtomicBool::new(false),
             events,
         });
-        manager.recover()?;
         Ok(manager)
     }
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
@@ -270,55 +259,29 @@ impl LifecycleManager {
             .join(".platform/operations")
             .join(task)
     }
-    fn journal_path(&self, task: &str) -> PathBuf {
-        self.operation(task).join("lifecycle.json")
-    }
-    fn save(&self, journal: &Journal) -> Result<(), ApiError> {
-        builds::atomic_json(&self.journal_path(&journal.task_id), journal)
-    }
-    fn finish_journal(&self, journal: &mut Journal) -> Result<(), ApiError> {
-        journal.resolved = true;
-        if let Err(error) = self.save(journal) {
-            journal.resolved = false;
-            return Err(self
-                .store
-                .control(&journal.project_id)?
-                .mark_recovery_required(
-                    error
-                        .outcome("needs_attention")
-                        .detail("recoveryStage", "lifecycle-journal")
-                        .detail("recoveryTaskId", journal.task_id.clone()),
-                ));
+    fn remember(&self, operation: &Operation) -> Result<(), ApiError> {
+        let mut operations = self.operations.lock().map_err(|_| {
+            ApiError::new(
+                "LIFECYCLE_STATE_FAILED",
+                "Current operation ownership is unavailable",
+            )
+        })?;
+        if operation.resolved && !operation.cleanup_temporary_files {
+            operations.remove(&operation.task_id);
+        } else {
+            operations.insert(operation.task_id.clone(), operation.clone());
         }
         Ok(())
     }
-    fn clear_completion_gate(&self, journal: &Journal) -> Result<(), ApiError> {
-        let control = self.store.control(&journal.project_id)?;
-        let mut current = control.get();
-        let owned = current.last_error.as_ref().is_some_and(|error| {
-            error.details["recoveryStage"] == "lifecycle-journal"
-                && error.details["recoveryTaskId"] == journal.task_id
-        });
-        if current.recovery_required && owned {
-            // Only undo this exact failed checkpoint's gate. Preserve newer
-            // pending-build metadata and other current state.
-            if let Some(saved) = &journal.control {
-                current.mode = saved.mode.clone();
-                current.ready_for_changes = saved.ready_for_changes;
-            }
-            current.recovery_required = false;
-            current.last_error = journal
-                .control
-                .as_ref()
-                .and_then(|saved| saved.last_error.clone());
-            control.set(current)?;
-        }
-        Ok(())
+    fn finish_operation(&self, operation: &mut Operation) -> Result<(), ApiError> {
+        operation.resolved = true;
+        self.remember(operation)
     }
-    fn phase(&self, journal: &mut Journal, phase: &str) -> Result<(), ApiError> {
-        journal.phase = phase.into();
-        self.save(journal)?;
-        self.tasks.phase(&journal.task_id, phase)
+
+    fn phase(&self, operation: &mut Operation, phase: &str) -> Result<(), ApiError> {
+        operation.phase = phase.into();
+        self.remember(operation)?;
+        self.tasks.phase(&operation.task_id, phase)
     }
     fn check_running(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
@@ -359,16 +322,12 @@ impl LifecycleManager {
         }
         Ok(input)
     }
-    fn journal(record: &TaskRecord, kind: &str, project: &str) -> Journal {
-        Journal {
-            schema_version: 1,
+    fn operation_state(record: &TaskRecord, kind: &str, project: &str) -> Operation {
+        Operation {
             task_id: record.task_id.clone(),
             kind: kind.into(),
             project_id: project.into(),
             source_project_id: None,
-            trash_id: None,
-            system_trash: false,
-            system_trash_path: None,
             target_epoch: Uuid::new_v4().to_string(),
             phase: "intent".into(),
             directory_name: None,
@@ -381,7 +340,6 @@ impl LifecycleManager {
             committed: false,
             resolved: false,
             result: json!({}),
-            error: None,
         }
     }
     pub async fn submit_project(
@@ -446,13 +404,13 @@ impl LifecycleManager {
         } else {
             id.into()
         };
-        let mut journal = Self::journal(&record, kind, &target);
-        journal.source_project_id = Some(id.into());
-        journal.destination = input.destination_path.clone();
+        let mut operation = Self::operation_state(&record, kind, &target);
+        operation.source_project_id = Some(id.into());
+        operation.destination = input.destination_path.clone();
         if kind != "copy" {
-            journal.directory_name = Some(root_directory_name(&root)?);
+            operation.directory_name = Some(root_directory_name(&root)?);
         }
-        journal.directory_identity = deletion.map(|(_, expected)| expected);
+        operation.directory_identity = deletion.map(|(_, expected)| expected);
         let mut leases = vec![source_lease];
         let prepare = (|| {
             if kind == "delete" {
@@ -462,7 +420,7 @@ impl LifecycleManager {
             } else {
                 self.authorize(id, input.maintenance_id.as_deref())?;
             }
-            self.save(&journal)?;
+            self.remember(&operation)?;
             if kind == "copy" {
                 leases.push(self.store.reserve_task(&target, &record.task_id)?);
                 self.store.reserve_identity(&target, &record.task_id)?;
@@ -474,7 +432,7 @@ impl LifecycleManager {
             self.tasks.finish(&record.task_id, Err(error.clone()))?;
             return Err(error);
         }
-        self.launch(&mut running, journal, input, leases);
+        self.launch(&mut running, operation, input, leases);
         Ok(record)
     }
     fn authorize_delete(
@@ -484,18 +442,6 @@ impl LifecycleManager {
     ) -> Result<ControlState, ApiError> {
         crate::source_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
         crate::data_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
-        let state = self.store.control(id)?.get();
-        if state.recovery_required {
-            let owned = self.store.pending_deletion(id)?.is_some_and(|marker| {
-                state.last_error.as_ref().is_some_and(|error| {
-                    error.details["recoveryStage"] == "lifecycle-journal"
-                        && error.details["recoveryTaskId"] == marker.task_id
-                })
-            });
-            if owned {
-                return Ok(state);
-            }
-        }
         self.authorize(id, maintenance)
     }
     async fn owned_operation<T, F, W>(self: &Arc<Self>, work: W) -> Result<T, ApiError>
@@ -591,51 +537,47 @@ impl LifecycleManager {
         };
         self.store.check_identity_available(&target, None)?;
         let (mut record, lease) = self.tasks.create_operation(&target, "import")?;
-        let mut journal = Self::journal(&record, "import", &target);
-        journal.source_project_id = Some(metadata.project_id);
-        journal.cleanup_temporary_files = input.cleanup_temporary_files;
+        let mut operation = Self::operation_state(&record, "import", &target);
+        operation.source_project_id = Some(metadata.project_id);
+        operation.cleanup_temporary_files = input.cleanup_temporary_files;
         let prepared = self
-            .save(&journal)
+            .remember(&operation)
             .and_then(|()| self.store.reserve_identity(&target, &record.task_id));
         if let Err(error) = prepared {
             self.tasks.finish(&record.task_id, Err(error.clone()))?;
             return Err(error);
         }
         record.result = Some(json!({"targetProjectId":target}));
-        if journal.cleanup_temporary_files {
-            let temporary = self.import_temporary(&journal);
+        if operation.cleanup_temporary_files {
+            let temporary = self.import_temporary(&operation);
             let prepared = (|| {
                 check_no_symlinks(&temporary, true)?;
+                fs::create_dir_all(self.operation(&record.task_id))?;
                 fs::create_dir(&temporary)?;
-                journal.import_temporary_identity = Some(persistent_identity(&temporary)?);
-                self.save(&journal)
+                operation.import_temporary_identity = Some(persistent_identity(&temporary)?);
+                self.remember(&operation)
             })();
             if let Err(error) = prepared {
                 self.tasks.finish(&record.task_id, Err(error.clone()))?;
                 return Err(error.detail("taskId", record.task_id.clone()));
             }
         }
-        self.launch(&mut running, journal, input, vec![lease]);
+        self.launch(&mut running, operation, input, vec![lease]);
         Ok(record)
     }
     fn launch(
         self: &Arc<Self>,
         running: &mut Vec<JoinHandle<()>>,
-        mut journal: Journal,
+        mut operation: Operation,
         input: Input,
         leases: Vec<ProjectTaskLease>,
     ) {
         let manager = self.clone();
         let runner = tokio::spawn(async move {
-            let mut result = manager.run(&mut journal, input).await;
+            let mut result = manager.run(&mut operation, input).await;
             if let Err(error) = &result {
-                let _ = manager.tasks.append(
-                    &journal.task_id,
-                    format!("{}: {}\n", error.code, error.message).as_bytes(),
-                );
-                journal.error = Some(error.clone());
-                let _ = manager.save(&journal);
-                match manager.reconcile(&mut journal) {
+                let _ = manager.remember(&operation);
+                match manager.reconcile(&mut operation) {
                     Ok(recovered) => {
                         result = Err(error
                             .clone()
@@ -647,10 +589,6 @@ impl LifecycleManager {
                             .detail("lifecycleResult", recovered));
                     }
                     Err(recovery) => {
-                        let _ = manager.tasks.append(
-                            &journal.task_id,
-                            format!("Lifecycle recovery needs attention: {recovery}\n").as_bytes(),
-                        );
                         result = Err(error
                             .clone()
                             .outcome("needs_attention")
@@ -658,24 +596,24 @@ impl LifecycleManager {
                     }
                 }
             }
-            let _ = manager.tasks.finish(&journal.task_id, result);
-            manager.notify(&journal.project_id);
-            if let Some(source) = &journal.source_project_id {
+            let _ = manager.tasks.finish(&operation.task_id, result);
+            manager.notify(&operation.project_id);
+            if let Some(source) = &operation.source_project_id {
                 manager.notify(source);
             }
             drop(leases);
         });
         running.push(runner);
     }
-    async fn run(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
-        match journal.kind.as_str() {
-            "export" => self.export(journal, input).await,
-            "copy" => self.copy(journal, input).await,
-            "import" => self.import(journal, input).await,
-            "delete" if journal.trash_id.is_none() => self.delete(journal, input).await,
+    async fn run(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
+        match operation.kind.as_str() {
+            "export" => self.export(operation, input).await,
+            "copy" => self.copy(operation, input).await,
+            "import" => self.import(operation, input).await,
+            "delete" => self.delete(operation, input).await,
             _ => Err(ApiError::new(
                 "INVALID_INPUT",
-                "Unknown lifecycle journal kind",
+                "Unknown lifecycle operation kind",
             )),
         }
     }
@@ -722,10 +660,10 @@ impl LifecycleManager {
     }
     async fn snapshot(
         &self,
-        journal: &mut Journal,
+        operation: &mut Operation,
         source: &str,
     ) -> Result<PreparedSnapshot, ApiError> {
-        self.phase(journal, "snapshot-freeze")?;
+        self.phase(operation, "snapshot-freeze")?;
         let control = self.store.control(source)?;
         let freeze = Freeze::new(control.clone());
         self.notify(source);
@@ -758,7 +696,7 @@ impl LifecycleManager {
             },
             build_provenance: backups::capture_provenance(&project)?,
         };
-        let destination = self.operation(&journal.task_id).join("snapshot");
+        let destination = self.operation(&operation.task_id).join("snapshot");
         let prepared = tokio::task::spawn_blocking(move || {
             backups::prepare_snapshot(&project.root, &project.manifest, &destination, options)
         })
@@ -769,30 +707,31 @@ impl LifecycleManager {
         self.notify(source);
         Ok(prepared)
     }
-    async fn export(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
-        let source = journal.project_id.clone();
+    async fn export(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
+        let source = operation.project_id.clone();
         let root = self.store.metadata_root(&source)?.0;
         let destination = self.export_destination(
             input.destination_path.as_deref().unwrap(),
             &root,
             input.overwrite,
         )?;
-        journal.destination = Some(destination.clone());
-        let snapshot = self.snapshot(journal, &source).await?;
+        operation.destination = Some(destination.clone());
+        let snapshot = self.snapshot(operation, &source).await?;
         let stage = destination
             .parent()
             .unwrap()
-            .join(format!(".export-{}.partial", journal.task_id));
+            .join(format!(".export-{}.partial", operation.task_id));
         let staged = stage.clone();
         let snapshot_root = snapshot.root.clone();
-        self.phase(journal, "archive-verify")?;
+        let snapshot_identity = persistent_identity(&snapshot_root)?;
+        self.phase(operation, "archive-verify")?;
         let info =
             tokio::task::spawn_blocking(move || backups::publish_snapshot(&snapshot, &staged))
                 .await
                 .map_err(|e| ApiError::new("EXPORT_FAILED", e.to_string()))??;
-        journal.published_sha256 = Some(sha256(&stage)?);
-        journal.result = json!({"projectId":source,"path":destination,"backupId":info.manifest.backup_id,"createdAt":info.manifest.created_at,"snapshotState":info.manifest.snapshot_state,"pendingBuild":info.manifest.pending_build,"verified":true,"diagnostics":info.database,"operationOutcome":"exported"});
-        self.phase(journal, "export-publish")?;
+        operation.published_sha256 = Some(sha256(&stage)?);
+        operation.result = json!({"projectId":source,"path":destination,"backupId":info.manifest.backup_id,"createdAt":info.manifest.created_at,"snapshotState":info.manifest.snapshot_state,"pendingBuild":info.manifest.pending_build,"verified":true,"diagnostics":info.database,"operationOutcome":"exported"});
+        self.phase(operation, "export-publish")?;
         self.export_destination(&destination, &root, input.overwrite)?;
         if input.overwrite {
             fs::rename(&stage, &destination)?;
@@ -801,37 +740,61 @@ impl LifecycleManager {
             fs::remove_file(&stage)?;
         }
         sync_parent(&destination)?;
-        journal.committed = true;
-        journal.resolved = true;
-        self.save(journal)?;
-        if let Err(error) = fs::remove_dir_all(snapshot_root) {
-            let _ = self.tasks.append(
-                &journal.task_id,
-                format!("Temporary snapshot cleanup deferred: {error}\n").as_bytes(),
-            );
+        operation.committed = true;
+        operation.resolved = true;
+        self.remember(operation)?;
+        let cleaned = tokio::task::spawn_blocking(move || {
+            crate::history_cleanup::remove_owned_directory(&snapshot_root, &snapshot_identity)
+        })
+        .await;
+        if let Err(error) = cleaned
+            .map_err(|error| error.to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()))
+        {
+            operation.result["cleanupWarning"] = json!(format!(
+                "Export completed but temporary snapshot cleanup failed: {error}"
+            ));
         }
-        Ok(journal.result.clone())
+        let _ = fs::remove_dir(self.operation(&operation.task_id));
+        Ok(operation.result.clone())
     }
-    async fn copy(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
-        let source = journal.source_project_id.clone().unwrap();
-        let snapshot = self.snapshot(journal, &source).await?;
-        let candidate = self.operation(&journal.task_id).join("candidate");
+    async fn copy(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
+        let source = operation.source_project_id.clone().unwrap();
+        let snapshot = self.snapshot(operation, &source).await?;
+        let snapshot_root = snapshot.root.clone();
+        let snapshot_identity = persistent_identity(&snapshot_root)?;
+        let candidate = self.operation(&operation.task_id).join("candidate");
         move_directory(&snapshot.root.join("project"), &candidate)?;
         let mut manifest: ProjectManifest = read_json(&candidate.join("project.json"))?;
-        manifest.id = journal.project_id.clone();
+        manifest.id = operation.project_id.clone();
         manifest.name = input
             .name
             .unwrap_or_else(|| format!("{} · 副本", manifest.name));
         builds::atomic_json(&candidate.join("project.json"), &manifest)?;
-        self.prepare_install(journal, candidate, manifest, snapshot.manifest)
-            .await
+        let mut result = self
+            .prepare_install(operation, candidate, manifest, snapshot.manifest)
+            .await?;
+        let cleaned = tokio::task::spawn_blocking(move || {
+            crate::history_cleanup::remove_owned_directory(&snapshot_root, &snapshot_identity)
+        })
+        .await;
+        if let Err(error) = cleaned
+            .map_err(|error| error.to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()))
+        {
+            result["cleanupWarning"] = json!(format!(
+                "Project copied but temporary snapshot cleanup failed: {error}"
+            ));
+        }
+        let _ = fs::remove_dir(self.operation(&operation.task_id));
+        Ok(result)
     }
-    async fn import(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
-        self.phase(journal, "archive-copy")?;
-        let payload = if journal.cleanup_temporary_files {
-            self.import_temporary(journal)
+    async fn import(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
+        self.phase(operation, "archive-copy")?;
+        let payload = if operation.cleanup_temporary_files {
+            self.import_temporary(operation)
         } else {
-            self.operation(&journal.task_id)
+            self.operation(&operation.task_id)
         };
         let archived = payload.join("source.zip");
         let from = input.archive_path.unwrap();
@@ -839,29 +802,29 @@ impl LifecycleManager {
         tokio::task::spawn_blocking(move || copy_verified(&from, &to))
             .await
             .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
-        self.phase(journal, "archive-validate")?;
+        self.phase(operation, "archive-validate")?;
         let candidate = payload.join("candidate");
         let path = archived.clone();
         let destination = candidate.clone();
-        let original_id = journal.source_project_id.clone().unwrap();
+        let original_id = operation.source_project_id.clone().unwrap();
         let validated = tokio::task::spawn_blocking(move || {
             backups::extract_validated(&path, &destination, Some(&original_id))
         })
         .await
         .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         let mut manifest = validated.project_manifest;
-        let original = manifest.id == journal.project_id;
+        let original = manifest.id == operation.project_id;
         if !original {
-            manifest.id = journal.project_id.clone();
+            manifest.id = operation.project_id.clone();
             manifest.name = input
                 .name
                 .unwrap_or_else(|| format!("{} · 副本", manifest.name));
             builds::atomic_json(&candidate.join("project.json"), &manifest)?;
         }
-        self.prepare_install(journal, candidate, manifest, validated.manifest)
+        self.prepare_install(operation, candidate, manifest, validated.manifest)
             .await?;
-        if journal.cleanup_temporary_files {
-            self.phase(journal, "cleanup")?;
+        if operation.cleanup_temporary_files {
+            self.phase(operation, "cleanup")?;
             #[cfg(test)]
             {
                 let pause = self.import_cleanup_pause.lock().unwrap().take();
@@ -870,21 +833,21 @@ impl LifecycleManager {
                     let _ = release.await;
                 }
             }
-            let cleanup = self.cleanup_import_payload(journal)?;
-            journal.result["cleanupPending"] = json!(cleanup["completed"] != true);
-            journal.result["cleanup"] = cleanup;
-            self.save(journal)?;
+            let cleanup = self.cleanup_import_payload(operation)?;
+            operation.result["cleanupPending"] = json!(cleanup["completed"] != true);
+            operation.result["cleanup"] = cleanup;
+            self.remember(operation)?;
         }
-        Ok(journal.result.clone())
+        Ok(operation.result.clone())
     }
     async fn prepare_install(
         &self,
-        journal: &mut Journal,
+        operation: &mut Operation,
         candidate: PathBuf,
         manifest: ProjectManifest,
         metadata: BackupManifest,
     ) -> Result<Value, ApiError> {
-        validate_manifest(&manifest, &journal.project_id, &candidate)?;
+        validate_manifest(&manifest, &operation.project_id, &candidate)?;
         // Validate before creating control state or committing a new instance.
         // Old maintenance/unknown archives need an explicit compatibility flow;
         // they cannot silently become ready when ZIP baselines are retired.
@@ -895,45 +858,45 @@ impl LifecycleManager {
             .await
             .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         let target = self.store.reserve_named_identity(
-            &journal.project_id,
-            &journal.task_id,
+            &operation.project_id,
+            &operation.task_id,
             &manifest.name,
         )?;
-        journal.directory_name = Some(root_directory_name(&target)?);
-        self.save(journal)?;
-        self.phase(journal, "candidate-initialize")?;
+        operation.directory_name = Some(root_directory_name(&target)?);
+        self.remember(operation)?;
+        self.phase(operation, "candidate-initialize")?;
         let workspace = self.paths.workspace_root().to_owned();
         let root = candidate.clone();
         let project = manifest.clone();
-        let task = journal.task_id.clone();
+        let task = operation.task_id.clone();
         let final_root = target.clone();
         let (state, diagnostics) = tokio::task::spawn_blocking(move || {
             initialize_candidate(&workspace, &root, &final_root, &project, &metadata, &task)
         })
         .await
         .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
-        journal.directory_identity = Some(persistent_identity(&candidate)?);
-        journal.control = Some(state.clone());
-        journal.result = json!({"projectId":journal.project_id,"targetProjectId":journal.project_id,"sourceProjectId":journal.source_project_id,"documentEpoch":journal.target_epoch,"mode":state.mode,"maintenanceId":state.maintenance_id,"readyForChanges":state.ready_for_changes,"baselineBackupId":state.baseline_backup_id,"pendingBuild":{"required":state.pending_build,"reason":state.pending_build_reason},"diagnostics":diagnostics,"operationOutcome":if journal.kind=="copy"{"copied"}else{"imported"}});
-        self.phase(journal, "install-intent")?;
-        self.store.control(&journal.project_id)?.set(state)?;
-        clear_project_provenance(self.paths.workspace_root(), &journal.project_id)?;
+        operation.directory_identity = Some(persistent_identity(&candidate)?);
+        operation.control = Some(state.clone());
+        operation.result = json!({"projectId":operation.project_id,"targetProjectId":operation.project_id,"sourceProjectId":operation.source_project_id,"documentEpoch":operation.target_epoch,"mode":state.mode,"maintenanceId":state.maintenance_id,"readyForChanges":state.ready_for_changes,"baselineBackupId":state.baseline_backup_id,"pendingBuild":{"required":state.pending_build,"reason":state.pending_build_reason},"diagnostics":diagnostics,"operationOutcome":if operation.kind=="copy"{"copied"}else{"imported"}});
+        self.phase(operation, "install-intent")?;
+        self.store.control(&operation.project_id)?.set(state)?;
+        clear_project_provenance(self.paths.workspace_root(), &operation.project_id)?;
         move_directory(&candidate, &target)?;
         self.store.register_lifecycle(
-            &journal.project_id,
-            &journal.target_epoch,
-            &journal.task_id,
+            &operation.project_id,
+            &operation.target_epoch,
+            &operation.task_id,
             false,
         )?;
-        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &journal.project_id)?;
-        journal.committed = true;
-        self.finish_journal(journal)?;
-        self.notify(&journal.project_id);
-        Ok(journal.result.clone())
+        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &operation.project_id)?;
+        operation.committed = true;
+        self.finish_operation(operation)?;
+        self.notify(&operation.project_id);
+        Ok(operation.result.clone())
     }
-    async fn delete(&self, journal: &mut Journal, input: Input) -> Result<Value, ApiError> {
-        self.phase(journal, "delete-freeze")?;
-        let id = journal.project_id.clone();
+    async fn delete(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
+        self.phase(operation, "delete-freeze")?;
+        let id = operation.project_id.clone();
         let control = self.store.control(&id)?;
         let _freeze = Freeze::new(control.clone());
         self.notify(&id);
@@ -942,13 +905,13 @@ impl LifecycleManager {
         self.store.close_database(&id).await?;
         crate::source_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
         crate::data_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
-        self.check_protection(&id, Some(&journal.task_id))?;
+        self.check_protection(&id, Some(&operation.task_id))?;
         let (root, expected) = self.store.deletion_root(&id)?;
         if root
-            != journal_project_root(
+            != operation_project_root(
                 self.paths.workspace_root(),
                 &id,
-                journal.directory_name.as_deref(),
+                operation.directory_name.as_deref(),
             )?
         {
             return Err(ApiError::new(
@@ -958,7 +921,7 @@ impl LifecycleManager {
         }
         self.store
             .validate_deletion_epoch(&id, input.expected_document_epoch.as_deref())?;
-        if !journal
+        if !operation
             .directory_identity
             .as_ref()
             .is_some_and(|identity| identity.matches_captured(&expected))
@@ -968,37 +931,33 @@ impl LifecycleManager {
                 "Project directory changed after deletion was requested; no files were removed",
             ));
         }
-        journal.control = Some(control.get());
-        self.phase(journal, "delete-prepared")?;
+        operation.control = Some(control.get());
+        self.phase(operation, "delete-prepared")?;
         self.store
-            .begin_deletion(&id, &journal.task_id, &journal.target_epoch, &expected)?;
-        self.phase(journal, "delete-intent")?;
+            .begin_deletion(&id, &operation.task_id, &operation.target_epoch, &expected)?;
+        self.phase(operation, "delete-intent")?;
         if root.try_exists()? {
-            let progress = self
-                .operation(&journal.task_id)
-                .join("delete-progress.ndjson");
             tokio::task::spawn_blocking(move || {
-                crate::history_cleanup::remove_owned_directory(&root, &expected, &progress)
-                    .map(|_| ())
+                crate::history_cleanup::remove_owned_directory(&root, &expected).map(|_| ())
             })
             .await
             .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))??;
         }
-        self.finish_direct_delete(journal)
+        self.finish_direct_delete(operation)
     }
-    fn finish_direct_delete(&self, journal: &mut Journal) -> Result<Value, ApiError> {
+    fn finish_direct_delete(&self, operation: &mut Operation) -> Result<Value, ApiError> {
         let marker = self
             .store
-            .pending_deletion(&journal.project_id)?
+            .pending_deletion(&operation.project_id)?
             .ok_or_else(|| {
                 ApiError::new(
                     "PROJECT_IDENTITY_CHANGED",
                     "Deletion ownership marker is missing",
                 )
             })?;
-        if marker.task_id != journal.task_id
-            || marker.target_epoch != journal.target_epoch
-            || !journal
+        if marker.task_id != operation.task_id
+            || marker.target_epoch != operation.target_epoch
+            || !operation
                 .directory_identity
                 .as_ref()
                 .is_some_and(|identity| identity.matches_captured(&marker.root_identity))
@@ -1009,173 +968,125 @@ impl LifecycleManager {
             ));
         }
         self.store.retire_deleted_project(&marker)?;
-        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &journal.project_id)?;
-        journal.committed = true;
-        journal.result = json!({"projectId":journal.project_id,"operationOutcome":"deleted","restoreAvailable":false});
-        self.finish_journal(journal)?;
-        self.clear_completion_gate(journal)?;
+        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &operation.project_id)?;
+        operation.committed = true;
+        operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false});
+        self.finish_operation(operation)?;
+
         self.store.finish_deletion_marker(
-            &journal.project_id,
-            &journal.task_id,
-            &journal.target_epoch,
+            &operation.project_id,
+            &operation.task_id,
+            &operation.target_epoch,
         )?;
-        Ok(journal.result.clone())
+        Ok(operation.result.clone())
     }
-    fn reconcile_direct_delete(&self, journal: &mut Journal) -> Result<Value, ApiError> {
-        let marker = self.store.pending_deletion(&journal.project_id)?;
+    fn reconcile_direct_delete(&self, operation: &mut Operation) -> Result<Value, ApiError> {
+        let marker = self.store.pending_deletion(&operation.project_id)?;
         let owned = marker.as_ref().is_some_and(|marker| {
-            marker.task_id == journal.task_id
-                && marker.target_epoch == journal.target_epoch
-                && journal
+            marker.task_id == operation.task_id
+                && marker.target_epoch == operation.target_epoch
+                && operation
                     .directory_identity
                     .as_ref()
                     .is_some_and(|identity| identity.matches_captured(&marker.root_identity))
         });
-        if journal.resolved {
+        if operation.resolved {
             // Removing a completed marker is bookkeeping only. A later instance
             // or retry's marker must never be touched by historical recovery.
-            if journal.committed && owned {
+            if operation.committed && owned {
                 self.store.finish_deletion_marker(
-                    &journal.project_id,
-                    &journal.task_id,
-                    &journal.target_epoch,
+                    &operation.project_id,
+                    &operation.task_id,
+                    &operation.target_epoch,
                 )?;
             }
-            return Ok(journal.result.clone());
+            return Ok(operation.result.clone());
         }
-        if journal.committed && marker.is_none() && journal.result["operationOutcome"] == "deleted"
+        if operation.committed
+            && marker.is_none()
+            && operation.result["operationOutcome"] == "deleted"
         {
-            // The durable completion may outlive a later same-ID import. Its
+            // An in-process completion may outlive a later same-ID import. Its
             // result is historical; it must not reset the new owner's state.
-            journal.resolved = true;
-            self.save(journal)?;
-            return Ok(journal.result.clone());
+            operation.resolved = true;
+            self.remember(operation)?;
+            return Ok(operation.result.clone());
         }
         let mut outcome = "not_deleted";
         if owned {
-            match self.store.deletion_root(&journal.project_id) {
-                Ok((root, _)) if !root.try_exists()? => return self.finish_direct_delete(journal),
+            match self.store.deletion_root(&operation.project_id) {
+                Ok((root, _)) if !root.try_exists()? => {
+                    return self.finish_direct_delete(operation)
+                }
                 Ok(_) => outcome = "delete_incomplete",
-                Err(error) => {
-                    journal.error = Some(error);
+                Err(_) => {
                     outcome = "needs_attention";
                 }
             }
-        } else if marker.is_some() || journal.phase == "delete-intent" {
-            // An old journal is not authority over a later same-ID instance.
+        } else if marker.is_some() || operation.phase == "delete-intent" {
+            // An old operation is not authority over a later same-ID instance.
             // In particular, do not call ambiguous(), which changes its control.
             outcome = "needs_attention";
         }
-        journal.result = json!({"projectId":journal.project_id,"operationOutcome":outcome,"restoreAvailable":false,
-                    "remainingPath":journal_project_root(self.paths.workspace_root(), &journal.project_id, journal.directory_name.as_deref())?,
+        operation.result = json!({"projectId":operation.project_id,"operationOutcome":outcome,"restoreAvailable":false,
+                    "remainingPath":operation_project_root(self.paths.workspace_root(), &operation.project_id, operation.directory_name.as_deref())?,
         });
-        journal.resolved = true;
-        self.save(journal)?;
-        Ok(journal.result.clone())
+        operation.resolved = true;
+        self.remember(operation)?;
+        Ok(operation.result.clone())
     }
     fn check_protection(&self, project: &str, except_task: Option<&str>) -> Result<(), ApiError> {
-        let directory = self.paths.workspace_root().join(".platform/operations");
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            if entry.file_name().to_str() == except_task {
-                continue;
-            }
-            for name in ["journal.json", "lifecycle.json"] {
-                let path = entry.path().join(name);
-                if !path.exists() {
-                    continue;
-                }
-                let value: Value = read_json(&path)?;
-                if value["resolved"] != true
-                    && (value["projectId"] == project || value["sourceProjectId"] == project)
-                {
-                    return Err(ApiError::new(
-                        "PROJECT_OPERATION_PROTECTED",
-                        "Another unresolved operation still references this project",
-                    )
-                    .detail("taskId", value["taskId"].clone()));
-                }
-            }
+        let operations = self.operations.lock().map_err(|_| {
+            ApiError::new(
+                "LIFECYCLE_STATE_FAILED",
+                "Current operation ownership is unavailable",
+            )
+        })?;
+        if let Some(operation) = operations.values().find(|operation| {
+            Some(operation.task_id.as_str()) != except_task
+                && !operation.resolved
+                && (operation.project_id == project
+                    || operation.source_project_id.as_deref() == Some(project))
+        }) {
+            return Err(ApiError::new(
+                "PROJECT_OPERATION_PROTECTED",
+                "Another active operation still references this project",
+            )
+            .detail("taskId", operation.task_id.clone()));
         }
         Ok(())
     }
-    fn recover(&self) -> Result<(), ApiError> {
-        for entry in fs::read_dir(self.paths.workspace_root().join(".platform/operations"))? {
-            let path = entry?.path().join("lifecycle.json");
-            if !path.is_file() {
-                continue;
-            }
-            let mut journal: Journal = read_json(&path)?;
-            if journal.schema_version != 1
-                || !valid_id(&journal.project_id)
-                || !valid_id(&journal.task_id)
-                || path
-                    .parent()
-                    .and_then(Path::file_name)
-                    .and_then(|v| v.to_str())
-                    != Some(journal.task_id.as_str())
-                || Uuid::parse_str(&journal.target_epoch).is_err()
-            {
-                return Err(ApiError::new(
-                    "RECOVERY_REQUIRED",
-                    "Invalid lifecycle journal identity",
-                ));
-            }
-            let mut result = self.reconcile(&mut journal)?;
-            result["recovered"] = true.into();
-            self.tasks
-                .reconcile_operation_result(&journal.task_id, result)?;
+
+    fn reconcile(&self, operation: &mut Operation) -> Result<Value, ApiError> {
+        if operation.kind == "delete" {
+            return self.reconcile_direct_delete(operation);
         }
-        Ok(())
-    }
-    fn reconcile(&self, journal: &mut Journal) -> Result<Value, ApiError> {
-        // These records have different deletion semantics. In particular, even
-        // resolved records must not inspect or retire a direct-delete marker.
-        if journal.system_trash
-            || journal.system_trash_path.is_some()
-            || journal.phase.starts_with("system-trash")
-            || journal.trash_id.is_some()
-            || matches!(journal.kind.as_str(), "trashRestore" | "trashPurge")
-        {
-            return if journal.resolved {
-                Ok(journal.result.clone())
-            } else {
-                Err(ApiError::new(
-                    "RECOVERY_REQUIRED",
-                    "A retained recycle-bin operation from a retired version is not supported; all files and records were preserved",
-                )
-                .detail("taskId", journal.task_id.clone()))
-            };
+        if operation.resolved {
+            return Ok(operation.result.clone());
         }
-        if journal.kind == "delete" {
-            return self.reconcile_direct_delete(journal);
-        }
-        if journal.resolved {
-            return Ok(journal.result.clone());
-        }
-        let root = journal_project_root(
+        let root = operation_project_root(
             self.paths.workspace_root(),
-            &journal.project_id,
-            journal.directory_name.as_deref(),
+            &operation.project_id,
+            operation.directory_name.as_deref(),
         )?;
-        let expected = journal.directory_identity.clone();
+        let expected = operation.directory_identity.clone();
         let matches = |path: &Path| {
             expected
                 .as_ref()
                 .is_some_and(|expected| matches_identity(expected, path).unwrap_or(false))
         };
         let mut outcome = "not_started";
-        match journal.kind.as_str() {
+        match operation.kind.as_str() {
             "export" => {
-                let published = journal
+                let published = operation
                     .destination
                     .as_ref()
-                    .zip(journal.published_sha256.as_ref())
+                    .zip(operation.published_sha256.as_ref())
                     .is_some_and(|(path, digest)| {
                         sha256(path).is_ok_and(|actual| &actual == digest)
                     });
                 if published {
-                    journal.committed = true;
+                    operation.committed = true;
                 } else {
                     outcome = "not_published";
                 }
@@ -1184,41 +1095,44 @@ impl LifecycleManager {
                 if matches(&root) {
                     if !self
                         .store
-                        .project_root(&journal.project_id)
+                        .project_root(&operation.project_id)
                         .is_ok_and(|registered| registered == root)
                     {
-                        return self.ambiguous(journal, "Registered project directory differs from the install journal; all copies were preserved");
+                        return self.ambiguous(operation, "Registered project directory differs from the install operation; all copies were preserved");
                     }
-                    if self.store.registered_epoch(&journal.project_id)?.as_deref()
-                        != Some(&journal.target_epoch)
+                    if self
+                        .store
+                        .registered_epoch(&operation.project_id)?
+                        .as_deref()
+                        != Some(&operation.target_epoch)
                     {
-                        self.store.control(&journal.project_id)?.set(
-                            journal.control.clone().ok_or_else(|| {
+                        self.store.control(&operation.project_id)?.set(
+                            operation.control.clone().ok_or_else(|| {
                                 ApiError::new(
                                     "RECOVERY_REQUIRED",
-                                    "Install journal lacks its prepared control state",
+                                    "Install operation lacks its prepared control state",
                                 )
                             })?,
                         )?;
                         self.store.register_lifecycle(
-                            &journal.project_id,
-                            &journal.target_epoch,
-                            &journal.task_id,
+                            &operation.project_id,
+                            &operation.target_epoch,
+                            &operation.task_id,
                             false,
                         )?;
                     }
-                    journal.committed = true;
+                    operation.committed = true;
                     MaintenanceManager::invalidate_storage(
                         self.paths.workspace_root(),
-                        &journal.project_id,
+                        &operation.project_id,
                     )?;
                 } else if !root.exists() {
                     self.store
-                        .release_identity(&journal.project_id, &journal.task_id)?;
+                        .release_identity(&operation.project_id, &operation.task_id)?;
                     outcome = "not_registered";
                 } else {
                     return self.ambiguous(
-                        journal,
+                        operation,
                         "Target project identity differs from the validated candidate",
                     );
                 }
@@ -1226,41 +1140,38 @@ impl LifecycleManager {
             _ => {
                 return Err(ApiError::new(
                     "RECOVERY_REQUIRED",
-                    "Unknown lifecycle journal kind",
+                    "Unknown lifecycle operation kind",
                 ))
             }
         }
-        if !journal.committed {
-            journal.result = json!({"projectId":journal.project_id,"operationOutcome":outcome});
-        } else {
-            self.clear_completion_gate(journal)?;
+        if !operation.committed {
+            operation.result = json!({"projectId":operation.project_id,"operationOutcome":outcome});
         }
-        self.finish_journal(journal)?;
-        Ok(journal.result.clone())
+        self.finish_operation(operation)?;
+        Ok(operation.result.clone())
     }
-    fn ambiguous(&self, journal: &mut Journal, message: &str) -> Result<Value, ApiError> {
+    fn ambiguous(&self, operation: &mut Operation, message: &str) -> Result<Value, ApiError> {
         let error = self
             .store
-            .control(&journal.project_id)?
+            .control(&operation.project_id)?
             .mark_recovery_required(
                 ApiError::new("RECOVERY_REQUIRED", message).outcome("needs_attention"),
             );
-        journal.error = Some(error.clone());
-        self.save(journal)?;
+        self.remember(operation)?;
         Ok(
-            json!({"projectId":journal.project_id,"operationOutcome":"needs_attention","error":error}),
+            json!({"projectId":operation.project_id,"operationOutcome":"needs_attention","error":error}),
         )
     }
-    fn import_temporary(&self, journal: &Journal) -> PathBuf {
-        self.operation(&journal.task_id).join("import-temporary")
+    fn import_temporary(&self, operation: &Operation) -> PathBuf {
+        self.operation(&operation.task_id).join("import-temporary")
     }
-    fn cleanup_import_payload(&self, journal: &Journal) -> Result<Value, ApiError> {
-        if journal.kind != "import"
-            || !journal.cleanup_temporary_files
-            || journal.import_temporary_identity.is_none()
-            || !journal.resolved
+    fn cleanup_import_payload(&self, operation: &Operation) -> Result<Value, ApiError> {
+        if operation.kind != "import"
+            || !operation.cleanup_temporary_files
+            || operation.import_temporary_identity.is_none()
+            || !operation.resolved
             || !matches!(
-                journal.result["operationOutcome"].as_str(),
+                operation.result["operationOutcome"].as_str(),
                 Some("imported" | "not_registered" | "not_started")
             )
         {
@@ -1269,26 +1180,29 @@ impl LifecycleManager {
                 "导入结果尚未确认，未清理临时材料。",
             ));
         }
-        if journal.result["operationOutcome"] == "imported" {
-            let root = journal_project_root(
+        if operation.result["operationOutcome"] == "imported" {
+            let root = operation_project_root(
                 self.paths.workspace_root(),
-                &journal.project_id,
-                journal.directory_name.as_deref(),
+                &operation.project_id,
+                operation.directory_name.as_deref(),
             )?;
-            if !journal.committed
-                || !journal
+            if !operation.committed
+                || !operation
                     .directory_identity
                     .as_ref()
                     .is_some_and(|expected| matches_identity(expected, &root).unwrap_or(false))
                 || !self
                     .store
-                    .project_root(&journal.project_id)
+                    .project_root(&operation.project_id)
                     .is_ok_and(|registered| registered == root)
-                || self.store.registered_epoch(&journal.project_id)?.as_deref()
-                    != Some(journal.target_epoch.as_str())
                 || self
                     .store
-                    .control(&journal.project_id)?
+                    .registered_epoch(&operation.project_id)?
+                    .as_deref()
+                    != Some(operation.target_epoch.as_str())
+                || self
+                    .store
+                    .control(&operation.project_id)?
                     .get()
                     .recovery_required
             {
@@ -1297,41 +1211,40 @@ impl LifecycleManager {
                     "已导入项目的登记仍需核对，未清理恢复依据。",
                 ));
             }
-            self.check_protection(&journal.project_id, Some(&journal.task_id))?;
-        } else if journal.committed {
+            self.check_protection(&operation.project_id, Some(&operation.task_id))?;
+        } else if operation.committed {
             return Err(ApiError::new(
                 "IMPORT_CLEANUP_BLOCKED",
                 "安装提交和结果记录不一致，未删除文件。",
             ));
         }
-        let temporary = self.import_temporary(journal);
+        let temporary = self.import_temporary(operation);
         check_no_symlinks(&temporary, true)?;
         let mut removed = vec![];
         let mut failures = vec![];
         if temporary.try_exists()? {
-            let expected = journal.import_temporary_identity.as_ref().ok_or_else(|| {
-                ApiError::new(
-                    "IMPORT_CLEANUP_BLOCKED",
-                    "缺少本次临时目录的归属记录，未删除文件。",
-                )
-            })?;
-            let progress = self
-                .operation(&journal.task_id)
-                .join(format!("import-cleanup-{}.jsonl", Uuid::new_v4().simple()));
-            match crate::history_cleanup::remove_owned_directory(&temporary, expected, &progress) {
+            let expected = operation
+                .import_temporary_identity
+                .as_ref()
+                .ok_or_else(|| {
+                    ApiError::new(
+                        "IMPORT_CLEANUP_BLOCKED",
+                        "缺少本次临时目录的归属记录，未删除文件。",
+                    )
+                })?;
+            match crate::history_cleanup::remove_owned_directory(&temporary, expected) {
                 Ok(_) => removed.push(temporary.clone()),
                 Err(error) => failures.push(json!({"path":temporary,"error":error})),
             }
         }
-        let result = json!({"completed":failures.is_empty() && !temporary.exists(),"projectId":journal.project_id,"operationOutcome":journal.result["operationOutcome"],"removedPaths":removed,"failures":failures});
-        builds::atomic_json(
-            &self.operation(&journal.task_id).join("import-cleanup.json"),
-            &result,
-        )?;
+        let result = json!({"completed":failures.is_empty() && !temporary.exists(),"projectId":operation.project_id,"operationOutcome":operation.result["operationOutcome"],"removedPaths":removed,"failures":failures});
+        if result["completed"] == true {
+            let _ = fs::remove_dir(self.operation(&operation.task_id));
+        }
         Ok(result)
     }
-    /// Only the exact opt-in import's process files are removable. Lifecycle
-    /// journals and the caller's archive remain outside this bound directory.
+    /// Only this service's exact opt-in import files are removable. A restart
+    /// discards ownership, so old materials are never adopted as a cleanup target.
     pub async fn cleanup_import(self: &Arc<Self>, task_id: String) -> Result<Value, ApiError> {
         if !valid_id(&task_id) {
             return Err(ApiError::new(
@@ -1347,10 +1260,13 @@ impl LifecycleManager {
                     "导入任务尚未结束，请等待后再清理。",
                 ));
             }
-            let mut journal: Journal = read_json(&manager.journal_path(&task_id))?;
-            if journal.schema_version != 1
-                || journal.task_id != task_id
-                || Some(journal.project_id.as_str()) != task.project_id.as_deref()
+            let mut operation = manager.operations.lock().map_err(|_| {
+                ApiError::new("LIFECYCLE_STATE_FAILED", "Current operation ownership is unavailable")
+            })?.get(&task_id).cloned().ok_or_else(|| {
+                ApiError::new("IMPORT_CLEANUP_BLOCKED", "本次运行已无该导入的临时目录归属。请重新核对遗留目录；不会根据旧任务自动删除文件。")
+            })?;
+            if operation.task_id != task_id
+                || Some(operation.project_id.as_str()) != task.project_id.as_deref()
             {
                 return Err(ApiError::new(
                     "IMPORT_CLEANUP_BLOCKED",
@@ -1359,13 +1275,13 @@ impl LifecycleManager {
             }
             let _lease = manager
                 .store
-                .reserve_transient_operation(&journal.project_id, "import temporary cleanup")?;
+                .reserve_transient_operation(&operation.project_id, "import temporary cleanup")?;
             let worker = manager.clone();
             tokio::task::spawn_blocking(move || {
-                let cleanup = worker.cleanup_import_payload(&journal)?;
-                journal.result["cleanupPending"] = json!(cleanup["completed"] != true);
-                journal.result["cleanup"] = cleanup.clone();
-                worker.save(&journal)?;
+                let cleanup = worker.cleanup_import_payload(&operation)?;
+                operation.result["cleanupPending"] = json!(cleanup["completed"] != true);
+                operation.result["cleanup"] = cleanup.clone();
+                worker.remember(&operation)?;
                 Ok(cleanup)
             })
             .await

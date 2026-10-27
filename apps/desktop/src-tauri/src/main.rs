@@ -12,7 +12,6 @@ mod local_data_cleanup;
 mod local_directory;
 mod native_process;
 mod node_development;
-mod node_program_rollback;
 mod node_windows;
 mod project_onboarding;
 mod source_import;
@@ -1133,23 +1132,6 @@ async fn project_git_versions(
         .await?
 }
 #[tauri::command]
-async fn project_git_branch_create(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitCreateBranchInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_create_branch(&id, input).await
-        })
-        .await?
-}
-#[tauri::command]
 async fn project_git_source_restore_preview(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1226,40 +1208,6 @@ async fn project_git_source_restore_recover(
         .await?
 }
 #[tauri::command]
-async fn project_git_initialize(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitInitInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_initialize(&id, input).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_save(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitSaveInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_save(&id, input).await
-        })
-        .await?
-}
-#[tauri::command]
 async fn project_git_data_restore_preview(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1332,23 +1280,6 @@ async fn project_git_data_restore_recover(
                 .handle
                 .project_git_data_restore_recover(&id, input)
                 .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_save(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitDataSaveInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_data_save(&id, input).await
         })
         .await?
 }
@@ -2045,24 +1976,6 @@ async fn task_get(
 }
 
 #[tauri::command]
-async fn task_logs(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    task_id: String,
-    cursor: u64,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.task_logs(&task_id, cursor).await
-        })
-        .await?
-}
-
-#[tauri::command]
 async fn environment_doctor(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -2325,12 +2238,12 @@ fn main() {
             local_data_cleanup::local_data_cleanup_status,
             local_data_cleanup::local_data_cleanup_quit,
             bootstrap_info,
-            node_program_rollback::node_program_rollback_preview,node_program_rollback::node_program_rollback_apply,
+
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_reveal,project_onboarding::source_review_capabilities,
             source_import::source_import_location,source_import::source_import_publish,source_import::source_import_build_info,source_import::source_import_recover,
             source_list,source_info,source_inspect,source_acquire,source_cancel,source_import_cleanup,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
-            project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
+            project_git_status,project_git_versions,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
@@ -2348,7 +2261,6 @@ fn main() {
             project_build,
             maintenance_status,
             task_get,
-            task_logs,
             environment_doctor,
             environment_node_set,
             environment_git_doctor,

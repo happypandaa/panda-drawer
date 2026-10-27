@@ -115,20 +115,20 @@ async fn save(handle: &RuntimeHandle, apps: &NodeApps, id: &str, message: &str) 
             .unwrap(),
     )
     .unwrap();
-    assert!(status.can_save, "{status:?}");
-    handle
-        .node_development_git(
-            apps,
-            id,
-            NodeGitAction::Save(GitSaveInput {
-                expected_head: status.repository.head.and_then(|head| head.oid),
+    assert!(!status.can_save, "{status:?}");
+    let root = status.repository.root.unwrap();
+    crate::node_development_git::NodeGit::new(handle.current().git_environment.clone())
+        .fixture_save(
+            &root,
+            GitSaveInput {
+                expected_head: status.repository.head.and_then(|h| h.oid),
                 expected_snapshot: status.snapshot_digest,
                 message: message.into(),
                 author: GitAuthor {
                     name: "Disposable integration".into(),
                     email: "disposable@example.invalid".into(),
                 },
-            }),
+            },
         )
         .await
         .unwrap()
@@ -185,14 +185,13 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
             .unwrap(),
     )
     .unwrap();
-    handle
-        .node_development_git(
-            &apps,
-            id,
-            NodeGitAction::Initialize(GitInitInput {
+    crate::node_development_git::NodeGit::new(handle.current().git_environment.clone())
+        .fixture_initialize(
+            &source,
+            GitInitInput {
                 expected_snapshot: status.snapshot_digest,
                 initial_branch: "main".into(),
-            }),
+            },
         )
         .await
         .unwrap();
@@ -399,7 +398,7 @@ async fn verify_source_restore_roundtrip(
         before_restore["status"]["repository"]["head"]
     );
     assert_eq!(after_restore["changes"].as_array().unwrap().len(), 1);
-    assert_eq!(after_restore["canSave"], true);
+    assert_eq!(after_restore["canSave"], false);
     let final_detail = apps.configuration(id).await.unwrap();
     assert_eq!(
         final_detail["installation"]["generation"],
@@ -428,7 +427,7 @@ async fn artificial_toolchain(handle: &RuntimeHandle, root: &Path, build_body: &
     let node = bin.join("node");
     fs::write(&node,"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'v24.22.0\\n'; exit 0; fi\nexec /bin/sh \"$@\"\n").unwrap();
     fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(bin.join("npm"),format!("set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\nif [ \"$1\" = ci ]; then mkdir -p node_modules; exit 0; fi\n{build_body}\n")).unwrap();
+    fs::write(bin.join("npm"),format!("set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\nif [ \"$1\" = --logs-dir ]; then [ \"$#\" -ge 3 ]; [ -n \"$2\" ]; [ \"$3\" = --logs-max=0 ]; shift 3; fi\nif [ \"$1\" = ci ]; then mkdir -p node_modules; exit 0; fi\n{build_body}\n")).unwrap();
     handle
         .set_node_path(Some(node.to_string_lossy().into()))
         .await

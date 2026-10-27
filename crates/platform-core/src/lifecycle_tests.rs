@@ -7,7 +7,6 @@ struct Fixture {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
-    maintenance: Arc<MaintenanceManager>,
     lifecycle: Arc<LifecycleManager>,
     id: String,
 }
@@ -52,7 +51,6 @@ impl Fixture {
             paths,
             store,
             tasks,
-            maintenance,
             lifecycle,
             id: project.id,
         }
@@ -74,8 +72,16 @@ impl Fixture {
     }
     async fn project(&self, kind: &str, mut input: Value) -> TaskRecord {
         if kind == "delete" && input.get("expectedDocumentEpoch").is_none() {
-            input["expectedDocumentEpoch"] =
-                json!(self.store.registered_epoch(&self.id).unwrap().unwrap());
+            input["expectedDocumentEpoch"] = json!(self
+                .store
+                .registered_epoch(&self.id)
+                .unwrap()
+                .or_else(|| self
+                    .store
+                    .pending_deletion(&self.id)
+                    .unwrap()
+                    .map(|marker| marker.target_epoch))
+                .unwrap());
         }
         let task = self
             .lifecycle
@@ -126,7 +132,6 @@ impl Fixture {
             paths: self.paths,
             store,
             tasks,
-            maintenance,
             lifecycle,
             id: self.id,
         }
@@ -136,233 +141,6 @@ fn good(task: &TaskRecord) -> &Value {
     assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
     task.result.as_ref().unwrap()
 }
-
-fn lifecycle_evidence(paths: &[PathBuf]) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
-    fn collect(path: &Path, evidence: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
-        let metadata = fs::symlink_metadata(path).unwrap();
-        if metadata.is_dir() {
-            evidence.insert(path.into(), vec![]);
-            for entry in fs::read_dir(path).unwrap() {
-                collect(&entry.unwrap().path(), evidence);
-            }
-        } else {
-            assert!(metadata.is_file());
-            evidence.insert(path.into(), fs::read(path).unwrap());
-        }
-    }
-    let mut evidence = std::collections::BTreeMap::new();
-    for path in paths {
-        collect(path, &mut evidence);
-    }
-    evidence
-}
-
-async fn retained_delete_journal() -> (Fixture, TaskRecord, Journal, Vec<PathBuf>) {
-    let fixture = Fixture::new().await;
-    let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
-    let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
-    let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
-    journal.directory_name = Some(root_directory_name(&root).unwrap());
-    journal.directory_identity = Some(expected.clone());
-    let control = fixture.store.control(&fixture.id).unwrap();
-    let mut state = control.get();
-    state.pending_build = true;
-    state.pending_build_reason = Some("Retain later control and every payload".into());
-    control.set(state.clone()).unwrap();
-    journal.control = Some(state);
-    fixture
-        .store
-        .begin_deletion(&fixture.id, &task.task_id, &journal.target_epoch, &expected)
-        .unwrap();
-    let evidence = vec![
-        root,
-        fixture.lifecycle.operation(&task.task_id),
-        fixture
-            .paths
-            .workspace_root()
-            .join(".platform/project-state"),
-    ];
-    fs::create_dir_all(&evidence[1]).unwrap();
-    fs::write(evidence[1].join("keep.txt"), b"retained operation evidence").unwrap();
-    drop(lease);
-    (fixture, task, journal, evidence)
-}
-
-#[tokio::test]
-async fn resolved_system_trash_journal_restarts_without_reading_markers_or_rewriting_evidence() {
-    for opaque_marker in [false, true] {
-        let (fixture, task, mut journal, mut evidence) = retained_delete_journal().await;
-        let retained = fixture.paths.data_root().join("disposable-system-trash");
-        fs::create_dir(&retained).unwrap();
-        fs::write(
-            retained.join("keep.txt"),
-            b"operating-system trash evidence",
-        )
-        .unwrap();
-        evidence.push(retained.clone());
-        journal.system_trash = true;
-        journal.system_trash_path = Some(retained.clone());
-        journal.phase = "system-trash-moved".into();
-        journal.committed = true;
-        journal.resolved = true;
-        journal.result = json!({"projectId":fixture.id,"operationOutcome":"system_trashed","systemTrashPath":retained,"restoreAvailable":true});
-        let path = fixture.lifecycle.journal_path(&task.task_id);
-        // Preserve arbitrary original formatting too, rather than reserializing
-        // an already completed old-worktree record during startup.
-        fs::write(&path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
-        if opaque_marker {
-            fs::write(
-                fixture
-                    .paths
-                    .workspace_root()
-                    .join(".platform/project-state/deleting")
-                    .join(format!("{}.json", fixture.id)),
-                b"opaque later marker must not be read by this historical journal",
-            )
-            .unwrap();
-        }
-        let before = lifecycle_evidence(&evidence);
-        let original_result = journal.result.clone();
-        assert_eq!(
-            fixture.lifecycle.reconcile(&mut journal).unwrap(),
-            original_result
-        );
-        let fixture = fixture.restart_task(task.clone()).await;
-        let mut recovered_result = original_result;
-        recovered_result["recovered"] = true.into();
-        assert_eq!(
-            fixture.tasks.task(&task.task_id).unwrap().result,
-            Some(recovered_result)
-        );
-        assert_eq!(lifecycle_evidence(&evidence), before);
-        fixture.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn unresolved_system_trash_intent_never_enters_direct_delete_recovery() {
-    for (system_trash, path_present, phase_only) in [
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
-    ] {
-        let (fixture, _task, mut journal, mut evidence) = retained_delete_journal().await;
-        let retained = fixture.paths.data_root().join("disposable-system-trash");
-        fs::create_dir(&retained).unwrap();
-        fs::write(
-            retained.join("keep.txt"),
-            b"preserve possible trash payload",
-        )
-        .unwrap();
-        evidence.push(retained.clone());
-        journal.system_trash = system_trash;
-        journal.system_trash_path = path_present.then_some(retained);
-        journal.phase = if phase_only {
-            "system-trash-intent"
-        } else {
-            "delete-intent"
-        }
-        .into();
-        fixture.lifecycle.save(&journal).unwrap();
-        let before = lifecycle_evidence(&evidence);
-        assert_eq!(
-            fixture.lifecycle.reconcile(&mut journal).unwrap_err().code,
-            "RECOVERY_REQUIRED"
-        );
-        let error = LifecycleManager::new(
-            fixture.paths.clone(),
-            fixture.store.clone(),
-            fixture.tasks.clone(),
-            fixture.maintenance.clone(),
-        )
-        .err()
-        .unwrap();
-        assert_eq!(error.code, "RECOVERY_REQUIRED");
-        assert_eq!(lifecycle_evidence(&evidence), before);
-        assert!(fixture
-            .store
-            .pending_deletion(&fixture.id)
-            .unwrap()
-            .is_some());
-        fixture.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn ordinary_delete_recovery_keeps_false_null_compatibility_and_defaults_missing_fields() {
-    for omit_fields in [false, true] {
-        let (fixture, task, journal, evidence) = retained_delete_journal().await;
-        let path = fixture.lifecycle.journal_path(&task.task_id);
-        let mut value = json!(journal);
-        if omit_fields {
-            value.as_object_mut().unwrap().remove("systemTrash");
-            value.as_object_mut().unwrap().remove("systemTrashPath");
-        }
-        builds::atomic_json(&path, &value).unwrap();
-        let parsed: Journal = read_json(&path).unwrap();
-        assert!(!parsed.system_trash);
-        assert!(parsed.system_trash_path.is_none());
-        let root_before = lifecycle_evidence(&evidence[..1]);
-        let fixture = fixture.restart_task(task.clone()).await;
-        assert_eq!(
-            fixture.tasks.task(&task.task_id).unwrap().result.unwrap()["operationOutcome"],
-            "delete_incomplete"
-        );
-        assert_eq!(lifecycle_evidence(&evidence[..1]), root_before);
-        let saved: Value = read_json(&path).unwrap();
-        assert_eq!(saved["systemTrash"], false);
-        assert_eq!(saved["systemTrashPath"], Value::Null);
-        assert_eq!(saved["resolved"], true);
-        assert!(fixture
-            .store
-            .pending_deletion(&fixture.id)
-            .unwrap()
-            .is_some());
-        fixture.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn compatible_journal_fields_do_not_relax_schema_identity_or_type_validation() {
-    for (field, value, expected_code) in [
-        ("schemaVersion", json!(2), "RECOVERY_REQUIRED"),
-        ("unexpectedField", json!(true), "INVALID_JSON"),
-        ("systemTrash", json!("false"), "INVALID_JSON"),
-        ("systemTrash", Value::Null, "INVALID_JSON"),
-        ("systemTrashPath", json!(false), "INVALID_JSON"),
-        (
-            "systemTrashPath",
-            json!({"path":"untrusted"}),
-            "INVALID_JSON",
-        ),
-        ("projectId", json!("../unsafe"), "RECOVERY_REQUIRED"),
-        ("taskId", json!("task_other"), "RECOVERY_REQUIRED"),
-        ("targetEpoch", json!("invalid-epoch"), "RECOVERY_REQUIRED"),
-    ] {
-        let (fixture, task, mut journal, evidence) = retained_delete_journal().await;
-        journal.system_trash = true;
-        journal.resolved = true;
-        journal.phase = "system-trash-moved".into();
-        let mut record = json!(journal);
-        record[field] = value;
-        builds::atomic_json(&fixture.lifecycle.journal_path(&task.task_id), &record).unwrap();
-        let before = lifecycle_evidence(&evidence);
-        let error = LifecycleManager::new(
-            fixture.paths.clone(),
-            fixture.store.clone(),
-            fixture.tasks.clone(),
-            fixture.maintenance.clone(),
-        )
-        .err()
-        .unwrap();
-        assert_eq!(error.code, expected_code, "{field}");
-        assert_eq!(lifecycle_evidence(&evidence), before, "{field}");
-        fixture.stop().await;
-    }
-}
-
-#[path = "direct_delete_tests.rs"]
-mod direct_delete;
 
 #[tokio::test]
 async fn export_copy_import_preserve_data_metadata_and_independent_files_without_node() {
@@ -587,273 +365,6 @@ async fn export_collision_and_project_destination_leave_original_files_unchanged
 }
 
 #[tokio::test]
-async fn installed_copy_restart_recovers_response_without_replaying_registration_or_control() {
-    for resolved in [false, true] {
-        let fixture = Fixture::new().await;
-        let task = fixture.project("copy", json!({})).await;
-        let id = good(&task)["projectId"].as_str().unwrap().to_owned();
-        let project = fixture.store.project(&id).unwrap();
-        let epoch = project.document_epoch.clone();
-        let directory_identity = identity(&project.root).unwrap();
-        let control = fixture.store.control(&id).unwrap();
-        let mut later = control.get();
-        later.pending_build = true;
-        later.pending_build_reason =
-            Some("Later legitimate changes must survive historical recovery".into());
-        control.set(later.clone()).unwrap();
-        let path = fixture.lifecycle.journal_path(&task.task_id);
-        let mut journal: Journal = read_json(&path).unwrap();
-        journal.resolved = resolved;
-        journal.committed = resolved;
-        builds::atomic_json(&path, &journal).unwrap();
-        let task_id = task.task_id.clone();
-        let restarted = fixture.restart_task(task).await;
-        let recovered = restarted.tasks.task(&task_id).unwrap();
-        assert_eq!(recovered.status, TaskStatus::Interrupted);
-        assert_eq!(
-            recovered.result.as_ref().unwrap()["operationOutcome"],
-            "copied"
-        );
-        assert_eq!(recovered.result.as_ref().unwrap()["recovered"], true);
-        let current = restarted.store.project(&id).unwrap();
-        assert_eq!(current.document_epoch, epoch);
-        assert_eq!(identity(&current.root).unwrap(), directory_identity);
-        assert_eq!(
-            serde_json::to_value(restarted.store.control(&id).unwrap().get()).unwrap(),
-            json!(later)
-        );
-        restarted.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn install_recovery_preserves_both_copies_when_registration_redirects_the_journal() {
-    let fixture = Fixture::new().await;
-    let archive = fixture.export_path("same-id-recovery-material.zip");
-    good(
-        &fixture
-            .project("export", json!({"destinationPath":archive}))
-            .await,
-    );
-    let copied = fixture
-        .project("copy", json!({"name":"Authorized recovery target"}))
-        .await;
-    let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
-    let root = fixture.store.project(&id).unwrap().root;
-    let alternate = fixture
-        .paths
-        .workspace_root()
-        .join("projects/unreviewed-same-id-copy");
-    backups::extract_validated(&archive, &alternate, Some(&fixture.id)).unwrap();
-    let mut manifest: ProjectManifest = read_json(&alternate.join("project.json")).unwrap();
-    manifest.id = id.clone();
-    builds::atomic_json(&alternate.join("project.json"), &manifest).unwrap();
-    let identity_before = identity(&root).unwrap();
-    let alternate_before = identity(&alternate).unwrap();
-    let registration = fixture
-        .paths
-        .workspace_root()
-        .join(".platform/project-state")
-        .join(format!("{id}.json"));
-    let mut state: Value = read_json(&registration).unwrap();
-    state["directoryName"] = json!("unreviewed-same-id-copy");
-    state["projectRoot"] = json!(alternate);
-    state["documentEpoch"] = json!(Uuid::new_v4().to_string());
-    builds::atomic_json(&registration, &state).unwrap();
-    let reservation = fixture
-        .paths
-        .workspace_root()
-        .join(".platform/project-state/reservations")
-        .join(format!("{id}.json"));
-    builds::atomic_json(
-        &reservation,
-        &json!({"projectId":id,"taskId":copied.task_id,"directoryName":"unreviewed-same-id-copy"}),
-    )
-    .unwrap();
-    let registration_before = fs::read(&registration).unwrap();
-    let mut journal: Journal = read_json(&fixture.lifecycle.journal_path(&copied.task_id)).unwrap();
-    journal.resolved = false;
-    journal.committed = false;
-    fixture.lifecycle.save(&journal).unwrap();
-    let fixture = fixture.restart_task(copied.clone()).await;
-    let recovered = fixture.tasks.task(&copied.task_id).unwrap();
-    assert_eq!(
-        recovered.result.as_ref().unwrap()["operationOutcome"],
-        "needs_attention"
-    );
-    assert_eq!(identity(&root).unwrap(), identity_before);
-    assert_eq!(identity(&alternate).unwrap(), alternate_before);
-    assert_eq!(fs::read(&registration).unwrap(), registration_before);
-    assert!(reservation.is_file());
-    assert!(fixture.store.control(&id).unwrap().get().recovery_required);
-    for project in [&root, &alternate] {
-        assert_eq!(
-            fs::read(project.join("data/attachments/original.txt")).unwrap(),
-            b"independent attachment"
-        );
-    }
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn readable_copy_recovery_uses_saved_destination_without_a_candidate_or_registration() {
-    for legacy in [false, true] {
-        let fixture = Fixture::new().await;
-        let copied = fixture
-            .project("copy", json!({"name":"恢复目录测试"}))
-            .await;
-        let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
-        let mut root = fixture.store.project(&id).unwrap().root;
-        assert_ne!(root.file_name().unwrap().to_str().unwrap(), id);
-        let journal_path = fixture.lifecycle.journal_path(&copied.task_id);
-        let mut journal: Journal = read_json(&journal_path).unwrap();
-        assert_eq!(
-            journal.directory_name.as_deref(),
-            root.file_name().and_then(|name| name.to_str())
-        );
-        assert!(!fixture
-            .lifecycle
-            .operation(&copied.task_id)
-            .join("candidate")
-            .exists());
-        let registration = fixture
-            .paths
-            .workspace_root()
-            .join(".platform/project-state")
-            .join(format!("{id}.json"));
-        if legacy {
-            // Represent an actual pre-naming project and journal. No existing
-            // development project or historical record is modified by this fixture.
-            let old_root = fixture.paths.workspace_root().join("projects").join(&id);
-            fs::rename(&root, &old_root).unwrap();
-            root = old_root;
-            let mut state: Value = read_json(&registration).unwrap();
-            state["projectRoot"] = json!(root);
-            state.as_object_mut().unwrap().remove("directoryName");
-            builds::atomic_json(&registration, &state).unwrap();
-            journal.directory_name = None;
-        } else {
-            let handoff = fs::read_to_string(root.join(".platform/handoff.md")).unwrap();
-            assert!(handoff.contains(&format!("Project root: `{}`", root.display())));
-            // A host can stop after the candidate rename but before the final
-            // registration. The reservation and journal remain authoritative.
-            fs::remove_file(&registration).unwrap();
-            let reservation = fixture
-                .paths
-                .workspace_root()
-                .join(".platform/project-state/reservations")
-                .join(format!("{id}.json"));
-            builds::atomic_json(&reservation, &json!({"projectId":id,"taskId":copied.task_id,"directoryName":journal.directory_name})).unwrap();
-        }
-        journal.committed = false;
-        journal.resolved = false;
-        builds::atomic_json(&journal_path, &journal).unwrap();
-        let fixture = fixture.restart_task(copied.clone()).await;
-        let recovered = fixture.tasks.task(&copied.task_id).unwrap();
-        assert_eq!(
-            recovered.result.as_ref().unwrap()["operationOutcome"],
-            "copied"
-        );
-        let current = fixture.store.project(&id).unwrap();
-        assert_eq!(current.root, root);
-        assert_eq!(current.document_epoch, journal.target_epoch);
-        let db = rusqlite::Connection::open(current.root.join("data/main.sqlite")).unwrap();
-        assert_eq!(
-            db.query_row(
-                "SELECT value FROM evidence WHERE id='business-uuid'",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .unwrap(),
-            "original"
-        );
-        drop(db);
-        assert_eq!(
-            fs::read(current.root.join("data/attachments/original.txt")).unwrap(),
-            b"independent attachment"
-        );
-        assert!(fixture.store.project(&fixture.id).unwrap().root.exists());
-        fixture.stop().await;
-    }
-}
-
-#[test]
-fn lifecycle_journal_directory_binding_rejects_unsafe_names_and_keeps_legacy_fallback() {
-    let temporary = tempfile::tempdir().unwrap();
-    let workspace = temporary.path().canonicalize().unwrap();
-    fs::create_dir(workspace.join("projects")).unwrap();
-    let id = "prj_0123456789abcdef0123456789abcdef";
-    assert_eq!(
-        journal_project_root(&workspace, id, None).unwrap(),
-        workspace.join("projects").join(id)
-    );
-    assert_eq!(
-        journal_project_root(&workspace, id, Some("ji-lu-01234567")).unwrap(),
-        workspace.join("projects/ji-lu-01234567")
-    );
-    for name in [
-        "",
-        ".",
-        "..",
-        "../outside",
-        "/outside",
-        "a/b",
-        "a\\b",
-        "a\nb",
-        "Upper",
-        "名称",
-    ] {
-        assert!(
-            journal_project_root(&workspace, id, Some(name)).is_err(),
-            "{name:?}"
-        );
-    }
-    assert!(journal_project_root(&workspace, id, Some(&"a".repeat(129))).is_err());
-}
-
-#[tokio::test]
-async fn pending_import_reservation_is_released_when_no_directory_was_committed() {
-    let fixture = Fixture::new().await;
-    let target = format!("prj_{}", Uuid::new_v4().simple());
-    let (task, lease) = fixture.tasks.create_operation(&target, "import").unwrap();
-    let journal = LifecycleManager::journal(&task, "import", &target);
-    fixture.lifecycle.save(&journal).unwrap();
-    fixture
-        .store
-        .reserve_identity(&target, &task.task_id)
-        .unwrap();
-    let candidate = fixture.lifecycle.operation(&task.task_id).join("candidate");
-    fs::create_dir_all(&candidate).unwrap();
-    fs::write(
-        candidate.join("retained.txt"),
-        b"unvalidated temporary content",
-    )
-    .unwrap();
-    drop(lease);
-    let task_id = task.task_id.clone();
-    let fixture = fixture.restart_task(task).await;
-    assert_eq!(
-        fixture.tasks.task(&task_id).unwrap().result.unwrap()["operationOutcome"],
-        "not_registered"
-    );
-    fixture
-        .store
-        .check_identity_available(&target, None)
-        .unwrap();
-    assert!(!fixture
-        .paths
-        .workspace_root()
-        .join("projects")
-        .join(&target)
-        .exists());
-    assert_eq!(
-        fs::read(candidate.join("retained.txt")).unwrap(),
-        b"unvalidated temporary content"
-    );
-    fixture.stop().await;
-}
-
-#[tokio::test]
 async fn copied_bundled_artifact_keeps_portable_provenance_and_matching_inputs() {
     let fixture = Fixture::new().await;
     let source = fixture.store.project(&fixture.id).unwrap();
@@ -994,76 +505,6 @@ async fn ready_snapshot_with_pending_build_is_rejected_without_clearing_requirem
     fixture.stop().await;
 }
 
-#[cfg(target_os = "macos")]
-struct ImmutableFile(std::ffi::CString);
-#[cfg(target_os = "macos")]
-impl ImmutableFile {
-    fn new(path: &Path) -> Self {
-        use std::os::unix::ffi::OsStrExt;
-        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        assert_eq!(
-            unsafe { libc::chflags(name.as_ptr(), libc::UF_IMMUTABLE) },
-            0
-        );
-        Self(name)
-    }
-}
-#[cfg(target_os = "macos")]
-impl Drop for ImmutableFile {
-    fn drop(&mut self) {
-        assert_eq!(unsafe { libc::chflags(self.0.as_ptr(), 0) }, 0);
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn final_lifecycle_journal_failure_blocks_in_memory_and_reconciles_its_own_gate() {
-    let fixture = Fixture::new().await;
-    let copied = fixture.project("copy", json!({})).await;
-    let id = good(&copied)["projectId"].as_str().unwrap().to_owned();
-    let path = fixture.lifecycle.journal_path(&copied.task_id);
-    let mut journal: Journal = read_json(&path).unwrap();
-    journal.resolved = false;
-    builds::atomic_json(&path, &journal).unwrap();
-    let control = fixture.store.control(&id).unwrap();
-    let mut later = control.get();
-    later.pending_build = true;
-    later.pending_build_reason = Some("Preserve newer metadata during gate recovery".into());
-    control.set(later).unwrap();
-    let control_path = fixture
-        .paths
-        .workspace_root()
-        .join(".platform/project-state/maintenance")
-        .join(format!("{id}.json"));
-    let journal_guard = ImmutableFile::new(&path);
-    let control_guard = ImmutableFile::new(&control_path);
-    let error = fixture.lifecycle.finish_journal(&mut journal).unwrap_err();
-    assert_eq!(error.details["operationOutcome"], "needs_attention");
-    assert!(error.details.get("controlPersistenceError").is_some());
-    assert!(!journal.resolved);
-    assert!(control.get().recovery_required);
-    assert_eq!(
-        control.check(true, None, false).unwrap_err().code,
-        "RECOVERY_REQUIRED"
-    );
-    drop(control_guard);
-    drop(journal_guard);
-    assert_eq!(
-        fixture.lifecycle.reconcile(&mut journal).unwrap()["operationOutcome"],
-        "copied"
-    );
-    let state = control.get();
-    assert!(!state.recovery_required);
-    assert_eq!(state.mode, "ready");
-    assert!(state.pending_build);
-    assert_eq!(
-        state.pending_build_reason.as_deref(),
-        Some("Preserve newer metadata during gate recovery")
-    );
-    control.check(true, None, false).unwrap();
-    fixture.stop().await;
-}
-
 #[tokio::test]
 async fn opt_in_import_reports_cleanup_before_success_and_preserves_original_archive() {
     let fixture = Fixture::new().await;
@@ -1108,7 +549,11 @@ async fn opt_in_import_reports_cleanup_before_success_and_preserves_original_arc
     assert_eq!(good(&completed)["cleanupPending"], false);
     assert_eq!(good(&completed)["cleanup"]["completed"], true);
     assert!(!temporary.exists());
-    assert!(fixture.lifecycle.journal_path(&submitted.task_id).is_file());
+    assert!(!fixture
+        .lifecycle
+        .operation(&submitted.task_id)
+        .join("lifecycle.json")
+        .exists());
     assert_eq!(sha256(&archive).unwrap(), before);
     let retried = fixture
         .lifecycle
@@ -1210,14 +655,20 @@ async fn failed_opt_in_import_cleanup_refuses_unknown_result_then_removes_only_t
         failed.error.as_ref().unwrap().details["operationOutcome"],
         "not_registered"
     );
-    let path = fixture.lifecycle.journal_path(&submitted.task_id);
-    let mut journal: Journal = read_json(&path).unwrap();
+    let mut journal = fixture
+        .lifecycle
+        .operations
+        .lock()
+        .unwrap()
+        .get(&submitted.task_id)
+        .cloned()
+        .unwrap();
     let saved = journal.result.clone();
     let temporary = fixture.lifecycle.import_temporary(&journal);
     assert!(temporary.join("source.zip").is_file());
     assert!(temporary.join("candidate/data/main.sqlite").is_file());
     journal.result["operationOutcome"] = json!("needs_attention");
-    fixture.lifecycle.save(&journal).unwrap();
+    fixture.lifecycle.remember(&journal).unwrap();
     let blocked = fixture
         .lifecycle
         .cleanup_import(submitted.task_id.clone())
@@ -1226,7 +677,7 @@ async fn failed_opt_in_import_cleanup_refuses_unknown_result_then_removes_only_t
     assert_eq!(blocked.code, "IMPORT_CLEANUP_BLOCKED");
     assert!(temporary.join("candidate/data/main.sqlite").is_file());
     journal.result = saved;
-    fixture.lifecycle.save(&journal).unwrap();
+    fixture.lifecycle.remember(&journal).unwrap();
     let cleaned = fixture
         .lifecycle
         .cleanup_import(submitted.task_id.clone())
@@ -1237,7 +688,11 @@ async fn failed_opt_in_import_cleanup_refuses_unknown_result_then_removes_only_t
     assert!(!temporary.exists());
     assert!(source.root.join("data/main.sqlite").is_file());
     assert_eq!(sha256(&archive).unwrap(), before);
-    assert!(path.is_file());
+    assert!(!fixture
+        .lifecycle
+        .operation(&submitted.task_id)
+        .join("lifecycle.json")
+        .exists());
     fixture.stop().await;
 }
 
@@ -1270,3 +725,81 @@ async fn import_cleanup_does_not_adopt_default_or_legacy_import_materials() {
     assert_eq!(sha256(&retained).unwrap(), before);
     fixture.stop().await;
 }
+
+#[tokio::test]
+async fn completed_operations_do_not_write_lifecycle_or_cleanup_history() {
+    let fixture = Fixture::new().await;
+    let archive = fixture.export_path("disposable-no-history.zip");
+    let exported = fixture
+        .project("export", json!({"destinationPath":archive}))
+        .await;
+    good(&exported);
+    let imported = fixture
+        .lifecycle
+        .submit_import(json!({"archivePath":archive,"cleanupTemporaryFiles":true}))
+        .await
+        .unwrap();
+    good(&fixture.wait(&imported).await);
+    let operation = fixture.lifecycle.operation(&imported.task_id);
+    assert!(!operation.join("lifecycle.json").exists());
+    assert!(!operation.join("import-cleanup.json").exists());
+    assert!(!operation.exists());
+    assert!(fixture
+        .lifecycle
+        .operations
+        .lock()
+        .unwrap()
+        .values()
+        .all(|op| op.cleanup_temporary_files));
+    let legacy = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/operations/task_legacy/lifecycle.json");
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::write(&legacy, b"opaque retired operation history").unwrap();
+    fixture.lifecycle.shutdown().await;
+    let restarted = LifecycleManager::new(
+        fixture.paths.clone(),
+        fixture.store.clone(),
+        fixture.tasks.clone(),
+        MaintenanceManager::new(fixture.store.clone(), fixture.tasks.clone()),
+    )
+    .unwrap();
+    assert!(restarted.operations.lock().unwrap().is_empty());
+    assert_eq!(
+        fs::read(&legacy).unwrap(),
+        b"opaque retired operation history"
+    );
+    let error = restarted
+        .cleanup_import(imported.task_id.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "IMPORT_CLEANUP_BLOCKED");
+    assert!(archive.is_file());
+    restarted.shutdown().await;
+    fixture.stop().await;
+}
+
+#[cfg(target_os = "macos")]
+struct ImmutableFile(std::ffi::CString);
+#[cfg(target_os = "macos")]
+impl ImmutableFile {
+    fn new(path: &Path) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe { libc::chflags(name.as_ptr(), libc::UF_IMMUTABLE) },
+            0
+        );
+        Self(name)
+    }
+}
+#[cfg(target_os = "macos")]
+impl Drop for ImmutableFile {
+    fn drop(&mut self) {
+        assert_eq!(unsafe { libc::chflags(self.0.as_ptr(), 0) }, 0);
+    }
+}
+
+#[path = "direct_delete_tests.rs"]
+mod direct_delete;

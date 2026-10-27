@@ -24,7 +24,6 @@ pub(super) struct Report {
     status: Status,
     message: String,
     remaining_paths: Vec<String>,
-    receipt_path: Option<String>,
     error: Option<String>,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -49,18 +48,17 @@ impl Status {
 impl Report {
     fn finish(&mut self, result: Result<Value, ApiError>) {
         match result {
-            Ok(result) => {
+            Ok(_) => {
                 self.status = Status::Completed;
                 self.message = "本软件管理的本机项目数据和代码已清理。外部原始源码及清理范围之外的独立导出文件保留。请退出软件后卸载。".into();
                 self.remaining_paths.clear();
-                self.receipt_path = result["receiptPath"].as_str().map(str::to_owned);
             }
             Err(error) => {
                 self.status = Status::Failed;
                 self.message = if error.details["operationOutcome"] == "not_started" {
                     "清理范围或关闭条件未通过核对，没有开始删除。请退出后检查，再重新确认。"
                 } else {
-                    "清理未全部完成，部分内容可能已经永久删除。请保留清理回执并核对剩余目录，不会自动重试。"
+                    "清理未全部完成，部分内容可能已经永久删除。请核对剩余目录和错误信息，不会自动重试。"
                 }.into();
                 if let Some(paths) = error.details["remainingPaths"].as_array() {
                     self.remaining_paths = paths
@@ -68,7 +66,6 @@ impl Report {
                         .filter_map(|path| path.as_str().map(str::to_owned))
                         .collect();
                 }
-                self.receipt_path = error.details["receiptPath"].as_str().map(str::to_owned);
                 self.error = Some(format!("{}: {}", error.code, error.message));
             }
         }
@@ -185,7 +182,6 @@ impl LocalDataCleanup {
                 .flatten()
                 .filter_map(|item| item["path"].as_str().map(str::to_owned))
                 .collect(),
-            receipt_path: None,
             error: None,
         };
         Ok(inner.report.clone())
@@ -247,7 +243,7 @@ impl LocalDataCleanup {
                 Ok(result) => inner.report.finish(result),
                 Err(_) => {
                     inner.report.status = Status::Failed;
-                    inner.report.message = "清理工作异常结束，结果未知。部分内容可能已经删除；请核对清理回执和剩余目录，不会自动重试。".into();
+                    inner.report.message = "清理工作异常结束，结果未知。部分内容可能已经删除；请核对错误信息和剩余目录，不会自动重试。".into();
                     inner.report.error = Some("LOCAL_CLEANUP_WORKER_UNKNOWN".into());
                 }
             }
@@ -338,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_failure_reports_actual_remaining_paths_and_receipt() {
+    fn partial_failure_reports_actual_remaining_paths_without_a_receipt() {
         let mut report = Report {
             remaining_paths: vec![
                 "/disposable/already-removed".into(),
@@ -355,10 +351,10 @@ mod tests {
         .detail("receiptPath", "/disposable/.local-cleanup/receipt.json")));
         assert!(report.status == Status::Failed);
         assert_eq!(report.remaining_paths, ["/disposable/remaining"]);
-        assert_eq!(
-            report.receipt_path.as_deref(),
-            Some("/disposable/.local-cleanup/receipt.json")
-        );
+        assert!(serde_json::to_value(&report)
+            .unwrap()
+            .get("receiptPath")
+            .is_none());
         assert!(report.message.contains("部分内容可能已经永久删除"));
     }
 
@@ -376,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_cleanup_clears_pending_paths_and_keeps_receipt_location() {
+    fn completed_cleanup_clears_pending_paths_without_a_receipt() {
         let mut report = Report {
             remaining_paths: vec!["/disposable/owned".into()],
             ..Report::default()
@@ -386,9 +382,9 @@ mod tests {
         ));
         assert!(report.status == Status::Completed);
         assert!(report.remaining_paths.is_empty());
-        assert_eq!(
-            report.receipt_path.as_deref(),
-            Some("/disposable/receipt.json")
-        );
+        assert!(serde_json::to_value(&report)
+            .unwrap()
+            .get("receiptPath")
+            .is_none());
     }
 }

@@ -12,17 +12,16 @@ use std::{
     io::Read,
     os::{
         fd::AsRawFd,
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt, fs::PermissionsExt},
+        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     },
     path::{Component, Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
-const CONTROL: &str = ".local-cleanup";
 const TTL: Duration = Duration::from_secs(10 * 60);
 const CONFIRMATION: &str = "删除全部本机数据";
-const RETAINED: [&str; 3] = [".environment.json", "instance.lock", CONTROL];
+const RETAINED: [&str; 2] = [".environment.json", "instance.lock"];
 
 fn fail(message: impl Into<String>) -> ApiError {
     ApiError::new("LOCAL_CLEANUP_UNAVAILABLE", message).outcome("not_started")
@@ -116,7 +115,6 @@ pub struct LocalCleanupPlan {
     root: BoundPath,
     lock: BoundPath,
     marker: BoundPath,
-    control: Option<BoundPath>,
     targets: Vec<BoundPath>,
     workspace_roots: Vec<PathBuf>,
     metadata: BTreeMap<PathBuf, String>,
@@ -142,22 +140,6 @@ impl LocalCleanupPlan {
         if lock.directory || marker.directory {
             return Err(fail("固定应用身份或实例锁不是普通文件。"));
         }
-        let control_path = paths.data_root().join(CONTROL);
-        let control = if control_path.try_exists()? {
-            let bound = BoundPath::capture(control_path.clone())?;
-            if !bound.directory {
-                return Err(fail("清理安全记录目录类型异常。"));
-            }
-            let previous: Value =
-                serde_json::from_slice(&read_small(&control_path.join("receipt.json"))?)?;
-            if previous["schemaVersion"] != 1 || previous["phase"] != "completed" {
-                return Err(fail("上次清理尚未完成，请保留清理回执并核对剩余目录。"));
-            }
-            verify_control_entries(&control_path)?;
-            Some(bound)
-        } else {
-            None
-        };
         let (metadata, preserved) = scope_metadata(paths, &workspace_roots)?;
         let mut target_paths = BTreeSet::new();
         for entry in fs::read_dir(paths.data_root())? {
@@ -208,7 +190,6 @@ impl LocalCleanupPlan {
             root,
             lock,
             marker,
-            control,
             targets,
             workspace_roots,
             metadata,
@@ -259,7 +240,6 @@ impl LocalCleanupPlan {
             .filter(|target| target.path.parent() == Some(self.paths.data_root()))
             .map(|target| target.path.clone())
             .chain([self.lock.path.clone(), self.marker.path.clone()])
-            .chain(self.control.as_ref().map(|control| control.path.clone()))
             .collect::<BTreeSet<_>>();
         if current != expected {
             return Err(changed());
@@ -307,19 +287,13 @@ impl LocalCleanupPlan {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error.into()),
         }
-        if let Some(control) = &self.control {
-            control.verify()?;
-        }
-        if let Some(control) = &self.control {
-            verify_control_entries(&control.path)?;
-        }
         Ok(())
     }
 
     /// The caller must additionally have joined strict native windows, Node
     /// processes/proxies and native sessions. Core checks its actual owned
     /// shutdown state, never a caller-supplied JSON report or boolean.
-    pub fn execute_after_shutdown(mut self, runtime: &RuntimeService) -> Result<Value, ApiError> {
+    pub fn execute_after_shutdown(self, runtime: &RuntimeService) -> Result<Value, ApiError> {
         let info = runtime.info();
         if info.instance_id != self.instance_id
             || info.data_root != self.paths.data_root()
@@ -332,41 +306,12 @@ impl LocalCleanupPlan {
         }
         self.verify_scope()
             .map_err(|error| error.outcome("not_started"))?;
-        let control = self.paths.data_root().join(CONTROL);
-        if self.control.is_none() {
-            fs::create_dir(&control)
-                .map_err(|error| ApiError::from(error).outcome("not_started"))?;
-            fs::set_permissions(&control, fs::Permissions::from_mode(0o700))
-                .map_err(|error| ApiError::from(error).outcome("not_started"))?;
-            self.control = Some(
-                BoundPath::capture(control.clone())
-                    .map_err(|error| error.outcome("not_started"))?,
-            );
-        }
-        let receipt_path = control.join("receipt.json");
-        let receipt = |phase: &str, remaining: &[PathBuf]| {
-            json!({"schemaVersion":1,"planId":self.id,
-            "instanceId":self.instance_id,"phase":phase,"updatedAt":now(),"remainingPaths":remaining,
-            "retainedControlPaths":RETAINED.iter().map(|name|self.paths.data_root().join(name)).collect::<Vec<_>>()})
-        };
-        let all_paths = self
-            .targets
-            .iter()
-            .map(|target| target.path.clone())
-            .collect::<Vec<_>>();
-        crate::builds::atomic_json(&receipt_path, &receipt("deleting", &all_paths))
-            .map_err(|error| error.outcome("not_started"))?;
         let result = (|| -> Result<(), ApiError> {
-            for (index, target) in self.targets.iter().enumerate() {
+            for target in &self.targets {
                 self.verify_controls()?;
                 target.verify()?;
                 if target.directory {
-                    let progress = control.join(format!("{}-{index}.ndjson", self.id));
-                    crate::history_cleanup::remove_owned_directory(
-                        &target.path,
-                        &target.identity,
-                        &progress,
-                    )?;
+                    crate::history_cleanup::remove_owned_directory(&target.path, &target.identity)?;
                 } else {
                     remove_bound_file(target)?;
                 }
@@ -381,23 +326,6 @@ impl LocalCleanupPlan {
             {
                 return Err(fail("清理期间新增了未核对内容，已停止并保留剩余文件。"));
             }
-            // Successful cleanup retains no per-file history or project names,
-            // including any old progress of an already completed cleanup.
-            for entry in fs::read_dir(&control)? {
-                let path = entry?.path();
-                if path.file_name().is_some_and(|name| name != "receipt.json") {
-                    if !path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(valid_progress_name)
-                    {
-                        return Err(fail("清理安全目录新增了未知记录，请保留现场。"));
-                    }
-                    remove_bound_file(&BoundPath::capture(path)?)?;
-                }
-            }
-            self.verify_controls()?;
-            crate::builds::atomic_json(&receipt_path, &receipt("completed", &[]))?;
             Ok(())
         })();
         let mut remaining = self
@@ -416,19 +344,17 @@ impl LocalCleanupPlan {
         let remaining = remaining.into_iter().collect::<Vec<_>>();
         if let Err(error) = result {
             // Do not automatically retry an unknown or partially deleted scope.
-            let _ = crate::builds::atomic_json(&receipt_path, &receipt("incomplete", &remaining));
             return Err(ApiError::new(
                 "LOCAL_CLEANUP_INCOMPLETE",
-                "全部本机数据清理未完成，请保留清理回执并核对剩余目录；不要自动重试。",
+                "全部本机数据清理未完成，请核对剩余目录后重新扫描；不要自动重试。",
             )
             .outcome("delete_incomplete")
             .detail("remainingPaths", json!(remaining))
-            .detail("receiptPath", json!(receipt_path))
             .detail("cause", json!(error)));
         }
         Ok(
             json!({"operationOutcome":"deleted","restoreAvailable":false,"remainingPaths":[],
-            "receiptPath":receipt_path,"retainedControlPaths":RETAINED.iter().map(|name|self.paths.data_root().join(name)).collect::<Vec<_>>(),
+            "retainedControlPaths":RETAINED.iter().map(|name|self.paths.data_root().join(name)).collect::<Vec<_>>(),
             "preservedPaths":self.preserved,"exitRequired":true}),
         )
     }
@@ -545,7 +471,7 @@ fn node_references(
     node_root: &Path,
     slot: &Path,
     name: &str,
-    value: Value,
+    mut value: Value,
 ) -> Result<Vec<String>, ApiError> {
     let id = slot
         .file_name()
@@ -567,6 +493,14 @@ fn node_references(
     };
     if name == "development-source.json" {
         return Ok(vec![binding_path(value)?]);
+    }
+    if let Some(pending) = value
+        .as_object_mut()
+        .and_then(|value| value.remove("removalPending"))
+    {
+        if !pending.is_boolean() {
+            return Err(fail("当前应用可用状态无效，未开始清理。"));
+        }
     }
     if value["version"] == 1 {
         let record: ExternalRegistration = serde_json::from_value(value)
@@ -621,6 +555,7 @@ fn installation_references(
     let fields = [
         "version",
         "candidateId",
+        "sourceId",
         "prepareTaskId",
         "applyTaskId",
         "state",
@@ -800,27 +735,6 @@ fn resolve_external(path: &Path) -> Result<PathBuf, ApiError> {
             Err(error) => return Err(error.into()),
         }
     }
-}
-
-fn valid_progress_name(name: &str) -> bool {
-    name.strip_prefix("local_cleanup_")
-        .and_then(|name| name.strip_suffix(".ndjson"))
-        .and_then(|name| name.rsplit_once('-'))
-        .is_some_and(|(id, index)| Uuid::parse_str(id).is_ok() && index.parse::<usize>().is_ok())
-}
-
-fn verify_control_entries(control: &Path) -> Result<(), ApiError> {
-    for entry in fs::read_dir(control)? {
-        let path = entry?.path();
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(changed)?;
-        if (name != "receipt.json" && !valid_progress_name(name)) || !ordinary(&path)?.is_file() {
-            return Err(fail("清理安全目录存在未知内容，请保留现场并核对。"));
-        }
-    }
-    Ok(())
 }
 
 fn remove_bound_file(target: &BoundPath) -> Result<(), ApiError> {

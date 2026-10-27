@@ -25,6 +25,8 @@ export interface NodeAppDeleteResult {
   sourcePreserved: true;
   evidenceRetained: true;
   metadataCleanupPending?: boolean;
+  durabilityConfirmed?: boolean;
+  warning?: string | null;
 }
 
 export interface NodeConfigurationField {

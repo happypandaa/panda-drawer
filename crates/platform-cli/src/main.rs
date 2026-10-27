@@ -196,13 +196,6 @@ enum TaskCommand {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=30))]
         timeout: u64,
     },
-    /// Read a bounded log chunk; pass nextCursor to read subsequent output.
-    Logs {
-        #[command(flatten)]
-        task: TaskOptions,
-        #[arg(long, default_value_t = 0)]
-        cursor: u64,
-    },
 }
 
 #[derive(Args)]
@@ -267,8 +260,6 @@ enum ProjectGitCommand {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
-    /// Create and switch to a new branch at the current clean HEAD, without changing source files.
-    BranchCreate(ProjectGitInputOptions),
     /// Preview exact local source files to retrieve, without changing them.
     SourceRestorePreview(ProjectGitInputOptions),
     /// Apply a freshly confirmed source retrieval plan; do not change HEAD, index or business data.
@@ -277,12 +268,6 @@ enum ProjectGitCommand {
     SourceRecovery(ProjectOptions),
     /// Explicitly continue or undo exactly the retained source-retrieval operation.
     SourceRecover(ProjectGitInputOptions),
-    /// Initialize main using the exact expectedSnapshot from a fresh status.
-    Init(ProjectGitInputOptions),
-    /// Save scoped source with explicit author, message, expectedHead and expectedSnapshot.
-    Save(ProjectGitInputOptions),
-    /// Save source plus a consistent database and attachment snapshot to this local project repository.
-    SaveData(ProjectGitInputOptions),
     /// Compare a saved local data version with a fresh consistent snapshot of live data.
     DataRestorePreview(ProjectGitInputOptions),
     /// Apply a freshly confirmed local project-v1 database and attachment version.
@@ -571,14 +556,6 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
             project.output.json,
             project_request(&project.project, "GET", &format!("/git/versions?limit={limit}"), None),
         ),
-        ProjectGitCommand::BranchCreate(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitCreateBranchInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide name, expectedHead, expectedBranch and expectedSnapshot from a fresh status."))?;
-                project_request(&options.project, "POST", "/git/branches", Some(body))
-            }),
-        ),
         ProjectGitCommand::SourceRestorePreview(options) => (
             options.input.output.json,
             read_input(&options.input.input).and_then(|body| {
@@ -606,30 +583,6 @@ fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
         ProjectGitCommand::SourceRecovery(options) => (
             options.output.json,
             project_request(&options.project, "GET", "/git/source-recovery", None),
-        ),
-        ProjectGitCommand::Init(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitInitInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide expectedSnapshot and initialBranch main."))?;
-                project_request(&options.project, "POST", "/git/initialize", Some(body))
-            }),
-        ),
-        ProjectGitCommand::Save(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitSaveInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide explicit expectedHead (null for no commit), expectedSnapshot, message and author name/email."))?;
-                project_request(&options.project, "POST", "/git/saves", Some(body))
-            }),
-        ),
-        ProjectGitCommand::SaveData(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitDataSaveInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide explicit expectedHead (null for no commit), expectedSnapshot, message and author name/email. Data is captured after acquiring the project write window."))?;
-                project_request(&options.project, "POST", "/git/data-saves", Some(body))
-            }),
         ),
         ProjectGitCommand::DataRestorePreview(options) => (
             options.input.output.json,
@@ -1079,10 +1032,7 @@ fn node_command(command: NodeCommand) -> (bool, Result<Value>) {
 
 fn task_command(command: TaskCommand) -> (bool, Result<Value>) {
     match command {
-        TaskCommand::Get(options) => (options.output.json, task_request(&options.task, None)),
-        TaskCommand::Logs { task, cursor } => {
-            (task.output.json, task_request(&task.task, Some(cursor)))
-        }
+        TaskCommand::Get(options) => (options.output.json, task_request(&options.task)),
         TaskCommand::Wait { task, timeout } => (
             task.output.json,
             wait_for_task(&task.task, Duration::from_secs(timeout)),
@@ -1105,7 +1055,7 @@ fn validate_task_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_task_response(value: &Value, id: &str, logs: bool) -> Result<()> {
+fn validate_task_response(value: &Value, id: &str) -> Result<()> {
     if value["ok"] != true {
         return Ok(());
     }
@@ -1115,7 +1065,7 @@ fn validate_task_response(value: &Value, id: &str, logs: bool) -> Result<()> {
             "The returned task does not match the requested task ID.",
         ));
     }
-    if !logs {
+    {
         let terminal = matches!(
             value["data"]["status"].as_str(),
             Some("succeeded" | "failed" | "interrupted")
@@ -1131,13 +1081,10 @@ fn validate_task_response(value: &Value, id: &str, logs: bool) -> Result<()> {
     Ok(())
 }
 
-fn task_request(id: &str, cursor: Option<u64>) -> Result<Value> {
+fn task_request(id: &str) -> Result<Value> {
     validate_task_id(id)?;
-    let suffix = cursor
-        .map(|value| format!("/logs?offset={value}"))
-        .unwrap_or_default();
-    let value = business_request("GET", &format!("/api/v1/tasks/{id}{suffix}"), None, None)?;
-    validate_task_response(&value, id, cursor.is_some())?;
+    let value = business_request("GET", &format!("/api/v1/tasks/{id}"), None, None)?;
+    validate_task_response(&value, id)?;
     Ok(value)
 }
 
@@ -1170,7 +1117,7 @@ fn wait_for_connected_task_with_discovery(
     };
     let mut refreshed_connection = None;
     let mut current = connection.request("GET", &route, None, None, initial_timeout)?;
-    validate_task_response(&current, id, false)?;
+    validate_task_response(&current, id)?;
     while current["ok"] == true && current["data"]["final"] == false {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -1217,7 +1164,7 @@ fn wait_for_connected_task_with_discovery(
         }
         match response {
             Ok(next) => {
-                validate_task_response(&next, id, false)?;
+                validate_task_response(&next, id)?;
                 current = next;
             }
             Err(_) if Instant::now() >= deadline => break,
@@ -1670,7 +1617,6 @@ mod tests {
             "source-restore-preview",
             "source-restore",
             "source-recover",
-            "save-data",
             "data-restore-preview",
             "data-restore",
             "data-recover",
@@ -1778,7 +1724,7 @@ mod tests {
             "disposable-input.json",
             "--json"
         ])
-        .is_ok());
+        .is_err());
         assert!(Cli::try_parse_from([
             "local-projects-dev",
             "project",
@@ -1811,16 +1757,20 @@ mod tests {
             "maintenance_sample"
         ])
         .is_err());
-        let input = json!({"expectedSnapshot":"a".repeat(64),"message":"Disposable commit","author":{"name":"Sample","email":"sample@example.invalid"}});
-        assert!(
-            serde_json::from_value::<platform_core::project_git::GitSaveInput>(input.clone())
-                .is_err()
-        );
-        let mut explicit = input;
-        explicit["expectedHead"] = Value::Null;
-        assert!(
-            serde_json::from_value::<platform_core::project_git::GitSaveInput>(explicit).is_ok()
-        );
+        for command in ["init", "save", "save-data", "branch-create"] {
+            assert!(Cli::try_parse_from([
+                "local-projects-dev",
+                "project",
+                "git",
+                command,
+                "--project",
+                "prj_disposable",
+                "--input",
+                "-",
+                "--json"
+            ])
+            .is_err());
+        }
     }
 
     fn discovery() -> Discovery {
@@ -2424,13 +2374,13 @@ mod tests {
             assert_eq!(validate_task_id(id).unwrap_err().code, "INPUT_INVALID");
         }
         let value = json!({"ok":true,"data":{"taskId":"task_a","status":"failed","final":true}});
-        assert!(validate_task_response(&value, "task_a", false).is_ok());
-        assert!(validate_task_response(&value, "task_b", false).is_err());
+        assert!(validate_task_response(&value, "task_a").is_ok());
+        assert!(validate_task_response(&value, "task_b").is_err());
         let mut inconsistent = value.clone();
         inconsistent["data"]["final"] = json!(false);
-        assert!(validate_task_response(&inconsistent, "task_a", false).is_err());
+        assert!(validate_task_response(&inconsistent, "task_a").is_err());
         inconsistent["data"]["status"] = json!("cancelled");
-        assert!(validate_task_response(&inconsistent, "task_a", false).is_err());
+        assert!(validate_task_response(&inconsistent, "task_a").is_err());
     }
 
     #[test]
@@ -2525,7 +2475,7 @@ mod tests {
         assert!(Cli::try_parse_from([
             "platform", "task", "logs", "--task", "task_a", "--cursor", "512", "--json"
         ])
-        .is_ok());
+        .is_err());
         let (_, result) = node_command(NodeCommand::Set {
             path: "node".into(),
             output: OutputOptions { json: true },

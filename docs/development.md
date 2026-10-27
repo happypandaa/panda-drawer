@@ -1,5 +1,7 @@
 # 开发环境与数据隔离
 
+2026-10-27 最新确认：[操作记录精简与外部 AI 分工](operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
+
 2026-10-21 当前开发工具：Mac arm64 内部版为 project-v1 增加独立的受管 Node 24.22.0／npm 11.19.1。已有显式本机选择优先；无显式选择且带安装资源时默认受管工具，失效不回退。无资源开发／测试服务保留检测。另有私有 Git 2.56.0 的工具选择与诊断、系统 SSH 的版本检查，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；已接公开源码获取、本机源码保存、历史列表与新建定制分支；另接显式源码取回及中断处理；私有认证与已有分支切换尚未接入，见第 7.1 节。应用运行 Node 和已有 Node 工具设置不受影响，Windows 与完整安装／分享仍须独立验收。以下带日期的早期方案和验证保留当时范围；当前构建语义见第 7 节。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
@@ -164,7 +166,6 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `project build --project ID` | 提交构建，立即返回任务 ID |
 | `task get --task ID` | 读取持久任务状态与结果 |
 | `task wait --task ID --timeout 30` | 有界等待；超时返回当前任务，不取消任务 |
-| `task logs --task ID --cursor N` | 读取日志片段；用返回的 `nextCursor` 继续 |
 | `env node set --path /绝对路径/node` | 检查并保存开发版的显式 Node 路径 |
 | `env node clear` | 清除显式选择；带资源时恢复受管默认，无资源开发服务恢复检测 |
 | `env git doctor` | 读取服务实际 Git 选择、版本与可用性，分别返回系统 SSH 工具状态和未验证的认证状态；不访问仓库 |
@@ -254,21 +255,17 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 
 系统 SSH 目前仅执行 `-V` 读取版本，工具缺失不掩盖可用的 Git。`authentication.state` 始终为 `not-checked`：没有读取或复制私钥，没有修改 SSH／Git 全局配置，没有访问仓库验证身份，也没有接入 HTTPS 凭据助手。公开源码获取和 project-v1 本机源码提交、历史列表、新建定制分支及显式源码取回有独立入口；已有分支切换尚未开放。Git 与 SSH 不可用不影响成品应用运行，完整第 2 项、Windows、干净电脑、最低系统与正式发行仍待各自验收。新增包内工具和原生设置的真实验证另见[技术实施记录](technical-implementation-plan.md)。
 
-### 本机源码版本保存
+### 本机源码版本由外部 AI 管理
 
-Git 版本管理由 AI 先读取范围和改动，再明确初始化或保存，普通应用详情不展示完整 Git 面板。CLI 为 `project git status --project ID --json`、`project git init --project ID --input FILE --json`、`project git save --project ID --input FILE --json`、`project git cancel --project ID --task TASK_ID --json`。初始化输入为 `expectedSnapshot` 与 `initialBranch:"main"`；保存须明确提供 `expectedHead`（无提交时为 JSON null）、`expectedSnapshot`、`message`、`author:{name,email}`。快照和 HEAD 来自最新状态，不默认采用全局作者，不自动重试写请求。
+用户与外部 AI 在作者仓库使用标准 Git 完成初始化、保存和创建分支。平台不再提供 `project git init/save/save-data/branch-create`，对应管理 HTTP／原生命令和新的保存事务也已移除；不要通过改平台登记来保存版本。
 
-管理 HTTP 为 `GET /api/v1/projects/:id/git`、`POST .../git/initialize`、`POST .../git/saves`、`POST .../git/tasks/:taskId/cancel`。初始化／保存返回持久任务，取消仅请求停止；提交点之后可能最终成功，`committed`／`unknown`／`not_committed` 结果分别保留，不凭连接失败重新提交。
+提交前核对用户明确提供的作者身份和变更范围，不修改全局 Git 配置，不默认加入配置、密钥、数据库、附件、依赖或运行程序，不自动推送业务资料。平台仍可只读检查范围与本机历史，以及处理已有源码／数据恢复；已存在的未决恢复先核对和收尾。
 
-首步只写项目根的普通标准 Git 仓库。已有源码子仓库、父仓库、多个标记、worktree／submodule、分离 HEAD 或不支持的配置保持原状并拒绝写入。预览列出清单、源码、固定 SDK、文档等开发材料；未知文件、已有暂存／冲突或被跟踪的保护路径阻止保存。已知凭据、活库、附件、依赖、本机控制与运行产物按路径排除，不能通用识别任意文件内的秘密。采用原始对象和私有索引，不运行用户 hooks、内容过滤器、签名或 fsmonitor，不推送。此次保存不含数据库快照；旧备份及恢复证据保留。
-
-### 本机版本列表与新建定制分支
+### 本机版本列表
 
 `project git versions --project ID --limit 50 --json` 对应 `GET /api/v1/projects/:id/git/versions?limit=50`，只列出当前 HEAD 可达的本机提交，不接受任意 revision、不访问远端。`limit` 默认50、范围1–100；返回 `head`、`versions`（提交号、父提交、说明、作者、时间）、`hasMore` 与实际工具。AI 可通过此接口查询，普通详情不展示版本列表；普通未提交或暂存改动不阻止只读列表，但不安全仓库、恢复现场和已跟踪保护路径仍拒绝。
 
-`project git branch-create --project ID --input FILE --json` 对应 `POST /api/v1/projects/:id/git/branches`。完整输入为 `name`（新分支短名）、`expectedHead`（现存完整提交号）、`expectedBranch`（状态返回的 `refs/heads/...`）和 `expectedSnapshot`。只允许在干净且已保存的当前版本新建分支并将 HEAD 指向它；已有同名分支、过期核对、未知／暂存／冲突内容均拒绝。不会取回其他提交或替换源码、索引、活库、附件及当前产物。仅此操作要求已验证的 Git2.56.0 引用事务；2.54.0 的保存和列表仍可用，分支限制单独放在 `branchCreationIssue` 中，不自动换工具。
-
-新建分支返回 `gitBranchCreate` 持久任务，沿用取消入口和已提交／未提交／未知结果；成功结果含原分支、新分支及当前提交。开始修改前先等待最终结果。现有分支切换、合并／拉取仍未实现，不能用新建分支代替这些操作。旧源码取回是下面的独立显式操作；project-v1 的主动[数据保存](project-data-git.md)及明确[数据取回与恢复](project-data-restore-apply.md)使用各自入口，不由新建分支触发。
+创建分支、切换与保存版本交给外部 AI 的标准 Git；平台只读版本列表不改变作者仓库。
 
 ### 取回本机已保存源码
 
@@ -302,7 +299,7 @@ Git 版本管理由 AI 先读取范围和改动，再明确初始化或保存，
 
 早期 `m4-live-test.mjs`、`m4-migration-test.mjs` 与 `workspace-identity-live-test.mjs` 只对应旧版软删除流程，已于 2026-10-26 随回收站一起删除；其历史证据仍在各验证记录中。
 
-以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait/logs`。普通应用详情只提供导出与删除，不再提供直接创建独立副本的表单；需要独立副本时，可导出完整项目 ZIP，再按默认新 ID 导入。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
+以下为当前开发 CLI 的命令；真实包的验证进度单列于 [M4 记录](m4-verification.md)。导入、导出、复制、删除、回收站恢复/清除和迁移均返回持久任务 ID，沿用 `task get/wait`。普通应用详情只提供导出与删除，不再提供直接创建独立副本的表单；需要独立副本时，可导出完整项目 ZIP，再按默认新 ID 导入。任务可能在 CLI 等待结束后继续；实例切换只重新发现服务并恢复查询，不自动重发写入。
 
 | 命令 | 输入与结果 |
 | --- | --- |

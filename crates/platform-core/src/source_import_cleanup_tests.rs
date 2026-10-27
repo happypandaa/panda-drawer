@@ -1,5 +1,5 @@
 use super::*;
-use crate::TaskStatus;
+use crate::{builds, TaskStatus};
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -126,9 +126,9 @@ async fn failed_import_cleans_only_exact_source_staging_and_build_and_is_idempot
         .cleanup
         .source_import_cleanup(&fixture.task.task_id)
         .unwrap();
-    assert_eq!(repeated, result);
-    let receipt = PathBuf::from(result["receiptPath"].as_str().unwrap());
-    assert!(receipt.join("plan.json").is_file());
+    assert_eq!(repeated["completed"], true);
+    assert!(repeated["removedPaths"].as_array().unwrap().is_empty());
+    assert!(!fixture.paths.data_root().join("cleanup/imports").exists());
     assert_eq!(
         fixture.tasks.task(&fixture.task.task_id).unwrap().status,
         TaskStatus::Succeeded
@@ -232,20 +232,9 @@ async fn symlink_targets_and_task_identity_mismatch_are_not_followed() {
 }
 
 #[tokio::test]
-async fn partial_staging_deletion_can_retry_after_its_journal_was_already_unlinked() {
+async fn partial_staging_without_ownership_is_retained_for_fresh_review() {
     let fixture = Fixture::new();
     let stage = fixture.staging("failed");
-    let receipt = fixture
-        .cleanup
-        .root()
-        .join("imports")
-        .join(&fixture.task.task_id);
-    fs::create_dir_all(&receipt).unwrap();
-    let plan = fixture
-        .cleanup
-        .import_plan(&fixture.task.task_id, &receipt)
-        .unwrap();
-    builds::atomic_json(&receipt.join("plan.json"), &plan).unwrap();
     let mut item = Candidate::new(
         "disposable-partial".into(),
         "ownedDirectory",
@@ -255,33 +244,28 @@ async fn partial_staging_deletion_can_retry_after_its_journal_was_already_unlink
     item.root_identity = Some(directory_identity(&stage).unwrap());
     item.parents = parent_identities(&stage).unwrap();
     item.entries = scan(&stage).unwrap();
-    let failed = remove_tree_with_hook(
-        &item,
-        &receipt.join("artificial-partial.jsonl"),
-        |progress, _| {
-            if progress
-                .removed_paths
-                .contains(&PathBuf::from("install.json"))
-            {
-                return Err(ApiError::new(
-                    "DISPOSABLE_PARTIAL",
-                    "artificial interruption after journal unlink",
-                ));
-            }
-            Ok(())
-        },
-    )
+    let failed = remove_tree_with_hook(&item, |progress, _| {
+        if progress
+            .removed_paths
+            .contains(&PathBuf::from("install.json"))
+        {
+            return Err(ApiError::new(
+                "DISPOSABLE_PARTIAL",
+                "artificial interruption after journal unlink",
+            ));
+        }
+        Ok(())
+    })
     .unwrap_err();
     assert_eq!(failed.code, "DISPOSABLE_PARTIAL");
     assert!(stage.exists());
     assert!(!stage.join("install.json").exists());
-    let result = fixture
+    assert!(fixture
         .cleanup
         .source_import_cleanup(&fixture.task.task_id)
-        .unwrap();
-    assert_eq!(result["completed"], true, "{result}");
-    assert!(!stage.exists());
-    assert!(!fixture.source_path().exists());
+        .is_err());
+    assert!(stage.exists());
+    assert!(fixture.source_path().exists());
     fixture.stop().await;
 }
 
@@ -337,27 +321,17 @@ async fn known_uncommitted_apply_cleans_only_after_the_actual_pointer_is_checked
 }
 
 #[tokio::test]
-async fn resumed_plan_cannot_abandon_a_new_install_candidate() {
+async fn fresh_attempt_checks_and_cleans_new_finished_candidates() {
     let fixture = Fixture::new();
     fixture.staging("failed");
-    let receipt = fixture
-        .cleanup
-        .root()
-        .join("imports")
-        .join(&fixture.task.task_id);
-    fs::create_dir_all(&receipt).unwrap();
-    let plan = fixture
-        .cleanup
-        .import_plan(&fixture.task.task_id, &receipt)
-        .unwrap();
-    builds::atomic_json(&receipt.join("plan.json"), &plan).unwrap();
     let new_stage = fixture.staging("failed");
-    assert!(fixture
+    let result = fixture
         .cleanup
         .source_import_cleanup(&fixture.task.task_id)
-        .is_err());
-    assert!(new_stage.join("npm-cache/payload").is_file());
-    assert!(fixture.source_path().join("repository/app.js").is_file());
+        .unwrap();
+    assert_eq!(result["completed"], true, "{result}");
+    assert!(!new_stage.exists());
+    assert!(!fixture.source_path().exists());
     fixture.stop().await;
 }
 
@@ -365,16 +339,7 @@ async fn resumed_plan_cannot_abandon_a_new_install_candidate() {
 async fn corrupted_resume_target_cannot_delete_an_unrelated_installation() {
     let fixture = Fixture::new();
     let stage = fixture.staging("failed");
-    let receipt = fixture
-        .cleanup
-        .root()
-        .join("imports")
-        .join(&fixture.task.task_id);
-    fs::create_dir_all(&receipt).unwrap();
-    let mut plan = fixture
-        .cleanup
-        .import_plan(&fixture.task.task_id, &receipt)
-        .unwrap();
+    let mut plan = fixture.cleanup.import_plan(&fixture.task.task_id).unwrap();
     let other = stage
         .parent()
         .unwrap()
@@ -392,12 +357,11 @@ async fn corrupted_resume_target_cannot_delete_an_unrelated_installation() {
             path: other.clone(),
         },
     );
-    builds::atomic_json(&receipt.join("plan.json"), &plan).unwrap();
-    let result = fixture
+    let target = plan.targets.first().unwrap();
+    assert!(fixture
         .cleanup
-        .source_import_cleanup(&fixture.task.task_id)
-        .unwrap();
-    assert_eq!(result["completed"], false, "{result}");
+        .validate_import_target(&plan, target)
+        .is_err());
     assert_eq!(
         fs::read_to_string(other.join("npm-cache/keep")).unwrap(),
         "other import"

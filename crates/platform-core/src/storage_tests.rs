@@ -287,9 +287,6 @@ async fn cleanup_only_deletes_identified_dependencies_completed_cache_and_logs()
     let backups = f.paths.workspace_root().join("backups").join(&f.id);
     assert!(!backups.exists());
     let (build, lease) = f.tasks.create_operation(&f.id, "build").unwrap();
-    f.tasks
-        .append(&build.task_id, b"completed build log")
-        .unwrap();
     f.tasks.finish(&build.task_id, Ok(json!({}))).unwrap();
     drop(lease);
     for path in [
@@ -495,7 +492,7 @@ async fn cleanup_external_symlink_is_retained_and_partial_result_survives() {
     f.stop().await;
 }
 #[tokio::test]
-async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
+async fn interrupted_cleanup_uses_task_status_and_never_replays_deletion() {
     let f = Fixture::new().await;
     f.write("app/node_modules/residual", b"do not replay");
     let task = f
@@ -503,15 +500,6 @@ async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
         .create_readonly_operation(&f.id, "storageCleanup")
         .unwrap();
     f.tasks.phase(&task.task_id, "deleting").unwrap();
-    let journal = CleanupJournal {
-        schema_version: SCHEMA,
-        project_id: f.id.clone(),
-        task_id: task.task_id.clone(),
-        resolved: false,
-        result: json!({"deleted":[{"category":"dependencies","fileCount":1,"logicalBytes":9}],"skipped":[],"failures":[],"logicalBytes":9,"fileCount":1,"operationOutcome":"in_progress"}),
-        in_flight: Some(f.root.join("app/node_modules")),
-    };
-    builds::atomic_json(&f.storage.cleanup_journal(&task.task_id), &journal).unwrap();
     f.storage.shutdown().await;
     f.tasks.shutdown().await;
     let tasks = BuildManager::new(
@@ -530,11 +518,14 @@ async fn interrupted_cleanup_preserves_checkpoint_and_never_replays_deletion() {
     .unwrap();
     let task = tasks.task(&task.task_id).unwrap();
     assert_eq!(task.status, TaskStatus::Interrupted);
-    assert_eq!(task.result.as_ref().unwrap()["logicalBytes"], 9);
-    assert_eq!(
-        task.result.as_ref().unwrap()["operationOutcome"],
-        "interrupted"
-    );
+    assert!(task.result.is_none());
+    assert!(!f
+        .paths
+        .workspace_root()
+        .join(".platform/operations")
+        .join(&task.task_id)
+        .join("cleanup.json")
+        .exists());
     assert_eq!(
         fs::read(f.root.join("app/node_modules/residual")).unwrap(),
         b"do not replay"

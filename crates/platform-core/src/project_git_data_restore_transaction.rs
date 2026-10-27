@@ -317,7 +317,7 @@ pub(super) fn verify_binding(
         }
     }
     let mut issues = vec![];
-    inspect_repository_files(&git, None, &mut issues)?;
+    inspect_repository_files(&git, &mut issues)?;
     if !issues.is_empty() {
         return Err(changed().detail("issues", json!(issues)));
     }

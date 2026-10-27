@@ -160,11 +160,12 @@ test('A final task releases the guard only after refreshing both application and
   assert.equal(commandCalls(calls, 'project_git_source_restore_recover').length, 0);
 });
 
-test('Task logs remain accessible for an unresolved operation without exposing creation or full version controls', async () => {
-  const { calls } = await setup({ overrides: { project_git_source_restore_status: () => pendingRecovery(), task_logs: ({ taskId }) => ({ taskId, cursor: 0, nextCursor: 6, text: '记录保留', truncated: false, gaps: [], eof: true }) } });
-  await open(); await click(byText('查看任务日志'));
-  assert.deepEqual(commandCalls(calls, 'task_logs'), [['task_logs', { taskId: 'restore_original', cursor: 0 }]]);
-  assert.match(document.body.textContent, /记录保留/); assert.doesNotMatch(document.body.textContent, /创建备份|准备基线|保存源码版本|要取回的本机提交/);
+test('An unresolved operation shows current state without fetching or retaining task output', async () => {
+  const { calls } = await setup({ overrides: { project_git_source_restore_status: () => pendingRecovery() } });
+  await open();
+  assert.equal(byText('查看任务日志'), undefined);
+  assert.equal(commandCalls(calls, 'task_logs').length, 0);
+  assert.doesNotMatch(document.body.textContent, /创建备份|准备基线|保存源码版本|要取回的本机提交/);
 });
 
 test('Late reads and submissions cannot publish into another project, instance or unmounted detail', async () => {

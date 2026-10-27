@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowRight, Copy, FolderOpen, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { timeText } from './storage-utils';
 import type { RetainedWorkspaceRoot, TaskRecord, WorkspaceInfo } from './types';
 import { messageFrom } from './ui-utils';
 
@@ -96,7 +95,7 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
     try { await navigator.clipboard.writeText(value); setNotice(`${label}路径已复制。`); } catch { setError('无法复制，请选择显示的路径手动复制。'); }
   }
   const records = (workspace?.retainedRoots ?? []).map(retainedRecord);
-  const uncleaned = records.filter((record) => record.cleaned !== true);
+  const presentRecords = records.filter((record) => record.absent !== true);
   const step = tracker.running || pending ? 3 : confirmedPath ? 2 : 1;
   return <section className="lifecycle-card workspace-location-card" aria-labelledby="workspace-location-title">
     <div className="section-heading"><div><h2 id="workspace-location-title">存储位置</h2><p>软件管理的内容保存在下面两个位置。</p></div><button className="refresh-button" disabled={!enabled || refreshing || pending} onClick={() => void refresh()}><RefreshCw size={14} />{refreshing ? '刷新中…' : '刷新状态'}</button></div>
@@ -114,10 +113,10 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
         {confirmedPath && <div className="operation-confirmation workspace-migration-confirmation"><strong>确认迁移整个工作区</strong><p>来源：<code>{workspace?.workspaceRoot}</code><br />目标：<code>{confirmedPath}</code></p><p>迁移包含所有网页项目；原目录会保留。成功后需要从平台重新进入项目，并重新复制 AI 路径。</p><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对来源和目标，并处理各窗口草稿与外部写入</label><div className="confirmation-actions"><button className="primary-button" disabled={blocked || !acknowledged} onClick={() => void migrate()}>{pending ? '提交中…' : '确认开始迁移'}</button><button className="refresh-button" disabled={pending || tracker.running} onClick={() => { setConfirmedPath(null); setAcknowledged(false); }}>取消</button></div></div>}
       </div>}
     </div>
-    {uncleaned.length > 0 && <div className="settings-history-notice"><span>有 {uncleaned.length} 个迁移前的旧工作区还没清理。</span>{onOpenHistory && <button className="refresh-button" onClick={onOpenHistory}>去清理</button>}</div>}
-    <details className="workspace-disclosure"><summary>技术信息与迁移记录</summary><div className="workspace-disclosure-body"><dl className="path-list"><div className="path-row"><dt>工作区格式</dt><dd>{workspace?.formatVersion ?? '未知'}</dd></div><div className="path-row"><dt>文件系统</dt><dd>{workspace?.filesystem ?? '尚未读取'}</dd></div></dl>{records.length ? <div className="retained-roots"><h3>迁移原目录记录</h3><p>这里记录迁移前的位置及后续清理状态。平台使用上方当前工作区，不会自动切回原目录。</p>{records.map((record, index) => {
-      const cleaned = record.cleaned === true;
-      return <article className={`retained-root-record${cleaned ? ' is-cleaned' : ''}`} key={record.taskId ?? index}><strong>{cleaned ? '已清理' : '保留未清理'}</strong><code>{record.path ?? record.sourcePath ?? '原目录路径未记录'}</code><p>{cleaned ? '这里只保留原路径和清理回执，不表示该目录仍存在或仍占用空间。' : record.available === false ? '当前无法读取此原目录，请在“空间 › 历史资料”检查目录状态；这条记录本身不能证明目录仍然存在或占用空间。' : '此目录尚未清理。可在“空间 › 历史资料”扫描并核对。'}</p>{Boolean(cleaned && record.cleanup?.completedAt) && <small>清理完成：{timeText(record.cleanup?.completedAt)}</small>}{record.cleanup?.receiptPath && <div className="retained-root-receipt"><span>清理回执</span><code>{record.cleanup.receiptPath}</code></div>}{record.reason && <details><summary>查看记录说明</summary><p>{record.reason}</p></details>}</article>;
+    {presentRecords.length > 0 && <div className="settings-history-notice"><span>有 {presentRecords.length} 个迁移前的旧工作区还没清理。</span>{onOpenHistory && <button className="refresh-button" onClick={onOpenHistory}>去清理</button>}</div>}
+    <details className="workspace-disclosure"><summary>技术信息与迁移记录</summary><div className="workspace-disclosure-body"><dl className="path-list"><div className="path-row"><dt>工作区格式</dt><dd>{workspace?.formatVersion ?? '未知'}</dd></div><div className="path-row"><dt>文件系统</dt><dd>{workspace?.filesystem ?? '尚未读取'}</dd></div></dl>{records.length ? <div className="retained-roots"><h3>迁移原目录记录</h3><p>这里显示迁移前的位置及当前是否可读取。平台使用上方当前工作区，不会自动切回原目录。</p>{records.map((record, index) => {
+      const absent = record.absent === true;
+      return <article className={`retained-root-record${absent ? ' is-absent' : ''}`} key={record.taskId ?? index}><strong>{absent ? '目录当前不存在' : '保留目录'}</strong><code>{record.path ?? record.sourcePath ?? '原目录路径未记录'}</code><p>{absent ? '原磁盘上的此路径当前不存在；平台不保留删除历史，也不据此认定是谁删除了目录。' : record.available === false ? '当前无法读取此原目录，请在“空间 › 历史资料”检查目录状态；这条记录本身不能证明目录仍然存在或占用空间。' : '此目录尚未清理。可在“空间 › 历史资料”扫描并核对。'}</p>{record.reason && <details><summary>查看记录说明</summary><p>{record.reason}</p></details>}</article>;
     })}</div> : <p>没有迁移原目录记录。</p>}</div></details>
     {tracker.running && <p className="workspace-operation-status" role="status">迁移任务已提交，正在等待最终结果。请勿重复提交。</p>}
     {(error || tracker.error) && <p role="alert" className="task-error">{error || tracker.error}</p>}{notice && <p role="status" className="workspace-inline-notice">{notice}</p>}

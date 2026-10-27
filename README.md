@@ -1,5 +1,7 @@
 # 熊猫小抽屉
 
+2026-10-27 最新确认：[操作记录精简与外部 AI 分工](docs/operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
+
 2026-10-27 已接入[添加项目第2版](docs/add-project-flow.md)：并列添加入口、可编辑Git源码、本地四类检查结果、共享AI评估／修复说明及后台进度；开发包、实际检查和边界见[实施记录](docs/add-project-v2-verification.md)。
 
 Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、删除、旧回收站兼容和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码。2026-10-25 用户明确选择[清空旧开发环境并重新开始](docs/development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`，实际清理与新环境验收另记。实际验收范围见各阶段记录，仍是隔离的内部开发版。
@@ -137,7 +139,6 @@ npm run cli -- project handoff --project prj_实际项目ID --json
 npm run cli -- db schema --project prj_实际项目ID --json
 npm run cli -- project build --project prj_实际项目ID --json
 npm run cli -- task wait --task task_实际任务ID --timeout 30 --json
-npm run cli -- task logs --task task_实际任务ID --json
 npm run cli -- project url --project prj_实际项目ID --json
 npm run cli -- maintenance status --project prj_实际项目ID --json
 npm run cli -- project export --project prj_实际项目ID --input export.json --json

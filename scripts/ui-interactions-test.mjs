@@ -483,8 +483,8 @@ async function openOverviewVersions() {
   return details;
 }
 
-test('Web details explicitly mount version management and preserve its draft across folding and pages', async () => {
-  await setup(); const calls = []; const states = []; let guard;
+test('Web details explicitly mount retained read-only version tools without save drafts', async () => {
+  await setup(); const calls = []; const states = [];
   globalThis.__UI_TEST_INVOKE__ = async command => {
     calls.push(command);
     if (command === 'project_metadata') return metadata;
@@ -494,43 +494,18 @@ test('Web details explicitly mount version management and preserve its draft acr
     if (command === 'storage_files') return emptyStorageFiles;
     throw new Error(`Unexpected version integration request: ${command}`);
   };
-  await render(h(ProjectOverview, overviewProps({ onDismissGuardChange: value => { guard = value; }, onDevelopmentStateChange: value => states.push(value) })));
-  assert.equal(calls.some(command => command === 'project_git_status' || command === 'project_git_data_save_status'), false);
+  await render(h(ProjectOverview, overviewProps({ onDevelopmentStateChange: value => states.push(value) })));
+  assert.equal(calls.includes('project_git_status'), false);
   const details = await openOverviewVersions();
   assert.ok(document.querySelector('.project-git-panel'));
-  const label = [...document.querySelectorAll('label')].find(element => element.textContent === '版本说明');
-  const field = document.getElementById(label.htmlFor);
-  await inputValue(field, '尚未保存的网页版本草稿');
-  assert.equal(states.at(-1).dirty, true);
+  assert.equal([...document.querySelectorAll('label')].some(element => element.textContent === '版本说明'), false);
+  assert.equal(calls.some(command => /project_git_(save|initialize|branch_create|data_save)$/.test(command)), false);
   await act(async () => { details.open = false; details.dispatchEvent(new window.Event('toggle')); });
-  assert.equal(details.open, true);
+  assert.equal(details.open, false);
   await click(hubTab('空间与文件')); await click(hubTab('概览'));
-  assert.equal(field.value, '尚未保存的网页版本草稿');
-  await act(async () => { assert.equal(guard(), false); });
-  assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
-  assert.equal(calls.some(command => /project_git_(save|initialize|data_save)$/.test(command)), false);
+  assert.equal(document.querySelector('[aria-label="关闭详情确认"]'), null);
   await render(h('div'));
   assert.deepEqual(states.at(-1), { dirty: false, pending: false });
-});
-
-test('Web version submission keeps the detail and tabs protected until the accepted request resolves', async () => {
-  await setup(); const accepted = deferred(); const states = []; let guard;
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status' || command === 'project_git_data_restore_status') return clearRecovery;
-    if (command === 'project_git_status') return overviewGitStatus({ canInitialize: true, canSave: false, canListVersions: false });
-    if (command === 'project_git_initialize') return accepted.promise;
-    throw new Error(`Unexpected version integration request: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ onDismissGuardChange: value => { guard = value; }, onDevelopmentStateChange: value => states.push(value) })));
-  await openOverviewVersions();
-  await click(buttonNamed('初始化本项目 Git'));
-  assert.equal(states.at(-1).pending, true);
-  assert.equal(hubTab('更多操作').disabled, true);
-  await act(async () => { assert.equal(guard(), false); });
-  await act(async () => accepted.reject(new Error('Disposable initialization refused; existing files retained')));
-  assert.equal(states.at(-1).pending, false);
-  assert.match(document.querySelector('.project-git-panel').textContent, /Disposable initialization refused/);
 });
 
 test('A project requiring data recovery opens its recovery entry even when ordinary Git and metadata are unavailable', async () => {
@@ -1115,10 +1090,10 @@ test('Expired cleanup plans and plans for a different workspace cannot submit de
   assert.deepEqual(requests, ['workspace_cleanup_preview']);
 });
 
-test('Historical cleanup shows per-item results, uncertain deletion lower bounds and the durable receipt', async () => {
+test('Historical cleanup shows current per-item results and uncertain lower bounds without a receipt', async () => {
   await setup();
   const task = { taskId: 'task_cleanup_results', type: 'workspaceCleanup', projectId: null, final: true, status: 'failed', phase: 'failed', result: {
-    completed: false, receiptPath: '/disposable/development/cleanup/receipts/task_cleanup_results', items: [
+    completed: false, items: [
       { id: 'one', kind: 'retainedWorkspace', path: '/disposable/old-one', status: 'removed', completed: true, removed: { removedLogicalBytes: 1234, removedFileCount: 5, completed: true } },
       { id: 'two', kind: 'retainedWorkspace', path: '/disposable/old-two', status: 'failed', completed: false, error: { code: 'TARGET_CHANGED', message: 'Disposable partial fixture', details: { cleanupResult: { removedLogicalBytes: 42, removedFileCount: 1, accountingComplete: false, countsAreLowerBounds: true, remainingPath: '/disposable/old-two' } } } },
       { id: 'three', kind: 'retainedWorkspace', path: '/disposable/retained', status: 'skipped', completed: false, reason: 'A preceding item needs attention' },
@@ -1130,24 +1105,24 @@ test('Historical cleanup shows per-item results, uncertain deletion lower bounds
   assert.match(results[0].textContent, /已清理.*实际删除.*5 个/);
   assert.match(results[1].textContent, /已确认至少删除.*42 B.*下限.*待核对的残留目录/);
   assert.match(results[2].textContent, /未处理.*没有继续处理/);
-  assert.equal(document.querySelector('.workspace-cleanup-receipt code').textContent, task.result.receiptPath);
+  assert.equal(document.querySelector('.workspace-cleanup-receipt'), null);
 });
 
-test('A cleaned retired workspace remains an explicit historical record instead of claiming space is still occupied', async () => {
+test('An absent retired workspace reports current absence without claiming a recorded deletion', async () => {
   await setup();
   globalThis.__UI_TEST_INVOKE__ = async (command) => { throw new Error(`Reading locations must not call ${command}`); };
-  const workspace = { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [{ path: '/disposable/old-workspace', available: false, cleaned: true, cleanup: { completed: true, receiptPath: '/disposable/development/cleanup/receipt' } }] };
+  const workspace = { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [{ path: '/disposable/old-workspace', available: false, absent: true, cleanup: { status: 'absent', completed: false } }] };
   await render(h(WorkspaceLocation, { workspace, dataRoot: '/disposable/development', enabled: true, active: true, migrating: false, onTask() {}, onRefresh: async () => {} }));
   const record = document.querySelector('.retained-roots');
-  assert.match(record.textContent, /已清理/);
-  assert.match(record.textContent, /不表示该目录仍存在或仍占用空间/);
+  assert.match(record.textContent, /目录当前不存在/);
+  assert.match(record.textContent, /不保留删除历史/);
   assert.match(record.textContent, /disposable\/old-workspace/);
   assert.equal(document.querySelector('.settings-history-notice'), null, 'A cleaned root is not offered for cleanup again');
-  // The history list shows the same record as completed, without a checkbox.
+  // Current absence is informational, without a checkbox or completion claim.
   globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan({ items: [] })); };
-  await render(h(WorkspaceCleanupPanel, cleanupProps({ cleanedRecords: workspace.retainedRoots }))); await click(buttonNamed('扫描可清理范围'));
-  const cleaned = document.querySelector('.workspace-cleanup-item.is-cleaned');
-  assert.match(cleaned.textContent, /disposable\/old-workspace.*已清理/);
+  await render(h(WorkspaceCleanupPanel, cleanupProps({ absentRecords: workspace.retainedRoots }))); await click(buttonNamed('扫描可清理范围'));
+  const cleaned = document.querySelector('.workspace-cleanup-item.is-absent');
+  assert.match(cleaned.textContent, /disposable\/old-workspace.*目录当前不存在/);
   assert.equal(cleaned.querySelector('input'), null);
 });
 

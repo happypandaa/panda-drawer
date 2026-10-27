@@ -463,7 +463,6 @@ test('A verified program candidate never asks to run its author build a second t
 test('A failed update preparation provides repair help for the verified editable source and says no version was switched', async () => {
   const { calls } = await setup({ props: { targetAppId: appId, sourceKind: 'managed', sourcePath: '/disposable/author-source' }, overrides: {
     node_install_prepare: () => task({final:true,status:'failed',error:{code:'PREPARE_FAILED',message:'Artificial dependency rejected'}}),
-    task_logs: () => ({text:'Artificial preparation log'}),
   } });
   await choose(); await prepareClick();
   const help=document.querySelector('.add-project-failure-help');
@@ -471,13 +470,13 @@ test('A failed update preparation provides repair help for the verified editable
   assert.match(help.textContent,/disposable\/author-source/);
   assert.ok(byText('复制说明给 AI'));
   assert.equal(commandCalls(calls,'node_install_apply').length,0);
+  assert.equal(commandCalls(calls,'task_logs').length,0);
 });
 
 test('A lost update response offers AI help without claiming the previous version is unaffected', async () => {
   const { calls } = await setup({ props: { targetAppId: appId, sourceKind: 'managed', sourcePath: '/disposable/author-source' }, overrides: {
     node_install_prepare: () => readyTask(),
     node_install_apply: () => {throw new Error('Artificial lost IPC response');},
-    task_logs: () => ({text:''}),
   } });
   await choose(); await prepareClick(); await confirmAll(); await click(byText('确认更新'));
   const help=document.querySelector('.add-project-failure-help');

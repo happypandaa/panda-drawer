@@ -20,7 +20,6 @@ interface CleanupState {
   status: CleanupStatus;
   message?: string;
   remainingPaths?: string[];
-  receiptPath?: string | null;
   error?: unknown;
 }
 interface Props {
@@ -47,7 +46,6 @@ function readState(value: CleanupState): CleanupState {
   if (!value || !(value.status === 'idle' ? value.operationId === null : typeof value.operationId === 'string' && Boolean(value.operationId))
     || !['idle', 'stopping', 'deleting', 'completed', 'blocked', 'failed'].includes(value.status)
     || value.message !== undefined && typeof value.message !== 'string'
-    || value.receiptPath != null && typeof value.receiptPath !== 'string'
     || (value.remainingPaths !== undefined && (!Array.isArray(value.remainingPaths) || value.remainingPaths.some(path => typeof path !== 'string')))) {
     throw new Error('清理状态返回不完整，请核对状态；不会再次提交删除。');
   }
@@ -152,7 +150,7 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
         <p>包括项目源码、已安装应用及其依赖、数据库、附件、配置和保存的 Key、所有工作区、旧备份、旧回收项与恢复现场。请先把需要保留的内容导出到本次范围以外，并停止外部编辑器、AI 和其他工具访问这些目录。</p>
         {previewing && <p role="status">正在核对清理范围，尚未删除文件…</p>}
         {plan && <>{managedProjects.length > 0 && <div className="local-data-cleanup-paths"><h4>将删除的托管项目</h4><ul>{managedProjects.map(project => <li key={project.path}><strong>{project.name}</strong><code>{project.path}</code></li>)}</ul></div>}<p>外部项目的文件夹不会被删除：{externalProjectCount} 个。平台内的应用数据和设置会删除。</p><div className="local-data-cleanup-paths"><h4>将永久删除</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{item.label}</strong><code>{item.path}</code></li>)}</ul></div>
-          <div className="local-data-cleanup-paths"><h4>继续保留</h4><p>软件程序本身保留，可在清理完成并退出后卸载。为阻止并发运行及核对结果，可能保留极少量实例锁与清理回执。</p><p>系统生成的网页存储（可能包含会话和本地存储）、软件缓存及系统偏好也可能保留；本操作不等于卸载后完全无残留。</p>{plan.preservedPaths.length > 0 && <ul>{plan.preservedPaths.map((path, index) => <li key={index}>{path}</li>)}</ul>}</div>
+          <div className="local-data-cleanup-paths"><h4>继续保留</h4><p>软件程序本身保留，可在清理完成并退出后卸载。为阻止并发运行，可能保留必要的实例锁与环境身份文件。</p><p>系统生成的网页存储（可能包含会话和本地存储）、软件缓存及系统偏好也可能保留；本操作不等于卸载后完全无残留。</p>{plan.preservedPaths.length > 0 && <ul>{plan.preservedPaths.map((path, index) => <li key={index}>{path}</li>)}</ul>}</div>
           {plan.warnings.length > 0 && <ul className="local-data-cleanup-warnings">{plan.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
           {expired && <p role="status">清理范围已过期，请重新核对后完成两次确认。</p>}
           {disabled && <p role="status">有其他操作进行中或工作区不可用，请等待处理完成后重新核对。</p>}
@@ -162,10 +160,10 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
       </> : <div className="local-data-cleanup-result" aria-live="polite" aria-busy={operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))}>
         <h3>{status ? stateLabels[status.status] : operation.current ? '正在提交清理，请等待' : '清理结果尚待核对'}</h3>
         {status?.message && <p>{status.message}</p>}
-        {status?.status === 'completed' ? <><p>本次清理已完成。软件程序仍在，可退出后卸载；外部保留范围及必要的实例锁和清理回执以核对结果为准。</p><p>系统网页存储、软件缓存和系统偏好可能保留，本操作不等于卸载后完全无残留。</p></> : status?.status === 'idle' ? <p>本次没有受理清理，未开始删除。可以退出软件，重新打开后核对范围并重新确认；不会自动重试。</p> : <p>普通项目操作已停止。请等待并核对实际结果；已删除的文件无法恢复，不会自动再次提交清理。</p>}
+        {status?.status === 'completed' ? <><p>本次清理已完成。软件程序仍在，可退出后卸载；外部保留范围及必要的实例锁和环境身份文件以核对范围为准。</p><p>系统网页存储、软件缓存和系统偏好可能保留，本操作不等于卸载后完全无残留。</p></> : status?.status === 'idle' ? <p>本次没有受理清理，未开始删除。可以退出软件，重新打开后核对范围并重新确认；不会自动重试。</p> : <p>普通项目操作已停止。请等待并核对实际结果；已删除的文件无法恢复，不会自动再次提交清理。</p>}
         {status?.error != null && <p role="alert">{messageFrom(status.error)}</p>}
         {Boolean(status?.remainingPaths?.length) && <div className="local-data-cleanup-paths"><h4>尚需核对的目录</h4><ul>{status!.remainingPaths!.map(path => <li key={path}><code>{path}</code></li>)}</ul></div>}
-        {status?.receiptPath && <div className="local-data-cleanup-paths"><h4>清理回执</h4><code>{status.receiptPath}</code><p>回执用于核对实际结果，此处仅显示位置。</p></div>}
+
         <div className="confirmation-actions">{status?.status !== 'completed' && <button className="refresh-button" disabled={checking || operation.current} onClick={() => void checkStatus()}>{checking ? '正在核对…' : '查看清理状态'}</button>}<button className="refresh-button" disabled={quitting || operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))} onClick={() => void quit()}>{quitting ? '正在退出…' : '退出软件'}</button></div>
       </div>}
       {error && <p className="task-error" role="alert">{error}</p>}

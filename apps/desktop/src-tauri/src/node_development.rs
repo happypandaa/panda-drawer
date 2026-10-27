@@ -91,11 +91,6 @@ pub(super) async fn node_development_git(
             let action = match operation.as_str() {
                 "status" => NodeGitAction::Status,
                 "versions" => NodeGitAction::Versions(limit.unwrap_or(50)),
-                "initialize" => {
-                    NodeGitAction::Initialize(serde_json::from_value(value).map_err(parse)?)
-                }
-                "save" => NodeGitAction::Save(serde_json::from_value(value).map_err(parse)?),
-                "branch" => NodeGitAction::Branch(serde_json::from_value(value).map_err(parse)?),
                 "restore-preview" => {
                     NodeGitAction::RestorePreview(serde_json::from_value(value).map_err(parse)?)
                 }

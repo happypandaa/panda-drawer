@@ -2,7 +2,7 @@
 use super::*;
 
 #[tokio::test]
-async fn task_management_routes_require_admin_identity_and_preserve_log_cursors() {
+async fn task_management_routes_require_admin_identity_and_never_expose_retired_logs() {
     let (_temp, paths) = RuntimePaths::for_test();
     let task_id = "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let task_dir = paths.workspace_root().join(".platform/tasks").join(task_id);
@@ -101,43 +101,22 @@ async fn task_management_routes_require_admin_identity_and_preserve_log_cursors(
     assert_eq!(envelope["data"]["final"], true);
     assert_eq!(envelope["data"]["error"]["code"], "BUILD_FAILED");
 
-    let url = format!("{base}/api/v1/tasks/{task_id}/logs");
-    let envelope: Value = client
-        .get(format!("{url}?offset=6"))
-        .bearer_auth(&service.shared.snapshot().token)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(envelope["data"]["taskId"], task_id);
-    assert_eq!(envelope["data"]["cursor"], 6);
-    assert_eq!(envelope["data"]["nextCursor"], log.len());
-    assert_eq!(envelope["data"]["text"], &log[6..]);
-    assert_eq!(envelope["data"]["eof"], true);
-    let envelope: Value = client
-        .get(format!("{url}?offset={}", log.len()))
-        .bearer_auth(&service.shared.snapshot().token)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(envelope["data"]["text"], "");
-    assert_eq!(envelope["data"]["eof"], true);
-    let envelope: Value = client
-        .get(format!("{url}?offset=-1"))
-        .bearer_auth(&service.shared.snapshot().token)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "INVALID_INPUT");
+    for offset in ["6", "-1", "0"] {
+        let response = client
+            .get(format!(
+                "{base}/api/v1/tasks/{task_id}/logs?offset={offset}"
+            ))
+            .bearer_auth(&service.shared.snapshot().token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(!response
+            .text()
+            .await
+            .unwrap()
+            .contains("test-only-sentinel"));
+    }
     service.shutdown().await.unwrap();
 }
 

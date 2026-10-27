@@ -127,7 +127,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 `trash list/info/restore/purge` 仅兼容旧版本留下的回收项，不表示新删除可恢复。旧项恢复保留原 ID 并推进页面代次；坏库恢复保留字节并阻断业务，不创建空库。只有用户明确要求永久清除选定旧回收项才使用 `trash purge --trash "$TRASH_ID" --json`；它不连带删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 需核对原任务和残留，不能承诺完整恢复。
 
-Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 Node CLI 删除入口。受管安装删除其登记、程序代次、私有配置／秘密、数据和缓存；外部目录引用只删除平台登记与私有配置／数据／缓存，整个外部目录保留。独立来源、安装证据、旧运行恢复记录及删除回执保留，不手工递归清空 Node 槽。
+Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 Node CLI 删除入口。受管安装删除其登记、程序代次、私有配置／秘密、数据和缓存；外部目录引用只删除平台登记与私有配置／数据／缓存，整个外部目录保留。独立来源、安装登记及旧运行恢复材料保留；新流程不生成删除回执或逐文件删除明细，不手工递归清空 Node 槽。
 
 ## 工作区迁移后的继续工作
 
@@ -142,18 +142,17 @@ Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 No
 1. 根据用户需求修改业务源码，设计可用的空状态、加载状态、表单校验、保存反馈和错误恢复。无需 AI 在线才能完成日常操作。
 2. 需要新依赖时有意修改 `app/package.json`，用 npm 更新并保留对应锁文件。不要删除锁文件绕过安装错误，也不要用不同内容覆盖同版本 SDK 包。SDK 升级应明确更新版本、vendor、锁文件和说明。
 3. 用 `env doctor --json` 检查**桌面服务实际选用**的 Node/npm。当前支持 Node `^22.12.0 || ^24.0.0`，推荐 24 LTS；有受管资源的环境默认使用配套工具，已有显式本机路径优先且失效不回退。不是任意更高主版本都已支持。缺少构建工具影响构建，不影响已发布网页和数据操作。
-4. 提交平台构建，再检查任务结果和日志。构建脚本必须接受 `--outDir ABSOLUTE_DIRECTORY`；平台复制 `sourceDir` 内普通源码，每次在独立候选执行 `npm ci`，构建到暂存目录并验证后发布。不复用或修改原源码 `node_modules`；只支持源码目录内 file/workspace 依赖，候选不带根清单、数据或 Git，脚本不能假设它们存在。候选不是系统权限沙箱。不要自行向 `dist/` 拷贝产物，也不要在构建中操作业务数据或启动常驻进程。
+4. 提交平台构建，再检查任务状态、最终结果和错误原因。构建脚本必须接受 `--outDir ABSOLUTE_DIRECTORY`；平台复制 `sourceDir` 内普通源码，每次在独立候选执行 `npm ci`，构建到暂存目录并验证后发布。不复用或修改原源码 `node_modules`；只支持源码目录内 file/workspace 依赖，候选不带根清单、数据或 Git，脚本不能假设它们存在。候选不是系统权限沙箱。不要自行向 `dist/` 拷贝产物，也不要在构建中操作业务数据或启动常驻进程。
 
 ```sh
 "$PROJECT_CLI" env doctor --json
 "$PROJECT_CLI" project build --project "$PROJECT_ID" --json
 # 从提交结果读取 taskId，再设置 TASK_ID。
 "$PROJECT_CLI" task wait --task "$TASK_ID" --timeout 30 --json
-"$PROJECT_CLI" task logs --task "$TASK_ID" --json
 "$PROJECT_CLI" project info --project "$PROJECT_ID" --json
 ```
 
-`task wait` 返回 `waitTimedOut: true` 只表示本次等待结束，任务仍可能运行；继续查询同一任务。日志分页用返回的 `nextCursor` 传给 `task logs --cursor`。只有任务为 `succeeded` 才表示发布成功；失败时查明原因、修复并重新构建，旧产物与业务数据保留。构建输入在过程中变化会导致发布失败，构建期间不要继续编辑同一项目。`buildInfo.sourceState` 描述当前源码与发布产物的匹配情况，不代替任务结果或页面验证。
+`task wait` 返回 `waitTimedOut: true` 只表示本次等待结束，任务仍可能运行；继续查询同一任务。平台不再保存或提供构建／npm 详细日志；失败时读取同一任务的错误码与简短原因，必要时在作者源码目录自行复现。只有任务为 `succeeded` 才表示发布成功；失败时查明原因、修复并重新构建，旧产物与业务数据保留。构建输入在过程中变化会导致发布失败，构建期间不要继续编辑同一项目。`buildInfo.sourceState` 描述当前源码与发布产物的匹配情况，不代替任务结果或页面验证。
 
 成功后优先通过平台原生应用窗口验证。既有 project-v1 如需诊断当前会话，可使用实际提供的入口命令：
 
@@ -167,21 +166,17 @@ Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 No
 
 ## 当前能力与交接
 
-当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait/logs`、旧 `backup list/info/restore`、`maintenance status/end` 兼容接口、`trash list/info/restore/purge` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait`、`maintenance status` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
 
-`env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机源码保存、历史列表、新建定制分支和源码取回有独立命令，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
+`env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机历史列表和源码取回有独立命令；源码初始化、保存与新建分支由外部 AI 使用作者仓库的标准 Git 负责，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
 
 需要检查指定公开仓库时，明确执行 `env git check --url https://github.com/owner/repository.git --json`；也支持标准 Gitee HTTPS 仓库地址。检查在 20 秒执行预算内匿名读取 HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果绑定该地址与本次时间，不改变 `doctor` 的认证未验证状态；`readable-no-head` 不表示仓库为空。不要把远端检查加入普通离线工具诊断，不将其扩为 SSH／私有仓库认证、仓库获取或完整路线已交付。
 
 实际源码获取使用 `source acquire --url https://github.com/owner/repository.git --json`（也支持 Gitee），返回异步任务；`task wait --task TASK_ID --json` 等待最终结果。`source list --json`、`source get --source SOURCE_ID --json` 查看下载来源、精确提交和候选目录；`source inspect --path /绝对路径 --json` 仅检查本机声明。明确接入本机源码副本用 `source capture --path /绝对路径 [--name 名称] --json`：按路径排除已知数据、凭据、依赖、Git 控制与本机状态，不能通用识别任意文件中的秘密。`source cancel --task TASK_ID --json` 只是请求取消，继续核对最终状态。下载／复制不安装或运行代码，不创建业务项目；失败和中断现场保留，重试是新目录。Node 受管安装和更新另在原生管理窗口准备并确认，没有 Node 安装 HTTP／CLI 提交入口；通用应用包和私有认证仍未开放，不以候选ID调用数据库。
 
-明确保存 project-v1 源码时，先用 `project git status --project PROJECT_ID --json` 检查范围、排除项、改动和问题；只支持项目根普通标准仓库，已有 app 子仓库／父仓库不自动搬迁。若 `canInitialize:true`，明确执行 `project git init --project PROJECT_ID --input FILE --json`，输入含最新 `expectedSnapshot` 和 `initialBranch:"main"`，等待最终成功后重新读取状态。
+源码版本交给外部 AI 使用项目自己的标准 Git 管理。平台不再提供 `project git init/save/save-data/branch-create`，也不新增平台保存事务 journal。提交前核对作者身份、变更范围和秘密；不默认提交数据库、附件、配置、凭据、依赖或运行产物，不自动推送业务数据。已有 `version-data` 数据版本与源码／数据恢复功能保留；旧未完成数据保存仍可使用 `project git data-save-recovery` 只读核对，并在明确授权后以新鲜摘要调用 `data-save-finalize` 完成原任务，不能据此新建版本。
 
-保存用 `project git save --project PROJECT_ID --input FILE --json`，完整输入含最新 `expectedSnapshot`、明确的 `expectedHead`（尚无提交则 JSON null）、`message`、`author:{name,email}`。作者必须来自用户明确提供或会话已确认的信息，不猜身份、不读写全局身份；缺作者先保留待保存内容。`canSave:false` 时处理报告的问题后重新检查，不强制重置、不覆盖暂存内容。不将整个项目目录直接加入提交。
-
-返回任务后通过 `task get/wait/logs` 核对最终结果，取消用 `project git cancel --project PROJECT_ID --task TASK_ID --json`，请求取消不表示提交未发生。`operationOutcome:committed` 表示已提交但可能收尾需检查，`unknown` 需保留现场核对，不能自动重试。普通 `project git save` 保存源码开发材料并保留已有 `version-data` 数据子树，不重新读取活库。project-v1 项目根的标准 Git 可由用户明确选择 `project git save-data --project PROJECT_ID --input FILE --json`，输入与源码保存相同，主动保存源码、SQLite 一致性文件和完整附件至 `version-data`；先核对状态中的 `database.canSave`，等待同一任务最终结果。已有 `app/.git` 与 Node 自有数据库不纳管，不移动仓库根；配置、凭据、依赖和运行产物仍排除。源码取回不修改数据子树、活库或当前附件，从 Git 取回数据库到活库尚未实现；不自动推送含业务数据的历史。保存收尾失败先用 `project git data-save-recovery --project PROJECT_ID --json` 核对，只有当前允许且任务已授权时，才以最新 `saveTaskId`、`expectedJournalDigest` 调用 `project git data-save-finalize --project PROJECT_ID --input FILE --json`，不重建一个版本或删除外部锁。任意文件内的秘密不能通用识别，提交前仍须核对明确范围。
-
-`project git versions --project PROJECT_ID --limit 50 --json` 只读当前 HEAD 可达的本机历史；范围1–100、默认50，`hasMore` 表示更早记录未显示，不取回文件或联网。明确创建定制分支时，先重新读取状态，要求 `canCreateBranch:true`；调用 `project git branch-create --project PROJECT_ID --input FILE --json`，输入完整包含新分支短名 `name`、最新 `expectedHead`、`expectedBranch` 和 `expectedSnapshot`，等待任务最终结果。此操作只在当前干净版本创建并指向新分支，保留源码／索引／业务数据／当前产物，不覆盖已有分支。仅分支创建要求Git2.56.0；工具不支持时按 `branchCreationIssue` 说明处理，不擅自换工具。分支创建后再开始业务修改；已有分支切换、合并不在当前入口范围；旧源码取回是下述独立显式操作。
+`project git status --project PROJECT_ID --json` 只读检查当前范围与改动；`project git versions --project PROJECT_ID --limit 50 --json` 查看当前 HEAD 可达的本机历史。Node 受管程序的“退回上一个版本”入口已移除；外部 AI 回退源码后仍需按现行构建、准备和明确更新流程交付，源码 Git 不恢复业务数据。
 
 用户明确要取回已保存源码时，先停止对该项目的外部编辑，保留并保存现有改动。用 `project git source-restore-preview --project PROJECT_ID --input FILE --json`，输入 `targetCommit` 为完整40位小写SHA-1本机提交号；核对允许范围、逐文件增删改和 `canApply`。不接受任意revision／SHA-256，不联网取对象，目标清单必须逐字节一致。确认后调用 `project git source-restore --project PROJECT_ID --input FILE --json`，完整输入来自本次预览的 `targetCommit`、`expectedHead`、`expectedBranch`、`expectedSnapshot`、`expectedPlanDigest`；等待同一任务最终结果，不自动重发。
 

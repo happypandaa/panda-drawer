@@ -183,7 +183,7 @@ impl ProjectGitManager {
         let _gate = read_gate(&project, &mut context).await?;
         let tools = context.resolve(&self.git).await?;
         let plan = self
-            .restore_plan(&project, &input.target_commit, &tools, &mut context, None)
+            .restore_plan(&project, &input.target_commit, &tools, &mut context)
             .await?;
         preview(&project, &plan, &tools)
     }
@@ -322,9 +322,8 @@ impl ProjectGitManager {
         target: &str,
         tools: &GitToolchain,
         context: &mut Context,
-        owned_lock: Option<&IndexLock>,
     ) -> Result<RestorePlan, ApiError> {
-        let mut snapshot = inspect(project, Some(tools), context, owned_lock).await?;
+        let mut snapshot = inspect(project, Some(tools), context).await?;
         self.add_recovery_issue(&project.manifest.id, &mut snapshot.view)?;
         finalize_capabilities(&mut snapshot.view);
         if !snapshot.view.can_save
@@ -375,7 +374,7 @@ impl ProjectGitManager {
                 "目标版本的 project.json 必须与当前文件逐字节一致；本步不改运行声明或项目身份。",
             ));
         }
-        let verify = inspect(project, Some(tools), context, owned_lock).await?;
+        let verify = inspect(project, Some(tools), context).await?;
         if verify.view.snapshot_digest != snapshot.view.snapshot_digest {
             return Err(stale());
         }
@@ -1231,7 +1230,7 @@ impl ProjectGitManager {
         self.tasks.phase(task_id, "source-restore-preview")?;
         let tools = context.resolve(&self.git).await?;
         let plan = self
-            .restore_plan(project, &input.target_commit, &tools, context, None)
+            .restore_plan(project, &input.target_commit, &tools, context)
             .await?;
         if plan.snapshot_digest != input.expected_snapshot
             || plan_digest(&plan)? != input.expected_plan_digest
@@ -1262,14 +1261,6 @@ impl ProjectGitManager {
                 "源码与恢复现场不在同一卷；未使用复制覆盖替代原子操作。",
             ));
         }
-        self.tasks.append(
-            task_id,
-            format!(
-                "Source restore preparation evidence: {}\n",
-                staging.display()
-            )
-            .as_bytes(),
-        )?;
         let mut entries = Vec::new();
         for (index, change) in plan.changes.iter().enumerate() {
             context.checkpoint()?;
@@ -1350,17 +1341,6 @@ impl ProjectGitManager {
                 return Err(error);
             }
         }
-        self.tasks
-            .append(
-                task_id,
-                format!("Source restore retained evidence: {}\n", root.display()).as_bytes(),
-            )
-            .map_err(|error| {
-                error
-                    .outcome("unknown")
-                    .detail("restoreTaskId", task_id.to_owned())
-                    .detail("pending", true)
-            })?;
         self.drive_restore(
             project,
             task_id,
@@ -1477,7 +1457,6 @@ impl ProjectGitManager {
                         .detail("pending", false));
                 }
             }
-            let _ = self.tasks.append(task_id, b"Source restore needs explicit recovery; retained live files and displaced originals were not deleted.\n");
             return Err(error
                 .outcome("unknown")
                 .detail("restoreTaskId", journal.task_id.clone())
@@ -1522,7 +1501,6 @@ impl ProjectGitManager {
                 .detail("pending", true)
         })?;
         let result = json!({"operation":operation,"operationOutcome":"committed","restoreTaskId":journal.task_id,"state":journal.phase,"pending":false,"targetCommit":journal.plan.target_commit,"head":journal.plan.binding.head,"branch":journal.plan.binding.branch,"paths":journal.entries.iter().map(|entry| &entry.path).collect::<Vec<_>>(),"database":database_boundary(),"issues":warning.iter().collect::<Vec<_>>(),"durabilityWarning":warning,"completedAt":now()});
-        let _ = self.tasks.append(task_id, b"Source-only operation verified. HEAD, index, running output and business data were not replaced; retained evidence remains available.\n");
         Ok(result)
     }
 }

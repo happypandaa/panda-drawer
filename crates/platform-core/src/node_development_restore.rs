@@ -342,7 +342,7 @@ fn verify_binding(root: &Path, expected: &Binding) -> Result<(), ApiError> {
         return Err(changed());
     }
     let mut issues = vec![];
-    inspect_repository_files(&git, None, &mut issues)?;
+    inspect_repository_files(&git, &mut issues)?;
     if !issues.is_empty() {
         return Err(changed());
     }
@@ -588,7 +588,7 @@ impl NodeGit {
             return Err(input_error());
         }
         require_clear(root)?;
-        let snapshot = inspect_node(root, Some(tools), context, None).await?;
+        let snapshot = inspect_node(root, Some(tools), context).await?;
         if !snapshot.view.can_save
             || !snapshot.view.changes.is_empty()
             || head_oid(&snapshot.view).is_none()
@@ -736,7 +736,7 @@ impl NodeGit {
             })
             .collect();
         verify_binding(root, &bound)?;
-        let verify = inspect_node(root, Some(tools), context, None).await?;
+        let verify = inspect_node(root, Some(tools), context).await?;
         if snapshot.view.snapshot_digest != verify.view.snapshot_digest
             || raw_snapshot(root)? != before
         {
