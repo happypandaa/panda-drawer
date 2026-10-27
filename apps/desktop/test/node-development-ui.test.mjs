@@ -201,11 +201,11 @@ test('Git drafts belong to one application and are cleared when its identity cha
   assert.equal(gitInput('版本说明').value,''); assert.equal(gitInput('提交人').value,'');
 });
 
-test('Publishing the first managed generation refreshes source separation and enables AI handoff', async () => {
+test('External source handoff stays available and refreshes after publishing the first managed generation', async () => {
   const seen=[]; let reads=0;
   const props=developmentProps({onInfo:value=>seen.push(value)});
   await mount(NodeDevelopmentPanel,props,async command=>{ assert.equal(command,'node_development_info'); return info({runtimeIsSource:++reads===1}); });
-  assert.equal(button('在 Codex 打开').disabled,true);
+  assert.equal(button('在 Codex 打开').disabled,false);
   await act(async()=>root.render(h(NodeDevelopmentPanel,{...props,installedGeneration:'gen_'+'a'.repeat(32)})));
   assert.equal(reads,2); assert.equal(seen.at(-1).runtimeIsSource,false); assert.equal(button('在 Codex 打开').disabled,false);
 });
@@ -476,4 +476,51 @@ test('A failed status read after a successful write uses read context instead of
   await previewRestore(); await act(async () => document.querySelector('input[type=checkbox]').click()); await click('确认取回源码');
   assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/);
   assert.doesNotMatch(document.querySelector('[role=alert]').textContent, committedWords);
+});
+
+test('External source can be handed to AI without first building or separating its running files', async () => {
+  const copied=[]; const calls=[];
+  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>copied.push(value)}});
+  await mount(NodeDevelopmentPanel,developmentProps(),async command=>{
+    calls.push(command);
+    if(command==='node_development_info')return info({runtimeIsSource:true});
+    if(command==='node_development_handoff')return {projectRoot:info().sourceRoot,instanceId:'instance_one',text:'Read and edit only the verified author folder.'};
+    throw Error(command);
+  });
+  assert.equal(button('复制提示词').disabled,false);
+  await click('复制提示词');
+  assert.deepEqual(copied,['Read and edit only the verified author folder.']);
+  assert.deepEqual(calls,['node_development_info','node_development_handoff']);
+});
+
+test('A failed managed build offers a repair prompt and preserves the old-program distinction', async () => {
+  const prepared=[]; const copied=[];
+  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>copied.push(value)}});
+  await mount(NodeDevelopmentPanel,developmentProps({onPrepared:value=>prepared.push(value)}),async command=>{
+    if(command==='node_development_info')return info();
+    if(command==='node_development_build')return task({final:true,status:'failed',error:{code:'BUILD_FAILED',message:'Artificial build rejected'}});
+    if(command==='task_logs')return {text:'Artificial build log'};
+    if(command==='source_review_capabilities')return {codexAvailable:false};
+    throw Error(command);
+  });
+  await click('构建并更新');
+  assert.match(document.querySelector('.add-project-failure-help').textContent,/更新没有成功，正在使用的版本不受影响/);
+  assert.match(document.querySelector('.add-project-failure-help').textContent,/one-authoritative-repository/);
+  await click('复制说明给 AI');
+  assert.equal(copied.length,1);
+  assert.match(copied[0],/Artificial build rejected/);
+  assert.match(copied[0],/Artificial build log/);
+  assert.deepEqual(prepared,[]);
+});
+
+test('A failed external-source build does not claim its editable files are still a working previous version', async () => {
+  await mount(NodeDevelopmentPanel,developmentProps(),async command=>{
+    if(command==='node_development_info')return info({runtimeIsSource:true});
+    if(command==='node_development_build')return task({final:true,status:'failed',error:{code:'BUILD_FAILED',message:'External source broken'}});
+    if(command==='task_logs')return {text:''};
+    throw Error(command);
+  });
+  await click('构建并更新');
+  assert.match(document.querySelector('.add-project-failure-help').textContent,/请先修复你的文件夹/);
+  assert.doesNotMatch(document.querySelector('.add-project-failure-help').textContent,/正在使用的版本不受影响/);
 });

@@ -246,3 +246,26 @@ for (const detail of ['processResourceClosed', 'candidateOwnershipConfirmed']) t
   await assert.rejects(session.acquire(input), error => error instanceof SourceImportError && error.recovery);
   assert.ok(!commands(calls).includes('node_install_prepare'));
 });
+
+test('Editable source publication is bound to the installed application and reused on cleanup retries', async () => {
+  const published = { published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' };
+  const { session, calls } = fixture({ source_import_publish: () => published });
+  await assert.rejects(session.publishSource(), error => error instanceof SourceImportError && error.recovery);
+  assert.deepEqual(calls, []);
+  await session.acquire(input); await session.install(false);
+  assert.deepEqual(await session.publishSource(), published);
+  assert.deepEqual(await session.publishSource(), published);
+  assert.deepEqual(calls.filter(([command]) => command === 'source_import_publish'), [['source_import_publish', { sourceTaskId: 'task_source', appId }]]);
+});
+
+test('An unconfirmed publication keeps the installed result and is retried without another apply', async () => {
+  let publications = 0;
+  const { session, calls } = fixture({ source_import_publish: () => ++publications === 1 ? { published: false, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' } : { published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' } });
+  await session.acquire(input); await session.install(false);
+  await assert.rejects(session.publishSource(), error => error instanceof SourceImportError && error.recovery);
+  assert.deepEqual(session.installed, installed);
+  assert.equal(session.published, null);
+  await session.publishSource();
+  assert.equal(publications, 2);
+  assert.equal(commands(calls).filter(command => command === 'node_install_apply').length, 1);
+});

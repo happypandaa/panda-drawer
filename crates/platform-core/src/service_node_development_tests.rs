@@ -200,14 +200,15 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
     let initial_head = initial["status"]["repository"]["head"]["oid"]
         .as_str()
         .unwrap();
+    let external_handoff = handle.node_development_handoff(&apps, id).await.unwrap();
     assert_eq!(
-        handle
-            .node_development_handoff(&apps, id)
-            .await
-            .unwrap_err()
-            .code,
-        "NODE_DEVELOPMENT_RUNTIME_IS_SOURCE"
+        external_handoff["projectRoot"],
+        source.to_string_lossy().as_ref()
     );
+    assert!(external_handoff["text"]
+        .as_str()
+        .unwrap()
+        .contains("直接运行此文件夹"));
     let installed = build_install(&handle, apps.clone(), id).await;
     assert_eq!(installed["appId"], id);
     let detail = apps.configuration(id).await.unwrap();

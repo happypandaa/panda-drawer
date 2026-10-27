@@ -12,7 +12,8 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/disposable-feedback-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
-await writeFile(mockPath, 'export const invoke = (...args) => globalThis.__FEEDBACK_INVOKE__(...args); export const isTauri = () => true;\n');
+// These unrelated interaction fixtures have no interrupted Git additions.
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__FEEDBACK_INVOKE__(command, ...args); export const isTauri = () => true;\n');
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
@@ -520,8 +521,8 @@ test('Node and local-directory errors remain in their original panels and never 
   await details(node.name); await click(byText('进入项目', dialog()));
   assert.match(dialog().textContent, /Artificial local Node error/); assert.equal(failure(), null);
   await closeDialog(); assert.equal(failure(), null);
-  await click(byText('添加本地应用'));
-  await click(byText('选择本地项目文件夹'));
+  await click(byText('添加本地项目'));
+  await click(byText('选择文件夹…'));
   assert.match(dialog().textContent, /Artificial local directory error/); assert.equal(failure(), null); assert.equal(success(), null);
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
 });
@@ -532,14 +533,16 @@ test('Local Node and directory success messages remain local instead of entering
   await setup({ nodes: [runningNode], overrides: {
     node_app_stop: () => ({ ...node, state: 'stopped' }),
     choose_path: () => '/disposable/feedback/review-folder',
+    source_review_capabilities: () => ({codexAvailable:false}),
     node_app_directory_inspect: () => ({ sourcePath: '/disposable/feedback/review-folder', state: 'needs-review', expectedRevision: 'feedback-directory-revision', issues: [], reviewPrompt: 'Disposable complete local review prompt' }),
   } });
   await details(node.name); await click(byText('运行状态', dialog())); await click(byText('关闭应用', dialog()));
   assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
   await advance(6000); assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
   await closeDialog();
-  await click(byText('添加本地应用')); await click(byText('选择本地项目文件夹')); await click(byText('复制给 AI 检查'));
-  assert.match(dialog().textContent, /完整检查说明已复制/); assert.equal(success(), null);
+  await click(byText('添加本地项目')); await click(byText('选择文件夹…')); await click(byText('复制说明给 AI'));
+  assert.match(document.querySelector('.project-ai-help-modal').textContent, /已复制。粘贴给 AI/); assert.equal(success(), null);
+  await click(document.querySelector('.project-ai-help-modal .modal-close'));
   await closeDialog(); assert.equal(success(), null);
 });
 

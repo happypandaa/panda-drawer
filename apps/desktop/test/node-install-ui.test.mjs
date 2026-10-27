@@ -459,3 +459,30 @@ test('A verified program candidate never asks to run its author build a second t
   await prepareClick();
   assert.deepEqual(commandCalls(calls, 'node_install_prepare')[0][1], { input: { sourceId, expectedSourceDigest: digest, targetAppId: null } });
 });
+
+test('A failed update preparation provides repair help for the verified editable source and says no version was switched', async () => {
+  const { calls } = await setup({ props: { targetAppId: appId, sourceKind: 'managed', sourcePath: '/disposable/author-source' }, overrides: {
+    node_install_prepare: () => task({final:true,status:'failed',error:{code:'PREPARE_FAILED',message:'Artificial dependency rejected'}}),
+    task_logs: () => ({text:'Artificial preparation log'}),
+  } });
+  await choose(); await prepareClick();
+  const help=document.querySelector('.add-project-failure-help');
+  assert.match(help.textContent,/更新没有成功，正在使用的版本不受影响/);
+  assert.match(help.textContent,/disposable\/author-source/);
+  assert.ok(byText('复制说明给 AI'));
+  assert.equal(commandCalls(calls,'node_install_apply').length,0);
+});
+
+test('A lost update response offers AI help without claiming the previous version is unaffected', async () => {
+  const { calls } = await setup({ props: { targetAppId: appId, sourceKind: 'managed', sourcePath: '/disposable/author-source' }, overrides: {
+    node_install_prepare: () => readyTask(),
+    node_install_apply: () => {throw new Error('Artificial lost IPC response');},
+    task_logs: () => ({text:''}),
+  } });
+  await choose(); await prepareClick(); await confirmAll(); await click(byText('确认更新'));
+  const help=document.querySelector('.add-project-failure-help');
+  assert.match(help.textContent,/更新结果还需要核对/);
+  assert.doesNotMatch(help.textContent,/正在使用的版本不受影响/);
+  assert.equal(commandCalls(calls,'node_install_apply').length,1);
+  assert.ok(byText('复制说明给 AI'));
+});

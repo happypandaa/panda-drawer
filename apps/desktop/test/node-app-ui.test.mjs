@@ -12,7 +12,8 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/node-form-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
-await writeFile(mockPath, 'export const invoke = (...args) => globalThis.__NODE_FORM_INVOKE__(...args); export const isTauri = () => true;\n');
+// These unrelated interaction fixtures have no interrupted Git additions.
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__NODE_FORM_INVOKE__(command, ...args); export const isTauri = () => true;\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {
@@ -48,7 +49,7 @@ const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel
 const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
 const { default: App } = await component('App.tsx');
 let root;
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; delete navigator.clipboard; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; dom.window.localStorage.clear(); delete navigator.clipboard; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 function field(name, type, extra = {}) { return { name, type, label: `设置 ${name}`, required: false, secret: false, description: `人工说明 ${name}`, howToGet: [`人工步骤 ${name}`], ...extra }; }
@@ -370,6 +371,7 @@ test('Managed details distinguish declared, legacy and unreadable data metadata 
     await setup(baseMock(value, async (command, args) => {
       calls.push([command, args]);
       if (command === 'node_app_start') return { ...value, state: 'running' };
+      if (command === 'node_program_rollback_preview') return { appId: value.id, canRollback: false };
       throw new Error(command);
     }), { request: { app: value, intent: 'details', token: 1 } });
     await click(byText('概览'));
@@ -382,7 +384,7 @@ test('Managed details distinguish declared, legacy and unreadable data metadata 
       assert.deepEqual(calls, [['node_app_start', { appId: value.id }]]);
     } else {
       assert.doesNotMatch(declaration.textContent, /后续普通更新无法核对数据契约，将被阻止/);
-      assert.deepEqual(calls, []);
+      assert.deepEqual(calls, value.state === 'failed' ? [['node_program_rollback_preview', { appId: value.id }]] : []);
     }
     await act(async () => root.unmount()); root = null;
   }
@@ -984,18 +986,18 @@ test('Adding a ready local folder previews first and binds registration to the r
     if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
     throw new Error(command);
   }, { request: null, addRequest: 1 });
-  await click(byText('选择本地项目文件夹'));
+  await click(byText('选择文件夹…'));
   assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }], ['node_app_directory_inspect', { sourcePath: '/artificial/node-source' }]]);
-  assert.ok(byText('确认添加此项目')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
+  assert.ok(byText('添加')); assert.equal(document.querySelector('[role="dialog"]').textContent.includes('Artificial preview'), true);
   const readyHeading = document.querySelector('.node-inspection-preview h3');
-  assert.equal(readyHeading.textContent, '确认添加到项目列表');
-  assert.equal(document.activeElement, byText('确认添加此项目'));
-  assert.match(document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent, /核对下面的项目和目录/);
-  const copyPath = byText('复制目录路径'); copyPath.focus(); await click(copyPath);
+  assert.equal(readyHeading.textContent, '「Artificial preview」可以添加');
+  assert.equal(document.activeElement, byText('添加'));
+  assert.match(document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent, /核对下面的项目和文件夹/);
+  const copyPath = byText('复制文件夹路径'); copyPath.focus(); await click(copyPath);
   assert.equal(document.activeElement, copyPath, 'A later local operation must not repeatedly pull focus back to the preview');
   assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /org.example.inspected-data · 版本 1/);
   assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /平台未验证实际数据格式/);
-  await click(byText('确认添加此项目'));
+  await click(byText('添加'));
   assert.deepEqual(calls.at(-1), ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'directory-revision-1' }]);
   assert.ok(document.querySelector('[role="dialog"]'));
   assert.match(document.querySelector('[role="dialog"]').textContent, /添加成功/);
@@ -1013,23 +1015,23 @@ test('Local folder progress follows actual read and add operations, then waits f
     if (command === 'node_app_directory_register') return adding.promise;
     throw new Error(command);
   }, { onAdded: item => registered.push(item), onEnter: item => enters.push(item), onClose: () => completions.push(true) });
-  const activeStep = () => document.querySelector('[aria-label="导入进度"] [aria-current=step]')?.textContent;
-  assert.match(activeStep(), /选择目录/);
-  await click(byText('选择本地项目文件夹'));
+  const activeStep = () => document.querySelector('[aria-label="添加进度"] [aria-current=step]')?.textContent;
+  assert.match(activeStep(), /选择文件夹/);
+  await click(byText('选择文件夹…'));
   assert.match(activeStep(), /检查项目/);
   await act(async () => reading.resolve(directoryReview()));
   assert.match(activeStep(), /添加应用/);
   assert.deepEqual(registered, []);
-  await click(byText('确认添加此项目'));
+  await click(byText('添加'));
   assert.match(activeStep(), /添加应用/);
   assert.deepEqual(enters, []);
   await act(async () => adding.resolve(value));
   assert.deepEqual(registered, [value]);
   assert.match(document.body.textContent, /添加成功/);
-  assert.equal(document.querySelectorAll('[aria-label="导入进度"] .is-complete').length, 4);
+  assert.equal(document.querySelectorAll('[aria-label="添加进度"] .is-complete').length, 3);
   assert.deepEqual(enters, []); assert.deepEqual(completions, []);
   assert.equal(document.activeElement, document.querySelector('.import-result h3'));
-  await click(byText('去配置'));
+  await click(byText('去设置'));
   assert.deepEqual(enters, [value]); assert.deepEqual(completions, []);
 });
 
@@ -1042,7 +1044,7 @@ test('Local folder success is revoked after the platform instance changes and ca
     if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
     throw new Error(command);
   }, props);
-  await click(byText('选择本地项目文件夹')); await click(byText('确认添加此项目'));
+  await click(byText('选择文件夹…')); await click(byText('添加'));
   assert.ok(byText('打开应用'));
   await act(async () => root.render(h(LocalDirectoryPanel, { ...props, instanceId: 'new-directory-service' })));
   assert.equal(byText('打开应用'), undefined); assert.doesNotMatch(document.body.textContent, /添加成功/);
@@ -1062,9 +1064,9 @@ test('Choosing configuration from a local add result never starts the app even i
     if (command === 'node_app_configuration') return ready;
     throw new Error(command);
   }, { request: null, addRequest: 1 });
-  await click(byText('选择本地项目文件夹')); await click(byText('确认添加此项目'));
-  assert.ok(byText('去配置')); assert.equal(calls.some(([command]) => command === 'node_app_configuration'), false);
-  await click(byText('去配置'));
+  await click(byText('选择文件夹…')); await click(byText('添加'));
+  assert.ok(byText('去设置')); assert.equal(calls.some(([command]) => command === 'node_app_configuration'), false);
+  await click(byText('去设置'));
   assert.equal(document.querySelector('.local-directory-panel'), null);
   assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
   assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 1);
@@ -1093,11 +1095,11 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
     if (command === 'node_app_directory_initialize_and_register') return app({ sourcePath: '/artificial/node-source' });
     throw new Error(command);
   }, { onAdded: value => added.push(value) });
-  await click(byText('选择本地项目文件夹'));
+  await click(byText('选择文件夹…'));
   const name = document.querySelector('.local-directory-empty input');
   assert.equal(name.value, 'node-source');
   assert.match(document.querySelector('.local-directory-empty').textContent, /生成.*添加/);
-  assert.match(document.querySelector('.local-directory-empty').textContent, /原始目录.*保留/);
+  assert.match(document.querySelector('.local-directory-empty').textContent, /文件夹.*保留/);
   assert.equal(document.querySelector('.local-directory-empty input[type=checkbox]'), null);
   await change(name, ''); assert.equal(byText('生成并添加项目').disabled, true);
   await change(name, 'My local project');
@@ -1105,11 +1107,11 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
   await click(byText('生成并添加项目'));
   assert.deepEqual(calls[2], ['node_app_directory_initialize_and_register', { sourcePath: '/artificial/node-source', input: { expectedRevision: 'directory-revision-1', name: 'My local project' } }]);
   assert.equal(added.length, 1); assert.equal(calls.length, 3);
-  assert.equal(byText('确认添加此项目'), undefined, 'Successful generation and adding must not request a second add confirmation');
+  assert.equal(byText('添加'), undefined, 'Successful generation and adding must not request a second add confirmation');
   assert.equal(calls.some(([command]) => ['node_app_directory_initialize', 'node_app_directory_register', 'node_app_start'].includes(command)), false);
 });
 
-test('Review-needed folders expose the complete backend prompt, copy it only explicitly and retain manual fallback', async () => {
+test('Review-needed folders copy the shared contextual AI prompt only explicitly and retain manual fallback', async () => {
   const review = directoryReview('needs-review', { issues: ['人工检查问题，平台不据此判定不可适配。'], reviewPrompt: ' 保留首尾空白\n完整说明：请检查本机 /artificial/node-source。\n ' });
   const calls = []; const copied = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); throw new Error('Artificial clipboard denied'); } } });
@@ -1117,22 +1119,28 @@ test('Review-needed folders expose the complete backend prompt, copy it only exp
     calls.push([command, args]);
     if (command === 'choose_path') return review.sourcePath;
     if (command === 'node_app_directory_inspect') return review;
+    if (command === 'source_review_capabilities') return { codexAvailable: false };
     throw new Error(command);
   });
-  await click(byText('选择本地项目文件夹'));
-  assert.match(document.body.textContent, /平台尚未判断这个目录是否适配/);
-  assert.match(document.body.textContent, /能读取本机目录的 AI/);
-  assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('生成并添加项目'), undefined);
-  const prompt = document.querySelector('[aria-label="给 AI 的检查说明"]'); assert.equal(prompt.readOnly, true); assert.equal(prompt.value, review.reviewPrompt);
+  await click(byText('选择文件夹…'));
+  assert.match(document.body.textContent, /需要修改后才能添加/);
+  assert.match(document.body.textContent, /文件夹保持原样/);
+  assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+  const retained = document.querySelector('[aria-label="给 AI 的检查说明"]');
+  assert.equal(retained.readOnly, true); assert.equal(retained.value, review.reviewPrompt);
   assert.deepEqual(copied, []);
-  await click(byText('复制给 AI 检查'));
-  assert.deepEqual(copied, [review.reviewPrompt]); assert.match(document.body.textContent, /复制未完成.*手动复制/);
-  assert.equal(prompt.value, review.reviewPrompt); assert.equal(document.querySelector('.local-directory-path input').value, review.sourcePath);
-  await click(byText('选择完整说明')); assert.equal(prompt.selectionStart, 0); assert.equal(prompt.selectionEnd, review.reviewPrompt.length);
+  await click(byText('复制说明给 AI'));
+  assert.equal(copied.length, 1);
+  assert.match(copied[0], /\/artificial\/node-source/); assert.match(copied[0], /人工检查问题/);
+  assert.match(document.body.textContent, /Artificial clipboard denied/);
+  const preview = document.querySelector('.project-ai-preview textarea');
+  assert.equal(preview.value, copied[0]); assert.equal(preview.readOnly, true);
+  await click(byText('选择完整说明')); assert.equal(preview.selectionStart, 0); assert.equal(preview.selectionEnd, preview.value.length);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); } } });
-  await click(byText('复制给 AI 检查')); assert.match(document.body.textContent, /完整检查说明已复制/);
-  await click(byText('复制目录路径')); assert.equal(copied.at(-1), review.sourcePath);
-  assert.equal(calls.length, 2, 'Copying never initializes, registers or sends anything through native APIs');
+  await click(byText('复制完整说明')); assert.match(document.body.textContent, /已复制/);
+  await click(document.querySelector('[aria-label="关闭把问题交给 AI"]'));
+  await click(byText('复制文件夹路径')); assert.equal(copied.at(-1), review.sourcePath);
+  assert.equal(calls.some(([command]) => /initialize|register|start|send/.test(command)), false, 'Copying never initializes, registers, starts or sends the project');
 });
 
 test('Rechecking revokes ready previews and empty-folder actions before reading and never reuses them on failure', async () => {
@@ -1144,12 +1152,12 @@ test('Rechecking revokes ready previews and empty-folder actions before reading 
       if (command === 'node_app_directory_inspect') return ++reads === 1 ? directoryReview(state) : deferredRead.promise;
       throw new Error(command);
     });
-    await click(byText('选择本地项目文件夹'));
+    await click(byText('选择文件夹…'));
     if (state === 'empty') assert.equal(byText('生成并添加项目').disabled, false);
     await click(byText('重新检查'));
     assert.equal(document.querySelector('.node-inspection-preview'), null); assert.equal(document.querySelector('.local-directory-empty'), null);
     await act(async () => deferredRead.reject(new Error('Artificial inspection failed')));
-    assert.match(document.body.textContent, /Artificial inspection failed/); assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.match(document.body.textContent, /Artificial inspection failed/); assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
     assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
     assert.equal(calls.length, 3);
     await act(async () => root.unmount()); root = null;
@@ -1163,8 +1171,8 @@ test('Cancelling a replacement folder chooser preserves the path and prompt but 
     if (command === 'node_app_directory_inspect') { inspections++; return directoryReview('needs-review'); }
     throw new Error(command);
   });
-  await click(byText('选择本地项目文件夹')); const prompt = document.querySelector('textarea').value;
-  await click(byText('重新选择文件夹'));
+  await click(byText('选择文件夹…')); const prompt = document.querySelector('textarea').value;
+  await click(byText('换一个'));
   assert.match(document.body.textContent, /已取消选择/); assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
   assert.equal(document.querySelector('textarea').value, prompt); assert.equal(inspections, 1);
   await click(byText('重新检查')); assert.equal(inspections, 2);
@@ -1178,11 +1186,11 @@ test('Pending local-folder actions reject duplicates and adding does not reuse a
     if (command === 'node_app_directory_register') { registrations++; return registering.promise; }
     throw new Error(command);
   }, { onAdded: value => added.push(value) });
-  await click(byText('选择本地项目文件夹')); await click(byText('正在选择与检查…')); assert.equal(choices, 1);
+  await click(byText('选择文件夹…')); await click(byText('正在选择与检查…')); assert.equal(choices, 1);
   await act(async () => choosing.resolve('/artificial/node-source'));
-  await click(byText('确认添加此项目')); assert.equal(byText('确认添加此项目'), undefined);
+  await click(byText('添加')); assert.equal(byText('添加'), undefined);
   await act(async () => registering.reject(new Error('Reviewed directory changed')));
-  assert.equal(registrations, 1); assert.equal(byText('确认添加此项目'), undefined); assert.match(document.body.textContent, /Reviewed directory changed/);
+  assert.equal(registrations, 1); assert.equal(byText('添加'), undefined); assert.match(document.body.textContent, /Reviewed directory changed/);
   await click(byText('重新检查')); assert.equal(reads, 2); assert.deepEqual(added, []);
 });
 
@@ -1197,19 +1205,19 @@ test('Service changes discard late chooser, inspection, combined generation and 
       if (command === 'node_app_directory_initialize_and_register' || command === 'node_app_directory_register') return delayed.promise;
       throw new Error(command);
     }, props);
-    await click(byText('选择本地项目文件夹'));
+    await click(byText('选择文件夹…'));
     if (delayedOperation === 'initialize') {
       await click(byText('生成并添加项目'));
     }
-    if (delayedOperation === 'register') await click(byText('确认添加此项目'));
+    if (delayedOperation === 'register') await click(byText('添加'));
     const submitted = calls.length;
     await act(async () => root.render(h(LocalDirectoryPanel, { ...props, instanceId: 'new-directory-service' })));
     const result = delayedOperation === 'choose' ? '/artificial/late-chooser' : ['initialize', 'register'].includes(delayedOperation) ? app({ sourcePath: '/artificial/node-source' }) : directoryReview();
     await act(async () => delayed.resolve(result));
     assert.equal(calls.length, submitted); assert.deepEqual(added, []); assert.equal(gates.at(-1), false);
-    assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
     assert.doesNotMatch(document.body.textContent, /late-chooser/);
-    assert.equal(byText(delayedOperation === 'choose' ? '选择本地项目文件夹' : '重新选择文件夹').disabled, false);
+    assert.equal(byText(delayedOperation === 'choose' ? '选择文件夹…' : '换一个').disabled, false);
     await act(async () => root.unmount()); root = null;
   }
 });
@@ -1222,20 +1230,20 @@ test('Disabled local-folder access invalidates its unfinished review and keeps t
     if (command === 'node_app_directory_inspect') return ++reads === 1 ? delayed.promise : directoryReview();
     throw new Error(command);
   }, props);
-  await click(byText('选择本地项目文件夹'));
+  await click(byText('选择文件夹…'));
   await act(async () => root.render(h(LocalDirectoryPanel, { ...props, enabled: false })));
   await act(async () => delayed.resolve(directoryReview()));
-  assert.equal(byText('重新检查').disabled, true); assert.equal(byText('确认添加此项目'), undefined);
+  assert.equal(byText('重新检查').disabled, true); assert.equal(byText('添加'), undefined);
   await act(async () => root.render(h(LocalDirectoryPanel, props)));
   assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
-  assert.equal(byText('确认添加此项目'), undefined);
-  await click(byText('重新检查')); assert.equal(reads, 2); assert.ok(byText('确认添加此项目'));
+  assert.equal(byText('添加'), undefined);
+  await click(byText('重新检查')); assert.equal(reads, 2); assert.ok(byText('添加'));
 });
 
 test('Closing local-folder content prevents a late chooser from inspecting or initializing after unmount', async () => {
   const delayed = deferred(); const calls = []; const gates = [];
   await setupDirectory(async (command, args) => { calls.push([command, args]); assert.equal(command, 'choose_path'); return delayed.promise; }, { onPendingChange: value => gates.push(value) });
-  await click(byText('选择本地项目文件夹'));
+  await click(byText('选择文件夹…'));
   await act(async () => root.unmount()); root = null;
   await act(async () => delayed.resolve('/artificial/closed-folder'));
   assert.deepEqual(calls, [['choose_path', { kind: 'nodeapp' }]]); assert.equal(gates.at(-1), false);
@@ -1250,7 +1258,7 @@ test('A generate-and-add error keeps directory and name and needs a fresh empty 
     if (command === 'node_app_directory_initialize_and_register') { initializations++; writes.push(args); throw new Error('Artificial initialization needs inspection'); }
     throw new Error(command);
   });
-  await click(byText('选择本地项目文件夹')); await change(document.querySelector('.local-directory-empty input'), 'Preserved project name');
+  await click(byText('选择文件夹…')); await change(document.querySelector('.local-directory-empty input'), 'Preserved project name');
   await click(byText('生成并添加项目'));
   assert.equal(initializations, 1); assert.equal(byText('生成并添加项目'), undefined); assert.match(document.body.textContent, /Artificial initialization needs inspection/);
   assert.match(document.querySelector('[role=alert]').textContent, /已生成的文件会保留.*重新检查.*不要重复生成/);
@@ -1279,18 +1287,18 @@ test('A generated-folder add failure requires reinspection and an explicit ready
       if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
       throw new Error(command);
     }, { onAdded: value => added.push(value) });
-    await click(byText('选择本地项目文件夹')); await click(byText('生成并添加项目'));
+    await click(byText('选择文件夹…')); await click(byText('生成并添加项目'));
     assert.deepEqual(added, []);
     assert.match(document.querySelector('[role=alert]').textContent, /文件已生成.*保留文件.*重新检查/);
     assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
-    assert.equal(byText('生成并添加项目'), undefined); assert.equal(byText('确认添加此项目'), undefined);
+    assert.equal(byText('生成并添加项目'), undefined); assert.equal(byText('添加'), undefined);
     assert.deepEqual(calls.map(([command]) => command), ['choose_path', 'node_app_directory_inspect', 'node_app_directory_initialize_and_register'], 'An incomplete or uncertain operation must never silently retry its stages');
     await click(byText('重新检查'));
     assert.equal(byText('生成并添加项目'), undefined, 'The already generated nonempty folder must use the ordinary ready path');
-    assert.equal(byText('确认添加此项目').disabled, false);
+    assert.equal(byText('添加').disabled, false);
     assert.equal(calls.filter(([command]) => command === 'node_app_directory_initialize_and_register').length, 1);
     assert.deepEqual(added, []);
-    await click(byText('确认添加此项目'));
+    await click(byText('添加'));
     assert.deepEqual(calls.at(-1), ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'after-inspection-2' }]);
     assert.equal(added.length, 1);
     assert.equal(calls.filter(([command]) => command === 'node_app_directory_initialize_and_register').length, 1);
@@ -1308,11 +1316,11 @@ test('Unknown or mismatched combined results never claim that the generated fold
       if (command === 'node_app_directory_initialize_and_register') return result;
       throw new Error(command);
     }, { onAdded: value => added.push(value) });
-    await click(byText('选择本地项目文件夹')); await click(byText('生成并添加项目'));
+    await click(byText('选择文件夹…')); await click(byText('生成并添加项目'));
     assert.deepEqual(added, []);
     assert.ok(document.querySelector('[role=alert]'));
     assert.match(document.querySelector('[role=alert]').textContent, /重新检查.*不要重复生成/);
-    assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
     assert.deepEqual(calls.map(([command]) => command), ['choose_path', 'node_app_directory_inspect', 'node_app_directory_initialize_and_register']);
     await act(async () => root.unmount()); root = null;
   }
@@ -1324,10 +1332,131 @@ test('Adding rejects malformed or mismatched directory previews instead of makin
       if (command === 'choose_path') return '/artificial/node-source';
       assert.equal(command, 'node_app_directory_inspect'); return result;
     });
-    await click(byText('选择本地项目文件夹'));
-    assert.ok(document.querySelector('[role=alert]')); assert.equal(byText('确认添加此项目'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    await click(byText('选择文件夹…'));
+    assert.ok(document.querySelector('[role=alert]')); assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
     await act(async () => root.unmount()); root = null;
   }
+});
+
+test('Local add offers a reusable evaluation before choosing a folder and never starts or modifies a project', async () => {
+  const calls = [];
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'source_review_capabilities') return { codexAvailable: false };
+    throw new Error(command);
+  });
+  assert.equal(document.querySelectorAll('[aria-label="添加进度"] li').length, 3);
+  assert.ok(byText('不确定能不能用？先复制说明问问 AI'));
+  assert.deepEqual(calls, []);
+  await click(byText('不确定能不能用？先复制说明问问 AI'));
+  assert.ok(byText('复制评估说明'));
+  assert.match(document.body.textContent, /不填写时.*当前对话/);
+  assert.deepEqual(calls.map(([command]) => command), ['source_review_capabilities']);
+});
+
+test('A previously registered external folder opens the existing application without inspection or a second registration', async () => {
+  const selected = app({ sourcePath: '/artificial/node-source' });
+  const calls = []; const enters = []; const details = [];
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return selected.sourcePath;
+    throw new Error(command);
+  }, { apps: [selected], onEnter: value => enters.push(value), onViewDetails: value => details.push(value) });
+  await click(byText('选择文件夹…'));
+  assert.match(document.body.textContent, /这个文件夹已经添加过了/);
+  assert.equal(byText('添加'), undefined);
+  assert.deepEqual(calls.map(([command]) => command), ['choose_path']);
+  await click(byText('查看应用详情')); assert.deepEqual(details, [selected]);
+  await click(byText(`打开「${selected.name}」`)); assert.deepEqual(enters, [selected]);
+  assert.equal(calls.some(([command]) => /inspect|register|start/.test(command)), false);
+});
+
+test('A native directory-identity match also prevents duplicate addition when its path differs', async () => {
+  const selected = app({ id: 'existing_alias', sourcePath: '/artificial/original-source' });
+  const calls = []; const enters = [];
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview('needs-review', { existingApp: { id: selected.id, name: selected.name } });
+    if (command === 'node_app_configuration') return selected;
+    throw new Error(command);
+  }, { onEnter: value => enters.push(value) });
+  await click(byText('选择文件夹…'));
+  assert.match(document.body.textContent, /这个文件夹已经添加过了/);
+  await click(byText(`打开「${selected.name}」`));
+  assert.deepEqual(enters, [selected]);
+  assert.deepEqual(calls.at(-1), ['node_app_configuration', { appId: selected.id }]);
+  assert.equal(calls.some(([command]) => command === 'node_app_directory_register'), false);
+});
+
+test('Local result categories preserve the native uncertainty and never invent an add action', async () => {
+  for (const [category, label] of [['needs-changes', '需要修改'], ['unsupported', '当前不适合'], ['insufficient', '信息不足']]) {
+    await setupDirectory(async command => {
+      if (command === 'choose_path') return '/artificial/node-source';
+      if (command === 'node_app_directory_inspect') return directoryReview('needs-review', { category, issues: ['缺少 local-app.json'] });
+      throw new Error(command);
+    });
+    await click(byText('选择文件夹…'));
+    assert.equal(document.querySelector('.local-directory-review .local-directory-result-label').textContent, label);
+    assert.match(document.querySelector('.local-directory-location').textContent, /文件夹保持原样/);
+    assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.ok(byText(category === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '复制说明给 AI'));
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('A project-v1 folder directs the user to the complete-project workflow without changing its files', async () => {
+  let imports = 0; const calls = [];
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return directoryReview('needs-review', { category: 'insufficient', projectFormat: 'project-v1', issues: ['发现 project.json，应使用正确入口。'] });
+    throw new Error(command);
+  }, { onImportArchive: () => imports++ });
+  await click(byText('选择文件夹…')); await click(byText('改用导入完整项目'));
+  assert.equal(imports, 1);
+  assert.equal(calls.some(([command]) => /register|initialize|start/.test(command)), false);
+});
+
+test('Recent folders retain only five paths in the same workspace and always perform a fresh inspection', async () => {
+  const paths = Array.from({ length: 6 }, (_, index) => `/artificial/recent-folder-${index + 1}`);
+  let choices = 0; const reads = [];
+  const mock = async (command, args) => {
+    if (command === 'choose_path') return paths[choices++];
+    if (command === 'node_app_directory_inspect') { reads.push(args.sourcePath); return directoryReview('needs-review', { sourcePath: args.sourcePath, issues: ['缺少 local-app.json'] }); }
+    throw new Error(command);
+  };
+  await setupDirectory(mock, { workspacePath: '/artificial/recent-workspace', instanceId: 'before-restart' });
+  for (let index = 0; index < paths.length; index++) await click(byText(index ? '换一个' : '选择文件夹…'));
+  assert.equal(reads.length, 6);
+  await act(async () => root.unmount()); root = null;
+  await setupDirectory(mock, { workspacePath: '/artificial/recent-workspace', instanceId: 'after-restart' });
+  const recent = document.querySelectorAll('.local-directory-recent');
+  assert.equal(recent.length, 5);
+  assert.equal(recent[0].querySelector('span').textContent, paths[5]);
+  assert.doesNotMatch(document.querySelector('.local-directory-recents').textContent, /recent-folder-1/);
+  await click(recent[0].querySelector('button'));
+  assert.equal(reads.length, 7); assert.equal(reads.at(-1), paths[5]);
+  assert.equal(choices, 6, 'Using recent choices should not reopen the native directory picker');
+  await act(async () => root.unmount()); root = null;
+  await setupDirectory(mock, { workspacePath: '/artificial/different-workspace' });
+  assert.equal(document.querySelector('.local-directory-recents'), null);
+});
+
+test('A fresh recheck compares actual issues and never reuses the prior revision for adding', async () => {
+  let reads = 0; const writes = [];
+  await setupDirectory(async (command, args) => {
+    if (command === 'choose_path') return '/artificial/node-source';
+    if (command === 'node_app_directory_inspect') return ++reads === 1
+      ? directoryReview('needs-review', { issues: ['缺少 local-app.json', '缺少构建结果'] })
+      : directoryReview('ready', { expectedRevision: 'fresh-after-adaptation', issues: [] });
+    if (command === 'node_app_directory_register') { writes.push(args); return app({ sourcePath: '/artificial/node-source' }); }
+    throw new Error(command);
+  });
+  await click(byText('选择文件夹…')); await click(byText('重新检查'));
+  assert.match(document.querySelector('.local-directory-diff').textContent, /已解决 2 项，还剩 0 项/);
+  await click(byText('添加'));
+  assert.deepEqual(writes, [{ sourcePath: '/artificial/node-source', expectedRevision: 'fresh-after-adaptation' }]);
 });
 
 test('Input conversion refuses unsafe integers and preserves an explicit false value', () => {
@@ -1496,7 +1625,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   });
   await setup(async (command, args) => { calls.push([command, args]); return mock(command, args); }, {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 0);
-  await click(byText('添加本地应用')); await click(byText('选择本地项目文件夹'));
+  await click(byText('添加本地项目')); await click(byText('选择文件夹…'));
   await change(document.querySelector('.local-directory-empty input'), value.name);
   await click(byText('生成并添加项目'));
   assert.deepEqual(calls.filter(([command]) => command === 'node_app_directory_initialize_and_register'), [['node_app_directory_initialize_and_register', { sourcePath, input: { expectedRevision: 'directory-revision-1', name: value.name } }]]);
@@ -1508,7 +1637,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.equal(document.querySelector('.local-directory-prompt'), null);
   assert.doesNotMatch(document.querySelector('[role=dialog]').textContent, /Artificial retained empty-folder AI prompt/);
   assert.ok([...document.querySelectorAll('.radio-primary-nav button')].every(button => button.disabled));
-  assert.equal(byText('确认添加此项目'), undefined);
+  assert.equal(byText('添加'), undefined);
   await act(async () => completed.resolve(value));
   assert.equal(document.querySelectorAll('.project-card').length, 1, 'The registration callback must update the real App list immediately');
   assert.ok(byLabel(`进入项目「${value.name}」`));
@@ -1516,7 +1645,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.ok(document.querySelector('.local-directory-panel'), 'A successful combined command keeps the completion step visible');
   assert.match(document.querySelector('[role=dialog]').textContent, /添加成功/);
   assert.equal(document.querySelector('[role=tab]'), null);
-  assert.equal(byText('确认添加此项目'), undefined);
+  assert.equal(byText('添加'), undefined);
   assert.equal(byText('打开应用').disabled, false);
   assert.equal(byText('完成').disabled, false);
   assert.match(document.querySelector('[role=dialog]').textContent, /没有临时下载文件需要清理/);
@@ -1673,10 +1802,10 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   const staticTile = document.querySelector('[aria-label="进入项目「Static fixture」"]').closest('article');
   assert.equal(document.querySelector('.launcher-more'), null);
   assert.equal(byText('新建项目').disabled, true);
-  assert.equal(byText('添加本地应用').disabled, true);
-  assert.equal(byText('从 Git 导入应用').disabled, true);
+  assert.equal(byText('添加本地项目').disabled, true);
+  assert.equal(byText('从 Git 添加').disabled, true);
   await act(async () => staticTile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-  await click(byText('新建项目')); await click(byText('添加本地应用')); await click(byText('从 Git 导入应用'));
+  await click(byText('新建项目')); await click(byText('添加本地项目')); await click(byText('从 Git 添加'));
   assert.equal(document.querySelector('[role=menu]'), null);
   assert.equal(document.querySelector('[role=dialog]'), null);
   await act(async () => configuration.reject(new Error('Artificial configuration read failure')));

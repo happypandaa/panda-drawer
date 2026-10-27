@@ -3,6 +3,7 @@
 @import './ProjectLifecyclePanel.css';
 @import './ProjectDeleteDialog.css';
 @import './LocalDataCleanupPanel.css';
+@import './AddProject.css';
 
 :root {
   --surface: #fff;

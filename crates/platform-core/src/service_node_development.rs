@@ -59,6 +59,7 @@ impl RuntimeHandle {
         editable: bool,
     ) -> std::result::Result<NodeDevelopmentLease<'a>, ApiError> {
         let state = self.current();
+        apps.set_source_workspace(state.info.workspace_root.clone())?;
         state.active.fetch_add(1, Ordering::SeqCst);
         let active = Active(state.clone());
         if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::Acquire) {
@@ -76,12 +77,6 @@ impl RuntimeHandle {
         if editable {
             apps.require_no_source_restore(app_id)?;
             crate::node_development_git::require_source_restore_clear(&source.source_root)?;
-        }
-        if editable && source.runtime_is_source {
-            return Err(ApiError::new(
-                "NODE_DEVELOPMENT_RUNTIME_IS_SOURCE",
-                "请先构建并更新应用，再开发源码。",
-            ));
         }
         let lease = NodeDevelopmentLease {
             _source_lease: source_lease,
@@ -210,7 +205,12 @@ impl RuntimeHandle {
         let lease = self.node_development_lease(apps, app_id, true).await?;
         let root = &lease.source.source_root;
         crate::node_development_git::require_source_restore_clear(root)?;
-        let text = format!("请继续开发这个 Node 应用。\n源码仓库：{}\n\n以仓库 local-app.json 的 development 声明为准。一个应用只使用这个 Git 仓库。不要修改已安装的运行副本、平台登记、真实数据库、附件、配置或密钥。\n在源码中修改并测试后，通过平台的“构建并更新”准备新版本，用户确认后才发布。Git 只保存源码，不能代替数据库或密钥备份。请先阅读仓库中的 AGENTS.md、README 和开发文档，再按用户需求开发。", root.display());
+        let delivery = if lease.source.runtime_is_source {
+            "这个应用直接运行此文件夹的代码。请先让用户关闭应用，再按需求修改；修改后提醒用户重新打开应用。修改可能使应用暂时无法启动。"
+        } else {
+            "在源码中修改并测试后，通过平台的“构建并更新”准备新版本，用户确认后才更新；修改源码不改变当前可用程序。"
+        };
+        let text = format!("请继续开发这个 Node 应用。\n源码仓库：{}\n\n以仓库 local-app.json 的 development 声明为准。一个应用只使用这个 Git 仓库。只修改指定源码目录，不修改平台登记、私有配置或密钥；不读取或输出真实 .env 和密钥。任何会删除或清空应用数据、数据库、上传文件的操作，先说明影响并取得用户明确同意。修改前项目已有 Git 时建议保存一个版本，完成后列出修改文件。\n{}\nGit 只保存源码，不能代替数据库或密钥备份。请先阅读仓库中的 AGENTS.md、README 和开发文档，再按用户需求开发。", root.display(), delivery);
         Ok(json!({"text":text,"projectRoot":root,"instanceId":lease.instance_id}))
     }
     pub async fn node_development_build(

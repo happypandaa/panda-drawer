@@ -31,6 +31,9 @@ pub use directory::DirectoryInitializeInput;
 #[path = "node_app_development.rs"]
 pub(crate) mod development;
 pub use development::{NodeDevelopmentSource, NodeDevelopmentSourceLease};
+#[path = "node_app_rollback.rs"]
+pub(crate) mod rollback;
+pub use rollback::RollbackNodeProgramInput;
 
 /// Whether a Node app slot has a deletion receipt (in progress or finished).
 pub(crate) fn deletion_recorded(node_apps_root: &Path, id: &str) -> Result<bool> {
@@ -103,6 +106,7 @@ pub struct NodeApps {
     development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: std::sync::Mutex<()>,
     directory_stopping: std::sync::atomic::AtomicBool,
+    source_workspace: std::sync::RwLock<Option<PathBuf>>,
     #[cfg(test)]
     start_intent_pause: std::sync::Mutex<Option<StartIntentPause>>,
 }
@@ -120,7 +124,9 @@ impl NodeApps {
         node_path: PathBuf,
         runtime: &crate::RuntimeHandle,
     ) -> Result<Self> {
-        Self::with_processes(data_root, node_path, runtime.store().processes())
+        let apps = Self::with_processes(data_root, node_path, runtime.store().processes())?;
+        apps.set_source_workspace(runtime.info().workspace_root)?;
+        Ok(apps)
     }
     fn with_processes(
         data_root: PathBuf,
@@ -164,6 +170,7 @@ impl NodeApps {
             development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: std::sync::Mutex::new(()),
             directory_stopping: std::sync::atomic::AtomicBool::new(false),
+            source_workspace: std::sync::RwLock::new(None),
             #[cfg(test)]
             start_intent_pause: std::sync::Mutex::new(None),
         })
@@ -178,7 +185,7 @@ impl NodeApps {
 
     fn load_source(&self, source: &Path) -> Result<TrialManifest> {
         ordinary_path(source, true)?;
-        if source.starts_with(&self.data_root)
+        if source.starts_with(&self.data_root) && !self.is_published_source(source)
             || self.data_root.starts_with(source)
             || source
                 .components()
@@ -196,6 +203,27 @@ impl NodeApps {
         }
         manifest.inspect(source).map_err(|e| fail(e.to_string()))?;
         Ok(manifest)
+    }
+
+    pub(crate) fn set_source_workspace(&self, workspace: PathBuf) -> Result<()> {
+        ordinary_path(&workspace, true)?;
+        *self
+            .source_workspace
+            .write()
+            .map_err(|_| fail("无法核对项目目录。"))? = Some(workspace);
+        Ok(())
+    }
+    pub(crate) fn is_published_source(&self, source: &Path) -> bool {
+        self.source_workspace
+            .read()
+            .ok()
+            .and_then(|w| w.as_ref().map(|w| w.join("project-sources")))
+            .is_some_and(|root| {
+                source.strip_prefix(root).is_ok_and(|relative| {
+                    relative.components().count() == 1
+                        && matches!(relative.components().next(), Some(Component::Normal(_)))
+                })
+            })
     }
 
     fn registrations(&self) -> Result<Vec<Registration>> {
@@ -380,7 +408,7 @@ impl NodeApps {
             }
         }
         Ok(json!({
-            "id":record.id,"name":manifest.app.name,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
+            "id":record.id,"name":manifest.app.name,"version":manifest.app.version,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
             "dataContract":manifest.data_contract,
             "objectLayout":object_layout,
             "development":development_source.as_ref().map(|source|json!({"sourcePath":source.source_root,"runtimeIsSource":record.managed.is_none(),"manifestId":source.manifest_id})),

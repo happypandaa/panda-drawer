@@ -4062,6 +4062,10 @@ mod node_install_tests;
 
 #[path = "service_node_development.rs"]
 mod node_development;
+#[path = "service_source_publication.rs"]
+mod source_publication;
+#[path = "service_source_recovery.rs"]
+mod source_recovery;
 pub use node_development::{NodeDevelopmentLease, NodeGitAction};
 
 #[cfg(test)]

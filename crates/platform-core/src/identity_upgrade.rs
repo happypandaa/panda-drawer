@@ -448,6 +448,9 @@ mod tests {
                 b"identity repair must preserve this attachment",
             )
             .unwrap();
+            // This fixture models retained legacy material. New workspaces no
+            // longer create the retired backup directory automatically.
+            fs::create_dir_all(paths.workspace_root().join("backups")).unwrap();
             fs::write(
                 paths.workspace_root().join("backups/keep.txt"),
                 b"retained backup",

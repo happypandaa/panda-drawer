@@ -12,7 +12,10 @@ mod local_data_cleanup;
 mod local_directory;
 mod native_process;
 mod node_development;
+mod node_program_rollback;
 mod node_windows;
+mod project_onboarding;
+mod source_import;
 mod window_sizes;
 
 use platform_core::{
@@ -1442,6 +1445,7 @@ async fn source_acquire(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     input: platform_core::source_acquisition::AcquireSourceInput,
+    onboarding: Option<bool>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     let io_lease = state.handle.io_lifetime().admit()?;
@@ -1449,7 +1453,17 @@ async fn source_acquire(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            state.handle.source_acquire(input).await
+            let url = input.url.clone();
+            let value = state.handle.source_acquire(input).await?;
+            if onboarding == Some(true) {
+                if let Some(task) = value["taskId"].as_str() {
+                    state
+                        .handle
+                        .remember_source_import(task, &url)
+                        .map_err(|error| error.detail("taskId", serde_json::json!(task)))?;
+                }
+            }
+            Ok(value)
         })
         .await?
 }
@@ -1482,7 +1496,14 @@ async fn source_import_cleanup(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            state.handle.source_import_cleanup(source_task_id).await
+            let value = state
+                .handle
+                .source_import_cleanup(source_task_id.clone())
+                .await?;
+            if value["completed"] == true {
+                state.handle.complete_source_import(&source_task_id)?;
+            }
+            Ok(value)
         })
         .await?
 }
@@ -2304,6 +2325,9 @@ fn main() {
             local_data_cleanup::local_data_cleanup_status,
             local_data_cleanup::local_data_cleanup_quit,
             bootstrap_info,
+            node_program_rollback::node_program_rollback_preview,node_program_rollback::node_program_rollback_apply,
+            project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_reveal,project_onboarding::source_review_capabilities,
+            source_import::source_import_location,source_import::source_import_publish,source_import::source_import_build_info,source_import::source_import_recover,
             source_list,source_info,source_inspect,source_acquire,source_cancel,source_import_cleanup,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_branch_create,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_initialize,project_git_save,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,

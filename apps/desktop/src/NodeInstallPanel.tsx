@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ProjectTask } from './ProjectTask';
+import { AiProjectHelp } from './AiProjectHelp';
 import { isNodeDataContract, NodeDataContractInfo } from './NodeDataContractInfo';
 import type { NodeDataContract } from './node-app-types';
 import type { TaskRecord } from './types';
@@ -12,6 +13,10 @@ export interface SourceInstallCandidate {
   status: string;
   contentDigest?: string;
   buildSourceDigest?: string | null;
+  url?: string;
+  branch?: string | null;
+  commit?: string | null;
+  localSourcePath?: string | null;
   inspection?: { kind: string; name?: string; requiresBuild?: boolean; issues?: unknown[] };
 }
 export interface PreparedNodeInstall {
@@ -41,6 +46,11 @@ export interface NodeInstallPanelProps {
   targetAppId?: string;
   disabled: boolean;
   instanceId?: string;
+  sourcePath?: string;
+  sourceKind?: 'git' | 'local' | 'managed';
+  appName?: string;
+  appVersion?: string;
+  platformVersion?: string;
   task?: TaskRecord | null;
   onTask: (task: TaskRecord) => void;
   onInstalled?: (result: InstalledNodeResult) => void;
@@ -94,7 +104,7 @@ export function NodeInstallPanel(props: NodeInstallPanelProps) {
   return <NodeInstallWorkflow key={JSON.stringify([props.targetAppId ?? null, props.instanceId ?? ''])} {...props} />;
 }
 
-function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTask, onTask, onInstalled, onPendingChange }: NodeInstallPanelProps) {
+function NodeInstallWorkflow({ sources, targetAppId, disabled, sourcePath, sourceKind, appName, appVersion, platformVersion, task: externalTask, onTask, onInstalled, onPendingChange }: NodeInstallPanelProps) {
   const id = useId();
   const [sourceId, setSourceId] = useState('');
   const [task, setTask] = useState<TaskRecord | null>(null);
@@ -107,6 +117,8 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
+  const [diagnosticLogs, setDiagnosticLogs] = useState('');
+  const [applyOutcome, setApplyOutcome] = useState<'not-submitted' | 'unknown' | 'not-committed' | 'committed'>('not-submitted');
   const [pollError, setPollError] = useState('');
   const [notice, setNotice] = useState('');
   const [records, setRecords] = useState<InstallRecord[]>([]);
@@ -152,6 +164,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
   const publishInstalled = useCallback((value: InstalledNodeResult, expected?: PreparedNodeInstall | null) => {
     if (targetAppId && value.appId !== targetAppId || expected && (value.candidateId !== expected.candidateId || value.appId !== expected.appId || value.generation !== expected.generation)) throw new Error('安装结果身份不符，请保留现场并重新核验。');
     setInstalled(value); setChecked(false); setConfirmed(false);
+    setApplyOutcome('committed');
     const key = `${value.candidateId}:${value.generation}`;
     if (!notified.current.has(key)) { notified.current.add(key); callbacks.current.onInstalled?.(value); }
   }, [targetAppId]);
@@ -168,7 +181,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
   const lookup = useCallback(async (candidateId: string, expected?: PreparedNodeInstall | null) => {
     if (!alive.current || !candidatePattern.test(candidateId)) return;
     const generation = lifetime.current; const choice = choiceRevision.current; const request = ++lookupSequence.current;
-    setChecking(true); setChecked(false); setConfirmed(false);
+    setChecking(true); setChecked(false); setConfirmed(false); setApplyOutcome('unknown');
     try {
       const value = await invoke<unknown>('node_install_candidate', { candidateId });
       if (!current(generation) || choice !== choiceRevision.current || request !== lookupSequence.current) return;
@@ -182,6 +195,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
         const result = preparedResult(value.candidate);
         if (!result || result.candidateId !== candidateId || expected && (result.programDigest !== expected.programDigest || result.appId !== expected.appId || result.generation !== expected.generation || JSON.stringify(result.manifest) !== JSON.stringify(expected.manifest))) throw new Error('安装候选记录已变化，请重新准备。');
         matchPrepared(result); currentCandidate.current = result; setCandidate(result); setKnownCandidateId(result.candidateId); setChecked(true);
+        setApplyOutcome('not-committed');
         setNotice('安装材料已准备并核验，尚未安装。请核对后明确确认。');
       } else throw new Error('安装候选状态尚不能确认，请保留现场并查看任务结果。');
     } catch (cause) { if (current(generation) && choice === choiceRevision.current && request === lookupSequence.current) setError(messageFrom(cause)); }
@@ -212,6 +226,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
           : '');
     } else if (value.type === 'nodeInstallApply') {
       const outcome = value.result?.operationOutcome ?? value.error?.details?.operationOutcome;
+      setApplyOutcome(outcome === 'committed' || outcome === 'not-committed' ? outcome : 'unknown');
       if (outcome === 'committed') {
         const result = installedResult(value.result);
         if (!result) throw new Error('安装提交记录尚不完整，请核验候选结果，勿重复安装。');
@@ -259,11 +274,11 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     if (pending.current || active) return;
     choiceRevision.current += 1; lookupSequence.current += 1;
     sourceRef.current = value; setSourceId(value); binding.current = null; currentCandidate.current = null;
-    setCandidate(null); setKnownCandidateId(''); setChecked(false); setChecking(false); setConfirmed(false); setWindowClosed(false); setInstalled(null); setError(''); setNotice('');
+    setCandidate(null); setKnownCandidateId(''); setChecked(false); setChecking(false); setConfirmed(false); setWindowClosed(false); setInstalled(null); setError(''); setNotice(''); setDiagnosticLogs(''); setApplyOutcome('not-submitted'); setTask(null); currentTask.current = null;
   }
   async function prepare() {
     if (pending.current || disabled || active || checking || listActive || !selected || !targetValid) return;
-    pending.current = true; setBusy(true); setError(''); setPollError(''); setNotice(''); setChecked(false); setConfirmed(false); setInstalled(null);
+    pending.current = true; setBusy(true); setError(''); setPollError(''); setNotice(''); setChecked(false); setConfirmed(false); setInstalled(null); setDiagnosticLogs(''); setApplyOutcome('not-submitted');
     const generation = lifetime.current; const choice = choiceRevision.current;
     binding.current = { sourceId: selected.sourceId, digest: selected.contentDigest! };
     try {
@@ -280,7 +295,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
   const canApply = Boolean(candidate && checked && sameSource && confirmed && (!targetAppId || windowClosed) && !installed && !disabled && !busy && !checking && !active && targetValid);
   async function apply() {
     if (pending.current || !canApply || !candidate) return;
-    pending.current = true; setBusy(true); setError(''); setNotice(''); setChecked(false); setConfirmed(false);
+    pending.current = true; setBusy(true); setError(''); setNotice(''); setChecked(false); setConfirmed(false); setApplyOutcome('unknown'); setDiagnosticLogs('');
     const generation = lifetime.current;
     try {
       const value = await invoke<TaskRecord>('node_install_apply', { candidateId: candidate.candidateId });
@@ -332,6 +347,20 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     }
   }
 
+  const failedTask = Boolean(task?.final && task.status !== 'succeeded');
+  const showFailureHelp = !active && !busy && Boolean(error || failedTask);
+  const oldVersionUnchanged = Boolean(targetAppId && sourceKind !== 'local' && ['not-submitted', 'not-committed'].includes(applyOutcome));
+  const diagnosticIssues = [...new Set([error, task?.error ? messageFrom(task.error) : ''].filter(Boolean))];
+  const editableSource = sourcePath || selected?.localSourcePath || undefined;
+  useEffect(() => {
+    if (!showFailureHelp || !task) return;
+    const generation = lifetime.current; let valid = true;
+    void invoke<{ text: string }>('task_logs', { taskId: task.taskId, cursor: 0 }).then(value => {
+      if (valid && current(generation) && typeof value?.text === 'string') setDiagnosticLogs(value.text.slice(-12000));
+    }).catch(() => {});
+    return () => { valid = false; };
+  }, [showFailureHelp, task?.taskId, current]);
+
   return <section className="node-install-panel" aria-labelledby={`${id}-title`}>
     <h3 id={`${id}-title`}>{targetAppId ? '准备应用更新' : '安装本地服务应用'}</h3>
     <p>选择已检查的来源，准备完成后核对并确认。应用不会自动打开。</p>
@@ -341,6 +370,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, task: externalTas
     {error && <p className="task-error" role="alert">{error}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
     {notice && <p role="status">{notice}</p>}
+    {showFailureHelp && <section className="add-project-failure-help"><h4>{targetAppId ? oldVersionUnchanged ? '更新没有成功，正在使用的版本不受影响' : applyOutcome === 'committed' ? '更新已提交，收尾还需要检查' : applyOutcome === 'unknown' ? '更新结果还需要核对' : '更新没有完成，请检查你的文件夹' : '应用添加还需要处理'}</h4><p>{oldVersionUnchanged ? '最新源码没有通过准备或检查，尚未切换应用版本。' : applyOutcome === 'unknown' ? '暂时不能确认是否已经切换版本，请先核验结果，避免重复更新。' : '可以把问题和检查详情交给 AI；确认实际结果后，再决定下一步。'}</p>{editableSource && <p>文件在哪里：<code>{editableSource}</code></p>}<AiProjectHelp context={{ mode: targetAppId ? 'update-failed' : 'add-failed', sourceKind: sourceKind ?? (targetAppId ? 'managed' : selected?.url ? 'git' : 'local'), sourcePath: editableSource, url: selected?.url, branch: selected?.branch ?? undefined, commit: selected?.commit ?? undefined, issues: diagnosticIssues, logs: diagnosticLogs, appName: appName ?? candidate?.manifest.app.name, appVersion: appVersion ?? candidate?.manifest.app.version, platformVersion }} label="复制说明给 AI" className="primary-button" disabled={disabled || checking} /></section>}
     <form className="create-project-form" onSubmit={event => { event.preventDefault(); void prepare(); }}>
       <label htmlFor={`${id}-source`}>源码候选</label>
       <select id={`${id}-source`} value={sourceId} disabled={busy || active || disabled} onChange={event => changeSource(event.target.value)}>

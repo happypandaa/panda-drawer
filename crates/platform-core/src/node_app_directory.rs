@@ -320,7 +320,62 @@ impl NodeApps {
         })
     }
     pub fn inspect_directory(&self, source: &Path) -> Result<Value> {
-        Ok(self.directory_preview(source)?.response())
+        let source = self.directory_path(source)?;
+        let identity = PersistedIdentity::capture(&source).map_err(|_| stale())?;
+        // An existing folder remains the same application even when its
+        // declaration was changed or a large dependency tree was added later.
+        for record in self.registrations()? {
+            if record.managed.is_none()
+                && (record.source_path == source
+                    || identity.matches_path(&record.source_path).unwrap_or(false))
+            {
+                let name = self
+                    .manifest(&record)
+                    .map(|m| m.app.name)
+                    .unwrap_or_else(|_| {
+                        source
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    });
+                return Ok(
+                    json!({"sourcePath":source,"state":"needs-review","expectedRevision":format!("registered:{}",record.id),
+                    "issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":record.id,"name":name}}),
+                );
+            }
+        }
+        let preview = self.directory_preview(&source)?;
+        let mut response = preview.response();
+        if preview.state == "needs-review" {
+            let has = |name: &str| {
+                fs::symlink_metadata(preview.source.join(name)).is_ok_and(|m| m.is_file())
+            };
+            if has("project.json") {
+                response["issues"] = json!(["检测到 project.json，这是平台项目格式；请核对是否有平台导出的完整 ZIP，普通源码文件夹不能当作完整归档。"]);
+                response["category"] = json!("insufficient");
+                response["projectFormat"] = json!("project-v1");
+                response["reasonCodes"] = json!(["PROJECT_V1"]);
+            } else if !has("package.json")
+                && !has("local-app.json")
+                && ((has("pyproject.toml") || has("requirements.txt"))
+                    && (has("main.py") || has("app.py"))
+                    || has("pom.xml")
+                    || has("build.gradle"))
+            {
+                response["category"] = json!("unsupported");
+                response["reasonCodes"] = json!(["EXTERNAL_RUNTIME"]);
+                response["issues"] = json!(["检测到 Python／Java 工程入口，当前平台不提供这些运行环境；请让 AI 评估是否能保留主要功能并调整。"]);
+            } else {
+                response["category"] = json!("needs-changes");
+                response["reasonCodes"] = if has("local-app.json") {
+                    json!(["APPLICATION_MATERIALS"])
+                } else {
+                    json!(["MISSING_DECLARATION"])
+                };
+            }
+        }
+        Ok(response)
     }
     pub fn initialize_directory(
         &self,
@@ -406,7 +461,7 @@ impl NodeApps {
             .replace('\'', "&#39;");
         let html = INDEX.replace("__LOCAL_APP_NAME__", &html_name);
         let readme = format!("# {name}\n\n这是一个本地起始应用。在平台选择“生成并添加项目”会创建源码并完成添加；成功后可从项目列表进入。若目录已有这些文件但未出现在列表，重新选择目录并确认添加即可，无需再次生成。生成和添加均不会安装依赖或启动应用。\n\n网页包含连接检查按钮。使用平台提供的独立数据目录保存持久数据；不要把用户数据或密钥写进源码、Git或分享包。配置、打开与关闭均由平台管理。\n");
-        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。dataContract 声明兼容性；更改数据格式前明确迁移策略。初始应用不创建业务数据。\n\n首次修改前，在平台应用详情展开“开发与更新”，明确构建并更新，把运行副本与作者源码分开；之后把同一源码仓库交给 AI，修改并测试，再构建、核验并明确更新。应用标识、配置和数据契约不兼容时必须停止，不要绕过暂停提示。\n";
+        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。dataContract 声明兼容性；更改数据格式前明确迁移策略。初始应用不创建业务数据。\n\n这个项目直接运行所选文件夹的代码。修改前先关闭应用，可把同一源码仓库交给 AI 原地修改，完成后明确重新打开。也可在应用详情“开发与更新”中主动构建并更新为独立程序；分离后再修改源码时，须构建、核验并明确更新才会影响运行程序。应用标识、配置和数据契约不兼容时必须停止，不要绕过暂停提示。\n";
         let package_name = format!("local-starter-{}", Uuid::new_v4().simple());
         let package = serde_json::to_vec_pretty(
             &json!({"name":package_name,"version":"0.1.0","private":true,"type":"module"}),

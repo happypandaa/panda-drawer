@@ -12,7 +12,8 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/disposable-local-data-cleanup-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
-await writeFile(mockPath, 'export const invoke = (...args) => globalThis.__CLEANUP_INVOKE__(...args); export const isTauri = () => true;\n');
+// These unrelated interaction fixtures have no interrupted Git additions.
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__CLEANUP_INVOKE__(command, ...args); export const isTauri = () => true;\n');
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
