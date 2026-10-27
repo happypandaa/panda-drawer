@@ -19,7 +19,7 @@ type ExistingRepository = { url: string; appId: string; name: string };
 export type SourceAcquisitionPanelProps = {
   disabled: boolean; instanceId?: string; open?: boolean; projectDirectory?: string; platformVersion?: string;
   existingRepositories?: ExistingRepository[];
-  onClose: () => void; onBackground?: () => void; onAttention?: () => void;
+  onClose: (options?: { keepSession: boolean }) => void; onBackground?: () => void; onAttention?: () => void;
   onOpenLocal?: () => void; onOpenSettings?: () => void; onOpenExisting?: (appId: string) => void;
   onTask: (task: TaskRecord) => void; onInstalled?: () => void; onEnter?: (app: NodeAppDetail) => void;
 };
@@ -197,7 +197,8 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   }
   async function cleanAndClose() {
     if (operation.current) return;
-    if (!session.current?.sourceTaskId || cleanupDone || view === 'recovery') { callbacks.current.onClose(); return; }
+    if (view === 'recovery') { callbacks.current.onClose({ keepSession: true }); return; }
+    if (!session.current?.sourceTaskId || cleanupDone) { callbacks.current.onClose(); return; }
     operation.current = true; setBusy(true);
     const value = session.current; const generation = lifetime.current;
     try { if (await clean(value) && current(generation)) callbacks.current.onClose(); }
@@ -262,7 +263,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   function close() {
     if (canBackground) { callbacks.current.onBackground?.(); return; }
     if (active) return;
-    if (view === 'recovery' || view === 'publish-failed' || view === 'cleanup-failed') callbacks.current.onClose();
+    if (view === 'recovery' || view === 'publish-failed' || view === 'cleanup-failed') callbacks.current.onClose({ keepSession: true });
     else void cleanAndClose();
   }
   if (!open) return null;
@@ -298,7 +299,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
         {flow?.warning && <p role="status">{flow.warning}</p>}
         {cleaning && <p role="status"><LoaderCircle size={16} className="import-spinner" />正在清理本次临时文件…</p>}
         {cleanupError && <div role="alert"><p className="task-error">{cleanupError}</p><button type="button" className="refresh-button" disabled={busy} onClick={() => void retryCleanup()}>重试清理</button></div>}
-        {(view === 'cleanup-failed' || view === 'publish-failed') && <button type="button" className="refresh-button" disabled={busy} onClick={() => callbacks.current.onClose()}>稍后</button>}
+        {(view === 'cleanup-failed' || view === 'publish-failed') && <button type="button" className="refresh-button" disabled={busy} onClick={() => callbacks.current.onClose({ keepSession: true })}>稍后</button>}
         {view === 'recovery' && <><p>正在核对，请不要重复添加。结果明确前会保留必要文件。</p><div className="confirmation-actions"><button type="button" className="primary-button" disabled={busy} onClick={() => void reconcile()}>重新核对</button><button type="button" className="text-button" disabled={busy} onClick={() => setShowLibrary(true)}>检查详情</button></div></>}
         {view === 'running' && !cleaning && flow?.phase !== 'install' && <div className="confirmation-actions">{onBackground && <button type="button" className="refresh-button" disabled={!canBackground} onClick={() => callbacks.current.onBackground?.()}>在后台继续</button>}<button type="button" className="text-button" disabled={cancelling} onClick={() => setCancelConfirm(true)}>{flow?.phase === 'download' ? '取消下载' : '取消'}</button></div>}
         {flow?.task && <details className="import-task"><summary>检查详情</summary><ProjectTask key={flow.task.taskId} task={flow.task} /></details>}
