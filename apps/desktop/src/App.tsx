@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
-  ArrowUpRight, BookOpen, CircleAlert, Play,
+  BookOpen, CircleAlert, Play,
   Download, FolderOpen, Monitor, Package, Plus,
   RefreshCw, ShieldCheck, Hammer, Trash2, Search, Settings, ChevronRight,
 } from 'lucide-react';
@@ -677,14 +677,15 @@ function App() {
         {!localDataLocked && <NodeAppsPanel apps={nodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {archiveImportOpen && <ImportPanel disabled={workspaceBusy} instanceId={info?.instanceId} onTask={acceptLifecycleTask} onCompleted={() => void refresh()} onClose={() => setArchiveImportOpen(false)} />}
-        {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
+        {showCreate && <Modal title="新建项目" titleIcon={<Plus size={20} />} description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>
             <label htmlFor="project-name">项目名称 <span className="required-label">必填</span></label>
             <input id="project-name" required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：孩子的英语学习" readOnly={creating || workspaceBusy} autoComplete="off" />
             <label htmlFor="project-description">简介 <span className="optional-label">选填</span></label>
             <textarea id="project-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="这个项目准备帮你做什么？" rows={3} readOnly={creating || workspaceBusy} />
-            <div className="form-footer"><span><ShieldCheck size={14} />保存在当前开发工作区</span><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? '正在创建…' : '创建项目'}<ArrowUpRight size={15} /></button></div>
+            <p className="create-project-location"><FolderOpen size={14} aria-hidden="true" />保存在熊猫小抽屉的项目目录，你和 AI 都可以修改。</p>
+            <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? '正在创建…' : '创建项目'}</button><button type="button" className="refresh-button" disabled={creating} onClick={() => setShowCreate(false)}>取消</button></div>
           </form>
         </Modal>}
         {overviewProject && overview && <Modal title={overviewProject.name} description="网页应用 · 本机独立数据" titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <BookOpen size={20} />} headerAside={<span className={`detail-status-badge${overviewProject.state === 'ready' ? ' is-ready' : ''}`}><span />{({ ready: '可使用', unbuilt: '等待构建', error: '需要检查', missing: '文件缺失', maintenance: '操作暂停', recoveryRequired: '有操作待处理' })[overviewProject.state]}</span>} className="software-detail-modal" wide beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>

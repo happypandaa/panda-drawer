@@ -48,12 +48,60 @@ export function isAbsoluteFolderPath(path: string): boolean { return path.starts
 // identity remain the native inspector/registration's responsibility.
 export function normalizedFolderPath(path: string): string { return path.replaceAll('\\', '/').replace(/\/$/, '') || '/'; }
 
+export const reviewCategoryLabels: Record<LocalReviewCategory, string> = { 'needs-changes': '需要修改', unsupported: '当前不适合', insufficient: '信息不足' };
+
+// One fallback for both entries. The local inspector supplies `category`
+// directly; Git source inspection does not yet, so both use this same mapping
+// instead of each screen keeping its own text rules.
+export function reviewCategoryFromIssues(issues: string[]): LocalReviewCategory {
+  const text = issues.join('\n');
+  if (/Python|Java\b|Docker|多服务|原生扩展|本机编译|\.node\b/i.test(text)) return 'unsupported';
+  if (!text || /无法安全读取|无法读取|没有读取权限|不可访问|超[出限]|文件太多|多个应用|无法确定/.test(text)) return 'insufficient';
+  return 'needs-changes';
+}
+
+export function reviewCategoryTitle(category: LocalReviewCategory): string {
+  return category === 'unsupported' ? '这个项目目前没法直接使用' : category === 'insufficient' ? '还需要进一步确认这个项目' : '这个项目需要修改后才能添加';
+}
+
 export function localReviewCategory(review: NodeDirectoryReview): LocalReviewCategory {
   if (review.category && ['needs-changes', 'unsupported', 'insufficient'].includes(review.category)) return review.category;
   if (review.projectFormat === 'project-v1') return 'insufficient';
-  const issues = review.issues.join('\n');
-  if (!issues || /无法安全读取|无法读取|没有读取权限|不可访问|超[出限]|文件太多|多个应用|无法确定/.test(issues)) return 'insufficient';
-  return 'needs-changes';
+  return reviewCategoryFromIssues(review.issues);
+}
+
+/** Short, readable form of a long path; the full path stays in `title`. */
+export function displayPath(path: string): string {
+  const home = path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~');
+  const parts = home.split('/');
+  if (home.length <= 60 || parts.length <= 5) return home;
+  return [...parts.slice(0, 2), '…', ...parts.slice(-3)].join('/');
+}
+
+export function folderName(path: string): string {
+  const parts = normalizedFolderPath(path).split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+export function parentPath(path: string): string {
+  const normalized = normalizedFolderPath(path);
+  const index = normalized.lastIndexOf('/');
+  return index > 0 ? normalized.slice(0, index) : '/';
+}
+
+export function recentTimeLabel(value: string, now = new Date()): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((day(now) - day(date)) / 86_400_000);
+  if (diff === 0) return `今天 ${time}`;
+  if (diff === 1) return `昨天 ${time}`;
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+export function recentStatus(item: RecentProjectFolder): string {
+  return item.result === '上次未通过' && item.issues.length ? `上次：${reviewCategoryLabels[reviewCategoryFromIssues(item.issues)]}` : item.result;
 }
 
 export function localReviewReason(issue: string): LocalReviewReason {

@@ -1433,7 +1433,8 @@ test('Recent folders retain only five paths in the same workspace and always per
   await setupDirectory(mock, { workspacePath: '/artificial/recent-workspace', instanceId: 'after-restart' });
   const recent = document.querySelectorAll('.local-directory-recent');
   assert.equal(recent.length, 5);
-  assert.equal(recent[0].querySelector('span').textContent, paths[5]);
+  assert.equal(recent[0].querySelector('button').title, paths[5]);
+  assert.equal(recent[0].querySelector('strong').textContent, 'recent-folder-6');
   assert.doesNotMatch(document.querySelector('.local-directory-recents').textContent, /recent-folder-1/);
   await click(recent[0].querySelector('button'));
   assert.equal(reads.length, 7); assert.equal(reads.at(-1), paths[5]);

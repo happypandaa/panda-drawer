@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { AiProjectHelp } from './AiProjectHelp';
 import { ImportProgress } from './ImportProgress';
 import { NodeDataContractInfo } from './NodeDataContractInfo';
-import { isAbsoluteFolderPath, localReviewCategory, localReviewComparison, localReviewReason, normalizedFolderPath, readRecentProjectFolders, removeRecentProjectFolder, saveRecentProjectFolder } from './local-directory-review';
+import { displayPath, folderName, isAbsoluteFolderPath, localReviewCategory, localReviewComparison, localReviewReason, normalizedFolderPath, parentPath, readRecentProjectFolders, recentStatus, recentTimeLabel, removeRecentProjectFolder, reviewCategoryLabels, reviewCategoryTitle, saveRecentProjectFolder } from './local-directory-review';
 import type { RecentProjectFolder } from './local-directory-review';
 import type { NodeAppDetail, NodeDirectoryReview } from './node-app-types';
 import { messageFrom } from './ui-utils';
@@ -215,8 +215,9 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
 
   const inspection = review?.state === 'ready' ? review.inspection : null;
   const category = review?.state === 'needs-review' ? localReviewCategory(review) : null;
-  const categoryLabel = category === 'unsupported' ? '当前不适合' : category === 'insufficient' ? '信息不足' : '需要修改';
-  const reviewTitle = category === 'unsupported' ? '这个项目目前没法直接使用' : category === 'insufficient' ? '还需要进一步确认这个文件夹' : '这个项目需要修改后才能添加';
+  const categoryLabel = reviewCategoryLabels[category ?? 'needs-changes'];
+  const reviewTitle = category === 'insufficient' ? '还需要进一步确认这个文件夹' : reviewCategoryTitle(category ?? 'needs-changes');
+  const recentList = !sourcePath && recent.length > 0 ? <section className="local-directory-recents" aria-label="最近选过的文件夹"><h3><History size={16} />最近选过的文件夹</h3>{recent.map(item => <div className="local-directory-recent" key={item.path}><button type="button" className="local-directory-recent-open" disabled={blocked} title={item.path} onClick={() => selectSource(item.path)}><FolderOpen size={18} aria-hidden="true" /><span className="local-directory-recent-text"><strong>{folderName(item.path)}</strong><span>{displayPath(parentPath(item.path))}</span></span><small>{[recentStatus(item), recentTimeLabel(item.selectedAt)].filter(Boolean).join(' · ')}</small><span className="local-directory-recent-check" aria-hidden="true">检查</span></button><button type="button" className="text-button local-directory-recent-remove" disabled={blocked} aria-label={`移除最近目录 ${item.path}`} onClick={() => setRecent(removeRecentProjectFolder(scope, item.path))}>移除</button></div>)}<p className="project-help">每次都会重新检查，上次结果仅供参考。</p></section> : null;
   const existingDetail = existing ? apps.find(app => app.id === existing.id) : null;
   const helpIssues = review?.issues ?? (error ? [error] : []);
   const canShowPrompt = reviewPrompt && pending !== 'initialize' && pending !== 'register' && (review?.state === 'needs-review' || !review);
@@ -230,7 +231,8 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       <p className="project-help">没有临时下载文件需要清理。以后删除应用时，你的文件夹仍会保留。</p>
       <div className="confirmation-actions">{onEnter && <button type="button" className="primary-button" disabled={blocked} onClick={() => callbacks.current.onEnter?.(completed)}>{completed.configuration.canStart ? '打开应用' : '去设置'}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>完成</button>}</div>
     </section> : <>
-      <div ref={dropzone} className={`local-directory-dropzone${sourcePath ? ' has-selection' : ''}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = blocked ? 'none' : 'copy'; }} onDrop={event => {
+      {recentList}
+      <div ref={dropzone} className={`local-directory-dropzone${sourcePath ? ' has-selection' : recentList ? ' is-compact' : ''}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = blocked ? 'none' : 'copy'; }} onDrop={event => {
         event.preventDefault(); if (blocked) return;
         const path = (event.dataTransfer.files[0] as File & { path?: string } | undefined)?.path;
         if (path && event.dataTransfer.files.length === 1) selectSource(path);
@@ -240,7 +242,6 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
         <button className="refresh-button" disabled={blocked} onClick={choose}>{pending === 'choose' ? '正在选择与检查…' : sourcePath ? '换一个' : '选择文件夹…'}</button>
       </div>
       <ul className="local-directory-guarantees" hidden={Boolean(sourcePath)}><li>检查只读取文件，不修改、不移动你的文件夹。</li><li>添加后直接使用这里的代码，你和 AI 继续在这里修改。</li><li>应用数据另外保存，原项目里的数据不会自动带过来。</li></ul>
-      {!sourcePath && recent.length > 0 && <section className="local-directory-recents"><h3><History size={16} />最近选过的文件夹</h3><p className="project-help">每次选择都会重新检查，上次结果仅供参考。</p>{recent.map(item => <div className="local-directory-recent" key={item.path}><button className="text-button" disabled={blocked} onClick={() => selectSource(item.path)}><span>{item.path}</span><small>{item.result}</small></button><button className="text-button" disabled={blocked} aria-label={`移除最近目录 ${item.path}`} onClick={() => setRecent(removeRecentProjectFolder(scope, item.path))}>移除</button></div>)}</section>}
       {sourcePath && <div className="local-directory-path"><label htmlFor={`${id}-path`}>你的文件夹</label><input id={`${id}-path`} className="node-selected-source" readOnly value={sourcePath} /><div className="local-directory-actions"><button className="text-button" disabled={blocked} onClick={copyPath}><Copy size={13} />复制文件夹路径</button><button className="text-button" disabled={blocked} onClick={recheck}><RefreshCw size={13} />{pending === 'inspect' ? '正在检查…' : '重新检查'}</button></div></div>}
       {error && <section className="local-directory-result"><h3>这次添加没有完成</h3><p className="task-error" role="alert">{error} 请重新检查或重新选择文件夹后继续。</p><p>文件在哪里：<code>{sourcePath}</code>。本次结果需要核对，已有文件和登记不会自动删除。</p><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'local', sourcePath: sourcePath || undefined, issues: helpIssues, platformVersion, checkedAt }} label="复制说明给 AI" disabled={blocked} /></section>}
       {(pending === 'initialize' || pending === 'register') && <p className="workspace-inline-notice" role="status">{pending === 'initialize' ? '正在生成并添加项目…' : '正在添加应用…'}</p>}

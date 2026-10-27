@@ -373,7 +373,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
         {deleteDialog}
       </section></Modal>}
     {(!modalOpen || !detail) && deleteDialog}
-    {addOpen && <Modal title="添加本地项目" description="选择你的文件夹，检查后添加。原文件夹保持原位。" className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }}>
+    {addOpen && <Modal title="添加本地项目" titleIcon={<FolderOpen size={20} />} description="选择你的文件夹，检查后添加。原文件夹保持原位。" className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }}>
       <LocalDirectoryPanel apps={apps} workspacePath={workspacePath} platformVersion={platformVersion} onViewDetails={app => { setAddOpen(false); void select(app); }} onImportArchive={() => { setAddOpen(false); onImportArchive?.(); }} enabled={enabled && !pending && !installPending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }} />
     </Modal>}
   </>;
