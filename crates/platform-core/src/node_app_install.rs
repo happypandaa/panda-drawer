@@ -1491,8 +1491,8 @@ async fn npm_ci(
             "--logs-max=0",
             "--no-audit",
             "--no-fund",
-            "--fetch-retries=0",
-            "--fetch-timeout=10000",
+            "--fetch-retries=2",
+            "--fetch-timeout=60000",
         ])
         .current_dir(cwd)
         .env_clear()
