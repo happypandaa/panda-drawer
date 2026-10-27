@@ -1138,6 +1138,95 @@ async fn real_npm_prepares_a_dependency_free_program_with_distinct_empty_configs
 }
 
 #[tokio::test]
+#[ignore = "opt-in: real npm retries a disposable loopback tarball twice; default backoff takes about 70 seconds"]
+async fn real_npm_recovers_after_two_transient_download_failures() {
+    use base64::Engine;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut fixture = Fixture::new(NPM_OK);
+    fixture.tools = selected_real_tools(&fixture).await;
+    // Gzip-compressed tar containing only package/package.json, with the same
+    // name/version checked below. No package scripts or network code run.
+    let tarball = base64::engine::general_purpose::STANDARD.decode(
+        "H4sIAAAAAAAC/+3NPQoCMRBA4dSeQqbWNZE1greJGmT9SUKyCiLe3aiFYC0i+L7mDTPFJLfauY2fpGebbYlBfZiubNs+Wr1X65l9zfe9MXY6V0OtvuBYepfre/WfLhLcwctC1l1Jsbjl3o+z7/NZRnLyuXQx1KNpdKPlOlAAAAAAAAAAAAAAAAAAgB9xA3uEERYAKAAA",
+    ).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let counted = requests.clone();
+    let response_tarball = tarball.clone();
+    let router = axum::Router::new().route(
+        "/disposable-retry.tgz",
+        axum::routing::get(move || {
+            let attempt = counted.fetch_add(1, Ordering::SeqCst);
+            let tarball = response_tarball.clone();
+            async move {
+                if attempt < 2 {
+                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Vec::new())
+                } else {
+                    (axum::http::StatusCode::OK, tarball)
+                }
+            }
+        }),
+    );
+    let (stop_server, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    atomic_json(&fixture.source.join("package.json"), &json!({"name":"disposable-install","version":"1.0.0","dependencies":{"disposable-retry":"1.0.0"}})).unwrap();
+    atomic_json(&fixture.source.join("package-lock.json"), &json!({"lockfileVersion":3,"packages":{
+        "":{"name":"disposable-install","version":"1.0.0","dependencies":{"disposable-retry":"1.0.0"}},
+        "node_modules/disposable-retry":{"version":"1.0.0","resolved":format!("http://{address}/disposable-retry.tgz"),
+            "integrity":format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tarball)))}
+    }})).unwrap();
+    let operation = fixture
+        .source
+        .parent()
+        .unwrap()
+        .join("disposable-retry-operation");
+    private_dir(&operation).unwrap();
+    let (_stop, _cancel, mut control) = live_control();
+    control.deadline = Instant::now() + Duration::from_secs(120);
+    // Exercise the production npm runner directly: loopback HTTP is only a
+    // transport fixture; source validation still requires HTTPS in production.
+    let result = npm_ci(
+        &operation,
+        &fixture.source,
+        &fixture.tools,
+        &control,
+        NodeProcessScope::new(fixture.store.processes(), Arc::new(())),
+    )
+    .await;
+    let _ = stop_server.send(());
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+    result.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+    let installed: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .source
+                .join("node_modules/disposable-retry/package.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        installed,
+        json!({"name":"disposable-retry","version":"1.0.0"})
+    );
+    assert!(!operation.join("npm-disabled-output").exists());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 #[ignore = "opt-in: real npm attempts only an intentionally refused loopback dependency download"]
 async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
     let mut fixture = Fixture::new(NPM_OK);
@@ -1155,7 +1244,7 @@ async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
         .create_workspace_operation("nodeInstallPrepare")
         .unwrap();
     let (_stop, _cancel, mut control) = live_control();
-    control.deadline = Instant::now() + Duration::from_secs(20);
+    control.deadline = Instant::now() + Duration::from_secs(120);
     let target = InstallTargetSnapshot::fresh();
     let slot = fixture.installer.slot(&target.app_id).unwrap();
     let error = fixture
