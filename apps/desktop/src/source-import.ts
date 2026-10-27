@@ -6,12 +6,17 @@ import { messageFrom } from './ui-utils';
 export interface SourceCandidate {
   sourceId: string; taskId: string; status: string; name: string; url: string;
   contentDigest?: string; buildSourceDigest?: string | null; commit?: string | null;
-  sourcePath?: string;
+  sourcePath?: string; branch?: string | null;
   inspection?: { kind: string; name?: string; requiresBuild?: boolean; issues: unknown[] };
 }
 export interface ImportCleanupResult {
   completed: boolean; sourceId: string; sourceRetained: boolean; removedPaths: string[];
   failures: { path: string; error: unknown }[]; receiptPath: string;
+}
+export interface PublishedImportSource {
+  published: true;
+  sourcePath: string;
+  projectDirectory: string;
 }
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 interface Callbacks {
@@ -19,7 +24,7 @@ interface Callbacks {
   pause?: () => Promise<void>;
 }
 export class SourceImportError extends Error {
-  constructor(message: string, public recovery = false) { super(message); }
+  constructor(message: string, public recovery = false, public code?: string) { super(message); }
 }
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
@@ -30,6 +35,7 @@ export class SourceImportSession {
   source: SourceCandidate | null = null;
   candidate: PreparedNodeInstall | null = null;
   installed: InstalledNodeResult | null = null;
+  published: PublishedImportSource | null = null;
   task: TaskRecord | null = null;
   phase: 'download' | 'check' | 'prepare' | 'install' | 'cleanup' | 'done' = 'download';
   warning = '';
@@ -83,21 +89,21 @@ export class SourceImportSession {
   private stopped(task: TaskRecord) {
     if (this.cancelRequested || ['SOURCE_CANCELLED', 'SOURCE_ACQUISITION_CANCELLED', 'NODE_INSTALL_CANCELLED'].includes(task.error?.code ?? '')) {
       this.cancelled = true;
-      throw new SourceImportError('导入已取消，可以清理本次临时文件后关闭。');
+      throw new SourceImportError('添加已取消，正在清理本次临时文件。', false, task.error?.code);
     }
-    if (task.status !== 'succeeded') throw new SourceImportError(messageFrom(task.error ?? '任务未完成。'));
+    if (task.status !== 'succeeded') throw new SourceImportError(messageFrom(task.error ?? '任务未完成。'), false, task.error?.code);
   }
   async acquire(input: { url: string; branch: string | null; name?: string }): Promise<SourceCandidate> {
     this.phase = 'download'; this.changed();
     let accepted: TaskRecord;
-    try { accepted = await this.call<TaskRecord>('source_acquire', { input }); }
+    try { accepted = await this.call<TaskRecord>('source_acquire', { input, onboarding: true }); }
     catch (cause) {
       this.check();
       const details = record(cause) && record(cause.details) ? cause.details : null;
       if (typeof details?.taskId === 'string') this.sourceTaskId = details.taskId;
       // A structured rejection is actionable; an IPC/network failure can have
       // lost an accepted task and must not immediately enable a second submit.
-      throw new SourceImportError(messageFrom(cause), !record(cause) || typeof cause.code !== 'string' || Boolean(this.sourceTaskId));
+      throw new SourceImportError(messageFrom(cause), !record(cause) || typeof cause.code !== 'string' || Boolean(this.sourceTaskId), record(cause) && typeof cause.code === 'string' ? cause.code : undefined);
     }
     const task = await this.wait(accepted, 'sourceAcquire');
     this.stopped(task);
@@ -109,7 +115,7 @@ export class SourceImportSession {
     this.source = value as unknown as SourceCandidate;
     if (this.source.inspection?.kind !== 'node-service-source') {
       const reasons = this.source.inspection?.issues.map(messageFrom).join('；');
-      throw new SourceImportError(`这个仓库目前不能直接导入为应用。${reasons || '需要先按平台应用格式适配，再重新导入。'}`);
+      throw new SourceImportError(`这个项目暂时不能添加。${reasons || '需要先按平台要求修改，再重新添加。'}`, false, 'SOURCE_NEEDS_ADAPTATION');
     }
     if (!/^[a-f0-9]{64}$/.test(this.source.contentDigest ?? '')) throw new SourceImportError('源码校验信息不完整，请核对下载结果。', true);
     return this.source;
@@ -154,6 +160,18 @@ export class SourceImportSession {
     this.installed = result; this.uncertain = false; this.phase = 'cleanup';
     this.warning = needsAttention ? '应用已经导入，安装收尾需要检查。请保留记录，勿重复导入。' : '';
     this.changed(); return result;
+  }
+  async publishSource(): Promise<PublishedImportSource> {
+    this.check();
+    if (this.published) return this.published;
+    if (!this.installed || !this.sourceTaskId || this.uncertain) throw new SourceImportError('添加结果尚未确认，暂不能整理项目源码。', true);
+    const value = await this.call<PublishedImportSource>('source_import_publish', { sourceTaskId: this.sourceTaskId, appId: this.installed.appId });
+    if (!value || value.published !== true || typeof value.sourcePath !== 'string' || !value.sourcePath || typeof value.projectDirectory !== 'string' || !value.projectDirectory) {
+      throw new SourceImportError('源码位置尚未确认，请重试整理源码。应用已经添加，不会重复添加。', true);
+    }
+    this.published = value;
+    this.changed();
+    return value;
   }
   async reconcile(): Promise<InstalledNodeResult> {
     if (!this.candidate) throw new SourceImportError('请从“源码记录与恢复”查看本次任务，确认结果后继续。', true);

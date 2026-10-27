@@ -41,6 +41,7 @@ pub mod platform_support;
 pub mod production_resources;
 mod project_directory_name;
 pub mod project_git;
+pub mod project_review;
 pub mod projects;
 pub mod resources;
 mod runtime_notice;

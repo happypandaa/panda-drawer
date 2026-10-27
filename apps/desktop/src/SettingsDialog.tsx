@@ -8,8 +8,9 @@ import { Modal } from './Modal';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { WorkspaceLocation } from './WorkspaceLocation';
 import type { Appearance } from './appearance';
-import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo } from './types';
+import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo, ProjectInfo } from './types';
 import { messageFrom } from './ui-utils';
+import type { NodeAppDetail } from './node-app-types';
 
 export type SettingsSection = 'general' | 'storage' | 'tools' | 'diagnostics' | 'about' | 'uninstall';
 const sections: { id: SettingsSection; label: string }[] = [
@@ -25,6 +26,8 @@ const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
 
 export interface SettingsDialogProps {
   info: BootstrapInfo | null;
+  projects?: ProjectInfo[];
+  nodeApps?: NodeAppDetail[];
   loading: boolean;
   checkedAt: string | null;
   theme: Appearance;
@@ -85,7 +88,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => props.onSection('tools')} onStorage={props.onOpenSpace} /></details>
           <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。</p></div>
         </section>)}
-        {panel('storage', <WorkspaceLocation workspace={props.workspace} dataRoot={info?.dataRoot} enabled={Boolean(info) && !props.cleanupBusy} active={section === 'storage'} migrating={props.workspaceBlocked} onTask={props.onTask} onRefresh={props.onRefresh} onOpenHistory={props.onOpenHistory} />)}
+        {panel('storage', <><section className="settings-project-directory"><h3>项目目录</h3><p>从 Git 添加成功的项目源码保存在这里，可交给 AI 修改。更改位置使用下方工作区迁移。</p><code>{info ? `${info.workspaceRoot}/project-sources` : '等待读取'}</code><p>应用数据另存于平台管理的位置；你的外部文件夹仍留在原位置。</p></section><WorkspaceLocation workspace={props.workspace} dataRoot={info?.dataRoot} enabled={Boolean(info) && !props.cleanupBusy} active={section === 'storage'} migrating={props.workspaceBlocked} onTask={props.onTask} onRefresh={props.onRefresh} onOpenHistory={props.onOpenHistory} /></>)}
         {panel('tools', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">开发工具</h3>
           <p className="settings-lead">只影响项目构建和版本保存；应用运行使用平台自带的 Node，不受这里影响。</p>
@@ -117,7 +120,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">
           <h3 id="settings-uninstall-title">卸载前清除数据</h3>
           <p className="settings-lead">通常在卸载熊猫小抽屉之前使用。只想释放空间请用“空间”页。</p>
-          <LocalDataCleanupPanel instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
+          <LocalDataCleanupPanel managedProjects={[...(props.projects ?? []).map(project => ({ name: project.name, path: project.projectRoot })), ...(props.nodeApps ?? []).filter(app => app.installation).map(app => ({ name: app.name, path: app.development?.sourcePath ?? app.objectLayout?.source.path ?? app.sourcePath }))]} externalProjectCount={(props.nodeApps ?? []).filter(app => !app.installation).length} instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
         </section>)}
       </div>
     </div>

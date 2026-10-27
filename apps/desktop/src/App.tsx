@@ -23,6 +23,8 @@ import type { NodeAppDeleteResult, NodeAppDetail } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
+import { ImportPanel } from './ArchiveImportPanel';
+import { SourceRecoveryNotice } from './SourceRecoveryNotice';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
@@ -95,6 +97,19 @@ function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
   const [showSources, setShowSources] = useState(false);
+  const [sourcesMounted, setSourcesMounted] = useState(false);
+  const [sourceNeedsAttention, setSourceNeedsAttention] = useState(false);
+  const [archiveImportOpen, setArchiveImportOpen] = useState(false);
+  const [sourceRepositories, setSourceRepositories] = useState<{ url: string; appId: string; name: string }[]>([]);
+  const sourceTaskIds = useRef(new Set<string>());
+  useEffect(() => {
+    if (!showSources || !info) return;
+    let cancelled = false;
+    void invoke<{ sourceId: string; url: string }[]>('source_list').then(sources => {
+      if (!cancelled && Array.isArray(sources)) setSourceRepositories(nodeApps.flatMap(app => { const source = sources.find(source => source.sourceId === app.installation?.sourceId); return source?.url ? [{ url: source.url, appId: app.id, name: app.name }] : []; }));
+    }).catch(() => { if (!cancelled) setSourceRepositories([]); });
+    return () => { cancelled = true; };
+  }, [showSources, info?.instanceId, nodeApps]);
   const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
   const [overviewVersionDraft, setOverviewVersionDraft] = useState({ dirty: false, pending: false });
   const [deleteProject, setDeleteProject] = useState<ProjectInfo | null>(null);
@@ -589,8 +604,8 @@ function App() {
   const addBlocked = !info || workspaceBusy || nodeDraft.pending || nodeModalOpen;
   const addActions = (className: string) => <div className={className} role="group" aria-label="添加项目">
     <button className="refresh-button" disabled={addBlocked || creating} onClick={() => { if (!addBlocked) setShowCreate(true); }}><Plus size={15} aria-hidden="true" />新建项目</button>
-    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setNodeAddRequest((value) => value + 1); }}><FolderOpen size={15} aria-hidden="true" />添加本地应用</button>
-    <button className="primary-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setShowSources(true); }}><Download size={15} aria-hidden="true" />从 Git 导入应用</button>
+    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setNodeAddRequest((value) => value + 1); }}><FolderOpen size={15} aria-hidden="true" />添加本地项目</button>
+    <button className="primary-button" disabled={addBlocked} onClick={() => { if (!addBlocked) { setSourcesMounted(true); setShowSources(true); setSourceNeedsAttention(false); } }}><Download size={15} aria-hidden="true" />从 Git 添加</button>
   </div>;
   const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
   const openSpace = (tab?: SpaceTab) => { if (tab) setSpaceTab(tab); navigatePage('storage'); };
@@ -619,7 +634,7 @@ function App() {
           <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('storage')}>空间</button>
         </nav>
         <div className="radio-header-actions">
-          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} open={tasksOpen} onOpenChange={setTasksOpen} />}
+          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} open={tasksOpen} onOpenChange={setTasksOpen} importFlow={sourcesMounted ? { needsAttention: sourceNeedsAttention, onOpen: () => { setTasksOpen(false); setShowSources(true); setSourceNeedsAttention(false); } } : undefined} onViewTask={task => { if (sourceTaskIds.current.has(task.taskId)) { setTasksOpen(false); setShowSources(true); setSourceNeedsAttention(false); } }} canViewTask={task => sourceTaskIds.current.has(task.taskId)} />}
           <button className="radio-settings-button" aria-label="设置" title="设置" disabled={nodeDraft.pending || localDataLocked} onClick={() => openSettings()}><Settings size={17} /></button>
         </div>
       </header>
@@ -641,7 +656,8 @@ function App() {
           {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" onClick={() => setTasksOpen(true)}>查看任务</button></div>}
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
-            {showSources && <SourceAcquisitionPanel instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={acceptLifecycleTask} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
+            {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => { setSourcesMounted(true); setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
+      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { sourceTaskIds.current.add(task.taskId); acceptLifecycleTask(task); }} onClose={() => setShowSources(false)} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
@@ -657,9 +673,10 @@ function App() {
           </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={nodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
       </main>
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `显示 ${filteredCount} / 共 ${totalProjects} 个应用` : `共 ${totalProjects} 个应用`}{runningCount > 0 ? ` · ${runningCount} 个运行中` : ''}</span><span title={info?.workspaceRoot}><ShieldCheck size={12} aria-hidden="true" />数据保存在本机</span></footer>
-      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onOpenHistory={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('history'); }} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onOpenSpace={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('overview'); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} />}
-        {!localDataLocked && <NodeAppsPanel instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
+      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onOpenHistory={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('history'); }} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onOpenSpace={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('overview'); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} projects={projects} nodeApps={nodeApps} />}
+        {!localDataLocked && <NodeAppsPanel apps={nodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
+        {archiveImportOpen && <ImportPanel disabled={workspaceBusy} instanceId={info?.instanceId} onTask={acceptLifecycleTask} onCompleted={() => void refresh()} onClose={() => setArchiveImportOpen(false)} />}
         {showCreate && <Modal title="新建项目" description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>

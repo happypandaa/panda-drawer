@@ -88,7 +88,7 @@ test('A complete but runtime-blocked entry opens runtime status and cannot issue
   assert.equal(selectedTab(), '运行状态'); assert.match(document.querySelector('[role=dialog]').textContent, /人工保留的 active intent 故障/);
   await click(button('概览')); assert.match(facts(), /已完整（1 项）/); assert.doesNotMatch(facts(), /缺少 0/);
   assert.match(document.querySelector('.detail-document-row').textContent, /查看或修改应用配置/);
-  await click(button('进入项目')); assert.equal(selectedTab(), '运行状态'); noLaunch(calls);
+  await click(button('再试一次')); assert.equal(selectedTab(), '运行状态'); noLaunch(calls);
 });
 
 test('A stopped complete configuration with another admission restriction also opens runtime status', async () => {

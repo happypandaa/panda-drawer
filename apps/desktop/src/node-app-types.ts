@@ -43,6 +43,8 @@ export interface NodeConfigurationField {
 }
 
 export interface NodeAppDetail {
+  version?: string;
+  development?: { sourcePath: string; runtimeIsSource: boolean; manifestId: string } | null;
   id: string;
   name: string;
   sourcePath: string;
@@ -81,6 +83,10 @@ export interface NodeDirectoryReview {
   inspection?: NodeAppInspection;
   issues: string[];
   reviewPrompt: string;
+  category?: 'needs-changes' | 'unsupported' | 'insufficient';
+  reasonCodes?: string[];
+  projectFormat?: 'project-v1';
+  existingApp?: { id: string; name: string };
 }
 
 export type NodeSecretChange = { action: 'keep' | 'unbind' | 'rebind' } | { action: 'replace'; value: string };

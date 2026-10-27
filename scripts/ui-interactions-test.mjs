@@ -12,7 +12,8 @@ const outputParent = path.join(repo, '.test-artifacts');
 await mkdir(outputParent, { recursive: true });
 const output = await mkdtemp(path.join(outputParent, 'ui-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
-await writeFile(mockPath, 'export const invoke = (...args) => globalThis.__UI_TEST_INVOKE__(...args); export const isTauri = () => true;\n');
+// These unrelated interaction fixtures have no interrupted Git additions.
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true;\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {

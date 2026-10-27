@@ -12,7 +12,8 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/radio-shell-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
-await writeFile(mockPath, 'export const invoke = (...args) => globalThis.__RADIO_SHELL_INVOKE__(...args); export const isTauri = () => true;\n');
+// These unrelated interaction fixtures have no interrupted Git additions.
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__RADIO_SHELL_INVOKE__(command, ...args); export const isTauri = () => true;\n');
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
@@ -77,6 +78,7 @@ async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
     if (command === 'bootstrap_info') return bootstrap;
     if (command === 'project_list') return projects;
     if (command === 'node_app_list') return nodes;
+    if (command === 'source_list') return [];
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [] };
     if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false, activeTask: null };
     if (command === 'environment_doctor') return environment;
@@ -214,8 +216,8 @@ test('The toolbar shows new, local and Git add actions side by side, separate fr
   assert.ok(refresh.closest('.radio-toolbar'));
   assert.equal(filter.closest('[aria-label="添加项目"]'), null);
   assert.equal(refresh.closest('[aria-label="添加项目"]'), null);
-  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['新建项目', '添加本地应用', '从 Git 导入应用']);
-  assert.ok(byText('从 Git 导入应用', addGroup()).classList.contains('primary-button'));
+  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['新建项目', '添加本地项目', '从 Git 添加']);
+  assert.ok(byText('从 Git 添加', addGroup()).classList.contains('primary-button'));
   assert.equal(document.querySelector('.radio-add-menu'), null);
   assert.equal(byText('导入项目'), undefined, 'ZIP import has no home entry');
   const before = calls.filter(([command]) => command === 'project_list').length;
@@ -223,12 +225,12 @@ test('The toolbar shows new, local and Git add actions side by side, separate fr
   assert.equal(calls.filter(([command]) => command === 'project_list').length, before + 1);
 });
 
-for (const [label, title] of [['新建项目', '新建项目'], ['添加本地应用', '添加本地应用'], ['从 Git 导入应用', '从 Git 导入应用']]) {
-  test(`The ${label} action opens its own dialog without running a native command`, async () => {
+for (const [label, title] of [['新建项目', '新建项目'], ['添加本地项目', '添加本地项目'], ['从 Git 添加', '从 Git 添加项目']]) {
+  test(`The ${label} action opens its own dialog without submitting a native mutation`, async () => {
     const calls = await setup();
     await click(byText(label, addGroup()));
     assert.equal(dialog().querySelector('h2').textContent, title);
-    assert.equal(calls.some(([command]) => /choose_path|project_import|project_create|node_app_register|source_/.test(command)), false);
+    assert.equal(calls.some(([command]) => /^(choose_path|project_import|project_create|node_app_register|source_acquire|source_capture|node_install_prepare|node_install_apply)$/.test(command)), false);
   });
 }
 
@@ -270,7 +272,7 @@ test('Add actions stay disabled before bootstrap and while a Node entry is pendi
   await setup({ overrides: { bootstrap_info: () => bootstrapRead.promise } });
   const disabled = () => [...addGroup().querySelectorAll('button')].map(element => element.disabled);
   assert.deepEqual(disabled(), [true, true, true]);
-  await click(byText('从 Git 导入应用', addGroup()));
+  await click(byText('从 Git 添加', addGroup()));
   assert.equal(dialog(), null);
   await act(async () => bootstrapRead.resolve(bootstrap));
   assert.deepEqual(disabled(), [false, false, false]);
@@ -279,7 +281,7 @@ test('Add actions stay disabled before bootstrap and while a Node entry is pendi
   await setup({ nodes: [nodeFixture], overrides: { node_app_configuration: () => nodeRead.promise } });
   await click(document.querySelector('[aria-label="进入项目「Disposable shell Node」"]'));
   assert.deepEqual(disabled(), [true, true, true]);
-  await click(byText('添加本地应用', addGroup()));
+  await click(byText('添加本地项目', addGroup()));
   assert.equal(dialog(), null);
   await act(async () => nodeRead.resolve(nodeFixture));
   assert.ok(dialog());

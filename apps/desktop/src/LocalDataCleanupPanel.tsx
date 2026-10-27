@@ -24,6 +24,8 @@ interface CleanupState {
   error?: unknown;
 }
 interface Props {
+  managedProjects?: { name: string; path: string }[];
+  externalProjectCount?: number;
   instanceId?: string;
   scopeIdentity: string;
   disabled: boolean;
@@ -56,7 +58,7 @@ const stateLabels: Record<CleanupStatus, string> = {
   completed: '本机项目内容已清理', blocked: '清理已停止，需要核对', failed: '清理未完成',
 };
 
-export function LocalDataCleanupPanel({ instanceId, scopeIdentity, disabled, onPendingChange, onTerminalLock }: Props) {
+export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCount = 0, instanceId, scopeIdentity, disabled, onPendingChange, onTerminalLock }: Props) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
@@ -149,7 +151,7 @@ export function LocalDataCleanupPanel({ instanceId, scopeIdentity, disabled, onP
         <p className="local-data-cleanup-warning">通常在卸载软件前才需要执行。将永久删除下方范围内的全部代码和本机数据，不进入回收站，无法撤销。</p>
         <p>包括项目源码、已安装应用及其依赖、数据库、附件、配置和保存的 Key、所有工作区、旧备份、旧回收项与恢复现场。请先把需要保留的内容导出到本次范围以外，并停止外部编辑器、AI 和其他工具访问这些目录。</p>
         {previewing && <p role="status">正在核对清理范围，尚未删除文件…</p>}
-        {plan && <><div className="local-data-cleanup-paths"><h4>将永久删除</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{item.label}</strong><code>{item.path}</code></li>)}</ul></div>
+        {plan && <>{managedProjects.length > 0 && <div className="local-data-cleanup-paths"><h4>将删除的托管项目</h4><ul>{managedProjects.map(project => <li key={project.path}><strong>{project.name}</strong><code>{project.path}</code></li>)}</ul></div>}<p>外部项目的文件夹不会被删除：{externalProjectCount} 个。平台内的应用数据和设置会删除。</p><div className="local-data-cleanup-paths"><h4>将永久删除</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{item.label}</strong><code>{item.path}</code></li>)}</ul></div>
           <div className="local-data-cleanup-paths"><h4>继续保留</h4><p>软件程序本身保留，可在清理完成并退出后卸载。为阻止并发运行及核对结果，可能保留极少量实例锁与清理回执。</p><p>系统生成的网页存储（可能包含会话和本地存储）、软件缓存及系统偏好也可能保留；本操作不等于卸载后完全无残留。</p>{plan.preservedPaths.length > 0 && <ul>{plan.preservedPaths.map((path, index) => <li key={index}>{path}</li>)}</ul>}</div>
           {plan.warnings.length > 0 && <ul className="local-data-cleanup-warnings">{plan.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
           {expired && <p role="status">清理范围已过期，请重新核对后完成两次确认。</p>}

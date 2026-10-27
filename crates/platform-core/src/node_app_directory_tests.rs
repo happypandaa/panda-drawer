@@ -1,7 +1,7 @@
 //! Only disposable directories and declarations are used. No runtime, npm,
 //! credential store or existing application is opened by these regressions.
 use super::*;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, FileTypeExt};
 
 struct Fixture {
     _temporary: tempfile::TempDir,
@@ -107,6 +107,134 @@ fn inspection_is_read_only_and_hidden_or_unrelated_files_are_never_empty() {
         fs::read_to_string(fixture.source.join(".env")).unwrap(),
         "DISPOSABLE_SECRET_DO_NOT_READ"
     );
+}
+
+#[tokio::test]
+async fn registered_directory_is_identified_before_a_damaged_manifest_or_entry_budget() {
+    let fixture = Fixture::new();
+    let input = fixture.input("disposable existing application");
+    let registered = fixture
+        .manager
+        .initialize_and_register_directory(fixture.source.clone(), input)
+        .await
+        .unwrap();
+    let id = registered["id"].as_str().unwrap();
+    let registration = fixture.manager.root.join(id).join("registration.json");
+    let original_registration = fs::read(&registration).unwrap();
+
+    fs::write(
+        fixture.source.join("local-app.json"),
+        b"{broken disposable declaration",
+    )
+    .unwrap();
+    let damaged = fixture.preview();
+    assert_eq!(damaged["existingApp"]["id"], id);
+    assert_eq!(damaged["category"], "insufficient");
+    assert!(damaged.get("inspection").is_none());
+
+    for index in 0..=MAX_ENTRIES {
+        fs::write(
+            fixture.source.join(format!("disposable-entry-{index}")),
+            b"preserve",
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        fixture
+            .manager
+            .directory_preview(&fixture.source)
+            .err()
+            .unwrap()
+            .code,
+        "NODE_DIRECTORY_LIMIT"
+    );
+    let large = fixture.preview();
+    assert_eq!(large["existingApp"]["id"], id);
+    assert_eq!(fixture.manager.registrations().unwrap().len(), 1);
+    assert_eq!(fs::read(&registration).unwrap(), original_registration);
+    assert_eq!(
+        fs::read(fixture.source.join("local-app.json")).unwrap(),
+        b"{broken disposable declaration"
+    );
+    assert!(fixture.manager.running_ids().await.is_empty());
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(!fixture.manager.node_path.exists());
+    fixture.manager.stop_all().await.unwrap();
+}
+
+#[test]
+fn directory_categories_distinguish_platform_python_and_frontend_materials_without_reading_secrets()
+{
+    for (files, category, format, code) in [
+        (
+            vec![("project.json", "disposable platform declaration")],
+            "insufficient",
+            Some("project-v1"),
+            "PROJECT_V1",
+        ),
+        (
+            vec![
+                ("requirements.txt", "disposable dependency"),
+                ("main.py", "raise RuntimeError('never execute')"),
+            ],
+            "unsupported",
+            None,
+            "EXTERNAL_RUNTIME",
+        ),
+        (
+            vec![
+                ("package.json", r#"{"scripts":{"dev":"vite"}}"#),
+                ("requirements.txt", "optional tooling"),
+                ("main.py", "not necessarily the runtime"),
+            ],
+            "needs-changes",
+            None,
+            "MISSING_DECLARATION",
+        ),
+        (
+            vec![(
+                "requirements.txt",
+                "insufficient to identify the actual runtime",
+            )],
+            "needs-changes",
+            None,
+            "MISSING_DECLARATION",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        for (path, content) in &files {
+            fs::write(fixture.source.join(path), content).unwrap();
+        }
+        let secret = fixture.source.join(".env");
+        let name = c_name(secret.as_os_str()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let private_database = fixture.source.join("records.sqlite");
+        fs::write(
+            &private_database,
+            b"DO_NOT_INSPECT_DISPOSABLE_BUSINESS_RECORDS",
+        )
+        .unwrap();
+        let result = fixture.preview();
+        assert_eq!(result["state"], "needs-review");
+        assert_eq!(result["category"], category);
+        assert_eq!(result["projectFormat"].as_str(), format);
+        assert_eq!(result["reasonCodes"], json!([code]));
+        assert!(!result
+            .to_string()
+            .contains("DO_NOT_INSPECT_DISPOSABLE_BUSINESS_RECORDS"));
+        for (path, content) in files {
+            assert_eq!(
+                fs::read_to_string(fixture.source.join(path)).unwrap(),
+                content
+            );
+        }
+        assert_eq!(
+            fs::read(private_database).unwrap(),
+            b"DO_NOT_INSPECT_DISPOSABLE_BUSINESS_RECORDS"
+        );
+        assert!(fs::symlink_metadata(secret).unwrap().file_type().is_fifo());
+        fixture.assert_no_platform_writes();
+    }
 }
 
 #[test]
@@ -498,7 +626,8 @@ async fn one_confirmed_generation_registers_durably_without_starting_or_later_so
         )
         .await
         .unwrap_err();
-    assert_eq!(stale.code, "NODE_DIRECTORY_NOT_EMPTY");
+    assert_eq!(stale.code, "NODE_DIRECTORY_CHANGED");
+    assert_eq!(fixture.preview()["existingApp"]["id"], result["id"]);
     assert_eq!(fixture.manager.list().await.unwrap().len(), 1);
     assert_eq!(source_files(&fixture.source), generated);
     reopened.stop_all().await.unwrap();
@@ -575,13 +704,11 @@ async fn generated_files_survive_registration_failure_and_explicit_reinspection_
 {
     let fixture = Fixture::new();
     // A real filesystem obstacle affects only registration, after generation.
+    let input = fixture.input("Retained generated project");
     fs::write(&fixture.manager.root, b"registration directory is blocked").unwrap();
     let error = fixture
         .manager
-        .initialize_and_register_directory(
-            fixture.source.clone(),
-            fixture.input("Retained generated project"),
-        )
+        .initialize_and_register_directory(fixture.source.clone(), input)
         .await
         .unwrap_err();
     assert_eq!(error.code, "NODE_DIRECTORY_ADD_FAILED");
@@ -737,28 +864,16 @@ async fn registration_publication_and_postcommit_detail_failures_report_actual_u
             let registration_bytes =
                 fs::read(fixture.manager.root.join(id).join("registration.json")).unwrap();
             fs::remove_file(retained).unwrap();
-            let ready = fixture.preview();
-            let added = fixture
-                .manager
-                .register_directory(
-                    fixture.source.clone(),
-                    ready["expectedRevision"].as_str().unwrap().into(),
-                )
-                .await
-                .unwrap();
+            let existing = fixture.preview();
+            assert_eq!(existing["existingApp"]["id"], id);
+            let added = fixture.manager.configuration(id).await.unwrap();
             assert_eq!(added["id"], id);
             let reopened = NodeApps::new(
                 fixture.manager.data_root.clone(),
                 fixture.manager.node_path.clone(),
             )
             .unwrap();
-            let reused = reopened
-                .register_directory(
-                    fixture.source.clone(),
-                    ready["expectedRevision"].as_str().unwrap().into(),
-                )
-                .await
-                .unwrap();
+            let reused = reopened.configuration(id).await.unwrap();
             assert_eq!(reused["id"], id);
             assert_eq!(reused["state"], "stopped");
             assert_eq!(reopened.list().await.unwrap().len(), 1);

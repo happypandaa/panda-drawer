@@ -307,6 +307,7 @@ impl NodeApps {
         })?;
         let source = binding.source(id, record.managed.is_none());
         if source.source_root.starts_with(&self.data_root)
+            && !self.is_published_source(&source.source_root)
             || self.data_root.starts_with(&source.source_root)
             || source
                 .source_root
@@ -339,7 +340,42 @@ impl NodeApps {
     /// files. An external application already has its authoritative source.
     pub async fn bind_development_source(&self, id: &str, source: PathBuf) -> Result<Value> {
         let inner = self.inner.lock().await;
-        self.require_install_stopped(id, &inner)?;
+        self.bind_development_source_locked(id, source, &inner)
+    }
+
+    pub(crate) async fn bind_imported_development_source(
+        &self,
+        id: &str,
+        source: PathBuf,
+        expected_source_id: &str,
+        expected_digest: &str,
+        expected_generation: &str,
+    ) -> Result<Value> {
+        let inner = self.inner.lock().await;
+        let record = self.registration(id)?;
+        let managed = record.managed.as_ref().ok_or_else(development_changed)?;
+        if managed.provenance.source_id != expected_source_id
+            || managed.provenance.source_digest != expected_digest
+            || managed.generation != expected_generation
+        {
+            return Err(development_changed());
+        }
+        if self
+            .read_development_binding(id)?
+            .is_some_and(|binding| binding.source_root != source)
+        {
+            return Err(development_changed());
+        }
+        self.bind_development_source_locked(id, source, &inner)
+    }
+
+    fn bind_development_source_locked(
+        &self,
+        id: &str,
+        source: PathBuf,
+        inner: &Inner,
+    ) -> Result<Value> {
+        self.require_install_stopped(id, inner)?;
         let record = self.registration(id)?;
         if record.managed.is_none() && source != record.source_path {
             return Err(fail(
@@ -367,8 +403,148 @@ impl NodeApps {
             &self.root.join(id).join("development-source.json"),
             &binding,
         )?;
-        self.detail(&record, &runtime_manifest, &inner)
+        self.detail(&record, &runtime_manifest, inner)
     }
+}
+
+/// Called only by the verified public workspace migration, after the target
+/// copy has been selected. External author folders are deliberately untouched.
+pub(crate) fn rebind_published_after_migration(
+    data_root: &Path,
+    old: &Path,
+    new: &Path,
+) -> Result<()> {
+    let apps = data_root.join("node-apps");
+    if !apps.try_exists()? {
+        return Ok(());
+    }
+    ordinary_path(&apps, true)?;
+    for entry in fs::read_dir(apps)? {
+        let entry = entry?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if Uuid::parse_str(&id).is_err() {
+            continue;
+        }
+        let path = entry.path().join("development-source.json");
+        if !path.try_exists()? {
+            continue;
+        }
+        ordinary_path(&path, false)?;
+        let mut binding: NodeDevelopmentBinding = serde_json::from_slice(&read_small(&path)?)?;
+        let (relative, already_rebound) = if let Ok(relative) = binding
+            .source_root
+            .strip_prefix(old.join("project-sources"))
+        {
+            (relative, false)
+        } else if let Ok(relative) = binding
+            .source_root
+            .strip_prefix(new.join("project-sources"))
+        {
+            (relative, true)
+        } else {
+            continue;
+        };
+        if relative.components().count() != 1
+            || !matches!(relative.components().next(), Some(Component::Normal(_)))
+        {
+            return Err(development_changed());
+        }
+        binding.validate_record()?;
+        let target = new.join("project-sources").join(relative);
+        ordinary_path(&target, true)?;
+        let receipt = new
+            .join(".platform/source-publications")
+            .join(&id)
+            .join("publication.json");
+        ordinary_path(&receipt, false)?;
+        let mut publication: Value = serde_json::from_slice(&read_small(&receipt)?)?;
+        let original: PersistedIdentity =
+            serde_json::from_value(publication["payloadIdentity"].clone())?;
+        if publication["appId"] != id
+            || publication["directory"].as_str() != relative.to_str()
+            || (!already_rebound && !binding.root_identity.matches_captured(&original))
+            || (already_rebound
+                && (!binding
+                    .root_identity
+                    .matches_path(&target)
+                    .map_err(|_| development_changed())?
+                    || (!binding.root_identity.matches_captured(&original)
+                        && !original
+                            .matches_path(&old.join("project-sources").join(relative))
+                            .map_err(|_| development_changed())?)))
+        {
+            return Err(development_changed());
+        }
+        let manifest = TrialManifest::load(&target).map_err(|_| development_changed())?;
+        if manifest.app.id != binding.manifest_id {
+            return Err(development_changed());
+        }
+        binding.source_root = target;
+        binding.root_identity =
+            PersistedIdentity::capture(&binding.source_root).map_err(|_| development_changed())?;
+        publication["payloadIdentity"] = serde_json::to_value(&binding.root_identity)?;
+        // Rebind the per-instance association before updating its copied receipt.
+        // A retry sees the new association and never rebinds an external folder.
+        crate::builds::atomic_json(&path, &binding)?;
+        crate::builds::atomic_json(&receipt, &publication)?;
+    }
+    // A crash can occur after exclusive directory publication but before its
+    // Node binding is written. The verified public migration also carries this
+    // receipt, so retain its exact old ownership proof while rebasing identity.
+    let publications = new.join(".platform/source-publications");
+    if publications.try_exists()? {
+        ordinary_path(&publications, true)?;
+        for entry in fs::read_dir(&publications)? {
+            let entry = entry?;
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if Uuid::parse_str(&id).is_err() {
+                continue;
+            }
+            let path = entry.path().join("publication.json");
+            if !path.try_exists()? {
+                continue;
+            }
+            ordinary_path(&path, false)?;
+            let mut publication: Value = serde_json::from_slice(&read_small(&path)?)?;
+            let Some(name) = publication["directory"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            if publication["appId"] != id
+                || Path::new(&name).components().count() != 1
+                || !matches!(
+                    Path::new(&name).components().next(),
+                    Some(Component::Normal(_))
+                )
+            {
+                return Err(development_changed());
+            }
+            let target = new.join("project-sources").join(&name);
+            if !target.try_exists()? {
+                continue;
+            }
+            ordinary_path(&target, true)?;
+            let original: PersistedIdentity =
+                serde_json::from_value(publication["payloadIdentity"].clone())?;
+            if original
+                .matches_path(&target)
+                .map_err(|_| development_changed())?
+            {
+                continue;
+            }
+            let previous = old.join("project-sources").join(&name);
+            if !original
+                .matches_path(&previous)
+                .map_err(|_| development_changed())?
+            {
+                return Err(development_changed());
+            }
+            publication["payloadIdentity"] = serde_json::to_value(
+                PersistedIdentity::capture(&target).map_err(|_| development_changed())?,
+            )?;
+            crate::builds::atomic_json(&path, &publication)?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn build_capability(binding: &NodeDevelopmentBinding, available: bool) -> Value {

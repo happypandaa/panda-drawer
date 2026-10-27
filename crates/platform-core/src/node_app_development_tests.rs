@@ -259,3 +259,241 @@ async fn source_restore_requires_a_separate_runtime_and_releases_its_failed_leas
     );
     drop(fixture.apps.development_source_lease(id).await.unwrap());
 }
+
+struct MigratedAuthorFixture {
+    fixture: Fixture,
+    old: PathBuf,
+    new: PathBuf,
+    old_source: PathBuf,
+    new_source: PathBuf,
+    binding: PathBuf,
+    receipt: PathBuf,
+    external_binding: PathBuf,
+}
+fn copy_artificial_migration_tree(source: &Path, target: &Path) {
+    fs::create_dir_all(target).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let metadata = fs::symlink_metadata(entry.path()).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        if metadata.is_dir() {
+            copy_artificial_migration_tree(&entry.path(), &target.join(entry.file_name()));
+        } else {
+            assert!(metadata.is_file());
+            fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+        }
+    }
+}
+impl MigratedAuthorFixture {
+    async fn new() -> Self {
+        let fixture = Fixture::new();
+        let external_id = fixture.register().await;
+        drop(
+            fixture
+                .apps
+                .development_source_lease(&external_id)
+                .await
+                .unwrap(),
+        );
+        let external_binding = fixture
+            .apps
+            .root
+            .join(&external_id)
+            .join("development-source.json");
+        let base = fixture.source.parent().unwrap();
+        let old = base.join("disposable-old-workspace");
+        let new = base.join("disposable-new-workspace");
+        let old_source = old.join("project-sources/disposable-author");
+        let new_source = new.join("project-sources/disposable-author");
+        copy_artificial_migration_tree(&fixture.source, &old_source);
+        copy_artificial_migration_tree(&old_source, &new_source);
+        let id = Uuid::new_v4().to_string();
+        let binding = fixture.apps.root.join(&id).join("development-source.json");
+        fs::create_dir_all(binding.parent().unwrap()).unwrap();
+        let text = fs::read_to_string(old_source.join("local-app.json")).unwrap();
+        let manifest: Value = serde_json::from_str(&text).unwrap();
+        let record = NodeDevelopmentBinding {
+            source_root: old_source.clone(),
+            manifest_id: manifest["app"]["id"].as_str().unwrap().into(),
+            root_identity: PersistedIdentity::capture(&old_source).unwrap(),
+            registered_manifest_digest: format!("{:x}", Sha256::digest(text.as_bytes())),
+            registered_manifest_text: text,
+        };
+        crate::builds::atomic_json(&binding, &record).unwrap();
+        let receipt = new
+            .join(".platform/source-publications")
+            .join(&id)
+            .join("publication.json");
+        fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+        crate::builds::atomic_json(&receipt, &json!({
+            "schemaVersion":1,"sourceId":format!("src_{}",Uuid::new_v4().simple()),
+            "sourceTaskId":format!("task_{}",Uuid::new_v4().simple()),"sourceDigest":"a".repeat(64),
+            "authorDigest":"b".repeat(64),"appId":id,"directory":"disposable-author","phase":"published",
+            "payload":"payload_disposable","payloadIdentity":record.root_identity,"retainedPayloads":[]
+        })).unwrap();
+        Self {
+            fixture,
+            old,
+            new,
+            old_source,
+            new_source,
+            binding,
+            receipt,
+            external_binding,
+        }
+    }
+    fn rebind(&self) -> Result<()> {
+        rebind_published_after_migration(&self.fixture.apps.data_root, &self.old, &self.new)
+    }
+    fn binding(&self) -> NodeDevelopmentBinding {
+        serde_json::from_slice(&fs::read(&self.binding).unwrap()).unwrap()
+    }
+    fn receipt(&self) -> Value {
+        serde_json::from_slice(&fs::read(&self.receipt).unwrap()).unwrap()
+    }
+}
+
+#[tokio::test]
+async fn public_migration_rebinds_only_published_author_sources_and_retry_is_idempotent() {
+    let fixture = MigratedAuthorFixture::new().await;
+    let before = fixture.binding();
+    let external_binding = fs::read(&fixture.external_binding).unwrap();
+    let external_manifest = fs::read(fixture.fixture.source.join("local-app.json")).unwrap();
+    let old_manifest = fs::read(fixture.old_source.join("local-app.json")).unwrap();
+    assert!(before
+        .root_identity
+        .matches_path(&fixture.old_source)
+        .unwrap());
+    assert!(!before
+        .root_identity
+        .matches_path(&fixture.new_source)
+        .unwrap());
+
+    fixture.rebind().unwrap();
+    let rebound = fixture.binding();
+    assert_eq!(rebound.source_root, fixture.new_source);
+    assert_eq!(rebound.manifest_id, before.manifest_id);
+    assert_eq!(
+        rebound.registered_manifest_digest,
+        before.registered_manifest_digest
+    );
+    assert_eq!(
+        rebound.registered_manifest_text,
+        before.registered_manifest_text
+    );
+    rebound.validate_record().unwrap();
+    assert!(rebound
+        .root_identity
+        .matches_path(&fixture.new_source)
+        .unwrap());
+    let identity: PersistedIdentity =
+        serde_json::from_value(fixture.receipt()["payloadIdentity"].clone()).unwrap();
+    assert!(identity.matches_path(&fixture.new_source).unwrap());
+    assert_eq!(
+        fs::read(&fixture.external_binding).unwrap(),
+        external_binding
+    );
+    assert_eq!(
+        fs::read(fixture.fixture.source.join("local-app.json")).unwrap(),
+        external_manifest
+    );
+    assert_eq!(
+        fs::read(fixture.old_source.join("local-app.json")).unwrap(),
+        old_manifest
+    );
+
+    let binding = fs::read(&fixture.binding).unwrap();
+    let receipt = fs::read(&fixture.receipt).unwrap();
+    fixture.rebind().unwrap();
+    assert_eq!(fs::read(&fixture.binding).unwrap(), binding);
+    assert_eq!(fs::read(&fixture.receipt).unwrap(), receipt);
+    assert_eq!(
+        fs::read(&fixture.external_binding).unwrap(),
+        external_binding
+    );
+}
+
+#[tokio::test]
+async fn migration_rebind_rejects_binding_receipt_and_target_identity_mismatches_without_writes() {
+    for mismatch in [
+        "binding-identity",
+        "receipt-identity",
+        "receipt-app",
+        "manifest-digest",
+        "target-app",
+    ] {
+        let fixture = MigratedAuthorFixture::new().await;
+        if mismatch == "binding-identity" || mismatch == "manifest-digest" {
+            let mut binding = fixture.binding();
+            if mismatch == "binding-identity" {
+                binding.root_identity =
+                    PersistedIdentity::capture(&fixture.fixture.source).unwrap();
+            } else {
+                binding.registered_manifest_digest = "0".repeat(64);
+            }
+            crate::builds::atomic_json(&fixture.binding, &binding).unwrap();
+        } else if mismatch.starts_with("receipt") {
+            let mut receipt = fixture.receipt();
+            if mismatch == "receipt-identity" {
+                receipt["payloadIdentity"] = serde_json::to_value(
+                    PersistedIdentity::capture(&fixture.fixture.source).unwrap(),
+                )
+                .unwrap();
+            } else {
+                receipt["appId"] = json!(Uuid::new_v4().to_string());
+            }
+            crate::builds::atomic_json(&fixture.receipt, &receipt).unwrap();
+        } else {
+            let path = fixture.new_source.join("local-app.json");
+            let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            manifest["app"]["id"] = json!("disposable.other-migration-app");
+            crate::builds::atomic_json(&path, &manifest).unwrap();
+        }
+        let binding = fs::read(&fixture.binding).unwrap();
+        let receipt = fs::read(&fixture.receipt).unwrap();
+        let external = fs::read(&fixture.external_binding).unwrap();
+        assert!(
+            fixture.rebind().is_err(),
+            "{mismatch} must not authorize a source rebind"
+        );
+        assert_eq!(
+            fs::read(&fixture.binding).unwrap(),
+            binding,
+            "{mismatch} changed the binding"
+        );
+        assert_eq!(
+            fs::read(&fixture.receipt).unwrap(),
+            receipt,
+            "{mismatch} changed the receipt"
+        );
+        assert_eq!(fs::read(&fixture.external_binding).unwrap(), external);
+    }
+}
+
+#[tokio::test]
+async fn migration_rebind_retry_finishes_an_old_receipt_but_rejects_an_unrelated_identity() {
+    let fixture = MigratedAuthorFixture::new().await;
+    let original_receipt = fixture.receipt();
+    fixture.rebind().unwrap();
+    // The public migration writes the association first. An interruption at
+    // that boundary leaves the copied receipt with the old author identity.
+    crate::builds::atomic_json(&fixture.receipt, &original_receipt).unwrap();
+    let rebound_bytes = fs::read(&fixture.binding).unwrap();
+    fixture.rebind().unwrap();
+    assert_eq!(fs::read(&fixture.binding).unwrap(), rebound_bytes);
+    let expected: PersistedIdentity =
+        serde_json::from_value(fixture.receipt()["payloadIdentity"].clone()).unwrap();
+    assert!(expected.matches_path(&fixture.new_source).unwrap());
+
+    let mut unrelated = fixture.receipt();
+    unrelated["payloadIdentity"] =
+        serde_json::to_value(PersistedIdentity::capture(&fixture.fixture.source).unwrap()).unwrap();
+    crate::builds::atomic_json(&fixture.receipt, &unrelated).unwrap();
+    let receipt = fs::read(&fixture.receipt).unwrap();
+    assert!(
+        fixture.rebind().is_err(),
+        "a retry must not accept a third directory's unrelated receipt identity"
+    );
+    assert_eq!(fs::read(&fixture.binding).unwrap(), rebound_bytes);
+    assert_eq!(fs::read(&fixture.receipt).unwrap(), receipt);
+}

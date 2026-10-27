@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { FolderOpen, Hammer } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
+import { AiProjectHelp } from './AiProjectHelp';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import { ProjectTask } from './ProjectTask';
 import type { SourceInstallCandidate } from './NodeInstallPanel';
@@ -11,13 +12,16 @@ import { messageFrom } from './ui-utils';
 export interface NodeDevelopmentInfo { sourceRoot: string; runtimeIsSource: boolean; instanceId: string }
 let clipboard = Promise.resolve();
 
-export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, disabled, running, onPendingChange, onPrepared, onTask, onInfo }: {
+export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, disabled, running, appName, appVersion, platformVersion, onPendingChange, onPrepared, onTask, onInfo }: {
   appId: string; instanceId?: string; installedGeneration?: string; disabled: boolean; running: boolean;
+  appName?: string; appVersion?: string; platformVersion?: string;
   onPendingChange: (value: boolean) => void; onPrepared: (value: SourceInstallCandidate) => void; onTask?: (value: TaskRecord) => void; onInfo: (value: NodeDevelopmentInfo) => void;
 }) {
   const [info, setInfo] = useState<NodeDevelopmentInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [buildError, setBuildError] = useState(false);
+  const [diagnosticLogs, setDiagnosticLogs] = useState('');
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
   const [action, setAction] = useState<HandoffAction | null>(null);
@@ -33,7 +37,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
     alive.current = true;
     const sequence = ++generation.current;
     const request = ++infoRead.current;
-    pending.current = false; polling.current = false; setBusy(false); setInfo(null); setTask(null); setHandoff(null); setFeedback(null); setAction(null); setError('');
+    pending.current = false; polling.current = false; setBusy(false); setInfo(null); setTask(null); setHandoff(null); setFeedback(null); setAction(null); setError(''); setBuildError(false); setDiagnosticLogs('');
     void invoke<NodeDevelopmentInfo>('node_development_info', { appId }).then(value => { if (current(sequence) && request === infoRead.current) { setInfo(value); callbacks.current.onInfo(value); } }).catch(cause => { if (current(sequence) && request === infoRead.current) setError(messageFrom(cause)); });
     return () => { alive.current = false; generation.current++; callbacks.current.onPendingChange(false); };
   }, [appId, instanceId, installedGeneration]);
@@ -55,7 +59,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
           if (value.result?.appId !== appId || !source || source.status !== 'ready' || source.inspection?.kind !== 'node-service-source' || !/^src_[a-f0-9]{32}$/.test(source.sourceId) || !/^[a-f0-9]{64}$/.test(source.contentDigest ?? '')) throw new Error('构建结果不完整，请保留现场并核对。');
           callbacks.current.onPrepared(source);
         }
-      } catch (cause) { if (!cancelled && current(sequence)) setError(messageFrom(cause)); }
+      } catch (cause) { if (!cancelled && current(sequence)) { setError(messageFrom(cause)); setBuildError(true); } }
       finally { if (current(sequence)) polling.current = false; }
     };
     void poll(); const timer = window.setInterval(() => void poll(), 500);
@@ -65,6 +69,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
     if (disabled || pending.current) return;
     const sequence = generation.current;
     pending.current = true; setBusy(true); setError('');
+    if (command === 'build') { setBuildError(false); setDiagnosticLogs(''); }
     try {
       if (command === 'bind') {
         const sourcePath = await invoke<string | null>('choose_path', { kind: 'nodeapp' });
@@ -73,7 +78,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
         await invoke('node_development_bind', { appId, sourcePath });
         if (!current(sequence)) return;
         const value = await invoke<NodeDevelopmentInfo>('node_development_info', { appId });
-        if (current(sequence) && request === infoRead.current) { setInfo(value); callbacks.current.onInfo(value); }
+        if (current(sequence) && request === infoRead.current) { setInfo(value); setTask(null); setBuildError(false); setDiagnosticLogs(''); callbacks.current.onInfo(value); }
       } else if (command === 'reveal') await invoke('node_development_reveal', { appId });
       else if (command === 'build') {
         const value = await invoke<TaskRecord>('node_development_build', { appId });
@@ -81,7 +86,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
           if (value.type !== 'nodeDevelopmentBuild') throw new Error('构建任务身份不符，请重新核对。');
           setTask(value); callbacks.current.onTask?.(value); }
       } else if (task) await invoke('node_development_cancel', { taskId: task.taskId });
-    } catch (cause) { if (current(sequence)) setError(messageFrom(cause)); }
+    } catch (cause) { if (current(sequence)) { setError(messageFrom(cause)); setBuildError(command === 'build'); } }
     finally { if (current(sequence)) { pending.current = false; setBusy(false); } }
   }
   async function prepare(value: HandoffAction) {
@@ -108,12 +113,23 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
   }
   const active = Boolean(task && !task.final);
   const locked = disabled || busy || active;
+  const buildFailed = !active && (buildError || Boolean(task?.final && task.status !== 'succeeded'));
+  const diagnosticIssues = [...new Set([error, task?.error ? messageFrom(task.error) : ''].filter(Boolean))];
+  useEffect(() => {
+    if (!buildFailed || !task) return;
+    const sequence = generation.current; let valid = true;
+    void invoke<{ text: string }>('task_logs', { taskId: task.taskId, cursor: 0 }).then(value => {
+      if (valid && current(sequence) && typeof value?.text === 'string') setDiagnosticLogs(value.text.slice(-12000));
+    }).catch(() => {});
+    return () => { valid = false; };
+  }, [buildFailed, task?.taskId]);
   return <section className="node-development-panel" aria-label="Node 开发工具">
     {error && <p className="task-error" role="alert">{error}</p>}
     {info && <code className="node-development-path">{info.sourceRoot}</code>}
     <div className="project-dialog-actions"><button className="refresh-button" disabled={locked || !info} onClick={() => void run('reveal')}><FolderOpen size={15} />打开源码</button><button className="text-button" disabled={locked} onClick={() => void run('bind')}>{info ? '更换源码目录' : '选择源码目录'}</button><button className="primary-button" disabled={locked || !info || running} onClick={() => void run('build')}><Hammer size={15} />构建并更新</button>{active && <button className="text-button" disabled={disabled || busy} onClick={() => void run('cancel')}>取消构建</button>}</div>
     <p className="project-help">{running ? '先关闭应用，再构建更新。' : info?.runtimeIsSource ? '首次更新会将程序与源码分开，数据和配置保留。' : '构建后核对并应用，当前程序在确认前保持原状。'}</p>
+    {buildFailed && <section className="add-project-failure-help"><h4>{info?.runtimeIsSource ? '没有生成可用更新，请先修复你的文件夹' : '更新没有成功，正在使用的版本不受影响'}</h4><p>{info?.runtimeIsSource ? '应用仍直接使用你的文件夹。请让 AI 检查改动，修复后重新构建。' : '最新源码没有完成检查或构建，尚未切换应用版本。'}</p>{info?.sourceRoot && <p>文件在哪里：<code>{info.sourceRoot}</code></p>}<AiProjectHelp context={{ mode: 'update-failed', sourceKind: info?.runtimeIsSource ? 'local' : 'managed', sourcePath: info?.sourceRoot, appName, appVersion, platformVersion, issues: diagnosticIssues, logs: diagnosticLogs }} label="复制说明给 AI" className="primary-button" disabled={locked} /></section>}
     {task && <ProjectTask task={task} />}
-    <CodexHandoffPanel handoff={handoff} action={action} feedback={feedback && (feedback.error ? <p className="task-error" role="alert">{feedback.error}</p> : <p role="status">{feedback.notice}</p>)} disabled={locked || !info || info.runtimeIsSource} onPrepare={value => void prepare(value)} onClear={() => { setHandoff(null); setFeedback(null); }} />
+    <CodexHandoffPanel handoff={handoff} action={action} feedback={feedback && (feedback.error ? <p className="task-error" role="alert">{feedback.error}</p> : <p role="status">{feedback.notice}</p>)} disabled={locked || !info} onPrepare={value => void prepare(value)} onClear={() => { setHandoff(null); setFeedback(null); }} />
   </section>;
 }

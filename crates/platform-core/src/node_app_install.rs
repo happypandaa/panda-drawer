@@ -996,6 +996,24 @@ impl NodeAppInstaller {
         File::open(self.operation(&journal.candidate_id)?)?.sync_all()?;
         checkpoint(CommitPoint::BeforePointer)?;
         self.check_target(&journal.target)?;
+        if let Some(expected_generation) = &journal.target.generation {
+            let previous_bytes = read_small(&slot.join("registration.json"))?;
+            if Some(digest_bytes(&previous_bytes)) != journal.target.registration_digest {
+                return Err(changed());
+            }
+            let previous: ManagedNodeRegistration = serde_json::from_slice(&previous_bytes)?;
+            if previous.id != prepared.app_id || previous.generation != *expected_generation {
+                return Err(changed());
+            }
+            crate::node_apps::rollback::record_previous_program(
+                &slot,
+                &prepared.generation,
+                previous,
+            )?;
+            // Saving the previous pointer is not permission to publish over a
+            // newer registration or a runtime that appeared in the meantime.
+            self.check_target(&journal.target)?;
+        }
         atomic_json(
             &slot.join("registration.json"),
             journal

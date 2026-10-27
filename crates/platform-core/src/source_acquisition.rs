@@ -37,6 +37,8 @@ use uuid::Uuid;
 
 #[path = "source_acquisition_process.rs"]
 mod process;
+#[path = "source_publication.rs"]
+mod publication;
 #[cfg(test)]
 use process::SourceHooks;
 use process::{execute, materialize, resolve_source_git, SourceScope};

@@ -694,6 +694,11 @@ pub(crate) fn initialize_selected(
         }
     }
     j.epochs_applied = true;
+    crate::node_apps::development::rebind_published_after_migration(
+        paths.data_root(),
+        &j.source_path,
+        &j.destination_path,
+    )?;
     save_journal(paths, j)?;
     let cache = paths.workspace_root().join(".platform/cache/storage");
     check_no_symlinks(&cache, true)?;

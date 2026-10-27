@@ -12,17 +12,20 @@ export interface TaskCenterProps {
   open: boolean;
   disabled?: boolean;
   onOpenChange: (open: boolean) => void;
+  importFlow?: { needsAttention: boolean; onOpen: () => void };
+  onViewTask?: (task: TaskRecord) => void;
+  canViewTask?: (task: TaskRecord) => boolean;
 }
 
 // Header task button and its popover; switching pages never cancels a task.
-export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange }: TaskCenterProps) {
+export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange, importFlow, onViewTask, canViewTask }: TaskCenterProps) {
   const id = useId();
   const container = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const active = tasks.filter((task) => !task.final);
   const attention = tasks.filter(needsAttention).slice(0, 10);
   const done = tasks.filter((task) => task.final && !needsAttention(task)).slice(0, 10);
-  const count = active.length + attention.length;
+  const count = active.length + attention.length + (importFlow?.needsAttention ? 1 : 0);
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onOpenChange(false); button.current?.focus(); } };
@@ -33,7 +36,7 @@ export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange }:
   }, [open, onOpenChange]);
   const title = (task: TaskRecord) => { const name = projectName(task.projectId); return name ? `${taskLabel(task.type)} · ${name}` : taskLabel(task.type); };
   const entry = (task: TaskRecord) => <li key={task.taskId} className={`task-center-entry is-${task.status}`}>
-    <details><summary><span className="history-chip">{statusText[task.status]}</span><strong>{title(task)}</strong></summary><ProjectTask task={task} /></details>
+    <details><summary><span className="history-chip">{statusText[task.status]}</span><strong>{title(task)}</strong></summary><ProjectTask task={task} />{canViewTask?.(task) && <button className="refresh-button" onClick={() => onViewTask?.(task)}>查看添加流程</button>}</details>
   </li>;
   return <div className="task-center" ref={container}>
     <button ref={button} type="button" className="radio-task-button" aria-expanded={open} aria-controls={`${id}-panel`} aria-label={`任务${active.length ? `，${active.length} 项进行中` : ''}${attention.length ? `，${attention.length} 项需要查看` : ''}`} disabled={disabled} onClick={() => onOpenChange(!open)}>
@@ -41,6 +44,7 @@ export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange }:
     </button>
     {open && <section className="task-center-panel" id={`${id}-panel`} aria-label="任务">
       <div className="task-center-heading"><h2>任务</h2><span>切换页面不会中断任务</span></div>
+      {importFlow && <div className="task-center-import"><strong>{importFlow.needsAttention ? '添加项目需要查看' : '从 Git 添加项目'}</strong><button className="refresh-button" onClick={importFlow.onOpen}>查看添加流程</button></div>}
       {active.length > 0 && <><h3>进行中</h3><ul aria-label="进行中的任务">{active.map(entry)}</ul></>}
       {attention.length > 0 && <><h3>需要查看</h3><ul aria-label="需要查看的任务">{attention.map(entry)}</ul></>}
       {done.length > 0 && <><h3>最近完成</h3><ul aria-label="最近完成的任务">{done.map(entry)}</ul></>}
