@@ -134,12 +134,7 @@ async fn real_npm_installs_internal_workspaces_and_nested_local_dependencies_in_
         BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into()).unwrap();
     let task = manager.submit(&project.manifest.id).await.unwrap();
     let done = wait(&manager, &task.task_id).await;
-    assert_eq!(
-        done.status,
-        TaskStatus::Succeeded,
-        "{done:?}; {}",
-        manager.logs(&task.task_id, 0).unwrap().text
-    );
+    assert_eq!(done.status, TaskStatus::Succeeded, "{done:?}");
     assert_candidate_removed(&project, &task.task_id);
     assert_eq!(input_digest(&project).unwrap(), before);
     assert!(!app.join("node_modules").exists());

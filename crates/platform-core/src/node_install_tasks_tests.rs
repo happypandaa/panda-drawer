@@ -198,7 +198,7 @@ impl Fixture {
     }
 }
 fn script(body: &str) -> String {
-    format!("set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\nmkdir -p node_modules\nprintf '{{}}' > node_modules/.package-lock.json\n{body}\n")
+    format!("set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\nif [ \"$1\" = --logs-dir ]; then [ \"$#\" -ge 3 ]; [ -n \"$2\" ]; [ \"$3\" = --logs-max=0 ]; shift 3; fi\nmkdir -p node_modules\nprintf '{{}}' > node_modules/.package-lock.json\n{body}\n")
 }
 const SLOW_NPM: &str = "printf '%s' \"$$\" > node_modules/disposable-pid; /bin/sleep 60 & wait";
 

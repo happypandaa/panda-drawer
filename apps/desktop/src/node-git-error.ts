@@ -16,10 +16,7 @@ export function nodeGitFailureMessage(cause: unknown, request: NodeGitFailureReq
   const result = record(details?.result);
   let receipt = '';
   if (details?.operationOutcome === 'committed' && result?.operationOutcome === 'committed') {
-    if (request.operation === 'save' && result.operation === 'save') receipt = '源码版本已保存';
-    else if (request.operation === 'branch' && result.operation === 'create-branch') receipt = '已创建并切换分支';
-    else if (request.operation === 'initialize' && result.operation === 'initialize') receipt = 'Git 已启用';
-    else if ((request.operation === 'restore-apply' || request.operation === 'restore-recover')
+    if ((request.operation === 'restore-apply' || request.operation === 'restore-recover')
       && result.sourceOnly === true && (result.state === 'completed' || result.state === 'undone')
       && typeof result.operationId === 'string' && restoreId.test(result.operationId)
       && (request.operation !== 'restore-recover' || result.operationId === request.operationId)) {
@@ -27,7 +24,7 @@ export function nodeGitFailureMessage(cause: unknown, request: NodeGitFailureReq
     }
   }
   const message = messageFrom(cause);
-  if (receipt) return `${receipt}，最后状态尚待${receipt === '源码操作已提交' ? '核对' : '刷新'}，请勿重复提交。${details?.processResourceClosed === false ? '相关任务仍待收尾，请保留现场。' : ''} ${message}`;
-  if (['save', 'branch', 'initialize', 'restore-apply', 'restore-recover'].includes(request.operation) || details?.operationOutcome === 'unknown' || details?.processResourceClosed === false) return `${message} 操作结果仍待核对，请刷新状态并保留现场，勿重复提交。`;
+  if (receipt) return `${receipt}，最后状态尚待核对，请勿重复提交。${details?.processResourceClosed === false ? '相关任务仍待收尾，请保留现场。' : ''} ${message}`;
+  if (['restore-apply', 'restore-recover'].includes(request.operation) || details?.operationOutcome === 'unknown' || details?.processResourceClosed === false) return `${message} 操作结果仍待核对，请刷新状态并保留现场，勿重复提交。`;
   return message;
 }

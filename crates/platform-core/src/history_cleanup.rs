@@ -1,7 +1,7 @@
-//! Explicit, scoped removal of retained history. Plans and receipts live outside
-//! every removable tree; no arbitrary path or force-delete operation is exposed.
+//! Explicit, scoped removal. Accepted plans live only in this manager; each new
+//! preview rechecks current ownership. No per-file deletion history is written.
 use crate::{
-    builds::{self, BuildManager},
+    builds::BuildManager,
     file_identity::PersistedIdentity,
     projects::{check_no_symlinks, valid_id},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord, APP_IDENTIFIER, ENVIRONMENT,
@@ -76,11 +76,6 @@ struct Candidate {
     blocked_reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     root_identity: Option<Identity>,
-    // Runtime identities above still protect this exact preview and fd-relative
-    // removal. This companion only binds durable progress to the same root after
-    // a reboot, when the preview itself can no longer be executed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    persistent_root_identity: Option<PersistedIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     parents: Vec<(PathBuf, Identity)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -102,7 +97,6 @@ impl Candidate {
             can_clean: false,
             blocked_reasons: vec![],
             root_identity: None,
-            persistent_root_identity: None,
             parents: vec![],
             entries: vec![],
             guards: BTreeMap::new(),
@@ -131,7 +125,7 @@ impl Plan {
     fn public(&self) -> Value {
         json!({"planId":self.plan_id,"expiresAt":self.expires_at,"workspaceRoot":self.workspace_root,
             "confirmationText":CONFIRMATION,"items":self.items.iter().map(Candidate::public).collect::<Vec<_>>(),
-            "preserved":["当前项目及其源码、数据库、附件和发布版本","已安装 Node 应用当前使用的程序、数据、配置及其源码副本","未完成的取回、安装和恢复现场以及操作日志","固定应用身份、设置、运行记录、迁移记录及清理回执"],
+            "preserved":["当前项目及其源码、数据库、附件和发布版本","已安装 Node 应用当前使用的程序、数据、配置及其源码副本","未完成的取回、安装和恢复现场以及操作日志","固定应用身份、设置、运行记录及迁移记录"],
             "warning":"永久清理不能撤销。旧工作区是迁移时点的完整副本，可能包含后来已删除的项目；取回前的原件清理后无法再找回那次取回之前的数据。请先停止外部 AI、编辑器或数据库工具对所选目录的访问。"})
     }
 }
@@ -164,6 +158,8 @@ pub(crate) struct CleanupManager {
     admission: Mutex<()>,
     running: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
+    plans: Mutex<BTreeMap<String, Plan>>,
+    latest: Mutex<Option<String>>,
 }
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -269,10 +265,6 @@ fn directory_identity(path: &Path) -> Result<Identity, ApiError> {
     }
     Ok(Identity::of(&meta))
 }
-fn persistent_identity(path: &Path) -> Result<PersistedIdentity, ApiError> {
-    directory_identity(path)?;
-    PersistedIdentity::capture(path).map_err(error)
-}
 fn matches_persisted_root(
     expected: &PersistedIdentity,
     item: &Candidate,
@@ -313,6 +305,9 @@ fn parent_identities(path: &Path) -> Result<Vec<(PathBuf, Identity)>, ApiError> 
         .collect()
 }
 fn scan(path: &Path) -> Result<Vec<Entry>, ApiError> {
+    scan_with_content(path, true)
+}
+fn scan_with_content(path: &Path, contents: bool) -> Result<Vec<Entry>, ApiError> {
     let identity = directory_identity(path)?;
     let root = OpenOptions::new()
         .read(true)
@@ -326,10 +321,17 @@ fn scan(path: &Path) -> Result<Vec<Entry>, ApiError> {
         relative: &Path,
         device: u64,
         out: &mut Vec<Entry>,
+        contents: bool,
     ) -> Result<(), ApiError> {
+        if relative.components().count() > 256 || out.len() > 500_000 {
+            return Err(error("Cleanup inventory exceeds its depth or entry bound"));
+        }
         let mut children = directory_names(directory)?;
         children.sort();
         for name in children {
+            if out.len() >= 500_000 {
+                return Err(error("Cleanup inventory exceeds its entry bound"));
+            }
             let rel = relative.join(&name);
             if rel.to_str().is_none() {
                 return Err(error("Non-UTF8 cleanup filename"));
@@ -358,11 +360,13 @@ fn scan(path: &Path) -> Result<Vec<Entry>, ApiError> {
                 libc::S_IFREG => {
                     entry.kind = "file".into();
                     entry.bytes = stat.st_size as u64;
-                    let mut file = open_file_at(directory, &name)?;
-                    if Identity::of(&file.metadata()?) != entry.identity {
-                        return Err(error("File changed while scanning"));
+                    if contents {
+                        let mut file = open_file_at(directory, &name)?;
+                        if Identity::of(&file.metadata()?) != entry.identity {
+                            return Err(error("File changed while scanning"));
+                        }
+                        entry.digest = Some(hash_reader(&mut file)?);
                     }
-                    entry.digest = Some(hash_reader(&mut file)?);
                 }
                 libc::S_IFDIR => entry.kind = "directory".into(),
                 _ => return Err(error("Unsupported special file in cleanup tree")),
@@ -385,7 +389,7 @@ fn scan(path: &Path) -> Result<Vec<Entry>, ApiError> {
             }
             out.push(entry.clone());
             if let Some(child) = child {
-                walk(&child, &rel, device, out)?;
+                walk(&child, &rel, device, out, contents)?;
             }
             if !stat_matches(&stat_at(directory, &name)?, &entry) {
                 return Err(error("Directory tree changed during scan"));
@@ -394,7 +398,13 @@ fn scan(path: &Path) -> Result<Vec<Entry>, ApiError> {
         Ok(())
     }
     let mut entries = vec![];
-    walk(&root, Path::new(""), identity.device, &mut entries)?;
+    walk(
+        &root,
+        Path::new(""),
+        identity.device,
+        &mut entries,
+        contents,
+    )?;
     if directory_identity(path)? != identity {
         return Err(error("Cleanup root changed during scan"));
     }
@@ -497,30 +507,6 @@ impl CleanupManager {
         tasks: Arc<BuildManager>,
         instance_id: String,
     ) -> Result<Arc<Self>, ApiError> {
-        let root = paths.data_root().join("cleanup");
-        check_no_symlinks(&root, true)?;
-        fs::create_dir_all(root.join("plans"))?;
-        fs::create_dir_all(root.join("receipts"))?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-        for entry in fs::read_dir(root.join("receipts"))? {
-            let path = entry?.path().join("task.json");
-            if !path.exists() {
-                continue;
-            }
-            let mut task: TaskRecord = serde_json::from_value(read_json(&path)?)?;
-            if !task.status.is_final() {
-                task.status = crate::TaskStatus::Interrupted;
-                task.phase = "interrupted".into();
-                task.error = Some(ApiError::new(
-                    "WORKSPACE_CLEANUP_INTERRUPTED",
-                    "Cleanup was interrupted; inspect retained progress. No deletion was retried.",
-                ));
-                builds::atomic_json(&path, &task)?;
-                if tasks.task(&task.task_id).is_ok() {
-                    tasks.reconcile_operation_result(&task.task_id,task.result.clone().unwrap_or(json!({"completed":false,"accountingComplete":false,"receiptPath":path.parent()})))?;
-                }
-            }
-        }
         Ok(Arc::new(Self {
             paths,
             store,
@@ -529,13 +515,12 @@ impl CleanupManager {
             admission: Mutex::new(()),
             running: Mutex::new(vec![]),
             stopping: AtomicBool::new(false),
+            plans: Mutex::new(BTreeMap::new()),
+            latest: Mutex::new(None),
         }))
     }
     fn root(&self) -> PathBuf {
         self.paths.data_root().join("cleanup")
-    }
-    fn receipt(&self, id: &str) -> PathBuf {
-        self.root().join("receipts").join(id)
     }
     fn ensure_running(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
@@ -570,14 +555,11 @@ impl CleanupManager {
                     task_id: None,
                     selected_ids: vec![],
                 };
-                builds::atomic_json(
-                    &worker
-                        .root()
-                        .join("plans")
-                        .join(format!("{}.json", plan.plan_id)),
-                    &plan,
-                )?;
-                Ok(plan.public())
+                let public = plan.public();
+                let mut plans = worker.plans.lock().unwrap();
+                plans.retain(|_, plan| plan.expires_at >= now_ms() || plan.task_id.is_some());
+                plans.insert(plan.plan_id.clone(), plan);
+                Ok(public)
             })
             .await
             .map_err(error)
@@ -602,11 +584,13 @@ impl CleanupManager {
             ));
         }
         let _admission = self.admission.lock().unwrap();
-        let path = self
-            .root()
-            .join("plans")
-            .join(format!("{}.json", input.plan_id));
-        let mut plan: Plan = serde_json::from_value(read_json(&path)?)?;
+        let mut plans = self.plans.lock().unwrap();
+        let mut plan = plans.get(&input.plan_id).cloned().ok_or_else(|| {
+            ApiError::new(
+                "CLEANUP_PLAN_EXPIRED",
+                "清理预览已结束或软件已重开，请重新扫描后确认。",
+            )
+        })?;
         let selected: BTreeSet<_> = input.item_ids.into_iter().collect();
         let selected_ids = selected.iter().cloned().collect::<Vec<_>>();
         if plan.schema_version != 1 || plan.plan_id != input.plan_id {
@@ -619,10 +603,7 @@ impl CleanupManager {
                     "This plan was consumed with a different selection",
                 ));
             }
-            return self.tasks.task(id).or_else(|_| {
-                serde_json::from_value(read_json(&self.receipt(id).join("task.json"))?)
-                    .map_err(Into::into)
-            });
+            return self.tasks.task(id);
         }
         if plan.instance_id != self.instance_id
             || plan.expires_at < now_ms()
@@ -651,24 +632,11 @@ impl CleanupManager {
             ));
         }
         let task = self.tasks.create_workspace_operation("workspaceCleanup")?;
-        let receipt = self.receipt(&task.task_id);
-        let prepared = (|| {
-            builds::atomic_json(&receipt.join("task.json"), &task)?;
-            builds::atomic_json(
-                &receipt.join("selection.json"),
-                &json!({"planId":plan.plan_id,"workspaceRoot":plan.workspace_root,"instanceId":self.instance_id,"itemIds":selected_ids,"acceptedAt":now_ms()}),
-            )?;
-            plan.task_id = Some(task.task_id.clone());
-            plan.selected_ids = selected_ids;
-            builds::atomic_json(&path, &plan)
-        })();
-        if let Err(failure) = prepared {
-            self.tasks.finish(&task.task_id, Err(failure.clone()))?;
-            if let Ok(record) = self.tasks.task(&task.task_id) {
-                let _ = builds::atomic_json(&receipt.join("task.json"), &record);
-            }
-            return Err(failure);
-        }
+        plan.task_id = Some(task.task_id.clone());
+        plan.selected_ids = selected_ids;
+        plans.insert(plan.plan_id.clone(), plan.clone());
+        drop(plans);
+        *self.latest.lock().unwrap() = Some(task.task_id.clone());
         let manager = self.clone();
         let id = task.task_id.clone();
         let runner = tokio::spawn(async move {
@@ -696,37 +664,21 @@ impl CleanupManager {
                     );
                 }
                 Err(failure) => {
-                    let value = json!({"completed":false,"error":failure,"receiptPath":manager.receipt(&id)});
+                    let value = json!({"completed":false,"error":failure});
                     let _ = manager.tasks.finish_partial(&id, value, failure);
                 }
-            }
-            if let Ok(record) = manager.tasks.task(&id) {
-                let _ = builds::atomic_json(&manager.receipt(&id).join("task.json"), &record);
             }
         });
         running.push(runner);
         Ok(task)
     }
     pub(crate) fn latest_task(&self) -> Result<Option<TaskRecord>, ApiError> {
-        let mut records = vec![];
-        for entry in fs::read_dir(self.root().join("receipts"))? {
-            let path = entry?.path().join("task.json");
-            if !path.exists() {
-                continue;
-            }
-            let stored: TaskRecord = serde_json::from_value(read_json(&path)?)?;
-            if stored.task_type != "workspaceCleanup" {
-                continue;
-            }
-            let task = self.tasks.task(&stored.task_id).unwrap_or(stored);
-            records.push((
-                !task.status.is_final(),
-                fs::metadata(path)?.modified().ok(),
-                task,
-            ));
-        }
-        records.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-        Ok(records.into_iter().next().map(|(_, _, task)| task))
+        self.latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|id| self.tasks.task(id))
+            .transpose()
     }
     pub(crate) fn request_stop(&self) {
         let _submission = self.running.lock().unwrap();
@@ -938,7 +890,7 @@ impl CleanupManager {
     ) -> Result<Option<crate::node_app_install::ManagedNodeRegistration>, ApiError> {
         let path = self.node_root().join(app).join("registration.json");
         check_no_symlinks(&path, true)?;
-        if !path.try_exists()? || crate::node_apps::deletion_recorded(&self.node_root(), app)? {
+        if !path.try_exists()? {
             return Ok(None);
         }
         let value = read_json(&path)?;
@@ -1069,7 +1021,7 @@ impl CleanupManager {
         let result = (|| {
             self.validate_location(item)?;
             item.root_identity = Some(directory_identity(&item.path)?);
-            item.persistent_root_identity = Some(persistent_identity(&item.path)?);
+
             item.parents = parent_identities(&item.path)?;
             item.entries = scan(&item.path)?;
             item.total_bytes = Some(item.entries.iter().try_fold(0u64, |total, entry| {
@@ -1193,7 +1145,7 @@ impl CleanupManager {
             if directory.file_name().to_str() == except {
                 continue;
             }
-            for file in ["journal.json", "lifecycle.json"] {
+            for file in ["journal.json"] {
                 let path = directory.path().join(file);
                 if !path.try_exists()? {
                     continue;
@@ -1226,7 +1178,6 @@ impl CleanupManager {
         if !matches_persisted_root(&expected, item)? {
             return Err(error("Retained workspace identity changed"));
         }
-        let removed = self.known_removals(item)?;
         let marker_path = item.path.join(RETIRED);
         if marker_path.try_exists()? {
             let marker = Self::guard_file(item, &marker_path)?;
@@ -1236,9 +1187,8 @@ impl CleanupManager {
             {
                 return Err(error("Retained workspace retirement marker is invalid"));
             }
-        } else if !removed.contains(Path::new(RETIRED)) {
-            return Err(error("Retained workspace retirement marker is missing without an authorized cleanup record"));
         }
+
         self.check_references(None, None)?;
         crate::source_restore_guard::check_workspace_available(&item.path)?;
         crate::data_restore_guard::check_workspace_available(&item.path)?;
@@ -1265,9 +1215,24 @@ impl CleanupManager {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let remaining = without_removed(entries, None, &removed)?;
+        let current_paths = persistent
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<BTreeSet<_>>();
+        let remaining = entries
+            .iter()
+            .filter(|entry| {
+                entry["path"]
+                    .as_str()
+                    .is_some_and(|path| current_paths.contains(Path::new(path)))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         if !content_matches(&persistent, &remaining, None)? {
-            return Err(ApiError::new("OLD_WORKSPACE_MODIFIED", "Retained persistent files differ from the migration inventory; preserve and inspect changes"));
+            return Err(ApiError::new(
+                "OLD_WORKSPACE_MODIFIED",
+                "Retained persistent files differ from the migration inventory; preserve and inspect changes",
+            ));
         }
         // Retired backup archives and recycle-bin entries are not interpreted
         // here. Their presence keeps the whole old workspace for manual review.
@@ -1411,85 +1376,6 @@ impl CleanupManager {
         }
         result
     }
-    /// Only this application's durable successful-unlink records authorize
-    /// missing entries in a later plan. A changed root never inherits progress.
-    fn known_removals(&self, item: &Candidate) -> Result<BTreeSet<PathBuf>, ApiError> {
-        let mut removed = BTreeSet::new();
-        for directory in fs::read_dir(self.root().join("receipts"))? {
-            let directory = directory?;
-            let log_path = directory.path().join(format!("{}.progress.jsonl", item.id));
-            if !log_path.exists() {
-                continue;
-            }
-            let selection = read_json(&directory.path().join("selection.json"))?;
-            let plan_id = selection["planId"]
-                .as_str()
-                .filter(|id| valid_id(id))
-                .ok_or_else(|| error("Invalid cleanup progress owner"))?;
-            let plan: Plan = serde_json::from_value(read_json(
-                &self.root().join("plans").join(format!("{plan_id}.json")),
-            )?)?;
-            let Some(prior) = plan.items.iter().find(|prior| prior.id == item.id) else {
-                return Err(error("Cleanup progress has no matching planned item"));
-            };
-            if !prior.can_clean
-                || !plan.selected_ids.contains(&item.id)
-                || plan.task_id.as_deref() != directory.file_name().to_str()
-            {
-                return Err(error(
-                    "Cleanup progress is not bound to an accepted eligible selection",
-                ));
-            }
-            if prior.path != item.path {
-                continue;
-            }
-            let Some(prior_runtime) = &prior.root_identity else {
-                return Err(error("Cleanup progress has no original root identity"));
-            };
-            let expected = match &prior.persistent_root_identity {
-                Some(identity) => {
-                    if identity.legacy_pair() != (prior_runtime.device, prior_runtime.inode) {
-                        return Err(error("Cleanup progress root identity records disagree"));
-                    }
-                    identity.clone()
-                }
-                None => serde_json::from_value(serde_json::to_value(prior_runtime)?)?,
-            };
-            if !matches_persisted_root(&expected, item)? {
-                continue;
-            }
-            check_no_symlinks(&log_path, false)?;
-            for line in fs::read_to_string(&log_path)?.lines() {
-                let entry: Value = serde_json::from_str(line)
-                    .map_err(|_| error("Incomplete cleanup progress requires inspection"))?;
-                let relative = entry["removed"]
-                    .as_str()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| error("Invalid removed-entry record"))?;
-                let Some(expected) = prior
-                    .entries
-                    .iter()
-                    .find(|expected| expected.path == relative)
-                else {
-                    return Err(error("Removed entry was absent from its confirmed plan"));
-                };
-                if serde_json::to_value(&expected.identity)? != entry["identity"]
-                    || expected.bytes != entry["bytes"].as_u64().unwrap_or(u64::MAX)
-                    || entry["kind"] != expected.kind
-                {
-                    return Err(error("Cleanup progress identity mismatch"));
-                }
-                if fs::symlink_metadata(item.path.join(&relative)).is_ok() {
-                    if entry["event"] == "intent" {
-                        continue;
-                    }
-                    return Err(error("A previously removed path has reappeared; it is not authorized for cleanup"));
-                }
-                removed.insert(relative);
-            }
-        }
-        Ok(removed)
-    }
     fn validate_migration_chain(
         &self,
         migration_id: &str,
@@ -1620,7 +1506,6 @@ impl CleanupManager {
             }
             selected.push(planned);
         }
-        let receipt = self.receipt(task);
         // Node installs commit under this lock; holding it keeps a commit from
         // adopting or replacing material while it is being removed.
         let _node_lock = if selected.iter().any(|item| {
@@ -1641,24 +1526,19 @@ impl CleanupManager {
                 continue;
             }
             self.tasks.phase(task, &format!("cleaning-{}", item.kind))?;
-            let log = receipt.join(format!("{}.progress.jsonl", item.id));
-            let operation = remove_tree(item, &log);
+            let operation = remove_tree(item);
             let result = match operation {
                 Ok(removed) => {
-                    json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"progressPath":log,"migrationId":item.id.strip_prefix("retained_")})
+                    json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"migrationId":item.id.strip_prefix("retained_")})
                 }
                 Err(failure) => {
                     stopped = true;
-                    json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"failed","completed":false,"error":failure,"progressPath":log})
+                    json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"failed","completed":false,"error":failure})
                 }
             };
-            // The receipt is outside every removable payload and is the durable
-            // ownership record used by later previews and storage accounting.
-            builds::atomic_json(&receipt.join(format!("{}.json", item.id)), &result)?;
             results.push(result);
         }
-        let result = json!({"planId":plan.plan_id,"workspaceRoot":plan.workspace_root,"completed":!stopped,"items":results,"receiptPath":receipt,"completedAt":now_ms()});
-        builds::atomic_json(&receipt.join("result.json"), &result)?;
+        let result = json!({"planId":plan.plan_id,"workspaceRoot":plan.workspace_root,"completed":!stopped,"items":results,"completedAt":now_ms()});
         Ok(result)
     }
 }
@@ -1732,31 +1612,6 @@ fn content_matches(
         }
     }
     Ok(expected.is_empty())
-}
-fn without_removed(
-    expected: &[Value],
-    prefix: Option<&Path>,
-    removed: &BTreeSet<PathBuf>,
-) -> Result<Vec<Value>, ApiError> {
-    validate_manifest_entries(expected)?;
-    let mut remaining = vec![];
-    for entry in expected {
-        let path = PathBuf::from(
-            entry["path"]
-                .as_str()
-                .ok_or_else(|| error("Invalid migration inventory path"))?,
-        );
-        let relative = if let Some(prefix) = prefix {
-            path.strip_prefix(prefix).ok()
-        } else {
-            Some(path.as_path())
-        };
-        if relative.is_some_and(|path| removed.contains(path)) {
-            continue;
-        }
-        remaining.push(entry.clone());
-    }
-    Ok(remaining)
 }
 fn validate_copy_evidence(source: &[Value], target: &[Value]) -> Result<(), ApiError> {
     validate_manifest_entries(source)?;
@@ -1925,8 +1780,8 @@ fn relative_parent(
     }
     Ok(directory)
 }
-fn remove_tree(item: &Candidate, progress_path: &Path) -> Result<Value, ApiError> {
-    remove_tree_with_hook(item, progress_path, |_, _| Ok(()))
+fn remove_tree(item: &Candidate) -> Result<Value, ApiError> {
+    remove_tree_with_hook(item, |_, _| Ok(()))
 }
 
 /// Explicit permanent deletion shares the descriptor-relative removal boundary
@@ -1934,7 +1789,6 @@ fn remove_tree(item: &Candidate, progress_path: &Path) -> Result<Value, ApiError
 pub(crate) fn remove_owned_directory(
     path: &Path,
     expected: &PersistedIdentity,
-    progress_path: &Path,
 ) -> Result<Value, ApiError> {
     if !expected.matches_path(path).map_err(error)? {
         return Err(error("Permanent deletion target identity changed"));
@@ -1946,20 +1800,19 @@ pub(crate) fn remove_owned_directory(
         path.into(),
     );
     item.root_identity = Some(directory_identity(path)?);
-    item.persistent_root_identity = Some(expected.clone());
+
     item.parents = parent_identities(path)?;
-    item.entries = scan(path)?;
+    item.entries = scan_with_content(path, false)?;
     item.can_clean = true;
-    remove_tree(&item, progress_path)
+    remove_tree_with_hook(&item, |_, _| Ok(()))
 }
 fn remove_tree_with_hook(
     item: &Candidate,
-    progress_path: &Path,
     mut after_remove: impl FnMut(&Progress, &Path) -> Result<(), ApiError>,
 ) -> Result<Value, ApiError> {
-    use std::io::Write;
     verify_parents(item)?;
-    if scan(&item.path)? != item.entries {
+    let contents = item.entries.iter().any(|entry| entry.digest.is_some());
+    if contents && scan(&item.path)? != item.entries {
         return Err(error("Content changed immediately before removal"));
     }
     let parent = OpenOptions::new()
@@ -1970,12 +1823,6 @@ fn remove_tree_with_hook(
     if Some(Identity::of(&root.metadata()?)) != item.root_identity {
         return Err(error("Cleanup root changed before opening"));
     }
-    let mut log = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(progress_path)?;
     let by_path = item
         .entries
         .iter()
@@ -2002,7 +1849,7 @@ fn remove_tree_with_hook(
             if !stat_matches(&stat_at(&directory, name)?, entry) {
                 return Err(error("Cleanup file identity or type changed"));
             }
-            if entry.kind == "file" {
+            if entry.kind == "file" && entry.digest.is_some() {
                 let name_c = c_name(name)?;
                 let fd = unsafe {
                     libc::openat(
@@ -2034,12 +1881,6 @@ fn remove_tree_with_hook(
             } else {
                 0
             };
-            serde_json::to_writer(
-                &mut log,
-                &json!({"event":"intent","removed":entry.path,"bytes":entry.bytes,"kind":entry.kind,"identity":entry.identity}),
-            )?;
-            log.write_all(b"\n")?;
-            log.sync_all()?;
             if unsafe { libc::unlinkat(directory.as_raw_fd(), name_c.as_ptr(), flags) } != 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
@@ -2051,13 +1892,6 @@ fn remove_tree_with_hook(
                 progress.removed_file_count += 1;
             }
             progress.removed_paths.push(entry.path.clone());
-            directory.sync_all()?;
-            serde_json::to_writer(
-                &mut log,
-                &json!({"event":"removed","removed":entry.path,"bytes":entry.bytes,"kind":entry.kind,"identity":entry.identity}),
-            )?;
-            log.write_all(b"\n")?;
-            log.sync_all()?;
             after_remove(&progress, &item.path)?;
         }
         verify_parents(item)?;
@@ -2071,11 +1905,13 @@ fn remove_tree_with_hook(
         parent.sync_all()?;
         Ok(())
     })();
-    let summary = json!({"removedLogicalBytes":wire_u64(Some(progress.removed_logical_bytes)),"removedFileCount":wire_u64(Some(progress.removed_file_count)),"removedEntryCount":wire_u64(Some(progress.removed_paths.len() as u64)),"completed":run.is_ok(),"accountingComplete":run.is_ok(),"countsAreLowerBounds":run.is_err(),"progressPath":progress_path,"remainingPath":if run.is_err(){Some(&item.path)}else{None}});
+    let summary = json!({"removedLogicalBytes":wire_u64(Some(progress.removed_logical_bytes)),"removedFileCount":wire_u64(Some(progress.removed_file_count)),"removedEntryCount":wire_u64(Some(progress.removed_paths.len() as u64)),"completed":run.is_ok(),"accountingComplete":run.is_ok(),"countsAreLowerBounds":run.is_err(),"remainingPath":if run.is_err(){Some(&item.path)}else{None}});
     run.map(|()| summary.clone())
         .map_err(|failure| failure.detail("cleanupResult", summary))
 }
 
+/// No cleanup history is kept. Absence is reported only while the original
+/// filesystem is available; a disconnected disk is never treated as cleaned.
 pub(crate) fn retired_cleanup_status(
     paths: &RuntimePaths,
     migration_id: &str,
@@ -2092,33 +1928,29 @@ pub(crate) fn retired_cleanup_status(
     let Some(source) = journal["sourcePath"].as_str().map(PathBuf::from) else {
         return Ok(None);
     };
-    // A later same-name directory is never treated as the previously removed root.
-    if fs::symlink_metadata(&source).is_ok() {
+    if !matches!(fs::symlink_metadata(&source), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
         return Ok(None);
     }
-    let receipts = paths.data_root().join("cleanup/receipts");
-    if !receipts.exists() {
+    let expected: PersistedIdentity = serde_json::from_value(journal["sourceIdentity"].clone())?;
+    let Some(parent) = source.parent() else {
+        return Ok(None);
+    };
+    check_no_symlinks(parent, true)?;
+    let Ok(parent_identity) = PersistedIdentity::capture(parent) else {
+        return Ok(None);
+    };
+    let same_volume = match (&expected.volume_uuid, &parent_identity.volume_uuid) {
+        (Some(expected), Some(actual)) => expected == actual,
+        (None, None) => expected.device == parent_identity.device,
+        _ => false,
+    };
+    if !same_volume {
         return Ok(None);
     }
-    for directory in fs::read_dir(receipts)? {
-        let path = directory?
-            .path()
-            .join(format!("retained_{migration_id}.json"));
-        if !path.exists() {
-            continue;
-        }
-        let receipt = read_json(&path)?;
-        if receipt["completed"] == true
-            && receipt["kind"] == "retainedWorkspace"
-            && receipt["path"].as_str().map(Path::new) == Some(source.as_path())
-            && receipt["migrationId"] == migration_id
-        {
-            return Ok(Some(
-                json!({"completed":true,"status":"cleaned","completedAt":receipt["completedAt"],"receiptPath":path,"removed":receipt["removed"]}),
-            ));
-        }
-    }
-    Ok(None)
+    Ok(Some(
+        json!({"completed":false,"status":"absent","accountingComplete":false}),
+    ))
 }
 
 #[cfg(test)]

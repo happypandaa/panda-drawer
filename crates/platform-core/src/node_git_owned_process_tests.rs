@@ -7,7 +7,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn owned_node_git_pending_and_dropped_request_keep_source_token_task_and_lock_fds() {
+async fn owned_node_git_pending_and_dropped_request_keep_source_token_task_and_owned_file_fds() {
     for abort in [false, true] {
         let (_temporary, paths) = RuntimePaths::for_test();
         let source_temporary = tempfile::tempdir().unwrap();
@@ -51,8 +51,8 @@ async fn owned_node_git_pending_and_dropped_request_keep_source_token_task_and_l
         let (mut context, _senders) = manager.context().unwrap();
         drop((manager, source));
         let private = context.root().to_path_buf();
-        let lock_path = root.join("owned-index.lock");
-        let lock = IndexLock::acquire(&lock_path).unwrap();
+        let lock_path = root.join("owned-source-fixture.lock");
+        let lock = crate::project_git::fixture::OwnedFixtureFile::acquire(&lock_path).unwrap();
         context.retain(lock.retained.clone());
         let marker = root.join("actual-reader-write");
         let actual_marker = marker.clone();

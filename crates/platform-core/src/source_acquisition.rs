@@ -604,7 +604,6 @@ impl SourceAcquisitionManager {
             private_dir(&self.root())?;
             new_dir(&self.root().join(&id))?;
             self.save_record(&record)?;
-            self.tasks.append(&task.task_id, format!("Source candidate: {id}\nProvider: {}\nPublic URL: {}\nWorkspace path: .platform/sources/{id}\nNo project code is executed.\n", record.provider, record.url).as_bytes())?;
             fs::File::open(self.root().join(&id)).map_err(ApiError::from)
         })();
         let anchor = match prepared {
@@ -693,9 +692,7 @@ impl SourceAcquisitionManager {
     fn phase(&self, record: &mut SourceRecord, phase: &str) -> Result<(), ApiError> {
         record.phase = phase.into();
         self.save_record(record)?;
-        self.tasks.phase(&record.task_id, phase)?;
-        self.tasks
-            .append(&record.task_id, format!("Phase: {phase}\n").as_bytes())
+        self.tasks.phase(&record.task_id, phase)
     }
     async fn run(
         &self,
@@ -753,24 +750,17 @@ impl SourceAcquisitionManager {
                     record.phase = "process-unconfirmed".into();
                 }
                 record.error = Some(error.clone());
-                if let Err(persist) = scope
+                let persistence = scope
                     .check_identity()
-                    .and_then(|()| self.save_record(&record))
-                {
-                    let _ = self.tasks.append(
-                        &record.task_id,
-                        format!(
-                            "Source outcome record could not be saved: {}\n",
-                            persist.code
-                        )
-                        .as_bytes(),
-                    );
-                }
+                    .and_then(|()| self.save_record(&record));
                 // Partial payloads are retained as operation evidence. A retry is
                 // a new slot; no previous or unknown directory is deleted.
                 let unknown = error.details["processResourceClosed"] == false
                     || error.details["candidateOwnershipConfirmed"] == false;
-                let issue = error.detail("sourceId", record.source_id.clone());
+                let mut issue = error.detail("sourceId", record.source_id.clone());
+                if let Err(persist) = persistence {
+                    issue = issue.detail("sourceRecordError", persist.code);
+                }
                 Err(if unknown {
                     issue.outcome("unknown")
                 } else {
@@ -778,10 +768,6 @@ impl SourceAcquisitionManager {
                 })
             }
         };
-        let _ = self.tasks.append(
-            &record.task_id,
-            format!("Result: {}\n", record.status).as_bytes(),
-        );
         let _ = self.tasks.finish(&record.task_id, result);
         drop(control);
         drop(scope);

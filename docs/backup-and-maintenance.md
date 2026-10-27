@@ -239,7 +239,7 @@ SQLite Backup API 提供数据库一致性副本，但不能同时替附件和�
 
 ## 11 已确定的接口扩展
 
-本节为已确认接口，与既有路由共同构成第一版契约。已有 `backup create`、`backup restore` 与 `task get/wait/logs` 继续复用；后台操作均使用 `queued → running → succeeded | failed | interrupted`，通过 `type`、`phase`、结果字段表达细节。
+本节为已确认接口，与既有路由共同构成第一版契约。已有 `backup create`、`backup restore` 与 `task get/wait` 继续复用；后台操作均使用 `queued → running → succeeded | failed | interrupted`，通过 `type`、`phase`、结果字段表达细节。
 
 | CLI 入口 | HTTP 入口 | 用途 |
 | --- | --- | --- |

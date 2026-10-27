@@ -78,15 +78,7 @@ export interface TaskRecord {
   error: { code: string; message: string; details?: Record<string, unknown> } | null;
 }
 
-export interface TaskLogs {
-  taskId: string;
-  cursor: number;
-  nextCursor: number;
-  text: string;
-  truncated: boolean;
-  gaps: { from: number; to: number }[];
-  eof: boolean;
-}
+
 
 export interface EnvironmentInfo {
   ready: boolean;
@@ -126,14 +118,11 @@ export interface RetainedWorkspaceRoot {
   taskId?: string;
   available?: boolean;
   identityMatches?: boolean;
-  cleaned?: boolean;
+  absent?: boolean;
   reason?: string;
   cleanup?: {
     completed?: boolean;
     status?: string;
-    completedAt?: string | number | null;
-    receiptPath?: string;
-    removed?: Record<string, unknown>;
   } | null;
 }
 export interface WorkspaceInfo {

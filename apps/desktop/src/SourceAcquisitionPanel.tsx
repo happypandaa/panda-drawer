@@ -9,7 +9,7 @@ import { AiProjectHelp } from './AiProjectHelp';
 import { SourceImportError, SourceImportSession } from './source-import';
 import type { InstalledNodeResult } from './NodeInstallPanel';
 import type { NodeAppDetail } from './node-app-types';
-import type { TaskLogs, TaskRecord } from './types';
+import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { displayPath, reviewCategoryFromIssues, reviewCategoryLabels, reviewCategoryTitle } from './local-directory-review';
 
@@ -73,7 +73,6 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   const [cleanupDone, setCleanupDone] = useState(false);
   const [sourceRetained, setSourceRetained] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [logs, setLogs] = useState('');
   const [app, setApp] = useState<NodeAppDetail | null>(null);
   const [showLibrary, setShowLibrary] = useState(false);
   const [buildInfo, setBuildInfo] = useState<{ scriptName: string; script: string } | null>(null);
@@ -134,12 +133,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     if (value?.sourceTaskId) await clean(value);
     else { setCleanupDone(true); setSourceRetained(false); }
     if (!current(generation)) return;
-    if (value?.task?.taskId) {
-      try {
-        const chunk = await invoke<TaskLogs>('task_logs', { taskId: value.task.taskId, cursor: 0 });
-        if (current(generation) && session.current === value && typeof chunk?.text === 'string') setLogs(chunk.text.slice(-12000));
-      } catch { /* Error and source identity still make a usable handoff. */ }
-    }
+
   }
   async function readInstalled(value: SourceImportSession, result: InstalledNodeResult, notify = true) {
     if (!alive.current || session.current !== value) return;
@@ -171,7 +165,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
         isCurrent: (): boolean => current(generation) && session.current === value,
         onChange: () => redraw(count => count + 1), onTask: task => callbacks.current.onTask(task),
       });
-      session.current = value; setCleanupDone(false); setSourceRetained(false); setApp(null); setLogs(''); setBuildInfo(null); setBuildInfoError(''); setCancelling(false); setView('running');
+      session.current = value; setCleanupDone(false); setSourceRetained(false); setApp(null); setBuildInfo(null); setBuildInfoError(''); setCancelling(false); setView('running');
       const source = await value.acquire({ url: address.url, branch: branch.trim() || null, ...(name.trim() ? { name: name.trim() } : {}) });
       if (source.inspection?.requiresBuild && !source.buildSourceDigest) {
         setView('build');
@@ -296,7 +290,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
         {view === 'success' && <><p role="status">临时文件已清理。{app ? app.configuration.canStart ? '可以直接使用。' : `还差 ${app.configuration.missingRequired.length} 项设置就可以使用。` : '可以查看应用并完成必要设置。'}</p><div className="add-project-location"><strong>文件在哪里</strong><dl><dt>源码</dt><dd><code>{sourceLocation}</code><button type="button" className="text-button" disabled={busy} onClick={() => void revealSource()}><FolderOpen size={14} />在 Finder 中显示</button></dd><dt>应用</dt><dd>在“我的项目”里打开。</dd><dt>应用数据</dt><dd>单独保存在熊猫小抽屉里。</dd></dl></div><p>想改功能时，在应用详情的“开发与更新”中把源码交给 AI。</p><div className="confirmation-actions"><button type="button" className="primary-button" disabled={busy} onClick={() => void enter()}>{app ? app.configuration.canStart ? '打开应用' : '去设置' : '查看应用'}</button><button type="button" className="refresh-button" disabled={busy} onClick={close}>完成</button></div></>}
         {view === 'cleanup-failed' && <p>应用已经添加。可以稍后处理临时文件；重试清理不会再次添加应用。</p>}
         {view === 'publish-failed' && <><p>应用已经添加，源码还没整理到项目目录。请重试整理，原应用和数据会保留，不会重复添加。</p><button type="button" className="primary-button" disabled={busy} onClick={() => void retryCleanup()}>重试整理源码</button></>}
-        {view === 'failed' && <>{failureCategory ? <span className={`local-directory-result-label is-${failureCategory}`}>{reviewCategoryLabels[failureCategory]}</span> : failurePhase !== 'download' && <span className="add-project-result-label">需要处理</span>}{[...new Set(issues.map(ordinaryReason))].slice(0, 3).map(reason => <p key={reason}>{reason}</p>)}<div className="add-project-location"><strong>文件在哪里</strong><p>{cleaning ? '正在清理本次下载的临时文件。' : cleanupDone ? sourceRetained ? '本次临时文件已清理；仍被其他操作使用的文件已保留，请核对检查详情。' : flow?.sourceTaskId ? '下载的文件已经删除，项目目录里没有留下这个项目。' : '尚未下载项目文件。' : '临时文件尚未清理完成，请重试清理。'}</p></div>{failurePhase !== 'download' && <p>把说明交给能读取项目的 AI，先评估再修改。改好后，让 AI 告诉你本机文件夹位置，再用“添加本地项目”添加。</p>}<div className="confirmation-actions"><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url: url.trim(), branch: branch.trim() || undefined, commit: flow?.source?.commit ?? undefined, issues, logs, platformVersion }} label={failureCategory === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '复制说明给 AI'} className="primary-button" disabled={busy} />{failurePhase === 'download' && <button type="button" className="refresh-button" disabled={busy || disabled || !cleanupDone} onClick={() => void start()}>重试下载</button>}{failurePhase === 'download' && <button type="button" className="refresh-button" disabled={busy} onClick={() => void editAddress()}>修改地址</button>}{onOpenLocal && <button type="button" className="refresh-button" disabled={busy} onClick={() => { close(); onOpenLocal(); }}>改用本地添加</button>}<button type="button" className="text-button" disabled={busy} onClick={close}>{failurePhase === 'download' ? '稍后再试' : '关闭'}</button></div></>}
+        {view === 'failed' && <>{failureCategory ? <span className={`local-directory-result-label is-${failureCategory}`}>{reviewCategoryLabels[failureCategory]}</span> : failurePhase !== 'download' && <span className="add-project-result-label">需要处理</span>}{[...new Set(issues.map(ordinaryReason))].slice(0, 3).map(reason => <p key={reason}>{reason}</p>)}<div className="add-project-location"><strong>文件在哪里</strong><p>{cleaning ? '正在清理本次下载的临时文件。' : cleanupDone ? sourceRetained ? '本次临时文件已清理；仍被其他操作使用的文件已保留，请核对检查详情。' : flow?.sourceTaskId ? '下载的文件已经删除，项目目录里没有留下这个项目。' : '尚未下载项目文件。' : '临时文件尚未清理完成，请重试清理。'}</p></div>{failurePhase !== 'download' && <p>把说明交给能读取项目的 AI，先评估再修改。改好后，让 AI 告诉你本机文件夹位置，再用“添加本地项目”添加。</p>}<div className="confirmation-actions"><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url: url.trim(), branch: branch.trim() || undefined, commit: flow?.source?.commit ?? undefined, issues, platformVersion }} label={failureCategory === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '复制说明给 AI'} className="primary-button" disabled={busy} />{failurePhase === 'download' && <button type="button" className="refresh-button" disabled={busy || disabled || !cleanupDone} onClick={() => void start()}>重试下载</button>}{failurePhase === 'download' && <button type="button" className="refresh-button" disabled={busy} onClick={() => void editAddress()}>修改地址</button>}{onOpenLocal && <button type="button" className="refresh-button" disabled={busy} onClick={() => { close(); onOpenLocal(); }}>改用本地添加</button>}<button type="button" className="text-button" disabled={busy} onClick={close}>{failurePhase === 'download' ? '稍后再试' : '关闭'}</button></div></>}
         {view !== 'failed' && error && <p role="alert" className="task-error">{error}</p>}
         {flow?.warning && <p role="status">{flow.warning}</p>}
         {cleaning && <p role="status"><LoaderCircle size={16} className="import-spinner" />正在清理本次临时文件…</p>}
@@ -304,7 +298,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
         {(view === 'cleanup-failed' || view === 'publish-failed') && <button type="button" className="refresh-button" disabled={busy} onClick={() => callbacks.current.onClose()}>稍后</button>}
         {view === 'recovery' && <><p>正在核对，请不要重复添加。结果明确前会保留必要文件。</p><div className="confirmation-actions"><button type="button" className="primary-button" disabled={busy} onClick={() => void reconcile()}>重新核对</button><button type="button" className="text-button" disabled={busy} onClick={() => setShowLibrary(true)}>检查详情</button></div></>}
         {view === 'running' && !cleaning && flow?.phase !== 'install' && <div className="confirmation-actions">{onBackground && <button type="button" className="refresh-button" disabled={!canBackground} onClick={() => callbacks.current.onBackground?.()}>在后台继续</button>}<button type="button" className="text-button" disabled={cancelling} onClick={() => setCancelConfirm(true)}>{flow?.phase === 'download' ? '取消下载' : '取消'}</button></div>}
-        {flow?.task && <details className="import-task"><summary>检查详情与日志</summary><ProjectTask key={flow.task.taskId} task={flow.task} /></details>}
+        {flow?.task && <details className="import-task"><summary>检查详情</summary><ProjectTask key={flow.task.taskId} task={flow.task} /></details>}
       </section>
     </>}
     {['form', 'duplicate'].includes(view) && <div className="git-import-library"><AiProjectHelp context={{ mode: 'evaluation', sourceKind: 'git', url: url.trim() || undefined, branch: branch.trim() || undefined, platformVersion }} /><button type="button" className="text-button git-import-records" disabled={busy || disabled} onClick={() => setShowLibrary(true)}>源码记录与恢复</button></div>}

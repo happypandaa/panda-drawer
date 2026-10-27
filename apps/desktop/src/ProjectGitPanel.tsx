@@ -65,24 +65,19 @@ export function ProjectGitPanel(props: ProjectGitPanelProps) {
   return <ProjectGitProject key={props.projectId} {...props} />;
 }
 
-type Draft = { message: string; authorName: string; authorEmail: string; branchName: string; targetCommit: string };
+type Draft = { targetCommit: string };
 interface DataSaveRecovery {
   state: string;
   operations: { saveTaskId: string; phase: string; journalDigest: string; canFinalize: boolean; targetCommit?: string | null; issues: unknown[] }[];
   issues: unknown[];
 }
 function ProjectGitProject(props: ProjectGitPanelProps) {
-  const [draft, setDraft] = useState<Draft>({ message: '', authorName: '', authorEmail: '', branchName: '', targetCommit: '' });
+  const [draft, setDraft] = useState<Draft>({ targetCommit: '' });
   return <ProjectGitPanelInstance key={props.instanceId ?? ''} {...props} draftValues={draft} changeDraft={setDraft} />;
 }
 
 function relevantTask(value: TaskRecord | null | undefined, projectId: string): value is TaskRecord {
-  return Boolean(value && value.projectId === projectId && ['gitInitialize', 'gitSave', 'gitDataSave', 'gitDataSaveFinalize', 'gitBranchCreate', ...sourceRestoreTaskTypes, ...dataRestoreTaskTypes].includes(value.type));
-}
-
-function validBranchName(name: string) {
-  return name.length >= 1 && name.length <= 128 && name !== 'HEAD' && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)
-    && !name.includes('..') && !name.endsWith('.') && name.split('/').every(part => part && !part.startsWith('.') && !part.endsWith('.lock'));
+  return Boolean(value && value.projectId === projectId && ['gitDataSaveFinalize', ...sourceRestoreTaskTypes, ...dataRestoreTaskTypes].includes(value.type));
 }
 
 function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTask, onTask, onDraftStateChange, draftValues, changeDraft }: ProjectGitPanelProps & { draftValues: Draft; changeDraft: (value: Draft) => void }) {
@@ -91,9 +86,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const [fresh, setFresh] = useState(false);
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const { message, authorName, authorEmail, branchName, targetCommit } = draftValues;
-  const [acceptedDraft, setAcceptedDraft] = useState('');
-  const [acceptedBranchName, setAcceptedBranchName] = useState('');
+  const { targetCommit } = draftValues;
   const [acceptedTarget, setAcceptedTarget] = useState('');
   const [restorePreview, setRestorePreview] = useState<SourceRestorePreview | null>(null);
   const [recovery, setRecovery] = useState<SourceRestoreStatus | null>(null);
@@ -102,7 +95,6 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const [recoveryError, setRecoveryError] = useState('');
   const [externalEditingStopped, setExternalEditingStopped] = useState(false);
   const [restoreConfirmed, setRestoreConfirmed] = useState(false);
-  const [dataSaveConfirmed, setDataSaveConfirmed] = useState(false);
   const [dataRecovery, setDataRecovery] = useState<DataSaveRecovery | null>(null);
   const [dataRecoveryFresh, setDataRecoveryFresh] = useState(false);
   const [dataRecoveryError, setDataRecoveryError] = useState('');
@@ -161,7 +153,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     const request = ++readSequence.current;
     setDataRestorePreview(null); setDataRestoreError('');
     setDataRestoreRecoveryFresh(false);
-    statusPending.current = true; setReading(true); setFresh(false); setVersionsFresh(false); setDataSaveConfirmed(false); setDataRecoveryFresh(false);
+    statusPending.current = true; setReading(true); setFresh(false); setVersionsFresh(false); setDataRecoveryFresh(false);
     setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false); setRecoveryReading(true);
     // Recovery is independently readable even when ordinary Git inspection fails.
     // Keep these reads serial: each backend read holds the project operation lease.
@@ -214,8 +206,6 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     const becameFinal = value.final && !(currentTask.current?.taskId === value.taskId && currentTask.current.final);
     seenTasks.current.add(value.taskId);
     currentTask.current = value; setTask(value); if (notify) callback.current?.(value);
-    if (['gitSave', 'gitDataSave'].includes(value.type) && value.final && value.status !== 'succeeded') setAcceptedDraft('');
-    if (value.type === 'gitBranchCreate' && value.final && value.status !== 'succeeded') setAcceptedBranchName('');
     if (['gitSourceRestoreApply', 'gitDataRestoreApply'].includes(value.type) && value.final && value.status !== 'succeeded') setAcceptedTarget('');
     return becameFinal;
   }, []);
@@ -251,7 +241,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     statusPending.current = false; versionsPending.current = false;
     setDataRestorePreview(null); setDataRestoreError('');
     setDataRestoreRecoveryFresh(false);
-    setFresh(false); setReading(false); setVersionsFresh(false); setListing(false); setDataRecoveryFresh(false); setDataSaveConfirmed(false);
+    setFresh(false); setReading(false); setVersionsFresh(false); setListing(false); setDataRecoveryFresh(false);
     setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false); setRecoveryReading(false);
     if (acceptTask(externalTask, false)) void read();
   }, [externalTask, projectId, acceptTask, read, task?.taskId, task?.final]);
@@ -261,8 +251,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
     return () => window.clearInterval(timer);
   }, [task?.taskId, task?.final, poll]);
 
-  const draft = JSON.stringify([message, authorName, authorEmail]);
-  const dirty = Boolean(message || authorName || authorEmail) && draft !== acceptedDraft || Boolean(branchName) && branchName !== acceptedBranchName || Boolean(targetCommit) && targetCommit !== acceptedTarget;
+  const dirty = Boolean(targetCommit) && targetCommit !== acceptedTarget;
   const restoreActive = Boolean(task && !task.final && [...sourceRestoreTaskTypes, ...dataRestoreTaskTypes].includes(task.type));
   useEffect(() => { draftCallback.current?.({ dirty, pending: busy || restoreActive || recoveryReading }); }, [dirty, busy, restoreActive, recoveryReading]);
   useEffect(() => () => { draftCallback.current?.({ dirty: false, pending: false }); }, []);
@@ -272,42 +261,6 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const recoveryClear = recoveryFresh && recovery?.state === 'clear' && dataRecoveryFresh && dataRecovery?.state === 'clear'
     && dataRestoreRecoveryFresh && dataRestoreRecovery?.state === 'clear' && !dataRestoreRecovery.businessBlocked;
   const writable = !disabled && idle && fresh && recoveryClear;
-  const hasChanges = Boolean(status?.changes.length);
-  const branchReady = Boolean(status?.canCreateBranch && !hasChanges && status.repository.indexState === 'matched' && status.repository.head?.oid && status.repository.head.branch);
-  const validAuthor = authorName.trim().length > 0 && authorName.trim().length <= 200
-    && !/[\x00-\x1f\x7f<>]/.test(authorName)
-    && authorEmail.trim().length <= 254 && /^[^\s<>@]+@[^\s<>@]+$/.test(authorEmail.trim());
-  const validMessage = Boolean(message.trim()) && message.length <= 4000 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(message);
-
-  async function submit(operation: 'initialize' | 'save' | 'save-data' | 'create-branch') {
-    if (pending.current || statusPending.current || versionsPending.current || currentTask.current && !currentTask.current.final || !writable || !status) return;
-    const saving = operation === 'save' || operation === 'save-data';
-    if (operation === 'initialize' ? !status.canInitialize : saving ? !validAuthor || !validMessage || (operation === 'save' ? !status.canSave || !hasChanges : !status.database.canSave || !dataSaveConfirmed) : !branchReady || !validBranchName(branchName)) return;
-    pending.current = true; setBusy(true); setError(''); setNotice('');
-    setDataRestorePreview(null);
-    const generation = lifetime.current;
-    readSequence.current += 1; versionsSequence.current += 1; setFresh(false); setVersionsFresh(false);
-    setRestorePreview(null); setRestoreConfirmed(false); setRecoveryFresh(false);
-    setDataRestoreRecoveryFresh(false); setDataRecoveryFresh(false);
-    try {
-      const input = operation === 'initialize'
-        ? { expectedSnapshot: status.snapshotDigest, initialBranch: 'main' }
-        : saving ? { expectedHead: status.repository.head?.oid ?? null, expectedSnapshot: status.snapshotDigest, message: message.trim(), author: { name: authorName.trim(), email: authorEmail.trim() } }
-          : { name: branchName, expectedHead: status.repository.head!.oid!, expectedBranch: status.repository.head!.branch!, expectedSnapshot: status.snapshotDigest };
-      const value = await invoke<TaskRecord>(operation === 'initialize' ? 'project_git_initialize' : operation === 'save' ? 'project_git_save' : operation === 'save-data' ? 'project_git_data_save' : 'project_git_branch_create', { id: projectId, input });
-      if (!current(generation)) return;
-      if (value.projectId !== projectId) throw new Error('任务所属项目不符，请刷新状态后检查。');
-      setPollError('');
-      if (saving && (!value.final || value.status === 'succeeded')) setAcceptedDraft(draft);
-      if (operation === 'create-branch' && (!value.final || value.status === 'succeeded')) setAcceptedBranchName(branchName);
-      const finished = acceptTask(value);
-      setNotice(value.final ? '任务已结束，请核对结果。' : '任务已接受，最终结果确认前请勿重复提交。');
-      if (finished) await read();
-    } catch (cause) {
-      if (current(generation)) { setError(messageFrom(cause)); setNotice('请先刷新当前状态，再决定是否重试。填写内容已保留。'); }
-    } finally { pending.current = false; if (current(generation)) setBusy(false); }
-  }
-
   async function finalizeDataSave(operation: DataSaveRecovery['operations'][number]) {
     if (pending.current || statusPending.current || versionsPending.current || !idle || disabled || !dataRecoveryFresh || !operation.canFinalize) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
@@ -472,8 +425,7 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
   const head = status?.repository.head;
   return <section className="project-git-panel" aria-labelledby={`${id}-title`}>
     <div className="storage-heading"><h3 id={`${id}-title`}>源码版本</h3><button type="button" className="refresh-button" disabled={reading || listing || busy} onClick={() => { if (currentTask.current && !currentTask.current.final) void poll(); else void read(); }}>{reading ? '核对中…' : '刷新状态'}</button></div>
-    <p>在本项目的标准 Git 仓库中保存下面列出的源码和开发文档。保存源码版本时，本次不保存数据库、附件或数据快照；可创建新分支，或预览后将已保存源码取回为待保存修改。暂不切换到已有分支。</p>
-    <p>仅操作本机；不会推送远端。保存前请核对文件范围，路径排除不能代替对源码中敏感内容的检查。</p>
+    <p>让外部 AI 在本项目的标准 Git 仓库中保存源码版本、管理分支。这里可以查看本机状态和历史，或预览后取回已有源码、数据版本。</p>
     {error && <p className="task-error" role="alert">{error}</p>}
     {readError && <p className="task-error" role="alert">{readError}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
@@ -512,36 +464,8 @@ function ProjectGitPanelInstance({ projectId, disabled = false, task: externalTa
       </section>
       <PathList key={`changes:${status.snapshotDigest}`} title="待保存的源码变更" items={status.changes.map(change => ({ path: change.path, reason: `${changeLabels[change.kind] ?? change.kind}${change.staged ? ' · 已有暂存变更' : ''}` }))} />
       {!status.changes.length && status.scope.complete && !status.issues.length && <p>本次范围内没有未保存的源码变更。</p>}
-      {status.canInitialize && <div className="operation-confirmation"><p>初始化会在项目根目录建立 main 分支仓库，不创建版本。随后填写作者和说明，再保存第一个源码版本。</p><button type="button" className="primary-button" disabled={!writable} onClick={() => void submit('initialize')}>初始化本项目 Git</button></div>}
-      <form className="create-project-form" onSubmit={event => { event.preventDefault(); void submit('save'); }}>
-        <label htmlFor={`${id}-message`}>版本说明</label><textarea id={`${id}-message`} value={message} onChange={event => changeDraft({ ...draftValues, message: event.target.value })} maxLength={4000} readOnly={busy} rows={3} />
-        <label htmlFor={`${id}-name`}>作者姓名</label><input id={`${id}-name`} value={authorName} onChange={event => changeDraft({ ...draftValues, authorName: event.target.value })} maxLength={200} readOnly={busy} autoComplete="off" />
-        <label htmlFor={`${id}-email`}>作者邮箱</label><input id={`${id}-email`} type="email" value={authorEmail} onChange={event => changeDraft({ ...draftValues, authorEmail: event.target.value })} maxLength={254} readOnly={busy} autoComplete="off" />
-        <p>作者仅用于本次提交，由你填写，不读取或修改全局 Git 作者配置。</p>
-        <button type="submit" className="primary-button" disabled={!writable || !status.canSave || !hasChanges || !validAuthor || !validMessage}>保存源码版本</button>
-        <section aria-label="保存业务数据版本">
-          <h4>业务数据版本</h4>
-          <p>{status.database.reason}</p>
-          {status.database.currentSavedSnapshot && <p>当前 Git 版本中的数据快照：数据库 {bytesText(status.database.currentSavedSnapshot.databaseBytes)} · {status.database.currentSavedSnapshot.attachmentCount} 个附件。</p>}
-          {status.database.canSave && <>
-            <p>同时保存本次源码，以及操作开始后取得的一致性数据库副本和全部附件。捕获数据期间暂时停止业务读写；数据版本仅保存在本机 Git，不推送远端。取回源码不会替换当前业务数据。</p>
-            <label className="checkbox-row"><input type="checkbox" checked={dataSaveConfirmed} disabled={!writable} onChange={event => setDataSaveConfirmed(event.target.checked)} />我确认将当前业务数据和附件保存到本机 Git</label>
-            <button type="button" className="refresh-button" disabled={!writable || !dataSaveConfirmed || !validAuthor || !validMessage} onClick={() => void submit('save-data')}>保存源码和数据版本</button>
-          </>}
-        </section>
-      </form>
+      {status.database.currentSavedSnapshot && <p>当前 Git 版本中的数据快照：数据库 {bytesText(status.database.currentSavedSnapshot.databaseBytes)} · {status.database.currentSavedSnapshot.attachmentCount} 个附件。</p>}
       <ProjectGitVersions value={versions} fresh={versionsFresh} reading={listing} error={versionsError} canRead={idle && fresh && status.canListVersions} onRead={() => { if (!idle || !fresh || !status.canListVersions) return; versionsRequested.current = true; void readVersions(status); }} canSelect={idle && !disabled && recoveryClear && versionsFresh} onSelect={selectRestoreTarget} />
-      <form className="create-project-form" aria-label="创建定制分支" onSubmit={event => { event.preventDefault(); void submit('create-branch'); }}>
-        <h4>从当前版本创建定制分支</h4>
-        <p>仅在源码与暂存区干净时，从当前版本创建并切换到新分支。当前提交、源码、暂存区、业务数据和运行产物保持不变；不会自动构建或更新应用。</p>
-        {status.repository.head?.oid && <p>分支起点：<code>{status.repository.head.oid}</code></p>}
-        <label htmlFor={`${id}-branch`}>新分支名称</label><input id={`${id}-branch`} value={branchName} onChange={event => changeDraft({ ...draftValues, branchName: event.target.value })} maxLength={128} readOnly={busy} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="custom/my-changes" />
-        <p>以英文字母或数字开头，可使用英文字母、数字、短横线、下划线、点和斜线；最长 128 个字符。名称不得与已有分支重复。</p>
-        {branchName && !validBranchName(branchName) && <p role="alert">分支名称无效：请勿使用 HEAD、连续点、空路径段、隐藏路径段、.lock 后缀或末尾点。</p>}
-        {Boolean(status.branchCreationIssue) && <p className="task-error" role="alert">{messageFrom(status.branchCreationIssue)}</p>}
-        {!branchReady && !status.branchCreationIssue && <p>需先保存首个版本，并确认当前源码无变更、暂存区和项目范围可用，再创建分支。</p>}
-        <button type="submit" className="primary-button" disabled={!writable || !branchReady || !validBranchName(branchName)}>创建并切换到新分支</button>
-      </form>
     </>}
     <ProjectGitSourceRestore targetCommit={targetCommit} onTargetChange={selectRestoreTarget} preview={restorePreview} recovery={recovery} recoveryFresh={recoveryFresh} recoveryError={recoveryError}
       busy={busy || active} canPreview={idle && !disabled && recoveryClear} canApply={idle && !disabled && recoveryClear} canRecover={idle && !disabled && recoveryFresh} canRefresh={idle}

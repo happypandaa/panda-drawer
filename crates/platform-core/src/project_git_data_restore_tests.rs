@@ -44,7 +44,7 @@ impl Fixture {
             .await
             .unwrap();
         let task = manager
-            .initialize(
+            .fixture_initialize(
                 &project.manifest.id,
                 GitInitInput {
                     expected_snapshot: view.snapshot_digest,
@@ -91,7 +91,7 @@ impl Fixture {
             .unwrap();
         let task = self
             .manager
-            .save_data(
+            .fixture_save_data(
                 &self.project.manifest.id,
                 GitDataSaveInput {
                     expected_head: head_oid(&status).map(str::to_string),

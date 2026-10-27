@@ -371,7 +371,6 @@ test('Managed details distinguish declared, legacy and unreadable data metadata 
     await setup(baseMock(value, async (command, args) => {
       calls.push([command, args]);
       if (command === 'node_app_start') return { ...value, state: 'running' };
-      if (command === 'node_program_rollback_preview') return { appId: value.id, canRollback: false };
       throw new Error(command);
     }), { request: { app: value, intent: 'details', token: 1 } });
     await click(byText('概览'));
@@ -384,7 +383,8 @@ test('Managed details distinguish declared, legacy and unreadable data metadata 
       assert.deepEqual(calls, [['node_app_start', { appId: value.id }]]);
     } else {
       assert.doesNotMatch(declaration.textContent, /后续普通更新无法核对数据契约，将被阻止/);
-      assert.deepEqual(calls, value.state === 'failed' ? [['node_program_rollback_preview', { appId: value.id }]] : []);
+      assert.deepEqual(calls, []);
+      assert.equal(byText('退回上一个版本'), undefined);
     }
     await act(async () => root.unmount()); root = null;
   }
@@ -1841,24 +1841,30 @@ test('Node development is explicit inside the current three-tab details and neve
   assert.deepEqual(calls.map(([command]) => command), ['node_development_info']);
 });
 
-test('Node source-version drafts join the current detail close guard and prevent deleting the application', async () => {
+test('Node source-restore target drafts still guard closing and deletion after version writes retire', async () => {
   const { value } = managedInstallFixture();
   const calls = [];
   const status = { repository: { state: 'project-root', root: '/disposable/source', markers: [], head: null, indexState: 'clean', git: null }, scope: { complete: true, excluded: [], protectedTrackedPaths: [] }, changes: [], snapshotDigest: 'a'.repeat(64), canInitialize: false, canSave: true, canListVersions: false, canCreateBranch: false, issues: [] };
   await setup(baseMock(value, async (command, args) => {
     calls.push([command, args]);
-    if (command === 'node_development_git') return status;
+    if (command === 'node_development_git' && args.operation === 'status') return status;
+    if (command === 'node_development_git' && args.operation === 'restore-status') return { state: 'clear', operations: [], issues: [] };
     throw new Error(command);
   }), { instanceId: 'current', request: { app: value, intent: 'details', token: 1 } });
   await click(byText('概览'));
   const section = [...document.querySelectorAll('details')].find(item => item.querySelector(':scope > summary')?.textContent === '源码版本');
   await click(section.querySelector('summary'));
   await act(async () => section.dispatchEvent(new Event('toggle')));
-  const label = [...section.querySelectorAll('label')].find(item => item.textContent === '版本说明');
-  await change(document.getElementById(label.htmlFor), 'unfinished version message');
+  assert.equal([...section.querySelectorAll('label')].some(item => item.textContent === '版本说明'), false);
+  const restore = [...section.querySelectorAll('details')].find(item => item.querySelector(':scope > summary')?.textContent === '取回已保存源码');
+  await click(restore.querySelector('summary'));
+  await act(async () => restore.dispatchEvent(new Event('toggle')));
+  const label = [...restore.querySelectorAll('label')].find(item => item.textContent === '本机完整提交号');
+  const target = document.getElementById(label.htmlFor);
+  await change(target, 'b'.repeat(40));
   assert.equal(byText('删除项目').disabled, true);
   await click(document.querySelector('.node-detail-modal .modal-close'));
   assert.match(document.querySelector('[aria-label="关闭配置确认"]').textContent, /有未保存的修改/);
-  assert.match(section.textContent, /版本说明/);
-  assert.deepEqual(calls.map(([command]) => command), ['node_development_git']);
+  assert.equal(target.value, 'b'.repeat(40));
+  assert.deepEqual(calls.map(([command, args]) => [command, args.operation]), [['node_development_git', 'status'], ['node_development_git', 'restore-status']]);
 });

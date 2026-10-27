@@ -222,7 +222,7 @@ fn repository_ready(git_dir: &Path) -> Result<(), ApiError> {
         }
     }
     let mut issues = Vec::new();
-    inspect_repository_files(git_dir, None, &mut issues)?;
+    inspect_repository_files(git_dir, &mut issues)?;
     if let Some(issue) = issues.into_iter().next() {
         return Err(issue);
     }

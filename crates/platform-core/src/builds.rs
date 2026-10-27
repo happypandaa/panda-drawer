@@ -33,9 +33,6 @@ use tokio::{
 use uuid::Uuid;
 const BUILD_QUEUE: usize = 8;
 const BUILD_TIMEOUT: Duration = Duration::from_secs(600);
-const LOG_HEAD: usize = 2_000_000;
-const LOG_TAIL: usize = 8_000_000;
-const LOG_PAGE: usize = 64_000;
 const DIGEST_RULE: u32 = 1;
 
 #[path = "build_result.rs"]
@@ -98,27 +95,7 @@ pub struct ArtifactGeneration {
     pub root: PathBuf,
     pub entry_relative: String,
 }
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskLogs {
-    pub task_id: String,
-    pub cursor: u64,
-    pub next_cursor: u64,
-    pub text: String,
-    pub truncated: bool,
-    pub gaps: Vec<LogGap>,
-    pub eof: bool,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct LogGap {
-    pub from: u64,
-    pub to: u64,
-}
-#[derive(Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct LogMeta {
-    total: u64,
-}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Journal {
@@ -159,7 +136,6 @@ pub struct BuildManager {
     runner: Mutex<Option<JoinHandle<()>>>,
     stopping: AtomicBool,
     events: broadcast::Sender<BuildEvent>,
-    log_lock: Arc<Mutex<()>>,
     #[cfg(test)]
     reader_fixture: Mutex<Option<BuildReaderFixture>>,
 }
@@ -259,7 +235,6 @@ impl BuildManager {
             runner: Mutex::new(None),
             stopping: AtomicBool::new(false),
             events,
-            log_lock: Arc::new(Mutex::new(())),
             #[cfg(test)]
             reader_fixture: Mutex::new(None),
         });
@@ -610,47 +585,7 @@ impl BuildManager {
             &registry.legacy_build_times,
         )
     }
-    pub fn logs(&self, id: &str, cursor: u64) -> Result<TaskLogs, ApiError> {
-        let task = self.task(id)?;
-        let _log_guard = self.log_lock.lock().unwrap();
-        let dir = self.task_dir(id);
-        let meta = read_optional::<LogMeta>(&dir.join("log.json"))?.unwrap_or_default();
-        let head = read_optional_bytes(&dir.join("head.log"))?;
-        let tail = read_optional_bytes(&dir.join("tail.log"))?;
-        let head_end = head.len() as u64;
-        let tail_start = meta.total.saturating_sub(tail.len() as u64);
-        let mut cursor = cursor.min(meta.total);
-        let start = cursor;
-        let mut data = Vec::new();
-        let mut gaps = vec![];
-        if cursor < head_end {
-            let end = (cursor as usize + LOG_PAGE).min(head.len());
-            data.extend_from_slice(&head[cursor as usize..end]);
-            cursor = end as u64;
-        }
-        if data.len() < LOG_PAGE && cursor < tail_start {
-            gaps.push(LogGap {
-                from: cursor,
-                to: tail_start,
-            });
-            cursor = tail_start;
-        }
-        if data.len() < LOG_PAGE && cursor < meta.total {
-            let start = (cursor - tail_start) as usize;
-            let end = (start + LOG_PAGE - data.len()).min(tail.len());
-            data.extend_from_slice(&tail[start..end]);
-            cursor = tail_start + end as u64;
-        }
-        Ok(TaskLogs {
-            task_id: id.into(),
-            cursor: start,
-            next_cursor: cursor,
-            text: String::from_utf8_lossy(&data).into_owned(),
-            truncated: tail_start > head_end,
-            gaps,
-            eof: task.status.is_final() && cursor >= meta.total,
-        })
-    }
+
     pub async fn info(&self, id: &str) -> Result<Value, ApiError> {
         let project = self.store.project(id)?;
         let paths = self.paths.clone();
@@ -699,10 +634,7 @@ impl BuildManager {
         }
         issues
     }
-    pub(crate) fn append(&self, id: &str, bytes: &[u8]) -> Result<(), ApiError> {
-        let _guard = self.log_lock.lock().unwrap();
-        append_log(&self.task_dir(id), bytes)
-    }
+
     fn task_dir(&self, id: &str) -> PathBuf {
         self.paths.workspace_root().join(".platform/tasks").join(id)
     }
@@ -766,22 +698,13 @@ impl BuildManager {
     async fn run(&self, id: &str) {
         let project_id = self.task(id).unwrap().project_id.unwrap();
         let result = self.pipeline(id, &project_id).await;
-        if let Err(error) = &result {
-            let _ = self.append(
-                id,
-                format!("\n{}: {}\n", error.code, error.message).as_bytes(),
-            );
-        }
         if result.is_ok() {
             if let Ok(control) = self.store.control(&project_id) {
                 let mut state = control.get();
                 state.pending_build = false;
                 state.pending_build_reason = None;
                 if let Err(error) = control.set(state) {
-                    let _ = self.append(
-                        id,
-                        format!("Maintenance build marker not cleared: {error}\n").as_bytes(),
-                    );
+                    eprintln!("Build completed but current control state was not saved: {error}");
                 }
             }
         }
@@ -842,7 +765,7 @@ impl BuildManager {
             .environment
             .resolve_with_keepalive(protection.clone())
             .await?;
-        self.append(id,format!("Node {}: {}\nnpm {}: {}\nLimits: internal test parameters; timeout 600 seconds, global concurrency 1.\n",tools.node.version,tools.node.path.display(),tools.npm.version,tools.npm.path.display()).as_bytes())?;
+
         self.phase(id, "input-digest")?;
         let baseline = snapshot_input_digest(&project)?;
         let task_root = checked_relative(&project.root, &format!(".platform/builds/{id}"), true)?;
@@ -940,7 +863,7 @@ impl BuildManager {
     ) -> Result<Value, ApiError> {
         let source = candidate.source();
         self.phase(id, "dependencies")?;
-        self.append(id, b"Installing exact locked dependencies in a private source candidate with npm ci. Existing project dependencies are not reused.\n")?;
+
         let process_protection = Arc::new(BuildProcessProtection {
             _project: protection,
             _candidate: candidate.clone(),
@@ -1043,16 +966,9 @@ impl BuildManager {
         self.phase(id, "publish")?;
         // From the journal onward the filesystem transaction must reach a recoverable outcome.
         publish(&self.paths, project, &staging, &provenance, old_digest)?;
-        let _ = self.append(
-            id,
-            format!(
-                "Published build {}\nInput SHA-256: {}\nArtifact SHA-256: {}\n",
-                id, baseline, provenance.artifact_digest
-            )
-            .as_bytes(),
-        );
+
         Ok(
-            json!({"buildId":id,"logPath":self.task_dir(id),"url":format!("{}/p/{}/",self.base_url,project.manifest.id),"node":tools.node,"npm":tools.npm,"digestRuleVersion":DIGEST_RULE,"inputDigest":baseline,"artifactDigest":provenance.artifact_digest,"sdkVersion":provenance.sdk_version,"completedAt":provenance.completed_at}),
+            json!({"buildId":id,"url":format!("{}/p/{}/",self.base_url,project.manifest.id),"node":tools.node,"npm":tools.npm,"digestRuleVersion":DIGEST_RULE,"inputDigest":baseline,"artifactDigest":provenance.artifact_digest,"sdkVersion":provenance.sdk_version,"completedAt":provenance.completed_at}),
         )
     }
     async fn command<G: Send + 'static>(
@@ -1067,10 +983,6 @@ impl BuildManager {
         self.checkpoint(start)?;
         let cache = self.paths.workspace_root().join(".platform/cache/npm");
         ensure_dir(&cache)?;
-        // npm prunes logs on startup. Keep that cleanup inside this task;
-        // shared cache/_logs and earlier tasks are preservation evidence.
-        let npm_logs = self.task_dir(id).join("npm-logs");
-        ensure_dir(&npm_logs)?;
         let mut command = Command::new(&tools.node.path);
         command
             .arg(&tools.npm.path)
@@ -1080,8 +992,11 @@ impl BuildManager {
             .arg(cwd)
             .arg("--global=false")
             // CLI configuration wins over inherited environment/.npmrc values.
+            // npm may rotate logs even with logs-max=0: keep that lookup away
+            // from user or shared log directories without retaining new logs.
             .arg("--logs-dir")
-            .arg(&npm_logs)
+            .arg(self.task_dir(id).join("npm-disabled-output"))
+            .arg("--logs-max=0")
             .args(args)
             .current_dir(cwd)
             .env("PATH", &tools.path)
@@ -1089,8 +1004,6 @@ impl BuildManager {
             .env("npm_config_update_notifier", "false")
             .env("NO_COLOR", "1");
         candidate::isolate_git_environment(&mut command, cwd)?;
-        let log = self.task_dir(id);
-        let log_lock = self.log_lock.clone();
         let remaining = BUILD_TIMEOUT.saturating_sub(start.elapsed());
         let mut stopped = self.git_stop.subscribe();
         #[cfg(test)]
@@ -1111,23 +1024,19 @@ impl BuildManager {
                     stop: _,
                 } = pipes;
                 drop(stdin);
-                let output_log = log.clone();
-                let output_lock = log_lock.clone();
                 IoPlan::new(async move {
-                    read_output(stdout, output_log.clone(), output_lock.clone()).await?;
+                    read_output(stdout).await?;
                     #[cfg(test)]
                     if let Some(fixture) = reader_fixture {
                         let _ = fixture.entered.send(());
                         assert!(!fixture.panic, "controlled disposable build reader panic");
                         if let Some(release) = fixture.release {
                             let _ = release.await;
-                            let _guard = output_lock.lock().unwrap();
-                            append_log(&output_log, b"actual owned log writer completed\n")?;
                         }
                     }
                     Ok(())
                 })
-                .drain("npm-stderr", read_output(stderr, log, log_lock))
+                .drain("npm-stderr", read_output(stderr))
             },
         )?;
         if *stopped.borrow() {
@@ -1172,20 +1081,10 @@ impl BuildManager {
         Ok(())
     }
 }
-async fn read_output<R: tokio::io::AsyncRead + Unpin>(
-    mut reader: R,
-    log: PathBuf,
-    log_lock: Arc<Mutex<()>>,
-) -> Result<(), ApiError> {
+async fn read_output<R: tokio::io::AsyncRead + Unpin>(mut reader: R) -> Result<(), ApiError> {
     let mut bytes = [0u8; 8192];
-    loop {
-        let n = reader.read(&mut bytes).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        let _guard = log_lock.lock().unwrap();
-        append_log(&log, &bytes[..n])?;
-    }
+    while reader.read(&mut bytes).await? != 0 {}
+    Ok(())
 }
 
 pub(crate) fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), ApiError> {
@@ -1226,14 +1125,7 @@ fn read_optional<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T
         Err(error) => Err(error.into()),
     }
 }
-fn read_optional_bytes(path: &Path) -> Result<Vec<u8>, ApiError> {
-    check_no_symlinks(path, true)?;
-    match fs::read(path) {
-        Ok(bytes) => Ok(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
-        Err(error) => Err(error.into()),
-    }
-}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1245,21 +1137,7 @@ fn valid_task_id(id: &str) -> bool {
         && id.starts_with("task_")
         && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
-fn append_log(dir: &Path, bytes: &[u8]) -> Result<(), ApiError> {
-    let mut meta = read_optional::<LogMeta>(&dir.join("log.json"))?.unwrap_or_default();
-    let mut head = read_optional_bytes(&dir.join("head.log"))?;
-    let mut tail = read_optional_bytes(&dir.join("tail.log"))?;
-    let take = (LOG_HEAD - head.len()).min(bytes.len());
-    head.extend_from_slice(&bytes[..take]);
-    tail.extend_from_slice(&bytes[take..]);
-    if tail.len() > LOG_TAIL {
-        tail.drain(..tail.len() - LOG_TAIL);
-    }
-    meta.total += bytes.len() as u64;
-    fs::write(dir.join("head.log"), head)?;
-    fs::write(dir.join("tail.log"), tail)?;
-    atomic_json(&dir.join("log.json"), &meta)
-}
+
 fn excluded(name: &str) -> bool {
     matches!(
         name,
@@ -2028,7 +1906,7 @@ fn reconcile_recovered_tasks(
         } else {
             record.error = Some(ApiError::new("BUILD_INTERRUPTED", "The platform exited after publication; the new artifact and its provenance were recovered, but the task did not finish reporting").outcome("committed"));
             record.result = Some(
-                json!({"recovered":true,"operationOutcome":"committed","buildId":provenance.build_id,"logPath":paths.workspace_root().join(".platform/tasks").join(&record.task_id),"url":format!("{base_url}/p/{project_id}/"),"node":provenance.node,"npm":provenance.npm,"digestRuleVersion":provenance.digest_rule_version,"inputDigest":provenance.input_digest,"artifactDigest":provenance.artifact_digest,"sdkVersion":provenance.sdk_version,"completedAt":provenance.completed_at}),
+                json!({"recovered":true,"operationOutcome":"committed","buildId":provenance.build_id,"url":format!("{base_url}/p/{project_id}/"),"node":provenance.node,"npm":provenance.npm,"digestRuleVersion":provenance.digest_rule_version,"inputDigest":provenance.input_digest,"artifactDigest":provenance.artifact_digest,"sdkVersion":provenance.sdk_version,"completedAt":provenance.completed_at}),
             );
         }
         atomic_json(
@@ -2155,12 +2033,16 @@ mod tests {
         let (_temp, paths) = RuntimePaths::for_test();
         let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
         let project = project(&store, "Pipeline").await;
-        fixture(&project, BUILD);
+        fixture(&project, &format!("{BUILD}\nconsole.log('disposable-output-fragment');console.error('disposable-error-fragment');"));
         let manager =
             BuildManager::new(paths.clone(), store, "http://127.0.0.1:1234".into()).unwrap();
         let first = manager.submit(&project.manifest.id).await.unwrap();
         let first = wait(&manager, &first.task_id).await;
         assert_eq!(first.status, TaskStatus::Succeeded, "{:?}", first.error);
+        for name in ["head.log", "tail.log", "log.json", "npm-logs"] {
+            assert!(!manager.task_dir(&first.task_id).join(name).exists());
+        }
+        assert!(first.result.as_ref().unwrap().get("logPath").is_none());
         let previous = fs::read(project.root.join("dist/index.html")).unwrap();
         let provenance = fs::read(provenance_path(
             paths.workspace_root(),
@@ -2527,23 +2409,7 @@ mod tests {
             assert!(validate_artifact(&root, entry).is_err());
         }
     }
-    #[test]
-    fn logs_keep_head_and_tail_and_expose_cursor_gaps() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().canonicalize().unwrap();
-        append_log(&path, &vec![b'a'; LOG_HEAD]).unwrap();
-        append_log(&path, &vec![b'b'; LOG_TAIL + 128]).unwrap();
-        let meta: LogMeta = read_optional(&path.join("log.json")).unwrap().unwrap();
-        assert_eq!(meta.total, (LOG_HEAD + LOG_TAIL + 128) as u64);
-        assert_eq!(
-            fs::metadata(path.join("head.log")).unwrap().len(),
-            LOG_HEAD as u64
-        );
-        assert_eq!(
-            fs::metadata(path.join("tail.log")).unwrap().len(),
-            LOG_TAIL as u64
-        );
-    }
+
     #[test]
     fn lock_mismatch_is_not_hidden_by_dependency_reuse() {
         let package = json!({"dependencies":{"x":"2"}});

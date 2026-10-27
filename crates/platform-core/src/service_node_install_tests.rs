@@ -182,13 +182,15 @@ async fn captured_app_install_cleanup_preserves_registered_program_and_reopens_a
         .unwrap()
         .iter()
         .any(|app| app["id"] == app_id));
-    assert_eq!(
-        handle
-            .source_import_cleanup(source_task.clone())
-            .await
-            .unwrap(),
-        cleaned
-    );
+    let repeated = handle
+        .source_import_cleanup(source_task.clone())
+        .await
+        .unwrap();
+    assert_eq!(repeated["completed"], true);
+    assert_eq!(repeated["sourceId"], cleaned["sourceId"]);
+    assert_eq!(repeated["sourceRetained"], cleaned["sourceRetained"]);
+    assert!(repeated["removedPaths"].as_array().unwrap().is_empty());
+    assert!(!paths.data_root().join("cleanup/imports").exists());
 
     // A real unsupported capture is also removable without touching its author
     // directory or the installed app from the first half of this test.
@@ -241,14 +243,16 @@ async fn captured_app_install_cleanup_preserves_registered_program_and_reopens_a
         restarted.handle().source_info(&source_id).await.unwrap()["status"],
         "ready"
     );
-    assert_eq!(
-        restarted
-            .handle()
-            .source_import_cleanup(source_task)
-            .await
-            .unwrap(),
-        cleaned
-    );
+    let rescanned = restarted
+        .handle()
+        .source_import_cleanup(source_task)
+        .await
+        .unwrap();
+    assert_eq!(rescanned["completed"], true);
+    assert_eq!(rescanned["sourceId"], cleaned["sourceId"]);
+    assert_eq!(rescanned["sourceRetained"], cleaned["sourceRetained"]);
+    assert!(rescanned["removedPaths"].as_array().unwrap().is_empty());
+    assert!(!paths.data_root().join("cleanup/imports").exists());
     assert_eq!(
         fs::read(app_slot.join("registration.json")).unwrap(),
         registration

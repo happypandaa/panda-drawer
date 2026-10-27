@@ -115,7 +115,7 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
       <SpaceProjects projects={props.projects} nodeApps={props.nodeApps ?? []} nodeRows={storage?.nodeApps} enabled={props.enabled && !workspaceBlocked && !cleanupBusy} isProjectBusy={props.isProjectBusy} bulkRequest={bulkRequest} onProjectTask={props.onProjectTask ?? ignore} onProjectDetails={props.onProjectDetails ?? ignore} onProjectDelete={props.onProjectDelete ?? ignore} onNodeDetails={props.onNodeDetails ?? ignore} onNodeDelete={props.onNodeDelete ?? ignore} />
     </div>
     <div className="workspace-hub-panel" id={`${id}-history-panel`} role="tabpanel" aria-labelledby={`${id}-history-tab`} hidden={tab !== 'history'}>
-      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'history'} autoScan migrating={workspaceBlocked} cleanedRecords={retained} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
+      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'history'} autoScan migrating={workspaceBlocked} absentRecords={retained} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
     </div>
   </div>;
 }

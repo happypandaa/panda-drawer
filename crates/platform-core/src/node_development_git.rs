@@ -64,9 +64,13 @@ impl NodeGit {
     pub async fn status(&self, root: &Path) -> Result<ProjectGitStatus, ApiError> {
         let (mut context, _senders) = self.context()?;
         match context.resolve(&self.environment).await {
-            Ok(tools) => Ok(inspect_node(root, Some(&tools), &mut context, None)
-                .await?
-                .view),
+            Ok(tools) => {
+                let mut view = inspect_node(root, Some(&tools), &mut context).await?.view;
+                view.can_initialize = false;
+                view.can_save = false;
+                view.can_create_branch = false;
+                Ok(view)
+            }
             Err(issue)
                 if issue.code.starts_with("PROCESS_")
                     || issue.details["processResourceClosed"] == false =>
@@ -74,243 +78,15 @@ impl NodeGit {
                 Err(issue)
             }
             Err(issue) => {
-                let mut snapshot = inspect_node(root, None, &mut context, None).await?;
+                let mut snapshot = inspect_node(root, None, &mut context).await?;
                 snapshot.view.issues.push(issue);
                 finalize_capabilities(&mut snapshot.view);
+                snapshot.view.can_initialize = false;
+                snapshot.view.can_save = false;
+                snapshot.view.can_create_branch = false;
                 Ok(snapshot.view)
             }
         }
-    }
-
-    pub async fn initialize(&self, root: &Path, input: GitInitInput) -> Result<Value, ApiError> {
-        validate_digest(&input.expected_snapshot)?;
-        if input.initial_branch != "main" {
-            return Err(input_error());
-        }
-        let (mut context, _senders) = self.context()?;
-        let tools = context.resolve(&self.environment).await?;
-        let snapshot = inspect_node(root, Some(&tools), &mut context, None).await?;
-        expected(&snapshot, &input.expected_snapshot, None, false)?;
-        if !snapshot.view.can_initialize {
-            return Err(blocked(&snapshot.view));
-        }
-        let candidate = context.root().join("candidate");
-        let template = context.root().join("empty-template");
-        private_dir(&template)?;
-        let mut command = git_command(&tools, context.root(), None);
-        command
-            .args([
-                "init",
-                "--quiet",
-                "--initial-branch=main",
-                "--object-format=sha1",
-                "--template",
-            ])
-            .arg(&template)
-            .arg(&candidate);
-        context.run(command, vec![]).await?.success()?;
-        private_dir(&candidate.join(".git/info"))?;
-        fs::write(candidate.join(".git/info/exclude"), "/data/\n/config/\n/configuration/\n/credentials/\n/release/\n**/node_modules/\n**/.env*\n!**/.env.example\n**/.npmrc\n**/.netrc\n**/.cache/\n**/uploads/\n**/logs/\n**/*.pem\n**/*.key\n")?;
-        sync_ordinary_tree(&candidate.join(".git"))?;
-        let verify = inspect_node(root, Some(&tools), &mut context, None).await?;
-        expected(&verify, &input.expected_snapshot, None, false)?;
-        context.checkpoint()?;
-        rename_new(&candidate.join(".git"), &root.join(".git"))?;
-        let result = json!({"operation":"initialize","operationOutcome":"committed","repositoryRoot":root,"branch":"main","head":null});
-        File::open(root)?.sync_all().map_err(|_| {
-            recovery()
-                .outcome("committed")
-                .detail("result", result.clone())
-        })?;
-        let status = inspect_node(root, Some(&tools), &mut context, None)
-            .await
-            .map_err(|issue| issue.outcome("committed").detail("result", result.clone()))?
-            .view;
-        Ok(with_status(result, status))
-    }
-
-    pub async fn save(&self, root: &Path, input: GitSaveInput) -> Result<Value, ApiError> {
-        validate_save(&input)?;
-        let (mut context, _senders) = self.context()?;
-        let tools = context.resolve(&self.environment).await?;
-        let snapshot = inspect_node(root, Some(&tools), &mut context, None).await?;
-        expected(
-            &snapshot,
-            &input.expected_snapshot,
-            input.expected_head.as_deref(),
-            true,
-        )?;
-        if !snapshot.view.can_save {
-            return Err(blocked(&snapshot.view));
-        }
-        if snapshot.view.changes.is_empty() {
-            return Err(error("PROJECT_GIT_NO_CHANGES", "没有需要保存的源码改动。"));
-        }
-        let branch = snapshot
-            .view
-            .repository
-            .head
-            .as_ref()
-            .and_then(|head| head.branch.clone())
-            .ok_or_else(input_error)?;
-        let git_dir = root.join(".git");
-        let mut lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
-        context.retain(lock.retained.clone());
-        let verify = inspect_node(root, Some(&tools), &mut context, Some(&lock)).await?;
-        expected(
-            &verify,
-            &input.expected_snapshot,
-            input.expected_head.as_deref(),
-            true,
-        )?;
-        // Retain a private operation journal and candidate index if publication
-        // becomes uncertain. It is inside this existing repository, not a repo.
-        let operation = git_dir
-            .join("local-projects-node-operations")
-            .join(uuid::Uuid::new_v4().to_string());
-        private_dir(&operation)?;
-        // Source filenames such as yarn.lock are ordinary inputs. Keep their
-        // disposable copies outside .git so repository lock discovery cannot
-        // mistake them for another Git operation's metadata locks.
-        let source = context.root().join("source");
-        private_dir(&source)?;
-        for (path, entry) in &snapshot.files {
-            context.checkpoint()?;
-            let bytes = read_file(&checked_relative(root, path, false)?, MAX_BLOB)?;
-            if sha256(&bytes) != entry.digest {
-                return Err(stale());
-            }
-            let destination = source.join(path);
-            private_dir(destination.parent().ok_or_else(unsafe_path)?)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(if entry.mode == "100755" { 0o700 } else { 0o600 })
-                .open(destination)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        let index = operation.join("candidate-index");
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command
-            .env("GIT_INDEX_FILE", &index)
-            .args(["read-tree", "--empty"]);
-        context.run(command, vec![]).await?.success()?;
-        let hashes = node_hashes(
-            &tools,
-            &mut context,
-            Some(root),
-            &source,
-            snapshot.files.keys(),
-            true,
-        )
-        .await?;
-        let mut entries = vec![];
-        for (path, entry) in &snapshot.files {
-            entries.extend_from_slice(
-                format!(
-                    "{} {}\t",
-                    entry.mode,
-                    hashes.get(path).ok_or_else(output_invalid)?
-                )
-                .as_bytes(),
-            );
-            entries.extend_from_slice(path.as_bytes());
-            entries.push(0);
-        }
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command
-            .env("GIT_INDEX_FILE", &index)
-            .args(["update-index", "-z", "--index-info"]);
-        context.run(command, entries).await?.success()?;
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command.env("GIT_INDEX_FILE", &index).arg("write-tree");
-        let tree = one_oid(&context.run(command, vec![]).await?.success()?)?;
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command
-            .env("GIT_INDEX_FILE", &index)
-            .args(["commit-tree", &tree, "--no-gpg-sign"]);
-        if let Some(parent) = &input.expected_head {
-            command.args(["-p", parent]);
-        }
-        author_environment(&mut command, &input.author);
-        let commit = one_oid(
-            &context
-                .run(command, input.message.as_bytes().to_vec())
-                .await?
-                .success()?,
-        )?;
-        let verify = inspect_node(root, Some(&tools), &mut context, Some(&lock)).await?;
-        expected(
-            &verify,
-            &input.expected_snapshot,
-            input.expected_head.as_deref(),
-            true,
-        )?;
-        lock.write(&read_file(&index, MAX_METADATA)?)?;
-        let journal = operation.join("journal.json");
-        let mut record = json!({"schemaVersion":1,"operation":"save","phase":"prepared","root":root,
-            "previousHead":input.expected_head,"candidateCommit":commit,"branch":branch,"snapshotDigest":input.expected_snapshot});
-        atomic_json(&journal, &record)?;
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command.args([
-            "update-ref",
-            "--create-reflog",
-            "-m",
-            "Local Projects: save Node source",
-            "--stdin",
-            "-z",
-        ]);
-        author_environment(&mut command, &input.author);
-        lock.preserve = true;
-        let outcome = context
-            .commit_ref(command, &commit, input.expected_head.as_deref(), || {
-                if read_file(&git_dir.join("HEAD"), 4096)? != format!("ref: {branch}\n").as_bytes()
-                    || repository_digest(&git_dir)? != snapshot.repository_digest
-                    || node_source_digest(&scan_node(root)?)? != snapshot.source_digest
-                    || node_root_identity(root)? != snapshot.root_identity
-                {
-                    return Err(stale());
-                }
-                Ok(())
-            })
-            .await;
-        if let Err(issue) = outcome {
-            if issue.details["safeAbort"] == true {
-                lock.preserve = false;
-                record["phase"] = json!("not-committed");
-                atomic_json(&journal, &record)?;
-                return Err(issue.outcome("not_committed"));
-            }
-            let published = issue.details["commitAcknowledged"] == true;
-            return Err(issue
-                .outcome(if published { "committed" } else { "unknown" })
-                .detail("journal", json!(journal))
-                .detail("candidateCommit", commit));
-        }
-        record["phase"] = json!("ref-committed");
-        let result = json!({"operation":"save","operationOutcome":"committed","repositoryRoot":root,"commit":commit,"parent":input.expected_head,"branch":branch,"message":input.message,"author":input.author});
-        if atomic_json(&journal, &record).is_err() || lock.publish(&git_dir.join("index")).is_err()
-        {
-            return Err(recovery()
-                .outcome("committed")
-                .detail("result", result)
-                .detail("journal", json!(journal)));
-        }
-        record["phase"] = json!("completed");
-        atomic_json(&journal, &record).map_err(|_| {
-            recovery()
-                .outcome("committed")
-                .detail("result", result.clone())
-        })?;
-        // Only this operation's disposable snapshots are removed after success.
-        let _ = fs::remove_dir_all(source);
-        let _ = fs::remove_file(index);
-        let status = inspect_node(root, Some(&tools), &mut context, None)
-            .await
-            .map_err(|issue| issue.outcome("committed").detail("result", result.clone()))?
-            .view;
-        Ok(with_status(result, status))
     }
 
     pub async fn versions(&self, root: &Path, limit: u32) -> Result<ProjectGitVersions, ApiError> {
@@ -319,7 +95,7 @@ impl NodeGit {
         }
         let (mut context, _senders) = self.context()?;
         let tools = context.resolve(&self.environment).await?;
-        let snapshot = inspect_node(root, Some(&tools), &mut context, None).await?;
+        let snapshot = inspect_node(root, Some(&tools), &mut context).await?;
         if !snapshot.view.can_list_versions {
             return Err(blocked(&snapshot.view));
         }
@@ -351,7 +127,7 @@ impl NodeGit {
         if versions.first().map(|version| &version.oid) != head.oid.as_ref() {
             return Err(output_invalid());
         }
-        let verify = inspect_node(root, Some(&tools), &mut context, None).await?;
+        let verify = inspect_node(root, Some(&tools), &mut context).await?;
         expected(
             &verify,
             &snapshot.view.snapshot_digest,
@@ -370,153 +146,8 @@ impl NodeGit {
             database: node_boundary(),
         })
     }
-
-    pub async fn create_branch(
-        &self,
-        root: &Path,
-        input: GitCreateBranchInput,
-    ) -> Result<Value, ApiError> {
-        validate_branch_name(&input.name)?;
-        validate_digest(&input.expected_snapshot)?;
-        if !valid_oid(&input.expected_head)
-            || one_ref(format!("{}\n", input.expected_branch).as_bytes()).is_err()
-        {
-            return Err(input_error());
-        }
-        let (mut context, _senders) = self.context()?;
-        let tools = context.resolve(&self.environment).await?;
-        if !branch_version_supported(&tools.git.version) {
-            return Err(branch_version_issue());
-        }
-        let snapshot = inspect_node(root, Some(&tools), &mut context, None).await?;
-        expected(
-            &snapshot,
-            &input.expected_snapshot,
-            Some(&input.expected_head),
-            true,
-        )?;
-        if snapshot
-            .view
-            .repository
-            .head
-            .as_ref()
-            .and_then(|head| head.branch.as_deref())
-            != Some(&input.expected_branch)
-        {
-            return Err(stale());
-        }
-        if !snapshot.view.can_create_branch {
-            return Err(blocked(&snapshot.view));
-        }
-        let git_dir = root.join(".git");
-        let mut index_lock = IndexLock::acquire(&git_dir.join("index.lock"))?;
-        context.retain(index_lock.retained.clone());
-        let verify = inspect_node(root, Some(&tools), &mut context, Some(&index_lock)).await?;
-        expected(
-            &verify,
-            &input.expected_snapshot,
-            Some(&input.expected_head),
-            true,
-        )?;
-        let old_lock = Arc::new(RefLock::acquire(
-            &git_dir.join(format!("{}.lock", input.expected_branch)),
-        )?);
-        context.retain(old_lock.clone());
-        let branch = format!("refs/heads/{}", input.name);
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command.args(["show-ref", "--verify", "--quiet", &branch]);
-        match context.run(command, vec![]).await?.code {
-            1 => (),
-            0 => return Err(error("PROJECT_GIT_BRANCH_EXISTS", "分支已存在。")),
-            _ => return Err(git_failed()),
-        }
-        let operation = git_dir
-            .join("local-projects-node-operations")
-            .join(uuid::Uuid::new_v4().to_string());
-        private_dir(&operation)?;
-        let journal = operation.join("journal.json");
-        let mut record = json!({"schemaVersion":1,"operation":"create-branch","phase":"prepared","root":root,"previousBranch":input.expected_branch,"branch":branch,"head":input.expected_head,"snapshotDigest":input.expected_snapshot});
-        atomic_json(&journal, &record)?;
-        let mut command = node_command(&tools, context.root(), Some(root));
-        command.args([
-            "update-ref",
-            "--create-reflog",
-            "-m",
-            "Local Projects: create Node source branch",
-            "--stdin",
-            "-z",
-        ]);
-        author_environment(
-            &mut command,
-            &GitAuthor {
-                name: "Local Projects".into(),
-                email: "local-projects@localhost".into(),
-            },
-        );
-        let commands = format!("start\0create {branch}\0{}\0option no-deref\0symref-update HEAD\0{branch}\0oid\0{}\0prepare\0", input.expected_head, input.expected_head).into_bytes();
-        index_lock.preserve = true;
-        old_lock.preserve.store(true, Ordering::Release);
-        let outcome = context
-            .commit_transaction(command, commands, || {
-                if !old_lock.matches()
-                    || !index_lock.matches(&index_lock.path)
-                    || index_fingerprint(&git_dir.join("index"))? != index_lock.original_index
-                    || read_file(&git_dir.join("HEAD"), 4096)?
-                        != format!("ref: {}\n", input.expected_branch).as_bytes()
-                    || repository_digest(&git_dir)? != snapshot.repository_digest
-                    || node_source_digest(&scan_node(root)?)? != snapshot.source_digest
-                    || node_root_identity(root)? != snapshot.root_identity
-                {
-                    return Err(stale());
-                }
-                Ok(())
-            })
-            .await;
-        if let Err(issue) = outcome {
-            if issue.details["safeAbort"] == true {
-                index_lock.preserve = false;
-                old_lock.preserve.store(false, Ordering::Release);
-                record["phase"] = json!("not-committed");
-                atomic_json(&journal, &record)?;
-                return Err(issue.outcome("not_committed"));
-            }
-            index_lock.preserve = true;
-            old_lock.preserve.store(true, Ordering::Release);
-            let published = issue.details["commitAcknowledged"] == true;
-            return Err(issue
-                .outcome(if published { "committed" } else { "unknown" })
-                .detail("journal", json!(journal)));
-        }
-        record["phase"] = json!("completed");
-        let result = json!({"operation":"create-branch","operationOutcome":"committed","repositoryRoot":root,"head":input.expected_head,"previousBranch":input.expected_branch,"branch":branch,"name":input.name});
-        atomic_json(&journal, &record).map_err(|_| {
-            recovery()
-                .outcome("committed")
-                .detail("result", result.clone())
-        })?;
-        index_lock.preserve = false;
-        old_lock.preserve.store(false, Ordering::Release);
-        drop(old_lock);
-        drop(index_lock);
-        // All processes have actually closed. Release the context's retained
-        // lock FDs before inspecting the final view, so our own locks cannot
-        // make a successful branch appear permanently busy.
-        drop(context);
-        let (mut context, _status_senders) = self
-            .context()
-            .map_err(|issue| issue.outcome("committed").detail("result", result.clone()))?;
-        let status = inspect_node(root, Some(&tools), &mut context, None)
-            .await
-            .map_err(|issue| issue.outcome("committed").detail("result", result.clone()))?
-            .view;
-        Ok(with_status(result, status))
-    }
 }
 
-fn with_status(mut result: Value, status: ProjectGitStatus) -> Value {
-    result["status"] = json!(status);
-    result
-}
 fn node_boundary() -> Value {
     json!({"state":"not-supported","reason":"仅管理源码；数据、密钥和运行目录不纳入 Git。"})
 }
@@ -548,38 +179,6 @@ fn expected(
         Ok(())
     }
 }
-fn validate_save(input: &GitSaveInput) -> Result<(), ApiError> {
-    validate_digest(&input.expected_snapshot)?;
-    if input
-        .expected_head
-        .as_ref()
-        .is_some_and(|oid| !valid_oid(oid))
-        || input.message.trim().is_empty()
-        || input.message.len() > 4000
-        || input
-            .message
-            .chars()
-            .any(|c| c.is_control() && c != '\n' && c != '\t')
-        || input.author.name.trim().is_empty()
-        || input.author.name.len() > 200
-        || input
-            .author
-            .name
-            .chars()
-            .any(|c| c.is_control() || "<>".contains(c))
-        || input.author.email.len() > 254
-        || !input.author.email.contains('@')
-        || input
-            .author
-            .email
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || "<>".contains(c))
-    {
-        return Err(input_error());
-    }
-    Ok(())
-}
-
 struct NodeScan {
     files: BTreeMap<String, SourceFile>,
     entries: BTreeSet<String>,
@@ -592,9 +191,6 @@ struct NodeScan {
 struct NodeSnapshot {
     view: ProjectGitStatus,
     files: BTreeMap<String, SourceFile>,
-    source_digest: String,
-    repository_digest: String,
-    root_identity: String,
 }
 
 fn node_root_identity(root: &Path) -> Result<String, ApiError> {
@@ -876,7 +472,6 @@ async fn inspect_node(
     root: &Path,
     tools: Option<&GitToolchain>,
     context: &mut Context,
-    lock: Option<&IndexLock>,
 ) -> Result<NodeSnapshot, ApiError> {
     context.checkpoint()?;
     let root_identity = node_root_identity(root)?;
@@ -957,7 +552,7 @@ async fn inspect_node(
     }
     if state == "project-root" {
         let git_dir = root.join(".git");
-        inspect_repository_files(&git_dir, lock, &mut view.issues)?;
+        inspect_repository_files(&git_dir, &mut view.issues)?;
         pending_node_operations(&git_dir, &mut view.issues)?;
         view.source_restore = restore::guard_state(root);
         if let Err(issue) = restore::require_clear(root) {
@@ -1167,9 +762,6 @@ async fn inspect_node(
     Ok(NodeSnapshot {
         view,
         files: scan.files,
-        source_digest,
-        repository_digest: repository,
-        root_identity,
     })
 }
 

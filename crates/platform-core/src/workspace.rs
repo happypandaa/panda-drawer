@@ -524,7 +524,8 @@ pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
     if directory.is_dir() {
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
-            for name in ["journal.json", "lifecycle.json"] {
+            {
+                let name = "journal.json";
                 let path = entry.path().join(name);
                 check_no_symlinks(&path, true)?;
                 if path.is_file() {
@@ -740,21 +741,7 @@ pub(crate) fn task(paths: &RuntimePaths, id: &str) -> Result<Option<TaskRecord>,
     };
     read_json(&path).map(Some).map_err(ioerr)
 }
-pub(crate) fn logs(paths: &RuntimePaths, id: &str, cursor: u64) -> Result<Option<Value>, ApiError> {
-    let Some(t) = task(paths, id)? else {
-        return Ok(None);
-    };
-    let p = task_dir(paths.data_root(), id).join("log.txt");
-    check_no_symlinks(&p, true)?;
-    let bytes = if p.is_file() { fs::read(p)? } else { vec![] };
-    let start = usize::try_from(cursor)
-        .unwrap_or(usize::MAX)
-        .min(bytes.len());
-    let end = (start + 64000).min(bytes.len());
-    Ok(Some(
-        json!({"taskId":id,"cursor":start,"nextCursor":end,"text":String::from_utf8_lossy(&bytes[start..end]),"truncated":false,"gaps":[],"eof":t.status.is_final()&&end==bytes.len()}),
-    ))
-}
+
 pub(crate) fn completed_result(j: &MigrationJournal) -> Value {
     json!({"sourcePath":j.source_path,"destinationPath":j.destination_path,"workspaceRoot":j.destination_path,"sourceRetained":true,"operationOutcome":"committed","fileCount":j.file_count,"totalBytes":j.total_bytes,"requiresReconnect":true,"blockedProjects":j.blocked_projects})
 }
@@ -855,9 +842,9 @@ pub(crate) fn info(paths: &RuntimePaths, store: &ProjectStore) -> Result<Value, 
         if j.committed && j.source_path != paths.workspace_root() {
             let actual = identity(&j.source_path).ok();
             let cleanup = crate::history_cleanup::retired_cleanup_status(paths, &id)?;
-            let cleaned = cleanup.is_some()
+            let absent = cleanup.is_some()
                 && matches!(fs::symlink_metadata(&j.source_path), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
-            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":j.source_identity.matches_path(&j.source_path).unwrap_or(false),"canDelete":false,"cleaned":cleaned,"cleanup":cleanup,"reason":if cleaned {"Retained snapshot was explicitly cleaned; the cleanup receipt remains"}else{"Inspect this registered snapshot in the history cleanup preview"}}));
+            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":j.source_identity.matches_path(&j.source_path).unwrap_or(false),"canDelete":false,"absent":absent,"cleanup":cleanup,"reason":if absent {"Retained snapshot is currently absent on its original volume; no deletion history is retained"}else{"Inspect this registered snapshot in the history cleanup preview"}}));
         }
     }
     Ok(
@@ -872,7 +859,7 @@ pub(crate) fn info(paths: &RuntimePaths, store: &ProjectStore) -> Result<Value, 
 pub(crate) fn local_cleanup_roots(paths: &RuntimePaths) -> Result<Vec<PathBuf>, ApiError> {
     paths.validate_cleanup_selection().map_err(ioerr)?;
     let mut journals = Vec::new();
-    let mut cleaned = BTreeSet::new();
+    let mut absent_roots = BTreeSet::new();
     for entry in fs::read_dir(paths.migrations_dir())? {
         let entry = entry?;
         let id = entry
@@ -897,9 +884,9 @@ pub(crate) fn local_cleanup_roots(paths: &RuntimePaths) -> Result<Vec<PathBuf>, 
             return Err(ioerr("存在迁移暂存目录，不能猜测其身份后清理。"));
         }
         if crate::history_cleanup::retired_cleanup_status(paths, &id)?
-            .is_some_and(|receipt| receipt["completed"] == true)
+            .is_some_and(|status| status["status"] == "absent")
         {
-            cleaned.insert(j.source_path.clone());
+            absent_roots.insert(j.source_path.clone());
         }
         journals.push(j);
     }
@@ -917,7 +904,8 @@ pub(crate) fn local_cleanup_roots(paths: &RuntimePaths) -> Result<Vec<PathBuf>, 
             check_no_symlinks(path, true)?;
             match fs::symlink_metadata(path) {
                 Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound && cleaned.contains(path) => {}
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && absent_roots.contains(path) => {}
                 Ok(metadata)
                     if metadata.is_dir() && expected.matches_path(path).unwrap_or(false) =>
                 {

@@ -236,7 +236,7 @@ for (const [label, title] of [['新建项目', '新建项目'], ['添加本地�
 
 test('Completed management history lives in the header task popover without occupying the home notice area', async () => {
   const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
-  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_logs: () => ({ nextCursor: 1, text: 'Disposable completed task log', gaps: [], eof: true, truncated: false }) } });
+  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }) } });
   assert.equal(document.querySelector('.radio-main .recent-tasks'), null);
   assert.equal(document.querySelector('.radio-main .build-task'), null);
   assert.equal(document.querySelector('.radio-notices').childElementCount, 0);
@@ -247,8 +247,8 @@ test('Completed management history lives in the header task popover without occu
   assert.ok(history);
   await click(history.querySelector('summary'));
   assert.match(history.textContent, /清理历史资料 · 已完成/);
-  await click(byText('查看任务日志', history));
-  assert.equal(history.querySelector('.task-logs').textContent, 'Disposable completed task log');
+  assert.equal(byText('查看任务日志', history), undefined);
+  assert.equal(history.querySelector('.task-logs'), null);
   await key(trigger, 'Escape');
   assert.equal(document.querySelector('.task-center-panel'), null);
   assert.equal(dialog(), null, 'Tasks never open the settings window');

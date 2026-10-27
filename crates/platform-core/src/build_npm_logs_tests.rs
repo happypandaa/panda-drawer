@@ -23,7 +23,7 @@ async fn fixture() -> (
 
 #[tokio::test]
 #[ignore = "opt-in: supplied local Node/npm artifacts, dependency-free offline TempDir build"]
-async fn real_npm_preserves_twenty_shared_logs_and_writes_only_task_logs() {
+async fn real_npm_preserves_old_logs_and_creates_no_task_or_npm_output_logs() {
     let node = PathBuf::from(
         std::env::var_os("PANDA_DRAWER_TEST_NODE").expect("explicit local Node artifact"),
     );
@@ -114,12 +114,12 @@ async fn real_npm_preserves_twenty_shared_logs_and_writes_only_task_logs() {
         );
     }
     assert_eq!(fs::read_dir(previous_logs).unwrap().count(), 20);
-    assert!(
-        fs::read_dir(manager.task_dir(&id).join("npm-logs"))
-            .unwrap()
-            .count()
-            >= 2
-    );
+    for name in ["npm-logs", "head.log", "tail.log", "log.json"] {
+        assert!(
+            !manager.task_dir(&id).join(name).exists(),
+            "unexpected output log {name}"
+        );
+    }
     manager.shutdown().await;
     store.shutdown().await;
 }

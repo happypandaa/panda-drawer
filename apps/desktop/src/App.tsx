@@ -154,8 +154,8 @@ function App() {
     setNodeRequest(null);
     const origin = capture();
     const outcome = result.ownership === 'external' ? '项目已从平台移除。原目录和文件未改动。' : '项目文件已永久删除。原始来源目录未删除。';
-    if (result.metadataCleanupPending) showError(origin, `${outcome} 但登记文件的收尾尚未完成。证据继续保留，请核对记录；不要再次提交删除。`, 'main', { nextScope: 'projects:page' });
-    else showSuccess(origin, `${outcome} 保留证据未删除。`, 'main', 'projects:page');
+    if (result.metadataCleanupPending || result.durabilityConfirmed === false) showError(origin, `${outcome} 但删除后的磁盘同步收尾尚未完成。${result.warning ?? '请刷新并核对当前目录。'} 不要再次提交删除。`, 'main', { nextScope: 'projects:page' });
+    else showSuccess(origin, outcome, 'main', 'projects:page');
   }, [capture, showError, showSuccess]);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'configure' | 'details' | 'delete') {
     if (nodeDraft.pending || nodeModalOpen || deleteProject) return;

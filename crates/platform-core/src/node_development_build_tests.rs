@@ -44,7 +44,7 @@ impl Fixture {
         atomic_json(&root.join("package.json"), &json!({"name":"disposable-build","version":"1.0.0","scripts":{"build":"node build.mjs"}})).unwrap();
         atomic_json(&root.join("package-lock.json"), &json!({"name":"disposable-build","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"disposable-build","version":"1.0.0"}}})).unwrap();
         let fake_npm = directory.join("disposable-npm.sh");
-        fs::write(&fake_npm, "set -eu\nif [ \"$1\" = run ]; then\n mkdir release\n cp local-app.json package.json package-lock.json release/\n cp -R public server release/\nfi\n").unwrap();
+        fs::write(&fake_npm, "set -eu\nif [ \"$1\" = --logs-dir ]; then [ \"$#\" -ge 3 ]; [ -n \"$2\" ]; [ \"$3\" = --logs-max=0 ]; shift 3; fi\nif [ \"$1\" = run ]; then\n mkdir release\n cp local-app.json package.json package-lock.json release/\n cp -R public server release/\nfi\n").unwrap();
         let tools = Toolchain {
             node: ExecutableInfo {
                 path: "/bin/sh".into(),
@@ -255,7 +255,7 @@ async fn failed_or_mismatched_build_never_returns_installable_program() {
     assert!(!fixture.operation.join("program").exists());
     let mut fixture = Fixture::new();
     fixture.npm();
-    fs::write(&fixture.tools.npm.path, "set -eu\nif [ \"$1\" = run ]; then mkdir release; cp local-app.json package.json package-lock.json release/; cp -R public server release/; sed 's/disposable.node.build/other.node/' release/local-app.json > release/changed; mv release/changed release/local-app.json; fi\n").unwrap();
+    fs::write(&fixture.tools.npm.path, "set -eu\nif [ \"$1\" = --logs-dir ]; then [ \"$#\" -ge 3 ]; [ -n \"$2\" ]; [ \"$3\" = --logs-max=0 ]; shift 3; fi\nif [ \"$1\" = run ]; then mkdir release; cp local-app.json package.json package-lock.json release/; cp -R public server release/; sed 's/disposable.node.build/other.node/' release/local-app.json > release/changed; mv release/changed release/local-app.json; fi\n").unwrap();
     assert!(fixture.build().await.is_err());
 }
 

@@ -46,9 +46,9 @@ impl Fixture {
         let environment = GitEnvironmentManager::new(base.join("tool-settings"), Some(resources));
         let manager = NodeGit::new(environment);
         let status = manager.status(&root).await.unwrap();
-        assert!(status.can_initialize, "{status:?}");
+        assert!(!status.can_initialize, "{status:?}");
         manager
-            .initialize(
+            .fixture_initialize(
                 &root,
                 GitInitInput {
                     expected_snapshot: status.snapshot_digest,
@@ -145,9 +145,9 @@ impl Fixture {
 }
 async fn save(manager: &NodeGit, root: &Path, message: &str) -> String {
     let status = manager.status(root).await.unwrap();
-    assert!(status.can_save, "{status:?}");
+    assert!(!status.can_save, "{status:?}");
     let value = manager
-        .save(
+        .fixture_save(
             root,
             GitSaveInput {
                 expected_head: head_oid(&status).map(str::to_owned),
@@ -178,7 +178,7 @@ async fn real_git_restore_changes_only_source_and_leaves_a_new_unsaved_worktree(
     fixture.old();
     require_clear(&fixture.root).unwrap();
     let status = fixture.manager.status(&fixture.root).await.unwrap();
-    assert!(status.can_save, "{status:?}");
+    assert!(!status.can_save, "{status:?}");
     assert_eq!(status.changes.len(), 3);
     let mut marker = read_control(&fixture.scope.control_path).unwrap().unwrap();
     marker.phase = "pending".into();
@@ -606,7 +606,7 @@ async fn real_git_overdeep_target_is_rejected_before_journal_or_source_publicati
     .unwrap();
     let mut command = node_command(&tools, context.root(), Some(&fixture.root));
     command.args(["commit-tree", &tree, "--no-gpg-sign"]);
-    author_environment(
+    crate::project_git::fixture::fixture_author_environment(
         &mut command,
         &GitAuthor {
             name: "Disposable Author".into(),

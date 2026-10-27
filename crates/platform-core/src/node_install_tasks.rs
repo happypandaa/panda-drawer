@@ -337,7 +337,6 @@ impl NodeInstallTasks {
             }
             crate::projects::check_no_symlinks(&build_root, false)?;
             self.tasks.phase(task_id, "building-source")?;
-            self.tasks.append(task_id,b"Explicit source build authorized. The declared npm build runs in a fresh isolated directory; the selected source and current app are not replaced.\n")?;
             let output = crate::node_development_build::build_repository_scoped(
                 &source_root,
                 &build_root.join(task_id),

@@ -89,14 +89,14 @@ fn holder(root: &Path) -> (String, PathBuf, ReleasePipe) {
 }
 
 #[tokio::test]
-async fn failed_or_dropped_metadata_request_retains_actual_lease_gate_directory_and_index_fd_until_io_join(
+async fn failed_or_dropped_metadata_request_retains_actual_lease_gate_directory_and_file_fd_until_io_join(
 ) {
     for abort in [false, true] {
         let mut sample = fixture().await;
         let mut context = sample.context.take().unwrap();
         let private = context.root().to_path_buf();
-        let lock_path = sample.project.root.join("owned-index.lock");
-        let lock = IndexLock::acquire(&lock_path).unwrap();
+        let lock_path = sample.project.root.join("owned-metadata-fixture.lock");
+        let lock = crate::project_git::fixture::OwnedFixtureFile::acquire(&lock_path).unwrap();
         context.retain(lock.retained.clone());
         let (holder, marker, release) = holder(&sample.project.root);
         let output = if abort {
@@ -132,7 +132,7 @@ async fn failed_or_dropped_metadata_request_retains_actual_lease_gate_directory_
         assert!(private.is_dir());
         assert!(
             lock_path.is_file(),
-            "a dropped request removed a still-owned index lock"
+            "a dropped request removed a still-owned fixture file"
         );
         assert!(sample
             .store
@@ -149,100 +149,6 @@ async fn failed_or_dropped_metadata_request_retains_actual_lease_gate_directory_
         assert!(sample.project.operation_gate.try_write().is_ok());
         assert!(!private.exists());
         assert!(!lock_path.exists());
-        assert!(sample.store.shutdown().await.is_empty());
-    }
-}
-
-#[tokio::test]
-async fn commit_publication_and_pending_cleanup_have_independent_receipts() {
-    for (action, acknowledge, expected_outcome) in [
-        ("abort", false, "unknown"),
-        ("commit", false, "unknown"),
-        ("commit", true, "committed"),
-    ] {
-        let mut sample = fixture().await;
-        let mut context = sample.context.take().unwrap();
-        let private = context.root().to_path_buf();
-        let (hold, marker, release) = holder(&sample.project.root);
-        let body = format!(
-            r#"import os,subprocess,sys,time
-
-def token():
-    data=bytearray()
-    while True:
-        byte=sys.stdin.buffer.read(1)
-        if not byte: return bytes(data)
-        if byte==b'\0': return bytes(data)
-        data.extend(byte)
-
-while token()!=b'prepare': pass
-sys.stdout.buffer.write(b'start: ok\nprepare: ok\n');sys.stdout.buffer.flush()
-action=token()
-if action==b'abort':
-    sys.stdout.buffer.write(b'abort: ok\n');sys.stdout.buffer.flush()
-{ack}
-{hold}
-time.sleep(30)
-"#,
-            ack = if acknowledge {
-                "if action==b'commit':\n    sys.stdout.buffer.write(b'commit: ok\\n');sys.stdout.buffer.flush()"
-            } else {
-                ""
-            }
-        );
-        let command = helper(&sample.project.root, &body);
-        let (acknowledged, receipt) = tokio::sync::oneshot::channel();
-        if acknowledge {
-            context.commit_ack_observed = Some(acknowledged);
-        } else {
-            drop(acknowledged);
-        }
-        let abort = action == "abort";
-        let request = tokio::spawn(async move {
-            context
-                .commit_transaction(command, b"start\0prepare\0".to_vec(), move || {
-                    if abort {
-                        Err(stale())
-                    } else {
-                        Ok(())
-                    }
-                })
-                .await
-        });
-        wait_file(&marker).await;
-        if acknowledge {
-            tokio::time::timeout(Duration::from_secs(2), receipt)
-                .await
-                .unwrap()
-                .unwrap();
-        }
-        // Keep the leader demonstrably live until this explicit stop. Natural
-        // os._exit racing the signal tests a different group transition, not
-        // the intended ACK-versus-still-open-reader ownership boundary.
-        sample.stop.send(true).unwrap();
-        let error = tokio::time::timeout(Duration::from_secs(4), request)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(
-            error.code, "PROCESS_CLEANUP_PENDING",
-            "action={action}, acknowledge={acknowledge}, error={error:?}"
-        );
-        assert_eq!(error.details["safeAbort"], false);
-        assert_eq!(error.details["commitSent"], action == "commit");
-        assert_eq!(error.details["commitAcknowledged"], acknowledge);
-        assert_eq!(error.details["operationOutcome"], expected_outcome);
-        assert_eq!(error.details["processClosed"], false);
-        assert_eq!(error.details["processResourceClosed"], false);
-        assert!(sample.store.has_active_tasks());
-        assert!(sample.project.operation_gate.try_write().is_err());
-        assert!(private.is_dir());
-        drop(release);
-        closed(&sample.store).await;
-        assert!(!sample.store.has_active_tasks());
-        assert!(sample.project.operation_gate.try_write().is_ok());
-        assert!(!private.exists());
         assert!(sample.store.shutdown().await.is_empty());
     }
 }

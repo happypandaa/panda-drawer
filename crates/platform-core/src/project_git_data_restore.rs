@@ -197,12 +197,6 @@ impl ProjectGitManager {
                 }
             }
             .map_err(|error| manager.data_restore_error(&id, &restore_task, error, &report_stop));
-            if let Err(error) = &result {
-                let _ = manager.tasks.append(
-                    &task_id,
-                    format!("{}: {}\n", error.code, error.message).as_bytes(),
-                );
-            }
             let _ = manager.tasks.finish(&task_id, result);
             manager.active.lock().unwrap().remove(&task_id);
         });

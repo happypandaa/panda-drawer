@@ -1,27 +1,23 @@
-//! Cleanup of one explicitly completed import, never a history sweep. The
-//! durable plan is outside removable payloads and supports partial-delete retry.
+//! Cleanup of one explicitly completed import. Every attempt inspects current
+//! source/install ownership; plans and detailed results are never written to disk.
 use super::*;
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 struct ImportTarget {
     path: PathBuf,
     identity: PersistedIdentity,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ImportPlan {
-    version: u32,
     source_task_id: String,
     source_id: String,
     source_retained: bool,
-    workspace_root: PathBuf,
     source_identity: PersistedIdentity,
-    source_record: Value,
     targets: Vec<ImportTarget>,
     removed_paths: Vec<PathBuf>,
     completed: bool,
+    bindings: BTreeMap<String, Value>,
+    installations: BTreeMap<String, Value>,
 }
 
 fn blocked(message: &str) -> ApiError {
@@ -62,29 +58,27 @@ impl CleanupManager {
         }
         let installer = self.installer()?;
         let _commit = installer.commit_lock()?;
-        let receipt = self.root().join("imports").join(source_task_id);
-        check_no_symlinks(&receipt, true)?;
-        fs::create_dir_all(&receipt)?;
-        let plan_path = receipt.join("plan.json");
-        let mut plan: ImportPlan = if plan_path.try_exists()? {
-            let plan: ImportPlan = serde_json::from_value(read_json(&plan_path)?)?;
-            if plan.version != 1
-                || plan.source_task_id != source_task_id
-                || plan.workspace_root != self.paths.workspace_root()
-                || !plan.source_id.starts_with("src_")
-                || !valid_id(&plan.source_id)
-                || plan.source_record["sourceId"] != plan.source_id
-                || plan.source_record["taskId"] != source_task_id
+        if let Some(source_id) = task
+            .result
+            .as_ref()
+            .and_then(|result| result["sourceId"].as_str())
+            .filter(|id| id.starts_with("src_") && valid_id(id))
+        {
+            let source = self.sources_root().join(source_id);
+            check_no_symlinks(&source, true)?;
+            let states = installer.installation_states()?;
+            if !source.try_exists()?
+                && !states.iter().any(|state| {
+                    state.source_id.as_deref() == Some(source_id)
+                        || (!state.is_terminal() && state.source_id.is_none())
+                })
             {
-                return Err(blocked("清理记录与当前导入不一致，请保留记录。"));
+                return Ok(
+                    json!({"completed":true,"sourceId":source_id,"sourceRetained":false,"removedPaths":[],"failures":[]}),
+                );
             }
-            plan
-        } else {
-            self.import_plan(source_task_id, &receipt)?
-        };
-        if plan.completed {
-            return Ok(import_result(&plan, &receipt, vec![]));
         }
+        let mut plan = self.import_plan(source_task_id)?;
         let source = self.sources_root().join(&plan.source_id);
         check_no_symlinks(&source, true)?;
         if source.try_exists()? && !plan.source_identity.matches_path(&source).map_err(error)? {
@@ -102,8 +96,7 @@ impl CleanupManager {
                     .as_str()
                     .filter(|id| valid_id(id))
                     .ok_or_else(|| blocked("源码安装绑定无效，未继续清理。"))?;
-                let archived = receipt.join(format!("binding_{task_id}.json"));
-                if !archived.try_exists()? || read_json(&archived)? != live {
+                if plan.bindings.get(task_id) != Some(&live) {
                     return Err(blocked(
                         "这份源码的安装任务已变化，请先处理新任务，未继续清理。",
                     ));
@@ -111,29 +104,28 @@ impl CleanupManager {
                 self.import_task_stopped(task_id, "nodeInstallPrepare")?;
             }
         }
-        self.validate_import_installations(&plan.source_id, &plan.targets, &receipt)?;
-        // Persist intent and minimal diagnostics before deleting even one file.
-        builds::atomic_json(&plan_path, &plan)?;
+        self.validate_import_installations(&plan)?;
         let mut failures = vec![];
         for target in plan.targets.clone() {
             if plan.removed_paths.contains(&target.path) {
                 continue;
             }
-            if !target.path.try_exists()? {
-                plan.removed_paths.push(target.path.clone());
-                builds::atomic_json(&plan_path, &plan)?;
-                continue;
+            match fs::symlink_metadata(&target.path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    plan.removed_paths.push(target.path.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
             }
-            if let Err(failure) = self.validate_import_target(&plan, &target, &receipt) {
+            if let Err(failure) = self.validate_import_target(&plan, &target) {
                 failures.push(json!({"path":target.path,"error":failure}));
                 break;
             }
-            let progress = receipt.join(format!("remove-{}.jsonl", Uuid::new_v4().simple()));
-            match remove_owned_directory(&target.path, &target.identity, &progress) {
+            match remove_owned_directory(&target.path, &target.identity) {
                 Ok(_) => plan.removed_paths.push(target.path.clone()),
                 Err(failure) => failures.push(json!({"path":target.path,"error":failure})),
             }
-            builds::atomic_json(&plan_path, &plan)?;
             // Keep later targets, especially source metadata, for a safe retry.
             if !failures.is_empty() {
                 break;
@@ -143,14 +135,11 @@ impl CleanupManager {
             && plan
                 .targets
                 .iter()
-                .all(|target| plan.removed_paths.contains(&target.path) && !target.path.exists());
-        builds::atomic_json(&plan_path, &plan)?;
-        let result = import_result(&plan, &receipt, failures);
-        builds::atomic_json(&receipt.join("result.json"), &result)?;
-        Ok(result)
+                .all(|target| plan.removed_paths.contains(&target.path) && matches!(fs::symlink_metadata(&target.path), Err(error) if error.kind() == std::io::ErrorKind::NotFound));
+        Ok(import_result(&plan, failures))
     }
 
-    fn import_plan(&self, task: &str, receipt: &Path) -> Result<ImportPlan, ApiError> {
+    fn import_plan(&self, task: &str) -> Result<ImportPlan, ApiError> {
         let root = self.sources_root();
         check_no_symlinks(&root, false)?;
         let mut matched = vec![];
@@ -184,6 +173,8 @@ impl CleanupManager {
         }
         let retained = self.import_source_referenced(&source_id, &source)?;
         let mut targets = vec![];
+        let mut saved_bindings = BTreeMap::new();
+        let mut installations = BTreeMap::new();
         let bindings = source.join("install-tasks");
         check_no_symlinks(&bindings, true)?;
         if bindings.try_exists()? {
@@ -200,7 +191,7 @@ impl CleanupManager {
                     return Err(blocked("安装任务与当前源码不一致。"));
                 }
                 self.import_task_stopped(task_id, "nodeInstallPrepare")?;
-                builds::atomic_json(&receipt.join(format!("binding_{task_id}.json")), &binding)?;
+                saved_bindings.insert(task_id.to_owned(), binding.clone());
                 add_target(
                     &mut targets,
                     self.paths
@@ -217,10 +208,7 @@ impl CleanupManager {
             }
             let journal = read_json(&state.path.join("install.json"))?;
             self.validate_import_installation(&journal)?;
-            builds::atomic_json(
-                &receipt.join(format!("{}.json", state.candidate_id)),
-                &journal,
-            )?;
+            installations.insert(state.candidate_id.clone(), journal);
             add_target(&mut targets, state.path)?;
         }
         // Source is last so interrupted staging removal retains its binding.
@@ -233,16 +221,15 @@ impl CleanupManager {
             },
         )?;
         Ok(ImportPlan {
-            version: 1,
             source_task_id: task.into(),
             source_id,
             source_retained: retained,
-            workspace_root: self.paths.workspace_root().into(),
             source_identity: PersistedIdentity::capture(&source).map_err(error)?,
-            source_record: record,
             targets,
             removed_paths: vec![],
             completed: false,
+            bindings: saved_bindings,
+            installations,
         })
     }
 
@@ -331,15 +318,10 @@ impl CleanupManager {
         Ok(())
     }
 
-    fn validate_import_installations(
-        &self,
-        id: &str,
-        targets: &[ImportTarget],
-        receipt: &Path,
-    ) -> Result<(), ApiError> {
+    fn validate_import_installations(&self, plan: &ImportPlan) -> Result<(), ApiError> {
         for state in self.installer()?.installation_states()? {
-            if state.source_id.as_deref() == Some(id) {
-                if !targets.iter().any(|target| target.path == state.path) {
+            if state.source_id.as_deref() == Some(plan.source_id.as_str()) {
+                if !plan.targets.iter().any(|target| target.path == state.path) {
                     return Err(blocked(
                         "这份源码新增了安装候选，请先处理新候选，未继续清理。",
                     ));
@@ -347,10 +329,8 @@ impl CleanupManager {
                 self.validate_import_installation(&read_json(&state.path.join("install.json"))?)?;
             } else if !state.is_terminal() && state.source_id.is_none() {
                 // A partial retry can have already removed its own journal.
-                let owned = targets.iter().any(|target| target.path == state.path)
-                    && receipt
-                        .join(format!("{}.json", state.candidate_id))
-                        .try_exists()?;
+                let owned = plan.targets.iter().any(|target| target.path == state.path)
+                    && plan.installations.contains_key(&state.candidate_id);
                 if !owned {
                     return Err(blocked("存在来源无法核对的安装记录，未删除源码。"));
                 }
@@ -363,7 +343,6 @@ impl CleanupManager {
         &self,
         plan: &ImportPlan,
         target: &ImportTarget,
-        receipt: &Path,
     ) -> Result<(), ApiError> {
         let source = self.sources_root().join(&plan.source_id);
         let installation =
@@ -402,16 +381,19 @@ impl CleanupManager {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| blocked("安装目标标识无效。"))?;
-            let archived = read_json(&receipt.join(format!("{id}.json")))?;
+            let archived = plan
+                .installations
+                .get(id)
+                .ok_or_else(|| blocked("安装材料缺少本次检查的归属。"))?;
             let bound = archived["sourceId"]
                 .as_str()
                 .or_else(|| archived["prepared"]["provenance"]["sourceId"].as_str());
             if archived["candidateId"] != id || bound != Some(plan.source_id.as_str()) {
                 return Err(blocked("安装材料与本次导入来源不一致。"));
             }
-            self.validate_import_installation(&archived)?;
+            self.validate_import_installation(archived)?;
             let live = target.path.join("install.json");
-            if live.try_exists()? && read_json(&live)? != archived {
+            if live.try_exists()? && &read_json(&live)? != archived {
                 return Err(blocked("安装材料记录在清理后已变化，请保留材料。"));
             }
         } else if build {
@@ -420,7 +402,10 @@ impl CleanupManager {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| blocked("构建任务标识无效。"))?;
-            let binding = read_json(&receipt.join(format!("binding_{id}.json")))?;
+            let binding = plan
+                .bindings
+                .get(id)
+                .ok_or_else(|| blocked("构建材料缺少本次检查的归属。"))?;
             if binding["sourceId"] != plan.source_id || binding["prepareTaskId"] != id {
                 return Err(blocked("构建材料与本次导入来源不一致。"));
             }
@@ -449,9 +434,9 @@ fn add_target(targets: &mut Vec<ImportTarget>, path: PathBuf) -> Result<(), ApiE
     Ok(())
 }
 
-fn import_result(plan: &ImportPlan, receipt: &Path, failures: Vec<Value>) -> Value {
+fn import_result(plan: &ImportPlan, failures: Vec<Value>) -> Value {
     json!({"completed":plan.completed,"sourceId":plan.source_id,"sourceRetained":plan.source_retained,
-        "removedPaths":plan.removed_paths,"failures":failures,"receiptPath":receipt})
+        "removedPaths":plan.removed_paths,"failures":failures})
 }
 
 #[cfg(test)]

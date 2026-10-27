@@ -44,7 +44,7 @@ impl Fixture {
         atomic_json(&source.join("package-lock.json"), &json!({"name":"disposable-install","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"disposable-install","version":"1.0.0","dependencies":{}}}})).unwrap();
         let npm = base.join("fake-npm.sh");
         write_new(&npm, format!(
-            "set -eu\n[ \"$1\" = '--prefix' ]\n[ \"$2\" = \"$PWD\" ]\n[ \"$NPM_CONFIG_USERCONFIG\" != \"$NPM_CONFIG_GLOBALCONFIG\" ]\n[ -f \"$NPM_CONFIG_USERCONFIG\" ]\n[ -f \"$NPM_CONFIG_GLOBALCONFIG\" ]\n[ -z \"${{NODE_PATH-}}\" ]\n[ -z \"${{NODE_OPTIONS-}}\" ]\n{npm_body}\n"
+            "set -eu\n[ \"$1\" = '--prefix' ]\n[ \"$2\" = \"$PWD\" ]\n[ \"$NPM_CONFIG_USERCONFIG\" != \"$NPM_CONFIG_GLOBALCONFIG\" ]\n[ -f \"$NPM_CONFIG_USERCONFIG\" ]\n[ -f \"$NPM_CONFIG_GLOBALCONFIG\" ]\n[ -z \"${{NODE_PATH-}}\" ]\n[ -z \"${{NODE_OPTIONS-}}\" ]\n[ \"$NPM_CONFIG_LOGS_MAX\" = \"0\" ]\n{npm_body}\n"
         ).as_bytes(), false).unwrap();
         let tools = Toolchain {
             node: ExecutableInfo {
@@ -239,25 +239,6 @@ async fn third_party_node_addons_still_reject_before_registration_and_keep_evide
     }
 }
 
-fn public_logs(tasks: &BuildManager, task_id: &str) -> String {
-    let mut cursor = 0;
-    let mut text = String::new();
-    loop {
-        let page = tasks.logs(task_id, cursor).unwrap();
-        assert!(!page.truncated);
-        assert!(page.gaps.is_empty());
-        text.push_str(&page.text);
-        if page.eof {
-            return text;
-        }
-        assert!(
-            page.next_cursor > cursor,
-            "final task log must make progress"
-        );
-        cursor = page.next_cursor;
-    }
-}
-
 fn sentinels(slot: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     [
         (
@@ -290,6 +271,16 @@ fn sentinels(slot: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 fn assert_preserved(files: &[(PathBuf, Vec<u8>)]) {
     for (path, bytes) in files {
         assert_eq!(&fs::read(path).unwrap(), bytes, "{}", path.display());
+    }
+}
+
+fn assert_no_task_logs(paths: &RuntimePaths, task_id: &str) {
+    let directory = paths.workspace_root().join(".platform/tasks").join(task_id);
+    for name in ["head.log", "tail.log", "log.json", "npm-logs"] {
+        assert!(
+            !directory.join(name).exists(),
+            "task output must not be retained"
+        );
     }
 }
 
@@ -348,6 +339,16 @@ async fn install_and_compatible_update_keep_uuid_configuration_data_and_old_prog
     let repeated = fixture.apply(&next, &update);
     assert_eq!(repeated.generation, updated.generation);
     assert_eq!(fs::read_dir(slot.join("generations")).unwrap().count(), 2);
+    for name in [
+        "previous-program.json",
+        "program-history",
+        "program-rollbacks",
+    ] {
+        assert!(
+            !slot.join(name).exists(),
+            "updates do not create platform version history"
+        );
+    }
     fixture.shutdown().await;
 }
 
@@ -576,12 +577,7 @@ exit 42
     assert_eq!(error.code, "NODE_INSTALL_NPM_FAILED");
     let final_task = fixture.tasks.task(&task.task_id).unwrap();
     assert!(final_task.status.is_final());
-    let logs = public_logs(&fixture.tasks, &task.task_id);
-    assert!(logs.len() > 64_000, "exercise the public log's next cursor");
-    assert_eq!(logs.bytes().filter(|byte| *byte == b'~').count(), 42000);
-    assert_eq!(logs.bytes().filter(|byte| *byte == b'^').count(), 42000);
-    assert!(logs.contains("stdout-tail"));
-    assert!(logs.contains("stderr-tail: simulated E404 download failure"));
+    assert_no_task_logs(&fixture.paths, &task.task_id);
     let id = final_task.result.unwrap()["candidateId"]
         .as_str()
         .unwrap()
@@ -643,9 +639,7 @@ async fn cancellation_terminates_npm_before_reporting_completion_and_preserves_e
     );
     assert!(marker.exists(), "interrupted candidate evidence remains");
     assert!(!expected_slot.exists());
-    let logs = public_logs(&fixture.tasks, &task.task_id);
-    assert!(logs.contains("stdout-before-cancel"));
-    assert!(logs.contains("stderr-before-cancel"));
+    assert_no_task_logs(&fixture.paths, &task.task_id);
     assert_eq!(
         fixture
             .tasks
@@ -660,7 +654,7 @@ async fn cancellation_terminates_npm_before_reporting_completion_and_preserves_e
 }
 
 #[tokio::test]
-async fn npm_output_limit_preserves_bounded_public_output_and_stops_the_process_group() {
+async fn npm_output_limit_discards_text_and_stops_the_process_group() {
     for redirect in ["", " >&2"] {
         let fixture = Fixture::new(&format!(
             "printf '%s' \"$$\" > npm-fixture-pid; awk 'BEGIN {{ for (i = 0; i < {}; i++) printf \"x\" }}'{redirect}; /bin/sleep 60 & wait",
@@ -689,9 +683,7 @@ async fn npm_output_limit_preserves_bounded_public_output_and_stops_the_process_
         assert_eq!(error.code, "NODE_INSTALL_OUTPUT_LIMIT");
         let final_task = fixture.tasks.task(&task.task_id).unwrap();
         assert!(final_task.status.is_final());
-        let logs = public_logs(&fixture.tasks, &task.task_id);
-        let output = logs.rsplit_once('\n').unwrap().1;
-        assert_eq!(output, "x".repeat(MAX_OUTPUT));
+        assert_no_task_logs(&fixture.paths, &task.task_id);
         let candidate_id = final_task.result.as_ref().unwrap()["candidateId"]
             .as_str()
             .unwrap();
@@ -1138,7 +1130,7 @@ async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "NODE_INSTALL_NPM_FAILED");
-    assert!(public_logs(&fixture.tasks, &task.task_id).contains("ECONNREFUSED"));
+    assert_no_task_logs(&fixture.paths, &task.task_id);
     assert!(!slot.exists());
     fixture.shutdown().await;
 }

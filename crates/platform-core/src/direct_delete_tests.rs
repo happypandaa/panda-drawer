@@ -57,11 +57,11 @@ async fn permanent_delete_removes_only_owned_payload_and_preserves_historical_ev
             b"preserve independently owned evidence"
         );
     }
-    assert!(fixture
+    assert!(!fixture
         .lifecycle
         .operation(&deleted.task_id)
         .join("delete-progress.ndjson")
-        .is_file());
+        .exists());
     fixture.stop().await;
 }
 
@@ -199,7 +199,7 @@ async fn interrupted_direct_delete_quarantines_residue_without_replaying_removal
     let fixture = Fixture::new().await;
     let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
-    let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    let mut journal = LifecycleManager::operation_state(&task, "delete", &fixture.id);
     journal.directory_name = Some(root_directory_name(&root).unwrap());
     journal.directory_identity = Some(expected.clone());
     journal.control = Some(fixture.store.control(&fixture.id).unwrap().get());
@@ -208,17 +208,15 @@ async fn interrupted_direct_delete_quarantines_residue_without_replaying_removal
         .begin_deletion(&fixture.id, &task.task_id, &journal.target_epoch, &expected)
         .unwrap();
     journal.phase = "delete-intent".into();
-    fixture.lifecycle.save(&journal).unwrap();
+    fixture.lifecycle.remember(&journal).unwrap();
     fs::remove_file(root.join("app/README.md")).unwrap();
     let remaining = root.join("data/attachments/original.txt");
     let bytes = fs::read(&remaining).unwrap();
     drop(lease);
     let fixture = fixture.restart_task(task.clone()).await;
     let recovered = fixture.tasks.task(&task.task_id).unwrap();
-    assert_eq!(
-        recovered.result.unwrap()["operationOutcome"],
-        "delete_incomplete"
-    );
+    assert_eq!(recovered.status, TaskStatus::Interrupted);
+    assert!(recovered.result.is_none());
     assert_eq!(fs::read(&remaining).unwrap(), bytes);
     assert_eq!(
         fixture.store.project(&fixture.id).err().unwrap().code,
@@ -257,15 +255,15 @@ async fn unstarted_direct_delete_recovery_preserves_the_active_project() {
     let project = fixture.store.project(&fixture.id).unwrap();
     let before = fs::read(project.root.join("data/attachments/original.txt")).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
-    let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    let mut journal = LifecycleManager::operation_state(&task, "delete", &fixture.id);
     journal.directory_name = Some(root_directory_name(&project.root).unwrap());
     journal.directory_identity = Some(persistent_identity(&project.root).unwrap());
-    fixture.lifecycle.save(&journal).unwrap();
+    fixture.lifecycle.remember(&journal).unwrap();
     drop(lease);
     let fixture = fixture.restart_task(task.clone()).await;
     assert_eq!(
-        fixture.tasks.task(&task.task_id).unwrap().result.unwrap()["operationOutcome"],
-        "not_deleted"
+        fixture.tasks.task(&task.task_id).unwrap().status,
+        TaskStatus::Interrupted
     );
     assert!(fixture.store.project(&fixture.id).is_ok());
     assert_eq!(
@@ -281,7 +279,7 @@ async fn unstarted_direct_delete_recovery_preserves_the_active_project() {
 }
 
 #[tokio::test]
-async fn removed_payload_checkpoint_finishes_bookkeeping_and_never_retires_a_later_import() {
+async fn removed_payload_requires_explicit_finalization_before_a_later_import() {
     let fixture = Fixture::new().await;
     let archive = fixture.export_path("disposable-reimport-after-delete.zip");
     good(
@@ -291,7 +289,7 @@ async fn removed_payload_checkpoint_finishes_bookkeeping_and_never_retires_a_lat
     );
     let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
-    let mut journal = LifecycleManager::journal(&task, "delete", &fixture.id);
+    let mut journal = LifecycleManager::operation_state(&task, "delete", &fixture.id);
     journal.directory_name = Some(root_directory_name(&root).unwrap());
     journal.directory_identity = Some(expected.clone());
     journal.control = Some(fixture.store.control(&fixture.id).unwrap().get());
@@ -300,19 +298,23 @@ async fn removed_payload_checkpoint_finishes_bookkeeping_and_never_retires_a_lat
         .begin_deletion(&fixture.id, &task.task_id, &journal.target_epoch, &expected)
         .unwrap();
     journal.phase = "delete-intent".into();
-    fixture.lifecycle.save(&journal).unwrap();
+    fixture.lifecycle.remember(&journal).unwrap();
     fs::remove_dir_all(&root).unwrap();
     drop(lease);
     let fixture = fixture.restart_task(task.clone()).await;
     assert_eq!(
-        fixture.tasks.task(&task.task_id).unwrap().result.unwrap()["operationOutcome"],
-        "deleted"
+        fixture.tasks.task(&task.task_id).unwrap().status,
+        TaskStatus::Interrupted
     );
     assert!(fixture
         .store
         .pending_deletion(&fixture.id)
         .unwrap()
-        .is_none());
+        .is_some());
+    assert_eq!(
+        good(&fixture.project("delete", json!({})).await)["operationOutcome"],
+        "deleted"
+    );
     let imported = fixture
         .lifecycle
         .submit_import(json!({"archivePath":archive,"mode":"original"}))
@@ -323,14 +325,11 @@ async fn removed_payload_checkpoint_finishes_bookkeeping_and_never_retires_a_lat
     let epoch = project.document_epoch.clone();
     let identity = persistent_identity(&project.root).unwrap();
     let control = fixture.store.control(&fixture.id).unwrap().get();
-    let mut historical: Journal =
-        read_json(&fixture.lifecycle.journal_path(&task.task_id)).unwrap();
-    historical.resolved = false;
-    fixture.lifecycle.save(&historical).unwrap();
-    assert_eq!(
-        fixture.lifecycle.reconcile(&mut historical).unwrap()["operationOutcome"],
-        "deleted"
-    );
+    assert!(!fixture
+        .lifecycle
+        .operation(&task.task_id)
+        .join("lifecycle.json")
+        .exists());
     let current = fixture.store.project(&fixture.id).unwrap();
     assert_eq!(current.document_epoch, epoch);
     assert!(identity.matches_path(&current.root).unwrap());

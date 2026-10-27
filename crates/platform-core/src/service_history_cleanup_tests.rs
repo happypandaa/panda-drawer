@@ -137,12 +137,26 @@ async fn history_cleanup_http_requires_admin_confirmation_and_preserves_other_pr
     let lock = paths.acquire_lock().unwrap();
     let restarted = RuntimeService::start(paths.clone(), lock).await.unwrap();
     let current = restarted.handle().workspace_info().await.unwrap();
-    assert_eq!(current["cleanupTask"]["taskId"], task_id);
-    assert_eq!(current["cleanupTask"]["final"], true);
+    assert!(current["cleanupTask"].is_null());
     assert_eq!(
-        restarted.handle().workspace_cleanup(input).await.unwrap()["taskId"],
-        task_id
+        restarted
+            .handle()
+            .workspace_cleanup(input)
+            .await
+            .unwrap_err()
+            .code,
+        "CLEANUP_PLAN_EXPIRED"
     );
+    assert!(!paths.data_root().join("cleanup/plans").exists());
+    assert!(!paths.data_root().join("cleanup/receipts").exists());
+    let fresh = restarted
+        .handle()
+        .workspace_cleanup_preview()
+        .await
+        .unwrap();
+    let fresh = final_task(&restarted, fresh["taskId"].as_str().unwrap()).await;
+    assert_eq!(fresh["status"], "succeeded");
+    assert_ne!(fresh["result"]["planId"], plan["planId"]);
     let stale = json!({"planId":unconsumed["result"]["planId"],"itemIds":["unlisted"],"confirmation":"永久清理所选内容"});
     assert_eq!(
         restarted

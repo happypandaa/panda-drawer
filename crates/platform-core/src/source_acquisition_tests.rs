@@ -368,11 +368,13 @@ async fn failed_acquisition_is_a_persisted_task_and_retry_never_reuses_slot() {
         assert!(task.project_id.is_none());
         let outcome = final_task(&tasks, &task.task_id).await;
         assert_eq!(outcome.error.unwrap().code, "SOURCE_GIT_FAILED");
-        assert!(!tasks
-            .logs(&task.task_id, 0)
-            .unwrap()
-            .text
-            .contains("private raw stderr"));
+        let task_root = paths
+            .workspace_root()
+            .join(".platform/tasks")
+            .join(&task.task_id);
+        for name in ["head.log", "tail.log", "log.json", "npm-logs"] {
+            assert!(!task_root.join(name).exists());
+        }
     }
     let slots = manager.list().unwrap();
     assert_eq!(slots.len(), 2);

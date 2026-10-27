@@ -1,5 +1,7 @@
 # Node 源码副本、安装与更新
 
+2026-10-27 最新确认：[操作记录精简与外部 AI 分工](operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
+
 更新：2026-10-26。本页描述内部安装子集及当前删除范围；安装／更新的实际原生验收另见[三场景记录](three-scenario-verification.md)，不能替代新删除验收。既有[外部目录登记](node-native-configuration.md)继续兼容，不自动迁移或改写。分享与通用应用包下载不在本步范围。
 
 ## 从来源到应用
@@ -41,7 +43,7 @@ Node `formatVersion: 2` 清单可声明顶层 `dataContract: {"id":"org.example.
 | 位置 | 内容与生命周期 |
 | --- | --- |
 | 工作区 `.platform/sources/src_<UUID>/` | 来源记录及独立源码副本；参加公开工作区迁移 |
-| 固定数据根 `node-apps/.installations/install_<UUID>/` | 安装准备、npm 缓存及提交日志；失败和中断保留 |
+| 固定数据根 `node-apps/.installations/install_<UUID>/` | 安装准备、npm 缓存及安装／提交状态；不保存 npm 输出，失败和中断材料保留 |
 | 固定数据根 `node-apps/<UUID>/generations/<代次>/` | 已安装的独立程序及生产依赖；运行不再依赖作者或来源目录 |
 | 同槽 `registration.json` | v2 受管登记及当前程序代次，原子写入为提交点 |
 | 同槽 `data/`、`configuration/`、`cache/`、`runs/` | 沿用既有运行和配置规则；准备／切换程序不覆盖业务数据或配置 |

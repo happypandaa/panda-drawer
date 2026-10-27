@@ -298,6 +298,11 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
         source
     );
     assert!(fixture.manager.list().await.unwrap().is_empty());
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-apps/.deletions")
+        .exists());
     fixture.shutdown().await;
 }
 
@@ -339,8 +344,49 @@ async fn delete_refuses_replaced_reviewed_directory_and_changed_registration() {
 }
 
 #[tokio::test]
-async fn partial_delete_blocks_config_recreation_and_restart_never_replays_removal() {
-    use std::os::unix::fs::symlink;
+async fn legacy_delete_markers_never_reopen_partially_removed_applications() {
+    for phase in ["delete-intent", "delete-incomplete", "deleted"] {
+        let fixture = Fixture::new();
+        let app = fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap();
+        let id = app["id"].as_str().unwrap();
+        let slot = fixture.slot(id);
+        fixture
+            .manager
+            .save(id, save_request(0, "before-old-delete", true))
+            .await
+            .unwrap();
+        fs::remove_dir_all(slot.join("configuration")).unwrap();
+        let legacy = fixture
+            .paths
+            .data_root()
+            .join("node-apps/.deletions")
+            .join(format!("{id}.json"));
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let bytes = serde_json::to_vec(&json!({"version":1,"appId":id,"phase":phase})).unwrap();
+        fs::write(&legacy, &bytes).unwrap();
+        let restarted = NodeApps::new(
+            fixture.paths.data_root().into(),
+            "/disposable-missing-node".into(),
+        )
+        .unwrap();
+        assert!(restarted.configuration(id).await.is_err());
+        assert!(restarted.start(id).await.is_err());
+        assert!(!slot.join("configuration").exists());
+        assert_eq!(fs::read(&legacy).unwrap(), bytes);
+        let preview = restarted.delete_preview(id).await.unwrap();
+        assert_eq!(preview["appId"], id);
+        restarted.stop_all().await.unwrap();
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn partial_delete_current_registration_blocks_reopen_without_deletion_history() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let fixture = Fixture::new();
     let external = fixture
         .manager
@@ -349,15 +395,15 @@ async fn partial_delete_blocks_config_recreation_and_restart_never_replays_remov
         .unwrap();
     let id = external["id"].as_str().unwrap();
     let slot = fixture.slot(id);
-    let protected = fixture.source.join("original-data");
-    fs::create_dir(&protected).unwrap();
-    fs::write(
-        protected.join("original.sqlite"),
-        b"external original database",
-    )
-    .unwrap();
-    fs::remove_dir(slot.join("data")).unwrap();
-    symlink(&protected, slot.join("data")).unwrap();
+    fixture
+        .manager
+        .save(id, save_request(0, "before-delete", true))
+        .await
+        .unwrap();
+    let original_source = fs::read(fixture.source.join("local-app.json")).unwrap();
+    let pipe = slot.join("data/disposable-unsupported-pipe");
+    let pipe_name = CString::new(pipe.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(pipe_name.as_ptr(), 0o600) }, 0);
     let failure = fixture
         .manager
         .delete(id, delete_input(&fixture.manager, id).await)
@@ -365,48 +411,45 @@ async fn partial_delete_blocks_config_recreation_and_restart_never_replays_remov
         .unwrap_err();
     assert_eq!(failure.details["operationOutcome"], "delete_incomplete");
     assert!(failure.message.contains("部分文件可能已永久删除"));
-    assert_eq!(failure.details["platformRoot"], json!(slot));
-    assert!(failure.details["deletionRecord"].as_str().is_some());
     assert!(!slot.join("configuration").exists());
+    let registration: Value =
+        serde_json::from_slice(&fs::read(slot.join("registration.json")).unwrap()).unwrap();
+    assert_eq!(registration["removalPending"], true);
+    assert!(failure.details["deletionRecord"].is_null());
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-apps/.deletions")
+        .exists());
     let restarted = NodeApps::new(
         fixture.paths.data_root().into(),
         "/disposable-missing-node".into(),
     )
     .unwrap();
-    let state = restarted.configuration(id).await.unwrap();
-    assert_eq!(state["configuration"]["canStart"], false);
-    assert!(!slot.join("configuration").exists());
+    assert!(restarted.configuration(id).await.is_err());
+    assert!(restarted
+        .save(id, save_request(0, "must-not-create", true))
+        .await
+        .is_err());
     assert!(restarted.start(id).await.is_err());
+    assert!(!slot.join("configuration").exists());
+    assert!(pipe.exists(), "restart must not replay deletion");
     assert_eq!(
-        fs::read(protected.join("original.sqlite")).unwrap(),
-        b"external original database"
+        fs::read(fixture.source.join("local-app.json")).unwrap(),
+        original_source
     );
-    // Stable volume identities must permit a reviewed retry after reboot even
-    // when the saved device number no longer matches the current mount number.
-    #[cfg(target_os = "macos")]
-    {
-        let receipt_path = fixture
-            .paths
-            .data_root()
-            .join("node-apps/.deletions")
-            .join(format!("{id}.json"));
-        let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
-        assert!(receipt["rootIdentity"]["volumeUuid"].is_string());
-        receipt["rootIdentity"]["device"] =
-            json!(receipt["rootIdentity"]["device"].as_u64().unwrap() + 100);
-        atomic_json(&receipt_path, &receipt).unwrap();
-    }
-    fs::remove_file(slot.join("data")).unwrap();
-    fs::create_dir(slot.join("data")).unwrap();
+    fs::remove_file(pipe).unwrap();
     restarted
         .delete(id, delete_input(&restarted, id).await)
         .await
         .unwrap();
     assert!(restarted.list().await.unwrap().is_empty());
-    assert_eq!(
-        fs::read(protected.join("original.sqlite")).unwrap(),
-        b"external original database"
-    );
+    assert!(!slot.join("registration.json").exists());
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-apps/.deletions")
+        .exists());
     fixture.shutdown().await;
 }
 
@@ -1038,454 +1081,5 @@ async fn managed_source_restore_rejects_start_cleanup_gate_without_an_active_mar
         .lock()
         .unwrap()
         .is_empty());
-    fixture.shutdown().await;
-}
-
-async fn rollback_generations() -> (Fixture, InstalledNodeGeneration, InstalledNodeGeneration) {
-    let fixture = Fixture::new();
-    let first = fixture.install().await;
-    fs::write(
-        fixture.source.join("public/index.html"),
-        "disposable newer program",
-    )
-    .unwrap();
-    let (target, prepared) = fixture.prepare(Some(&first.app_id)).await;
-    let second = fixture.apply(&target, &prepared).await.unwrap();
-    (fixture, first, second)
-}
-fn rollback_input(preview: &Value) -> RollbackNodeProgramInput {
-    serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap()
-}
-
-#[tokio::test]
-async fn program_rollback_requires_a_new_managed_update_and_never_adopts_external_sources() {
-    let fixture = Fixture::new();
-    let first = fixture.install().await;
-    assert_eq!(
-        fixture
-            .manager
-            .rollback_preview(&first.app_id, fixture.store.clone())
-            .await
-            .unwrap()["canRollback"],
-        false
-    );
-    assert!(!fixture
-        .slot(&first.app_id)
-        .join("previous-program.json")
-        .exists());
-    let external = fixture
-        .manager
-        .register(fixture.source.clone())
-        .await
-        .unwrap();
-    assert_eq!(
-        fixture
-            .manager
-            .rollback_preview(external["id"].as_str().unwrap(), fixture.store.clone())
-            .await
-            .unwrap()["canRollback"],
-        false
-    );
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_preserves_data_configuration_secrets_sources_and_both_programs_and_is_idempotent(
-) {
-    let (fixture, first, second) = rollback_generations().await;
-    let slot = fixture.slot(&first.app_id);
-    fixture
-        .manager
-        .bind_development_source(&first.app_id, fixture.source.clone())
-        .await
-        .unwrap();
-    let source_binding = fs::read(slot.join("development-source.json")).unwrap();
-    fixture
-        .manager
-        .save(
-            &first.app_id,
-            save_request(0, "current configuration", true),
-        )
-        .await
-        .unwrap();
-    let credential = fs::read_dir(slot.join("configuration/credentials"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(&credential, [0xff, 0xfe, 0xfd]).unwrap();
-    fs::write(
-        slot.join("data/current-data.sqlite"),
-        b"current business bytes",
-    )
-    .unwrap();
-    let configuration = fs::read(slot.join("configuration/configuration.json")).unwrap();
-    let author = fs::read(fixture.source.join("public/index.html")).unwrap();
-    let preview = fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .unwrap();
-    assert_eq!(preview["canRollback"], true);
-    assert_eq!(preview["currentGeneration"], second.generation);
-    assert_eq!(preview["previousGeneration"], first.generation);
-    let expected = preview["expectedRevision"].as_str().unwrap();
-    let result = fixture
-        .manager
-        .rollback_apply(
-            &first.app_id,
-            rollback_input(&preview),
-            fixture.store.clone(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(result["operationOutcome"], "committed");
-    assert_eq!(result["generation"], first.generation);
-    assert_eq!(result["started"], false);
-    assert_eq!(result["dataChanged"], false);
-    let repeated = fixture
-        .manager
-        .rollback_apply(
-            &first.app_id,
-            rollback_input(&preview),
-            fixture.store.clone(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(repeated["alreadyApplied"], true);
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        first.generation
-    );
-    assert!(fixture.program(&first).exists() && fixture.program(&second).exists());
-    assert_eq!(
-        fs::read(slot.join("data/current-data.sqlite")).unwrap(),
-        b"current business bytes"
-    );
-    assert_eq!(
-        fs::read(slot.join("configuration/configuration.json")).unwrap(),
-        configuration
-    );
-    assert_eq!(fs::read(credential).unwrap(), [0xff, 0xfe, 0xfd]);
-    assert_eq!(
-        fs::read(fixture.source.join("public/index.html")).unwrap(),
-        author
-    );
-    assert_eq!(
-        fs::read(slot.join("development-source.json")).unwrap(),
-        source_binding
-    );
-    assert!(slot
-        .join("program-rollbacks")
-        .join(format!("{expected}.json"))
-        .exists());
-    assert!(slot
-        .join("program-history")
-        .join(format!("{}.json", second.generation))
-        .exists());
-    assert_eq!(
-        fixture
-            .manager
-            .rollback_preview(&first.app_id, fixture.store.clone())
-            .await
-            .unwrap()["canRollback"],
-        false
-    );
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_rejects_a_configuration_revision_changed_since_preview() {
-    let (fixture, first, second) = rollback_generations().await;
-    let preview = fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .unwrap();
-    fixture
-        .manager
-        .save(
-            &first.app_id,
-            save_request(0, "changed after preview", false),
-        )
-        .await
-        .unwrap();
-    let error = fixture
-        .manager
-        .rollback_apply(
-            &first.app_id,
-            rollback_input(&preview),
-            fixture.store.clone(),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "NODE_PROGRAM_ROLLBACK_CHANGED");
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        second.generation
-    );
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_validates_the_complete_old_program_and_current_manifest_but_can_replace_broken_current_code(
-) {
-    let (fixture, first, second) = rollback_generations().await;
-    let old_file = fixture.program(&first).join("public/index.html");
-    let old_bytes = fs::read(&old_file).unwrap();
-    fs::write(&old_file, "tampered old program").unwrap();
-    assert!(fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .is_err());
-    fs::write(&old_file, old_bytes).unwrap();
-    fs::write(
-        fixture.program(&second).join("server/main.mjs"),
-        "corrupt current program",
-    )
-    .unwrap();
-    let preview = fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .unwrap();
-    assert_eq!(preview["canRollback"], true);
-    let manifest = fixture.program(&second).join("local-app.json");
-    fs::write(&manifest, b"{}").unwrap();
-    assert!(fixture
-        .manager
-        .rollback_apply(
-            &first.app_id,
-            rollback_input(&preview),
-            fixture.store.clone()
-        )
-        .await
-        .is_err());
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        second.generation
-    );
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_refuses_missing_old_files_foreign_pointers_and_symlinks() {
-    use std::os::unix::fs::symlink;
-    let (fixture, first, second) = rollback_generations().await;
-    let pointer = fixture.slot(&first.app_id).join("previous-program.json");
-    let original = fs::read(&pointer).unwrap();
-    let mut value: Value = serde_json::from_slice(&original).unwrap();
-    value["appId"] = json!(Uuid::new_v4().to_string());
-    atomic_json(&pointer, &value).unwrap();
-    assert!(fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .is_err());
-    fs::remove_file(&pointer).unwrap();
-    let outside = fixture.source.join("disposable-pointer.json");
-    fs::write(&outside, &original).unwrap();
-    symlink(&outside, &pointer).unwrap();
-    assert!(fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .is_err());
-    fs::remove_file(&pointer).unwrap();
-    fs::write(&pointer, original).unwrap();
-    fs::remove_file(fixture.program(&first).join("server/main.mjs")).unwrap();
-    assert!(fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .is_err());
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        second.generation
-    );
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_never_bypasses_workspace_cleanup_or_running_recovery_guards() {
-    let (fixture, first, second) = rollback_generations().await;
-    let preview = fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .unwrap();
-    fixture.store.begin_workspace_cleanup().unwrap();
-    assert!(fixture
-        .manager
-        .rollback_apply(
-            &first.app_id,
-            rollback_input(&preview),
-            fixture.store.clone()
-        )
-        .await
-        .is_err());
-    fixture.store.resume_workspace();
-    let active = fixture.slot(&first.app_id).join("active.json");
-    fs::write(&active, b"preserve unresolved runtime evidence").unwrap();
-    assert!(fixture
-        .manager
-        .rollback_apply(
-            &first.app_id,
-            rollback_input(&preview),
-            fixture.store.clone()
-        )
-        .await
-        .is_err());
-    assert_eq!(
-        fs::read(&active).unwrap(),
-        b"preserve unresolved runtime evidence"
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        second.generation
-    );
-    fs::remove_file(active).unwrap();
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_rechecks_configuration_and_data_declarations_before_switching() {
-    let (fixture, first, second) = rollback_generations().await;
-    let current_manifest = fixture.program(&second).join("local-app.json");
-    let original: Value = serde_json::from_slice(&fs::read(&current_manifest).unwrap()).unwrap();
-    let slot = fixture.slot(&first.app_id);
-    for (kind, code) in [
-        ("data", "NODE_INSTALL_DATA_INCOMPATIBLE"),
-        ("configuration", "NODE_INSTALL_CONFIGURATION_INCOMPATIBLE"),
-        ("missing-data", "NODE_INSTALL_DATA_COMPATIBILITY_UNKNOWN"),
-    ] {
-        let mut value = original.clone();
-        match kind {
-            "data" => value["dataContract"]["version"] = json!(2),
-            "configuration" => {
-                value["configuration"]["fields"][0]["label"] = json!("changed declaration")
-            }
-            _ => {
-                value.as_object_mut().unwrap().remove("dataContract");
-            }
-        }
-        atomic_json(&current_manifest, &value).unwrap();
-        let mut registration: ManagedNodeRegistration =
-            serde_json::from_slice(&fs::read(slot.join("registration.json")).unwrap()).unwrap();
-        registration.manifest_digest = digest_manifest(&fixture.program(&second)).unwrap();
-        atomic_json(&slot.join("registration.json"), &registration).unwrap();
-        let error = fixture
-            .manager
-            .rollback_preview(&first.app_id, fixture.store.clone())
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, code);
-        assert_eq!(
-            fixture
-                .manager
-                .registration(&first.app_id)
-                .unwrap()
-                .managed
-                .unwrap()
-                .generation,
-            second.generation
-        );
-    }
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_metadata_never_overwrites_an_unrecognized_existing_pointer() {
-    let fixture = Fixture::new();
-    let first = fixture.install().await;
-    let pointer = fixture.slot(&first.app_id).join("previous-program.json");
-    fs::write(&pointer, b"preserve unrelated or damaged pointer evidence").unwrap();
-    fs::write(
-        fixture.source.join("public/index.html"),
-        b"another disposable generation",
-    )
-    .unwrap();
-    let (target, candidate) = fixture.prepare(Some(&first.app_id)).await;
-    assert!(fixture.apply(&target, &candidate).await.is_err());
-    assert_eq!(
-        fs::read(&pointer).unwrap(),
-        b"preserve unrelated or damaged pointer evidence"
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        first.generation
-    );
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn program_rollback_preserves_unresolved_installation_evidence_and_does_not_switch_its_target(
-) {
-    let (fixture, first, second) = rollback_generations().await;
-    let (_, pending) = fixture.prepare(Some(&first.app_id)).await;
-    let journal = fixture
-        .paths
-        .data_root()
-        .join("node-apps/.installations")
-        .join(&pending.candidate_id)
-        .join("install.json");
-    let mut record: Value = serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
-    record["state"] = json!("needs-attention");
-    atomic_json(&journal, &record).unwrap();
-    let bytes = fs::read(&journal).unwrap();
-    assert!(fixture
-        .manager
-        .rollback_preview(&first.app_id, fixture.store.clone())
-        .await
-        .is_err());
-    assert_eq!(fs::read(&journal).unwrap(), bytes);
-    assert_eq!(
-        fixture
-            .manager
-            .registration(&first.app_id)
-            .unwrap()
-            .managed
-            .unwrap()
-            .generation,
-        second.generation
-    );
     fixture.shutdown().await;
 }

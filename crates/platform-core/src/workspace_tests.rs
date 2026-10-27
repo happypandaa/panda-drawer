@@ -446,7 +446,7 @@ async fn unresolved_switch_journals_outside_active_projects_prevent_migration() 
     let task = create(&paths, &dest).unwrap();
     let journal = paths
         .workspace_root()
-        .join(".platform/operations/task_hidden/lifecycle.json");
+        .join(".platform/operations/task_hidden/journal.json");
     builds::atomic_json(
         &journal,
         &json!({"taskId":"task_hidden","projectId":"prj_retired","resolved":false}),

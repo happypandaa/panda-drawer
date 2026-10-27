@@ -21,7 +21,6 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [buildError, setBuildError] = useState(false);
-  const [diagnosticLogs, setDiagnosticLogs] = useState('');
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
   const [action, setAction] = useState<HandoffAction | null>(null);
@@ -37,7 +36,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
     alive.current = true;
     const sequence = ++generation.current;
     const request = ++infoRead.current;
-    pending.current = false; polling.current = false; setBusy(false); setInfo(null); setTask(null); setHandoff(null); setFeedback(null); setAction(null); setError(''); setBuildError(false); setDiagnosticLogs('');
+    pending.current = false; polling.current = false; setBusy(false); setInfo(null); setTask(null); setHandoff(null); setFeedback(null); setAction(null); setError(''); setBuildError(false);
     void invoke<NodeDevelopmentInfo>('node_development_info', { appId }).then(value => { if (current(sequence) && request === infoRead.current) { setInfo(value); callbacks.current.onInfo(value); } }).catch(cause => { if (current(sequence) && request === infoRead.current) setError(messageFrom(cause)); });
     return () => { alive.current = false; generation.current++; callbacks.current.onPendingChange(false); };
   }, [appId, instanceId, installedGeneration]);
@@ -69,7 +68,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
     if (disabled || pending.current) return;
     const sequence = generation.current;
     pending.current = true; setBusy(true); setError('');
-    if (command === 'build') { setBuildError(false); setDiagnosticLogs(''); }
+    if (command === 'build') { setBuildError(false); }
     try {
       if (command === 'bind') {
         const sourcePath = await invoke<string | null>('choose_path', { kind: 'nodeapp' });
@@ -78,7 +77,7 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
         await invoke('node_development_bind', { appId, sourcePath });
         if (!current(sequence)) return;
         const value = await invoke<NodeDevelopmentInfo>('node_development_info', { appId });
-        if (current(sequence) && request === infoRead.current) { setInfo(value); setTask(null); setBuildError(false); setDiagnosticLogs(''); callbacks.current.onInfo(value); }
+        if (current(sequence) && request === infoRead.current) { setInfo(value); setTask(null); setBuildError(false); callbacks.current.onInfo(value); }
       } else if (command === 'reveal') await invoke('node_development_reveal', { appId });
       else if (command === 'build') {
         const value = await invoke<TaskRecord>('node_development_build', { appId });
@@ -115,20 +114,12 @@ export function NodeDevelopmentPanel({ appId, instanceId, installedGeneration, d
   const locked = disabled || busy || active;
   const buildFailed = !active && (buildError || Boolean(task?.final && task.status !== 'succeeded'));
   const diagnosticIssues = [...new Set([error, task?.error ? messageFrom(task.error) : ''].filter(Boolean))];
-  useEffect(() => {
-    if (!buildFailed || !task) return;
-    const sequence = generation.current; let valid = true;
-    void invoke<{ text: string }>('task_logs', { taskId: task.taskId, cursor: 0 }).then(value => {
-      if (valid && current(sequence) && typeof value?.text === 'string') setDiagnosticLogs(value.text.slice(-12000));
-    }).catch(() => {});
-    return () => { valid = false; };
-  }, [buildFailed, task?.taskId]);
   return <section className="node-development-panel" aria-label="Node 开发工具">
     {error && <p className="task-error" role="alert">{error}</p>}
     {info && <code className="node-development-path">{info.sourceRoot}</code>}
     <div className="project-dialog-actions"><button className="refresh-button" disabled={locked || !info} onClick={() => void run('reveal')}><FolderOpen size={15} />打开源码</button><button className="text-button" disabled={locked} onClick={() => void run('bind')}>{info ? '更换源码目录' : '选择源码目录'}</button><button className="primary-button" disabled={locked || !info || running} onClick={() => void run('build')}><Hammer size={15} />构建并更新</button>{active && <button className="text-button" disabled={disabled || busy} onClick={() => void run('cancel')}>取消构建</button>}</div>
     <p className="project-help">{running ? '先关闭应用，再构建更新。' : info?.runtimeIsSource ? '首次更新会将程序与源码分开，数据和配置保留。' : '构建后核对并应用，当前程序在确认前保持原状。'}</p>
-    {buildFailed && <section className="add-project-failure-help"><h4>{info?.runtimeIsSource ? '没有生成可用更新，请先修复你的文件夹' : '更新没有成功，正在使用的版本不受影响'}</h4><p>{info?.runtimeIsSource ? '应用仍直接使用你的文件夹。请让 AI 检查改动，修复后重新构建。' : '最新源码没有完成检查或构建，尚未切换应用版本。'}</p>{info?.sourceRoot && <p>文件在哪里：<code>{info.sourceRoot}</code></p>}<AiProjectHelp context={{ mode: 'update-failed', sourceKind: info?.runtimeIsSource ? 'local' : 'managed', sourcePath: info?.sourceRoot, appName, appVersion, platformVersion, issues: diagnosticIssues, logs: diagnosticLogs }} label="复制说明给 AI" className="primary-button" disabled={locked} /></section>}
+    {buildFailed && <section className="add-project-failure-help"><h4>{info?.runtimeIsSource ? '没有生成可用更新，请先修复你的文件夹' : '更新没有成功，正在使用的版本不受影响'}</h4><p>{info?.runtimeIsSource ? '应用仍直接使用你的文件夹。请让 AI 检查改动，修复后重新构建。' : '最新源码没有完成检查或构建，尚未切换应用版本。'}</p>{info?.sourceRoot && <p>文件在哪里：<code>{info.sourceRoot}</code></p>}<AiProjectHelp context={{ mode: 'update-failed', sourceKind: info?.runtimeIsSource ? 'local' : 'managed', sourcePath: info?.sourceRoot, appName, appVersion, platformVersion, issues: diagnosticIssues }} label="复制说明给 AI" className="primary-button" disabled={locked} /></section>}
     {task && <ProjectTask task={task} />}
     <CodexHandoffPanel handoff={handoff} action={action} feedback={feedback && (feedback.error ? <p className="task-error" role="alert">{feedback.error}</p> : <p role="status">{feedback.notice}</p>)} disabled={locked || !info} onPrepare={value => void prepare(value)} onClear={() => { setHandoff(null); setFeedback(null); }} />
   </section>;

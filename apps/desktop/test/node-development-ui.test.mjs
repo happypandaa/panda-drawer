@@ -66,8 +66,6 @@ const task = (extra={}) => ({taskId:'task_disposable_node_build',type:'nodeDevel
 const status = (extra={}) => ({repository:{state:'project-root',root:'/disposable/source',markers:[],head:{oid:'a'.repeat(40),branch:'refs/heads/main'},indexState:'clean',git:null},scope:{policy:'node-source-v1',includedRoots:[],includedPaths:[],excluded:[],unclassifiedPaths:[],protectedTrackedPaths:[],complete:true},changes:[{path:'server/main.mjs',kind:'modify',staged:false}],snapshotDigest:'c'.repeat(64),canInitialize:false,canSave:true,canListVersions:true,canCreateBranch:true,branchCreationIssue:null,database:{state:'not-supported',reason:''},issues:[],...extra});
 const developmentProps = extra => ({appId:'app_one',instanceId:'instance_one',disabled:false,running:false,onPendingChange(){},onPrepared(){},onInfo(){},...extra});
 const gitProps = extra => ({appId:'app_one',instanceId:'instance_one',disabled:false,runtimeIsSource:false,onDraftStateChange(){},...extra});
-function gitInput(label) { const element = [...document.querySelectorAll('label')].find(value => value.textContent === label); assert.ok(element,label); return element.querySelector('input') ?? document.getElementById(element.htmlFor); }
-async function fillGit() { await change(gitInput('版本说明'),'人工源码说明'); await change(gitInput('提交人'),'Disposable Author'); await change(gitInput('邮箱'),'disposable@example.invalid'); }
 
 test('Node development ignores late source information after connection changes', async () => {
   const old=deferred(); const seen=[]; let reads=0;
@@ -139,66 +137,6 @@ test('A build result for another application never becomes an update candidate',
     throw Error(command);
   });
   await click('构建并更新'); assert.deepEqual(prepared,[]); assert.match(document.querySelector('[role=alert]').textContent,/构建结果不完整/);
-});
-
-test('Node Git rejects an old status read but retains drafts on connection changes', async () => {
-  const old=deferred(); const drafts=[]; let reads=0;
-  const props=gitProps({onDraftStateChange:value=>drafts.push(value)});
-  await mount(NodeGitPanel,props,async()=>++reads===1?old.promise:status({repository:{...status().repository,head:{oid:'b'.repeat(40),branch:'refs/heads/fresh'}}}));
-  await act(async()=>root.render(h(NodeGitPanel,{...props,instanceId:'instance_two'})));
-  await fillGit();
-  await act(async()=>old.resolve(status({repository:{...status().repository,head:{oid:'a'.repeat(40),branch:'refs/heads/obsolete'}}})));
-  assert.doesNotMatch(document.body.textContent,/obsolete/); assert.equal(gitInput('版本说明').value,'人工源码说明'); assert.equal(drafts.at(-1).dirty,true);
-  await act(async()=>root.render(h(NodeGitPanel,{...props,instanceId:'instance_three'})));
-  assert.equal(gitInput('版本说明').value,'人工源码说明'); assert.equal(gitInput('提交人').value,'Disposable Author'); assert.equal(drafts.at(-1).dirty,true);
-});
-
-test('Author-only edits protect the Git draft until a successful save establishes its baseline', async () => {
-  const drafts=[];
-  await mount(NodeGitPanel,gitProps({onDraftStateChange:value=>drafts.push(value)}),async(command,args)=>args.operation==='save'?{operationOutcome:'committed'}:status());
-  await change(gitInput('提交人'),'Disposable Author'); assert.equal(drafts.at(-1).dirty,true);
-  await change(gitInput('邮箱'),'disposable@example.invalid'); await change(gitInput('版本说明'),'保存人工变更'); await click('保存源码版本');
-  assert.equal(gitInput('版本说明').value,''); assert.equal(drafts.at(-1).dirty,false); assert.equal(drafts.at(-1).pending,false);
-});
-
-test('Node Git save sends the reviewed snapshot and cannot retry a stale write without rereading', async () => {
-  const saved=deferred(); const calls=[];
-  await mount(NodeGitPanel,gitProps(),async(command,args)=>{calls.push(args); if(args.operation==='status')return status(); if(args.operation==='save')return saved.promise; throw Error(args.operation);});
-  await fillGit(); await click('保存源码版本'); await click('保存源码版本');
-  const saves=calls.filter(value=>value.operation==='save'); assert.equal(saves.length,1);
-  assert.equal(saves[0].input.expectedSnapshot,status().snapshotDigest); assert.equal(saves[0].input.expectedHead,status().repository.head.oid);
-  await act(async()=>saved.reject({message:'人工快照已过期'}));
-  assert.match(document.body.textContent,/人工快照已过期/); assert.equal(document.querySelector('.node-git-save'),null);
-  await click('刷新状态'); assert.equal(gitInput('版本说明').value,'人工源码说明'); assert.equal(gitInput('提交人').value,'Disposable Author');
-});
-
-test('A Git save response from an old connection cannot clear the current draft', async () => {
-  const saved=deferred(); const drafts=[];
-  const props=gitProps({onDraftStateChange:value=>drafts.push(value)});
-  await mount(NodeGitPanel,props,async(command,args)=>args.operation==='save'?saved.promise:status());
-  await fillGit(); await click('保存源码版本');
-  await act(async()=>root.render(h(NodeGitPanel,{...props,instanceId:'instance_two'})));
-  await act(async()=>saved.resolve({operationOutcome:'committed'}));
-  assert.equal(gitInput('版本说明').value,'人工源码说明'); assert.equal(drafts.at(-1).dirty,true); assert.equal(drafts.at(-1).pending,false);
-  assert.doesNotMatch(document.body.textContent,/已保存到本机 Git/);
-});
-
-test('Rebinding the source repository clears its stale status and history while keeping the message', async () => {
-  const seen=[]; let reads=0;
-  const props=gitProps({sourceRoot:'/old/source'});
-  await mount(NodeGitPanel,props,async(command,args)=>{seen.push(args); if(args.operation==='status')return status({snapshotDigest:String(++reads).repeat(64)}); if(args.operation==='versions')return {versions:[{oid:'a'.repeat(40),subject:'old source history',author:{name:'old'},authoredAt:'today'}]}; if(args.operation==='save')return {operationOutcome:'committed'}; throw Error(args.operation);});
-  await fillGit(); await click('查看版本记录'); assert.match(document.body.textContent,/old source history/);
-  await act(async()=>root.render(h(NodeGitPanel,{...props,sourceRoot:'/new/source'})));
-  assert.doesNotMatch(document.body.textContent,/old source history/); assert.equal(gitInput('版本说明').value,'人工源码说明');
-  await click('保存源码版本'); assert.equal(seen.find(value=>value.operation==='save').input.expectedSnapshot,'2'.repeat(64));
-});
-
-test('Git drafts belong to one application and are cleared when its identity changes', async () => {
-  const props=gitProps();
-  await mount(NodeGitPanel,props,async()=>status());
-  await fillGit();
-  await act(async()=>root.render(h(NodeGitPanel,{...props,appId:'other_app'})));
-  assert.equal(gitInput('版本说明').value,''); assert.equal(gitInput('提交人').value,'');
 });
 
 test('External source handoff stays available and refreshes after publishing the first managed generation', async () => {
@@ -308,9 +246,6 @@ const committedWords = /源码版本已保存|已创建并切换分支|Git 已�
 
 test('Native error receipt matrix recognizes only actual matching business commits and keeps physical cleanup separate', () => {
   const accepted = [
-    [{ operation: 'save' }, savedReceipt, '源码版本已保存'],
-    [{ operation: 'branch' }, { operation: 'create-branch', operationOutcome: 'committed', branch: 'refs/heads/custom', head: 'a'.repeat(40) }, '已创建并切换分支'],
-    [{ operation: 'initialize' }, { operation: 'initialize', operationOutcome: 'committed', branch: 'main', head: null }, 'Git 已启用'],
     [{ operation: 'restore-apply' }, restoredReceipt, '源码操作已提交'],
     [{ operation: 'restore-apply' }, { ...restoredReceipt, state: 'undone' }, '源码操作已提交'],
     [{ operation: 'restore-recover', operationId: restoredReceipt.operationId }, restoredReceipt, '源码操作已提交'],
@@ -322,25 +257,14 @@ test('Native error receipt matrix recognizes only actual matching business commi
     assert.match(message, /最后状态尚待.*请勿重复提交/);
     if (request.operation.startsWith('restore-')) assert.doesNotMatch(message, /已取回|已撤回|目标提交/);
   }
-  const pending = nodeGitFailureMessage(stoppingReceipt(savedReceipt, { processResourceClosed: false }), { operation: 'save' });
-  assert.match(pending, /源码版本已保存/); assert.match(pending, /相关任务仍待收尾/); assert.doesNotMatch(pending, /资源已关闭|收尾完成/);
+  const pending = nodeGitFailureMessage(stoppingReceipt(restoredReceipt, { processResourceClosed: false }), { operation: 'restore-apply' });
+  assert.match(pending, /源码操作已提交/); assert.match(pending, /相关任务仍待收尾/); assert.doesNotMatch(pending, /资源已关闭|收尾完成/);
   const unknown = nodeGitFailureMessage(stoppingReceipt(savedReceipt, { operationOutcome: 'unknown', processResourceClosed: false }), { operation: 'save' });
   assert.doesNotMatch(unknown, committedWords); assert.match(unknown, /待核对/);
 });
 
 test('Missing, contradictory, unrelated and read-only receipts never claim a committed Node operation', () => {
   const rejected = [
-    [{ operation: 'save' }, null],
-    [{ operation: 'save' }, new Error('人工服务正在退出')],
-    [{ operation: 'save' }, JSON.stringify(stoppingReceipt(savedReceipt))],
-    [{ operation: 'save' }, { message: '人工服务正在退出', details: [] }],
-    [{ operation: 'save' }, { message: '人工服务正在退出', details: { result: savedReceipt } }],
-    [{ operation: 'save' }, stoppingReceipt(undefined)],
-    [{ operation: 'save' }, stoppingReceipt([])],
-    [{ operation: 'save' }, stoppingReceipt({ ...savedReceipt, operation: 'create-branch' })],
-    [{ operation: 'branch' }, stoppingReceipt(savedReceipt)],
-    [{ operation: 'save' }, stoppingReceipt({ ...savedReceipt, operationOutcome: 'unknown' })],
-    [{ operation: 'save' }, stoppingReceipt(savedReceipt, { operationOutcome: true })],
     [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, sourceOnly: undefined })],
     [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, sourceOnly: 'true' })],
     [{ operation: 'restore-apply' }, stoppingReceipt({ ...restoredReceipt, state: undefined })],
@@ -358,56 +282,6 @@ test('Missing, contradictory, unrelated and read-only receipts never claim a com
     assert.doesNotMatch(message, committedWords, JSON.stringify(request));
     if (['save', 'branch', 'restore-apply', 'restore-recover'].includes(request.operation)) assert.match(message, /待核对/);
   }
-});
-
-test('A committed save error remains an alert, retains its draft and waits for an explicit status refresh', async () => {
-  const calls = []; const drafts = [];
-  await mount(NodeGitPanel, gitProps({ onDraftStateChange: value => drafts.push(value) }), async (_command, args) => {
-    calls.push(args); if (args.operation === 'status') return status();
-    if (args.operation === 'save') throw stoppingReceipt(savedReceipt, { processResourceClosed: false });
-    throw Error(args.operation);
-  });
-  await fillGit(); await click('保存源码版本');
-  assert.match(document.querySelector('[role=alert]').textContent, /源码版本已保存.*请勿重复提交.*仍待收尾/);
-  assert.equal(document.querySelector('[role=status]'), null); assert.equal(document.querySelector('.node-git-save'), null);
-  assert.equal(drafts.at(-1).dirty, true); assert.equal(drafts.at(-1).pending, false);
-  assert.deepEqual(calls.map(value => value.operation), ['status', 'save']);
-  await click('刷新状态'); assert.equal(gitInput('版本说明').value, '人工源码说明'); assert.equal(gitInput('提交人').value, 'Disposable Author');
-  assert.equal(calls.filter(value => value.operation === 'save').length, 1);
-});
-
-test('Matching branch and initialize error receipts disclose publication without treating the operation as success', async () => {
-  const calls = [];
-  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
-    calls.push(args); if (args.operation === 'status') return status();
-    throw stoppingReceipt({ operation: 'create-branch', operationOutcome: 'committed', branch: 'refs/heads/custom' });
-  });
-  await change(gitInput('分支名称'), 'custom'); await click('创建并切换');
-  assert.match(document.querySelector('[role=alert]').textContent, /已创建并切换分支.*请勿重复提交/);
-  assert.deepEqual(calls.map(value => value.operation), ['status', 'branch']);
-  await click('刷新状态'); assert.equal(gitInput('分支名称').value, 'custom');
-  await act(async () => root.unmount()); root = null;
-  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
-    if (args.operation === 'status') return status({ canInitialize: true, canSave: false });
-    assert.equal(args.operation, 'initialize'); throw stoppingReceipt({ operation: 'initialize', operationOutcome: 'committed', branch: 'main', head: null });
-  });
-  await click('启用 Git'); assert.match(document.querySelector('[role=alert]').textContent, /Git 已启用.*最后状态尚待刷新/);
-  assert.equal(document.querySelector('[role=status]'), null);
-});
-
-test('A committed-looking version read or old-generation error never becomes a save confirmation', async () => {
-  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
-    if (args.operation === 'status') return status(); throw stoppingReceipt(savedReceipt);
-  });
-  await click('查看版本记录'); assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/); assert.doesNotMatch(document.body.textContent, committedWords);
-  await act(async () => root.unmount()); root = null;
-  const saved = deferred(); const props = gitProps();
-  await mount(NodeGitPanel, props, async (_command, args) => args.operation === 'save' ? saved.promise : status());
-  await fillGit(); await click('保存源码版本');
-  await act(async () => root.render(h(NodeGitPanel, { ...props, instanceId: 'instance_two' })));
-  await act(async () => saved.reject(stoppingReceipt(savedReceipt)));
-  assert.equal(document.querySelector('[role=alert]'), null); assert.equal(gitInput('版本说明').value, '人工源码说明');
-  assert.doesNotMatch(document.body.textContent, committedWords);
 });
 
 test('A source-only terminal error receipt uses generic commit wording, retains error state and never applies again', async () => {
@@ -458,26 +332,6 @@ test('A stale restore commit error and a preview error cannot publish a confirma
   await previewRestore(); assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/); assert.doesNotMatch(document.body.textContent, committedWords);
 });
 
-test('A failed status read after a successful write uses read context instead of trusting an unrelated error receipt', async () => {
-  let reads = 0;
-  await mount(NodeGitPanel, gitProps(), async (_command, args) => {
-    if (args.operation === 'status') { if (++reads === 1) return status(); throw stoppingReceipt(savedReceipt); }
-    assert.equal(args.operation, 'save'); return { operationOutcome: 'committed' };
-  });
-  await fillGit(); await click('保存源码版本');
-  assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/);
-  assert.doesNotMatch(document.querySelector('[role=alert]').textContent, committedWords);
-  await act(async () => root.unmount()); root = null;
-  reads = 0;
-  await mount(NodeSourceRestorePanel, restoreProps(), async (_command, args) => {
-    if (args.operation === 'restore-status') { if (++reads === 1) return clearRestore(); throw stoppingReceipt(restoredReceipt); }
-    if (args.operation === 'restore-preview') return restorePreview(); return { operationOutcome: 'committed', state: 'completed' };
-  });
-  await previewRestore(); await act(async () => document.querySelector('input[type=checkbox]').click()); await click('确认取回源码');
-  assert.match(document.querySelector('[role=alert]').textContent, /人工服务正在退出/);
-  assert.doesNotMatch(document.querySelector('[role=alert]').textContent, committedWords);
-});
-
 test('External source can be handed to AI without first building or separating its running files', async () => {
   const copied=[]; const calls=[];
   Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>copied.push(value)}});
@@ -499,7 +353,6 @@ test('A failed managed build offers a repair prompt and preserves the old-progra
   await mount(NodeDevelopmentPanel,developmentProps({onPrepared:value=>prepared.push(value)}),async command=>{
     if(command==='node_development_info')return info();
     if(command==='node_development_build')return task({final:true,status:'failed',error:{code:'BUILD_FAILED',message:'Artificial build rejected'}});
-    if(command==='task_logs')return {text:'Artificial build log'};
     if(command==='source_review_capabilities')return {codexAvailable:false};
     throw Error(command);
   });
@@ -509,7 +362,7 @@ test('A failed managed build offers a repair prompt and preserves the old-progra
   await click('复制说明给 AI');
   assert.equal(copied.length,1);
   assert.match(copied[0],/Artificial build rejected/);
-  assert.match(copied[0],/Artificial build log/);
+  assert.doesNotMatch(copied[0],/Artificial build log/);
   assert.deepEqual(prepared,[]);
 });
 
@@ -523,4 +376,25 @@ test('A failed external-source build does not claim its editable files are still
   await click('构建并更新');
   assert.match(document.querySelector('.add-project-failure-help').textContent,/请先修复你的文件夹/);
   assert.doesNotMatch(document.querySelector('.add-project-failure-help').textContent,/正在使用的版本不受影响/);
+});
+
+
+test('Node Git exposes read-only status and history while version writes belong to external AI', async () => {
+  const calls=[];
+  await mount(NodeGitPanel,gitProps(),async (_command,args)=>{calls.push(args.operation);return args.operation==='versions'?{versions:[]}:status();});
+  assert.equal(document.querySelector('.node-git-save'),null);
+  assert.equal([...document.querySelectorAll('button')].some(button=>/保存源码版本|启用 Git|创建并切换/.test(button.textContent)),false);
+  await click('查看版本记录');
+  assert.deepEqual(calls,['status','versions']);
+  assert.match(document.body.textContent,/外部 AI/);
+});
+
+test('Node Git rejects stale status after the platform connection changes', async () => {
+  const old=deferred();let reads=0;
+  const props=gitProps();
+  await mount(NodeGitPanel,props,async()=>++reads===1?old.promise:status({repository:{...status().repository,head:{oid:'b'.repeat(40),branch:'refs/heads/fresh'}}}));
+  await act(async()=>root.render(h(NodeGitPanel,{...props,instanceId:'instance_two'})));
+  await act(async()=>old.resolve(status({repository:{...status().repository,head:{oid:'a'.repeat(40),branch:'refs/heads/obsolete'}}})));
+  assert.doesNotMatch(document.body.textContent,/obsolete/);
+  assert.match(document.body.textContent,/fresh/);
 });

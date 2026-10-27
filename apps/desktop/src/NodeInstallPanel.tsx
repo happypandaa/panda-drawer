@@ -117,7 +117,6 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, sourcePath, sourc
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
-  const [diagnosticLogs, setDiagnosticLogs] = useState('');
   const [applyOutcome, setApplyOutcome] = useState<'not-submitted' | 'unknown' | 'not-committed' | 'committed'>('not-submitted');
   const [pollError, setPollError] = useState('');
   const [notice, setNotice] = useState('');
@@ -274,11 +273,11 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, sourcePath, sourc
     if (pending.current || active) return;
     choiceRevision.current += 1; lookupSequence.current += 1;
     sourceRef.current = value; setSourceId(value); binding.current = null; currentCandidate.current = null;
-    setCandidate(null); setKnownCandidateId(''); setChecked(false); setChecking(false); setConfirmed(false); setWindowClosed(false); setInstalled(null); setError(''); setNotice(''); setDiagnosticLogs(''); setApplyOutcome('not-submitted'); setTask(null); currentTask.current = null;
+    setCandidate(null); setKnownCandidateId(''); setChecked(false); setChecking(false); setConfirmed(false); setWindowClosed(false); setInstalled(null); setError(''); setNotice(''); setApplyOutcome('not-submitted'); setTask(null); currentTask.current = null;
   }
   async function prepare() {
     if (pending.current || disabled || active || checking || listActive || !selected || !targetValid) return;
-    pending.current = true; setBusy(true); setError(''); setPollError(''); setNotice(''); setChecked(false); setConfirmed(false); setInstalled(null); setDiagnosticLogs(''); setApplyOutcome('not-submitted');
+    pending.current = true; setBusy(true); setError(''); setPollError(''); setNotice(''); setChecked(false); setConfirmed(false); setInstalled(null); setApplyOutcome('not-submitted');
     const generation = lifetime.current; const choice = choiceRevision.current;
     binding.current = { sourceId: selected.sourceId, digest: selected.contentDigest! };
     try {
@@ -295,7 +294,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, sourcePath, sourc
   const canApply = Boolean(candidate && checked && sameSource && confirmed && (!targetAppId || windowClosed) && !installed && !disabled && !busy && !checking && !active && targetValid);
   async function apply() {
     if (pending.current || !canApply || !candidate) return;
-    pending.current = true; setBusy(true); setError(''); setNotice(''); setChecked(false); setConfirmed(false); setApplyOutcome('unknown'); setDiagnosticLogs('');
+    pending.current = true; setBusy(true); setError(''); setNotice(''); setChecked(false); setConfirmed(false); setApplyOutcome('unknown');
     const generation = lifetime.current;
     try {
       const value = await invoke<TaskRecord>('node_install_apply', { candidateId: candidate.candidateId });
@@ -352,14 +351,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, sourcePath, sourc
   const oldVersionUnchanged = Boolean(targetAppId && sourceKind !== 'local' && ['not-submitted', 'not-committed'].includes(applyOutcome));
   const diagnosticIssues = [...new Set([error, task?.error ? messageFrom(task.error) : ''].filter(Boolean))];
   const editableSource = sourcePath || selected?.localSourcePath || undefined;
-  useEffect(() => {
-    if (!showFailureHelp || !task) return;
-    const generation = lifetime.current; let valid = true;
-    void invoke<{ text: string }>('task_logs', { taskId: task.taskId, cursor: 0 }).then(value => {
-      if (valid && current(generation) && typeof value?.text === 'string') setDiagnosticLogs(value.text.slice(-12000));
-    }).catch(() => {});
-    return () => { valid = false; };
-  }, [showFailureHelp, task?.taskId, current]);
+
 
   return <section className="node-install-panel" aria-labelledby={`${id}-title`}>
     <h3 id={`${id}-title`}>{targetAppId ? '准备应用更新' : '安装本地服务应用'}</h3>
@@ -370,7 +362,7 @@ function NodeInstallWorkflow({ sources, targetAppId, disabled, sourcePath, sourc
     {error && <p className="task-error" role="alert">{error}</p>}
     {pollError && <p className="task-error" role="alert">{pollError}</p>}
     {notice && <p role="status">{notice}</p>}
-    {showFailureHelp && <section className="add-project-failure-help"><h4>{targetAppId ? oldVersionUnchanged ? '更新没有成功，正在使用的版本不受影响' : applyOutcome === 'committed' ? '更新已提交，收尾还需要检查' : applyOutcome === 'unknown' ? '更新结果还需要核对' : '更新没有完成，请检查你的文件夹' : '应用添加还需要处理'}</h4><p>{oldVersionUnchanged ? '最新源码没有通过准备或检查，尚未切换应用版本。' : applyOutcome === 'unknown' ? '暂时不能确认是否已经切换版本，请先核验结果，避免重复更新。' : '可以把问题和检查详情交给 AI；确认实际结果后，再决定下一步。'}</p>{editableSource && <p>文件在哪里：<code>{editableSource}</code></p>}<AiProjectHelp context={{ mode: targetAppId ? 'update-failed' : 'add-failed', sourceKind: sourceKind ?? (targetAppId ? 'managed' : selected?.url ? 'git' : 'local'), sourcePath: editableSource, url: selected?.url, branch: selected?.branch ?? undefined, commit: selected?.commit ?? undefined, issues: diagnosticIssues, logs: diagnosticLogs, appName: appName ?? candidate?.manifest.app.name, appVersion: appVersion ?? candidate?.manifest.app.version, platformVersion }} label="复制说明给 AI" className="primary-button" disabled={disabled || checking} /></section>}
+    {showFailureHelp && <section className="add-project-failure-help"><h4>{targetAppId ? oldVersionUnchanged ? '更新没有成功，正在使用的版本不受影响' : applyOutcome === 'committed' ? '更新已提交，收尾还需要检查' : applyOutcome === 'unknown' ? '更新结果还需要核对' : '更新没有完成，请检查你的文件夹' : '应用添加还需要处理'}</h4><p>{oldVersionUnchanged ? '最新源码没有通过准备或检查，尚未切换应用版本。' : applyOutcome === 'unknown' ? '暂时不能确认是否已经切换版本，请先核验结果，避免重复更新。' : '可以把问题和检查详情交给 AI；确认实际结果后，再决定下一步。'}</p>{editableSource && <p>文件在哪里：<code>{editableSource}</code></p>}<AiProjectHelp context={{ mode: targetAppId ? 'update-failed' : 'add-failed', sourceKind: sourceKind ?? (targetAppId ? 'managed' : selected?.url ? 'git' : 'local'), sourcePath: editableSource, url: selected?.url, branch: selected?.branch ?? undefined, commit: selected?.commit ?? undefined, issues: diagnosticIssues, appName: appName ?? candidate?.manifest.app.name, appVersion: appVersion ?? candidate?.manifest.app.version, platformVersion }} label="复制说明给 AI" className="primary-button" disabled={disabled || checking} /></section>}
     <form className="create-project-form" onSubmit={event => { event.preventDefault(); void prepare(); }}>
       <label htmlFor={`${id}-source`}>源码候选</label>
       <select id={`${id}-source`} value={sourceId} disabled={busy || active || disabled} onChange={event => changeSource(event.target.value)}>

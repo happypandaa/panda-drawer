@@ -583,7 +583,6 @@ impl NodeAppInstaller {
             error: None,
         };
         self.save(&journal)?;
-        tasks.append(task_id, format!("Node installation candidate: {candidate_id}\nPreparation does not start the application or access its saved configuration/data.\n").as_bytes())?;
         let result = self
             .prepare_inner(&journal, &source, &tools, &control, tasks, processes)
             .await
@@ -656,17 +655,7 @@ impl NodeAppInstaller {
         let npm_root = npm_root(&program, &manifest)?;
         validate_npm_input(&npm_root)?;
         tasks.phase(&journal.prepare_task_id, "dependencies")?;
-        tasks.append(&journal.prepare_task_id, b"Preparing production dependencies with npm ci --omit=dev --ignore-scripts. No application or lifecycle script is started.\n")?;
-        npm_ci(
-            &operation,
-            &npm_root,
-            tools,
-            control,
-            tasks,
-            &journal.prepare_task_id,
-            processes,
-        )
-        .await?;
+        npm_ci(&operation, &npm_root, tools, control, processes).await?;
         control.check()?;
         let package: Value = serde_json::from_slice(&read_small(&npm_root.join("package.json"))?)?;
         if package["dependencies"]
@@ -1005,14 +994,6 @@ impl NodeAppInstaller {
             if previous.id != prepared.app_id || previous.generation != *expected_generation {
                 return Err(changed());
             }
-            crate::node_apps::rollback::record_previous_program(
-                &slot,
-                &prepared.generation,
-                previous,
-            )?;
-            // Saving the previous pointer is not permission to publish over a
-            // newer registration or a runtime that appeared in the meantime.
-            self.check_target(&journal.target)?;
         }
         atomic_json(
             &slot.join("registration.json"),
@@ -1482,8 +1463,6 @@ async fn npm_ci(
     cwd: &Path,
     tools: &Toolchain,
     control: &InstallControl,
-    tasks: &Arc<BuildManager>,
-    task_id: &str,
     processes: NodeProcessScope,
 ) -> Result<()> {
     control.check()?;
@@ -1502,10 +1481,13 @@ async fn npm_ci(
         .arg("--prefix")
         .arg(cwd)
         .arg("--global=false")
+        .arg("--logs-dir")
+        .arg(operation.join("npm-disabled-output"))
         .args([
             "ci",
             "--omit=dev",
             "--ignore-scripts",
+            "--logs-max=0",
             "--no-audit",
             "--no-fund",
             "--fetch-retries=0",
@@ -1518,11 +1500,10 @@ async fn npm_ci(
         .env("NPM_CONFIG_USERCONFIG", &user_config)
         .env("NPM_CONFIG_GLOBALCONFIG", &global_config)
         .env("NPM_CONFIG_CACHE", &cache)
+        .env("NPM_CONFIG_LOGS_MAX", "0")
         .env("NPM_CONFIG_UPDATE_NOTIFIER", "false")
         .env("GIT_CEILING_DIRECTORIES", operation)
         .env("NO_COLOR", "1");
-    let logs = tasks.clone();
-    let id = task_id.to_owned();
     let reader_scope = processes.clone();
     let mut run = processes.processes.start(
         command,
@@ -1539,18 +1520,12 @@ async fn npm_ci(
                 stop: _,
             } = pipes;
             drop(stdin);
-            let stdout_logs = logs.clone();
-            let stdout_id = id.clone();
             IoPlan::new(async move {
                 reader_scope
-                    .finish_reader(
-                        "node-install/npm",
-                        "ci",
-                        drain(stdout, stdout_logs, stdout_id),
-                    )
+                    .finish_reader("node-install/npm", "ci", drain(stdout))
                     .await
             })
-            .drain("install-stderr", drain(stderr, logs, id))
+            .drain("install-stderr", drain(stderr))
         },
     )?;
     let mut next_space_check = Instant::now() + NPM_SPACE_INTERVAL;
@@ -1623,11 +1598,7 @@ async fn npm_ci(
     }
     check_npm_space(operation, control).await
 }
-async fn drain(
-    mut reader: impl tokio::io::AsyncRead + Unpin,
-    tasks: Arc<BuildManager>,
-    task_id: String,
-) -> Result<()> {
+async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin) -> Result<()> {
     let mut total = 0;
     let mut buffer = [0; 8192];
     loop {
@@ -1635,12 +1606,7 @@ async fn drain(
         if n == 0 {
             return Ok(());
         }
-        // Use the same task-bound, locked public log as project builds. Keep
-        // this installer's smaller per-stream limit, including a partial chunk.
-        let retained = n.min(MAX_OUTPUT - total);
-        if retained > 0 {
-            tasks.append(&task_id, &buffer[..retained])?;
-        }
+        // Drain bounded output without retaining application or npm text.
         total += n;
         if total > MAX_OUTPUT {
             return Err(invalid("输出超限。"));

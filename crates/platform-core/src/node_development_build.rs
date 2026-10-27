@@ -613,6 +613,9 @@ fn npm_command(operation: &Path, cwd: &Path, tools: &Toolchain) -> Command {
     let mut command = Command::new(&tools.node.path);
     command
         .arg(&tools.npm.path)
+        .arg("--logs-dir")
+        .arg(operation.join("npm-disabled-output"))
+        .arg("--logs-max=0")
         .env_clear()
         .current_dir(cwd)
         .env("PATH", &tools.path)
@@ -629,6 +632,7 @@ fn npm_command(operation: &Path, cwd: &Path, tools: &Toolchain) -> Command {
         .env("npm_config_audit", "false")
         .env("npm_config_fund", "false")
         .env("npm_config_update_notifier", "false")
+        .env("npm_config_logs_max", "0")
         .env("CI", "true")
         .env("LC_ALL", "C");
     command
