@@ -43,7 +43,7 @@ Node `formatVersion: 2` 清单可声明顶层 `dataContract: {"id":"org.example.
 | 位置 | 内容与生命周期 |
 | --- | --- |
 | 工作区 `.platform/sources/src_<UUID>/` | 来源记录及独立源码副本；参加公开工作区迁移 |
-| 固定数据根 `node-apps/.installations/install_<UUID>/` | 安装准备、npm 缓存及安装／提交状态；不保存 npm 输出，失败和中断材料保留 |
+| 固定数据根 `node-apps/.installations/install_<UUID>/` | 安装准备、npm 缓存及安装／提交状态；不另存npm输出日志，失败摘录随既有任务错误展示，失败和中断材料保留 |
 | 固定数据根 `node-apps/<UUID>/generations/<代次>/` | 已安装的独立程序及生产依赖；运行不再依赖作者或来源目录 |
 | 同槽 `registration.json` | v2 受管登记及当前程序代次，原子写入为提交点 |
 | 同槽 `data/`、`configuration/`、`cache/`、`runs/` | 沿用既有运行和配置规则；准备／切换程序不覆盖业务数据或配置 |

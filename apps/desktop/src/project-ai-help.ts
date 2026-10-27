@@ -1,4 +1,7 @@
 import { PROJECT_AI_REQUIREMENTS } from './project-ai-requirements';
+import { checkedProcessDiagnostics, redactProjectDiagnostic } from './process-diagnostics';
+import type { ProcessDiagnostics } from './process-diagnostics';
+export { redactProjectDiagnostic } from './process-diagnostics';
 
 export type ProjectAiHelpMode = 'evaluation' | 'add-failed' | 'start-failed' | 'update-failed';
 export type ProjectAiSourceKind = 'git' | 'local' | 'managed';
@@ -10,6 +13,7 @@ export interface ProjectAiHelpContext {
   branch?: string;
   commit?: string;
   issues?: string[];
+  processDiagnostics?: ProcessDiagnostics | null;
   checkedAt?: string;
   platformVersion?: string;
   appName?: string;
@@ -31,16 +35,6 @@ export interface ProjectAiPromptOptions {
 
 const encoder = new TextEncoder();
 export const MAX_REVIEW_BYTES = 20 * 1024;
-
-// This is a conservative treatment of known diagnostic formats, not a general
-// guarantee that arbitrary source code or diagnostic messages contain no secrets.
-export function redactProjectDiagnostic(value: string): string {
-  return value
-    .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
-    .replace(/((?:authorization|set-cookie|cookie)\s*:\s*)[^\r\n]+/gi, '$1[已隐藏]')
-    .replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|authorization|set-cookie|cookie)["']?\s*[=:]\s*)([^\r\n,;}]+)/gi, '$1[已隐藏]')
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[已隐藏]@');
-}
 
 export function checkedProjectReviewExcerpt(value: ProjectReviewExcerpt, sourcePath: string): ProjectReviewExcerpt {
   if (!value || value.sourcePath !== sourcePath || !Array.isArray(value.files)
@@ -76,6 +70,7 @@ export function buildProjectAiPrompt(context: ProjectAiHelpContext, options: Pro
     platformVersion: context.platformVersion || '未核对，请以用户实际安装版为准',
     checkedAt: context.checkedAt || undefined,
     issues: context.issues?.map(value => redactProjectDiagnostic(value).slice(0, 1500)),
+    processDiagnostics: checkedProcessDiagnostics(context.processDiagnostics) ?? undefined,
   };
   const instruction = context.mode === 'evaluation'
     ? '本次先只读评估。读取公开源码和配置结构，不修改、安装、构建、测试、启动或登记应用；需要适配时先给方案，等用户明确同意后再修改。'

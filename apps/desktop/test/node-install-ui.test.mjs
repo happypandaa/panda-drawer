@@ -228,6 +228,18 @@ test('Unconfirmed cleanup, ordinary failure, shutdown and apply errors keep thei
   }
 });
 
+test('Task errors show an abnormal termination and a bounded-output notice without inventing npm output', async () => {
+  const processDiagnostics = { command: 'npm ci', exitCode: null, signal: 15, nodeVersion: '24.22.0', npmVersion: '11.19.1', stdout: '', stderr: '', truncated: true };
+  const terminal = task({ status: 'failed', final: true, phase: 'failed', error: { code: 'NODE_INSTALL_NPM_FAILED', message: '依赖准备失败', details: { processDiagnostics } } });
+  await setup({ props: { task: terminal } });
+  const detail = document.querySelector('.build-task .process-failure-details');
+  assert.ok(detail);
+  assert.match(detail.textContent, /被信号 15 终止/);
+  assert.match(detail.textContent, /进程没有返回文字错误/);
+  assert.match(detail.textContent, /输出较长，部分内容已省略/);
+  assert.doesNotMatch(detail.textContent, /退出码 0|安装成功/);
+});
+
 test('A legacy candidate can be explicitly installed as new with its future update limitation visible', async () => {
   const { calls } = await setup({ overrides: { node_install_prepare: () => readyTask() } });
   await choose(); await prepareClick();

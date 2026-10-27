@@ -554,6 +554,7 @@ mkdir -p node_modules
 printf candidate-only > node_modules/evidence
 awk 'BEGIN { for (i = 0; i < 42000; i++) printf "~"; print "\nstdout-tail" }'
 awk 'BEGIN { for (i = 0; i < 42000; i++) printf "^"; print "\nstderr-tail: simulated E404 download failure" }' >&2
+printf 'Authorization: Bearer artificial-diagnostic-credential\n' >&2
 exit 42
 "#).unwrap();
     fixture.tools.npm.version = "fault-injection".into();
@@ -575,8 +576,27 @@ exit 42
         .await
         .unwrap_err();
     assert_eq!(error.code, "NODE_INSTALL_NPM_FAILED");
+    let diagnostics = &error.details["processDiagnostics"];
+    assert_eq!(diagnostics["exitCode"], 42);
+    assert_eq!(diagnostics["command"], "npm ci --omit=dev --ignore-scripts");
+    assert!(diagnostics["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("stdout-tail"));
+    assert!(diagnostics["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("simulated E404 download failure"));
+    assert!(!diagnostics
+        .to_string()
+        .contains("artificial-diagnostic-credential"));
+    assert_eq!(diagnostics["truncated"], true);
     let final_task = fixture.tasks.task(&task.task_id).unwrap();
     assert!(final_task.status.is_final());
+    assert_eq!(
+        final_task.error.as_ref().unwrap().details["processDiagnostics"],
+        *diagnostics
+    );
     assert_no_task_logs(&fixture.paths, &task.task_id);
     let id = final_task.result.unwrap()["candidateId"]
         .as_str()
@@ -590,6 +610,27 @@ exit 42
         .is_file());
     assert_eq!(fs::read(slot.join("registration.json")).unwrap(), before);
     assert_preserved(&files);
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn successful_npm_with_stderr_warnings_stays_successful_without_retaining_output() {
+    let fixture = Fixture::new(&format!(
+        "{NPM_OK}\nprintf 'npm warn deprecated artificial-warning\n' >&2"
+    ));
+    let prepared = fixture.prepare(InstallTargetSnapshot::fresh()).await;
+    let task_id = fixture
+        .installer
+        .journal(&prepared.candidate_id)
+        .unwrap()
+        .prepare_task_id;
+    let task = fixture.tasks.task(&task_id).unwrap();
+    assert_eq!(task.status, crate::TaskStatus::Succeeded);
+    assert!(task.error.is_none());
+    assert!(!serde_json::to_string(&task)
+        .unwrap()
+        .contains("artificial-warning"));
+    assert_no_task_logs(&fixture.paths, &task_id);
     fixture.shutdown().await;
 }
 
@@ -1131,6 +1172,17 @@ async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
         .unwrap_err();
     assert_eq!(error.code, "NODE_INSTALL_NPM_FAILED");
     assert_no_task_logs(&fixture.paths, &task.task_id);
+    let diagnostics = &error.details["processDiagnostics"];
+    assert!(diagnostics["exitCode"]
+        .as_i64()
+        .is_some_and(|code| code != 0));
+    assert!(
+        diagnostics["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("ECONNREFUSED"),
+        "{error:?}"
+    );
     assert!(!slot.exists());
     fixture.shutdown().await;
 }

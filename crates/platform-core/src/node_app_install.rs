@@ -10,6 +10,7 @@ use crate::{
     node_app_manifest::{TrialManifest, TrialRuntime},
     node_development_build::NodeProcessScope,
     owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
+    process_diagnostics::ProcessDiagnostics,
     projects::check_no_symlinks,
     ApiError,
 };
@@ -25,7 +26,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{io::AsyncReadExt, process::Command, sync::watch, time::Instant};
+use tokio::{process::Command, sync::watch, time::Instant};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, ApiError>;
@@ -1504,30 +1505,46 @@ async fn npm_ci(
         .env("NPM_CONFIG_UPDATE_NOTIFIER", "false")
         .env("GIT_CEILING_DIRECTORIES", operation)
         .env("NO_COLOR", "1");
+    let diagnostics = ProcessDiagnostics::default();
+    let stdout_diagnostics = diagnostics.clone();
+    let stderr_diagnostics = diagnostics.clone();
     let reader_scope = processes.clone();
-    let mut run = processes.processes.start(
-        command,
-        ProcessOptions::new(
-            "node-install/npm",
-            control.deadline.saturating_duration_since(Instant::now()),
-        ),
-        processes.owner,
-        move |pipes| {
-            let ProcessPipes {
-                stdin,
-                stdout,
-                stderr,
-                stop: _,
-            } = pipes;
-            drop(stdin);
-            IoPlan::new(async move {
-                reader_scope
-                    .finish_reader("node-install/npm", "ci", drain(stdout))
-                    .await
-            })
-            .drain("install-stderr", drain(stderr))
-        },
-    )?;
+    let mut run = processes
+        .processes
+        .start(
+            command,
+            ProcessOptions::new(
+                "node-install/npm",
+                control.deadline.saturating_duration_since(Instant::now()),
+            ),
+            processes.owner,
+            move |pipes| {
+                let ProcessPipes {
+                    stdin,
+                    stdout,
+                    stderr,
+                    stop: _,
+                } = pipes;
+                drop(stdin);
+                IoPlan::new(async move {
+                    reader_scope
+                        .finish_reader(
+                            "node-install/npm",
+                            "ci",
+                            stdout_diagnostics.read(stdout, "stdout", Some(MAX_OUTPUT)),
+                        )
+                        .await
+                })
+                .drain("install-stderr", async move {
+                    stderr_diagnostics
+                        .read(stderr, "stderr", Some(MAX_OUTPUT))
+                        .await
+                })
+            },
+        )
+        .map_err(|error| {
+            diagnostics.attach(error, "npm ci --omit=dev --ignore-scripts", tools, None)
+        })?;
     let mut next_space_check = Instant::now() + NPM_SPACE_INTERVAL;
     let mut interruption = None;
     let result = loop {
@@ -1571,12 +1588,22 @@ async fn npm_ci(
                 "安装进程归属未确认，不能发布；现场及租约保留。",
             )
         });
-        return Err(error
-            .detail("processResourceClosed", false)
-            .outcome("unknown"));
+        return Err(diagnostics.attach(
+            error
+                .detail("processResourceClosed", false)
+                .outcome("unknown"),
+            "npm ci --omit=dev --ignore-scripts",
+            tools,
+            None,
+        ));
     }
     if let Some(error) = interruption {
-        return Err(error.detail("processResourceClosed", true));
+        return Err(diagnostics.attach(
+            error.detail("processResourceClosed", true),
+            "npm ci --omit=dev --ignore-scripts",
+            tools,
+            result.as_ref().ok().map(|output| &output.status),
+        ));
     }
     let output = result.map_err(|error| {
         let code = match error.code.as_str() {
@@ -1585,33 +1612,28 @@ async fn npm_ci(
             "PROCESS_CLEANUP_PENDING" => "NODE_INSTALL_NPM_FAILED",
             _ => "NODE_INSTALL_OUTPUT_LIMIT",
         };
-        failure(code, "依赖准备未完成；进程和日志已收尾，当前程序未改变。")
-            .detail("processCauseCode", error.code)
-            .detail("processResourceClosed", true)
+        diagnostics.attach(
+            failure(code, "依赖准备未完成；进程和输出已收尾，当前程序未改变。")
+                .detail("processCauseCode", error.code)
+                .detail("processResourceClosed", true),
+            "npm ci --omit=dev --ignore-scripts",
+            tools,
+            None,
+        )
     })?;
     if !output.status.success() {
-        return Err(failure(
-            "NODE_INSTALL_NPM_FAILED",
-            "依赖下载或准备失败；当前程序、配置及数据未改变。",
-        )
-        .detail("processResourceClosed", true));
+        return Err(diagnostics.attach(
+            failure(
+                "NODE_INSTALL_NPM_FAILED",
+                "依赖下载或准备失败；当前程序、配置及数据未改变。",
+            )
+            .detail("processResourceClosed", true),
+            "npm ci --omit=dev --ignore-scripts",
+            tools,
+            Some(&output.status),
+        ));
     }
     check_npm_space(operation, control).await
-}
-async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin) -> Result<()> {
-    let mut total = 0;
-    let mut buffer = [0; 8192];
-    loop {
-        let n = reader.read(&mut buffer).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        // Drain bounded output without retaining application or npm text.
-        total += n;
-        if total > MAX_OUTPUT {
-            return Err(invalid("输出超限。"));
-        }
-    }
 }
 fn excluded(path: &Path) -> bool {
     path.components().any(|part| {

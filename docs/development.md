@@ -164,7 +164,7 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `project refresh --project ID` | 通知页面重新查询 |
 | `project handoff --project ID` | 返回项目路径、README、skill、CLI 路径与可交给 AI 的说明；不改写项目文件 |
 | `project build --project ID` | 提交构建，立即返回任务 ID |
-| `task get --task ID` | 读取持久任务状态与结果 |
+| `task get --task ID` | 读取持久任务状态与结果；npm失败的 `error.details.processDiagnostics` 提供命令、退出状态、工具版本和有界脱敏错误摘录 |
 | `task wait --task ID --timeout 30` | 有界等待；超时返回当前任务，不取消任务 |
 | `env node set --path /绝对路径/node` | 检查并保存开发版的显式 Node 路径 |
 | `env node clear` | 清除显式选择；带资源时恢复受管默认，无资源开发服务恢复检测 |
