@@ -11,7 +11,7 @@ export interface SourceCandidate {
 }
 export interface ImportCleanupResult {
   completed: boolean; sourceId: string; sourceRetained: boolean; removedPaths: string[];
-  failures: { path: string; error: unknown }[]; receiptPath: string;
+  failures: { path: string; error: unknown }[];
 }
 export interface PublishedImportSource {
   published: true;
@@ -195,8 +195,8 @@ export class SourceImportSession {
     if (!this.sourceTaskId) throw new SourceImportError('没有本次下载任务可供清理。');
     if (this.installed) { this.phase = 'cleanup'; this.changed(); }
     const value = await this.call<ImportCleanupResult>('source_import_cleanup', { sourceTaskId: this.sourceTaskId });
-    if (!value || typeof value.completed !== 'boolean' || typeof value.sourceId !== 'string' || this.source && value.sourceId !== this.source.sourceId || typeof value.sourceRetained !== 'boolean' || !Array.isArray(value.removedPaths) || !Array.isArray(value.failures) || typeof value.receiptPath !== 'string') {
-      throw new SourceImportError('清理结果不完整，请重试清理并核对记录。');
+    if (!value || typeof value.completed !== 'boolean' || typeof value.sourceId !== 'string' || this.source && value.sourceId !== this.source.sourceId || typeof value.sourceRetained !== 'boolean' || !Array.isArray(value.removedPaths) || !Array.isArray(value.failures)) {
+      throw new SourceImportError('清理结果不完整，请重试清理。');
     }
     if (!value.completed) throw new SourceImportError(`部分临时文件未清理：${value.failures.map(item => messageFrom(item.error)).join('；') || '请重试清理。'}`);
     if (this.installed) { this.phase = 'done'; this.changed(); }

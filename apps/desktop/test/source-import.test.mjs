@@ -48,7 +48,7 @@ function fixture(overrides = {}, options = {}) {
     node_install_prepare: () => task('nodeInstallPrepare'),
     node_install_candidate: () => ({ state: 'prepared', candidate: prepared }),
     node_install_apply: () => task('nodeInstallApply'),
-    source_import_cleanup: () => ({ completed: true, sourceId, sourceRetained: false, removedPaths: ['/disposable/source'], failures: [], receiptPath: '/disposable/receipt.json' }),
+    source_import_cleanup: () => ({ completed: true, sourceId, sourceRetained: false, removedPaths: ['/disposable/source'], failures: [] }),
   };
   const invoke = async (command, args) => {
     calls.push([command, args]);
@@ -218,11 +218,33 @@ test('An IPC failure during apply blocks cleanup and requires result reconciliat
 
 test('A cleanup failure remains actionable and a second cleanup uses the same task', async () => {
   let cleanups = 0;
-  const { session, calls } = fixture({ source_import_cleanup: () => ({ completed: ++cleanups > 1, sourceId, sourceRetained: true, removedPaths: [], failures: cleanups === 1 ? [{ path: '/disposable/temp', error: { message: 'Disposable removal denied' } }] : [], receiptPath: '/disposable/receipt.json' }) });
+  const { session, calls } = fixture({ source_import_cleanup: () => ({ completed: ++cleanups > 1, sourceId, sourceRetained: true, removedPaths: [], failures: cleanups === 1 ? [{ path: '/disposable/temp', error: { message: 'Disposable removal denied' } }] : [] }) });
   await session.acquire(input); await session.install(false);
   await assert.rejects(session.cleanup(), /Disposable removal denied/);
   assert.equal((await session.cleanup()).completed, true);
   assert.deepEqual(calls.filter(([name]) => name === 'source_import_cleanup').map(([, args]) => args), [{ sourceTaskId: 'task_source' }, { sourceTaskId: 'task_source' }]);
+});
+
+test('Successful cleanup finishes an installed import without a persistent receipt', async () => {
+  const { session, calls } = fixture();
+  await session.acquire(input); await session.install(false);
+  const result = await session.cleanup();
+  assert.equal(result.completed, true);
+  assert.equal(Object.hasOwn(result, 'receiptPath'), false);
+  assert.equal(session.phase, 'done');
+  assert.equal(commands(calls).filter(name => name === 'node_install_apply').length, 1);
+});
+
+test('Cleanup still rejects incomplete responses and a different source identity', async () => {
+  const valid = { completed: true, sourceId, sourceRetained: false, removedPaths: [], failures: [] };
+  const invalid = Object.keys(valid).map(key => Object.fromEntries(Object.entries(valid).filter(([name]) => name !== key)));
+  invalid.push({ ...valid, sourceId: otherSourceId });
+  for (const result of invalid) {
+    const { session } = fixture({ source_import_cleanup: () => result });
+    await session.acquire(input); await session.install(false);
+    await assert.rejects(session.cleanup(), /清理结果/);
+    assert.equal(session.phase, 'cleanup');
+  }
 });
 
 test('A mismatched task returned by polling cannot trigger installation', async () => {
