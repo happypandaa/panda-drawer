@@ -55,7 +55,7 @@ const source = { sourceId, taskId: 'task_source', name: 'Disposable source', sta
 const prepared = { candidateId, appId, generation, manifest: { runtime: 'node-service', app: { id: 'org.example.disposable', name: 'Disposable app', version: '1.0.0' } }, programDigest: 'b'.repeat(64), provenance: { sourceId, sourceDigest: digest, sourceCommit: source.commit, node: { path: '/disposable/node', version: '24.22.0' }, npm: { path: '/disposable/npm', version: '11.19.1' }, preparedAt: 1 } };
 const installed = { candidateId, appId, generation, operationOutcome: 'committed' };
 const app = { id: appId, name: 'Disposable app', sourcePath: '/disposable/program', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, fields: [], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['API_KEY'], canStart: false } };
-const cleaned = { completed: true, sourceId, sourceRetained: true, removedPaths: ['/disposable/temp'], failures: [], receiptPath: '/disposable/receipt.json' };
+const cleaned = { completed: true, sourceId, sourceRetained: true, removedPaths: ['/disposable/temp'], failures: [] };
 const task = (type, overrides = {}) => ({ taskId: type === 'sourceAcquire' ? 'task_source' : type === 'nodeInstallPrepare' ? 'task_prepare' : 'task_apply', projectId: null, type, status: 'succeeded', final: true, phase: 'completed', result: type === 'sourceAcquire' ? source : type === 'nodeInstallPrepare' ? { state: 'prepared', candidate: prepared, installed: false } : installed, error: null, ...overrides });
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 async function setup(overrides = {}, initialProps = {}) {
@@ -64,7 +64,7 @@ async function setup(overrides = {}, initialProps = {}) {
     source_acquire: () => task('sourceAcquire'), node_install_prepare: () => task('nodeInstallPrepare'),
     node_install_candidate: () => ({ state: 'prepared', candidate: prepared }), node_install_apply: () => task('nodeInstallApply'),
     source_import_cleanup: () => cleaned, source_import_publish: () => ({ published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' }),
-    source_import_build_info: () => ({ scriptName: 'build', script: 'node build.mjs' }), task_logs: () => ({ text: '', nextCursor: 0, eof: true, truncated: false, gaps: [] }), source_review_capabilities: () => ({codexAvailable:false}), node_app_configuration: () => app, source_list: () => [],
+    source_import_build_info: () => ({ scriptName: 'build', script: 'node build.mjs' }), source_review_capabilities: () => ({codexAvailable:false}), node_app_configuration: () => app, source_list: () => [],
   };
   globalThis.__SOURCE_IMPORT_INVOKE__ = async (command, args) => {
     calls.push([command, args]); const run = overrides[command] ?? defaults[command];
@@ -223,11 +223,19 @@ test('Historical sources stay behind an explicit advanced action and never auto 
 });
 
 test('A failed preparation automatically cleans its stopped material and gives an AI handoff without reinstalling', async () => {
-  const fixture = await setup({ node_install_prepare: () => task('nodeInstallPrepare', { status: 'failed', result: null, error: { code: 'DEPENDENCY_FAILED', message: 'Disposable dependency failure' } }) });
+  const fixture = await setup({
+    node_install_prepare: () => task('nodeInstallPrepare', { status: 'failed', result: { candidateId, installed: false, partialFilesRetained: true }, error: { code: 'NODE_INSTALL_NPM_FAILED', message: '依赖下载或准备失败；当前程序、配置及数据未改变。', details: { processResourceClosed: true } } }),
+    source_import_cleanup: () => ({ ...cleaned, sourceRetained: false }),
+  });
   await begin();
   assert.ok(document.body.textContent.includes('准备应用时出错'));
+  assert.ok(document.body.textContent.includes('准备应用所需的依赖时出错'));
+  assert.ok(document.body.textContent.includes('下载的文件已经删除'));
+  assert.ok(!document.body.textContent.includes('清理结果不完整'));
+  assert.equal(byText('重试清理'), undefined);
   assert.ok(byText('复制说明给 AI'));
   assert.equal(byText('重试下载'), undefined);
+  assert.equal(fixture.registered, 0);
   assert.ok(!commands(fixture).includes('node_install_apply'));
   assert.equal(commands(fixture).filter(name => name === 'source_import_cleanup').length, 1);
 });
