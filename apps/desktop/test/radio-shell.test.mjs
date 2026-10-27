@@ -234,6 +234,87 @@ for (const [label, title] of [['新建项目', '新建项目'], ['添加本地�
   });
 }
 
+async function completedGitImport() {
+  const sourceId = `src_${'1'.repeat(32)}`;
+  const candidateId = `install_${'2'.repeat(32)}`;
+  const appId = '11111111-1111-4111-8111-111111111111';
+  const generation = `gen_${'3'.repeat(32)}`;
+  const digest = 'a'.repeat(64);
+  const source = { sourceId, taskId: 'task_shell_source', name: 'Disposable Git source', status: 'ready', phase: 'completed', url: 'https://github.com/disposable/shell-reopen.git', contentDigest: digest, commit: 'c'.repeat(40), inspection: { kind: 'node-service-source', name: 'Disposable Git app', requiresBuild: false, issues: [] } };
+  const prepared = { candidateId, appId, generation, manifest: { runtime: 'node-service', app: { id: 'org.example.shell-reopen', name: 'Disposable Git app', version: '1.0.0' } }, programDigest: 'b'.repeat(64), provenance: { sourceId, sourceDigest: digest, sourceCommit: source.commit, node: environment.node, npm: environment.npm, preparedAt: 1 } };
+  const installed = { candidateId, appId, generation, operationOutcome: 'committed' };
+  const app = { ...nodeFixture, id: appId, name: 'Disposable Git app', installation: { kind: 'managed', sourceId, generation } };
+  const task = (type, result) => ({ taskId: type === 'sourceAcquire' ? source.taskId : type === 'nodeInstallPrepare' ? 'task_shell_prepare' : 'task_shell_apply', projectId: null, type, status: 'succeeded', final: true, phase: 'completed', result, error: null });
+  let nodes = [];
+  let sourceRead = null;
+  let acquisitions = 0;
+  const calls = await setup({ overrides: {
+    node_app_list: () => nodes,
+    source_list: () => sourceRead ? sourceRead.promise : [{ sourceId, url: source.url }],
+    source_acquire: () => {
+      if (++acquisitions > 1) throw { code: 'SOURCE_URL_INVALID', message: 'Disposable second add reached acquisition' };
+      return task('sourceAcquire', source);
+    },
+    node_install_prepare: () => task('nodeInstallPrepare', { state: 'prepared', installed: false, candidate: prepared }),
+    node_install_candidate: () => ({ state: 'prepared', candidate: prepared }),
+    node_install_apply: () => { nodes = [app]; return task('nodeInstallApply', installed); },
+    source_import_publish: () => ({ published: true, sourcePath: `${bootstrap.workspaceRoot}/project-sources/shell-reopen`, projectDirectory: `${bootstrap.workspaceRoot}/project-sources` }),
+    source_import_cleanup: () => ({ completed: true, sourceId, sourceRetained: true, removedPaths: [], failures: [] }),
+    node_app_configuration: () => app,
+    node_app_status: () => app,
+  } });
+  await click(byText('从 Git 添加', addGroup()));
+  await change(document.getElementById('git-import-url'), source.url);
+  await click(byText('开始添加', dialog()));
+  assert.match(dialog().textContent, /已添加「Disposable Git app」/);
+  assert.equal(calls.filter(([command]) => command === 'source_acquire').length, 1);
+  return {
+    calls, source, app,
+    removeFromList: () => { nodes = []; },
+    deferSourceReads: () => { sourceRead = deferred(); return sourceRead; },
+  };
+}
+
+test('A completed Git addition closes its session and reopens a fresh form after the installed app is removed', async () => {
+  const fixture = await completedGitImport();
+  await click(byText('完成', dialog()));
+  assert.equal(dialog(), null);
+  fixture.removeFromList();
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  assert.equal(document.querySelector(`[aria-label='进入项目「${fixture.app.name}」']`), null);
+  await click(document.querySelector('.radio-task-button'));
+  const tasks = document.querySelector('.task-center-panel');
+  assert.ok(tasks);
+  assert.equal(byText('查看添加流程', tasks), undefined, 'Closed sessions must not leave an obsolete flow link in task history');
+  await key(document.querySelector('.radio-task-button'), 'Escape');
+  const sourceRead = fixture.deferSourceReads();
+  await click(byText('从 Git 添加', addGroup()));
+  assert.equal(dialog().querySelector('h2').textContent, '从 Git 添加项目');
+  assert.equal(document.getElementById('git-import-url')?.value, fixture.source.url);
+  assert.ok(byText('开始添加', dialog()));
+  assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
+  assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1, 'Reopening is not a new submission');
+  await click(byText('开始添加', dialog()));
+  assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 2, 'A removed app must not survive in the cached duplicate-repository check');
+  assert.doesNotMatch(dialog().textContent, /这个仓库已经添加过/);
+  await act(async () => sourceRead.resolve([{ sourceId: fixture.source.sourceId, url: fixture.source.url }]));
+});
+
+test('Entering configuration from a completed Git addition also retires that session before opening a new form', async () => {
+  const fixture = await completedGitImport();
+  await click(byText('去设置', dialog()));
+  assert.ok(document.querySelector('.node-detail-modal'));
+  assert.equal(document.querySelector('.git-import-modal'), null);
+  await click(document.querySelector('.node-detail-modal .modal-close'));
+  assert.equal(dialog(), null);
+  await click(byText('从 Git 添加', addGroup()));
+  assert.equal(document.getElementById('git-import-url')?.value, fixture.source.url);
+  assert.ok(byText('开始添加', dialog()));
+  assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
+  assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1);
+  assert.equal(fixture.calls.filter(([command]) => command === 'node_app_start').length, 0);
+});
+
 test('Completed management history lives in the header task popover without occupying the home notice area', async () => {
   const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
   await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }) } });

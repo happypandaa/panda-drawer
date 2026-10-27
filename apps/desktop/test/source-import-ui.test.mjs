@@ -59,7 +59,7 @@ const cleaned = { completed: true, sourceId, sourceRetained: true, removedPaths:
 const task = (type, overrides = {}) => ({ taskId: type === 'sourceAcquire' ? 'task_source' : type === 'nodeInstallPrepare' ? 'task_prepare' : 'task_apply', projectId: null, type, status: 'succeeded', final: true, phase: 'completed', result: type === 'sourceAcquire' ? source : type === 'nodeInstallPrepare' ? { state: 'prepared', candidate: prepared, installed: false } : installed, error: null, ...overrides });
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 async function setup(overrides = {}, initialProps = {}) {
-  const calls = []; const entered = []; const tasks = []; let closed = 0; let registered = 0;
+  const calls = []; const entered = []; const tasks = []; const closeOptions = []; let closed = 0; let registered = 0;
   const defaults = {
     source_acquire: () => task('sourceAcquire'), node_install_prepare: () => task('nodeInstallPrepare'),
     node_install_candidate: () => ({ state: 'prepared', candidate: prepared }), node_install_apply: () => task('nodeInstallApply'),
@@ -72,10 +72,10 @@ async function setup(overrides = {}, initialProps = {}) {
   };
   document.body.innerHTML = '<button id="trigger">Import</button><div id="root"></div>';
   document.getElementById('trigger').focus(); root = createRoot(document.getElementById('root'));
-  let props = { disabled: false, instanceId: 'instance_one', projectDirectory: '/disposable/projects', ...initialProps, onTask: value => tasks.push(value), onClose: () => { closed++; }, onInstalled: () => { registered++; }, onEnter: value => entered.push(value) };
+  let props = { disabled: false, instanceId: 'instance_one', projectDirectory: '/disposable/projects', ...initialProps, onTask: value => tasks.push(value), onClose: options => { closed++; closeOptions.push(options); }, onInstalled: () => { registered++; }, onEnter: value => entered.push(value) };
   async function render(next = {}) { props = { ...props, ...next }; await act(async () => root.render(h(SourceAcquisitionPanel, props))); }
   await render();
-  return { calls, entered, tasks, render, get closed() { return closed; }, get registered() { return registered; } };
+  return { calls, entered, tasks, closeOptions, render, get closed() { return closed; }, get registered() { return registered; } };
 }
 const byText = text => [...document.querySelectorAll('button')].find(element => element.textContent === text);
 const commands = value => value.calls.map(([name]) => name);
@@ -113,6 +113,7 @@ test('A completed add publishes editable source before cleanup and offers explic
   await click(byText('去设置'));
   assert.deepEqual(fixture.entered, [app]);
   assert.equal(fixture.closed, 1);
+  assert.equal(fixture.closeOptions[0]?.keepSession, undefined);
   assert.ok(!commands(fixture).some(name => ['node_app_start', 'node_app_open'].includes(name)));
 });
 
@@ -285,6 +286,11 @@ test('Unknown installation offers verification, and reconciliation publishes onc
   assert.equal(byText('重试下载'), undefined);
   assert.ok(!commands(fixture).includes('source_import_cleanup'));
   assert.ok(!commands(fixture).includes('source_import_publish'));
+  await click(document.querySelector('.modal-close'));
+  assert.deepEqual(fixture.closeOptions.at(-1), { keepSession: true });
+  await fixture.render({ open: false });
+  await fixture.render({ open: true });
+  assert.ok(document.body.textContent.includes('还不能确定应用是否已经添加'));
   await click(byText('重新核对'));
   assert.ok(document.body.textContent.includes('已添加「Disposable app」'));
   assert.equal(commands(fixture).filter(name => name === 'node_install_apply').length, 1);
@@ -316,6 +322,11 @@ test('A cleanup failure after installation retries only cleanup and never repeat
   await begin();
   assert.equal(document.querySelector('.git-import-result h3').textContent, '应用已添加，临时文件还没清理完');
   assert.equal(byText('完成'), undefined);
+  await click(byText('稍后'));
+  assert.deepEqual(fixture.closeOptions.at(-1), { keepSession: true });
+  await fixture.render({ open: false });
+  await fixture.render({ open: true });
+  assert.equal(document.querySelector('.git-import-result h3').textContent, '应用已添加，临时文件还没清理完');
   await click(byText('重试清理'));
   assert.equal(document.querySelector('.git-import-result h3').textContent, '正在清理本次临时文件…');
   await act(async () => removal.resolve(cleaned));
@@ -343,6 +354,11 @@ test('A publication failure retains the installed app and retries source publica
   await begin();
   assert.ok(document.body.textContent.includes('应用已添加，源码位置还需处理'));
   assert.ok(!commands(fixture).includes('source_import_cleanup'));
+  await click(byText('稍后'));
+  assert.deepEqual(fixture.closeOptions.at(-1), { keepSession: true });
+  await fixture.render({ open: false });
+  await fixture.render({ open: true });
+  assert.ok(document.body.textContent.includes('应用已添加，源码位置还需处理'));
   await click(byText('重试整理源码'));
   assert.ok(document.body.textContent.includes('已添加「Disposable app」'));
   assert.equal(publications, 2);
