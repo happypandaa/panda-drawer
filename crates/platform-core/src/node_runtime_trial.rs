@@ -2,8 +2,10 @@
 //!
 //! It never discovers a workspace, starts the platform, installs dependencies, or
 //! falls back to a Node from PATH. Callers must explicitly stop the instance.
-//! Drop is best-effort cleanup; host hard-crash/orphan recovery is not implemented.
+//! Drop is best-effort cleanup; persisted run reconciliation belongs to the
+//! registration layer, separate from this retained direct-Child owner.
 
+use crate::node_process_identity::{self, RuntimeProcessIdentity, RUN_IDENTITY_ENV};
 use crate::owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions};
 use crate::ApiError;
 use serde::{Deserialize, Serialize};
@@ -102,6 +104,7 @@ pub struct NodeRuntimeTrial {
     readers: Vec<JoinHandle<()>>,
     reader_failure: Option<ApiError>,
     token: String,
+    identity_nonce: String,
     status: TrialStatus,
     stderr_count: Arc<AtomicU64>,
     stopping: Arc<AtomicBool>,
@@ -354,6 +357,7 @@ fn validate_business_environment(values: &BTreeMap<String, String>) -> TrialResu
         let valid_name = crate::node_app_manifest::valid_business_variable(name);
         total = total.saturating_add(name.len()).saturating_add(value.len());
         if !valid_name
+            || name == RUN_IDENTITY_ENV
             || name.len() > 128
             || value.len() > 8192
             || value.contains('\0')
@@ -530,13 +534,13 @@ async fn limited_line<R: tokio::io::AsyncBufRead + Unpin>(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FailedLaunchCleanup {
     NoApplicationSpawned,
-    CleanlyStopped,
+    ResourcesStopped,
     Unconfirmed,
 }
 
 impl FailedLaunchCleanup {
     pub(crate) fn permits_intent_removal(self) -> bool {
-        matches!(self, Self::NoApplicationSpawned | Self::CleanlyStopped)
+        matches!(self, Self::NoApplicationSpawned | Self::ResourcesStopped)
     }
 }
 
@@ -702,6 +706,9 @@ impl NodeRuntimeTrial {
         .await?;
         let instance_id = Uuid::new_v4().to_string();
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        // Process identity survives host restarts independently of the private
+        // control bearer. Never persist or expose the bearer as a run identity.
+        let identity_nonce = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let run_directory = trial_root.join(format!("run-{instance_id}"));
         fs::create_dir(&run_directory)?;
         #[cfg(unix)]
@@ -737,6 +744,7 @@ impl NodeRuntimeTrial {
             .env("LANG", "en_US.UTF-8")
             .env("LC_ALL", "en_US.UTF-8")
             .env("APP_INSTANCE_ID", &instance_id)
+            .env(RUN_IDENTITY_ENV, &identity_nonce)
             .env("APP_HOST", "127.0.0.1")
             .env("APP_PORT", "0")
             .env("APP_DATA_DIR", data)
@@ -834,6 +842,7 @@ impl NodeRuntimeTrial {
             readers: vec![control_reader, diagnostic_reader],
             reader_failure: None,
             token,
+            identity_nonce,
             stderr_count,
             stopping,
             control_failed,
@@ -865,8 +874,8 @@ impl NodeRuntimeTrial {
         }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Trial was not ready within 10 seconds")));
         if let Err(error) = started {
             match runtime.stop().await {
-                Ok(status) if status.process_group_exited && status.state == "stopped" => {
-                    *cleanup = FailedLaunchCleanup::CleanlyStopped;
+                Ok(status) if status.process_group_exited => {
+                    *cleanup = FailedLaunchCleanup::ResourcesStopped;
                 }
                 Err(_) => {
                     if let Some(pending) = pending {
@@ -900,6 +909,27 @@ impl NodeRuntimeTrial {
             .port
             .ok_or_else(|| fail("TRIAL_NOT_READY", "Application backend has no private port"))?;
         Ok((port, self.token.clone()))
+    }
+
+    /// Capture only while this runtime still holds its original direct Child.
+    /// A failed observation leaves the Child and all cleanup work owned here;
+    /// callers must complete cleanup before retiring an incomplete start intent.
+    /// A trusted entry may exec, so persist the executable the kernel observes.
+    pub(crate) fn process_identity(&self) -> TrialResult<RuntimeProcessIdentity> {
+        if self.child.is_none() || self.ownership.observe()?.is_some() {
+            return Err(fail(
+                "TRIAL_IDENTITY_UNAVAILABLE",
+                "A live owned runtime is required to bind process identity",
+            ));
+        }
+        let identity = node_process_identity::capture_owned(self.status.pid, &self.identity_nonce)?;
+        if self.ownership.observe()?.is_some() {
+            return Err(fail(
+                "TRIAL_IDENTITY_UNAVAILABLE",
+                "The runtime ended before its process identity was bound",
+            ));
+        }
+        Ok(identity)
     }
 
     async fn send(&mut self, message: Value) -> TrialResult<()> {
@@ -1109,6 +1139,7 @@ impl NodeRuntimeTrial {
         self.child.take();
         self.status.process_group_exited = true;
         self.token.clear();
+        self.identity_nonce.clear();
         self.finish_readers().await?;
         self.status()
     }
@@ -1209,6 +1240,7 @@ impl Drop for NodeRuntimeTrial {
             }
         }
         self.token.clear();
+        self.identity_nonce.clear();
     }
 }
 
@@ -1243,8 +1275,14 @@ instance = message['instanceId']
 token = message['token']
 behavior = os.environ.get('TRIAL_BEHAVIOR', '')
 assert os.environ['APP_INSTANCE_ID'] == instance
+identity_nonce = os.environ['PANDA_DRAWER_RUN_IDENTITY']
+assert len(identity_nonce) == 64 and all(ch in '0123456789abcdef' for ch in identity_nonce)
+assert identity_nonce != token
 assert 'NODE_OPTIONS' not in os.environ and 'HOME' not in os.environ and 'PATH' not in os.environ
 assert os.path.isdir(os.environ['APP_DATA_DIR']) and os.path.isdir(os.environ['APP_CACHE_DIR'])
+if behavior == 'runtime-identity':
+    with open(os.path.join(os.environ['APP_DATA_DIR'], 'artificial-process-identity.json'), 'w') as output:
+        json.dump({'pid':os.getpid(), 'pgid':os.getpgrp(), 'nonce':identity_nonce}, output)
 if behavior == 'leak-descendants':
     import subprocess,time
     grand = "import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);open(os.path.join(os.environ['APP_DATA_DIR'],'grandchild-pid'),'w').write(str(os.getpid()));time.sleep(60)"
@@ -1339,6 +1377,66 @@ server.shutdown(); server.server_close()
         assert!(!group_exists(stopped.pid));
         assert_eq!(runtime.stop().await.unwrap().state, "stopped");
         assert!(runtime.proxy_target().is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn run_identity_nonce_is_unique_separate_from_bearer_and_injected_into_owned_group() {
+        let mut previous_nonce = None;
+        for _ in 0..2 {
+            let (_fixture, config) = protocol_fixture("runtime-identity");
+            let launch_executable = fs::canonicalize(&config.node_path).unwrap();
+            let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+            let observed: Value = serde_json::from_slice(
+                &fs::read(
+                    runtime
+                        .status
+                        .run_directory
+                        .join("data/artificial-process-identity.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(observed["pid"], runtime.status.pid);
+            assert_eq!(observed["pgid"], runtime.status.pid);
+            assert_eq!(observed["nonce"], runtime.identity_nonce);
+            assert_eq!(runtime.identity_nonce.len(), 64);
+            assert_ne!(runtime.identity_nonce, runtime.token);
+            if let Some(previous) = previous_nonce {
+                assert_ne!(runtime.identity_nonce, previous);
+            }
+            let public = serde_json::to_string(&runtime.status().unwrap()).unwrap();
+            assert!(!public.contains(&runtime.identity_nonce));
+            assert!(!public.contains(&runtime.token));
+
+            // Retained Child ownership permits recording the actual executable
+            // after this fixture deliberately execs Python through a wrapper.
+            let identity = runtime.process_identity().unwrap();
+            assert_eq!(identity.pid, runtime.status.pid);
+            assert_eq!(identity.pgid, runtime.status.pid);
+            assert_eq!(identity.nonce, runtime.identity_nonce);
+            assert!(identity.executable.is_absolute());
+            assert_ne!(identity.executable, launch_executable);
+            assert_eq!(
+                node_process_identity::observe(&identity).unwrap(),
+                node_process_identity::Observation::Matching
+            );
+
+            // Failed identity binding must keep the cleanup owner intact.
+            let nonce = runtime.identity_nonce.clone();
+            runtime.identity_nonce = "0".repeat(64);
+            assert!(runtime.process_identity().is_err());
+            assert!(runtime.child.is_some());
+            runtime.identity_nonce = nonce;
+            runtime.ping().await.unwrap();
+            assert_eq!(runtime.process_identity().unwrap(), identity);
+            previous_nonce = Some(runtime.identity_nonce.clone());
+            assert!(runtime.stop().await.unwrap().process_group_exited);
+            assert_eq!(
+                runtime.process_identity().unwrap_err().code,
+                "TRIAL_IDENTITY_UNAVAILABLE"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1839,6 +1937,8 @@ for await (const line of lines) {
  if(msg.type==='initialize') {
   ({token,instanceId:instance}=msg);
   assert.equal(process.env.APP_INSTANCE_ID,instance);
+  assert.match(process.env.PANDA_DRAWER_RUN_IDENTITY,/^[0-9a-f]{64}$/);
+  assert.notEqual(process.env.PANDA_DRAWER_RUN_IDENTITY,token);
   for(const name of ['PATH','HOME','NODE_OPTIONS','NODE_PATH']) assert.equal(process.env[name],undefined);
   assert.equal(process.env.TRIAL_BEHAVIOR,'');
   server=http.createServer((req,res)=>{
@@ -1856,9 +1956,19 @@ for await (const line of lines) {
  }
 }
 "#).unwrap();
+        let expected_node = fs::canonicalize(&config.node_path).unwrap();
         let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
         runtime.ping().await.unwrap();
         runtime.verify_health().await.unwrap();
+        let identity = runtime.process_identity().unwrap();
+        assert_eq!(identity.pid, runtime.status.pid);
+        assert_eq!(identity.pgid, runtime.status.pid);
+        assert_eq!(identity.executable, expected_node);
+        assert_eq!(identity.nonce, runtime.identity_nonce);
+        assert_eq!(
+            node_process_identity::observe(&identity).unwrap(),
+            node_process_identity::Observation::Matching
+        );
         let stopped = runtime.stop().await.unwrap();
         assert_eq!(stopped.state, "stopped");
         assert!(stopped.stopping_observed);
@@ -1946,6 +2056,7 @@ for await (const line of lines) {
             "NODE_PATH",
             "PATH",
             "APP_PORT",
+            RUN_IDENTITY_ENV,
             "DYLD_INSERT_LIBRARIES",
             "bad-name",
         ] {

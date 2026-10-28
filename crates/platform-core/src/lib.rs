@@ -30,6 +30,7 @@ pub mod node_apps;
 pub mod node_development_build;
 pub mod node_development_tasks;
 pub mod node_install_tasks;
+mod node_process_identity;
 pub use project_git::node_development_git;
 pub mod node_runtime_trial;
 pub mod object_layout;

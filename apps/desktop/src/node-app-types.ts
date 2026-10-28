@@ -57,6 +57,7 @@ export interface NodeAppDetail {
   runtime: 'node-service';
   window?: { width: number; height: number; rememberSize?: boolean } | null;
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
+  runRecovery?: { state: 'orphaned' | 'unconfirmed'; canStop: boolean; message: string } | null;
   restartRequired: boolean;
   runningRevision: number | null;
   lastError: string | null;

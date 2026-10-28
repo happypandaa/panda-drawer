@@ -1117,6 +1117,41 @@ test('Closing an app sends one stop request and returns the manager to its unope
   assert.match(document.body.textContent, /应用已关闭，相关服务已停止/);
 });
 
+test('A verified orphaned runtime can be stopped without opening a second instance', async () => {
+  const value = app({ state: 'failed', lastError: '已核对上次运行的身份', runRecovery: { state: 'orphaned', canStop: true, message: '已核对上次运行的身份，可以停止此遗留运行。' }, configuration: { ...app().configuration, canStart: false } });
+  const calls = [];
+  await setup(baseMock(value, async (command, args) => {
+    calls.push([command, args]);
+    assert.equal(command, 'node_app_stop');
+    return app({ runRecovery: null });
+  }), { request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('查看运行状态'));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  assert.match(document.querySelector('.node-runtime-actions').parentElement.textContent, /当前遗留运行.*可以停止此遗留运行/);
+  assert.equal(byText('停止遗留运行').disabled, false);
+  await click(byText('停止遗留运行'));
+  assert.deepEqual(calls, [['node_app_stop', { appId: value.id }]]);
+  assert.equal(byText('停止遗留运行'), undefined);
+  assert.equal(byText('关闭应用').disabled, true);
+  assert.equal(byText('进入项目').disabled, false);
+  assert.doesNotMatch(document.querySelector('.node-runtime-actions').parentElement.textContent, /可以停止此遗留运行/);
+});
+
+test('An unconfirmed old runtime explains why stop is unavailable and routes entry to runtime status', async () => {
+  const value = app({ state: 'failed', lastError: '运行身份无法确认，请重启电脑后重新核对。', runRecovery: { state: 'unconfirmed', canStop: false, message: '运行身份无法确认，请重启电脑后重新核对。' }, configuration: { ...app().configuration, missingRequired: ['AI_KEY'], secretStatus: { AI_KEY: 'missing' }, canStart: false } });
+  const calls = [];
+  await setup(baseMock(value, async (command, args) => { calls.push([command, args]); throw new Error(`Unexpected execution while identity is unknown: ${command}`); }), { request: { app: value, intent: 'details', token: 1 } });
+  await click(byText('查看运行状态'));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  const runtime = document.querySelector('.node-runtime-actions').parentElement;
+  assert.match(runtime.textContent, /当前运行待核对/);
+  assert.match(runtime.querySelector('[role=status]').textContent, /请重启电脑后重新核对/);
+  assert.equal(byText('关闭应用').disabled, true);
+  assert.equal(byText('重启并应用配置').disabled, true);
+  await click(byText('关闭应用')); await click(byText('查看运行状态'));
+  assert.deepEqual(calls, []);
+});
+
 test('Incomplete required configuration blocks opening an application and identifies the field to finish', async () => {
   await setup(baseMock(app({ configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false } }), async (command) => { throw new Error(command); }));
   assert.equal(byText('进入项目').disabled, false);
