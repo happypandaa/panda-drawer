@@ -316,7 +316,7 @@ async fn delete_preview_blocks_unowned_run_evidence_before_confirmation_and_pres
         assert!(preview["blocker"]["message"]
             .as_str()
             .unwrap()
-            .contains("重复确认删除无法解除"));
+            .contains("请重启电脑"));
         assert_eq!(preview["expectedRevision"], before["expectedRevision"]);
         assert_eq!(preview["deletePaths"], before["deletePaths"]);
         assert_eq!(preview["preservedPaths"], before["preservedPaths"]);

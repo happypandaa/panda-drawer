@@ -12,6 +12,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
@@ -27,6 +29,8 @@ mod deletion;
 pub use deletion::DeleteNodeAppInput;
 #[path = "node_app_directory.rs"]
 mod directory;
+#[path = "node_run_marker.rs"]
+mod run_marker;
 pub use directory::DirectoryInitializeInput;
 #[path = "node_app_development.rs"]
 pub(crate) mod development;
@@ -79,6 +83,7 @@ struct Running {
 #[derive(Default)]
 struct Inner {
     running: BTreeMap<String, Running>,
+    markers: BTreeMap<String, StartIntentOwnership>,
     errors: BTreeMap<String, String>,
     shutting_down: bool,
 }
@@ -375,19 +380,26 @@ impl NodeApps {
             .join(&record.id)
             .join("active.json")
             .try_exists()?;
-        let cleanup_pending = has_start_intent_cleanup(&self.root.join(&record.id))?;
+        let retained_cleanup = inner
+            .running
+            .get(&record.id)
+            .is_some_and(|run| run.cleanup_pending);
+        let cleanup_pending =
+            retained_cleanup || has_start_intent_cleanup(&self.root.join(&record.id))?;
         let error = if cleanup_pending {
-            Some(if running.is_some() {
-                "应用仍在运行，启动收尾记录需要核对；已阻止再次启动，请保留运行记录。".into()
-            } else {
-                "上次启动标记清理尚未确认完成，已阻止再次启动。请保留清理记录以便恢复。".into()
+            inner.errors.get(&record.id).cloned().or_else(|| {
+                Some(if retained_cleanup {
+                    "应用进程或运行标记尚未确认完整收尾，请重试停止；当前不能再次启动。".into()
+                } else if running.is_some() {
+                    "应用仍在运行，启动收尾记录需要核对；已阻止再次启动，请保留运行记录。".into()
+                } else {
+                    run_marker::unknown().message
+                })
             })
         } else {
             inner.errors.get(&record.id).cloned().or_else(|| {
-                (marker && running.is_none()).then(|| {
-                    "上次运行未完成正常关闭，已阻止再次启动。请保留应用数据和运行记录以便恢复。"
-                        .into()
-                })
+                (marker && running.is_none())
+                    .then(|| "上次运行尚未核对完成，已阻止再次启动。请查看运行状态。".into())
             })
         };
         let state = if running.is_some() {
@@ -726,7 +738,7 @@ impl NodeApps {
         let result = self
             .manifest(record)
             .and_then(|manifest| self.detail(record, &manifest, inner));
-        match result {
+        let mut value = match result {
             Ok(detail) => detail,
             Err(error) => {
                 // A developer may edit the external declaration before its
@@ -764,7 +776,27 @@ impl NodeApps {
                     "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]
                 }))
             }
+        };
+        if !inner.running.contains_key(&record.id) {
+            let recovery = run_marker::inspect(
+                &self.root.join(&record.id),
+                &record.id,
+                run_marker::boot_time_or_unknown(),
+            );
+            let view = match recovery {
+                Ok(value) => value.view(),
+                Err(_) => Some(
+                    json!({"state":"unconfirmed","canStop":false,"message":run_marker::unknown().message}),
+                ),
+            };
+            if let Some(view) = view {
+                value["state"] = json!("failed");
+                value["lastError"] = view["message"].clone();
+                value["configuration"]["canStart"] = json!(false);
+                value["runRecovery"] = view;
+            }
         }
+        value
     }
 
     pub async fn configuration(&self, id: &str) -> Result<Value> {
@@ -859,10 +891,9 @@ impl NodeApps {
         )
         .await?;
         // Write intent before spawning. A host hard crash fails closed; no PID guessing.
-        let intent = StartIntentOwnership::create(
-            &marker,
-            &json!({"version":1,"hostPid":std::process::id(),"runDirectory":trial_root}),
-        )?;
+        let mut run_record = run_marker::RunMarker::launching(id, trial_root);
+        let intent = StartIntentOwnership::create(&marker, &run_record)?;
+        inner.markers.insert(id.into(), intent);
         #[cfg(test)]
         {
             let pause = self.start_intent_pause.lock().unwrap().take();
@@ -884,6 +915,14 @@ impl NodeApps {
             Ok(value) => value,
             Err(error) => {
                 if let Some(runtime) = pending {
+                    if let Ok(identity) = runtime.process_identity() {
+                        run_record.bind(identity);
+                        let _ = inner
+                            .markers
+                            .get_mut(id)
+                            .unwrap()
+                            .publish(&marker, &run_record);
+                    }
                     inner.running.insert(
                         id.into(),
                         Running {
@@ -898,13 +937,16 @@ impl NodeApps {
                 // identity/content permit removal. Never infer safety from an
                 // empty pending handle, an empty directory or an absent PID.
                 if cleanup.permits_intent_removal() {
-                    if let Err(ownership_error) = intent.remove_if_owned(&marker) {
+                    if let Err(ownership_error) =
+                        inner.markers.get(id).unwrap().remove_if_owned(&marker)
+                    {
                         inner.errors.insert(
                             id.into(),
                             "启动标记归属发生变化，已保留记录并阻止再次启动。".into(),
                         );
                         return Err(ownership_error.detail("launchCauseCode", error.code));
                     }
+                    inner.markers.remove(id);
                     inner.errors.insert(
                         id.into(),
                         format!(
@@ -927,6 +969,32 @@ impl NodeApps {
                 ));
             }
         };
+        let binding = runtime.process_identity().and_then(|identity| {
+            run_record.bind(identity);
+            inner
+                .markers
+                .get_mut(id)
+                .unwrap()
+                .publish(&marker, &run_record)
+        });
+        if let Err(error) = binding {
+            inner.running.insert(
+                id.into(),
+                Running {
+                    runtime,
+                    proxy: None,
+                    revision: snapshot.revision,
+                    cleanup_pending: true,
+                },
+            );
+            let stopped = self.stop_locked(id, inner).await.is_ok();
+            return Err(ApiError::new(
+                "NODE_APP_RUN_IDENTITY_UNCONFIRMED",
+                "应用运行身份未能完整保存，本次启动已停止或保留收尾句柄，不能报告启动成功。",
+            )
+            .detail("identityCauseCode", error.code)
+            .detail("launchCleanupConfirmed", stopped));
+        }
         let (port, token) = match runtime.proxy_target() {
             Ok(target) => target,
             Err(error) => {
@@ -979,29 +1047,19 @@ impl NodeApps {
         revision: u64,
         inner: &mut Inner,
     ) -> Option<ApiError> {
-        let mut running = Running {
+        let running = Running {
             runtime,
             proxy,
             revision,
             cleanup_pending: true,
         };
-        let (proxy, process) = Self::stop_resources(&mut running).await;
+        // Retain the owner before awaiting cleanup so cancellation cannot drop
+        // the only retryable runtime/proxy handle.
+        inner.running.insert(id.into(), running);
+        let (proxy, process) = Self::stop_resources(inner.running.get_mut(id).unwrap()).await;
         let shutdown = proxy.as_ref().err().cloned();
-        match process {
-            Ok(status) if status.process_group_exited && proxy.is_ok() => {
-                if clean_shutdown(&status) {
-                    let _ = fs::remove_file(self.root.join(id).join("active.json"));
-                }
-            }
-            _ => {
-                inner.running.insert(id.into(), running);
-                inner.errors.insert(
-                    id.into(),
-                    "启动失败后的进程或网页连接尚未确认完整关闭，请重试停止。".into(),
-                );
-            }
-        }
-        shutdown
+        let cleanup = self.finish_stop(id, inner, proxy, process).err();
+        shutdown.or(cleanup)
     }
     async fn stop_resources(running: &mut Running) -> (Result<()>, Result<TrialStatus>) {
         let Running { runtime, proxy, .. } = running;
@@ -1026,7 +1084,19 @@ impl NodeApps {
             let (proxy, process) = Self::stop_resources(running).await;
             return self.finish_stop(id, inner, proxy, process);
         }
-        Ok(())
+        if has_start_intent_cleanup(&self.root.join(id))? {
+            return Err(run_marker::unknown());
+        }
+        let result =
+            run_marker::inspect(&self.root.join(id), id, run_marker::boot_time_or_unknown())
+                .map_err(|_| run_marker::unknown())?
+                .stop_and_retire(&self.root.join(id))
+                .await;
+        if result.is_ok() {
+            inner.errors.remove(id);
+            inner.markers.remove(id);
+        }
+        result
     }
     fn finish_stop(
         &self,
@@ -1052,16 +1122,25 @@ impl NodeApps {
             );
             return Err(error);
         }
-        inner.running.remove(id);
         if !clean_shutdown(&status) {
+            eprintln!("Node shutdown diagnostics: app={id}, state={}, forced={}, exitCode={:?}; process group and owned I/O closed", status.state, status.forced, status.exit_code);
+        }
+        if let Err(error) = self.retire_owned_marker(id, inner) {
             inner.errors.insert(
                 id.into(),
-                "应用未完成正常关闭，已阻止再次启动并保留数据。".into(),
+                "应用进程已停止，但运行标记尚未确认清理完成。请重试停止；当前不能再次启动。".into(),
             );
-            return Err(fail("应用未正常关闭，请保留运行记录以便恢复。"));
+            return Err(error);
         }
-        fs::remove_file(self.root.join(id).join("active.json"))?;
+        inner.running.remove(id);
         inner.errors.remove(id);
+        Ok(())
+    }
+
+    fn retire_owned_marker(&self, id: &str, inner: &mut Inner) -> Result<()> {
+        let marker = inner.markers.get(id).ok_or_else(run_marker::unknown)?;
+        marker.remove_if_owned(&self.root.join(id).join("active.json"))?;
+        inner.markers.remove(id);
         Ok(())
     }
 
@@ -1200,24 +1279,10 @@ fn digest_manifest(source: &Path) -> Result<String> {
     ))
 }
 
-/// Presence alone is a fail-closed gate; never follow or classify its entries.
-/// Fresh installation IDs legitimately have no slot yet.
+/// Same-boot cleanup evidence is a fail-closed gate. Earlier-boot evidence is
+/// retained on disk but cannot represent a currently running worker.
 pub(crate) fn has_start_intent_cleanup(slot: &Path) -> Result<bool> {
-    match fs::symlink_metadata(slot) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-        Ok(_) => ordinary_path(slot, true)?,
-    }
-    for entry in fs::read_dir(slot)? {
-        if entry?
-            .file_name()
-            .to_string_lossy()
-            .starts_with(START_INTENT_CLEANUP_PREFIX)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    run_marker::cleanup_pending(slot, run_marker::boot_time_or_unknown())
 }
 
 fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
@@ -1303,6 +1368,85 @@ struct StartIntentOwnership {
 }
 
 impl StartIntentOwnership {
+    #[cfg(unix)]
+    fn open_existing(path: &Path) -> Result<Self> {
+        ordinary_path(path, false)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut file = options.open(path)?;
+        let metadata = file.metadata()?;
+        #[cfg(unix)]
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || metadata.len() > 256 * 1024
+            || metadata.uid() != unsafe { libc::geteuid() }
+        {
+            return Err(run_marker::unknown());
+        }
+        let mut contents = Vec::new();
+        (&mut file)
+            .take(256 * 1024 + 1)
+            .read_to_end(&mut contents)?;
+        if contents.len() > 256 * 1024 {
+            return Err(run_marker::unknown());
+        }
+        let current = fs::symlink_metadata(path)?;
+        if current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
+            || current.nlink() != 1
+        {
+            return Err(run_marker::unknown());
+        }
+        Ok(Self { file, contents })
+    }
+
+    #[cfg(not(unix))]
+    fn open_existing(_path: &Path) -> Result<Self> {
+        Err(run_marker::unknown())
+    }
+
+    #[cfg(unix)]
+    fn publish(&mut self, path: &Path, value: &impl Serialize) -> Result<()> {
+        use std::io::{Seek, SeekFrom};
+        let changed = || fail("运行标记的归属或内容变化，已保留记录；请核对后再启动。");
+        let owned = self.file.metadata()?;
+        let before = fs::symlink_metadata(path)?;
+        if before.dev() != owned.dev()
+            || before.ino() != owned.ino()
+            || before.nlink() != 1
+            || read_small(path)? != self.contents
+        {
+            return Err(changed());
+        }
+        let contents = serde_json::to_vec_pretty(value)?;
+        // Keep the original inode and creation time. A crash during this second
+        // phase leaves an invalid/incomplete present marker, hence unconfirmed.
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.set_len(0)?;
+        self.file.write_all(&contents)?;
+        self.file.sync_all()?;
+        self.contents = contents;
+        let after = fs::symlink_metadata(path)?;
+        if after.dev() != owned.dev()
+            || after.ino() != owned.ino()
+            || after.nlink() != 1
+            || read_small(path)? != self.contents
+        {
+            return Err(changed());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn publish(&mut self, _path: &Path, _value: &impl Serialize) -> Result<()> {
+        Err(run_marker::unknown())
+    }
+
     fn create(path: &Path, value: &impl Serialize) -> Result<Self> {
         ordinary_path(path.parent().ok_or_else(|| fail("记录目录无效。"))?, true)?;
         let contents = serde_json::to_vec_pretty(value)?;

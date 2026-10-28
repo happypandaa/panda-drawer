@@ -59,19 +59,24 @@ fn has_active_marker(slot: &Path) -> Result<bool> {
 
 fn run_recovery_blocker(slot: &Path, owns_runtime: bool) -> Result<Option<ApiError>> {
     let cleanup_pending = has_start_intent_cleanup(slot)?;
-    if cleanup_pending || has_active_marker(slot)? && !owns_runtime {
-        let reason = if cleanup_pending {
-            "上次启动的安全关闭与标记收尾结果无法确认"
-        } else {
-            "上次运行的安全关闭结果无法确认"
-        };
-        return Ok(Some(
-            ApiError::new(
-                "NODE_APP_RUN_RECOVERY_REQUIRED",
-                format!("{reason}，本次未删除文件。请保留应用数据和运行记录，先完成运行现场核对；重复确认删除无法解除此保护。"),
-            )
-            .outcome("not_deleted"),
-        ));
+    if cleanup_pending {
+        return Ok(Some(run_marker::unknown()));
+    }
+    if has_active_marker(slot)? && !owns_runtime {
+        let id = slot
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(run_marker::unknown)?;
+        let inspected = run_marker::inspect(slot, id, run_marker::boot_time_or_unknown());
+        if !matches!(
+            inspected,
+            Ok(run_marker::Inspection {
+                state: run_marker::RunState::Stopped | run_marker::RunState::Orphaned(_),
+                ..
+            })
+        ) {
+            return Ok(Some(run_marker::unknown()));
+        }
     }
     Ok(None)
 }

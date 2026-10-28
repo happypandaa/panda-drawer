@@ -334,9 +334,18 @@ pub fn valid_business_variable(name: &str) -> bool {
     {
         return false;
     }
-    if ["APP_", "PLATFORM_", "NODE_", "LD_", "DYLD_", "VITE_", "LC_"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
+    if [
+        "APP_",
+        "PLATFORM_",
+        "PANDA_DRAWER_",
+        "NODE_",
+        "LD_",
+        "DYLD_",
+        "VITE_",
+        "LC_",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
     {
         return false;
     }

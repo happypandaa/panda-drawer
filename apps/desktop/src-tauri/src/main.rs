@@ -2312,6 +2312,9 @@ fn main() {
             let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::with_runtime(
                 node_data_root, runtime_node, &runtime.handle(),
             )?);
+            // Reconcile only obsolete run markers before publishing commands.
+            // Unknown records remain visible and never authorize PID-only stop.
+            tauri::async_runtime::block_on(node_apps.reconcile_run_markers())?;
             let monitor = std::sync::Arc::downgrade(&node_apps);
             let node_monitor_app = app.handle().clone();
             let monitor_io = runtime.handle().io_lifetime();

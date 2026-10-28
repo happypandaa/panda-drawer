@@ -327,9 +327,9 @@ async fn shutdown_cleans_every_owned_group_and_preserves_an_unrelated_process() 
             .parse()
             .unwrap(),
     ];
-    // Forced termination can preserve a business failure, but must not leave
-    // any owned process or prevent cleanup of the other registered application.
-    assert!(fixture.manager.stop_all().await.is_err());
+    // Forced termination remains diagnostic information. Once both groups and
+    // their owned I/O are closed, it must not prevent complete shutdown.
+    fixture.manager.stop_all().await.unwrap();
     assert!(fixture.manager.owned_process_ids().await.is_empty());
     for pid in pids {
         assert!(!process_is_live(pid));
@@ -342,8 +342,9 @@ async fn shutdown_cleans_every_owned_group_and_preserves_an_unrelated_process() 
         );
         assert_eq!(
             fixture.manager.configuration(id).await.unwrap()["state"],
-            "failed"
+            "stopped"
         );
+        assert!(!fixture.slot(id).join("active.json").exists());
     }
     assert!(process_is_live(unrelated_pid));
     unrelated.kill().await.unwrap();
@@ -394,7 +395,8 @@ async fn health_failure_and_missing_source_still_clean_the_whole_owned_group() {
         .errors
         .get(id)
         .unwrap()
-        .contains("未完成正常关闭"));
+        .contains("确认后台进程已停止"));
+    assert!(!fixture.slot(id).join("active.json").exists());
     fixture.manager.stop_runtime(id).await.unwrap();
 }
 
@@ -435,7 +437,7 @@ async fn unconfirmed_ownership_retains_cleanup_handle_and_blocks_a_second_instan
 }
 
 #[tokio::test]
-async fn control_failure_with_graceful_exit_still_preserves_business_failure_marker() {
+async fn control_failure_with_closed_group_and_io_does_not_preserve_a_running_marker() {
     let fixture = Fixture::new("log-budget-graceful");
     let registered = fixture
         .manager
@@ -461,13 +463,115 @@ async fn control_failure_with_graceful_exit_still_preserves_business_failure_mar
         assert_eq!(status.exit_code, Some(0));
         assert_eq!(status.state, "failed");
     }
-    assert!(fixture.manager.stop_runtime(id).await.is_err());
+    fixture.manager.stop_runtime(id).await.unwrap();
     assert!(fixture.manager.owned_process_ids().await.is_empty());
-    assert!(fixture.slot(id).join("active.json").exists());
+    assert!(!fixture.slot(id).join("active.json").exists());
     assert_eq!(
         fixture.manager.configuration(id).await.unwrap()["state"],
-        "failed"
+        "stopped"
     );
+    let preview = fixture.manager.delete_preview(id).await.unwrap();
+    assert!(preview["blocker"].is_null());
+}
+
+#[tokio::test]
+async fn deleting_a_forced_stop_preserves_external_source_and_another_running_instance() {
+    let fixture = Fixture::new("hang-stop");
+    let author_sentinel = fixture.source.join("author-kept.txt");
+    fs::write(
+        &author_sentinel,
+        b"disposable author source must survive deletion",
+    )
+    .unwrap();
+    let first = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let first_id = first["id"].as_str().unwrap();
+
+    let second_source = fixture
+        .source
+        .with_file_name("other-disposable-running-source");
+    copy_source(&fixture.source, &second_source);
+    let declaration_path = second_source.join("local-app.json");
+    let mut declaration: Value =
+        serde_json::from_slice(&fs::read(&declaration_path).unwrap()).unwrap();
+    declaration["app"]["id"] = json!("test.disposable.lifecycle.unrelated");
+    declaration["configuration"]["fields"][0]["default"] = json!("normal");
+    fs::write(&declaration_path, serde_json::to_vec(&declaration).unwrap()).unwrap();
+    let second = fixture
+        .manager
+        .register(second_source.clone())
+        .await
+        .unwrap();
+    let second_id = second["id"].as_str().unwrap();
+
+    fixture.manager.start(first_id).await.unwrap();
+    fixture.manager.start(second_id).await.unwrap();
+    let first_pid = fixture.pid(first_id) as i32;
+    let second_pid = fixture.pid(second_id) as i32;
+    let other_sentinel = fixture.slot(second_id).join("data/other-app-kept.txt");
+    fs::write(
+        &other_sentinel,
+        b"another app remains running and keeps its data",
+    )
+    .unwrap();
+    let registration_before = fs::read(fixture.slot(second_id).join("registration.json")).unwrap();
+    let source_before = fs::read(fixture.source.join("server/fixture.mjs")).unwrap();
+    let preview = fixture.manager.delete_preview(first_id).await.unwrap();
+    assert!(preview["blocker"].is_null());
+    let result = fixture
+        .manager
+        .delete(
+            first_id,
+            DeleteNodeAppInput {
+                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result["operationOutcome"], "deleted");
+    assert_eq!(result["ownership"], "external");
+    assert_eq!(result["sourcePreserved"], true);
+    assert!(!process_is_live(first_pid));
+    assert!(!fixture.slot(first_id).join("registration.json").exists());
+    assert!(!fixture.slot(first_id).join("configuration").exists());
+    assert!(!fixture.slot(first_id).join("data").exists());
+    assert!(!fixture.slot(first_id).join("cache").exists());
+    assert!(!fixture.slot(first_id).join("active.json").exists());
+    assert_eq!(
+        fs::read(&author_sentinel).unwrap(),
+        b"disposable author source must survive deletion"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("server/fixture.mjs")).unwrap(),
+        source_before
+    );
+    assert!(second_source.join("local-app.json").is_file());
+    assert!(process_is_live(second_pid));
+    assert_eq!(fixture.manager.running_ids().await, [second_id]);
+    assert_eq!(
+        fs::read(&other_sentinel).unwrap(),
+        b"another app remains running and keeps its data"
+    );
+    assert_eq!(
+        fs::read(fixture.slot(second_id).join("registration.json")).unwrap(),
+        registration_before
+    );
+    {
+        let mut inner = fixture.manager.inner.lock().await;
+        inner
+            .running
+            .get_mut(second_id)
+            .unwrap()
+            .runtime
+            .ping()
+            .await
+            .unwrap();
+    }
+    fixture.manager.stop_runtime(second_id).await.unwrap();
 }
 
 async fn proxy_test_browser(manager: &NodeApps, id: &str) -> (reqwest::Client, String, String) {
@@ -677,6 +781,111 @@ async fn losing_node_stop_waiter_preserves_running_and_proxy_until_actual_file_c
 }
 
 #[tokio::test]
+async fn marker_retirement_failure_keeps_closed_runtime_blocked_and_preserves_replacement() {
+    use std::os::unix::fs::MetadataExt;
+    for replace in [false, true] {
+        let fixture = Fixture::new("normal");
+        let registered = fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap();
+        let id = registered["id"].as_str().unwrap();
+        fixture.manager.start(id).await.unwrap();
+        let pid = fixture.pid(id);
+        let marker = fixture.slot(id).join("active.json");
+        let displaced = fixture.slot(id).join("displaced-owned-active.json");
+        let original = fs::read(&marker).unwrap();
+        let sentinel = fixture.slot(id).join("data/retained-after-retire-failure");
+        fs::write(&sentinel, b"business data must survive failed retirement").unwrap();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        {
+            let inner = fixture.manager.inner.lock().await;
+            inner.running[id]
+                .proxy
+                .as_ref()
+                .unwrap()
+                .fixture_read_pause(entered, blocked);
+        }
+        let (client, origin, cookie) = proxy_test_browser(&fixture.manager, id).await;
+        let request = tokio::spawn(
+            client
+                .get(format!("{origin}/"))
+                .header(reqwest::header::COOKIE, cookie)
+                .send(),
+        );
+        ready.await.unwrap();
+        let replacement = b"foreign marker must never be retired";
+        let mut replacement_inode = None;
+        let (stopped, ()) = tokio::join!(fixture.manager.stop_runtime(id), async {
+            // The real child exits while a real proxy file read still owns the
+            // drain. Replace the active name before retirement can begin.
+            wait_artificial_process_gone(pid).await;
+            fs::rename(&marker, &displaced).unwrap();
+            if replace {
+                fs::write(&marker, replacement).unwrap();
+                replacement_inode = Some(fs::symlink_metadata(&marker).unwrap().ino());
+            }
+            release.send(()).unwrap();
+            if let Ok(Ok(response)) = request.await {
+                drop(response);
+            }
+        });
+        assert!(stopped.is_err());
+        assert!(!process_is_live(pid as i32));
+        assert_eq!(fixture.manager.owned_process_ids().await, [id]);
+        assert!(fixture.manager.running_ids().await.is_empty());
+        {
+            let mut inner = fixture.manager.inner.lock().await;
+            assert!(
+                inner
+                    .running
+                    .get_mut(id)
+                    .unwrap()
+                    .runtime
+                    .status()
+                    .unwrap()
+                    .process_group_exited
+            );
+            assert!(inner.markers.contains_key(id));
+        }
+        for detail in [
+            fixture.manager.configuration(id).await.unwrap(),
+            fixture.manager.status(id).await.unwrap(),
+        ] {
+            assert_eq!(detail["state"], "failed", "replacement={replace}");
+            assert_eq!(detail["configuration"]["canStart"], false);
+            assert!(detail["lastError"].as_str().unwrap().contains("运行标记"));
+        }
+        assert!(fixture.manager.start(id).await.is_err());
+        let preview = fixture.manager.delete_preview(id).await.unwrap();
+        assert!(fixture
+            .manager
+            .delete(
+                id,
+                DeleteNodeAppInput {
+                    expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                },
+            )
+            .await
+            .is_err());
+        assert_eq!(fs::read(&displaced).unwrap(), original);
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            b"business data must survive failed retirement"
+        );
+        if let Some(inode) = replacement_inode {
+            assert_eq!(fs::read(&marker).unwrap(), replacement);
+            assert_eq!(fs::symlink_metadata(&marker).unwrap().ino(), inode);
+        } else {
+            assert!(!marker.exists());
+        }
+        assert_eq!(fixture.manager.owned_process_ids().await, [id]);
+    }
+}
+
+#[tokio::test]
 async fn sealed_after_start_intent_confirms_no_spawn_and_allows_reopen() {
     let fixture = Fixture::new("normal");
     let registration = fixture
@@ -802,7 +1011,7 @@ async fn failed_ready_with_verified_normal_stop_clears_only_this_launch_intent()
 }
 
 #[tokio::test]
-async fn failed_ready_without_normal_stop_receipt_keeps_intent_even_without_pending_handle() {
+async fn failed_ready_without_normal_handshake_clears_intent_only_after_verified_resource_stop() {
     let fixture = Fixture::new("bad-ready-without-stopping");
     let registration = fixture
         .manager
@@ -811,22 +1020,17 @@ async fn failed_ready_without_normal_stop_receipt_keeps_intent_even_without_pend
         .unwrap();
     let id = registration["id"].as_str().unwrap();
     let marker = fixture.slot(id).join("active.json");
-    fixture.manager.start(id).await.unwrap_err();
-    assert!(!process_is_live(fixture.pid(id) as i32));
-    assert!(fixture.manager.owned_process_ids().await.is_empty());
-    assert!(
-        marker.is_file(),
-        "absence of a pending owner does not prove a normal stop"
-    );
-    let before = fs::read(&marker).unwrap();
-    assert!(fixture
-        .manager
-        .start(id)
-        .await
-        .unwrap_err()
-        .message
-        .contains("上次运行"));
-    assert_eq!(fs::read(marker).unwrap(), before);
+    for _ in 0..2 {
+        let error = fixture.manager.start(id).await.unwrap_err();
+        assert_eq!(error.details["launchCauseCode"], "TRIAL_READY_INVALID");
+        assert_eq!(error.details["launchCleanupConfirmed"], true);
+        assert!(!process_is_live(fixture.pid(id) as i32));
+        assert!(fixture.manager.owned_process_ids().await.is_empty());
+        assert!(
+            !marker.exists(),
+            "the local runtime's completed group and I/O stop, rather than a normal protocol exit, authorizes retiring this owned intent"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1010,10 +1214,7 @@ async fn residual_intent_cleanup_gate_blocks_reopen_even_without_an_active_marke
         let detail = fixture.manager.configuration(id).await.unwrap();
         assert_eq!(detail["state"], "failed");
         assert_eq!(detail["configuration"]["canStart"], false);
-        assert!(detail["lastError"]
-            .as_str()
-            .unwrap()
-            .contains("清理尚未确认"));
+        assert!(detail["lastError"].as_str().unwrap().contains("重启电脑"));
         let listed = fixture.manager.list().await.unwrap();
         assert_eq!(listed[0]["state"], "failed");
         assert_eq!(listed[0]["configuration"]["canStart"], false);
@@ -1048,13 +1249,15 @@ async fn residual_intent_cleanup_gate_blocks_reopen_even_without_an_active_marke
         let delete_input =
             serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
                 .unwrap();
-        assert!(fixture
-            .manager
-            .delete(id, delete_input)
-            .await
-            .unwrap_err()
-            .message
-            .contains("安全关闭"));
+        assert_eq!(
+            fixture
+                .manager
+                .delete(id, delete_input)
+                .await
+                .unwrap_err()
+                .code,
+            "NODE_APP_RUN_RECOVERY_REQUIRED"
+        );
         assert_eq!(fs::read(&sentinel).unwrap(), b"preserve-runtime-data");
         assert!(fixture
             .manager
