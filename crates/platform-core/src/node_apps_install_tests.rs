@@ -192,6 +192,94 @@ async fn delete_input(manager: &NodeApps, id: &str) -> DeleteNodeAppInput {
 }
 
 #[tokio::test]
+async fn managed_delete_preview_reads_reviewed_name_without_verifying_program_or_configuration() {
+    let fixture = Fixture::new();
+    let installed = fixture.install().await;
+    let id = &installed.app_id;
+    let slot = fixture.slot(id);
+    let program = fixture.program(&installed);
+    let before = fixture.manager.delete_preview(id).await.unwrap();
+    let registration = fs::read(slot.join("registration.json")).unwrap();
+    fs::write(
+        program.join("public/index.html"),
+        b"disposable damaged installed payload",
+    )
+    .unwrap();
+    fs::remove_dir_all(slot.join("configuration")).unwrap();
+    let record = fixture.manager.registration(id).unwrap();
+    assert!(
+        fixture.manager.manifest(&record).is_err(),
+        "the complete installed-program verifier must reject this changed tree"
+    );
+
+    let preview = fixture.manager.delete_preview(id).await.unwrap();
+    assert_eq!(preview["name"], "可丢弃受管安装");
+    assert_eq!(preview["expectedRevision"], before["expectedRevision"]);
+    assert_eq!(preview["ownership"], "managed");
+    assert_eq!(preview["deletePaths"], before["deletePaths"]);
+    assert!(!slot.join("configuration").exists());
+    assert_eq!(
+        fs::read(slot.join("registration.json")).unwrap(),
+        registration
+    );
+    assert_eq!(
+        fs::read(program.join("public/index.html")).unwrap(),
+        b"disposable damaged installed payload"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn delete_preview_falls_back_without_following_or_trusting_changed_manifest() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let manifest = fixture.source.join("local-app.json");
+    let reviewed = fs::read(&manifest).unwrap();
+    let outside = fixture
+        ._temp
+        .path()
+        .join("disposable-outside-manifest.json");
+    fs::write(&outside, &reviewed).unwrap();
+    let before = fixture.manager.delete_preview(id).await.unwrap();
+    let registration = fs::read(fixture.slot(id).join("registration.json")).unwrap();
+    for kind in ["changed", "symlink", "oversized", "missing"] {
+        fs::remove_file(&manifest).unwrap();
+        match kind {
+            "changed" => {
+                let mut changed: Value = serde_json::from_slice(&reviewed).unwrap();
+                changed["app"]["name"] = json!("Unreviewed replacement name");
+                fs::write(&manifest, serde_json::to_vec(&changed).unwrap()).unwrap();
+            }
+            "symlink" => symlink(&outside, &manifest).unwrap(),
+            "oversized" => fs::write(&manifest, vec![b' '; 256 * 1024 + 1]).unwrap(),
+            "missing" => {}
+            _ => unreachable!(),
+        }
+        let preview = fixture.manager.delete_preview(id).await.unwrap();
+        assert_eq!(preview["name"], "disposable-managed-node-source", "{kind}");
+        assert_eq!(preview["expectedRevision"], before["expectedRevision"]);
+        assert_eq!(preview["deletePaths"], before["deletePaths"]);
+        assert_eq!(
+            fs::read(fixture.slot(id).join("registration.json")).unwrap(),
+            registration
+        );
+        assert_eq!(fs::read(&outside).unwrap(), reviewed);
+        if kind != "missing" {
+            fs::remove_file(&manifest).unwrap();
+        }
+        fs::write(&manifest, &reviewed).unwrap();
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_and_evidence() {
     let fixture = Fixture::new();
     let external = fixture

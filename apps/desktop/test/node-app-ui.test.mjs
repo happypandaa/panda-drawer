@@ -160,7 +160,7 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
   }
 });
 
-test('A standalone Node deletion preview blocks dismissal and has no stale scope to approve', async () => {
+test('A standalone Node deletion preview keeps cancellation available without offering an unreviewed delete action', async () => {
   const value = app(); const pending = deferred(); const calls = [];
   await setup(async (command, args) => {
     calls.push([command, args]); assert.equal(command, 'node_app_delete_preview'); return pending.promise;
@@ -169,12 +169,14 @@ test('A standalone Node deletion preview blocks dismissal and has no stale scope
   deletionProgress('正在核对本项目的删除范围…');
   assert.equal(document.querySelector('.node-delete-body').getAttribute('aria-busy'), 'true');
   assert.equal(document.querySelector('.node-delete-body').hidden, true);
-  assert.equal(dialog.querySelector('.modal-close').disabled, true);
-  assert.equal(byText('取消，保留项目').disabled, true);
+  assert.equal(dialog.querySelector('.modal-close').disabled, false);
+  assert.equal(document.querySelector('.node-delete-footer').hidden, false);
+  assert.equal(byText('取消，保留项目').disabled, false);
+  assert.equal(byText('取消，保留项目').closest('[hidden]'), null);
+  assert.ok(document.querySelector('.node-delete-confirmation input').closest('[hidden]'));
+  assert.ok(!byText('重新核对删除范围') || byText('重新核对删除范围').closest('[hidden]'));
+  assert.ok(byText('确认永久删除项目').closest('[hidden]'));
   assert.equal(byText('确认永久删除项目').disabled, true);
-  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
-  await click(dialog.closest('.modal-layer'));
-  assert.equal(deleteDialog(), dialog);
   assert.deepEqual(calls, [['node_app_delete_preview', { appId: value.id }]]);
   await act(async () => pending.resolve(deletionPreview(value)));
   assert.equal(dialog.querySelector('.delete-progress'), null);
@@ -183,6 +185,44 @@ test('A standalone Node deletion preview blocks dismissal and has no stale scope
   assert.equal(dialog.querySelector('.modal-close').disabled, false);
   assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
   assert.equal(byText('确认永久删除项目').disabled, true);
+});
+
+test('Every preview close action discards late results and reopening waits for a fresh unacknowledged scope', async () => {
+  for (const action of ['cancel', 'close', 'escape', 'backdrop']) {
+    const value = app(); const oldPreview = deferred(); const freshPreview = deferred(); const calls = []; const states = []; const changes = []; const deleted = [];
+    const props = { enabled: true, instanceId: 'same', onDraftStateChange: state => states.push(state), onAppChanged: detail => changes.push(detail), onAppDeleted: id => deleted.push(id), request: { app: value, intent: 'delete', token: 1 } };
+    await setup(async (command, args) => {
+      calls.push([command, args]); assert.equal(command, 'node_app_delete_preview');
+      return calls.length === 1 ? oldPreview.promise : freshPreview.promise;
+    }, props);
+    deletionProgress('正在核对本项目的删除范围…');
+    assert.equal(states.at(-1).pending, true);
+    if (action === 'cancel') await click(byText('取消，保留项目'));
+    if (action === 'close') await click(deleteDialog().querySelector('.modal-close'));
+    if (action === 'escape') await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    if (action === 'backdrop') await click(deleteDialog().closest('.modal-layer'));
+    assert.equal(Boolean(document.querySelector('[role=dialog]')), false, `${action} dismisses a read-only preview`);
+    assert.equal(states.at(-1).pending, false, 'Cancelling releases the local waiting gate immediately');
+    assert.equal(calls.length, 1);
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, request: { ...props.request, token: 2 } })));
+    assert.equal(calls.length, 2, 'Reopening reads the scope again');
+    deletionProgress('正在核对本项目的删除范围…');
+    if (action === 'close' || action === 'backdrop') await act(async () => oldPreview.reject(new Error('Cancelled preview error must not appear')));
+    else await act(async () => oldPreview.resolve({ ...deletionPreview(value, 'external', 'cancelled-old-revision'), name: 'Cancelled old preview' }));
+    deletionProgress('正在核对本项目的删除范围…');
+    assert.equal(states.at(-1).pending, true, 'A late cancelled result cannot release the new request');
+    assert.equal(deleteDialog().querySelectorAll('[role=alert]').length, 0);
+    assert.doesNotMatch(deleteDialog().textContent, /Cancelled old preview|Cancelled preview error/);
+    await act(async () => freshPreview.resolve({ ...deletionPreview(value, 'managed', 'fresh-reopened-revision'), name: 'Fresh reopened preview' }));
+    assert.equal(deleteDialog().querySelector('.delete-progress'), null);
+    assert.match(deleteDialog().querySelector('.node-delete-body').textContent, /Fresh reopened preview/);
+    assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+    assert.equal(byText('确认永久删除项目').disabled, true);
+    assert.equal(states.at(-1).pending, false);
+    assert.deepEqual(calls.map(([command]) => command), ['node_app_delete_preview', 'node_app_delete_preview']);
+    assert.deepEqual(changes, []); assert.deepEqual(deleted, []);
+    await act(async () => root.unmount()); root = null;
+  }
 });
 
 test('A failed Node deletion preview ends loading and keeps the error available for a fresh check', async () => {

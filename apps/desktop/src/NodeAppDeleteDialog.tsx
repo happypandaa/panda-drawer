@@ -59,8 +59,9 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
   const blocked = !enabled || pending !== null;
 
   function close() {
-    if (operation.current) return;
-    sequence.current++; approval.current = null;
+    if (operation.current === 'delete') return;
+    sequence.current++; approval.current = null; operation.current = null;
+    callbacks.current.onPendingChange(false);
     callbacks.current.onClose();
   }
   async function readPreview() {
@@ -118,7 +119,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
   const base = preview ? commonDir([...preview.deletePaths, ...otherPreserved]) : '/';
   const recheck = <button type="button" className="text-button node-delete-recheck" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>;
 
-  return <Modal title="删除项目" titleIcon={<Trash2 size={22} aria-hidden="true" />} className="project-delete-modal node-delete-modal" closeDisabled={pending !== null} onClose={close}>
+  return <Modal title="删除项目" titleIcon={<Trash2 size={22} aria-hidden="true" />} className="project-delete-modal node-delete-modal" closeDisabled={pending === 'delete'} onClose={close}>
     <section className="node-delete-confirmation" aria-label="永久删除 Node 项目确认">
       <div className="node-delete-body" hidden={pending !== null} aria-busy={pending !== null}>
         <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
@@ -143,9 +144,9 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
         </>}
       </div>
       {pending !== null && <DeleteProgress name={preview?.name ?? app.name} checking={pending === 'preview'} />}
-      <div className="node-delete-footer" hidden={pending !== null}>
-        <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
-        <div className="confirmation-actions">{!preview && recheck}<button className="refresh-button" disabled={pending !== null} onClick={close}>取消，保留项目</button><button className="danger-button" disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+      <div className="node-delete-footer" hidden={pending === 'delete'}>
+        <label className="checkbox-label" hidden={pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
+        <div className="confirmation-actions">{!preview && pending !== 'preview' && recheck}<button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button><button className="danger-button" hidden={pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
       </div>
     </section>
   </Modal>;

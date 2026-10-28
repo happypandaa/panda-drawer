@@ -17,6 +17,7 @@
 .project-delete-modal .task-error { margin: 0; }
 .project-delete-review { display: flex; flex-direction: column; gap: 16px; }
 .project-delete-review[hidden], .node-delete-modal .node-delete-body[hidden], .node-delete-modal .node-delete-footer[hidden], .project-delete-modal .confirmation-actions[hidden] { display: none; }
+.node-delete-footer [hidden] { display: none; }
 .delete-progress { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 260px; padding: 32px 24px; text-align: center; }
 .delete-progress-spinner { flex-shrink: 0; color: var(--radio-active); animation: delete-progress-spin 1s linear infinite; }
 .project-delete-modal .delete-progress h3 { font-size: 18px; }

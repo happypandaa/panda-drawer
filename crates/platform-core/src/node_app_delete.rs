@@ -48,8 +48,9 @@ fn check_root(slot: &Path, expected: &PersistedIdentity) -> Result<()> {
 }
 
 impl NodeApps {
-    /// Preview reads only registration and owned directory identity, so an
-    /// unavailable external source or broken business database remains removable.
+    /// Preview reads registration, owned directory identity and optional bounded
+    /// display metadata. It never verifies the complete installed program or
+    /// opens private configuration, so damaged applications remain removable.
     pub async fn delete_preview(&self, id: &str) -> Result<Value> {
         let _inner = self.inner.lock().await;
         self.require_no_development_operation(id)?;
@@ -59,9 +60,14 @@ impl NodeApps {
         ordinary_path(&slot, true)?;
         let expected_revision = revision(&slot)?;
         let managed = record.managed.is_some();
-        let name = self
-            .manifest(&record)
+        // The name is display metadata, not permission to execute this program.
+        // `manifest()` verifies every installed file, which can make opening the
+        // confirmation scan all of node_modules while holding the Node lock.
+        let name = read_small(&record.source_path.join("local-app.json"))
             .ok()
+            .filter(|bytes| format!("{:x}", Sha256::digest(bytes)) == record.manifest_digest)
+            .and_then(|bytes| TrialManifest::parse(&bytes).ok())
+            .filter(|manifest| manifest.runtime == TrialRuntime::NodeService)
             .map(|value| value.app.name)
             .unwrap_or_else(|| {
                 record
