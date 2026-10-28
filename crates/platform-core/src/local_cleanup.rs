@@ -233,8 +233,8 @@ impl LocalCleanupPlan {
             "warnings":["通常仅在卸载软件前使用；此操作会永久删除全部平台管理的本机项目数据和代码，不进入废纸篓，无法撤销。",
                 "包括项目源码、Git 版本、数据库、附件、已安装应用、配置与密钥，以及备份、旧回收站和恢复资料。",
                 "列出的受管目录会整体清空，其中自行放入或已取消登记的文件也会删除；需要保留的文件请先移出这些目录。",
-                "外部原始源码目录、删除范围之外的独立导出文件和程序安装包保留；清理完成后仅保留不含项目内容的最小身份、锁和清理回执。",
-                "系统生成的 WebKit 网页存储（可能含会话和本地存储）、软件缓存和系统偏好不在本入口范围；卸载程序后这些内容也可能保留。",
+                "外部原始源码目录、删除范围之外的独立导出文件和程序安装包保留；清理完成后仅保留不含项目内容的环境标记和原实例锁。",
+                "项目 WebKit 网页存储会等待系统确认删除，管理器网页偏好也会清空；其他系统级应用缓存及偏好文件仍可能保留。",
                 "请先保存并关闭外部编辑器、AI 和数据库工具；平台无法阻止其他程序继续写入这些目录。"]})
     }
 
@@ -320,16 +320,10 @@ impl LocalCleanupPlan {
         self.execute_with(runtime, crate::web_file_deletion::remove_owned_file)
     }
 
-    fn execute_with(
-        self,
-        runtime: &RuntimeService,
-        mut remove_web_file: impl FnMut(
-            &crate::web_project_ownership::WebProjectOwnership,
-            &str,
-            &Path,
-            &PersistedIdentity,
-        ) -> Result<(), ApiError>,
-    ) -> Result<Value, ApiError> {
+    /// Check the same frozen disk authority before the desktop erases any
+    /// native browser data. Native cleanup cannot bypass orphan writers or a
+    /// changed user-reviewed scope simply because it lives outside this root.
+    pub fn verify_before_native_cleanup(&self, runtime: &RuntimeService) -> Result<(), ApiError> {
         crate::durable_writer::require_all_clear(self.paths.data_root())?;
         let info = runtime.info();
         if info.instance_id != self.instance_id
@@ -342,7 +336,22 @@ impl LocalCleanupPlan {
             ));
         }
         self.verify_scope()
-            .map_err(|error| error.outcome("not_started"))?;
+            .map_err(|error| error.outcome("not_started"))
+    }
+
+    fn execute_with(
+        self,
+        runtime: &RuntimeService,
+        mut remove_web_file: impl FnMut(
+            &crate::web_project_ownership::WebProjectOwnership,
+            &str,
+            &Path,
+            &PersistedIdentity,
+        ) -> Result<(), ApiError>,
+    ) -> Result<Value, ApiError> {
+        crate::webview_storage::StoreLedger::new(self.paths.data_root().into())
+            .require_all_clear()?;
+        self.verify_before_native_cleanup(runtime)?;
         let result = (|| -> Result<(), ApiError> {
             let ownership = crate::web_project_ownership::WebProjectOwnership::new(
                 self.paths.data_root().into(),

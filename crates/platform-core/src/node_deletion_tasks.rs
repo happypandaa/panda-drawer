@@ -1093,6 +1093,11 @@ impl NodeApps {
         if !Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id) {
             return Err(fail("应用标识无效。"));
         }
+        if crate::webview_storage::StoreLedger::new(self.data_root.clone())
+            .contains(crate::project_cleanup::ProjectKind::Node, id)?
+        {
+            return Ok(false);
+        }
         for path in [self.root.join(id), self.project_ownership().directory(id)?] {
             match fs::symlink_metadata(path) {
                 Ok(_) => return Ok(false),

@@ -454,7 +454,7 @@ function App() {
     }
   }
 
-  async function openProject(project: ProjectInfo, target: 'desktop' | 'browser', reload = false) {
+  async function openProject(project: ProjectInfo, target: 'desktop', reload = false) {
     if (localDataLock.current || openPending.current || projectWasDeleted(project.id)) return;
     const request = ++openRequest.current; openTarget.current = project.id;
     openPending.current = true;
@@ -463,9 +463,7 @@ function App() {
     try {
       const result = await invoke<OpenProjectResult>('project_open', { projectId: project.id, target, reload });
       if (request !== openRequest.current || projectWasDeleted(project.id)) return;
-      showSuccess(origin, target === 'browser'
-        ? `已将「${project.name}」交给默认浏览器打开。`
-        : reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
+      showSuccess(origin, reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
     } catch (cause) {
       if (request === openRequest.current && !projectWasDeleted(project.id)) showError(origin, messageFrom(cause));
     } finally {

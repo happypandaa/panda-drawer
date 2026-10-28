@@ -129,6 +129,7 @@ struct HttpState {
     stop: watch::Sender<bool>,
 }
 struct RuntimeSwitch {
+    native_startup: StdRwLock<Option<ApiError>>,
     project_cleanup: Arc<crate::project_cleanup::ProjectCleanupCoordinator>,
     processes: crate::owned_process::OwnedProcessRegistry,
     shutdown_issues: Mutex<Vec<crate::shutdown::ShutdownIssue>>,
@@ -199,6 +200,68 @@ impl EditorHandoffLease {
     }
 }
 impl RuntimeHandle {
+    pub fn check_native_ready(&self) -> std::result::Result<(), ApiError> {
+        self.shared
+            .native_startup
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .map_or(Ok(()), Err)
+    }
+    pub fn complete_native_startup(&self) {
+        *self
+            .shared
+            .native_startup
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+    }
+    pub fn fail_native_startup(&self, error: ApiError) {
+        *self
+            .shared
+            .native_startup
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(error);
+    }
+    pub fn webview_stores(&self) -> crate::webview_storage::StoreLedger {
+        self.shared.project_cleanup.stores()
+    }
+    pub fn native_project_io(
+        &self,
+        id: &str,
+        epoch: &str,
+        component: &str,
+    ) -> std::result::Result<crate::native_project_io::NativeProjectIoGuard, ApiError> {
+        let state = self.current();
+        self.check_native_ready()?;
+        crate::native_project_io::NativeProjectIoGuard::try_begin(
+            &state.store,
+            state.paths.data_root(),
+            id,
+            epoch,
+            component,
+        )
+    }
+    pub fn publish_native_file(
+        &self,
+        guard: &crate::native_project_io::NativeProjectIoGuard,
+        source: std::fs::File,
+        destination: &std::path::Path,
+    ) -> std::result::Result<(), ApiError> {
+        let state = self.current();
+        guard.validate()?;
+        let project = state.store.project(guard.project_id())?;
+        crate::native_project_files::publish_file(
+            state.paths.data_root(),
+            state.paths.workspace_root(),
+            &project,
+            source,
+            destination,
+            |path| {
+                guard.validate()?;
+                self.validate_download_destination(path)
+            },
+        )
+    }
     pub fn window_size_store(&self) -> Arc<crate::app_windows::WindowSizeStore> {
         self.shared.project_cleanup.windows()
     }
@@ -334,6 +397,27 @@ impl RuntimeHandle {
                 "Save outside platform data, projects and the application bundle",
             ));
         }
+        crate::node_apps::development::require_export_location_unclaimed(
+            state.paths.data_root(),
+            &parent,
+        )
+        .map_err(|_| {
+            ApiError::new(
+                "UNSAFE_DOWNLOAD_DESTINATION",
+                "保存位置属于项目独占源码，请选择项目范围以外的位置。",
+            )
+        })?;
+        crate::web_project_ownership::WebProjectOwnership::new(
+            state.paths.data_root().into(),
+            state.paths.workspace_root().into(),
+        )
+        .require_global_tool_unowned(&actual)
+        .map_err(|_| {
+            ApiError::new(
+                "UNSAFE_DOWNLOAD_DESTINATION",
+                "保存目标属于项目独占材料，请选择其他位置。",
+            )
+        })?;
         if let Ok(metadata) = std::fs::symlink_metadata(&actual) {
             use std::os::unix::fs::MetadataExt;
             if !metadata.is_file() || metadata.nlink() != 1 {
@@ -1177,7 +1261,7 @@ pub struct RuntimeService {
 
 impl RuntimeService {
     pub async fn start(paths: RuntimePaths, lock: InstanceLock) -> Result<Self> {
-        Self::start_inner(paths, lock, None).await
+        Self::start_inner(paths, lock, None, false).await
     }
     pub async fn start_with_resources(
         paths: RuntimePaths,
@@ -1187,12 +1271,23 @@ impl RuntimeService {
     ) -> Result<Self> {
         crate::platform_support::require_runtime()?;
         let resources = Arc::new(ProjectResources::new(resource_root, cli_path)?);
-        Self::start_inner(paths, lock, Some(resources)).await
+        Self::start_inner(paths, lock, Some(resources), false).await
+    }
+    pub async fn start_desktop_with_resources(
+        paths: RuntimePaths,
+        lock: InstanceLock,
+        resource_root: PathBuf,
+        cli_path: PathBuf,
+    ) -> Result<Self> {
+        crate::platform_support::require_runtime()?;
+        let resources = Arc::new(ProjectResources::new(resource_root, cli_path)?);
+        Self::start_inner(paths, lock, Some(resources), true).await
     }
     async fn start_inner(
         paths: RuntimePaths,
         lock: InstanceLock,
         resources: Option<Arc<ProjectResources>>,
+        desktop_pending: bool,
     ) -> Result<Self> {
         crate::platform_support::require_runtime()?;
         paths.verify_lock(&lock)?;
@@ -1200,6 +1295,12 @@ impl RuntimeService {
         let listener = bind_loopback(paths.last_port()?).await?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(RuntimeSwitch {
+            native_startup: StdRwLock::new(desktop_pending.then(|| {
+                ApiError::new(
+                    "WEBVIEW_STORAGE_STARTING",
+                    "正在核对浏览器存储隔离，请稍后重试。",
+                )
+            })),
             project_cleanup: crate::project_cleanup::ProjectCleanupCoordinator::new(
                 paths.data_root(),
             ),
@@ -1303,6 +1404,14 @@ fn runtime_router(state: Arc<HttpState>) -> Router {
         .with_state(state)
 }
 async fn dispatch(State(shared): State<Arc<RuntimeSwitch>>, request: Request) -> Response {
+    let startup_error = shared
+        .native_startup
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    if let Some(error) = startup_error {
+        return failure(error, None);
+    }
     if shared.closing.load(Ordering::Acquire) {
         return failure(
             ApiError::new("SERVICE_STOPPING", "Platform is shutting down"),
@@ -2156,6 +2265,10 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
         paths
     };
     paths.push(owner_directory);
+    paths.push(
+        crate::webview_storage::StoreLedger::new(state.paths.data_root().into())
+            .project_directory(crate::project_cleanup::ProjectKind::Web, id)?,
+    );
     let (root, epoch, mode, maintenance_id) = if identity_absent {
         (None, None, "ready".to_string(), None)
     } else {
@@ -3399,6 +3512,50 @@ mod tests {
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap()
+    }
+    #[tokio::test]
+    async fn desktop_http_stays_closed_until_native_storage_initialization_completes() {
+        let (_temp, paths) = RuntimePaths::for_test();
+        let lock = paths.acquire_lock().unwrap();
+        let service = RuntimeService::start_inner(paths, lock, None, true)
+            .await
+            .unwrap();
+        let client = make_client();
+        let endpoint = format!("{}/healthz", service.info().base_url);
+        assert!(client
+            .get(&endpoint)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+            .contains("WEBVIEW_STORAGE_STARTING"));
+        let handle = service.handle();
+        handle.fail_native_startup(ApiError::new(
+            "DISPOSABLE_NATIVE_FAILURE",
+            "disposable test",
+        ));
+        assert!(client
+            .get(&endpoint)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+            .contains("DISPOSABLE_NATIVE_FAILURE"));
+        assert!(handle.check_native_ready().is_err());
+        handle.complete_native_startup();
+        assert!(handle.check_native_ready().is_ok());
+        assert!(client
+            .get(&endpoint)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        service.shutdown().await.unwrap();
     }
     pub(super) async fn start() -> (tempfile::TempDir, RuntimePaths, RuntimeService, Client) {
         let (temp, paths) = RuntimePaths::for_test();

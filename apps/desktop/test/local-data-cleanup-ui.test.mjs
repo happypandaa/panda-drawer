@@ -96,8 +96,8 @@ test('Opening, checking the first warning and cancelling never submits cleanup',
   assert.match(activeDialog().textContent, /配置和保存的 Key/);
   assert.match(activeDialog().textContent, /\/disposable\/migrated-workspace/);
   assert.match(activeDialog().textContent, /外部原作者源码/);
-  assert.match(activeDialog().textContent, /系统生成的网页存储（可能包含会话和本地存储）、软件缓存及系统偏好也可能保留/);
-  assert.match(activeDialog().textContent, /本操作不等于卸载后完全无残留/);
+  assert.match(activeDialog().textContent, /项目网页存储会等待系统确认删除，管理器网页偏好也会清空/);
+  assert.match(activeDialog().textContent, /系统级应用缓存及偏好文件仍可能保留/);
   assert.equal(button('已了解，继续第二次确认').disabled, true);
   await click(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]'));
   await click(button('取消，保留全部内容'));
@@ -212,7 +212,7 @@ test('Status identity mismatches do not report success; confirmed completion onl
   assert.doesNotMatch(activeDialog().textContent, /本机项目内容已清理/);
   latest = state('completed'); await click(button('查看清理状态'));
   assert.match(activeDialog().textContent, /本机项目内容已清理/);
-  assert.match(activeDialog().textContent, /系统网页存储、软件缓存和系统偏好可能保留/);
+  assert.match(activeDialog().textContent, /项目网页存储已收到系统删除确认，管理器网页偏好已清空/);
   assert.equal(button('查看清理状态'), undefined);
   assert.deepEqual([...activeDialog().querySelectorAll('.confirmation-actions button')].map(value => value.textContent), ['退出软件']);
   await click(button('退出软件'));

@@ -64,3 +64,142 @@ fn failed_build_has_no_synthetic_destroyed_receipt() {
     assert!(!receipt.destroyed());
     assert!(windows.reserve("project-artificial").is_err());
 }
+
+#[tokio::test]
+async fn project_seal_revokes_queued_creation_without_blocking_another_project() {
+    let windows = Arc::new(WindowLifetimes::default());
+    let a = windows.admit_project("web", "prj_disposable_a").unwrap();
+    let queued = a.clone();
+    let b = windows.admit_project("web", "prj_disposable_b").unwrap();
+    windows.seal_project("web", "prj_disposable_a").unwrap();
+    assert!(queued.check().is_err());
+    assert!(windows.reserve_project("project-a", &queued).is_err());
+    assert!(windows.admit_project("web", "prj_disposable_a").is_err());
+    let other = windows.reserve_project("project-b", &b).unwrap();
+    assert!(!other.destroyed());
+    assert!(b.check().is_ok());
+    windows.seal();
+    assert!(b.check().is_err());
+}
+
+#[test]
+fn project_forget_requires_actual_destroyed_and_retires_only_its_own_generation() {
+    let windows = WindowLifetimes::default();
+    let a = windows.admit_project("web", "prj_disposable_a").unwrap();
+    let b = windows.admit_project("web", "prj_disposable_b").unwrap();
+    let receipt_a = windows.reserve_project("project-a", &a).unwrap();
+    let receipt_b = windows.reserve_project("project-b", &b).unwrap();
+    windows.seal_project("web", "prj_disposable_a").unwrap();
+    receipt_a.failed();
+    assert!(windows.forget_project("web", "prj_disposable_a").is_err());
+    assert!(windows.finish_project("web", "prj_disposable_a").is_err());
+    assert!(windows.receipt("project-a").is_some());
+    windows.destroyed(&receipt_a, || {});
+    windows.forget_project("web", "prj_disposable_a").unwrap();
+    windows.finish_project("web", "prj_disposable_a").unwrap();
+    assert!(windows.receipt("project-a").is_none());
+    assert!(windows
+        .projects
+        .lock()
+        .unwrap()
+        .keys()
+        .all(|key| key.id != "prj_disposable_a"));
+    assert!(Arc::ptr_eq(
+        &windows.receipt("project-b").unwrap(),
+        &receipt_b
+    ));
+    assert!(b.check().is_ok());
+    assert!(a.check().is_err());
+    // New admission represents a later, independently authorized identity;
+    // removing temporary seal metadata cannot un-revoke old callback tokens.
+    let replacement = windows.admit_project("web", "prj_disposable_a").unwrap();
+    assert!(replacement.check().is_ok());
+    assert!(windows.reserve_project("project-a", &a).is_err());
+    let fresh = windows.reserve_project("project-a", &replacement).unwrap();
+    let mutated = std::sync::atomic::AtomicBool::new(false);
+    windows.destroyed(&receipt_a, || mutated.store(true, Ordering::Release));
+    assert!(!mutated.load(Ordering::Acquire));
+    assert!(!fresh.destroyed());
+}
+
+#[test]
+fn project_kind_is_part_of_the_admission_and_receipt_identity() {
+    let windows = WindowLifetimes::default();
+    let web = windows.admit_project("web", "disposable_same_id").unwrap();
+    let node = windows.admit_project("node", "disposable_same_id").unwrap();
+    windows.seal_project("web", "disposable_same_id").unwrap();
+    assert!(web.check().is_err());
+    let receipt = windows
+        .reserve_project("node-app-disposable", &node)
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &windows
+            .project_receipt("node", "disposable_same_id")
+            .unwrap()
+            .unwrap(),
+        &receipt
+    ));
+    assert!(windows
+        .project_receipt("web", "disposable_same_id")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn project_operation_waiter_is_revoked_and_does_not_hold_another_projects_operation() {
+    let windows = Arc::new(WindowLifetimes::default());
+    let a = windows.admit_project("web", "prj_disposable_a").unwrap();
+    let b = windows.admit_project("web", "prj_disposable_b").unwrap();
+    let held = a.operation().await.unwrap();
+    let waiting = a.clone();
+    let queued = tokio::spawn(async move { waiting.operation().await });
+    tokio::task::yield_now().await;
+    let cleanup_key = windows.seal_project("web", "prj_disposable_a").unwrap();
+    assert!(cleanup_key.try_lock().is_err());
+    let other = tokio::time::timeout(std::time::Duration::from_secs(1), b.operation())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!queued.is_finished());
+    drop(held);
+    assert!(queued.await.unwrap().is_err());
+    let cleanup = tokio::time::timeout(std::time::Duration::from_secs(1), cleanup_key.lock_owned())
+        .await
+        .unwrap();
+    assert!(a.operation().await.is_err());
+    drop(cleanup);
+    drop(other);
+}
+
+#[test]
+fn normal_close_latch_retries_failure_and_does_not_follow_a_replacement_window() {
+    let windows = WindowLifetimes::default();
+    let admission = windows
+        .admit_project("web", "prj_disposable_close")
+        .unwrap();
+    let receipt = windows
+        .reserve_project("project-close", &admission)
+        .unwrap();
+    assert!(receipt.begin_close());
+    assert!(!receipt.begin_close());
+    // A download timeout leaves the native receipt live and permits another
+    // explicit close attempt rather than acknowledging a synthetic destruction.
+    receipt.reset_close();
+    assert!(!receipt.destroyed());
+    assert!(receipt.begin_close());
+    assert!(windows.is_current(&receipt));
+    windows.destroyed(&receipt, || {});
+    let replacement = windows
+        .reserve_project("project-close", &admission)
+        .unwrap();
+    assert!(!windows.is_current(&receipt));
+    assert!(!receipt.begin_close());
+    assert!(windows.is_current(&replacement));
+    assert!(replacement.begin_close());
+    receipt.reset_close();
+    assert!(
+        !replacement.begin_close(),
+        "an old callback cannot reset the new latch"
+    );
+    assert!(!replacement.destroyed());
+}

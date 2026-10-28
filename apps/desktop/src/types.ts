@@ -51,7 +51,7 @@ export interface ProjectInfo {
 
 export interface OpenProjectResult {
   projectId: string;
-  target: 'desktop' | 'browser';
+  target: 'desktop';
   reused: boolean;
 }
 
