@@ -1,4 +1,5 @@
 import type { NodeDirectoryReview } from './node-app-types';
+import { deletedSourceMatches, onProjectDeleted, projectWasDeleted } from './project-deletion';
 
 export type LocalReviewCategory = 'needs-changes' | 'unsupported' | 'insufficient';
 export interface LocalReviewReason { title: string; description: string }
@@ -7,40 +8,31 @@ export interface RecentProjectFolder {
   selectedAt: string;
   result: '检查未完成' | '上次未通过' | '可以添加' | '空文件夹' | '已添加' | '已移动或删除';
   issues: string[];
+  ownerId?: string;
 }
 
-const RECENT_PREFIX = 'panda-drawer.recent-project-folders.v2:';
-const RESULTS = ['检查未完成', '上次未通过', '可以添加', '空文件夹', '已添加', '已移动或删除'];
-
-export function recentFolderStorageKey(scope: string): string { return `${RECENT_PREFIX}${scope}`; }
+const recentFolders = new Map<string, RecentProjectFolder[]>();
+onProjectDeleted(notice => {
+  for (const [scope, items] of recentFolders) recentFolders.set(scope, items.filter(item => !deletedSourceMatches(notice, { appId: item.ownerId, sourceRoots: [item.path] })));
+});
 
 export function readRecentProjectFolders(scope: string): RecentProjectFolder[] {
-  try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(recentFolderStorageKey(scope)) ?? '[]');
-    if (!Array.isArray(value)) return [];
-    const seen = new Set<string>();
-    return value.filter((item): item is RecentProjectFolder => {
-      if (!item || typeof item !== 'object' || typeof item.path !== 'string' || !isAbsoluteFolderPath(item.path)
-        || typeof item.selectedAt !== 'string' || !RESULTS.includes(item.result)
-        || !Array.isArray(item.issues) || !item.issues.every((issue: unknown) => typeof issue === 'string')) return false;
-      const path = normalizedFolderPath(item.path);
-      if (seen.has(path)) return false;
-      seen.add(path); return true;
-    }).slice(0, 5);
-  } catch { return []; }
+  return [...(recentFolders.get(scope) ?? [])].filter(item => !projectWasDeleted(item.ownerId));
 }
 
 export function saveRecentProjectFolder(scope: string, item: RecentProjectFolder): RecentProjectFolder[] {
+  if (projectWasDeleted(item.ownerId)) return readRecentProjectFolders(scope);
   const items = [item, ...readRecentProjectFolders(scope).filter(previous => normalizedFolderPath(previous.path) !== normalizedFolderPath(item.path))].slice(0, 5);
-  try { window.localStorage.setItem(recentFolderStorageKey(scope), JSON.stringify(items)); } catch { /* Recent choices are optional; registration never depends on browser storage. */ }
+  recentFolders.set(scope, items);
   return items;
 }
 
 export function removeRecentProjectFolder(scope: string, path: string): RecentProjectFolder[] {
   const items = readRecentProjectFolders(scope).filter(previous => normalizedFolderPath(previous.path) !== normalizedFolderPath(path));
-  try { window.localStorage.setItem(recentFolderStorageKey(scope), JSON.stringify(items)); } catch { /* Keep the current session usable if storage is disabled. */ }
+  recentFolders.set(scope, items);
   return items;
 }
+export function resetRecentProjectFoldersForTests() { recentFolders.clear(); }
 
 export function isAbsoluteFolderPath(path: string): boolean { return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\[^\\]+\\/.test(path); }
 

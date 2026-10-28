@@ -1,6 +1,6 @@
 // Pure command orchestration fixtures; no native install or network is exercised.
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -29,6 +29,8 @@ async function compile(file) {
 }
 after(async () => { await rm(output, { recursive: true, force: true }); });
 const { SourceImportSession, SourceImportError } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/source-import.ts'))).href);
+const { acceptProjectDeletion, checkedProjectDeletion, deletedSourceMatches, observeDeletionRuntime, projectWasDeleted, taskWasDeleted, resetProjectDeletionsForTests } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-deletion.ts'))).href);
+afterEach(resetProjectDeletionsForTests);
 
 const sourceId = `src_${'1'.repeat(32)}`;
 const otherSourceId = `src_${'2'.repeat(32)}`;
@@ -297,4 +299,51 @@ test('An unconfirmed publication keeps the installed result and is retried witho
   await session.publishSource();
   assert.equal(publications, 2);
   assert.equal(commands(calls).filter(command => command === 'node_install_apply').length, 1);
+});
+
+
+const deletionNotice = (extra = {}) => ({ version: 1, kind: 'node', id: appId, instanceId: 'disposable-import-instance', taskIds: ['task_source', 'task_prepare', 'task_apply'], sourceIds: [sourceId], sourceRoots: ['/disposable/projects/source'], ...extra });
+test('Deletion revokes only its own source session and clears every owned cached object', async () => {
+  const { session } = fixture(); await session.acquire(input); await session.install(false);
+  assert.equal(session.revoke(deletionNotice({ id: 'other-app', taskIds: [], sourceIds: [], sourceRoots: [] })), false);
+  assert.deepEqual(session.installed, installed);
+  assert.equal(session.revoke(deletionNotice()), true);
+  for (const key of ['sourceTaskId', 'source', 'candidate', 'installed', 'published', 'task']) assert.equal(session[key], null);
+  await assert.rejects(session.publishSource(), SourceImportError);
+});
+test('A publication reply received after deletion cannot restore paths or issue later commands', async () => {
+  let resolve; const reply = new Promise(yes => { resolve = yes; });
+  const { session, calls } = fixture({ source_import_publish: () => reply });
+  await session.acquire(input); await session.install(false);
+  const publication = session.publishSource();
+  session.revoke(deletionNotice());
+  resolve({ published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' });
+  await assert.rejects(publication, SourceImportError); assert.equal(session.published, null);
+  assert.equal(commands(calls).at(-1), 'source_import_publish');
+});
+test('A null-projectId acquisition accepted after its deletion notice is never forwarded or cached', async () => {
+  let resolve; const reply = new Promise(yes => { resolve = yes; }); let revoked = 0;
+  const { session, tasks } = fixture({ source_acquire: () => reply }, { onRevoked: () => revoked++ });
+  observeDeletionRuntime('disposable-import-instance');
+  const acquisition = session.acquire(input);
+  acceptProjectDeletion(deletionNotice());
+  resolve(task('sourceAcquire'));
+  await assert.rejects(acquisition, SourceImportError);
+  assert.equal(revoked, 1); assert.deepEqual(tasks, []); assert.equal(session.source, null); assert.equal(session.task, null);
+});
+
+test('Deletion notices validate their version and wait for an authoritative runtime before invalidating tasks', () => {
+  observeDeletionRuntime('older-runtime');
+  assert.equal(checkedProjectDeletion({ ...deletionNotice(), version: 2 }), null);
+  assert.equal(checkedProjectDeletion({ ...deletionNotice(), taskIds: [3] }), null);
+  assert.equal(acceptProjectDeletion(deletionNotice()), false);
+  assert.equal(projectWasDeleted(appId), false);
+  observeDeletionRuntime('disposable-import-instance');
+  assert.equal(projectWasDeleted(appId), true);
+  assert.equal(taskWasDeleted(task('sourceAcquire')), true);
+  assert.equal(taskWasDeleted({ ...task('sourceAcquire'), taskId: 'task_other', result: { ownerAppId: 'other-app', sourceId: otherSourceId } }), false);
+});
+test('A new source owner at the same path is not revoked by a duplicate old deletion', () => {
+  assert.equal(deletedSourceMatches(deletionNotice(), { appId: 'new-app', sourceRoots: ['/disposable/projects/source'] }), false);
+  assert.equal(deletedSourceMatches(deletionNotice(), { sourceIds: [otherSourceId], sourceRoots: ['/disposable/projects/source'] }), false);
 });

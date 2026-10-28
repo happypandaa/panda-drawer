@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   BookOpen, CircleAlert, Play,
   Download, FolderOpen, Monitor, Package, Plus,
@@ -33,6 +34,8 @@ import { matchingProjectTask, recoverBuildResult } from './build-result-state';
 import type { BuildResultView } from './build-result-state';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import type { BootstrapInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
+import { acceptProjectDeletion, checkedProjectDeletion, observeDeletionRuntime, onProjectDeleted, projectWasDeleted, sourceWasDeleted, taskProjectOwner, taskWasDeleted } from './project-deletion';
+import type { ProjectDeletedNotice } from './project-deletion';
 
 type AppPage = 'projects' | 'storage';
 
@@ -79,7 +82,7 @@ function App() {
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
   const nodeRequestToken = useRef(0);
   const nodeListRevision = useRef(0);
-  const deletedProjectIds = useRef(new Set<string>());
+  const deletionListenerReady = useRef<Promise<unknown>>(Promise.resolve());
   const nodeInteraction = useRef({ pending: false, modal: false });
   nodeInteraction.current = { pending: nodeDraft.pending, modal: nodeModalOpen };
   const [loading, setLoading] = useState(true);
@@ -118,7 +121,7 @@ function App() {
     if (!showSources || !info) return;
     let cancelled = false;
     void invoke<{ sourceId: string; url: string }[]>('source_list').then(sources => {
-      if (!cancelled && Array.isArray(sources)) setSourceRepositories(nodeApps.flatMap(app => { const source = sources.find(source => source.sourceId === app.installation?.sourceId); return source?.url ? [{ url: source.url, appId: app.id, name: app.name }] : []; }));
+      if (!cancelled && Array.isArray(sources)) setSourceRepositories(nodeApps.filter(app => !projectWasDeleted(app.id)).flatMap(app => { const source = sources.find(source => !sourceWasDeleted(source.sourceId) && source.sourceId === app.installation?.sourceId); return source?.url ? [{ url: source.url, appId: app.id, name: app.name }] : []; }));
     }).catch(() => { if (!cancelled) setSourceRepositories([]); });
     return () => { cancelled = true; };
   }, [showSources, info?.instanceId, nodeApps]);
@@ -138,6 +141,8 @@ function App() {
   const requestId = useRef(0);
   const createPending = useRef(false);
   const openPending = useRef(false);
+  const openRequest = useRef(0);
+  const openTarget = useRef<string | null>(null);
   const inDesktop = isTauri();
   const instanceId = useRef<string | null>(null);
   const serviceWorkspaceRoot = useRef<string | null>(null);
@@ -148,7 +153,30 @@ function App() {
   const selectedOverviewRoot = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
   const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : deleteProject ? `delete:${deleteProject.id}` : overview ? `project:${overview.project.id}` : 'page'}`;
-  const { capture, isCurrent, error: showError, success: showSuccess, recover, reset, dismiss, messages } = useManagementFeedback(feedbackScope);
+  const { capture, isCurrent, error: showError, success: showSuccess, recover, reset, dismiss, forgetProject: forgetFeedback, messages } = useManagementFeedback(feedbackScope);
+  function forgetDeletedProject(notice: ProjectDeletedNotice) {
+    const id = notice.id;
+    requestId.current++; nodeListRevision.current++;
+    setLoading(false);
+    setProjects(current => current.filter(project => project.id !== id));
+    setNodeApps(current => current.filter(app => app.id !== id));
+    setNodeRequest(current => current?.app.id === id ? null : current);
+    if (openTarget.current === id) { openRequest.current++; openTarget.current = null; openPending.current = false; setOpening(null); }
+    setNodeDeletionTasks(current => current.filter(task => task.appId !== id));
+    setTasks(current => Object.fromEntries(Object.entries(current).filter(([key, task]) => key !== id && !taskWasDeleted(task))));
+    setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => !taskWasDeleted(task))));
+    setSourceRepositories(current => current.filter(source => source.appId !== id));
+    for (const taskId of sourceTaskIds.current) if (notice.taskIds.includes(taskId) || sourceTaskOwners.current.get(taskId) === id) { sourceTaskIds.current.delete(taskId); sourceTaskOwners.current.delete(taskId); }
+    setBuildResults(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
+    setMaintenance(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
+    setBuilding(current => current.filter(key => key !== id)); buildPending.current.delete(id);
+    delete buildRevisions.current[id]; delete projectScopes.current[id]; delete dataRecoveryGates.current[id];
+    setDeleteProject(current => current?.id === id ? null : current);
+    setRequestedDelete(current => current?.projectId === id ? null : current);
+    if (selectedOverviewId.current === id) dismissOverview();
+    forgetFeedback(id, notice.taskIds);
+  }
+  const forgetDeletedProjectRef = useRef(forgetDeletedProject); forgetDeletedProjectRef.current = forgetDeletedProject;
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
   const reportOverviewDevelopment = useCallback((state: { dirty: boolean; pending: boolean }) => { setOverviewVersionDraft(state); }, []);
@@ -157,15 +185,12 @@ function App() {
     setPage(value);
   }
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
-    if (deletedProjectIds.current.has(app.id)) return;
+    if (projectWasDeleted(app.id)) return;
     nodeListRevision.current++;
     setNodeApps((current) => current.some((value) => value.id === app.id) ? current.map((value) => value.id === app.id ? app : value) : [...current, app]);
   }, []);
   const acceptNodeDeletion = useCallback((appId: string, result: NodeAppDeleteResult) => {
-    nodeListRevision.current++;
-    deletedProjectIds.current.add(appId);
-    setNodeApps((current) => current.filter((value) => value.id !== appId));
-    setNodeRequest(null);
+    acceptProjectDeletion({ version: 1, kind: 'node', id: appId, instanceId: instanceId.current, taskIds: [...sourceTaskOwners.current].filter(([, id]) => id === appId).map(([task]) => task), sourceIds: [], sourceRoots: [] });
     const origin = capture();
     setNodeDeletionTasks(current => current.filter(task => task.appId !== appId));
     setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => task.projectId !== appId)));
@@ -182,7 +207,7 @@ function App() {
     setNodeDeletionTasks(previous => {
       const tasks = new Map(previous.map(task => [task.taskId, task]));
       for (const task of values) {
-        if (deletedProjectIds.current.has(task.appId) || task.phase === 'deleted') continue;
+        if (projectWasDeleted(task.appId) || task.phase === 'deleted') continue;
         const current = tasks.get(task.taskId);
         if (!current || task.appId === current.appId && task.targetRevision === current.targetRevision && task.journalRevision >= current.journalRevision
           && (task.journalRevision > current.journalRevision || task.phase === current.phase) && (!current.renamedAny || task.renamedAny)
@@ -192,7 +217,7 @@ function App() {
     });
   }, []);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'configure' | 'details' | 'delete') {
-    if (deletedProjectIds.current.has(app.id) || nodeDraft.pending || nodeModalOpen || deleteProject) return;
+    if (projectWasDeleted(app.id) || nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
   const clearHandoff = useCallback(() => {
@@ -223,7 +248,7 @@ function App() {
   const workspaceBusy = migrating || paused || cleanupBusy || localDataLocked;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
-    if (task.projectId && deletedProjectIds.current.has(task.projectId)) return;
+    if (taskWasDeleted(task) || task.projectId && projectWasDeleted(task.projectId)) return;
     setLifecycleTasks((current) => mergeLifecycleTask(current, task));
   }, []);
 
@@ -237,15 +262,21 @@ function App() {
       return;
     }
     try {
+      await deletionListenerReady.current;
+      if (current !== requestId.current) return;
       // Read bootstrap first so an unavailable committed workspace reports its
       // concrete startup error, rather than a missing native command state.
       let runtime = await invoke<BootstrapInfo>('bootstrap_info');
       if (localDataLock.current || current !== requestId.current) return;
+      observeDeletionRuntime(runtime.instanceId);
+      if (current !== requestId.current) return;
       const [rawList, currentWorkspace, nodeResult] = await Promise.all([
         invoke<ProjectInfo[]>('project_list'), invoke<WorkspaceInfo>('workspace_info'),
         invoke<NodeAppDetail[]>('node_app_list').then((value) => ({ value, error: '' })).catch(() => ({ value: null, error: '带本地服务的项目暂时无法读取，请刷新后核对。已有项目保留。' })),
       ]);
       if (currentWorkspace.workspaceRoot !== runtime.workspaceRoot) runtime = await invoke<BootstrapInfo>('bootstrap_info');
+      if (current !== requestId.current) return;
+      observeDeletionRuntime(runtime.instanceId);
       if (current !== requestId.current) return;
       recover('workspace-read');
       if (instanceId.current && (instanceId.current !== runtime.instanceId || serviceWorkspaceRoot.current !== runtime.workspaceRoot)) {
@@ -253,10 +284,9 @@ function App() {
         clearHandoff();
         setBuildResults({});
         setNodeDeletionTasks([]);
-        deletedProjectIds.current.clear();
         showError(origin, '工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
-      const list = rawList.filter(project => !deletedProjectIds.current.has(project.id));
+      const list = rawList.filter(project => !projectWasDeleted(project.id));
       const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
       if (selectedOverviewId.current && (!selectedProject || selectedProject.projectRoot !== selectedOverviewRoot.current)) clearHandoff();
       selectedOverviewRoot.current = selectedProject?.projectRoot ?? null;
@@ -287,7 +317,7 @@ function App() {
       if (current !== requestId.current) return;
       setInfo(runtime);
       setProjects(list);
-      if (nodeResult.value) setNodeApps(nodeResult.value.filter(app => !deletedProjectIds.current.has(app.id)));
+      if (nodeResult.value) setNodeApps(nodeResult.value.filter(app => !projectWasDeleted(app.id)));
       nodeListRevision.current++;
       if (nodeResult.error) showError(origin, nodeResult.error, 'node-list', { backgroundKey: 'node-list' });
       else recover('node-list');
@@ -365,6 +395,17 @@ function App() {
   }, [acceptLifecycleTask, clearHandoff, capture, showError, recover, reset]);
 
   useEffect(() => {
+    let disposed = false; let unlisten: (() => void) | undefined;
+    const unsubscribe = onProjectDeleted(notice => { forgetDeletedProjectRef.current(notice); void refresh(); });
+    deletionListenerReady.current = isTauri() ? listen<unknown>('panda-project-deleted', event => {
+      if (checkedProjectDeletion(event.payload) && !acceptProjectDeletion(event.payload)) void refresh();
+    })
+      .then(stop => { if (disposed) stop(); else unlisten = stop; })
+      .catch(() => { /* Native deletion receipts still invalidate local UI operations. */ }) : Promise.resolve();
+    return () => { disposed = true; unlisten?.(); unsubscribe(); };
+  }, [refresh]);
+
+  useEffect(() => {
     void refresh();
     return () => { requestId.current += 1; handoffRequest.current++; selectedOverviewId.current = null; };
   }, [refresh]);
@@ -379,7 +420,7 @@ function App() {
       const generation = requestId.current;
       const origin = capture();
       void invoke<NodeAppDetail[]>('node_app_list').then((values) => {
-        if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) { setNodeApps(values); recover('node-list'); }
+        if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) { setNodeApps(values.filter(app => !projectWasDeleted(app.id))); recover('node-list'); }
       }).catch(() => { if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) showError(origin, '带本地服务的项目状态暂未更新，请刷新后核对。', 'node-list', { backgroundKey: 'node-list' }); }).finally(() => { polling = false; });
     }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
@@ -395,6 +436,7 @@ function App() {
       const project = await invoke<ProjectInfo>('project_create', {
         input: { name: name.trim(), description: description.trim() || null },
       });
+      if (projectWasDeleted(project.id)) return;
       setProjects((previous) => [...previous.filter((item) => item.id !== project.id), project]);
       if (isCurrent(origin)) {
         setName('');
@@ -413,20 +455,21 @@ function App() {
   }
 
   async function openProject(project: ProjectInfo, target: 'desktop' | 'browser', reload = false) {
-    if (localDataLock.current || openPending.current) return;
+    if (localDataLock.current || openPending.current || projectWasDeleted(project.id)) return;
+    const request = ++openRequest.current; openTarget.current = project.id;
     openPending.current = true;
     setOpening(`${project.id}:${target}`);
     const origin = capture();
     try {
       const result = await invoke<OpenProjectResult>('project_open', { projectId: project.id, target, reload });
+      if (request !== openRequest.current || projectWasDeleted(project.id)) return;
       showSuccess(origin, target === 'browser'
         ? `已将「${project.name}」交给默认浏览器打开。`
         : reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
     } catch (cause) {
-      showError(origin, messageFrom(cause));
+      if (request === openRequest.current && !projectWasDeleted(project.id)) showError(origin, messageFrom(cause));
     } finally {
-      openPending.current = false;
-      setOpening(null);
+      if (request === openRequest.current) { openPending.current = false; openTarget.current = null; setOpening(null); }
     }
   }
 
@@ -445,7 +488,7 @@ function App() {
         const origin = capture();
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId, ...(previous.type === 'delete' && previous.projectId ? { projectId: previous.projectId, taskType: 'delete' } : {}) });
-          if (cancelled || !previous.projectId || scopes[previous.projectId] !== projectScopes.current[previous.projectId]) return;
+          if (cancelled || taskWasDeleted(previous) || taskWasDeleted(task) || !previous.projectId || scopes[previous.projectId] !== projectScopes.current[previous.projectId]) return;
           if (['build', 'storageScan'].includes(previous.type) && dataRecoveryGates.current[previous.projectId]) return;
           if (previous.type === 'build' && revisions[previous.projectId] !== buildRevisions.current[previous.projectId]) return;
           if (!matchingProjectTask(task, previous.projectId, previous.taskId) || task.type !== previous.type) throw new Error('任务身份或类型不符，请刷新核对。');
@@ -464,7 +507,7 @@ function App() {
             void refresh();
           }
         } catch (cause) {
-          if (!cancelled) showError(origin, `任务状态暂时无法读取：${messageFrom(cause)}。读取失败本身不会取消任务，请以最终记录为准。`, `task:${previous.projectId}`, { backgroundKey: `task:${previous.taskId}` });
+          if (!cancelled && !taskWasDeleted(previous)) showError(origin, `任务状态暂时无法读取：${messageFrom(cause)}。读取失败本身不会取消任务，请以最终记录为准。`, `task:${previous.projectId}`, { backgroundKey: `task:${previous.taskId}` });
         }
       })).finally(() => { polling = false; });
     }, 1000);
@@ -483,11 +526,11 @@ function App() {
         const origin = capture();
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId, ...(previous.type === 'delete' && previous.projectId ? { projectId: previous.projectId, taskType: 'delete' } : {}) });
-          if (cancelled) return;
+          if (cancelled || taskWasDeleted(previous) || taskWasDeleted(task)) return;
           recover(`lifecycle:${previous.taskId}`);
           acceptLifecycleTask(task);
           if (task.final) void refresh();
-        } catch (cause) { if (!cancelled) showError(origin, `任务状态暂时无法读取：${messageFrom(cause)}。读取失败本身不会取消任务，请以最终记录为准；不要重复提交操作。`, 'main', { backgroundKey: `lifecycle:${previous.taskId}` }); }
+        } catch (cause) { if (!cancelled && !taskWasDeleted(previous)) showError(origin, `任务状态暂时无法读取：${messageFrom(cause)}。读取失败本身不会取消任务，请以最终记录为准；不要重复提交操作。`, 'main', { backgroundKey: `lifecycle:${previous.taskId}` }); }
       })).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
@@ -560,7 +603,7 @@ function App() {
   }
 
   function acceptTask(task: TaskRecord, deletionTarget?: ProjectInfo) {
-    if (task.projectId && deletedProjectIds.current.has(task.projectId)) return;
+    if (taskWasDeleted(task)) return;
     if (!task.projectId) { acceptLifecycleTask(task); return; }
     if (task.type === 'delete') {
       const target = deletionTarget ?? projects.find(project => project.id === task.projectId);
@@ -578,9 +621,11 @@ function App() {
       const matchesTarget = (project: ProjectInfo) => project.id === requestedDelete.projectId && project.projectRoot === requestedDelete.projectRoot && project.documentEpoch === requestedDelete.documentEpoch;
       const deletedId = requestedDelete.projectId;
       const replacement = projects.some(project => project.id === deletedId && !matchesTarget(project));
+      if (!replacement) acceptProjectDeletion({ version: 1, kind: 'web', id: deletedId, instanceId: requestedDelete.instanceId,
+        taskIds: [...Object.values(lifecycleTasks), ...Object.values(tasks)].filter(value => value.projectId === deletedId).map(value => value.taskId),
+        sourceIds: [], sourceRoots: [requestedDelete.projectRoot] });
       setProjects((current) => current.filter((project) => !matchesTarget(project)));
       if (!replacement) {
-        deletedProjectIds.current.add(deletedId);
         setTasks(current => Object.fromEntries(Object.entries(current).filter(([id, task]) => id !== deletedId && task.projectId !== deletedId)));
         setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => task.projectId !== deletedId)));
         setBuildResults(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== deletedId)));
@@ -657,7 +702,7 @@ function App() {
   </div>;
   const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
   const openSpace = (tab?: SpaceTab) => { if (tab) setSpaceTab(tab); navigatePage('storage'); };
-  const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter((task) => !lifecycleTasks[task.taskId])].reverse().slice(0, 20);
+  const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter((task) => !lifecycleTasks[task.taskId])].filter(task => !taskWasDeleted(task)).reverse().slice(0, 20);
   const projectName = (projectId: string | null) => projectId ? projects.find((project) => project.id === projectId)?.name ?? null : null;
   const lockLocalData = useCallback(() => {
     localDataLock.current = true;
@@ -707,7 +752,7 @@ function App() {
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
             {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => { setSourcesMounted(true); setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
-      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (task.projectId && deletedProjectIds.current.has(task.projectId)) return; sourceTaskIds.current.add(task.taskId); if (task.projectId) sourceTaskOwners.current.set(task.taskId, task.projectId); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
+      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (taskWasDeleted(task)) return; sourceTaskIds.current.add(task.taskId); const owner = taskProjectOwner(task); if (owner) sourceTaskOwners.current.set(task.taskId, owner); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>

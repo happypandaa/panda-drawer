@@ -129,6 +129,7 @@ struct HttpState {
     stop: watch::Sender<bool>,
 }
 struct RuntimeSwitch {
+    project_cleanup: Arc<crate::project_cleanup::ProjectCleanupCoordinator>,
     processes: crate::owned_process::OwnedProcessRegistry,
     shutdown_issues: Mutex<Vec<crate::shutdown::ShutdownIssue>>,
     io_lifetime: crate::io_lifetime::IoLifetime,
@@ -198,6 +199,15 @@ impl EditorHandoffLease {
     }
 }
 impl RuntimeHandle {
+    pub fn window_size_store(&self) -> Arc<crate::app_windows::WindowSizeStore> {
+        self.shared.project_cleanup.windows()
+    }
+    pub fn set_project_cleanup_hook(&self, hook: crate::project_cleanup::NativeProjectCleanup) {
+        self.shared.project_cleanup.set_native(hook);
+    }
+    pub(crate) fn project_cleanup(&self) -> Arc<crate::project_cleanup::ProjectCleanupCoordinator> {
+        self.shared.project_cleanup.clone()
+    }
     pub fn io_lifetime(&self) -> crate::io_lifetime::IoLifetime {
         self.shared.io_lifetime.clone()
     }
@@ -1190,6 +1200,9 @@ impl RuntimeService {
         let listener = bind_loopback(paths.last_port()?).await?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(RuntimeSwitch {
+            project_cleanup: crate::project_cleanup::ProjectCleanupCoordinator::new(
+                paths.data_root(),
+            ),
             processes: crate::owned_process::OwnedProcessRegistry::default().with_writer_owner(
                 crate::durable_writer::WriterOwner::platform(paths.data_root())?,
             ),
@@ -1356,6 +1369,13 @@ fn make_state(
         builds.clone(),
         maintenance.clone(),
     )?;
+    lifecycle.set_project_cleanup(
+        shared
+            .upgrade()
+            .expect("runtime owner exists")
+            .project_cleanup
+            .clone(),
+    );
     let metadata = crate::metadata::MetadataManager::new(store.clone(), info.instance_id.clone());
     let storage = crate::storage::StorageManager::new(
         paths.clone(),
@@ -1369,6 +1389,13 @@ fn make_state(
         builds.clone(),
         info.instance_id.clone(),
     )?;
+    let cleanup = shared
+        .upgrade()
+        .expect("runtime owner exists")
+        .project_cleanup
+        .clone();
+    cleanup.register_storage(&storage);
+    cleanup.register_history(&history_cleanup);
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
     let git_environment = crate::git_environment::GitEnvironmentManager::with_processes(

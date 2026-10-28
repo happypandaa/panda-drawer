@@ -8,6 +8,7 @@ import { displayPath, folderName, isAbsoluteFolderPath, localReviewCategory, loc
 import type { RecentProjectFolder } from './local-directory-review';
 import type { NodeAppDetail, NodeDirectoryReview } from './node-app-types';
 import { messageFrom } from './ui-utils';
+import { deletedSourceMatches, onProjectDeleted, projectWasDeleted } from './project-deletion';
 
 type Operation = 'choose' | 'inspect' | 'initialize' | 'register' | 'copy' | null;
 
@@ -66,15 +67,15 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   const alive = useRef(true);
   const operation = useRef(false);
   const sequence = useRef(0);
-  const context = useRef({ enabled, instanceId, scope, apps }); context.current = { enabled, instanceId, scope, apps };
+  const context = useRef({ enabled, instanceId, scope, apps, sourcePath, completed, existing }); context.current = { enabled, instanceId, scope, apps, sourcePath, completed, existing };
   const callbacks = useRef({ onPendingChange, onAdded, onEnter, onViewDetails, onImportArchive, onClose }); callbacks.current = { onPendingChange, onAdded, onEnter, onViewDetails, onImportArchive, onClose };
   const selectDropped = useRef<(path: string) => void>(() => {});
   const id = useId();
   const blocked = !enabled || pending !== null;
 
   function revokeReview() { focusPreview.current = false; setReview(null); setExisting(null); setComparison(null); }
-  function remember(path: string, result: RecentProjectFolder['result'], issues: string[]) {
-    const item = { path, result, issues, selectedAt: new Date().toISOString() };
+  function remember(path: string, result: RecentProjectFolder['result'], issues: string[], ownerId?: string) {
+    const item = { path, result, issues, selectedAt: new Date().toISOString(), ownerId };
     setRecent(saveRecentProjectFolder(context.current.scope, item));
   }
   useEffect(() => {
@@ -87,6 +88,16 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
     if (sourcePath) setNotice('接入状态已变化，请重新检查目录后继续。');
   }, [instanceId, enabled, scope]);
   useEffect(() => { setRecent(readRecentProjectFolders(scope)); }, [scope]);
+  useEffect(() => onProjectDeleted(notice => {
+    const value = context.current;
+    if (value.instanceId && value.instanceId !== notice.instanceId) return;
+    setRecent(readRecentProjectFolders(value.scope));
+    const knownOwner = value.completed?.id ?? value.existing?.id ?? value.apps.find(app => normalizedFolderPath(app.development?.sourcePath ?? app.sourcePath) === normalizedFolderPath(value.sourcePath))?.id;
+    if (!deletedSourceMatches(notice, { appId: knownOwner, sourceRoots: [value.sourcePath] })) return;
+    sequence.current++; operation.current = false; callbacks.current.onPendingChange(false);
+    setPending(null); revokeReview(); setCompleted(null); setSourcePath(''); setName(''); setPhase(0);
+    setGeneratedHere(false); setReviewPrompt(''); setCheckedAt(undefined); setError(''); setNotice(''); setCopyNotice('');
+  }), []);
   useEffect(() => {
     if (enabled && !pending && review?.state === 'ready' && focusPreview.current) {
       focusPreview.current = false; addButton.current?.focus();
@@ -128,7 +139,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   async function inspect(source: string, current: () => boolean) {
     setPhase(1);
     const already = context.current.apps.find(app => normalizedFolderPath(app.development?.sourcePath ?? app.sourcePath) === normalizedFolderPath(source));
-    if (already) { setExisting(already); remember(source, '已添加', []); return; }
+    if (already && !projectWasDeleted(already.id)) { setExisting(already); remember(source, '已添加', [], already.id); return; }
     const previous = readRecentProjectFolders(context.current.scope).find(item => normalizedFolderPath(item.path) === normalizedFolderPath(source));
     let value: NodeDirectoryReview;
     try { value = await invoke<NodeDirectoryReview>('node_app_directory_inspect', { sourcePath: source }); }
@@ -141,7 +152,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
     }
     if (!current()) return;
     const checked = checkedReview(value, source);
-    if (checked.existingApp) { setExisting(checked.existingApp); remember(source, '已添加', []); return; }
+    if (checked.existingApp) { if (!projectWasDeleted(checked.existingApp.id)) { setExisting(checked.existingApp); remember(source, '已添加', [], checked.existingApp.id); } return; }
     focusPreview.current = checked.state === 'ready';
     setReview(checked); setReviewPrompt(checked.reviewPrompt); setCheckedAt(new Date().toISOString()); setPhase(checked.state === 'needs-review' ? 1 : 2);
     setComparison(localReviewComparison(previous?.issues, checked.issues));
@@ -178,7 +189,8 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       const value = await invoke<NodeAppDetail>('node_app_directory_initialize_and_register', { sourcePath: selected.sourcePath, input: { expectedRevision: selected.expectedRevision, name: name.trim() } });
       if (!current()) return;
       const added = checkedAddedApp(value, selected.sourcePath);
-      setCompleted(added); setGeneratedHere(true); setPhase(2); remember(selected.sourcePath, '已添加', []); callbacks.current.onAdded(added);
+      if (projectWasDeleted(added.id)) return;
+      setCompleted(added); setGeneratedHere(true); setPhase(2); remember(selected.sourcePath, '已添加', [], added.id); callbacks.current.onAdded(added);
     });
   }
   function register() {
@@ -188,7 +200,8 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       const value = await invoke<NodeAppDetail>('node_app_directory_register', { sourcePath: selected.sourcePath, expectedRevision: selected.expectedRevision });
       if (!current()) return;
       const added = checkedAddedApp(value, selected.sourcePath);
-      setCompleted(added); setPhase(2); remember(selected.sourcePath, '已添加', []); callbacks.current.onAdded(added);
+      if (projectWasDeleted(added.id)) return;
+      setCompleted(added); setPhase(2); remember(selected.sourcePath, '已添加', [], added.id); callbacks.current.onAdded(added);
     });
   }
   function copyPath() {

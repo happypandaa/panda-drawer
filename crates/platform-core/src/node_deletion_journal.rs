@@ -256,6 +256,20 @@ mod macos {
         pub(crate) fn metadata(&self) -> &Value {
             &self.record.metadata
         }
+        pub(crate) fn set_cleanup_notice(
+            &mut self,
+            notice: &crate::project_cleanup::DeletedProjectNotice,
+        ) -> Result<()> {
+            let mut notice = notice.clone();
+            notice.normalize()?;
+            if notice.kind != crate::project_cleanup::ProjectKind::Node
+                || notice.id != self.app_id()
+            {
+                return Err(error("删除清理身份不符。"));
+            }
+            self.record.metadata["cleanupNotice"] = serde_json::to_value(notice)?;
+            self.persist()
+        }
         /// Admission binds the ledger directory before writer teardown. Only
         /// that same ledger may complete its list once every writer is joined.
         pub(crate) fn refresh_owned_paths(
@@ -1770,6 +1784,12 @@ mod unsupported {
         }
         pub(crate) fn metadata(&self) -> &Value {
             unreachable!("Unsupported journal cannot be constructed")
+        }
+        pub(crate) fn set_cleanup_notice(
+            &mut self,
+            _notice: &crate::project_cleanup::DeletedProjectNotice,
+        ) -> Result<()> {
+            Err(unsupported())
         }
         pub(crate) fn refresh_owned_paths(
             &mut self,

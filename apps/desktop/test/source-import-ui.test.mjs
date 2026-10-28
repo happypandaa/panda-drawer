@@ -44,7 +44,8 @@ dom.window.setTimeout = fn => { const id = ++nextTimer; timeouts.set(id, fn); re
 dom.window.clearTimeout = id => timeouts.delete(id);
 dom.window.setInterval = fn => { const id = ++nextTimer; intervals.set(id, fn); return id; };
 dom.window.clearInterval = id => intervals.delete(id);
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; timeouts.clear(); intervals.clear(); dom.window.localStorage.clear(); });
+const { acceptProjectDeletion, observeDeletionRuntime, resetProjectDeletionsForTests } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-deletion.ts'))).href);
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; resetProjectDeletionsForTests(); timeouts.clear(); intervals.clear(); dom.window.localStorage.clear(); });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 const sourceId = `src_${'1'.repeat(32)}`;
@@ -157,6 +158,7 @@ test('A structured rejection keeps the editable address and does not invent an a
   assert.ok(document.body.textContent.includes('尚未下载项目文件'));
   await click(byText('修改地址'));
   assert.equal(document.getElementById('git-import-url').value, source.url);
+  assert.equal(window.localStorage.length, 0);
   assert.ok(byText('开始添加'));
   assert.deepEqual(commands(fixture), ['source_acquire']);
 });
@@ -394,11 +396,58 @@ test('A repository already added requires an explicit decision before downloadin
   assert.equal(fixture.registered, 1);
 });
 
-test('The last submitted address survives closing and reopening the form', async () => {
+test('Closing and reopening the form leaves no persisted repository address', async () => {
   const fixture = await setup({ source_acquire: () => { throw { code: 'SOURCE_URL_INVALID', message: 'Address unavailable' }; } });
   await begin();
   await act(async () => root.unmount()); root = null;
   await setup();
-  assert.equal(document.getElementById('git-import-url').value, source.url);
+  assert.equal(document.getElementById('git-import-url').value, '');
+  assert.equal(window.localStorage.length, 0);
   assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1);
+});
+
+
+const removedNotice = (extra = {}) => ({ version: 1, kind: 'node', id: appId, instanceId: 'instance_one', taskIds: ['task_source', 'task_prepare', 'task_apply'], sourceIds: [sourceId], sourceRoots: ['/disposable/projects/source'], ...extra });
+test('A CLI deletion clears a completed source flow while an unrelated form draft remains', async () => {
+  observeDeletionRuntime('instance_one'); const fixture = await setup(); await begin();
+  assert.match(document.body.textContent, /已添加「Disposable app」/);
+  await act(async () => acceptProjectDeletion(removedNotice()));
+  assert.doesNotMatch(document.body.textContent, /已添加「Disposable app」|disposable\/projects\/source/);
+  assert.equal(document.getElementById('git-import-url').value, '');
+  assert.equal(fixture.closed, 1);
+  await change(document.getElementById('git-import-url'), 'https://github.com/disposable/keep-draft');
+  await act(async () => acceptProjectDeletion(removedNotice({ id: 'other-app', taskIds: ['other-task'], sourceIds: ['other-source'], sourceRoots: ['/other-source'] })));
+  assert.equal(document.getElementById('git-import-url').value, 'https://github.com/disposable/keep-draft');
+  assert.equal(fixture.closed, 1);
+});
+test('A late source publication after CLI deletion cannot fetch configuration or reopen its success page', async () => {
+  observeDeletionRuntime('instance_one'); const publication = deferred();
+  const fixture = await setup({ source_import_publish: () => publication.promise }); await begin();
+  await act(async () => acceptProjectDeletion(removedNotice()));
+  await act(async () => publication.resolve({ published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' }));
+  assert.equal(commands(fixture).includes('node_app_configuration'), false);
+  assert.doesNotMatch(document.body.textContent, /已添加「Disposable app」/);
+  assert.equal(document.getElementById('git-import-url').value, '');
+});
+
+test('Source library deletion removes A records without clearing a newly typed B draft', async () => {
+  observeDeletionRuntime('instance_one');
+  let candidates = [source];
+  await setup({ source_list: () => candidates });
+  await click(byText('源码记录与恢复'));
+  await change(document.getElementById('source-url'), source.url);
+  await click(byText('获取源码'));
+  await change(document.getElementById('source-url'), 'https://github.com/disposable/keep-library-B');
+  candidates = [];
+  await act(async () => acceptProjectDeletion(removedNotice()));
+  assert.equal(document.getElementById('source-url').value, 'https://github.com/disposable/keep-library-B');
+  assert.doesNotMatch(document.body.textContent, /Disposable source/);
+});
+test('Source library cannot restore a deleted inspection prompt from a late source reply', async () => {
+  observeDeletionRuntime('instance_one'); const inspected = deferred();
+  await setup({ choose_path: () => '/disposable/projects/source', source_inspect: () => inspected.promise });
+  await click(byText('源码记录与恢复')); await click(byText('检查本机源码目录'));
+  await act(async () => acceptProjectDeletion(removedNotice()));
+  await act(async () => inspected.resolve({ sourcePath: '/disposable/projects/source', inspection: { kind: 'needs-adaptation', executionState: 'not-executed', issues: ['Private removed A inspection'] } }));
+  assert.doesNotMatch(document.body.textContent, /Private removed A inspection/);
 });

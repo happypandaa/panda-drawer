@@ -72,6 +72,182 @@ impl Fixture {
         self.store.shutdown().await;
     }
 }
+async fn wait_pause(pause: &ScanPause) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !pause.entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+#[tokio::test]
+async fn deleted_project_forgets_cache_results_and_generation_without_touching_another_project() {
+    let f = Fixture::new().await;
+    let other = f
+        .store
+        .create(CreateProjectInput {
+            name: "Disposable unaffected storage B".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let first = f.storage.submit_scan(&f.id).await.unwrap();
+    f.wait(&first).await;
+    let second = f.storage.submit_scan(&other.id).await.unwrap();
+    f.wait(&second).await;
+    MaintenanceManager::invalidate_storage(f.paths.workspace_root(), &f.id).unwrap();
+    let global = f
+        .tasks
+        .create_workspace_operation("storageWorkspaceScan")
+        .unwrap();
+    f.tasks
+        .finish(&global.task_id, Ok(json!({"projects":[f.id,other.id]})))
+        .unwrap();
+    for path in [
+        f.paths.data_root().join("cache/storage/platform.json"),
+        f.paths
+            .workspace_root()
+            .join(".platform/cache/storage/workspace.json"),
+    ] {
+        builds::atomic_json(&path, &json!({"projectId":f.id})).unwrap();
+    }
+    let forgotten = f.storage.forget_deleted_project(&f.id).await.unwrap();
+    assert!(forgotten.contains(&first.task_id));
+    assert!(forgotten.contains(&global.task_id));
+    assert!(!forgotten.contains(&second.task_id));
+    assert!(f.tasks.task(&first.task_id).is_err());
+    assert!(f.tasks.task(&global.task_id).is_err());
+    assert!(f.tasks.task(&second.task_id).is_ok());
+    assert!(!f.storage.cache(&f.id).exists());
+    assert!(f.storage.cache(&other.id).exists());
+    assert!(!f.storage.generations.lock().unwrap().contains_key(&f.id));
+    assert!(f.storage.submit_scan(&f.id).await.is_err());
+    assert!(f.storage.workspace_info().await.is_err());
+    assert!(!f
+        .paths
+        .workspace_root()
+        .join(".platform/cache/storage/invalidations/projects")
+        .join(format!("{}.json", f.id))
+        .exists());
+    assert!(!f
+        .paths
+        .data_root()
+        .join("cache/storage/platform.json")
+        .exists());
+    assert_eq!(
+        f.storage.forget_deleted_project(&f.id).await.unwrap(),
+        Vec::<String>::new()
+    );
+    f.stop().await;
+}
+#[tokio::test]
+async fn deletion_waits_for_real_scan_before_publication_then_removes_its_terminal_task() {
+    let f = Fixture::new().await;
+    let pause = Arc::new(ScanPause::default());
+    *f.storage.scan_pause.lock().unwrap() = Some(pause.clone());
+    let scan = f.storage.submit_scan(&f.id).await.unwrap();
+    wait_pause(&pause).await;
+    let manager = f.storage.clone();
+    let id = f.id.clone();
+    let deletion = tokio::spawn(async move { manager.forget_deleted_project(&id).await });
+    while !f.storage.forgotten.lock().unwrap().contains(&f.id) {
+        tokio::task::yield_now().await;
+    }
+    assert!(!deletion.is_finished());
+    assert!(f.root.exists());
+    pause.release();
+    let forgotten = deletion.await.unwrap().unwrap();
+    assert!(forgotten.contains(&scan.task_id));
+    assert!(!f.storage.cache(&f.id).exists());
+    assert!(f.tasks.task(&scan.task_id).is_err());
+    assert!(!f.storage.generations.lock().unwrap().contains_key(&f.id));
+    f.stop().await;
+}
+#[tokio::test]
+async fn deletion_drains_a_real_workspace_scan_and_clears_its_late_aggregate() {
+    let f = Fixture::new().await;
+    let pause = Arc::new(ScanPause::default());
+    *f.storage.aggregate_pause.lock().unwrap() = Some(pause.clone());
+    let manager = f.storage.clone();
+    let scan = tokio::spawn(async move { manager.workspace_info().await });
+    wait_pause(&pause).await;
+    let manager = f.storage.clone();
+    let id = f.id.clone();
+    let deletion = tokio::spawn(async move { manager.forget_deleted_project(&id).await });
+    while !f.storage.forgotten.lock().unwrap().contains(&f.id) {
+        tokio::task::yield_now().await;
+    }
+    assert!(!deletion.is_finished());
+    pause.release();
+    scan.await.unwrap().unwrap();
+    deletion.await.unwrap().unwrap();
+    assert!(!f
+        .paths
+        .workspace_root()
+        .join(".platform/cache/storage/workspace.json")
+        .exists());
+    assert!(f.storage.workspace_info().await.is_err());
+    f.stop().await;
+}
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn forgotten_storage_clears_current_and_retained_workspace_caches_from_an_old_manager() {
+    let f = Fixture::new().await;
+    let scanned = f.storage.submit_scan(&f.id).await.unwrap();
+    f.wait(&scanned).await;
+    MaintenanceManager::invalidate_storage(f.paths.workspace_root(), &f.id).unwrap();
+    f.scan().await;
+    f.storage.shutdown().await;
+    f.tasks.shutdown().await;
+    let destination = f
+        ._temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-storage-migration");
+    fs::create_dir(&destination).unwrap();
+    f.store.begin_workspace_migration().unwrap();
+    let migration = crate::workspace::create(&f.paths, &destination).unwrap();
+    f.store.pause_workspace().await.unwrap();
+    let (selected, mut journal) =
+        crate::workspace::copy_and_commit(&f.paths, &f.store, &migration.task_id).unwrap();
+    let store = Arc::new(ProjectStore::new(selected.workspace_root().into()).unwrap());
+    store.set_node_source_data_root(selected.data_root().into());
+    crate::workspace::initialize_selected(&selected, &store, &mut journal).unwrap();
+    crate::workspace::mark_old_retired(&selected, &journal).unwrap();
+    crate::workspace::finish(&selected, &migration.task_id, Ok(json!({"completed":true}))).unwrap();
+    let new_cache = selected
+        .workspace_root()
+        .join(".platform/cache/storage/projects")
+        .join(format!("{}.json", f.id));
+    builds::atomic_json(&new_cache, &json!({"projectId":f.id})).unwrap();
+    let old_cache = f.storage.cache(&f.id);
+    assert!(old_cache.exists());
+    assert_eq!(
+        f.paths.selected_for_cleanup().unwrap().workspace_root(),
+        selected.workspace_root()
+    );
+    let journal_path = selected
+        .migrations_dir()
+        .join(&migration.task_id)
+        .join("journal.json");
+    let good = fs::read(&journal_path).unwrap();
+    let mut unavailable: Value = serde_json::from_slice(&good).unwrap();
+    unavailable["sourceIdentity"]["volumeUuid"] = json!(Uuid::new_v4().to_string());
+    builds::atomic_json(&journal_path, &unavailable).unwrap();
+    assert!(f.storage.forget_deleted_project(&f.id).await.is_err());
+    assert!(old_cache.exists());
+    assert!(new_cache.exists());
+    fs::write(&journal_path, &good).unwrap();
+    let forgotten = f.storage.forget_deleted_project(&f.id).await.unwrap();
+    assert!(forgotten.contains(&scanned.task_id));
+    assert!(!old_cache.exists());
+    assert!(!new_cache.exists());
+    assert!(f.tasks.task(&scanned.task_id).is_err());
+    store.shutdown().await;
+    f.store.shutdown().await;
+}
 #[tokio::test]
 async fn workspace_project_rows_keep_internal_ids_and_actual_readable_paths() {
     let fixture = Fixture::new().await;

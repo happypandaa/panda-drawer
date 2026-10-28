@@ -14,6 +14,7 @@ import { LocalDirectoryPanel } from './LocalDirectoryPanel';
 import { AiProjectHelp } from './AiProjectHelp';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { onProjectDeleted, projectWasDeleted } from './project-deletion';
 import type { NodeAppDeleteResult, NodeAppDetail, NodeConfigurationInput, NodeDeletionTaskSnapshot, NodeSecretChange } from './node-app-types';
 
 let handoffClipboard = Promise.resolve();
@@ -124,6 +125,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   }, [enabled, applyPending, directoryPending, loading, dirty, instanceId]);
 
   const accept = useCallback((value: NodeAppDetail, resetDraft: boolean) => {
+    if (projectWasDeleted(value.id)) return;
     changedCallback.current?.(value);
     if (selected.current === value.id) {
       setDetail((current) => resetDraft || !current ? value : { ...current, state: value.state, runRecovery: value.runRecovery, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError, configuration: { ...current.configuration, canStart: value.configuration.canStart } });
@@ -145,7 +147,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       }
     } catch (cause) {
       if (alive.current && selected.current === appId) { setError(messageFrom(cause)); setLaunchError(messageFrom(cause)); setModalOpen(true); setTab('runtime'); }
-    } finally { operation.current = false; if (alive.current) setPending(null); }
+    } finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
   }, [accept, enabled]);
 
   const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
@@ -171,12 +173,20 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   }, [accept, enterApp, instanceId]);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; selected.current = null; draftCallback.current({ dirty: false, pending: false }); }; }, []);
+  useEffect(() => onProjectDeleted(notice => {
+    if (notice.kind !== 'node' || notice.instanceId !== currentInstance.current) return;
+    if (selected.current === notice.id) {
+      closeDetails(); operation.current = false; setPending(null); setApplyPending(false);
+      setError(''); setLaunchError(''); setStatusError(''); setNotice(''); draftCallback.current({ dirty: false, pending: false });
+    } else if (deleteTargetRef.current?.app.id === notice.id) clearDeletion();
+    setRequestedSelection(current => current?.id === notice.id ? null : current);
+  }), []);
   useEffect(() => {
     statusRead.current++; sequence.current++; setLoading(false); setHandoff(null); setApplyPending(false);
     clearDeletion();
   }, [instanceId]);
   useEffect(() => {
-    if (!request || request.token === seenRequest.current) return;
+    if (!request || request.token === seenRequest.current || projectWasDeleted(request.app.id)) return;
     if (deleteTargetRef.current) { seenRequest.current = request.token; return; }
     if (operation.current || directoryPending || applyPending) return;
     seenRequest.current = request.token;
@@ -258,7 +268,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     finally {
       // A workspace change revokes this response, while the pending write still
       // holds the operation gate until it has finished. Never retry that write.
-      operation.current = false; if (alive.current) setPending(null);
+      if (alive.current && selected.current === appId) { operation.current = false; setPending(null); }
     }
   }
 
@@ -275,15 +285,16 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       if (command === 'node_app_restart') setSavedConfiguration(false);
       if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? '应用窗口已打开。关闭窗口会停止本应用。' : '打开结果已更新，请查看应用状态。');
     } catch (cause) { if (alive.current && selected.current === appId) { setError(messageFrom(cause)); if (command === 'node_app_start' || command === 'node_app_restart') setLaunchError(messageFrom(cause)); } }
-    finally { operation.current = false; if (alive.current) setPending(null); }
+    finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
   }
 
   async function open(command: 'node_app_open' | 'node_app_open_help', fieldName?: string) {
     if (blocked || operation.current || !detail) return;
     operation.current = true; setPending(command); setError(''); setLaunchError('');
+    const appId = detail.id;
     try { await invoke(command, { appId: detail.id, ...(fieldName ? { fieldName } : {}) }); }
-    catch (cause) { if (alive.current) setError(messageFrom(cause)); }
-    finally { operation.current = false; if (alive.current) setPending(null); }
+    catch (cause) { if (alive.current && selected.current === appId) setError(messageFrom(cause)); }
+    finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
   }
 
   function ordinaryChange(name: string, value: string) {

@@ -120,6 +120,34 @@ struct Plan {
     items: Vec<Candidate>,
     task_id: Option<String>,
     selected_ids: Vec<String>,
+    preview_task_id: String,
+}
+#[derive(Deserialize)]
+struct DerivedCleanupResult {
+    items: Vec<DerivedCleanupItem>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DerivedCleanupItem {
+    id: String,
+    project_id: Option<String>,
+    path: PathBuf,
+}
+fn deleted_scope_matches(
+    owner: Option<&str>,
+    candidate: &str,
+    path: &Path,
+    id: &str,
+    source_ids: &[String],
+    roots: &[PathBuf],
+) -> bool {
+    if let Some(owner) = owner {
+        return owner == id;
+    }
+    source_ids.iter().any(|source| source == candidate)
+        || roots
+            .iter()
+            .any(|root| path.starts_with(root) || root.starts_with(path))
 }
 impl Plan {
     fn public(&self) -> Value {
@@ -160,6 +188,7 @@ pub(crate) struct CleanupManager {
     stopping: AtomicBool,
     plans: Mutex<BTreeMap<String, Plan>>,
     latest: Mutex<Option<String>>,
+    deleting: Mutex<BTreeSet<String>>,
 }
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -173,17 +202,6 @@ fn error(message: impl std::fmt::Display) -> ApiError {
 /// A user-facing reason for keeping an item; it is shown verbatim.
 fn protected(message: &str) -> ApiError {
     ApiError::new("CLEANUP_ITEM_PROTECTED", message)
-}
-/// Whether a persisted record names this source ID or any path inside its slot.
-fn references_source(value: &Value, id: &str, slot: &Path) -> bool {
-    match value {
-        Value::String(text) => text == id || Path::new(text).starts_with(slot),
-        Value::Array(values) => values
-            .iter()
-            .any(|value| references_source(value, id, slot)),
-        Value::Object(map) => map.values().any(|value| references_source(value, id, slot)),
-        _ => false,
-    }
 }
 fn wire_u64(value: Option<u64>) -> Value {
     match value {
@@ -517,6 +535,7 @@ impl CleanupManager {
             stopping: AtomicBool::new(false),
             plans: Mutex::new(BTreeMap::new()),
             latest: Mutex::new(None),
+            deleting: Mutex::new(BTreeSet::new()),
         }))
     }
     fn root(&self) -> PathBuf {
@@ -525,6 +544,11 @@ impl CleanupManager {
     fn ensure_running(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
             Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"))
+        } else if !self.deleting.lock().unwrap().is_empty() {
+            Err(ApiError::new(
+                "PROJECT_DELETION_PENDING",
+                "项目正在删除，请在删除结束后重新预览清理范围。",
+            ))
         } else {
             Ok(())
         }
@@ -554,6 +578,7 @@ impl CleanupManager {
                     items,
                     task_id: None,
                     selected_ids: vec![],
+                    preview_task_id: task_id.clone(),
                 };
                 let public = plan.public();
                 let mut plans = worker.plans.lock().unwrap();
@@ -642,6 +667,12 @@ impl CleanupManager {
         let runner = tokio::spawn(async move {
             let worker = manager.clone();
             let task_id = id.clone();
+            let failure_items = plan
+                .items
+                .iter()
+                .filter(|item| plan.selected_ids.contains(&item.id))
+                .map(Candidate::public)
+                .collect::<Vec<_>>();
             let result = tokio::task::spawn_blocking(move || {
                 let _guard = guard;
                 worker.execute(&task_id, &plan)
@@ -664,7 +695,7 @@ impl CleanupManager {
                     );
                 }
                 Err(failure) => {
-                    let value = json!({"completed":false,"error":failure});
+                    let value = json!({"completed":false,"error":failure,"items":failure_items});
                     let _ = manager.tasks.finish_partial(&id, value, failure);
                 }
             }
@@ -679,6 +710,89 @@ impl CleanupManager {
             .as_ref()
             .map(|id| self.tasks.task(id))
             .transpose()
+    }
+    pub(crate) async fn forget_deleted_project(
+        &self,
+        id: &str,
+        source_ids: &[String],
+        roots: &[PathBuf],
+    ) -> Result<Vec<String>, ApiError> {
+        if !(id.starts_with("prj_") && valid_id(id)
+            || Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id))
+            || source_ids
+                .iter()
+                .any(|source| !valid_id(source) || !source.starts_with("src_"))
+            || roots.iter().any(|root| !normalized(root))
+        {
+            return Err(error("Invalid project cleanup ownership"));
+        }
+        self.deleting.lock().unwrap().insert(id.into());
+        let running = std::mem::take(&mut *self.running.lock().unwrap());
+        let issues = crate::shutdown::join_all("history-cleanup-deletion", running).await;
+        if !issues.is_empty() {
+            return Err(error("History inspection or cleanup has not stopped")
+                .detail("issues", json!(issues)));
+        }
+        // Only typed candidate ownership and known scope paths are inspected.
+        // Nested strings in another project's registration are never references.
+        let mut ids = vec![];
+        let mut plan_ids = vec![];
+        for (plan_id, plan) in self.plans.lock().unwrap().iter() {
+            let matches = plan.items.iter().any(|item| {
+                deleted_scope_matches(
+                    item.project_id.as_deref(),
+                    &item.id,
+                    &item.path,
+                    id,
+                    source_ids,
+                    roots,
+                )
+            });
+            if matches {
+                plan_ids.push(plan_id.clone());
+                ids.push(plan.preview_task_id.clone());
+                if let Some(task) = &plan.task_id {
+                    ids.push(task.clone());
+                }
+            }
+        }
+        for task in self.tasks.history_cleanup_tasks() {
+            if task
+                .result
+                .and_then(|result| serde_json::from_value::<DerivedCleanupResult>(result).ok())
+                .is_some_and(|result| {
+                    result.items.iter().any(|item| {
+                        normalized(&item.path)
+                            && deleted_scope_matches(
+                                item.project_id.as_deref(),
+                                &item.id,
+                                &item.path,
+                                id,
+                                source_ids,
+                                roots,
+                            )
+                    })
+                })
+            {
+                ids.push(task.task_id);
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        crate::workspace::local_cleanup_roots(&self.paths.selected_for_cleanup().map_err(error)?)?;
+        self.tasks.forget_owned_tasks(&ids)?;
+        self.plans
+            .lock()
+            .unwrap()
+            .retain(|key, _| !plan_ids.contains(key));
+        let mut latest = self.latest.lock().unwrap();
+        if latest.as_ref().is_some_and(|task| ids.contains(task)) {
+            *latest = None;
+        }
+        Ok(ids)
+    }
+    pub(crate) fn finish_deleted_project(&self, id: &str) {
+        self.deleting.lock().unwrap().remove(id);
     }
     pub(crate) fn request_stop(&self) {
         let _submission = self.running.lock().unwrap();
@@ -824,6 +938,7 @@ impl CleanupManager {
                 state.path.clone(),
             );
             item.name = state.app_name.clone();
+            item.project_id = state.app_id.clone();
             let candidate = state.candidate_id.clone();
             self.inspect(&mut item, |_| self.validate_installation(&candidate));
             items.push(item);
@@ -878,6 +993,7 @@ impl CleanupManager {
                     "Node 旧程序版本",
                     path,
                 );
+                item.project_id = Some(app.clone());
                 item.name = name.clone();
                 self.inspect(&mut item, |_| self.validate_generation(&app, &generation));
                 items.push(item);
@@ -940,8 +1056,7 @@ impl CleanupManager {
         }
         Ok(())
     }
-    /// Acquired or captured source copies that no installed app, development
-    /// binding or unfinished installation references.
+    /// Finished source material belonging exclusively to its admitted project.
     fn source_candidates(&self, items: &mut Vec<Candidate>) -> Result<(), ApiError> {
         let root = self.sources_root();
         check_no_symlinks(&root, true)?;
@@ -960,7 +1075,10 @@ impl CleanupManager {
         sources.sort();
         for (id, path) in sources {
             let record = read_json(&path.join("source.json")).ok();
-            let mut item = Candidate::new(id.clone(), "sourceCopy", "未被使用的源码副本", path);
+            let mut item = Candidate::new(id.clone(), "sourceCopy", "项目源码副本", path);
+            item.project_id = record
+                .as_ref()
+                .and_then(|record| record["ownerAppId"].as_str().map(str::to_owned));
             item.name = record
                 .as_ref()
                 .and_then(|record| record["name"].as_str().map(str::to_owned));
@@ -981,35 +1099,47 @@ impl CleanupManager {
         ) {
             return Err(protected("源码仍在获取中"));
         }
-        let states = self.installer()?.installation_states()?;
-        if states.iter().any(|state| {
-            !state.is_terminal()
-                && (state.source_id.is_none() || state.source_id.as_deref() == Some(id))
-        }) {
-            return Err(protected("有安装正在使用或可能使用这份源码"));
+        let owner = record["ownerAppId"]
+            .as_str()
+            .filter(|id| Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+            .ok_or_else(|| protected("源码缺少本项目的独占归属，未收编旧材料"))?;
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        Self::guard_file(item, &ownership.directory(owner)?.join("ownership.json"))?;
+        let owned = ownership.owned_paths(owner)?;
+        if !owned.contains(&item.path) {
+            return Err(protected("源码目录未被该项目独占登记"));
         }
-        let root = self.node_root();
-        if root.try_exists()? {
-            for entry in fs::read_dir(&root)? {
-                let entry = entry?;
-                let Some(app) = entry.file_name().to_str().map(str::to_owned) else {
-                    continue;
-                };
-                if Uuid::parse_str(&app).is_err() || !entry.file_type()?.is_dir() {
-                    continue;
-                }
-                for file in ["registration.json", "development-source.json"] {
-                    let path = entry.path().join(file);
-                    check_no_symlinks(&path, true)?;
-                    if !path.try_exists()? {
-                        continue;
-                    }
-                    let value = read_json(&path)
-                        .map_err(|_| protected("Node 应用记录无法读取，源码副本继续保留"))?;
-                    if references_source(&value, id, &item.path) {
-                        return Err(protected("已安装的应用仍在使用这份源码"));
-                    }
-                }
+        let registration = self.node_root().join(owner).join("registration.json");
+        check_no_symlinks(&registration, true)?;
+        if registration.try_exists()? {
+            return Err(protected("已安装的应用仍在使用这份源码"));
+        }
+        if self.store.active_task(owner).is_some()
+            || self.store.active_task(&format!("source:{id}")).is_some()
+        {
+            return Err(protected("该项目仍有任务正在使用源码"));
+        }
+        let installations = self.node_root().join(".installations");
+        for path in owned
+            .iter()
+            .filter(|path| path.parent() == Some(installations.as_path()))
+        {
+            if !path.try_exists()? {
+                continue;
+            }
+            let install = Self::guard_file(item, &path.join("install.json"))?;
+            if install["target"]["appId"] != owner
+                || !matches!(
+                    install["state"].as_str(),
+                    Some("committed" | "failed" | "interrupted")
+                )
+            {
+                return Err(protected(
+                    "该项目有尚未结束或归属无法核验的安装，源码继续保留",
+                ));
             }
         }
         Ok(())
@@ -1293,13 +1423,20 @@ impl CleanupManager {
         }
         for id in projects {
             let project = self.store.project(&id)?;
-            self.check_database_copy(&project.root.join(&project.manifest.database))?;
+            self.check_database_copy(&id, &project.root.join(&project.manifest.database))?;
             directory_identity(&project.root.join(&project.manifest.attachments_dir))?;
         }
         Ok(())
     }
-    fn check_database_copy(&self, original: &Path) -> Result<(), ApiError> {
-        let diagnostics = self.root().join("diagnostics");
+    fn check_database_copy(&self, id: &str, original: &Path) -> Result<(), ApiError> {
+        if !id.starts_with("prj_") || !valid_id(id) {
+            return Err(error("Invalid diagnostic project owner"));
+        }
+        let diagnostics = self
+            .paths
+            .workspace_root()
+            .join(".platform/project-state/diagnostics")
+            .join(id);
         check_no_symlinks(&diagnostics, true)?;
         fs::create_dir_all(&diagnostics)?;
         let directory = diagnostics.join(Uuid::new_v4().simple().to_string());
@@ -1515,18 +1652,18 @@ impl CleanupManager {
         let mut stopped = false;
         for item in selected {
             if stopped {
-                results.push(json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"skipped","completed":false,"reason":"A preceding item needs attention"}));
+                results.push(json!({"id":item.id,"projectId":item.project_id,"kind":item.kind,"path":item.path,"status":"skipped","completed":false,"reason":"A preceding item needs attention"}));
                 continue;
             }
             self.tasks.phase(task, &format!("cleaning-{}", item.kind))?;
             let operation = remove_tree(item);
             let result = match operation {
                 Ok(removed) => {
-                    json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"migrationId":item.id.strip_prefix("retained_")})
+                    json!({"id":item.id,"projectId":item.project_id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"migrationId":item.id.strip_prefix("retained_")})
                 }
                 Err(failure) => {
                     stopped = true;
-                    json!({"id":item.id,"kind":item.kind,"path":item.path,"status":"failed","completed":false,"error":failure})
+                    json!({"id":item.id,"projectId":item.project_id,"kind":item.kind,"path":item.path,"status":"failed","completed":false,"error":failure})
                 }
             };
             results.push(result);

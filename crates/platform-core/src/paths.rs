@@ -228,6 +228,19 @@ impl RuntimePaths {
             settings.migration_id.as_deref(),
         )
     }
+    /// Read only: an older manager can resolve the current, already validated
+    /// public-migration selection without initializing or switching anything.
+    pub(crate) fn selected_for_cleanup(&self) -> Result<Self> {
+        self.validate_marker()?;
+        let settings: Settings = read_private_json(&self.settings_path())?;
+        Self::validate_settings_identity(&settings)?;
+        let selected = Self {
+            data_root: self.data_root.clone(),
+            workspace_root: settings.workspace_root,
+        };
+        selected.validate_cleanup_selection()?;
+        Ok(selected)
+    }
     pub fn runtime_dir(&self) -> PathBuf {
         self.data_root.join("runtime")
     }

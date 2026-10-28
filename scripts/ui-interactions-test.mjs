@@ -13,7 +13,7 @@ await mkdir(outputParent, { recursive: true });
 const output = await mkdtemp(path.join(outputParent, 'ui-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : command === "project_delete_preview" ? globalThis.__UI_DELETE_PREVIEW__(...args) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true;\n');
+await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : command === "project_delete_preview" ? globalThis.__UI_DELETE_PREVIEW__(...args) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true; export const listen = async (name, callback) => { const listeners = globalThis.__UI_EVENT_LISTENERS__ ??= new Map(); listeners.set(name, callback); return () => listeners.delete(name); };\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {
@@ -35,7 +35,7 @@ async function component(name) {
       const result = await compile(dependency);
       source = source.replaceAll(`${match[1]}${relative}${match[1]}`, JSON.stringify(pathToFileURL(result).href));
     }
-    source = source.replaceAll(/(['"])@tauri-apps\/api\/core\1/g, JSON.stringify(pathToFileURL(mockPath).href));
+    source = source.replaceAll(/(['"])@tauri-apps\/api\/(?:core|event)\1/g, JSON.stringify(pathToFileURL(mockPath).href));
     await writeFile(target, source);
     return target;
   }
@@ -63,6 +63,7 @@ const { WorkspaceLocation } = await component('WorkspaceLocation.tsx');
 const { resetHistoryScanForTests } = await component('history-scan-store.ts');
 const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
 const { default: App } = await component('App.tsx');
+const { resetProjectDeletionsForTests, acceptProjectDeletion, observeDeletionRuntime, projectWasDeleted } = await component('project-deletion.ts');
 const { SourceLibraryPanel: SourceAcquisitionPanel } = await component('SourceLibraryPanel.tsx');
 const { ImportPanel } = await component('LifecyclePanels.tsx');
 const { ProjectDeleteDialog } = await component('ProjectDeleteDialog.tsx');
@@ -114,6 +115,7 @@ function deletionProgress(stage) {
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
   root = null;
+  resetProjectDeletionsForTests();
   globalThis.__UI_TEST_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); };
   delete navigator.clipboard;
 });
@@ -1867,4 +1869,62 @@ test('App blocks closing a pending create, shows its failure inside the modal, a
   await click([...document.querySelectorAll('.radio-toolbar button')].find((button) => button.textContent.trim() === '新建项目'));
   assert.equal(document.getElementById('project-name').value, 'Unsubmitted project draft');
   assert.equal(submissions, 1);
+});
+
+
+async function managerDeletion(value) {
+  const listener = globalThis.__UI_EVENT_LISTENERS__?.get('panda-project-deleted');
+  assert.ok(listener, 'Manager must install its native deletion listener before listing projects');
+  await act(async () => listener({ payload: value }));
+}
+const managerRemoved = (id, extra = {}) => ({ version: 1, kind: 'web', id, taskIds: [], sourceIds: [], sourceRoots: [], instanceId: 'instance_dom_fixture', ...extra });
+test('A CLI deletion notification rejects a late project list and keeps another project metadata draft', async () => {
+  await setup(); const a = appProject('prj_cli_A', 'CLI removed A'); const b = appProject('prj_cli_B', 'Preserved B');
+  const state = { projects: [a, b] }; mockApp(state);
+  await render(h(App)); await openDetails(b.name); await click(buttonNamed('编辑信息'));
+  await inputValue(document.querySelector('.detail-metadata-form input'), 'Keep unrelated B draft');
+  const original = globalThis.__UI_TEST_INVOKE__; const stale = deferred(); let delay = true;
+  globalThis.__UI_TEST_INVOKE__ = (command, args) => command === 'project_list' && delay ? (delay = false, stale.promise) : original(command, args);
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  state.projects = [b];
+  await managerDeletion(managerRemoved(a.id, { sourceRoots: [a.projectRoot] }));
+  await act(async () => stale.resolve([a, b]));
+  assert.equal(document.querySelector(`[aria-label="进入项目「${a.name}」"]`), null);
+  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Keep unrelated B draft');
+  await managerDeletion(managerRemoved(b.id, { instanceId: 'another-runtime' }));
+  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Keep unrelated B draft');
+});
+test('A CLI deletion removes null-projectId source tasks and a late task poll cannot restore the task center', async () => {
+  await setup(); const delayed = deferred(); const owner = 'disposable_node_cli_A';
+  const task = { taskId: 'task_cli_null_source', projectId: null, type: 'sourceAcquire', status: 'running', final: false, phase: 'downloading', result: { ownerAppId: owner } };
+  mockApp({ projects: [] }, async command => {
+    if (command === 'source_list') return [];
+    if (command === 'source_acquire') return task;
+    if (command === 'task_get') return delayed.promise;
+    throw new Error(command);
+  });
+  await render(h(App)); await click(buttonNamed('从 Git 添加'));
+  await inputValue(document.getElementById('git-import-url'), 'https://github.com/disposable/cli-source');
+  await click(buttonNamed('开始添加'));
+  await click(closeButton());
+  assert.equal(document.querySelectorAll('.task-center-entry').length, 1);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1050)); });
+  await managerDeletion(managerRemoved(owner, { kind: 'node', taskIds: [task.taskId], sourceIds: ['src_cli_source'] }));
+  await act(async () => delayed.resolve({ ...task, final: true, status: 'succeeded', phase: 'completed', result: { ownerAppId: owner } }));
+  assert.equal(document.querySelectorAll('.task-center-entry').length, 0);
+  assert.equal(document.querySelector('.task-center-import'), null);
+  assert.doesNotMatch(document.querySelector('.task-center-panel').textContent, /task_cli_null_source|正在获取源码/);
+});
+
+test('An obsolete bootstrap reply cannot change the deletion runtime or erase a confirmed revocation', async () => {
+  await setup(); const a = appProject('prj_stale_bootstrap_A', 'Bootstrap removed A'); const b = appProject('prj_stale_bootstrap_B', 'Bootstrap B');
+  const state = { projects: [a, b] }; mockApp(state); await render(h(App));
+  const original = globalThis.__UI_TEST_INVOKE__; const stale = deferred(); let delay = true;
+  globalThis.__UI_TEST_INVOKE__ = (command, args) => command === 'bootstrap_info' && delay ? (delay = false, stale.promise) : original(command, args);
+  await click(document.querySelector('[aria-label="刷新项目和运行状态"]'));
+  state.projects = [b]; await managerDeletion(managerRemoved(a.id));
+  await act(async () => stale.resolve({ instanceId: 'obsolete-bootstrap-runtime', workspaceRoot: '/obsolete-workspace' }));
+  assert.equal(projectWasDeleted(a.id), true);
+  assert.equal(document.querySelector(`[aria-label="进入项目「${a.name}」"]`), null);
+  assert.ok(document.querySelector(`[aria-label="进入项目「${b.name}」"]`));
 });

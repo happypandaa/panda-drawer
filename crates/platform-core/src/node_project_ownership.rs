@@ -710,6 +710,67 @@ impl NodeProjectOwnership {
     pub(crate) fn task_ids(&self, id: &str) -> Result<Vec<String>> {
         Ok(self.read(id)?.tasks.into_iter().collect())
     }
+    pub(crate) fn source_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Claim {
+            version: u32,
+            app_id: String,
+            source_root: PathBuf,
+            identity: PersistedIdentity,
+        }
+        let record = self.read(id)?;
+        let mut roots = vec![];
+        for key in record
+            .artifacts
+            .keys()
+            .filter(|key| key.starts_with("claim:"))
+        {
+            let directory = self.resolve(id, key)?;
+            let path = directory.join("owner.json");
+            check_no_symlinks(&path, true)?;
+            if !path.try_exists()? {
+                continue;
+            }
+            let claim: Claim = serde_json::from_slice(&fs::read(&path)?)?;
+            if claim.version != 1 || claim.app_id != id || !claim.source_root.is_absolute() {
+                return Err(invalid("源码占有记录身份不符。"));
+            }
+            check_no_symlinks(&claim.source_root, true)?;
+            match fs::symlink_metadata(&claim.source_root) {
+                Ok(_) => {
+                    let current = crate::node_apps::development::require_claimed_source_owner(
+                        &self.data,
+                        id,
+                        &claim.source_root,
+                    )?;
+                    if !claim.identity.matches_captured(&current) {
+                        return Err(invalid("源码目录身份已变化。"));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    claim
+                        .identity
+                        .absent_on_expected_volume(&claim.source_root)
+                        .map_err(|error| invalid(error.to_string()))?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            roots.push(claim.source_root);
+        }
+        if let Some(source) = record.generated_source {
+            roots.push(source.path);
+        }
+        roots.extend(
+            record
+                .source_restores
+                .into_iter()
+                .map(|restore| restore.source_root),
+        );
+        roots.sort();
+        roots.dedup();
+        Ok(roots)
+    }
     pub(crate) fn all_owned_scopes(&self) -> Result<Vec<(PathBuf, Vec<PathBuf>)>> {
         let mut scopes = vec![];
         check_no_symlinks(&self.root(), true)?;

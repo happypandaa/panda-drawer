@@ -20,6 +20,7 @@ struct InstanceAdmission {
 }
 #[derive(Default)]
 struct Admission {
+    closed: bool,
     operations: BTreeMap<u64, String>,
     window_operations: std::collections::BTreeSet<u64>,
     deletion: Option<(u64, String)>,
@@ -201,14 +202,57 @@ fn deleting() -> ApiError {
     )
 }
 impl NodeOperationCoordinator {
-    pub(super) fn forget_instance(&self, id: &str) -> Result<()> {
-        let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(instance) = instances.get(id) {
-            let state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
-            if !state.operations.is_empty() || state.deletion.is_some() {
-                return Err(fail("应用仍有操作归属，不能清理内存状态。"));
-            }
+    fn with_checked<T>(
+        &self,
+        id: &str,
+        check: impl FnOnce() -> Result<()>,
+        action: impl FnOnce(&Arc<InstanceAdmission>, &mut Admission) -> Result<T>,
+    ) -> Result<T> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("应用标识无效。"));
         }
+        let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        let created = !instances.contains_key(id);
+        let instance = instances.entry(id.into()).or_default().clone();
+        let mut state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
+        let result = if state.closed {
+            Err(deleting())
+        } else {
+            check().and_then(|()| action(&instance, &mut state))
+        };
+        if result.is_err() && created && state.operations.is_empty() && state.deletion.is_none() {
+            instances.remove(id);
+        }
+        result
+    }
+    pub(super) fn forget_deleting_instance(
+        &self,
+        id: &str,
+        permit: &NodeDeletionPermit,
+    ) -> Result<()> {
+        let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = permit
+            .0
+            .instance
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if permit.0.app_id != id
+            || !state.operations.is_empty()
+            || !state
+                .deletion
+                .as_ref()
+                .is_some_and(|(token, _)| *token == permit.0.token)
+        {
+            return Err(fail("应用删除归属尚未结束，不能清理内存状态。"));
+        }
+        if instances
+            .get(id)
+            .is_some_and(|current| !Arc::ptr_eq(current, &permit.0.instance))
+        {
+            return Err(fail("应用操作归属已变化。"));
+        }
+        state.closed = true;
         instances.remove(id);
         Ok(())
     }
@@ -224,37 +268,47 @@ impl NodeOperationCoordinator {
             .or_default()
             .clone())
     }
+    #[cfg(test)]
     fn admit(self: &Arc<Self>, id: &str, label: &str) -> Result<NodeOperationPermit> {
         self.admit_kind(id, label, false)
     }
+    #[cfg(test)]
     fn admit_kind(
         self: &Arc<Self>,
         id: &str,
         label: &str,
         window: bool,
     ) -> Result<NodeOperationPermit> {
-        let instance = self.instance(id)?;
-        let mut state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.deletion.is_some() {
-            return Err(deleting());
-        }
-        let token = self.next.fetch_add(1, Ordering::Relaxed);
-        state.operations.insert(token, label.into());
-        if window {
-            state.window_operations.insert(token);
-        }
-        drop(state);
-        Ok(NodeOperationPermit(Arc::new(OperationOwner {
-            coordinator: self.clone(),
-            instance,
-            app_id: id.into(),
-            token,
-        })))
+        self.admit_checked(id, label, window, || Ok(()))
+    }
+    fn admit_checked(
+        self: &Arc<Self>,
+        id: &str,
+        label: &str,
+        window: bool,
+        check: impl FnOnce() -> Result<()>,
+    ) -> Result<NodeOperationPermit> {
+        self.with_checked(id, check, |instance, state| {
+            if state.deletion.is_some() {
+                return Err(deleting());
+            }
+            let token = self.next.fetch_add(1, Ordering::Relaxed);
+            state.operations.insert(token, label.into());
+            if window {
+                state.window_operations.insert(token);
+            }
+            Ok(NodeOperationPermit(Arc::new(OperationOwner {
+                coordinator: self.clone(),
+                instance: instance.clone(),
+                app_id: id.into(),
+                token,
+            })))
+        })
     }
     fn deletion(self: &Arc<Self>, id: &str) -> Result<NodeDeletionPermit> {
         let instance = self.instance(id)?;
         let mut state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.deletion.is_some() {
+        if state.closed || state.deletion.is_some() {
             return Err(deleting());
         }
         let token = self.next.fetch_add(1, Ordering::Relaxed);
@@ -269,7 +323,18 @@ impl NodeOperationCoordinator {
         })))
     }
     fn snapshot(&self, id: &str) -> Result<Value> {
-        let instance = self.instance(id)?;
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("应用标识无效。"));
+        }
+        let Some(instance) = self
+            .instances
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+        else {
+            return Ok(json!({"active":false,"phase":null,"waitingFor":[]}));
+        };
         let state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
         let labels: std::collections::BTreeSet<_> = state.operations.values().cloned().collect();
         Ok(
@@ -278,11 +343,16 @@ impl NodeOperationCoordinator {
     }
 }
 impl NodeApps {
+    fn require_current_owner(&self, id: &str) -> Result<()> {
+        self.project_ownership().task_ids(id).map(|_| ())
+    }
     pub fn admit_operation(&self, id: &str, label: &str) -> Result<NodeOperationPermit> {
-        self.operations.admit(id, label)
+        self.operations
+            .admit_checked(id, label, false, || self.require_current_owner(id))
     }
     pub fn admit_window_operation(&self, id: &str, label: &str) -> Result<NodeOperationPermit> {
-        self.operations.admit_kind(id, label, true)
+        self.operations
+            .admit_checked(id, label, true, || self.require_current_owner(id))
     }
     pub fn begin_delete_operation(&self, id: &str) -> Result<NodeDeletionPermit> {
         self.operations.deletion(id)
@@ -295,32 +365,80 @@ impl NodeApps {
         _label: &str,
         action: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
-        let instance = self.operations.instance(id)?;
-        let state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.deletion.is_some() {
-            return Err(deleting());
-        }
-        action()
+        self.operations.with_checked(
+            id,
+            || self.require_current_owner(id),
+            |_, state| {
+                if state.deletion.is_some() {
+                    return Err(deleting());
+                }
+                action()
+            },
+        )
     }
     pub fn deletion_operation_status(&self, id: &str) -> Result<Value> {
         self.operations.snapshot(id)
     }
     pub(super) fn require_configuration_access(&self, id: &str) -> Result<()> {
-        let instance = self.operations.instance(id)?;
-        let state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
         // Existing admitted commits may still read their configuration while
         // deletion waits. Once all owners drain, configuration constructors
         // must not recreate a directory during filesystem removal.
-        if state.deletion.is_some() && state.operations.is_empty() {
-            return Err(deleting());
-        }
-        Ok(())
+        self.operations.with_checked(
+            id,
+            || self.require_current_owner(id),
+            |_, state| {
+                if state.deletion.is_some() && state.operations.is_empty() {
+                    return Err(deleting());
+                }
+                Ok(())
+            },
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn completed_deletion_forgets_admission_before_release_and_late_requests_leave_no_cache()
+    {
+        let temporary = tempfile::tempdir().unwrap();
+        let data = temporary.path().canonicalize().unwrap();
+        let apps = NodeApps::new(data, "/disposable/nonexistent-node".into()).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let owner = apps.project_ownership();
+        owner.initialize(&id).unwrap();
+        let admitted = apps
+            .admit_operation(&id, "disposable admitted source task")
+            .unwrap();
+        drop(admitted);
+        let deletion = apps.begin_delete_operation(&id).unwrap();
+        deletion.wait_ready().await;
+        let directory = owner.directory(&id).unwrap();
+        crate::history_cleanup::remove_owned_directory(
+            &directory,
+            &crate::file_identity::PersistedIdentity::capture(&directory).unwrap(),
+        )
+        .unwrap();
+        apps.forget_deleted_instance(&id, &deletion).await.unwrap();
+        assert!(apps.operations.instances.lock().unwrap().is_empty());
+        assert!(deletion.0.instance.state.lock().unwrap().closed);
+        deletion.release_gate();
+        assert!(apps.admit_operation(&id, "late start").is_err());
+        assert!(apps
+            .admit_window_operation(&id, "late native window")
+            .is_err());
+        assert!(apps
+            .with_operation_admission(&id, "late reservation", || Ok(()))
+            .is_err());
+        assert!(apps.require_configuration_access(&id).is_err());
+        assert_eq!(
+            apps.deletion_operation_status(&id).unwrap()["active"],
+            false
+        );
+        assert!(apps.operations.instances.lock().unwrap().is_empty());
+        assert!(apps.runtime_operations.lock().unwrap().is_empty());
+    }
     #[tokio::test]
     async fn abandonment_waits_for_actual_window_owner_but_not_a_long_git_owner() {
         let ops = Arc::new(NodeOperationCoordinator::default());

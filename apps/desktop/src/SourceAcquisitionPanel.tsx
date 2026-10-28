@@ -13,6 +13,7 @@ import type { InstalledNodeResult } from './NodeInstallPanel';
 import type { NodeAppDetail } from './node-app-types';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { onProjectDeleted, projectWasDeleted } from './project-deletion';
 import { displayPath, reviewCategoryFromIssues, reviewCategoryLabels, reviewCategoryTitle } from './local-directory-review';
 
 type ExistingRepository = { url: string; appId: string; name: string };
@@ -39,9 +40,6 @@ export function gitRepositoryAddress(value: string): { url: string; provider: st
   if (!repository) return null;
   return { url: `${match[1]}${match[2]}/${match[3]}/${repository}.git`, provider: match[2] === 'github.com' ? 'GitHub' : 'Gitee', repository };
 }
-function lastAddressKey(instanceId?: string) { return `panda-drawer:add-git:last-address:${instanceId ?? 'local'}`; }
-function readLastAddress(instanceId?: string) { try { return window.localStorage.getItem(lastAddressKey(instanceId)) ?? ''; } catch { return ''; } }
-function rememberAddress(instanceId: string | undefined, value: string) { try { window.localStorage.setItem(lastAddressKey(instanceId), value); } catch { /* Keeping an address is optional. */ } }
 function ordinaryReason(value: string) {
   if (/local-app\.json|应用声明|应用格式|声明文件/.test(value)) return '缺少有效的应用说明，平台还不知道怎样打开这个项目。';
   if (/lock|锁文件/i.test(value)) return '缺少有效的依赖版本记录，暂时无法准备应用。';
@@ -59,7 +57,7 @@ export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
   return <GitImportWorkflow key={props.instanceId ?? ''} {...props} />;
 }
 function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenLocal, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter }: SourceAcquisitionPanelProps) {
-  const [url, setUrl] = useState(() => readLastAddress(suppliedDirectory ?? instanceId));
+  const [url, setUrl] = useState('');
   const [branch, setBranch] = useState('');
   const [name, setName] = useState('');
   const [projectDirectory, setProjectDirectory] = useState(suppliedDirectory ?? '');
@@ -87,6 +85,19 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   const heading = useRef<HTMLHeadingElement>(null);
   const callbacks = useRef({ onTask, onInstalled, onEnter, onClose, onBackground, onAttention });
   callbacks.current = { onTask, onInstalled, onEnter, onClose, onBackground, onAttention };
+  const ownerContext = useRef({ instanceId, app, duplicate }); ownerContext.current = { instanceId, app, duplicate };
+  function forgetOwnedFlow() {
+    lifetime.current++; operation.current = false; session.current = null;
+    setUrl(''); setBranch(''); setName(''); setApp(null); setDuplicate(null); setBuildInfo(null); setBuildInfoError('');
+    setView('form'); setBusy(false); setCancelling(false); setCancelConfirm(false); setError(''); setCleanupError('');
+    setCleanupDone(false); setSourceRetained(false); setCleaning(false);
+    callbacks.current.onClose();
+  }
+  useEffect(() => onProjectDeleted(notice => {
+    if (ownerContext.current.instanceId && notice.instanceId !== ownerContext.current.instanceId) return;
+    if (session.current?.revoke(notice)) return;
+    if (ownerContext.current.app?.id === notice.id || ownerContext.current.duplicate?.appId === notice.id) forgetOwnedFlow();
+  }), []);
   useEffect(() => { alive.current = true; lifetime.current++; return () => { alive.current = false; lifetime.current++; }; }, []);
   useEffect(() => {
     if (suppliedDirectory) { setProjectDirectory(suppliedDirectory); setLocationError(''); return; }
@@ -159,7 +170,6 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     const found = existingRepositories?.find(item => gitRepositoryAddress(item.url)?.url === address.url);
     if (found && !allowDuplicate) { setDuplicate(found); setView('duplicate'); return; }
     operation.current = true; setBusy(true); setError(''); setCleanupError('');
-    rememberAddress(suppliedDirectory ?? instanceId, url.trim());
     const generation = lifetime.current;
     try {
       if (session.current?.sourceTaskId && !cleanupDone && !await clean(session.current)) return;
@@ -167,6 +177,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       const value: SourceImportSession = new SourceImportSession(invoke, {
         isCurrent: (): boolean => current(generation) && session.current === value,
         onChange: () => redraw(count => count + 1), onTask: task => callbacks.current.onTask(task),
+        onRevoked: forgetOwnedFlow,
       });
       session.current = value; setCleanupDone(false); setSourceRetained(false); setApp(null); setBuildInfo(null); setBuildInfoError(''); setCancelling(false); setView('running');
       const source = await value.acquire({ url: address.url, branch: branch.trim() || null, ...(name.trim() ? { name: name.trim() } : {}) });
@@ -234,7 +245,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   }
   async function enter() {
     if (operation.current || !session.current?.installed) return;
-    if (app) { callbacks.current.onClose(); callbacks.current.onEnter?.(app); return; }
+    if (app) { if (!projectWasDeleted(app.id)) { callbacks.current.onClose(); callbacks.current.onEnter?.(app); } return; }
     const value = session.current; const generation = lifetime.current;
     operation.current = true; setBusy(true);
     try {

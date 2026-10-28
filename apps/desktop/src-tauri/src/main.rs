@@ -31,7 +31,7 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     webview::NewWindowResponse,
-    Manager, Url,
+    Emitter, Manager, Url,
 };
 use tauri_plugin_dialog::DialogExt;
 
@@ -2336,6 +2336,45 @@ fn request_safe_shutdown(app: &tauri::AppHandle) {
     desktop_shutdown_native::request(app);
 }
 
+fn install_project_cleanup_hook(app: &tauri::AppHandle) {
+    let owner = app.clone();
+    app.state::<AppState>()
+        .handle
+        .set_project_cleanup_hook(std::sync::Arc::new(move |stage, notice| {
+            let app = owner.clone();
+            Box::pin(async move {
+                let state = app.try_state::<AppState>().ok_or_else(|| {
+                    ApiError::new(
+                        "PROJECT_CLEANUP_NOT_READY",
+                        "项目清理尚未就绪，请稍后重试。",
+                    )
+                })?;
+                match stage {
+                    platform_core::project_cleanup::NativeCleanupStage::Prepare => {
+                        state
+                            .window_sizes
+                            .forget_project(notice.kind.as_str(), &notice.id);
+                        Ok(())
+                    }
+                    platform_core::project_cleanup::NativeCleanupStage::Purge => Ok(()),
+                    platform_core::project_cleanup::NativeCleanupStage::Committed => {
+                        let mut payload = serde_json::to_value(notice).map_err(|error| {
+                            ApiError::new("PROJECT_CLEANUP_NOTIFICATION_FAILED", error.to_string())
+                        })?;
+                        payload["instanceId"] = serde_json::json!(state.handle.info().instance_id);
+                        app.emit_to("manager", "panda-project-deleted", payload)
+                            .map_err(|error| {
+                                ApiError::new(
+                                    "PROJECT_CLEANUP_NOTIFICATION_FAILED",
+                                    error.to_string(),
+                                )
+                            })
+                    }
+                }
+            })
+        }));
+}
+
 fn main() {
     // Reject before Tauri plugins, setup and WebView creation. In particular,
     // do not turn an unopened Windows stage into a workspace-repair prompt.
@@ -2408,7 +2447,6 @@ fn main() {
             let mut started_runtime = None;
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
-                let window_sizes = window_sizes::WindowSizes::new(paths.data_root());
             let lock = paths.acquire_lock()?;
             let InstalledResources {
                 info: resources,
@@ -2425,6 +2463,7 @@ fn main() {
                 cli_executable,
             ))?;
             let runtime = std::sync::Arc::new(runtime);
+            let window_sizes = window_sizes::WindowSizes::new(runtime.handle().window_size_store());
             started_runtime = Some(runtime.clone());
             let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::with_runtime(
                 node_data_root, runtime_node, &runtime.handle(),
@@ -2434,7 +2473,6 @@ fn main() {
             tauri::async_runtime::block_on(node_apps.reconcile_run_markers())?;
             // Durable deletion consent survives a host restart. Restore its
             // gates and resume proven cleanup before publishing commands.
-            tauri::async_runtime::block_on(node_apps.resume_deletions())?;
             let monitor = std::sync::Arc::downgrade(&node_apps);
             let node_monitor_app = app.handle().clone();
             let monitor_io = runtime.handle().io_lifetime();
@@ -2476,7 +2514,18 @@ fn main() {
             })
             })();
             match startup {
-                Ok(state) => { app.manage(state); }
+                Ok(state) => {
+                    app.manage(state);
+                    install_project_cleanup_hook(app.handle());
+                    let app=app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let Ok(lease)=app.state::<AppState>().handle.io_lifetime().admit_cleanup() else { return; };
+                        let _=lease.run(async move {
+                            let state=app.state::<AppState>();
+                            if let Err(error)=state.node_apps.resume_deletions().await { eprintln!("Node deletion startup recovery: {}",error.code); }
+                        }).await;
+                    });
+                }
                 Err(error) => {
                     let message = format!("平台工作区无法启动：{error:#}\n\n请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。");
                     eprintln!("{message}");

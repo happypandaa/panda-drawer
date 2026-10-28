@@ -960,7 +960,11 @@ impl NodeApps {
         self.detail(&record, &manifest, &inner)
     }
 
-    pub(super) async fn forget_deleted_instance(&self, id: &str) -> Result<()> {
+    pub(super) async fn forget_deleted_instance(
+        &self,
+        id: &str,
+        permit: &NodeDeletionPermit,
+    ) -> Result<()> {
         let mut inner = self.inner.lock().await;
         if inner.running.contains_key(id) {
             return Err(fail("应用写入尚未结束，不能清理内存状态。"));
@@ -972,7 +976,7 @@ impl NodeApps {
             .lock()
             .map_err(|_| fail("运行操作锁不可用。"))?
             .remove(id);
-        self.operations.forget_instance(id)?;
+        self.operations.forget_deleting_instance(id, permit)?;
         Ok(())
     }
 

@@ -13,7 +13,7 @@ await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/node-form-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__NODE_FORM_INVOKE__(command, ...args); export const isTauri = () => true;\n');
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__NODE_FORM_INVOKE__(command, ...args); export const isTauri = () => true; export const listen = async (name, callback) => { const listeners = globalThis.__NODE_EVENT_LISTENERS__ ??= new Map(); listeners.set(name, callback); return () => listeners.delete(name); };\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {
@@ -30,7 +30,7 @@ async function component(name) {
       assert.ok(dependency);
       source = source.replaceAll(`${match[1]}${match[2]}${match[1]}`, JSON.stringify(pathToFileURL(await compile(dependency)).href));
     }
-    source = source.replaceAll(/(['"])@tauri-apps\/api\/core\1/g, JSON.stringify(pathToFileURL(mockPath).href));
+    source = source.replaceAll(/(['"])@tauri-apps\/api\/(?:core|event)\1/g, JSON.stringify(pathToFileURL(mockPath).href));
     await writeFile(target, source);
     return target;
   }
@@ -48,8 +48,10 @@ const { createRoot } = await import('react-dom/client');
 const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel.tsx');
 const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
 const { default: App } = await component('App.tsx');
+const { acceptProjectDeletion, observeDeletionRuntime, resetProjectDeletionsForTests } = await component('project-deletion.ts');
+const { readRecentProjectFolders, saveRecentProjectFolder, resetRecentProjectFoldersForTests } = await component('local-directory-review.ts');
 let root;
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; dom.window.localStorage.clear(); delete navigator.clipboard; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; resetProjectDeletionsForTests(); resetRecentProjectFoldersForTests(); dom.window.localStorage.clear(); delete navigator.clipboard; globalThis.__NODE_FORM_INVOKE__ = async (command) => { throw new Error(`Unexpected native request: ${command}`); }; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 function field(name, type, extra = {}) { return { name, type, label: `设置 ${name}`, required: false, secret: false, description: `人工说明 ${name}`, howToGet: [`人工步骤 ${name}`], ...extra }; }
@@ -2057,7 +2059,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
 
 test('Deleting from a Node launcher action removes the app only after an explicit deleted result', async () => {
   for (const metadataCleanupPending of [false, true]) {
-    const value = app(); const state = { nodes: [value] }; const writes = []; const calls = []; const completed = deferred();
+    const value = app({ id: `node_delete_${metadataCleanupPending}` }); const state = { nodes: [value] }; const writes = []; const calls = []; const completed = deferred();
     const mock = shellMock(state, async (command, args) => {
       if (command === 'node_app_delete_preview') return deletionPreview(value, 'external');
       if (command === 'node_app_delete_submit') {
@@ -2244,4 +2246,41 @@ test('Entering after a stopped save clears its success notice without offering a
   await click(byText('进入项目'));
   assert.equal(byText('立即重启'), undefined);
   assert.doesNotMatch(document.querySelector('.node-configuration-body').textContent, /重启后生效|下次进入时生效/);
+});
+
+
+function removedFixture(extra = {}) { return { version: 1, kind: 'node', id: 'node_deleted_A', instanceId: 'directory-instance', taskIds: ['task_deleted_A'], sourceIds: [], sourceRoots: ['/artificial/deleted-A'], ...extra }; }
+test('A deletion notice revokes a pending local inspection and cannot recreate recent paths from its late reply', async () => {
+  observeDeletionRuntime('directory-instance'); const inspection = deferred();
+  await setupDirectory(async command => { if (command === 'choose_path') return '/artificial/deleted-A'; if (command === 'node_app_directory_inspect') return inspection.promise; throw new Error(command); });
+  await click(byText('选择文件夹…'));
+  await act(async () => acceptProjectDeletion(removedFixture()));
+  await act(async () => inspection.resolve(directoryReview('needs-review', { sourcePath: '/artificial/deleted-A', issues: ['Private stale A issue'], reviewPrompt: 'Private stale A prompt' })));
+  assert.doesNotMatch(document.body.textContent, /deleted-A|Private stale A/);
+  assert.equal(window.localStorage.length, 0);
+});
+test('An unrelated deletion preserves a Node configuration draft and a matching deletion clears it', async () => {
+  observeDeletionRuntime('directory-instance');
+  const value = app({ id: 'node_B' });
+  await setup(baseMock(value), { instanceId: 'directory-instance', request: { app: value, intent: 'configure', token: 1 } });
+  await change(input('AI_KEY'), 'Keep B private draft');
+  await act(async () => acceptProjectDeletion(removedFixture()));
+  assert.equal(input('AI_KEY').value, 'Keep B private draft');
+  await act(async () => acceptProjectDeletion(removedFixture({ id: value.id, sourceRoots: [] })));
+  assert.equal(document.querySelector('[role=dialog]'), null);
+});
+
+test('Session recent folders forget only their deleted owner and never persist into a new manager context', async () => {
+  observeDeletionRuntime('directory-instance'); const scope = '/artificial/recent-owned-workspace';
+  for (const owner of ['A', 'B']) saveRecentProjectFolder(scope, { path: `/artificial/deleted-${owner}`, selectedAt: new Date().toISOString(), result: '已添加', issues: [], ownerId: `node_deleted_${owner}` });
+  await setupDirectory(async command => { throw new Error(command); }, { workspacePath: scope });
+  assert.equal(document.querySelectorAll('.local-directory-recent').length, 2);
+  await act(async () => acceptProjectDeletion(removedFixture()));
+  assert.deepEqual(readRecentProjectFolders(scope).map(item => item.ownerId), ['node_deleted_B']);
+  assert.match(document.querySelector('.local-directory-recents').textContent, /deleted-B/);
+  assert.doesNotMatch(document.querySelector('.local-directory-recents').textContent, /deleted-A/);
+  assert.equal(window.localStorage.length, 0);
+  await act(async () => root.unmount()); root = null; resetRecentProjectFoldersForTests();
+  await setupDirectory(async command => { throw new Error(command); }, { workspacePath: scope });
+  assert.equal(document.querySelector('.local-directory-recents'), null);
 });

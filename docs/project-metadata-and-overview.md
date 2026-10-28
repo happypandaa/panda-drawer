@@ -25,7 +25,7 @@
 | 项目稳定 ID、名称、简介 | 项目根目录 `project.json` 的 `id`、`name`、`description` | 随项目保存；改展示名称不改 ID 或目录 |
 | 项目图标 | `project.json.icon` 指定的项目内 PNG，标准位置 `meta/icon.png` | 随项目备份、导出和复制，不依赖外部图片网址 |
 | 应用初始窗口尺寸 | `project.json` 可选顶层 `window`；内部 Node 源码槽为 `local-app.json.window` | 作者声明与本机上次普通窗口尺寸分开，规则见[应用窗口尺寸](app-window-runtime-contract.md#应用窗口尺寸)；不为既有 Node 槽绕过整份声明摘要门禁 |
-| 本机上次应用窗口尺寸 | 固定数据根 `app-window-sizes.json`，由宿主记录 | 与清单和业务数据分离；project-v1 按工作区根及 ID、Node 按注册 UUID 隔离，不随项目包共享 |
+| 本机上次应用窗口尺寸 | 固定数据根 `web-project-ownership/<项目ID>/window-size.json` 或 `node-project-ownership/<实例UUID>/window-size.json`，由宿主记录 | 项目独占，与清单和业务数据分离；网页按稳定 ID、Node 按注册 UUID 隔离，迁移保持身份，不随项目包共享；删除同步撤销缓存写许可并清理 |
 | 运行类型及类型图标/文字（新增目标） | 受控且已校验的运行声明；平台固定语义映射生成图标和中文标签 | 不从作者图标、名称、说明或 `package.json` 猜测；不新增旧 v1 必填，不允许作者自定义类型标识 |
 | 项目业务数据 | `data/main.sqlite` 及用户附件 | 不另建“项目名称表”作为平台信息来源 |
 | 维护、任务、构建来源 | 已有工作区 `.platform/` 持久控制记录 | 沿用控制状态与生命周期规则，不放进业务表 |

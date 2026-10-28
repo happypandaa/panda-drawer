@@ -20,15 +20,23 @@ async fn history_cleanup_http_requires_admin_confirmation_and_preserves_other_pr
     let before = std::fs::read(&marker).unwrap();
     // An unused, finished source copy is the disposable cleanup target.
     let source = format!("src_{}", uuid::Uuid::new_v4().simple());
+    let owner = uuid::Uuid::new_v4().to_string();
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    ownership.initialize(&owner).unwrap();
+    ownership.record_source(&owner, &source).unwrap();
     let slot = paths
         .workspace_root()
         .join(".platform/sources")
         .join(&source);
     std::fs::create_dir_all(slot.join("repository")).unwrap();
     std::fs::write(slot.join("repository/app.js"), "disposable source copy").unwrap();
+    ownership.record_source(&owner, &source).unwrap();
     crate::builds::atomic_json(
         &slot.join("source.json"),
-        &json!({"schemaVersion":1,"sourceId":source,"name":"Disposable source","status":"ready"}),
+        &json!({"schemaVersion":1,"sourceId":source,"ownerAppId":owner,"name":"Disposable source","status":"ready"}),
     )
     .unwrap();
     let base = service.info().base_url;
