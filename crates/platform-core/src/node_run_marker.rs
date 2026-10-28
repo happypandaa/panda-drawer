@@ -1,5 +1,6 @@
-//! Durable two-phase Node run identities. Old/incomplete same-boot records never
-//! authorize a signal. A marker from an earlier system boot can be retired.
+//! Durable two-phase Node run identities. Development-era v1 records are
+//! explicitly discardable and never authorize a signal. Incomplete v2 records
+//! remain gated unless a later system boot proves their processes have ended.
 use super::*;
 use crate::node_process_identity::{self, Observation, RuntimeProcessIdentity};
 use std::time::SystemTime;
@@ -40,6 +41,7 @@ impl RunMarker {
 
 pub(super) enum RunState {
     Absent,
+    LegacyDiscardable,
     Stopped,
     Orphaned(RuntimeProcessIdentity),
     Unconfirmed,
@@ -77,6 +79,17 @@ pub(super) fn inspect(slot: &Path, id: &str, boot: SystemTime) -> Result<Inspect
         Ok(_) => (),
     }
     let owner = StartIntentOwnership::open_existing(&path)?;
+    // The user explicitly discarded v1 compatibility during development.
+    // This authorizes retiring the record, not observing or signalling hostPid
+    // and not claiming that an old application's processes were verified dead.
+    if serde_json::from_slice::<Value>(&owner.contents)
+        .is_ok_and(|value| value["version"].as_u64() == Some(1))
+    {
+        return Ok(Inspection {
+            state: RunState::LegacyDiscardable,
+            owner: Some(owner),
+        });
+    }
     if owner.file.metadata()?.created().map_err(|_| unknown())? < boot {
         return Ok(Inspection {
             state: RunState::Stopped,
@@ -145,6 +158,9 @@ impl Inspection {
     pub(super) fn view(&self) -> Option<Value> {
         match self.state {
             RunState::Absent => None,
+            RunState::LegacyDiscardable => Some(
+                json!({"state":"orphaned","canStop":true,"message":"旧版运行记录可直接清理后继续。"}),
+            ),
             RunState::Stopped => Some(
                 json!({"state":"orphaned","canStop":true,"message":"遗留进程组已停止，可清理运行记录后继续。"}),
             ),
@@ -159,7 +175,7 @@ impl Inspection {
     pub(super) async fn stop_and_retire(self, slot: &Path) -> Result<()> {
         match &self.state {
             RunState::Absent => return Ok(()),
-            RunState::Stopped => (),
+            RunState::LegacyDiscardable | RunState::Stopped => (),
             RunState::Orphaned(identity) => {
                 node_process_identity::stop(identity).await?;
             }
@@ -171,7 +187,8 @@ impl Inspection {
 
 impl NodeApps {
     /// Called once before publishing manager commands. This touches only proven
-    /// obsolete active markers, never application data, configuration or code.
+    /// obsolete or explicitly discarded v1 markers, never application data,
+    /// configuration or code.
     pub async fn reconcile_run_markers(&self) -> Result<Value> {
         self.reconcile_run_markers_at(boot_time_or_unknown()).await
     }
@@ -198,7 +215,7 @@ impl NodeApps {
             match result {
                 Ok(value) => match value.state {
                     RunState::Absent => (),
-                    RunState::Stopped => match value.retire(&slot) {
+                    RunState::LegacyDiscardable | RunState::Stopped => match value.retire(&slot) {
                         Ok(()) => {
                             retired += 1;
                             inner.errors.remove(&id);

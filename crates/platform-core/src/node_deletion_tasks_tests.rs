@@ -182,7 +182,7 @@ async fn stopped_or_unconfirmed_failure_can_be_abandoned_without_faking_runtime_
     let slot = fixture.data.join("node-apps").join(&id);
     fs::write(
         slot.join("active.json"),
-        br#"{"version":1,"hostPid":2147483646}"#,
+        br#"{"version":2,"hostPid":2147483646}"#,
     )
     .unwrap();
     let original = fs::read(slot.join("active.json")).unwrap();

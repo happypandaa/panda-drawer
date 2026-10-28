@@ -56,7 +56,9 @@ fn run_recovery_blocker(slot: &Path, owns_runtime: bool) -> Result<Option<ApiErr
         if !matches!(
             inspected,
             Ok(run_marker::Inspection {
-                state: run_marker::RunState::Stopped | run_marker::RunState::Orphaned(_),
+                state: run_marker::RunState::LegacyDiscardable
+                    | run_marker::RunState::Stopped
+                    | run_marker::RunState::Orphaned(_),
                 ..
             })
         ) {

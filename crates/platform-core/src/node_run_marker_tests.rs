@@ -15,33 +15,36 @@ fn fixture() -> (tempfile::TempDir, NodeApps, String, PathBuf) {
 }
 
 #[tokio::test]
-async fn previous_boot_legacy_marker_is_retired_without_touching_app_files() {
+async fn previous_boot_markers_are_retired_without_touching_app_files() {
     let (_temporary, manager, id, slot) = fixture();
     let marker = slot.join("active.json");
-    let _owner = StartIntentOwnership::create(
-        &marker,
-        &json!({"version":1,"hostPid":std::process::id(),"runDirectory":slot.join("runs/old")}),
-    )
-    .unwrap();
-    let future_boot = marker.metadata().unwrap().created().unwrap() + Duration::from_secs(1);
-    let report = manager.reconcile_run_markers_at(future_boot).await.unwrap();
-    assert_eq!(report["retired"], 1);
-    assert!(!marker.exists());
-    assert_eq!(
-        fs::read(slot.join("data/sentinel")).unwrap(),
-        b"preserve disposable data"
-    );
-    assert!(matches!(
-        inspect(&slot, &id, future_boot).unwrap().state,
-        RunState::Absent
-    ));
+    for value in [
+        json!({"version":1,"hostPid":std::process::id(),"runDirectory":slot.join("runs/old")}),
+        serde_json::to_value(RunMarker::launching(&id, slot.join("runs/new"))).unwrap(),
+    ] {
+        let _owner = StartIntentOwnership::create(&marker, &value).unwrap();
+        let future_boot = marker.metadata().unwrap().created().unwrap() + Duration::from_secs(1);
+        let report = manager.reconcile_run_markers_at(future_boot).await.unwrap();
+        assert_eq!(report["retired"], 1);
+        assert!(!marker.exists());
+        assert_eq!(
+            fs::read(slot.join("data/sentinel")).unwrap(),
+            b"preserve disposable data"
+        );
+        assert!(matches!(
+            inspect(&slot, &id, future_boot).unwrap().state,
+            RunState::Absent
+        ));
+    }
 }
 
 #[tokio::test]
-async fn same_boot_legacy_and_incomplete_launch_remain_unknown_even_when_pid_is_absent() {
+async fn same_boot_incomplete_v2_and_unsupported_records_remain_unknown() {
     let (_temporary, manager, id, slot) = fixture();
     for value in [
-        json!({"version":1,"hostPid":2147483646u32,"runDirectory":slot.join("runs/old")}),
+        json!({"version":2}),
+        json!({"version":3,"hostPid":2147483646u32}),
+        json!({"version":"1","hostPid":2147483646u32}),
         serde_json::to_value(RunMarker::launching(&id, slot.join("runs/new"))).unwrap(),
     ] {
         let marker = slot.join("active.json");
@@ -56,6 +59,52 @@ async fn same_boot_legacy_and_incomplete_launch_remain_unknown_even_when_pid_is_
         assert_eq!(fs::read(&marker).unwrap(), original);
         owner.remove_if_owned(&marker).unwrap();
     }
+}
+
+#[tokio::test]
+async fn same_boot_legacy_marker_is_discarded_without_signaling_its_live_host_pid() {
+    let (_temporary, manager, id, slot) = fixture();
+    let mut child = tokio::process::Command::new("/bin/sleep")
+        .arg("60")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let child_pid = child.id().unwrap();
+    let boot = node_process_identity::boot_time().unwrap();
+    for action in ["startup", "stop"] {
+        let marker = slot.join("active.json");
+        let _owner = StartIntentOwnership::create(
+            &marker,
+            &json!({"version":1,"hostPid":child_pid,"runDirectory":slot.join("runs/old")}),
+        )
+        .unwrap();
+        assert!(marker.metadata().unwrap().created().unwrap() >= boot);
+        assert!(matches!(
+            inspect(&slot, &id, boot).unwrap().state,
+            RunState::LegacyDiscardable
+        ));
+        match action {
+            "startup" => {
+                let report = manager.reconcile_run_markers_at(boot).await.unwrap();
+                assert_eq!(report["retired"], 1);
+                assert_eq!(report["unconfirmed"], 0);
+            }
+            "stop" => manager.stop_runtime(&id).await.unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(!marker.exists(), "{action} retained the legacy marker");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "{action} signaled the unrelated process referenced by the legacy marker"
+        );
+        assert_eq!(
+            fs::read(slot.join("data/sentinel")).unwrap(),
+            b"preserve disposable data"
+        );
+    }
+    // Only the Child handle created by this fixture authorizes its cleanup.
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
 }
 
 #[test]
