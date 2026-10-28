@@ -11,7 +11,8 @@ function validPreview(value: NodeAppDeletePreview, appId: string): boolean {
     && ['managed', 'external'].includes(value.ownership) && typeof value.expectedRevision === 'string' && value.expectedRevision
     && typeof value.platformRoot === 'string' && value.platformRoot.startsWith('/') && typeof value.sourcePath === 'string' && value.sourcePath.startsWith('/')
     && Array.isArray(value.deletePaths) && value.deletePaths.length > 0 && value.deletePaths.every(path => typeof path === 'string' && path.startsWith('/'))
-    && Array.isArray(value.preservedPaths) && value.preservedPaths.every(path => typeof path === 'string' && path.startsWith('/')));
+    && Array.isArray(value.preservedPaths) && value.preservedPaths.every(path => typeof path === 'string' && path.startsWith('/'))
+    && (value.blocker == null || typeof value.blocker.code === 'string' && Boolean(value.blocker.code) && typeof value.blocker.message === 'string' && Boolean(value.blocker.message)));
 }
 
 function trimSlash(path: string): string { return path.length > 1 ? path.replace(/\/+$/, '') : path; }
@@ -49,10 +50,12 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
   const [verified, setVerified] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState('');
+  const [errorTitle, setErrorTitle] = useState('无法核对删除范围');
   const [pending, setPending] = useState<'preview' | 'delete' | null>(null);
   const alive = useRef(true);
   const operation = useRef<'preview' | 'delete' | null>(null);
   const sequence = useRef(0);
+  const errorPanel = useRef<HTMLDivElement>(null);
   const approval = useRef<{ appId: string; instanceId?: string; revision: string; sequence: number } | null>(null);
   const context = useRef({ appId: app.id, instanceId, enabled }); context.current = { appId: app.id, instanceId, enabled };
   const callbacks = useRef({ onClose, onPendingChange, onDeleted }); callbacks.current = { onClose, onPendingChange, onDeleted };
@@ -67,15 +70,17 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
   async function readPreview() {
     if (!context.current.enabled || operation.current) return;
     operation.current = 'preview'; setPending('preview'); callbacks.current.onPendingChange(true);
-    approval.current = null; setVerified(false); setAcknowledged(false); setError('');
+    approval.current = null; setVerified(false); setAcknowledged(false); setError(''); setErrorTitle('无法核对删除范围');
     const revision = ++sequence.current; const origin = context.current;
     const current = () => alive.current && sequence.current === revision && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
     try {
       const value = await invoke<NodeAppDeletePreview>('node_app_delete_preview', { appId: origin.appId });
       if (!current() || !context.current.enabled) return;
       if (!validPreview(value, origin.appId)) throw new Error('删除范围不完整或项目身份不符，请重新核对。');
+      setPreview(value);
+      if (value.blocker) { setErrorTitle('暂时无法删除'); setError(messageFrom(value.blocker)); return; }
       approval.current = { appId: origin.appId, instanceId: origin.instanceId, revision: value.expectedRevision, sequence: revision };
-      setPreview(value); setVerified(true);
+      setVerified(true);
     } catch (cause) { if (current() && context.current.enabled) setError(messageFrom(cause)); }
     finally {
       if (current()) { operation.current = null; setPending(null); callbacks.current.onPendingChange(false); }
@@ -88,7 +93,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       || approvedContext.revision !== preview.expectedRevision || approvedContext.sequence !== sequence.current) return;
     const approved = preview; const origin = context.current; const revision = sequence.current;
     const current = () => alive.current && sequence.current === revision && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
-    operation.current = 'delete'; setPending('delete'); callbacks.current.onPendingChange(true); setError('');
+    operation.current = 'delete'; setPending('delete'); callbacks.current.onPendingChange(true); setError(''); setErrorTitle('删除未完成');
     try {
       const result = await invoke<NodeAppDeleteResult>('node_app_delete', { appId: approved.appId, input: { expectedRevision: approved.expectedRevision } });
       if (!current()) return;
@@ -112,6 +117,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       sequence.current++; approval.current = null; operation.current = null; setPending(null); callbacks.current.onPendingChange(false); callbacks.current.onClose();
     }
   }, [enabled]);
+  useEffect(() => { if (error && pending === null) errorPanel.current?.focus(); }, [error, pending]);
 
   const preserved = preview ? [...new Set(preview.preservedPaths)] : [];
   const source = preview && preserved.includes(preview.sourcePath) ? preview.sourcePath : null;
@@ -124,13 +130,12 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       <div className="node-delete-body" hidden={pending !== null} aria-busy={pending !== null}>
         <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
         <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
-        {error && <p className="task-error" role="alert">{error}</p>}
         {preview && <>
           <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
           <div className="node-delete-scope">
             <p className="node-delete-base">平台目录 <code title={base}>{base === '/' ? '/' : `${base}/`}</code></p>
             <section className="node-delete-removed">
-              <div className="node-delete-scope-heading"><h4>将删除</h4>{recheck}</div>
+              <div className="node-delete-scope-heading"><h4>将删除</h4>{verified && recheck}</div>
               <PathGroups paths={preview.deletePaths} base={base} />
             </section>
             <section className="node-delete-kept">
@@ -145,8 +150,9 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       </div>
       {pending !== null && <DeleteProgress name={preview?.name ?? app.name} checking={pending === 'preview'} />}
       <div className="node-delete-footer" hidden={pending === 'delete'}>
-        <label className="checkbox-label" hidden={pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
-        <div className="confirmation-actions">{!preview && pending !== 'preview' && recheck}<button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button><button className="danger-button" hidden={pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+        {error && <div ref={errorPanel} className="node-delete-error" role="alert" tabIndex={-1}><strong>{errorTitle}</strong><p>{error}</p><p>处理上述问题后，重新核对删除范围；本次不会自动重试。</p></div>}
+        <label className="checkbox-label" hidden={!verified || pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
+        <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button>{!verified && pending !== 'preview' && <button className="primary-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>}<button className="danger-button" hidden={!verified || pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
       </div>
     </section>
   </Modal>;

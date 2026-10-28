@@ -38,7 +38,7 @@
 
 旧 `POST /api/v1/projects/{id}/trash` 拒绝新请求，不把旧客户端的可恢复删除变成永久删除。成功任务报告 `operationOutcome: "deleted"`、`restoreAvailable: false` 及历史备份保留；部分删除报告 `delete_incomplete` 与残留路径。
 
-Node 仅通过原生管理命令删除：`node_app_delete_preview({appId})` 返回名称、实例 ID、`ownership`（`managed`／`external`）、`platformRoot`、`sourcePath`、`deletePaths`、`preservedPaths` 和 `expectedRevision`；确认后以 `node_app_delete({appId,input:{expectedRevision}})` 提交。提交重新核对预览修订，不接受客户端提供的任意目录。业务窗口必须先关闭，再核实和停止遗留受管运行；成功结果报告 `operationOutcome: "deleted"`、所有权与保留证据，必要时另报 `metadataCleanupPending`。未新增 Node HTTP／CLI 删除入口。
+Node 仅通过原生管理命令删除：`node_app_delete_preview({appId})` 返回名称、实例 ID、`ownership`（`managed`／`external`）、`platformRoot`、`sourcePath`、`deletePaths`、`preservedPaths`、`expectedRevision` 和可空的 `blocker`；确认后以 `node_app_delete({appId,input:{expectedRevision}})` 提交。提交重新核对预览修订，不接受客户端提供的任意目录。业务窗口必须先关闭，再核实和停止遗留受管运行；成功结果报告 `operationOutcome: "deleted"`、所有权与保留证据，必要时另报 `metadataCleanupPending`。未新增 Node HTTP／CLI 删除入口。
 
 ## 2026-10-28 删除等待反馈
 
@@ -48,7 +48,11 @@ Node 删除范围读取及网页／Node 删除执行期间，弹窗切换为独�
 
 Node 预览读取名称时只读取受限的普通声明文件，核对登记中的声明摘要后解析名称；声明异常时使用原有目录名回退。打开确认弹窗不再触发整个已安装程序及 `node_modules` 的逐文件哈希，仍保留修订、目录身份及保护门禁，也不读取私有配置或密钥。取消只读预览立即退出弹窗，迟到响应不能污染重新打开的范围或确认状态；已经提交的删除不会因此被取消。
 
-最终管理界面全量回归 **511/511** 通过（包含 Node 界面完整文件 **84/84**），桌面 TypeScript／Vite 构建通过；既有 JavaScript chunk 超过 500 kB 的提示仍存在。浏览器可丢弃样本检查了网页和 Node 的等待视图及浅色／深色布局，原生命令均使用模拟响应。删除相关 Rust **24/24** 通过，覆盖四种预览关闭路径、迟到结果、损坏程序和异常声明回退。所有删除回归只操作可丢弃测试目录；未对实际项目执行删除，也未进行真实原生删除或跨系统验收。
+后续原生窗口排查发现：确认删除被安全关闭门禁拒绝后，滚动区域仍停留在底部，顶部错误不可见，而勾选及提交已失效。因此错误改为固定在底部操作区并接收焦点；失败时隐藏失效的勾选／删除按钮，提供明确的重新核对与取消操作。重新核对仍需重新勾选，不自动再次删除。
+
+当前宿主没有对应受管运行句柄、但应用槽仍有 `active.json`，或存在启动标记收尾证据时，预览通过 `blocker` 提前报告 `NODE_APP_RUN_RECOVERY_REQUIRED`，不放行确认；提交入口同样返回此诊断及 `not_deleted`。这里只检查证据存在性（包括悬空链接），不读取标记内容、不自动恢复或删除证据。旧宿主 PID 消失不能证明其后代与文件工作全部结束，重新确认不会解除保护；当前仍无通用的公开自动恢复入口。
+
+原生 WebKit 可丢弃验证窗口使用同一前端组件及模拟拒绝响应，验证了滚动到底部后的等待、固定错误与重新核对；真实产品窗口只读观察了已有失败结果。最终管理界面 **513/513**（包含 Node 界面 **86/86**）、删除与运行门禁 Rust **26 项**、格式检查及前端构建通过。删除回归均限可丢弃目录，未再次提交实际项目删除，也未进行真实永久删除或跨系统验收；既有 JavaScript chunk 超过 500 kB 的构建提示仍存在。
 
 ## 旧回收站（已移除）
 

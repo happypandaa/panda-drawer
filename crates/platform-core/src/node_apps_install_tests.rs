@@ -280,6 +280,79 @@ async fn delete_preview_falls_back_without_following_or_trusting_changed_manifes
 }
 
 #[tokio::test]
+async fn delete_preview_blocks_unowned_run_evidence_before_confirmation_and_preserves_everything() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+
+    for kind in ["active-file", "active-dangling-link", "startup-cleanup"] {
+        let fixture = Fixture::new();
+        let external = fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap();
+        let id = external["id"].as_str().unwrap();
+        let slot = fixture.slot(id);
+        let before = fixture.manager.delete_preview(id).await.unwrap();
+        assert!(before["blocker"].is_null());
+        let registration = fs::read(slot.join("registration.json")).unwrap();
+        let sentinel = slot.join("data/disposable-preserved-database");
+        fs::write(&sentinel, b"keep application data").unwrap();
+        let run_evidence = slot.join("runs/disposable-preserved-runtime-evidence");
+        fs::write(&run_evidence, b"keep runtime evidence").unwrap();
+        let marker = if kind == "startup-cleanup" {
+            slot.join(".start-intent-cleanup-disposable-delete-gate")
+        } else {
+            slot.join("active.json")
+        };
+        if kind == "active-dangling-link" {
+            symlink("disposable-missing-foreign-marker", &marker).unwrap();
+        } else {
+            fs::write(&marker, b"opaque unconfirmed runtime evidence").unwrap();
+        }
+        let marker_identity = fs::symlink_metadata(&marker).unwrap().ino();
+
+        let preview = fixture.manager.delete_preview(id).await.unwrap();
+        assert_eq!(preview["blocker"]["code"], "NODE_APP_RUN_RECOVERY_REQUIRED");
+        assert!(preview["blocker"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("重复确认删除无法解除"));
+        assert_eq!(preview["expectedRevision"], before["expectedRevision"]);
+        assert_eq!(preview["deletePaths"], before["deletePaths"]);
+        assert_eq!(preview["preservedPaths"], before["preservedPaths"]);
+        let input = serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
+            .unwrap();
+        let error = fixture.manager.delete(id, input).await.unwrap_err();
+        assert_eq!(error.code, "NODE_APP_RUN_RECOVERY_REQUIRED");
+        assert_eq!(error.details["operationOutcome"], "not_deleted");
+        assert_eq!(error.message, preview["blocker"]["message"]);
+        assert_eq!(
+            fs::symlink_metadata(&marker).unwrap().ino(),
+            marker_identity
+        );
+        if kind == "active-dangling-link" {
+            assert_eq!(
+                fs::read_link(&marker).unwrap(),
+                PathBuf::from("disposable-missing-foreign-marker")
+            );
+        } else {
+            assert_eq!(
+                fs::read(&marker).unwrap(),
+                b"opaque unconfirmed runtime evidence"
+            );
+        }
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep application data");
+        assert_eq!(fs::read(&run_evidence).unwrap(), b"keep runtime evidence");
+        assert_eq!(
+            fs::read(slot.join("registration.json")).unwrap(),
+            registration
+        );
+        assert!(slot.join("configuration").is_dir());
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_and_evidence() {
     let fixture = Fixture::new();
     let external = fixture
