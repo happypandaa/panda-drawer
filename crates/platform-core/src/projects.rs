@@ -425,6 +425,20 @@ pub(crate) fn enumerate_project_roots(
     Ok(roots)
 }
 
+/// A failed deletion still binds registration identity. Migration/cleanup must
+/// not rewrite that identity until the task completes or is safely abandoned.
+pub(crate) struct NodeDeletionBarrier {
+    pending: Arc<Mutex<HashMap<String, String>>>,
+    token: String,
+}
+impl Drop for NodeDeletionBarrier {
+    fn drop(&mut self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.token);
+    }
+}
 pub struct ProjectStore {
     workspace: PathBuf,
     processes: crate::owned_process::OwnedProcessRegistry,
@@ -440,6 +454,7 @@ pub struct ProjectStore {
     workspace_paused: Arc<AtomicBool>,
     controls: Mutex<HashMap<String, Arc<crate::control::ProjectControl>>>,
     active_tasks: Arc<Mutex<HashMap<String, ProjectOperation>>>,
+    pending_node_deletions: Arc<Mutex<HashMap<String, String>>>,
     resources: Option<Arc<crate::resources::ProjectResources>>,
 }
 impl ProjectStore {
@@ -481,6 +496,7 @@ impl ProjectStore {
             resources,
             controls: Mutex::new(HashMap::new()),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
+            pending_node_deletions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     pub fn workspace_root(&self) -> &Path {
@@ -1235,6 +1251,20 @@ impl ProjectStore {
         crate::data_restore_guard::check_workspace_available(&self.workspace)?;
         let _active = self.active_tasks.lock().unwrap();
         let _registration = self.registration_lock.lock().unwrap();
+        let pending = self
+            .pending_node_deletions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !pending.is_empty() {
+            return Err(ApiError::new(
+                "NODE_DELETION_PENDING",
+                "还有未完成的应用删除任务，请先完成或在允许时放弃，再迁移或清理工作区。",
+            )
+            .detail(
+                "appIds",
+                serde_json::json!(pending.values().collect::<Vec<_>>()),
+            ));
+        }
         check_pending_deletions(&self.workspace)?;
         if self.workspace_migrating.swap(true, Ordering::AcqRel) {
             return Err(ApiError::new(
@@ -1243,6 +1273,23 @@ impl ProjectStore {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn reserve_node_deletion_barrier(
+        &self,
+        app_id: &str,
+    ) -> Result<NodeDeletionBarrier, ApiError> {
+        let mut pending = self
+            .pending_node_deletions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        self.accepting()?;
+        self.check_workspace_available()?;
+        let token = uuid::Uuid::new_v4().to_string();
+        pending.insert(token.clone(), app_id.into());
+        Ok(NodeDeletionBarrier {
+            pending: self.pending_node_deletions.clone(),
+            token,
+        })
     }
     pub(crate) fn has_active_tasks(&self) -> bool {
         !self.active_tasks.lock().unwrap().is_empty()

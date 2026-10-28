@@ -575,7 +575,35 @@ async fn partial_delete_current_registration_blocks_reopen_without_deletion_hist
     assert!(!slot.join("configuration").exists());
     let registration: Value =
         serde_json::from_slice(&fs::read(slot.join("registration.json")).unwrap()).unwrap();
-    assert_eq!(registration["removalPending"], true);
+    assert!(registration["removalPending"].is_null());
+    let task = fixture
+        .manager
+        .deletion_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|task| task["appId"] == id)
+        .unwrap();
+    assert_eq!(task["phase"], "failed");
+    assert_eq!(task["renamedAny"], true);
+    assert_eq!(task["canAbandon"], false);
+    let task_id = task["taskId"].as_str().unwrap();
+    assert!(fixture
+        .paths
+        .data_root()
+        .join("node-deletion-tasks")
+        .join(task_id)
+        .join("task.json")
+        .exists());
+    let staged_data = task["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["path"] == json!(slot.join("data")))
+        .unwrap()["stagedPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let staged_pipe = PathBuf::from(staged_data).join("disposable-unsupported-pipe");
     assert!(failure.details["deletionRecord"].is_null());
     assert!(!fixture
         .paths
@@ -587,23 +615,31 @@ async fn partial_delete_current_registration_blocks_reopen_without_deletion_hist
         "/disposable-missing-node".into(),
     )
     .unwrap();
-    assert!(restarted.configuration(id).await.is_err());
+    assert_eq!(
+        restarted.configuration(id).await.unwrap()["configuration"]["canStart"],
+        false
+    );
     assert!(restarted
         .save(id, save_request(0, "must-not-create", true))
         .await
         .is_err());
     assert!(restarted.start(id).await.is_err());
     assert!(!slot.join("configuration").exists());
-    assert!(pipe.exists(), "restart must not replay deletion");
+    assert!(!pipe.exists(), "the original data directory was staged");
+    assert!(
+        staged_pipe.exists(),
+        "loading the manager alone must not replay file deletion"
+    );
     assert_eq!(
         fs::read(fixture.source.join("local-app.json")).unwrap(),
         original_source
     );
-    fs::remove_file(pipe).unwrap();
+    fs::remove_file(staged_pipe).unwrap();
     restarted
-        .delete(id, delete_input(&restarted, id).await)
+        .retry_deletion(task_id, id, task["journalRevision"].as_u64().unwrap())
         .await
         .unwrap();
+    restarted.wait_deletion_result(task_id, id).await.unwrap();
     assert!(restarted.list().await.unwrap().is_empty());
     assert!(!slot.join("registration.json").exists());
     assert!(!fixture

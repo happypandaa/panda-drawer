@@ -33,6 +33,9 @@ pub use deletion::DeleteNodeAppInput;
 #[path = "node_app_operations.rs"]
 mod operations;
 pub use operations::{NodeDeletionPermit, NodeOperationPermit};
+#[path = "node_deletion_tasks.rs"]
+mod delete_tasks;
+pub use delete_tasks::NodeDeletionBeforeStop;
 #[path = "node_app_directory.rs"]
 mod directory;
 #[path = "node_run_marker.rs"]
@@ -158,6 +161,7 @@ pub struct NodeApps {
     processes: crate::owned_process::OwnedProcessRegistry,
     inner: Arc<Mutex<Inner>>,
     operations: Arc<operations::NodeOperationCoordinator>,
+    deletion_tasks: Arc<delete_tasks::NodeDeletionTasks>,
     runtime_operations: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
     development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: Arc<std::sync::Mutex<()>>,
@@ -182,6 +186,7 @@ impl NodeApps {
     ) -> Result<Self> {
         let apps = Self::with_processes(data_root, node_path, runtime.store().processes())?;
         apps.set_source_workspace(runtime.info().workspace_root)?;
+        apps.set_deletion_store(runtime.store())?;
         Ok(apps)
     }
     fn with_processes(
@@ -216,7 +221,7 @@ impl NodeApps {
                 .ok_or_else(|| fail("内置 Node 校验信息无效。"))?
                 .to_owned()
         };
-        Ok(Self {
+        let apps = Self {
             root,
             data_root,
             node_path,
@@ -224,6 +229,7 @@ impl NodeApps {
             processes,
             inner: Arc::new(Mutex::new(Inner::default())),
             operations: Arc::new(operations::NodeOperationCoordinator::default()),
+            deletion_tasks: Arc::new(delete_tasks::NodeDeletionTasks::default()),
             runtime_operations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: Arc::new(std::sync::Mutex::new(())),
@@ -231,7 +237,9 @@ impl NodeApps {
             source_workspace: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             start_intent_pause: Arc::new(std::sync::Mutex::new(None)),
-        })
+        };
+        apps.load_delete_tasks()?;
+        Ok(apps)
     }
 
     pub fn inspect(&self, source: &Path) -> Result<Value> {
@@ -572,6 +580,7 @@ impl NodeApps {
         private_dir(&self.root)?;
         for record in self.registrations()? {
             if record.source_path == source {
+                let _operation = self.admit_operation(&record.id, "重新登记项目")?;
                 check()?;
                 // A previous publication may have reached disk but failed its
                 // parent sync. Explicit reuse must finish that durability step.
@@ -801,6 +810,7 @@ impl NodeApps {
         Ok(self
             .registrations()?
             .iter()
+            .filter(|record| !self.pending_delete_for(&record.id))
             .map(|record| self.available_detail(record, &inner))
             .collect())
     }
@@ -1506,7 +1516,8 @@ impl NodeApps {
         }
         let results =
             futures_util::future::join_all(ids.iter().map(|id| self.stop_runtime(id))).await;
-        results.into_iter().collect::<Result<Vec<_>>>().map(|_| ())
+        results.into_iter().collect::<Result<Vec<_>>>()?;
+        self.wait_deletion_workers().await
     }
 
     pub async fn monitor_tick(&self) {
