@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { TriangleAlert, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { DeleteProgress } from './DeleteProgress';
 import { Modal } from './Modal';
 import { ProjectTask } from './ProjectTask';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
@@ -67,8 +68,15 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
   function close() {
     if (!operation.current && !busy) callbacks.current.onClose();
   }
-  return <Modal title="删除项目" titleIcon={<Trash2 size={22} />} description="核对删除范围，确认后无法撤销。" className="project-delete-modal" closeDisabled={busy} beforeClose={() => !operation.current && !busy} onClose={close}>
-    <section className="project-delete-confirmation" aria-label="删除项目确认" aria-busy={busy}>
+  const progressDetails: Record<string, string> = {
+    queued: '删除任务已受理，正在等待执行',
+    'delete-freeze': '正在停止项目写入并关闭数据库',
+    'delete-prepared': '正在核对项目身份和删除范围',
+    'delete-intent': '正在永久删除项目文件',
+  };
+  return <Modal title="删除项目" titleIcon={<Trash2 size={22} />} description={busy ? undefined : '核对删除范围，确认后无法撤销。'} className="project-delete-modal" closeDisabled={busy} beforeClose={() => !operation.current && !busy} onClose={close}>
+    <section className="project-delete-confirmation" aria-label="删除项目确认">
+      <div className="project-delete-review" hidden={busy} aria-busy={busy}>
       <h3>永久删除「{project.name}」？此操作无法撤销。</h3>
       <p className="project-delete-warning"><TriangleAlert size={18} />本次删除不进入平台或系统回收站，无法从回收站恢复。</p>
       <p>项目 ID：<code>{project.id}</code></p>
@@ -78,12 +86,14 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       {!status && <p className="project-help">维护状态尚未读取，请先刷新状态再删除。</p>}
       {!project.documentEpoch && <p className="project-help" role="status">项目身份尚未读取，不能确认删除。请关闭弹窗并刷新项目列表，重新核对后再删除。</p>}
       {status?.recoveryRequired && <p className="task-error">项目有待处理的恢复现场，请先核对并处理，保留相关证据。</p>}
-      {(disabled || Boolean(status?.activeTask)) && <p className="project-help">当前操作进行中或目标已变化，请等待完成并重新核对后再删除。</p>}
+      {!busy && (disabled || Boolean(status?.activeTask)) && <p className="project-help">当前操作进行中或目标已变化，请等待完成并重新核对后再删除。</p>}
       <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={event => setAcknowledgedIdentity(event.target.checked ? confirmationIdentity : null)} />我已核对项目和删除目录，处理未保存内容，并理解永久删除无法撤销</label>
+      </div>
+      {busy && <DeleteProgress name={project.name} detail={submitting ? '正在提交删除请求' : progressDetails[observed?.phase ?? ''] ?? '正在等待删除任务的最终结果'} />}
       {error && <p className="task-error" role="alert">{error}</p>}
-      {observed && <ProjectTask task={observed} />}
+      {observed && (observed.final ? <ProjectTask task={observed} /> : <details className="delete-task-details"><summary>查看删除任务详情</summary><ProjectTask task={observed} /></details>)}
       {feedback}
-      <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={busy} onClick={close}>取消，保留项目</button><button type="button" className="danger-button" disabled={blocked || !acknowledged} onClick={() => void remove()}>{busy ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+      <div className="confirmation-actions" hidden={busy}><button type="button" className="refresh-button" disabled={busy} onClick={close}>取消，保留项目</button><button type="button" className="danger-button" disabled={blocked || !acknowledged} onClick={() => void remove()}>{busy ? '正在永久删除…' : '确认永久删除项目'}</button></div>
     </section>
   </Modal>;
 }

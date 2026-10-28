@@ -85,6 +85,19 @@ async function key(keyValue, shiftKey = false) {
 const dialog = () => document.querySelector('[role="dialog"]');
 const closeButton = () => dialog().querySelector('button[aria-label^="关闭"]');
 const layer = () => dialog().parentElement;
+function deletionProgress(stage) {
+  const progress = dialog().querySelector('.delete-progress[role="status"]');
+  assert.ok(progress, 'Pending deletion needs a visible status');
+  assert.equal(progress.closest('[hidden]'), null);
+  assert.equal(progress.getAttribute('aria-live'), 'polite');
+  assert.equal(progress.getAttribute('aria-atomic'), 'true');
+  assert.equal(progress.closest('[aria-busy="true"]'), null, 'The live status remains outside busy review content');
+  assert.equal(progress.querySelector('.delete-progress-spinner')?.getAttribute('aria-hidden'), 'true');
+  assert.ok(progress.textContent.includes(stage), `Missing deletion stage: ${stage}`);
+  assert.equal(document.querySelector('.project-delete-review')?.hidden ?? true, true);
+  assert.doesNotMatch(progress.textContent, /目标已变化|重新核对后再删除/);
+  return progress;
+}
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
   root = null;
@@ -751,6 +764,7 @@ test('An accepted deletion keeps its closing lock across name and maintenance re
     { status: normalStatus },
   ]) {
     props = { ...props, ...change, task: accepted }; await render(h(ProjectDeleteDialog, props));
+    deletionProgress('删除任务已受理，正在等待执行');
     assert.equal(closeButton().disabled, true);
     assert.equal(buttonNamed('取消，保留项目').disabled, true);
     assert.equal(document.querySelector('.project-delete-confirmation input').disabled, true);
@@ -758,9 +772,66 @@ test('An accepted deletion keeps its closing lock across name and maintenance re
     assert.equal(closes, 0); assert.equal(calls.length, 1); assert.deepEqual(tasks, [accepted]);
   }
   await render(h(ProjectDeleteDialog, { ...props, task: { ...accepted, status: 'failed', final: true, phase: 'failed', result: { operationOutcome: 'not_deleted' } } }));
+  assert.equal(dialog().querySelector('.delete-progress'), null);
+  assert.equal(document.querySelector('.project-delete-review').hidden, false);
   assert.equal(buttonNamed('取消，保留项目').disabled, false);
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
   await click(buttonNamed('取消，保留项目')); assert.equal(closes, 1);
+});
+
+test('Deletion loading follows task phases and ends for failed, interrupted and unconfirmed final results', async () => {
+  await setup();
+  const finals = [
+    { status: 'failed', final: true, phase: 'failed', result: { operationOutcome: 'not_deleted' }, error: { code: 'DISPOSABLE_DELETE_FAILURE', message: 'Disposable deletion failed' } },
+    { status: 'interrupted', final: true, phase: 'interrupted', result: { operationOutcome: 'unknown' }, error: { code: 'DISPOSABLE_DELETE_INTERRUPTED', message: 'Disposable deletion interrupted' } },
+    { status: 'succeeded', final: true, phase: 'completed', result: null },
+  ];
+  for (const [index, final] of finals.entries()) {
+    const accepted = { taskId: `task_loading_phases_${index}`, projectId: project.id, type: 'delete', status: 'queued', final: false, phase: 'queued' };
+    const props = { key: index, project: { ...project, projectRoot: '/disposable/loading-phases' }, status: normalStatus, disabled: false, onTask() {}, onClose() {} };
+    globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'project_delete'); return accepted; };
+    await render(h(ProjectDeleteDialog, props));
+    await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+    deletionProgress('删除任务已受理，正在等待执行');
+    for (const [phase, stage] of [
+      ['delete-freeze', '正在停止项目写入并关闭数据库'],
+      ['delete-prepared', '正在核对项目身份和删除范围'],
+      ['delete-intent', '正在永久删除项目文件'],
+      ['unrecognized-phase', '正在等待删除任务的最终结果'],
+    ]) {
+      await render(h(ProjectDeleteDialog, { ...props, disabled: true, task: { ...accepted, status: 'running', phase } }));
+      deletionProgress(stage);
+      assert.equal(buttonNamed('正在永久删除…').disabled, true);
+      assert.equal(document.querySelector('.project-delete-confirmation input').disabled, true);
+      assert.equal(closeButton().disabled, true);
+    }
+    await render(h(ProjectDeleteDialog, { ...props, task: { ...accepted, ...final } }));
+    assert.equal(dialog().querySelector('.delete-progress'), null);
+    assert.equal(document.querySelector('.project-delete-review').hidden, false);
+    assert.ok(dialog().textContent.includes(props.project.projectRoot));
+    if (final.error) assert.ok(dialog().textContent.includes(final.error.message));
+    else assert.match(dialog().textContent, /永久删除结果尚不能确认/);
+    assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
+    assert.equal(buttonNamed('确认永久删除项目').disabled, true);
+    assert.equal(buttonNamed('取消，保留项目').disabled, false);
+  }
+});
+
+test('A rejected deletion submission ends loading and restores its reviewed scope with the error', async () => {
+  await setup(); const accepting = deferred(); let submissions = 0;
+  globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'project_delete'); submissions++; return accepting.promise; };
+  await render(h(ProjectDeleteDialog, { project: { ...project, projectRoot: '/disposable/rejected-deletion' }, status: normalStatus, disabled: false, onTask() {}, onClose() {} }));
+  await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+  deletionProgress('正在提交删除请求');
+  await act(async () => accepting.reject(new Error('Disposable submission failed')));
+  assert.equal(dialog().querySelector('.delete-progress'), null);
+  assert.equal(document.querySelector('.project-delete-review').hidden, false);
+  assert.match(dialog().querySelector('[role=alert]').textContent, /Disposable submission failed/);
+  assert.match(dialog().textContent, /\/disposable\/rejected-deletion/);
+  assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
+  assert.equal(buttonNamed('确认永久删除项目').disabled, true);
+  assert.equal(buttonNamed('取消，保留项目').disabled, false);
+  assert.equal(submissions, 1);
 });
 
 function hubProps(extra = {}) {
@@ -1564,6 +1635,45 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.match(document.querySelector('.notice-success').textContent, /项目已永久删除/);
 });
 
+test('A final project-task deletion result ends loading while its lifecycle poll remains pending', async () => {
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval;
+  const timers = new Map(); let timerId = 0;
+  window.setInterval = (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; };
+  window.clearInterval = id => timers.delete(id);
+  try {
+    for (const status of ['succeeded', 'failed', 'interrupted']) {
+      await setup(); const stalled = deferred(); let polls = 0;
+      const fixture = appProject(`prj_single_poll_${status}`, `Single deletion poll ${status}`);
+      const state = { projects: [fixture] };
+      const task = { taskId: `task_single_poll_${status}`, type: 'delete', projectId: fixture.id, status: 'queued', final: false, phase: 'queued', result: null, error: null };
+      mockApp(state, async (command, args) => {
+        if (command === 'project_delete') return task;
+        assert.equal(command, 'task_get'); assert.equal(args.taskId, task.taskId);
+        if (++polls > 1) return stalled.promise;
+        if (status === 'succeeded') state.projects = [];
+        return { ...task, status, final: true, phase: status === 'succeeded' ? 'completed' : status, result: { operationOutcome: status === 'succeeded' ? 'deleted' : status === 'failed' ? 'not_deleted' : 'unknown' }, ...(status === 'succeeded' ? {} : { error: { code: 'DISPOSABLE_SINGLE_POLL', message: `Deletion ${status} from project poll` } }) };
+      });
+      await render(h(App)); await openProjectMenu(fixture.name); await click(document.querySelector(`[aria-label="删除项目「${fixture.name}」"]`));
+      await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+      deletionProgress('删除任务已受理，正在等待执行');
+      const pollingTimers = [...timers.values()].filter(timer => timer.delay === 1000);
+      assert.equal(pollingTimers.length, 2, 'Both project and lifecycle observers are waiting for the accepted task');
+      await act(async () => { for (const timer of pollingTimers) timer.callback(); });
+      assert.equal(polls, 2, 'The lifecycle observation is still unresolved');
+      assert.equal(Boolean(document.querySelector('.delete-progress')), false, 'Either validated final observation must end loading');
+      if (status === 'succeeded') {
+        assert.equal(dialog(), null);
+        assert.equal(document.querySelector(`[aria-label="进入项目「${fixture.name}」"]`), null);
+      } else {
+        assert.ok(dialog());
+        assert.ok(dialog().textContent.includes(`Deletion ${status} from project poll`));
+        assert.equal(buttonNamed('取消，保留项目').disabled, false);
+      }
+      await act(async () => root.unmount()); root = null;
+    }
+  } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
+});
+
 test('A final deletion task with an incomplete or missing outcome keeps the deletion dialog open', async () => {
   await setup();
   for (const outcome of ['delete_incomplete', null]) {
@@ -1610,6 +1720,7 @@ test('The deletion dialog blocks every close path and duplicate submission throu
   });
   await render(h(App)); await openProjectMenu('Pending deletion fixture'); await click(document.querySelector('[aria-label="删除项目「Pending deletion fixture」"]'));
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+  deletionProgress('正在提交删除请求');
   const attemptClose = async () => {
     assert.equal(closeButton().disabled, true);
     assert.equal(buttonNamed('取消，保留项目').disabled, true);
@@ -1621,6 +1732,7 @@ test('The deletion dialog blocks every close path and duplicate submission throu
   };
   await attemptClose();
   await act(async () => accepting.resolve(task));
+  deletionProgress('删除任务已受理，正在等待执行');
   await attemptClose();
   assert.ok(document.querySelector('[aria-label="进入项目「Pending deletion fixture」"]'));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });

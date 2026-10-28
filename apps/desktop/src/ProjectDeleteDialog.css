@@ -15,6 +15,21 @@
 .project-delete-modal .checkbox-label input { flex-shrink: 0; margin-top: 5px; }
 .project-delete-modal .confirmation-actions { justify-content: flex-end; padding-top: 4px; }
 .project-delete-modal .task-error { margin: 0; }
+.project-delete-review { display: flex; flex-direction: column; gap: 16px; }
+.project-delete-review[hidden], .node-delete-modal .node-delete-body[hidden], .node-delete-modal .node-delete-footer[hidden], .project-delete-modal .confirmation-actions[hidden] { display: none; }
+.delete-progress { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 260px; padding: 32px 24px; text-align: center; }
+.delete-progress-spinner { flex-shrink: 0; color: var(--radio-active); animation: delete-progress-spin 1s linear infinite; }
+.project-delete-modal .delete-progress h3 { font-size: 18px; }
+.project-delete-modal .delete-progress h3:focus { outline: none; }
+.node-delete-modal .delete-progress { min-height: 0; flex: 0 1 260px; overflow-y: auto; justify-content: safe center; }
+.project-delete-modal .delete-progress-name { max-width: 100%; font-weight: 600; overflow-wrap: anywhere; }
+.project-delete-modal .delete-progress-help { max-width: 320px; color: var(--radio-secondary); }
+.project-delete-modal .delete-progress-stage { color: var(--radio-secondary); }
+.delete-task-details { font-size: 12px; color: var(--radio-secondary); }
+.delete-task-details > summary { cursor: pointer; }
+.delete-task-details .build-task { margin-top: 12px; }
+@keyframes delete-progress-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .delete-progress-spinner { animation: none; } }
 @media (max-width: 640px) {
   .project-delete-modal .confirmation-actions { flex-direction: column-reverse; }
   .project-delete-modal .confirmation-actions button { width: 100%; }
