@@ -5,6 +5,7 @@ import { ProjectTask } from './ProjectTask';
 import { NodeInstallPanel } from './NodeInstallPanel';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { deletedSourceMatches, onProjectDeleted, projectWasDeleted, sourceWasDeleted, taskWasDeleted } from './project-deletion';
 
 type Inspection = { kind: string; name?: string; issues: unknown[]; executionState: string };
 type Candidate = { sourceId: string; taskId: string; name: string; status: string; url: string; provider?: string; branch?: string | null; localSourcePath?: string; captureNotice?: string; excludedPaths?: string[]; commit?: string; sourcePath?: string; evidencePath: string; inspection?: Inspection; error?: unknown; contentDigest?: string };
@@ -36,9 +37,36 @@ function SourceAcquisitionWorkflow({ disabled, instanceId, onClose, onTask, onIn
   const generation = useRef(0);
   const readSequence = useRef(0);
   const currentTask = useRef<TaskRecord | null>(null);
+  const inspectingPath = useRef<string | null>(null);
+  const inspectSequence = useRef(0);
+  const formContext = useRef({ url, name, branch }); formContext.current = { url, name, branch };
+  const acceptedForm = useRef<typeof formContext.current | null>(null);
+  function forgetTaskDraft() {
+    if (acceptedForm.current && JSON.stringify(acceptedForm.current) === JSON.stringify(formContext.current)) { setUrl(''); setName(''); setBranch(''); }
+    acceptedForm.current = null; currentTask.current = null; setTask(null); setError(''); setNotice('');
+  }
   const callbacks = useRef({ onTask }); callbacks.current = { onTask };
+  const ownerContext = useRef({ inspection, installTask, instanceId }); ownerContext.current = { inspection, installTask, instanceId };
+  useEffect(() => onProjectDeleted(notice => {
+    if (ownerContext.current.instanceId && ownerContext.current.instanceId !== notice.instanceId) return;
+    readSequence.current++;
+    setCandidates(values => values.filter(item => !notice.sourceIds.includes(item.sourceId) && !notice.taskIds.includes(item.taskId)));
+    if (currentTask.current && taskWasDeleted(currentTask.current)) {
+      forgetTaskDraft();
+    }
+    if (deletedSourceMatches(notice, { sourceRoots: [ownerContext.current.inspection?.sourcePath, inspectingPath.current] })) {
+      inspectSequence.current++; inspectingPath.current = null; setInspection(null); pending.current = false; setBusy(false);
+    }
+    if (ownerContext.current.installTask && taskWasDeleted(ownerContext.current.installTask)) { setShowInstall(false); setInstallTask(null); setInstallPending(false); }
+    setReading(false);
+  }), []);
   const isCurrent = useCallback((started: number) => alive.current && generation.current === started, []);
   const acceptTask = useCallback((value: TaskRecord, expectedId?: string) => {
+    if (taskWasDeleted(value)) {
+      if (!currentTask.current || currentTask.current.taskId === value.taskId) forgetTaskDraft();
+      pending.current = false; setBusy(false);
+      return false;
+    }
     if (expectedId && value.taskId !== expectedId) return false;
     if (currentTask.current?.taskId === value.taskId && currentTask.current.final && !value.final) return false;
     currentTask.current = value;
@@ -54,8 +82,9 @@ function SourceAcquisitionWorkflow({ disabled, instanceId, onClose, onTask, onIn
     try {
       const list = await invoke<Candidate[]>('source_list');
       if (!current()) return;
-      setCandidates(list);
-      const active = list.find(item => item.status === 'acquiring');
+      const currentList = list.filter(item => !sourceWasDeleted(item.sourceId) && !taskWasDeleted(item.taskId));
+      setCandidates(currentList);
+      const active = currentList.find(item => item.status === 'acquiring');
       if (active) {
         const value = await invoke<TaskRecord>('task_get', { taskId: active.taskId });
         if (!current()) return;
@@ -86,11 +115,12 @@ function SourceAcquisitionWorkflow({ disabled, instanceId, onClose, onTask, onIn
     if (pending.current || disabled || acquiring || !url.trim()) return;
     const started = generation.current;
     readSequence.current++; setReading(false);
+    currentTask.current = null; setTask(null); acceptedForm.current = { ...formContext.current };
     pending.current = true; setBusy(true); setError(''); setNotice('');
     try {
       const value = await invoke<TaskRecord>('source_acquire', { input: { url: url.trim(), branch: branch.trim() || null, ...(name.trim() ? { name: name.trim() } : {}) } });
       if (!isCurrent(started)) return;
-      acceptTask(value);
+      if (!acceptTask(value)) return;
       setNotice('获取任务已接受，尚未安装或运行。可以关闭此页，稍后回来查看结果。');
       await read();
     } catch (cause) { if (isCurrent(started)) setError(messageFrom(cause)); }
@@ -111,24 +141,28 @@ function SourceAcquisitionWorkflow({ disabled, instanceId, onClose, onTask, onIn
   async function inspect() {
     if (pending.current || disabled) return;
     const started = generation.current;
+    const request = ++inspectSequence.current;
+    const current = () => isCurrent(started) && inspectSequence.current === request;
     pending.current = true; setBusy(true); setError('');
     try {
       const sourcePath = await invoke<string | null>('choose_path', { kind: 'source' });
-      if (!sourcePath || !isCurrent(started)) return;
+      if (!sourcePath || !current()) return;
+      inspectingPath.current = sourcePath;
       const value = await invoke<{ sourcePath: string; inspection: Inspection }>('source_inspect', { sourcePath });
-      if (isCurrent(started)) setInspection(value);
-    } catch (cause) { if (isCurrent(started)) setError(messageFrom(cause)); }
-    finally { if (isCurrent(started)) { pending.current = false; setBusy(false); } }
+      if (current()) setInspection(value);
+    } catch (cause) { if (current()) setError(messageFrom(cause)); }
+    finally { if (current()) { inspectingPath.current = null; pending.current = false; setBusy(false); } }
   }
   async function capture() {
     if (pending.current || disabled || acquiring || !inspection) return;
     const started = generation.current;
     readSequence.current++; setReading(false);
+    currentTask.current = null; setTask(null); acceptedForm.current = { ...formContext.current };
     pending.current = true; setBusy(true); setError(''); setNotice('');
     try {
       const value = await invoke<TaskRecord>('source_capture', { input: { sourcePath: inspection.sourcePath, ...(name.trim() ? { name: name.trim() } : {}) } });
       if (!isCurrent(started)) return;
-      acceptTask(value);
+      if (!acceptTask(value)) return;
       setNotice('已接受接入任务，将创建独立源码副本；原目录不改动。');
       await read();
     } catch (cause) { if (isCurrent(started)) setError(messageFrom(cause)); }
@@ -151,7 +185,7 @@ function SourceAcquisitionWorkflow({ disabled, instanceId, onClose, onTask, onIn
       {!candidates.length && <p>暂无获取记录。</p>}
       {candidates.map(item => <article className="operation-confirmation" key={item.sourceId}><h4>{item.name} · {statusText[item.status] ?? item.status}</h4><code className="task-result-path">{item.provider === 'local' ? `本机来源：${item.localSourcePath ?? '路径未记录'}` : item.url}</code>{item.branch && <p>分支：<code>{item.branch}</code></p>}{item.commit && <p>源码版本：<code>{item.commit}</code></p>}<code className="task-result-path">{item.sourcePath ?? item.evidencePath}</code>{item.captureNotice && <p>{item.captureNotice}</p>}{Boolean(item.excludedPaths?.length) && <details><summary>接入时排除的路径（{item.excludedPaths?.length}）</summary><ul>{item.excludedPaths?.map(path => <li key={path}><code>{path}</code></li>)}</ul></details>}{item.inspection && <InspectionView value={item.inspection} />}{Boolean(item.error) && <p role="alert">{messageFrom(item.error)}</p>}</article>)}
     </section>
-    <section><h3>安装带本地服务的应用</h3><p>支持已核验的 Node 应用源码；静态项目和需适配的目录请先完成适配。</p><button type="button" className="refresh-button" disabled={disabled || busy || installPending} onClick={() => setShowInstall(true)}>查看安装候选与准备安装</button>{showInstall && <NodeInstallPanel sources={candidates} instanceId={instanceId} disabled={disabled || busy} task={installTask} onPendingChange={setInstallPending} onTask={value => { setInstallTask(value); onTask(value); }} onInstalled={() => onInstalled?.()} />}</section>
+    <section><h3>安装带本地服务的应用</h3><p>支持已核验的 Node 应用源码；静态项目和需适配的目录请先完成适配。</p><button type="button" className="refresh-button" disabled={disabled || busy || installPending} onClick={() => setShowInstall(true)}>查看安装候选与准备安装</button>{showInstall && <NodeInstallPanel sources={candidates} instanceId={instanceId} disabled={disabled || busy} task={installTask} onPendingChange={setInstallPending} onTask={value => { if (!taskWasDeleted(value)) { setInstallTask(value); onTask(value); } }} onInstalled={value => { if (!projectWasDeleted(value.appId)) onInstalled?.(); }} />}</section>
   </Modal>;
 }
 function InspectionView({ value }: { value: Inspection }) {

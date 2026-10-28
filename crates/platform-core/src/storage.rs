@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     cmp::Ordering as Cmp,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::{CStr, CString},
     fs::{self, File},
     os::{
@@ -247,14 +247,26 @@ fn directory_names(dir: &File, mut visit: impl FnMut(&[u8])) -> Result<(), ApiEr
         }
     }
 }
-fn walk(root: &Path, excluded: &[PathBuf], mut visit: impl FnMut(&Entry)) -> Walk {
+fn walk(root: &Path, excluded: &[PathBuf], visit: impl FnMut(&Entry)) -> Walk {
+    walk_cancellable(root, excluded, &|| false, visit)
+}
+fn walk_cancellable(
+    root: &Path,
+    excluded: &[PathBuf],
+    cancelled: &dyn Fn() -> bool,
+    mut visit: impl FnMut(&Entry),
+) -> Walk {
     fn descend(
         dir: &File,
         relative: &Path,
         excluded: &[PathBuf],
         out: &mut Walk,
+        cancelled: &dyn Fn() -> bool,
         visit: &mut dyn FnMut(&Entry),
     ) {
+        if cancelled() {
+            return;
+        }
         if relative.components().count() > 256 {
             out.issues.push(problem(
                 relative,
@@ -265,6 +277,9 @@ fn walk(root: &Path, excluded: &[PathBuf], mut visit: impl FnMut(&Entry)) -> Wal
         }
         let before = dir.metadata().ok().and_then(|m| m.modified().ok());
         let enumeration = directory_names(dir, |name| {
+            if cancelled() {
+                return;
+            }
             let Ok(name) = std::str::from_utf8(name) else {
                 out.issues.push(problem(
                     relative,
@@ -306,7 +321,7 @@ fn walk(root: &Path, excluded: &[PathBuf], mut visit: impl FnMut(&Entry)) -> Wal
                 visit(&entry);
             } else if kind == libc::S_IFDIR as u32 {
                 match child_dir(dir, name.as_bytes()) {
-                    Ok(child) => descend(&child, &path, excluded, out, visit),
+                    Ok(child) => descend(&child, &path, excluded, out, cancelled, visit),
                     Err(e) => out.issues.push(problem(&path, "unreadable", e)),
                 }
             } else {
@@ -334,7 +349,14 @@ fn walk(root: &Path, excluded: &[PathBuf], mut visit: impl FnMut(&Entry)) -> Wal
     }
     let mut out = Walk::new();
     match files::root(root) {
-        Ok(fd) => descend(&fd, Path::new(""), excluded, &mut out, &mut visit),
+        Ok(fd) => descend(
+            &fd,
+            Path::new(""),
+            excluded,
+            &mut out,
+            cancelled,
+            &mut visit,
+        ),
         Err(e) => out.issues.push(problem(root, "unreadable", e)),
     };
     out
@@ -412,6 +434,31 @@ fn scope_scan(
 }
 
 type RootGenerations = HashMap<String, (RootIdentity, Option<String>, String)>;
+struct StorageRunner {
+    project_id: String,
+    handle: JoinHandle<()>,
+}
+#[cfg(test)]
+#[derive(Default)]
+struct ScanPause {
+    entered: AtomicBool,
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+#[cfg(test)]
+impl ScanPause {
+    fn wait(&self) {
+        self.entered.store(true, Ordering::Release);
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.wake.wait(released).unwrap();
+        }
+    }
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
 pub(crate) struct StorageManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
@@ -420,10 +467,15 @@ pub(crate) struct StorageManager {
     instance: String,
     stopping: AtomicBool,
     scans: Mutex<HashMap<String, String>>,
-    runners: Mutex<Vec<JoinHandle<()>>>,
+    runners: Mutex<Vec<StorageRunner>>,
+    forgotten: Mutex<HashSet<String>>,
     installation: Option<PathBuf>,
     generations: Mutex<RootGenerations>,
     readers: Arc<tokio::sync::RwLock<()>>,
+    #[cfg(test)]
+    scan_pause: Mutex<Option<Arc<ScanPause>>>,
+    #[cfg(test)]
+    aggregate_pause: Mutex<Option<Arc<ScanPause>>>,
 }
 impl StorageManager {
     pub fn new(
@@ -446,9 +498,14 @@ impl StorageManager {
             stopping: AtomicBool::new(false),
             scans: Mutex::new(HashMap::new()),
             runners: Mutex::new(vec![]),
+            forgotten: Mutex::new(HashSet::new()),
             installation,
             generations: Mutex::new(HashMap::new()),
             readers: Arc::new(tokio::sync::RwLock::new(())),
+            #[cfg(test)]
+            scan_pause: Mutex::new(None),
+            #[cfg(test)]
+            aggregate_pause: Mutex::new(None),
         });
         Ok(manager)
     }
@@ -459,6 +516,7 @@ impl StorageManager {
             .join(format!("{id}.json"))
     }
     fn binding(&self, id: &str) -> Result<(Binding, Vec<Value>), ApiError> {
+        self.require_project_available(id)?;
         self.store.check_workspace_available()?;
         let (root, manifest) = self.store.metadata_root(id)?;
         let mut issues = vec![];
@@ -490,6 +548,15 @@ impl StorageManager {
         let project_identity = root_identity(&root)?;
         let registration_switch = self.store.registered_epoch(id)?;
         let mut generations = self.generations.lock().unwrap();
+        self.require_project_available(id)?;
+        if root_identity(&root)? != project_identity
+            || self.store.registered_epoch(id)? != registration_switch
+        {
+            return Err(ApiError::new(
+                "STORAGE_SCAN_INVALIDATED",
+                "项目身份已变化，未保留旧的空间扫描状态。",
+            ));
+        }
         let generation = generations.entry(id.into()).or_insert_with(|| {
             (
                 project_identity.clone(),
@@ -566,6 +633,7 @@ impl StorageManager {
         let manager = self.clone();
         let task = record.clone();
         let id = id.to_owned();
+        let runner_project = id.clone();
         let runner = tokio::spawn(async move {
             let _ = manager.tasks.phase(&task.task_id, "scanning");
             let worker = manager.clone();
@@ -579,7 +647,10 @@ impl StorageManager {
             let _ = manager.tasks.finish(&task.task_id, result);
             manager.scans.lock().unwrap().remove(&id);
         });
-        runners.push(runner);
+        runners.push(StorageRunner {
+            project_id: runner_project,
+            handle: runner,
+        });
         Ok(record)
     }
     fn scan_project(
@@ -605,7 +676,9 @@ impl StorageManager {
             .into_iter()
             .filter_map(|(_, p)| p.strip_prefix(root).ok().map(Path::to_path_buf))
             .collect::<Vec<_>>();
-        let mut first = walk(root, &[], |e| {
+        let cancelled =
+            || self.stopping.load(Ordering::Acquire) || self.forgotten.lock().unwrap().contains(id);
+        let mut first = walk_cancellable(root, &[], &cancelled, |e| {
             let key = if upload_staging(&e.path)
                 || safe_cache.iter().any(|p| Path::new(&e.path).starts_with(p))
             {
@@ -658,6 +731,10 @@ impl StorageManager {
         let total = counts.values().fold(0u64, |a, c| a.saturating_add(c.bytes));
         let current = json!({"scope":{"kind":"project","projectId":id},"root":root,"scanId":Uuid::new_v4().to_string(),"startedAt":started,"completedAt":now(),"complete":issues.is_empty(),"stale":false,"totalBytes":int(total),"categories":categories,"issues":issues,"nonAtomic":true,"measurement":"logicalFileBytes"});
         let result = json!({"currentProject":current,"relatedHistory":self.history(id)});
+        #[cfg(test)]
+        if let Some(pause) = self.scan_pause.lock().unwrap().clone() {
+            pause.wait();
+        }
         if self.stopping.load(Ordering::Acquire)
             || self.binding(id).map(|v| v.0).ok() != Some(binding.clone())
         {
@@ -956,6 +1033,7 @@ impl StorageManager {
         let manager = self.clone();
         let task = record.clone();
         let id = id.to_owned();
+        let runner_project = id.clone();
         let runner = tokio::spawn(async move {
             let _lease = lease;
             let _gate = manager.store.gate(&id).write_owned().await;
@@ -980,7 +1058,10 @@ impl StorageManager {
             let _ = MaintenanceManager::invalidate_storage(manager.paths.workspace_root(), &id);
             manager.maintenance.notify(&id);
         });
-        runners.push(runner);
+        runners.push(StorageRunner {
+            project_id: runner_project,
+            handle: runner,
+        });
         Ok(record)
     }
     fn cleanup(&self, id: &str, task: &str, input: &CleanupInput) -> Result<Value, ApiError> {
@@ -1060,11 +1141,18 @@ impl StorageManager {
             ));
         }
         self.store.check_workspace_available()?;
+        self.require_aggregate_available()?;
         let paths = self.paths.clone();
         let installation = self.installation.clone();
         let generation = self.instance.clone();
+        #[cfg(test)]
+        let pause = self.aggregate_pause.lock().unwrap().clone();
         tokio::task::spawn_blocking(move || {
             let _reader = reader;
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.wait();
+            }
             workspace_scan(&paths, installation.as_deref(), &generation)
         })
         .await
@@ -1076,7 +1164,11 @@ impl StorageManager {
     pub async fn quiesce(&self) -> Vec<crate::shutdown::ShutdownIssue> {
         self.request_stop();
         let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        let issues = crate::shutdown::join_all("storage", runners).await;
+        let issues = crate::shutdown::join_all(
+            "storage",
+            runners.into_iter().map(|runner| runner.handle).collect(),
+        )
+        .await;
         let _drained = self.readers.write().await;
         issues
     }
@@ -1085,6 +1177,121 @@ impl StorageManager {
     }
     pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
         self.quiesce().await
+    }
+    fn require_project_available(&self, id: &str) -> Result<(), ApiError> {
+        if self.forgotten.lock().unwrap().contains(id) {
+            return Err(ApiError::new(
+                "PROJECT_DELETED",
+                "项目正在删除或已经删除，空间扫描已停止。",
+            ));
+        }
+        Ok(())
+    }
+    fn require_aggregate_available(&self) -> Result<(), ApiError> {
+        for id in self.forgotten.lock().unwrap().iter() {
+            let pending = if id.starts_with("prj_") {
+                !self.store.deleted_project_identity_absent(id)?
+                    || self
+                        .paths
+                        .data_root()
+                        .join("web-project-ownership")
+                        .join(id)
+                        .exists()
+            } else {
+                self.paths.data_root().join("node-apps").join(id).exists()
+                    || self
+                        .paths
+                        .data_root()
+                        .join("node-project-ownership")
+                        .join(id)
+                        .exists()
+            };
+            if pending {
+                return Err(ApiError::new(
+                    "STORAGE_SCAN_INVALIDATED",
+                    "项目正在删除，汇总将在删除结束后重新统计。",
+                ));
+            }
+        }
+        Ok(())
+    }
+    /// Called before the deletion worker takes its project write gate. Waiting
+    /// here joins the real blocking scan and its final task write, not merely a
+    /// task status. Other projects' scans and cleanup drafts remain intact.
+    pub(crate) async fn forget_deleted_project(&self, id: &str) -> Result<Vec<String>, ApiError> {
+        if !(id.starts_with("prj_") && valid_id(id)
+            || Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id))
+        {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        self.forgotten.lock().unwrap().insert(id.into());
+        let selected = {
+            let mut runners = self.runners.lock().unwrap();
+            let mut selected = vec![];
+            let mut keep = vec![];
+            for runner in std::mem::take(&mut *runners) {
+                if runner.project_id == id {
+                    selected.push(runner.handle)
+                } else {
+                    keep.push(runner)
+                }
+            }
+            *runners = keep;
+            selected
+        };
+        let issues = crate::shutdown::join_all("storage-deletion", selected).await;
+        if !issues.is_empty() {
+            return Err(
+                ApiError::new("STORAGE_SCAN_STOP_FAILED", "空间扫描尚未确认结束。")
+                    .detail("issues", json!(issues)),
+            );
+        }
+        let _aggregate = self.readers.write().await;
+        self.scans.lock().unwrap().remove(id);
+        self.generations.lock().unwrap().remove(id);
+        let roots = crate::workspace::local_cleanup_roots(
+            &self
+                .paths
+                .selected_for_cleanup()
+                .map_err(|error| ApiError::new("STORAGE_CACHE_UNAVAILABLE", error.to_string()))?,
+        )?;
+        let mut paths = vec![self.paths.data_root().join("cache/storage/platform.json")];
+        for root in roots {
+            let storage = root.join(".platform/cache/storage");
+            paths.extend([
+                storage.join("projects").join(format!("{id}.json")),
+                storage
+                    .join("invalidations/projects")
+                    .join(format!("{id}.json")),
+                storage.join("workspace.json"),
+                storage.join("invalidations/workspace.json"),
+            ]);
+        }
+        for path in paths {
+            remove_storage_cache(&path)?;
+        }
+        let ids = self.tasks.storage_cache_task_ids(id);
+        self.tasks.forget_storage_cache_tasks(id, &ids)?;
+        Ok(ids)
+    }
+    pub(crate) fn finish_deleted_project(&self, id: &str) {
+        self.scans.lock().unwrap().remove(id);
+        self.generations.lock().unwrap().remove(id);
+        self.forgotten.lock().unwrap().remove(id);
+    }
+}
+
+fn remove_storage_cache(path: &Path) -> Result<(), ApiError> {
+    check_no_symlinks(path, true)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {
+            fs::remove_file(path)?;
+            File::open(path.parent().unwrap())?.sync_all()?;
+            Ok(())
+        }
+        Ok(_) => Err(ApiError::new("UNSAFE_PATH", "空间缓存不是普通文件。")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 

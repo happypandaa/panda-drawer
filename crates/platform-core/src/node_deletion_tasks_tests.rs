@@ -1032,6 +1032,42 @@ async fn retry_after_task_directory_was_removed_finishes_parent_flush_and_forget
     assert!(fixture.apps.deletion_tasks.tasks.lock().unwrap().is_empty());
     fixture.assert_source();
 }
+#[tokio::test]
+async fn terminal_deleted_journal_survives_restart_until_three_stage_cleanup_and_memory_finish() {
+    let fixture = Fixture::new();
+    let id = fixture.register().await;
+    let mut metadata = fixture.metadata(&id);
+    let mut paths = vec![fixture.data.join("node-apps").join(&id)];
+    paths.extend(fixture.apps.project_ownership().owned_paths(&id).unwrap());
+    metadata["ownedPaths"] = json!(paths);
+    let mut journal = NodeDeletionJournal::create(&fixture.data, metadata).unwrap();
+    let notice = crate::project_cleanup::DeletedProjectNotice::new(
+        crate::project_cleanup::ProjectKind::Node,
+        id.clone(),
+        vec![],
+        vec![],
+        vec![fixture.source.clone()],
+    );
+    journal.set_cleanup_notice(&notice).unwrap();
+    journal.stage_all().unwrap();
+    journal.remove_staged_all().unwrap();
+    journal.mark_completed().unwrap();
+    let task_id = journal.task_id().to_owned();
+    let restarted =
+        NodeApps::new(fixture.data.clone(), "/disposable/nonexistent-node".into()).unwrap();
+    let pending = restarted.deletion_task_status(&task_id, &id).unwrap();
+    assert_eq!(pending["phase"], "failed");
+    assert_eq!(pending["canRetry"], true);
+    assert!(!NodeDeletionJournal::list(&fixture.data).unwrap().is_empty());
+    restarted.resume_deletions().await.unwrap();
+    restarted.wait_deletion_workers().await.unwrap();
+    assert!(restarted.deletion_tasks().unwrap().is_empty());
+    assert!(NodeDeletionJournal::list(&fixture.data).unwrap().is_empty());
+    assert!(restarted
+        .admit_operation(&id, "late writer after terminal recovery")
+        .is_err());
+    fixture.assert_source();
+}
 
 #[tokio::test]
 async fn pending_source_restore_marker_is_deleted_without_requiring_recovery_first() {

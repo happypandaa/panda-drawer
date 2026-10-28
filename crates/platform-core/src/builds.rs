@@ -548,6 +548,95 @@ impl BuildManager {
         ids.sort();
         ids
     }
+    pub(crate) fn storage_cache_task_ids(&self, project: &str) -> Vec<String> {
+        let mut ids = self
+            .registry
+            .lock()
+            .unwrap()
+            .records
+            .values()
+            .filter(|task| {
+                matches!(
+                    task.task_type.as_str(),
+                    "storageScan" | "storageWorkspaceScan" | "storageWorkspace"
+                ) && (task.project_id.as_deref() == Some(project) || task.project_id.is_none())
+            })
+            .map(|task| task.task_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    pub(crate) fn history_cleanup_tasks(&self) -> Vec<TaskRecord> {
+        self.registry
+            .lock()
+            .unwrap()
+            .records
+            .values()
+            .filter(|task| {
+                task.project_id.is_none()
+                    && task.status.is_final()
+                    && matches!(
+                        task.task_type.as_str(),
+                        "workspaceCleanupPreview" | "workspaceCleanup"
+                    )
+            })
+            .cloned()
+            .collect()
+    }
+    pub(crate) fn forget_storage_cache_tasks(
+        &self,
+        project: &str,
+        ids: &[String],
+    ) -> Result<(), ApiError> {
+        let selected = self
+            .paths
+            .selected_for_cleanup()
+            .map_err(|error| ApiError::new("STORAGE_CACHE_UNAVAILABLE", error.to_string()))?;
+        if selected.workspace_root() == self.paths.workspace_root() {
+            return self.forget_owned_tasks(ids);
+        }
+        let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+            selected.data_root().into(),
+            selected.workspace_root().into(),
+        );
+        let mut registry = self.registry.lock().unwrap();
+        for id in ids {
+            let Some(record) = registry.records.get(id) else {
+                continue;
+            };
+            if !record.status.is_final()
+                || !matches!(
+                    record.task_type.as_str(),
+                    "storageScan" | "storageWorkspaceScan" | "storageWorkspace"
+                )
+                || (record.project_id.is_some() && record.project_id.as_deref() != Some(project))
+            {
+                return Err(ApiError::new(
+                    "STORAGE_SCAN_STOP_FAILED",
+                    "空间统计任务尚未结束或归属已变化。",
+                ));
+            }
+            let path = self.task_dir(id);
+            check_no_symlinks(&path, true)?;
+            if path.exists() {
+                let expected = if project.starts_with("prj_") && record.project_id.is_some() {
+                    ownership.material_identity(project, &path)?
+                } else {
+                    None
+                }
+                .ok_or_else(|| {
+                    ApiError::new(
+                        "STORAGE_CACHE_UNAVAILABLE",
+                        "旧工作区统计任务缺少已登记的目录身份。",
+                    )
+                })?;
+                crate::history_cleanup::remove_owned_directory(&path, &expected)?;
+            }
+            registry.records.remove(id);
+            registry.legacy_build_times.remove(id);
+        }
+        Ok(())
+    }
     pub(crate) fn restore_failed_project_task(
         &self,
         snapshot: &TaskRecord,
@@ -891,7 +980,11 @@ impl BuildManager {
             status: record.status,
         };
         let is_build = record.task_type == "build";
-        if !matches!(record.task_type.as_str(), "storageScan" | "storageCleanup") {
+        if !matches!(
+            record.task_type.as_str(),
+            "delete" | "storageScan" | "storageCleanup"
+        ) && self.store.registered_epoch(&event.project_id)?.is_some()
+        {
             if let Err(error) = crate::maintenance::MaintenanceManager::invalidate_storage(
                 self.paths.workspace_root(),
                 &event.project_id,

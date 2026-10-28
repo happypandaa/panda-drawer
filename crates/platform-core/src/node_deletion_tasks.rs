@@ -137,6 +137,17 @@ impl NodeApps {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         for journal in NodeDeletionJournal::list(&self.data_root)? {
+            if journal.phase() == "deleted" {
+                let permit = Some(self.begin_delete_operation(journal.app_id())?);
+                let task_id = journal.task_id().to_owned();
+                let task = Arc::new(DeletionTask::new(journal, permit));
+                task.fail(ApiError::new(
+                    "NODE_DELETION_FINALIZATION_REQUIRED",
+                    "项目文件已删除，请继续完成缓存和原生存储清理。",
+                ));
+                tasks.insert(task_id, task);
+                continue;
+            }
             if journal.is_terminal() {
                 match journal.remove_terminal() {
                     Ok(()) => continue,
@@ -732,18 +743,9 @@ impl NodeApps {
                 }
                 task.lease.lock().unwrap_or_else(|p| p.into_inner()).take();
                 if deleted && completed {
-                    let id = task.cached()["appId"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned();
-                    match apps.forget_deleted_instance(&id).await {
-                        Ok(()) => {
-                            let slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
-                            if let Some(journal) = slot.as_ref() {
-                                task.publish(journal);
-                            }
-                        }
-                        Err(error) => task.fail(error),
+                    let slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(journal) = slot.as_ref() {
+                        task.publish(journal);
                     }
                 }
                 if completed && abandoned {
@@ -803,7 +805,10 @@ impl NodeApps {
     ) -> Result<()> {
         {
             let mut slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(journal) = slot.as_mut().filter(|journal| journal.is_terminal()) {
+            if let Some(journal) = slot
+                .as_mut()
+                .filter(|journal| journal.phase() == "abandoned")
+            {
                 self.confirm_terminal_deletion(journal)?;
                 task.release_gate();
                 return Ok(());
@@ -821,6 +826,33 @@ impl NodeApps {
             .as_ref()
             .cloned()
             .ok_or_else(|| fail("删除操作归属缺失。"))?;
+        let terminal_deleted = task
+            .journal
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|journal| journal.phase() == "deleted");
+        if terminal_deleted {
+            let cleanup = self
+                .runtime
+                .as_ref()
+                .map(crate::RuntimeHandle::project_cleanup)
+                .unwrap_or_else(|| {
+                    crate::project_cleanup::ProjectCleanupCoordinator::new(&self.data_root)
+                });
+            let notice = cleanup.prepare(self.node_deletion_notice(task)?).await?;
+            cleanup.purge(&notice).await?;
+            self.forget_deleted_instance(&id, &permit).await?;
+            {
+                let mut slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
+                let journal = slot.as_mut().ok_or_else(|| fail("删除清理归属缺失。"))?;
+                journal.remove_terminal()?;
+                task.publish(journal);
+                task.release_gate();
+            }
+            cleanup.committed(&notice).await;
+            return Ok(());
+        }
         loop {
             let changed = task.changed.notified();
             tokio::pin!(changed);
@@ -870,11 +902,103 @@ impl NodeApps {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
         }
+        let cleanup = self
+            .runtime
+            .as_ref()
+            .map(crate::RuntimeHandle::project_cleanup)
+            .unwrap_or_else(|| {
+                crate::project_cleanup::ProjectCleanupCoordinator::new(&self.data_root)
+            });
+        let notice = cleanup.prepare(self.node_deletion_notice(task)?).await?;
+        {
+            let mut slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
+            let journal = slot.as_mut().ok_or_else(|| fail("删除清理归属缺失。"))?;
+            journal.set_cleanup_notice(&notice)?;
+            task.publish(journal);
+        }
         let apps = self.clone();
-        let task = task.clone();
-        tokio::task::spawn_blocking(move || apps.finish_deletion_files(&task))
+        let files_task = task.clone();
+        tokio::task::spawn_blocking(move || apps.finish_deletion_files(&files_task))
             .await
-            .map_err(|_| fail("删除文件工作意外结束，请保留任务现场。"))?
+            .map_err(|_| fail("删除文件工作意外结束，请保留任务现场。"))??;
+        cleanup.purge(&notice).await?;
+        self.forget_deleted_instance(&id, &permit).await?;
+        {
+            let mut slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
+            let journal = slot.as_mut().ok_or_else(|| fail("删除清理归属缺失。"))?;
+            journal.mark_completed()?;
+            journal.remove_terminal()?;
+            task.publish(journal);
+            task.release_gate();
+        }
+        cleanup.committed(&notice).await;
+        Ok(())
+    }
+    fn node_deletion_notice(
+        &self,
+        task: &DeletionTask,
+    ) -> Result<crate::project_cleanup::DeletedProjectNotice> {
+        use crate::project_cleanup::{DeletedProjectNotice, ProjectKind};
+        let mut slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
+        let journal = slot.as_mut().ok_or_else(|| fail("删除清理归属缺失。"))?;
+        if let Some(saved) = journal.metadata().get("cleanupNotice") {
+            let mut notice: DeletedProjectNotice = serde_json::from_value(saved.clone())?;
+            notice.normalize()?;
+            if notice.kind != ProjectKind::Node || notice.id != journal.app_id() {
+                return Err(fail("删除清理身份不符。"));
+            }
+            return Ok(notice);
+        }
+        if journal.snapshot()["renamedAny"] == false {
+            let ownership = self.project_ownership();
+            let mut paths = vec![self.root.join(journal.app_id())];
+            paths.extend(ownership.owned_paths(journal.app_id())?);
+            journal.refresh_owned_paths(
+                paths,
+                ownership.task_ids(journal.app_id())?,
+                ownership.generated_source(journal.app_id())?,
+                ownership.external_owned_paths(journal.app_id())?,
+            )?;
+        }
+        let metadata = journal.metadata();
+        let tasks: Vec<String> = serde_json::from_value(metadata["ownedTaskIds"].clone())?;
+        let sources = metadata["ownedPaths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| {
+                path.parent()
+                    == Some(
+                        self.deletion_workspace()
+                            .join(".platform/sources")
+                            .as_path(),
+                    )
+            })
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let mut roots = metadata["sourcePath"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .map(|path| vec![PathBuf::from(path)])
+            .unwrap_or_default();
+        if journal.snapshot()["renamedAny"] == false {
+            roots.extend(self.project_ownership().source_roots(journal.app_id())?);
+            roots.sort();
+            roots.dedup();
+        }
+        Ok(DeletedProjectNotice::new(
+            ProjectKind::Node,
+            journal.app_id().into(),
+            tasks,
+            sources,
+            roots,
+        ))
     }
     fn finalize_abandonment(&self, task: &DeletionTask) -> Result<()> {
         let mut slot = task.journal.lock().unwrap_or_else(|p| p.into_inner());
@@ -938,8 +1062,6 @@ impl NodeApps {
                     .ok_or_else(|| fail("项目任务管理器尚未绑定，删除未完成。"))?;
                 manager.forget_owned_tasks(&ids)?;
             }
-            journal.mark_completed()?;
-            journal.remove_terminal()?;
             Ok(())
         })();
         if let Err(error) = &outcome {
@@ -947,9 +1069,6 @@ impl NodeApps {
             let _ = journal.mark_failed(error);
         }
         *task.journal.lock().unwrap_or_else(|p| p.into_inner()) = Some(journal);
-        if outcome.is_ok() {
-            task.release_gate();
-        }
         outcome
     }
     pub(super) fn deletion_workspace(&self) -> PathBuf {

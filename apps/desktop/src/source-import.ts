@@ -2,6 +2,8 @@ import { installedResult, preparedResult } from './NodeInstallPanel';
 import type { InstalledNodeResult, PreparedNodeInstall } from './NodeInstallPanel';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { deletedSourceMatches, taskWasDeleted } from './project-deletion';
+import type { ProjectDeletedNotice } from './project-deletion';
 
 export interface SourceCandidate {
   sourceId: string; taskId: string; status: string; name: string; url: string;
@@ -21,6 +23,7 @@ export interface PublishedImportSource {
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 interface Callbacks {
   onTask: (task: TaskRecord) => void; onChange: () => void; isCurrent: () => boolean;
+  onRevoked?: () => void;
   pause?: () => Promise<void>;
 }
 export class SourceImportError extends Error {
@@ -43,9 +46,21 @@ export class SourceImportSession {
   private cancelRequested = false;
   private cancelling = false;
   private uncertain = false;
+  private revoked = false;
   constructor(private invoke: Invoke, private callbacks: Callbacks) {}
   private check() {
-    if (!this.callbacks.isCurrent()) throw new SourceImportError('当前连接已改变，请从源码记录核对之前的任务。', true);
+    if (this.revoked || !this.callbacks.isCurrent()) throw new SourceImportError('当前添加流程已失效。', true);
+  }
+  revoke(notice: ProjectDeletedNotice): boolean {
+    if (!deletedSourceMatches(notice, { appId: this.installed?.appId ?? this.candidate?.appId,
+      taskIds: [this.sourceTaskId, this.task?.taskId], sourceIds: [this.source?.sourceId],
+      sourceRoots: [this.source?.sourcePath, this.published?.sourcePath] })) return false;
+    this.retire(); return true;
+  }
+  private retire() {
+    this.revoked = true; this.cancelRequested = true;
+    this.sourceTaskId = null; this.source = null; this.candidate = null; this.installed = null;
+    this.published = null; this.task = null; this.warning = ''; this.callbacks.onRevoked?.();
   }
   private changed() { this.check(); this.callbacks.onChange(); }
   private async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -55,6 +70,8 @@ export class SourceImportSession {
     return value;
   }
   private accept(value: TaskRecord, type: string, id?: string) {
+    this.check();
+    if (taskWasDeleted(value)) { this.retire(); throw new SourceImportError('这个项目已经删除。', true); }
     if (!value || typeof value.taskId !== 'string' || value.type !== type || value.projectId !== null || typeof value.final !== 'boolean' || id && value.taskId !== id) {
       throw new SourceImportError('任务身份无法确认，请核对结果，勿重复导入。', true);
     }

@@ -34,6 +34,7 @@ struct Ownership {
     project_id: String,
     workspace_root: PathBuf,
     project_root: Option<OwnedPath>,
+    prior_project_roots: Vec<OwnedPath>,
     tasks: BTreeMap<String, Option<PersistedIdentity>>,
     retained: Vec<OwnedPath>,
     export_stages: BTreeMap<String, ExportStage>,
@@ -153,7 +154,12 @@ impl WebProjectOwnership {
         for task in record.tasks.keys() {
             task_id(task)?;
         }
-        for path in record.project_root.iter().chain(record.retained.iter()) {
+        for path in record
+            .project_root
+            .iter()
+            .chain(record.retained.iter())
+            .chain(record.prior_project_roots.iter())
+        {
             absolute(&path.path)?;
         }
         for (task, stage) in &record.export_stages {
@@ -203,6 +209,7 @@ impl WebProjectOwnership {
                     project_id: id.into(),
                     workspace_root: self.workspace.clone(),
                     project_root: None,
+                    prior_project_roots: vec![],
                     tasks: BTreeMap::new(),
                     retained: vec![],
                     export_stages: BTreeMap::new(),
@@ -262,6 +269,21 @@ impl WebProjectOwnership {
     }
     pub(crate) fn task_ids(&self, id: &str) -> Result<Vec<String>> {
         Ok(self.read(id)?.tasks.into_keys().collect())
+    }
+    pub(crate) fn source_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
+        let record = self.read(id)?;
+        let mut roots = vec![];
+        for root in record
+            .project_root
+            .iter()
+            .chain(record.prior_project_roots.iter())
+        {
+            root.verify()?;
+            if !roots.contains(&root.path) {
+                roots.push(root.path.clone());
+            }
+        }
+        Ok(roots)
     }
     pub(crate) fn task_directory_identity(
         &self,
@@ -748,6 +770,13 @@ impl WebProjectOwnership {
                 }
                 if let Some(root) = &record.project_root {
                     if let Ok(relative) = root.path.strip_prefix(old) {
+                        if !record
+                            .prior_project_roots
+                            .iter()
+                            .any(|prior| prior.path == root.path)
+                        {
+                            record.prior_project_roots.push(root.clone());
+                        }
                         let target = new.join(relative);
                         let current = capture(&target)?
                             .ok_or_else(|| invalid("网页项目未包含在已核验迁移副本中。"))?;
@@ -1195,12 +1224,19 @@ pub(crate) fn fixed_paths(workspace: &Path, id: &str) -> Vec<PathBuf> {
         workspace.join("backups").join(id),
         workspace.join(".platform/cache/npm").join(id),
         workspace.join("projects").join(format!(".creating-{id}")),
+        workspace
+            .join(".platform/cache/storage/projects")
+            .join(format!("{id}.json")),
+        workspace
+            .join(".platform/cache/storage/invalidations/projects")
+            .join(format!("{id}.json")),
     ];
     for scope in [
         "git",
         "source-restore",
         "source-restore-staging",
         "data-restore",
+        "diagnostics",
     ] {
         paths.push(state.join(scope).join(id));
     }
@@ -1333,6 +1369,9 @@ mod tests {
         WebProjectOwnership::rebind_after_migration(&owner.data, &owner.workspace, &next).unwrap();
         let migrated = WebProjectOwnership::new(owner.data.clone(), next.clone());
         let paths = migrated.material_paths(&id).unwrap();
+        let roots = migrated.source_roots(&id).unwrap();
+        assert!(roots.contains(&root));
+        assert!(roots.contains(&next.join("projects/disposable-web-root")));
         assert!(paths.contains(&root));
         assert!(paths.contains(&old_task));
         assert!(paths.contains(&new_task));

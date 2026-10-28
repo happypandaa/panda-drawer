@@ -13,7 +13,7 @@ await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/radio-shell-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : globalThis.__RADIO_SHELL_INVOKE__(command, ...args); export const isTauri = () => true;\n');
+await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : globalThis.__RADIO_SHELL_INVOKE__(command, ...args); export const isTauri = () => true; export const listen = async () => () => {};\n');
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
@@ -29,7 +29,7 @@ async function compile(file) {
     assert.ok(dependency);
     source = source.replaceAll(`${match[1]}${match[2]}${match[1]}`, JSON.stringify(pathToFileURL(await compile(dependency)).href));
   }
-  source = source.replaceAll(/(['"])@tauri-apps\/api\/core\1/g, JSON.stringify(pathToFileURL(mockPath).href));
+  source = source.replaceAll(/(['"])@tauri-apps\/api\/(?:core|event)\1/g, JSON.stringify(pathToFileURL(mockPath).href));
   await writeFile(target, source);
   return target;
 }
@@ -45,6 +45,7 @@ globalThis.__RADIO_SHELL_INVOKE__ = async command => { throw new Error(`Unexpect
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: App } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/App.tsx'))).href);
+const { resetProjectDeletionsForTests } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-deletion.ts'))).href);
 const { APPEARANCE_KEY } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/appearance.ts'))).href);
 const storagePrototype = dom.window.Storage.prototype;
 const originalGetItem = Object.getOwnPropertyDescriptor(storagePrototype, 'getItem');
@@ -53,6 +54,7 @@ let root;
 async function unmount() { if (root) await act(async () => root.unmount()); root = null; }
 afterEach(async () => {
   await unmount();
+  resetProjectDeletionsForTests();
   Object.defineProperty(storagePrototype, 'getItem', originalGetItem);
   Object.defineProperty(storagePrototype, 'setItem', originalSetItem);
   dom.window.localStorage.clear();
@@ -290,10 +292,11 @@ test('A completed Git addition closes its session and reopens a fresh form after
   const sourceRead = fixture.deferSourceReads();
   await click(byText('从 Git 添加', addGroup()));
   assert.equal(dialog().querySelector('h2').textContent, '从 Git 添加项目');
-  assert.equal(document.getElementById('git-import-url')?.value, fixture.source.url);
+  assert.equal(document.getElementById('git-import-url')?.value, '');
   assert.ok(byText('开始添加', dialog()));
   assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
   assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1, 'Reopening is not a new submission');
+  await change(document.getElementById('git-import-url'), fixture.source.url);
   await click(byText('开始添加', dialog()));
   assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 2, 'A removed app must not survive in the cached duplicate-repository check');
   assert.doesNotMatch(dialog().textContent, /这个仓库已经添加过/);
@@ -308,7 +311,7 @@ test('Entering configuration from a completed Git addition also retires that ses
   await click(document.querySelector('.node-detail-modal .modal-close'));
   assert.equal(dialog(), null);
   await click(byText('从 Git 添加', addGroup()));
-  assert.equal(document.getElementById('git-import-url')?.value, fixture.source.url);
+  assert.equal(document.getElementById('git-import-url')?.value, '');
   assert.ok(byText('开始添加', dialog()));
   assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
   assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1);

@@ -7,6 +7,7 @@ interface FeedbackMessage extends FeedbackContext {
   kind: 'error' | 'success';
   text: string;
   slot: string;
+  backgroundKey?: string;
 }
 
 // A context version changes even when the user leaves and returns to the same
@@ -30,7 +31,7 @@ export function useManagementFeedback(scope: string) {
       previous.add(text); reported.current.set(key, previous);
     }
     const destination = options?.nextScope ?? origin.scope;
-    const message: FeedbackMessage = { id: ++sequence.current, kind, text, slot, scope: destination, version: origin.version + (destination === origin.scope ? 0 : 1) };
+    const message: FeedbackMessage = { id: ++sequence.current, kind, text, slot, scope: destination, backgroundKey: key, version: origin.version + (destination === origin.scope ? 0 : 1) };
     setMessages((current) => {
       const retained = current.filter((item) => item.version >= origin.version);
       if (kind === 'error' && retained.some((item) => item.kind === kind && item.version === message.version && item.scope === destination && item.slot === slot && item.text === text)) return retained;
@@ -47,8 +48,13 @@ export function useManagementFeedback(scope: string) {
     return context.current;
   }, []);
   const dismiss = useCallback((id: number) => setMessages((current) => current.filter((item) => item.id !== id)), []);
+  const forgetProject = useCallback((id: string, taskIds: string[]) => {
+    const belongs = (value: string) => [id, ...taskIds].some(token => value.split(':').includes(token));
+    for (const key of reported.current.keys()) if (belongs(key)) reported.current.delete(key);
+    setMessages(current => current.filter(item => !belongs(item.scope) && !belongs(item.slot) && !belongs(item.backgroundKey ?? '')));
+  }, []);
   const visible = messages.filter((item) => item.scope === scope && item.version === context.current.version);
-  return { capture, isCurrent, error, success, recover, reset, dismiss, messages: visible };
+  return { capture, isCurrent, error, success, recover, reset, dismiss, forgetProject, messages: visible };
 }
 
 export function FeedbackNotices({ messages, dismiss, slot = 'main' }: { messages: FeedbackMessage[]; dismiss: (id: number) => void; slot?: string }) {

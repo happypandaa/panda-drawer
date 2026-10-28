@@ -46,6 +46,7 @@ struct Input {
 
 #[derive(Clone)]
 struct Operation {
+    cleanup_notice: Option<crate::project_cleanup::DeletedProjectNotice>,
     task_id: String,
     kind: String,
     project_id: String,
@@ -72,6 +73,7 @@ type DeleteCleanupCheckpoint = (
 );
 
 pub(crate) struct LifecycleManager {
+    project_cleanup: Mutex<Arc<crate::project_cleanup::ProjectCleanupCoordinator>>,
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
@@ -241,6 +243,9 @@ impl LifecycleManager {
         store.set_node_source_data_root(paths.data_root().to_path_buf());
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
+            project_cleanup: Mutex::new(crate::project_cleanup::ProjectCleanupCoordinator::new(
+                paths.data_root(),
+            )),
             paths,
             store,
             tasks,
@@ -260,6 +265,64 @@ impl LifecycleManager {
     }
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.events.subscribe()
+    }
+    pub(crate) fn set_project_cleanup(
+        &self,
+        cleanup: Arc<crate::project_cleanup::ProjectCleanupCoordinator>,
+    ) {
+        *self
+            .project_cleanup
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = cleanup;
+    }
+    fn cleanup(&self) -> Arc<crate::project_cleanup::ProjectCleanupCoordinator> {
+        self.project_cleanup
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+    fn deletion_notice(
+        &self,
+        operation: &Operation,
+    ) -> Result<crate::project_cleanup::DeletedProjectNotice, ApiError> {
+        if let Some(notice) = &operation.cleanup_notice {
+            return Ok(notice.clone());
+        }
+        let owner = crate::web_project_ownership::WebProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        let mut tasks = if owner.path(&operation.project_id)?.exists() {
+            owner.task_ids(&operation.project_id)?
+        } else {
+            self.tasks.project_task_ids(&operation.project_id)
+        };
+        tasks.push(operation.task_id.clone());
+        let mut roots = if let Some(directory) = &operation.directory_name {
+            vec![operation_project_root(
+                self.paths.workspace_root(),
+                &operation.project_id,
+                Some(directory),
+            )?]
+        } else {
+            self.store
+                .deletion_root(&operation.project_id)
+                .ok()
+                .map(|(root, _)| vec![root])
+                .unwrap_or_default()
+        };
+        if owner.path(&operation.project_id)?.exists() {
+            roots.extend(owner.source_roots(&operation.project_id)?);
+            roots.sort();
+            roots.dedup();
+        }
+        Ok(crate::project_cleanup::DeletedProjectNotice::new(
+            crate::project_cleanup::ProjectKind::Web,
+            operation.project_id.clone(),
+            tasks,
+            vec![],
+            roots,
+        ))
     }
     fn notify(&self, id: &str) {
         let _ = self.events.send(id.into());
@@ -428,6 +491,7 @@ impl LifecycleManager {
     }
     fn operation_state(record: &TaskRecord, kind: &str, project: &str) -> Operation {
         Operation {
+            cleanup_notice: None,
             task_id: record.task_id.clone(),
             kind: kind.into(),
             project_id: project.into(),
@@ -841,12 +905,9 @@ impl LifecycleManager {
                             }
                         }
                     }
-                    tokio::task::spawn_blocking(move || {
-                        cleanup_manager.finish_deleted_project(&cleanup_operation)
-                    })
-                    .await
-                    .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))
-                    .and_then(|result| result)
+                    cleanup_manager
+                        .finish_deleted_project(&cleanup_operation)
+                        .await
                 }
                 .await;
                 if let Err(error) = cleanup {
@@ -1215,11 +1276,21 @@ impl LifecycleManager {
         self.phase(operation, "delete-freeze")?;
         let id = operation.project_id.clone();
         if operation.committed && self.store.deleted_project_identity_absent(&id)? {
+            operation.cleanup_notice = Some(
+                self.cleanup()
+                    .prepare(self.deletion_notice(operation)?)
+                    .await?,
+            );
             return Ok(operation.result.clone());
         }
         let control = self.store.control_for_deletion(&id)?;
         let _freeze = Freeze::new(control.clone());
         self.notify(&id);
+        operation.cleanup_notice = Some(
+            self.cleanup()
+                .prepare(self.deletion_notice(operation)?)
+                .await?,
+        );
         let gate = self.store.gate(&id);
         let _guard = gate.write().await;
         self.store.close_database(&id).await?;
@@ -1324,14 +1395,39 @@ impl LifecycleManager {
             }
         }
     }
-    fn finish_deleted_project(&self, operation: &Operation) -> Result<(), ApiError> {
-        crate::web_project_cleanup::remove_project_materials(
-            &self.paths,
-            &self.store,
-            &self.tasks,
-            &operation.project_id,
-            &operation.task_id,
-        )?;
+    async fn finish_deleted_project(
+        self: &Arc<Self>,
+        operation: &Operation,
+    ) -> Result<(), ApiError> {
+        let cleanup = self.cleanup();
+        let notice = if let Some(notice) = &operation.cleanup_notice {
+            notice.clone()
+        } else {
+            cleanup.prepare(self.deletion_notice(operation)?).await?
+        };
+        let manager = self.clone();
+        let removing = operation.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::web_project_cleanup::remove_project_materials(
+                &manager.paths,
+                &manager.store,
+                &manager.tasks,
+                &removing.project_id,
+                &removing.task_id,
+            )
+        })
+        .await
+        .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))??;
+        cleanup.purge(&notice).await?;
+        let manager = self.clone();
+        let finishing = operation.clone();
+        tokio::task::spawn_blocking(move || manager.finish_deleted_project_records(&finishing))
+            .await
+            .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))??;
+        cleanup.committed(&notice).await;
+        Ok(())
+    }
+    fn finish_deleted_project_records(&self, operation: &Operation) -> Result<(), ApiError> {
         if let Some(marker) = self.store.pending_deletion(&operation.project_id)? {
             if marker.task_id != operation.task_id || marker.target_epoch != operation.target_epoch
             {
