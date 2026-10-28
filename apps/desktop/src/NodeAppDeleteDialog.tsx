@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { TriangleAlert, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { DeleteProgress } from './DeleteProgress';
 import { Modal } from './Modal';
 import type { NodeAppDeletePreview, NodeAppDeleteResult } from './node-app-types';
 import { messageFrom } from './ui-utils';
@@ -118,11 +119,10 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
   const recheck = <button type="button" className="text-button node-delete-recheck" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>;
 
   return <Modal title="删除项目" titleIcon={<Trash2 size={22} aria-hidden="true" />} className="project-delete-modal node-delete-modal" closeDisabled={pending !== null} onClose={close}>
-    <section className="node-delete-confirmation" aria-label="永久删除 Node 项目确认" aria-busy={pending !== null}>
-      <div className="node-delete-body">
+    <section className="node-delete-confirmation" aria-label="永久删除 Node 项目确认">
+      <div className="node-delete-body" hidden={pending !== null} aria-busy={pending !== null}>
         <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
         <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
-        {pending === 'preview' && <p role="status">正在核对本项目的删除范围…</p>}
         {error && <p className="task-error" role="alert">{error}</p>}
         {preview && <>
           <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
@@ -142,7 +142,8 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
           <p className="node-delete-id">项目 ID：<code>{preview.appId}</code></p>
         </>}
       </div>
-      <div className="node-delete-footer">
+      {pending !== null && <DeleteProgress name={preview?.name ?? app.name} checking={pending === 'preview'} />}
+      <div className="node-delete-footer" hidden={pending !== null}>
         <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
         <div className="confirmation-actions">{!preview && recheck}<button className="refresh-button" disabled={pending !== null} onClick={close}>取消，保留项目</button><button className="danger-button" disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
       </div>

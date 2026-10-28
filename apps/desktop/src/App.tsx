@@ -420,6 +420,9 @@ function App() {
           if (!matchingProjectTask(task, previous.projectId, previous.taskId) || task.type !== previous.type) throw new Error('任务身份或类型不符，请刷新核对。');
           recover(`task:${previous.taskId}`);
           if (task.projectId) setTasks((current) => ({ ...current, [task.projectId!]: task }));
+          // Both pollers can observe this deletion. A confirmed final result
+          // must also release the dialog if the lifecycle poll is still waiting.
+          if (task.type === 'delete' && task.final) acceptLifecycleTask(task);
           if (task.projectId && task.type === 'build') {
             buildRevisions.current[task.projectId] = (buildRevisions.current[task.projectId] ?? 0) + 1;
             setBuildResults((current) => ({ ...current, [task.projectId!]: { task, issues: current[task.projectId!]?.issues ?? [] } }));
@@ -435,7 +438,7 @@ function App() {
       })).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [tasks, refresh, capture, showError, recover, localDataLocked]);
+  }, [tasks, acceptLifecycleTask, refresh, capture, showError, recover, localDataLocked]);
 
   useEffect(() => {
     if (localDataLocked) return;
