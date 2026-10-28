@@ -66,6 +66,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         working_directory,
         trial_root: paths["--trial-root"].clone(),
         business_env,
+        control_directory: paths["--trial-root"].clone(),
+        redaction_values: Vec::new(),
     })
     .await?;
     let probe = async {

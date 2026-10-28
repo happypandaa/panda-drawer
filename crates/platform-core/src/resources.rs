@@ -252,7 +252,7 @@ Resource limits exposed by this development runtime are internal test parameters
 - 默认平台集成说明：{platform_docs}
 业务文档和 skill 的 PROJECT_ROOT 指上述业务项目根目录；skill 的 references/ 等资源链接相对该 skill 所在目录解析。当前目录、安装约束和 CLI 以上述实际路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
 
-Codex 接手时，请确认当前工作目录正是上述业务项目根目录。平台“在 Codex 打开”只准备项目目录，不自动发送需求。若 CLI 报本机连接受限或服务不可达，先核对平台是否运行及本会话对本机服务的访问权限；不要据此删除连接记录、重建项目、直接打开 SQLite 或绕过工具权限。不能访问时保留已完成的源码修改，给出待执行的公开 CLI 请求与未验事项，由用户在允许访问的平台会话中继续。
+AI 接手时，请确认当前工作目录正是上述业务项目根目录。复制交接说明后，由用户补充需求并自行发送。若 CLI 报本机连接受限或服务不可达，先核对平台是否运行及本会话对本机服务的访问权限；不要据此删除连接记录、重建项目、直接打开 SQLite 或绕过工具权限。不能访问时保留已完成的源码修改，给出待执行的公开 CLI 请求与未验事项，由用户在允许访问的平台会话中继续。
 
 平台应用窗口约束：每个应用实例最多一个原生窗口，重复打开只聚焦已有窗口，不重载或丢弃草稿；不得弹出新窗口、调用 window.open/target=_blank、另建 WebView 或转外部浏览器作为运行方式。业务确认与表单留在当前窗口内，不用脚本 alert/confirm/prompt。网页类型不启动自己的 Node；Node 类型由平台在打开应用时后台启动唯一后端，关闭应用窗口就停止，启动中的重复打开复用同一次任务。保存配置不启动或重启，明确重启或关窗后再打开才使用新配置。此交接仍针对已有 project-v1，不把独立 Node 源码槽的能力套入其安装、数据或迁移生命周期。
 
@@ -264,7 +264,7 @@ Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包�
 
 实际获取公开源码须明确使用 source acquire --url 标准HTTPS仓库地址 --json，再用 task wait 核对最终任务，source list/get 查看来源版本和保留目录。source inspect --path /绝对路径 --json 只检查本机声明；source cancel --task TASK_ID --json 请求取消后仍须等待最终状态。获取不会安装或执行代码，失败/中断现场保留、重试另建目录；不要将源码候选当已登记应用或用其来源ID调用项目数据库。当前完整安装和私有仓库认证尚未开放。
 
-源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
+源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。修改前先用 Git 保存当前版本，保留已有未提交改动；用户要求回退时，用 Git 恢复到之前的版本。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
 
 使用当前平台 CLI 检查环境、项目和数据库，再通过平台管理的 SQL/事务与构建流程完成修改，例如：
 
@@ -479,6 +479,9 @@ mod tests {
             "{quoted_cli} project url --project 'prj_current' --json"
         )));
         assert!(!text.contains("private-fixture-value"));
+        assert!(!text.contains("Codex"));
+        assert!(text.contains("修改前先用 Git 保存当前版本"));
+        assert!(text.contains("用户要求回退时，用 Git 恢复到之前的版本"));
         assert_eq!(fs::read(project_root.join("README.md")).unwrap(), readme);
         assert_eq!(fs::read_to_string(skill).unwrap(), "Existing project skill");
         assert_eq!(

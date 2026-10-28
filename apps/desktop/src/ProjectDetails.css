@@ -85,12 +85,10 @@
 :root[data-theme] .software-detail-modal .detail-status-badge.is-error { color: var(--radio-danger); background: var(--radio-danger-surface); }
 :root[data-theme] .software-detail-modal .detail-summary-facts dd.detail-warning-text { color: var(--radio-warning); }
 :root[data-theme] .software-detail-modal .detail-summary-facts dd.detail-error-text { color: var(--radio-danger); }
-:root[data-theme] .software-detail-modal .detail-action-note { margin: 12px 0 0; color: var(--radio-secondary); font-size: 12px; line-height: 20px; }
 :root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button { margin-left: auto; min-height: 40px; padding: 8px 12px; gap: 6px; border: 0; border-radius: 8px; color: var(--radio-danger); background: transparent; font-size: 13px; }
 :root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button:hover:not(:disabled) { background: var(--radio-danger-surface); }
 :root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button:disabled { color: var(--radio-muted); opacity: .6; }
 :root[data-theme] .software-detail-modal .detail-section-note { margin: 0; color: var(--radio-secondary); font-size: 13px; line-height: 22px; }
-:root[data-theme] .software-detail-modal .detail-update-section { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .node-detail-modal .node-app-modal-detail { padding: 0; border: 0; background: transparent; }
 .node-detail-modal .node-app-modal-detail > .overview-tabs { position: sticky; top: 0; padding-top: 0; }
 :root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] { padding: 28px 32px 32px; }
@@ -103,3 +101,19 @@
   :root[data-theme] .node-detail-modal .node-app-modal-detail > :is(.operation-confirmation, .node-inline-message, .node-config-warning, .node-delete-confirmation) { margin-inline: 24px; }
   :root[data-theme] .software-detail-modal .detail-summary-facts { grid-template-columns: 1fr; gap: 12px; }
 }
+
+:root[data-theme] .node-detail-modal .detail-summary-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.node-technical-paths { margin: 0; display: grid; gap: 12px; }
+.node-technical-paths > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 16px; }
+.node-technical-paths dt { color: var(--radio-secondary); }
+.node-technical-paths dd { margin: 0; overflow-wrap: anywhere; }
+.node-apply-changes { display: grid; gap: 12px; }
+.node-apply-changes > .confirmation-actions { justify-content: flex-start; margin: 0; }
+@media (max-width: 640px) {
+  :root[data-theme] .node-detail-modal .detail-summary-facts { grid-template-columns: 1fr; }
+  :root[data-theme] .node-detail-modal .detail-location-row { flex-wrap: wrap; }
+  .node-technical-paths > div { grid-template-columns: 1fr; gap: 4px; }
+}
+
+:root[data-theme] .software-detail-modal .detail-copy-actions { display: inline-flex; align-items: center; }
+:root[data-theme] .software-detail-modal .detail-copy-actions > button { min-height: 40px; padding: 8px 16px; gap: 8px; border-radius: 8px; font-size: 14px; line-height: 22px; }

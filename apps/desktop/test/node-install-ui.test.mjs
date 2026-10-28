@@ -497,3 +497,23 @@ test('A lost update response offers AI help without claiming the previous versio
   assert.equal(commandCalls(calls,'node_install_apply').length,1);
   assert.ok(byText('复制说明给 AI'));
 });
+
+
+test('Managed apply workflow keeps a lost commit response blocked until explicit reconciliation', async () => {
+  let committed = false;
+  const { calls, pending } = await setup({ props: { mode: 'apply-changes', targetAppId: appId }, overrides: {
+    node_install_prepare: () => readyTask(),
+    node_install_apply: () => { throw Error('artificial lost apply response'); },
+    node_install_candidate: () => committed ? { state: 'committed', result: installed } : { state: 'prepared', candidate: prepared },
+  } });
+  assert.equal(select(), null); assert.deepEqual(calls, []);
+  await click(byText('准备修改')); await confirmAll(); await click(byText('确认更新'));
+  assert.equal(pending.at(-1), true);
+  assert.equal(byText('重新准备修改').disabled, true);
+  await submit(); assert.equal(commandCalls(calls, 'node_install_prepare').length, 1);
+  assert.equal(commandCalls(calls, 'node_install_apply').length, 1);
+  committed = true; await click(byText('核验准备结果'));
+  assert.equal(pending.at(-1), false);
+  assert.match(document.body.textContent, /已确认更新/);
+  assert.equal(commandCalls(calls, 'node_install_apply').length, 1);
+});

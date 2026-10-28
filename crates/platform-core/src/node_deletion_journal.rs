@@ -119,7 +119,7 @@ mod macos {
             let directory = root.join(&task_id);
             let creating = root.join(format!(".creating-{task_id}"));
             let staging = instance.join(STAGING_NAME).join(&task_id);
-            let mut names = vec!["configuration", "data", "cache"];
+            let mut names = vec!["configuration", "data", "cache", "logs"];
             if metadata["ownership"] == "managed" {
                 names.push("generations");
             }
@@ -151,7 +151,7 @@ mod macos {
             private_directory(&creating, true)?;
             observe(JournalPoint::TaskDirectoryCreated)?;
             let record = Record {
-                version: 1,
+                version: 2,
                 task_id,
                 metadata,
                 data_root_identity,
@@ -710,7 +710,7 @@ mod macos {
             validate_identity(&self.record.instance_identity)?;
             validate_identity(&self.record.journal_directory_identity)?;
             canonical_uuid(self.task_id())?;
-            if self.record.version != 1
+            if !matches!(self.record.version, 1 | 2)
                 || self.record.journal_revision == 0
                 || !matches!(
                     self.phase(),
@@ -746,11 +746,16 @@ mod macos {
             {
                 return Err(error("删除任务目录或数据卷身份已变化。"));
             }
-            let names = if self.record.metadata["ownership"] == "managed" {
-                vec!["configuration", "data", "cache", "generations"]
-            } else {
-                vec!["configuration", "data", "cache"]
-            };
+            // Version 1 tasks predate application runtime logs. Keep their exact
+            // reviewed targets so an upgrade can resume an existing deletion
+            // without silently widening its destructive scope.
+            let mut names = vec!["configuration", "data", "cache"];
+            if self.record.version >= 2 {
+                names.push("logs");
+            }
+            if self.record.metadata["ownership"] == "managed" {
+                names.push("generations");
+            }
             if self.record.targets.len() != names.len() {
                 return Err(error("删除目标数量无效。"));
             }

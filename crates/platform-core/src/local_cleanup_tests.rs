@@ -59,6 +59,7 @@ async fn cleanup_removes_project_code_data_node_configuration_and_history_but_pr
         "configuration/credentials",
         "data",
         "cache",
+        "logs",
         "runs",
     ] {
         fs::create_dir_all(node_slot.join(name)).unwrap();

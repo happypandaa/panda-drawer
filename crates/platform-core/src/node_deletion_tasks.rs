@@ -671,7 +671,13 @@ impl NodeApps {
                         .as_str()
                         .unwrap_or_default()
                         .to_owned();
-                    if let Err(error) = apps.stop_runtime(&id).await {
+                    if let Err(error) = apps
+                        .stop_runtime_with_reason(
+                            &id,
+                            crate::node_runtime_trial::RuntimeStopReason::Deletion,
+                        )
+                        .await
+                    {
                         eprintln!(
                             "Abandoned Node deletion retained stop issue: {}",
                             error.code
@@ -730,7 +736,9 @@ impl NodeApps {
             Some(before_stop) => before_stop(permit.clone()).await,
             None => Ok(()),
         };
-        let stopped = self.stop_runtime(&id).await;
+        let stopped = self
+            .stop_runtime_with_reason(&id, crate::node_runtime_trial::RuntimeStopReason::Deletion)
+            .await;
         if task.abandon_requested() {
             if let Err(error) = &native {
                 eprintln!("Abandoned Node deletion window issue: {}", error.code);

@@ -87,8 +87,8 @@ test('A complete but runtime-blocked entry opens runtime status and cannot issue
   const calls = await panel(value);
   assert.equal(selectedTab(), '运行状态'); assert.match(document.querySelector('[role=dialog]').textContent, /人工保留的 active intent 故障/);
   await click(button('概览')); assert.match(facts(), /已完整（1 项）/); assert.doesNotMatch(facts(), /缺少 0/);
-  assert.match(document.querySelector('.detail-document-row').textContent, /查看或修改应用配置/);
-  await click(button('再试一次')); assert.equal(selectedTab(), '运行状态'); noLaunch(calls);
+  assert.ok(button('修改配置'));
+  await click(button('进入项目')); assert.equal(selectedTab(), '运行状态'); noLaunch(calls);
 });
 
 test('A stopped complete configuration with another admission restriction also opens runtime status', async () => {
@@ -99,7 +99,7 @@ test('Missing required fields still lead to configuration and show their actual 
   const value = app({ fields: [field('REQUIRED', { required: true })], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['REQUIRED'], canStart: false } });
   const calls = await panel(value); assert.equal(selectedTab(), '应用配置');
   await click(button('概览')); assert.match(facts(), /缺少 1 项必填/);
-  assert.match(document.querySelector('.detail-document-row').textContent, /补齐应用配置/);
+  assert.ok(button('修改配置'));
   await click(button('进入项目')); assert.equal(selectedTab(), '应用配置'); noLaunch(calls);
 });
 
@@ -149,5 +149,5 @@ test('A runtime restriction keeps restart disabled and does not ask to fill none
   const calls = await panel(value, 'details');
   assert.match(document.querySelector('.node-config-warning').textContent, /当前暂不能重启，请先查看运行状态/);
   assert.doesNotMatch(document.querySelector('.node-config-warning').textContent, /补齐必填/);
-  await click(button('运行状态')); assert.equal(button('重启并应用配置').disabled, true); noLaunch(calls);
+  await click(button('运行状态')); assert.equal(button('重启').disabled, true); noLaunch(calls);
 });

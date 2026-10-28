@@ -505,7 +505,7 @@ function App() {
     }
   }
 
-  async function copyHandoff(project: ProjectInfo, action: HandoffAction) {
+  async function copyHandoff(project: ProjectInfo, action: HandoffAction, copy = true) {
     if (selectedOverviewId.current !== project.id || workspaceBusy || !projects.some((value) => value.id === project.id) || handoffInFlight.current !== null) return;
     const sequence = ++handoffRequest.current;
     handoffInFlight.current = sequence;
@@ -518,10 +518,11 @@ function App() {
       const data = await invoke<ProjectHandoff>('project_handoff', { projectId: project.id });
       if (!current()) return;
       setHandoff(data);
-      if (action === 'codex' && (!data.projectRoot || !data.instanceId || data.projectRoot !== initialRoot || data.instanceId !== initialInstance)) {
-        showError(origin, '项目目录或服务信息已变化，请刷新项目列表后重新准备 Codex 说明。', 'handoff');
+      if ((data.projectRoot && data.projectRoot !== initialRoot) || (data.instanceId && data.instanceId !== initialInstance)) {
+        showError(origin, '项目目录或服务信息已变化，请刷新项目列表后重新准备说明。', 'handoff');
         return;
       }
+      if (!copy) return;
       let copied = false;
       try {
         // A system clipboard write cannot be cancelled after closing a detail.
@@ -534,21 +535,7 @@ function App() {
         copied = true;
       } catch { /* The complete handoff remains available for manual copying. */ }
       if (!current()) return;
-      if (action === 'copy') {
-        showSuccess(origin, copied ? `已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。` : '说明已准备好，可以选中下面的文字并复制给 AI。', 'handoff');
-        return;
-      }
-      try {
-        const result = await invoke<{ projectRoot: string; requested: boolean }>('project_open_codex', { projectId: project.id, expectedProjectRoot: data.projectRoot, expectedInstanceId: data.instanceId });
-        if (!current()) return;
-        if (!result.requested || result.projectRoot !== data.projectRoot) throw new Error('未能确认 Codex 的项目打开请求。');
-        showSuccess(origin, copied ? '说明已复制，已请求 Codex 打开此项目的新任务草稿。请粘贴说明、补充需求后自行发送。' : '已请求 Codex 打开此项目的新任务草稿，但剪贴板未能写入。请手动复制下方完整说明，在 Codex 中粘贴、补充需求后自行发送。', 'handoff');
-      } catch (cause) {
-        if (current()) {
-          showError(origin, messageFrom(cause), 'handoff');
-          showSuccess(origin, copied ? '说明已复制。请手动打开 Codex，选择下方项目目录，再粘贴说明并补充需求。' : '说明已准备好，但剪贴板未能写入。请手动复制下方全文，在 Codex 中选择项目目录并粘贴。', 'handoff');
-        }
-      }
+      showSuccess(origin, copied ? `已复制「${project.name}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。` : '说明已准备好，可以选中下面的文字并复制给 AI。', 'handoff');
     } catch (cause) { if (current()) showError(origin, messageFrom(cause), 'handoff'); }
     finally {
       if (handoffInFlight.current === sequence) handoffInFlight.current = null;
@@ -720,7 +707,7 @@ function App() {
         {overviewProject && overview && <Modal title={overviewProject.name} description="网页应用 · 本机独立数据" titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <BookOpen size={20} />} headerAside={<span className={`detail-status-badge${overviewProject.state === 'ready' ? ' is-ready' : ''}`}><span />{({ ready: '可使用', unbuilt: '等待构建', error: '需要检查', missing: '文件缺失', maintenance: '操作暂停', recoveryRequired: '有操作待处理' })[overviewProject.state]}</span>} className="software-detail-modal" wide beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
           {feedback}
           {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作删除或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
-          <CodexHandoffPanel key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onPrepare={action => void copyHandoff(overviewProject, action)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} buildAction={<button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? '构建中…' : '构建更新'}</button>}>
+          <CodexHandoffPanel key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onPrepare={action => void copyHandoff(overviewProject, action)} onShowHelp={() => void copyHandoff(overviewProject, 'copy', false)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} buildAction={<button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? '构建中…' : '构建更新'}</button>}>
             <button className="primary-button" disabled={overviewUnavailable || overviewVersionDraft.dirty || overviewVersionDraft.pending || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Play size={20} />进入应用</button>
             <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onClick={() => { const origin = capture(); void invoke('project_reveal', { projectId: overviewProject.id, target: 'root' }).catch(cause => showError(origin, messageFrom(cause))); }}><FolderOpen size={20} />打开本地目录</button>
           </CodexHandoffPanel>
