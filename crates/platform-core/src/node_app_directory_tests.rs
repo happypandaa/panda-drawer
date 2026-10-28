@@ -1448,3 +1448,83 @@ async fn managed_generated_custom_source_migration_preserves_runtime_digest_whil
         "NODE_SOURCE_ALREADY_OWNED"
     );
 }
+
+#[tokio::test]
+async fn node_admission_rejects_fixed_managed_workspace_ranges_even_when_workspace_is_outside_data()
+{
+    let fixture = Fixture::new();
+    let workspace = fixture.root.join("disposable-external-workspace");
+    fs::create_dir(&workspace).unwrap();
+    fixture
+        .manager
+        .set_source_workspace(workspace.clone())
+        .unwrap();
+    for range in ["projects", ".platform", "project-sources", "backups"] {
+        let source = workspace.join(range).join("disposable-owned-material");
+        fs::create_dir_all(&source).unwrap();
+        assert_eq!(
+            fixture.manager.inspect_directory(&source).unwrap_err().code,
+            "NODE_SOURCE_ALREADY_OWNED"
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .initialize_directory(
+                    &source,
+                    DirectoryInitializeInput {
+                        expected_revision: "unused".into(),
+                        name: "Must not generate here".into()
+                    }
+                )
+                .unwrap_err()
+                .code,
+            "NODE_SOURCE_ALREADY_OWNED"
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .register(source.clone())
+                .await
+                .unwrap_err()
+                .code,
+            "NODE_SOURCE_ALREADY_OWNED"
+        );
+        assert!(fs::read_dir(source).unwrap().next().is_none());
+    }
+    fixture.assert_no_platform_writes();
+}
+
+#[tokio::test]
+async fn web_project_admission_cannot_create_under_an_existing_node_author_claim() {
+    let fixture = Fixture::new();
+    fixture.initialize("Disposable Node author boundary");
+    fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let workspace = fixture.source.join("disposable-embedded-web-workspace");
+    fs::create_dir(&workspace).unwrap();
+    let store = crate::projects::ProjectStore::new(workspace.clone()).unwrap();
+    store.set_node_source_data_root(fixture.manager.data_root.clone());
+    let error = store
+        .create(crate::CreateProjectInput {
+            name: "Must not overlap the Node author".into(),
+            description: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "PROJECT_DIRECTORY_OWNED_BY_NODE");
+    assert!(fs::read_dir(workspace.join("projects"))
+        .unwrap()
+        .next()
+        .is_none());
+    assert!(
+        fs::read_dir(fixture.manager.data_root.join("web-project-ownership"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(fixture.source.join("backend/server.mjs").is_file());
+    assert_eq!(fixture.manager.list().await.unwrap().len(), 1);
+}

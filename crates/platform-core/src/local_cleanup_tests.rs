@@ -13,6 +13,173 @@ async fn fixture() -> (tempfile::TempDir, RuntimePaths, RuntimeService) {
     (temporary, paths, service)
 }
 
+async fn owned_export_fixture() -> (
+    tempfile::TempDir,
+    RuntimePaths,
+    RuntimeService,
+    crate::web_project_ownership::WebProjectOwnership,
+    String,
+    PathBuf,
+    PersistedIdentity,
+) {
+    let (temporary, paths, service) = fixture().await;
+    let project = service
+        .store()
+        .create(CreateProjectInput {
+            name: "Disposable uninstall export owner".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    let id = project.id;
+    let task = format!("task_{}", Uuid::new_v4().simple());
+    ownership.record_task(&id, &task).unwrap();
+    let parent = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-external-exports");
+    fs::create_dir(&parent).unwrap();
+    let path = parent.join("owned-snapshot.zip");
+    ownership
+        .reserve_export_destination(&id, &task, &path)
+        .unwrap();
+    let stage = parent.join(format!(".export-{task}.partial"));
+    ownership.reserve_export_stage(&id, &task, &stage).unwrap();
+    fs::write(&stage, "disposable platform ZIP").unwrap();
+    let identity = PersistedIdentity::capture(&stage).unwrap();
+    ownership
+        .capture_export_stage(&id, &task, &stage, &identity)
+        .unwrap();
+    ownership
+        .bind_export_destination(&id, &task, &path, &stage)
+        .unwrap();
+    fs::rename(&stage, &path).unwrap();
+    ownership.commit_export_destination(&id, &task).unwrap();
+    ownership.forget_export_stage(&id, &task).unwrap();
+    (temporary, paths, service, ownership, id, path, identity)
+}
+
+#[tokio::test]
+async fn cleanup_removes_owned_external_export_before_owner_index_and_leaves_no_stage_or_claim() {
+    let (_temporary, paths, service, ownership, id, path, _) = owned_export_fixture().await;
+    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    assert!(plan
+        .web_owned_files
+        .iter()
+        .any(|file| file.path == path && file.project_id == id));
+    assert!(service.quiesce().await.is_complete());
+    assert_eq!(
+        plan.execute_after_shutdown(&service).unwrap()["operationOutcome"],
+        "deleted"
+    );
+    assert!(!path.exists());
+    assert!(!ownership.directory(&id).unwrap().exists());
+    assert!(!paths.data_root().join("web-export-owners").exists());
+    assert!(fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[tokio::test]
+async fn cleanup_public_export_replacement_after_capture_is_preserved_and_keeps_all_owner_evidence()
+{
+    let (temporary, paths, service, ownership, id, path, _) = owned_export_fixture().await;
+    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    let held = temporary
+        .path()
+        .join("disposable-captured-original-kept.zip");
+    assert!(service.quiesce().await.is_complete());
+    let error = plan
+        .execute_with(&service, |owner, project, candidate, expected| {
+            if candidate == path {
+                crate::web_file_deletion::fixture_remove_after_capture(
+                    owner,
+                    project,
+                    candidate,
+                    expected,
+                    || {
+                        fs::rename(&path, &held).unwrap();
+                        fs::write(&path, "foreign replacement must remain").unwrap();
+                        Ok(())
+                    },
+                )
+            } else {
+                crate::web_file_deletion::remove_owned_file(owner, project, candidate, expected)
+            }
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "LOCAL_CLEANUP_INCOMPLETE");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "foreign replacement must remain"
+    );
+    assert_eq!(fs::read_to_string(held).unwrap(), "disposable platform ZIP");
+    assert!(ownership.path(&id).unwrap().is_file());
+    assert!(paths.workspace_root().exists());
+    assert!(paths.data_root().join("settings.json").exists());
+    assert!(paths.data_root().join("web-export-owners").is_dir());
+    let plans = ownership.file_deletion_plans(&id).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].staging_path.is_dir());
+    assert!(error.details["remainingPaths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(plans[0].staging_path)));
+}
+
+#[tokio::test]
+async fn cleanup_fresh_preview_resumes_bound_external_file_crash_snapshot_and_removes_every_plan_and_claim(
+) {
+    use crate::web_file_deletion::{FileDeletionPlan, FileDeletionState};
+    use std::os::unix::fs::PermissionsExt;
+    let (_temporary, paths, service, ownership, id, path, expected) = owned_export_fixture().await;
+    let old_preview = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    drop(old_preview);
+    let parent = path.parent().unwrap();
+    let staging = parent.join(format!(".panda-delete-file-{}", Uuid::new_v4()));
+    let mut interrupted = FileDeletionPlan {
+        original: path.clone(),
+        expected,
+        parent_identity: PersistedIdentity::capture(parent).unwrap(),
+        staging_path: staging.clone(),
+        staging_identity: None,
+        state: FileDeletionState::Preparing,
+    };
+    ownership
+        .save_file_deletion_plan(&id, &interrupted)
+        .unwrap();
+    fs::create_dir(&staging).unwrap();
+    fs::set_permissions(&staging, fs::Permissions::from_mode(0o700)).unwrap();
+    interrupted.staging_identity = Some(PersistedIdentity::capture(&staging).unwrap());
+    interrupted.state = FileDeletionState::RenameIntent;
+    ownership
+        .save_file_deletion_plan(&id, &interrupted)
+        .unwrap();
+    fs::rename(&path, staging.join("payload")).unwrap();
+    interrupted.state = FileDeletionState::Staged;
+    ownership
+        .save_file_deletion_plan(&id, &interrupted)
+        .unwrap();
+    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    assert!(plan.targets.iter().any(|target| target.path == staging));
+    assert!(service.quiesce().await.is_complete());
+    assert_eq!(
+        plan.execute_after_shutdown(&service).unwrap()["operationOutcome"],
+        "deleted"
+    );
+    assert!(!path.exists());
+    assert!(!staging.exists());
+    assert!(!ownership.directory(&id).unwrap().exists());
+    assert!(!paths.data_root().join("web-export-owners").exists());
+    assert!(fs::read_dir(parent).unwrap().next().is_none());
+}
+
 fn external_registration(paths: &RuntimePaths, source: &Path) -> PathBuf {
     let registration = paths
         .data_root()

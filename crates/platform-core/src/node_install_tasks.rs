@@ -257,27 +257,30 @@ impl NodeInstallTasks {
                 manager: manager.clone(),
                 task_id: task_id.clone(),
             };
-            let result = AssertUnwindSafe(
-                manager.run_prepare(
-                    &task_id,
-                    sources.clone(),
-                    input,
-                    target,
-                    stop,
-                    cancel,
-                    crate::node_development_build::NodeProcessScope::new(
-                        manager.store.processes(),
-                        writer_owner.clone(),
-                    )
-                    .with_project_ownership(
-                        crate::node_project_ownership::NodeProjectOwnership::new(
-                            manager.paths.data_root().into(),
-                            manager.paths.workspace_root().into(),
-                        ),
-                        owner_app_id,
+            let result = AssertUnwindSafe(async {
+                let processes = crate::node_development_build::NodeProcessScope::new(
+                    manager.store.processes(),
+                    writer_owner.clone(),
+                )
+                .with_project_ownership(
+                    crate::node_project_ownership::NodeProjectOwnership::new(
+                        manager.paths.data_root().into(),
+                        manager.paths.workspace_root().into(),
                     ),
-                ),
-            )
+                    owner_app_id,
+                )?;
+                manager
+                    .run_prepare(
+                        &task_id,
+                        sources.clone(),
+                        input,
+                        target,
+                        stop,
+                        cancel,
+                        processes,
+                    )
+                    .await
+            })
             .catch_unwind()
             .await;
             let error = match result {
@@ -346,6 +349,7 @@ impl NodeInstallTasks {
         let tools = self
             .tasks
             .environment()
+            .with_process_registry(processes.processes.clone())
             .resolve_with_keepalive(processes.owner.clone())
             .await
             .map_err(crate::node_development_build::NodeProcessScope::resolution_error)?;

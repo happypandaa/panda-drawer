@@ -25,11 +25,11 @@ function taskResult(task: TaskRecord): Record<string, unknown> | null {
 function failedOutcome(task: TaskRecord | null) { return task?.result?.operationOutcome ?? task?.error?.details?.operationOutcome; }
 
 export function ImportPanel(props: Props) {
-  const [path, setPath] = useState(''); const [mode, setMode] = useState<'original' | 'copy'>('copy'); const [name, setName] = useState('');
-  return <ArchiveImportWorkflow key={props.instanceId ?? ''} {...props} path={path} setPath={setPath} mode={mode} setMode={setMode} name={name} setName={setName} />;
+  const [path, setPath] = useState(''); const [name, setName] = useState('');
+  return <ArchiveImportWorkflow key={props.instanceId ?? ''} {...props} path={path} setPath={setPath} name={name} setName={setName} />;
 }
-function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disabled, path, setPath, mode, setMode, name, setName }: Props & {
-  path: string; setPath: (value: string) => void; mode: 'original' | 'copy'; setMode: (value: 'original' | 'copy') => void; name: string; setName: (value: string) => void;
+function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disabled, path, setPath, name, setName }: Props & {
+  path: string; setPath: (value: string) => void; name: string; setName: (value: string) => void;
 }) {
   const [view, setView] = useState<View>('form'); const [busy, setBusy] = useState(false); const [choosing, setChoosing] = useState(false);
   const [task, setTask] = useState<TaskRecord | null>(null); const [step, setStep] = useState(0); const [error, setError] = useState(''); const [pollError, setPollError] = useState('');
@@ -119,7 +119,7 @@ function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disab
       if (!current(started)) return;
       selectedTask.current = null; setTask(null); setCleaned(false); setProjectId(null); setFailedStep(null); observedStep.current = 0; setStep(0); setView('running');
       submitting = true;
-      const value = await invoke<TaskRecord>('project_import', { input: { archivePath: path.trim(), mode, cleanupTemporaryFiles: true, ...(mode === 'copy' && name.trim() ? { name: name.trim() } : {}) } });
+      const value = await invoke<TaskRecord>('project_import', { input: { archivePath: path.trim(), cleanupTemporaryFiles: true, ...(name.trim() ? { name: name.trim() } : {}) } });
       if (!current(started)) return;
       try { accept(value); }
       catch (cause) { setView('recovery'); setError(messageFrom(cause)); }
@@ -172,9 +172,8 @@ function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disab
   return <Modal title="导入完整项目" titleIcon={<FileArchive size={20} />} description="选择平台导出的 ZIP，检查后添加到项目列表。" onClose={close} closeDisabled={active} className="import-dialog">
     {view === 'form' && <form className="create-project-form" onSubmit={event => { event.preventDefault(); void submit(); }}>
       <div className="path-input"><label htmlFor={`${id}-path`}>完整项目 ZIP</label><span className="path-input-controls"><input id={`${id}-path`} value={path} onChange={event => setPath(event.target.value)} disabled={active || disabled} placeholder="/Users/你的名字/Documents/项目.zip" autoComplete="off" /><button type="button" className="refresh-button" disabled={active || disabled} onClick={() => void choose()}><FolderOpen size={14} />{choosing ? '选择中…' : '选择路径'}</button></span></div>
-      <fieldset disabled={active || disabled} className="choice-group"><legend>导入方式</legend><label><input type="radio" name="import-mode" value="copy" checked={mode === 'copy'} onChange={() => setMode('copy')} />作为新项目导入（默认）</label><label><input type="radio" name="import-mode" value="original" checked={mode === 'original'} onChange={() => setMode('original')} />保留原 ID（用于恢复）</label></fieldset>
-      <p className="project-help">{mode === 'original' ? '用于接回原项目身份。如果该 ID 已在项目列表或历史保留项目中，平台会拒绝导入，不会覆盖或合并。' : '每次导入都生成新 ID，重复导入可以并存；数据库、附件和源码各自独立。'}</p>
-      {mode === 'copy' && <label>副本名称（选填）<input value={name} onChange={event => setName(event.target.value)} disabled={active || disabled} /></label>}
+      <p className="project-help">每次导入都生成新 ID，重复导入可以并存；数据库、附件和源码各自独立。</p>
+      <label>项目名称（选填）<input value={name} onChange={event => setName(event.target.value)} disabled={active || disabled} /></label>
       <p className="project-help">导入不会运行项目脚本；维护中的快照继续保持维护。完成后清理临时副本，保留原 ZIP 文件。</p>
       <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={active || disabled || !path.trim().startsWith('/')}><Upload size={14} />校验并导入</button></div>
     </form>}

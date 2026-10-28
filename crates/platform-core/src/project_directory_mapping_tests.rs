@@ -79,22 +79,33 @@ async fn readable_directory_is_persisted_and_display_name_changes_do_not_rename_
 }
 
 #[tokio::test]
-async fn legacy_registration_is_read_without_rewriting_and_exact_id_lazy_registration_survives() {
+async fn missing_current_directory_binding_is_rejected_and_an_unregistered_id_directory_is_never_adopted(
+) {
     let (_temp, store) = fixture();
-    let project = create_fixture(&store, "Disposable legacy directory").await;
-    let legacy = store.workspace_root().join("projects").join(&project.id);
-    fs::rename(&project.project_root, &legacy).unwrap();
+    let project = create_fixture(&store, "Disposable missing registration").await;
+    let unregistered = store.workspace_root().join("projects").join(&project.id);
+    fs::rename(&project.project_root, &unregistered).unwrap();
     let mut record = state(&store, &project.id);
-    record["projectRoot"] = json!(legacy);
+    record["projectRoot"] = json!(unregistered);
     record.as_object_mut().unwrap().remove("directoryName");
     save_state(&store, &project.id, &record);
     let bytes = fs::read(state_path(&store, &project.id)).unwrap();
-    assert_eq!(store.project(&project.id).unwrap().root, legacy);
-    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert_eq!(
+        store.project(&project.id).err().unwrap().code,
+        "PROJECT_DIRECTORY_MAPPING_INVALID"
+    );
     assert_eq!(fs::read(state_path(&store, &project.id)).unwrap(), bytes);
     fs::remove_file(state_path(&store, &project.id)).unwrap();
-    assert_eq!(store.project(&project.id).unwrap().root, legacy);
-    assert!(state(&store, &project.id).get("directoryName").is_none());
+    assert_eq!(
+        store.project(&project.id).err().unwrap().code,
+        "PROJECT_NOT_REGISTERED"
+    );
+    assert!(store.list().await.unwrap().is_empty());
+    assert!(enumerate_project_roots(store.workspace_root())
+        .unwrap()
+        .is_empty());
+    assert!(!state_path(&store, &project.id).exists());
+    assert!(unregistered.is_dir());
 }
 
 #[tokio::test]
@@ -283,43 +294,6 @@ async fn a_same_task_reservation_survives_restart_and_does_not_admit_a_crash_can
 }
 
 #[tokio::test]
-async fn a_new_same_id_import_reservation_overrides_retired_registration_and_commits_its_name() {
-    let (_temp, store) = fixture();
-    let project = create_fixture(&store, "Disposable old binding").await;
-    let retired_epoch = Uuid::new_v4().to_string();
-    store
-        .unregister_lifecycle(&project.id, &retired_epoch)
-        .unwrap();
-    fs::remove_dir_all(&project.project_root).unwrap();
-    let root = store
-        .reserve_named_identity(
-            &project.id,
-            "task_same_id_import",
-            "Entirely different new name",
-        )
-        .unwrap();
-    assert_ne!(root, project.project_root);
-    assert_eq!(store.project_root(&project.id).unwrap(), root);
-    fs::create_dir_all(root.join("data")).unwrap();
-    fs::write(
-        root.join("project.json"),
-        serde_json::to_vec_pretty(&project.manifest.unwrap()).unwrap(),
-    )
-    .unwrap();
-    database::initialize_database(&root.join("data/main.sqlite")).unwrap();
-    let epoch = Uuid::new_v4().to_string();
-    store
-        .register_lifecycle(&project.id, &epoch, "task_same_id_import", false)
-        .unwrap();
-    assert_eq!(store.project(&project.id).unwrap().root, root);
-    assert_eq!(
-        store.registered_epoch(&project.id).unwrap().as_deref(),
-        Some(epoch.as_str())
-    );
-    assert_eq!(store.list().await.unwrap().len(), 1);
-}
-
-#[tokio::test]
 async fn partial_deletion_retains_the_readable_target_even_after_files_disappear() {
     let (_temp, store) = fixture();
     let project = create_fixture(&store, "Disposable partial deletion").await;
@@ -350,16 +324,13 @@ async fn partial_deletion_retains_the_readable_target_even_after_files_disappear
             .code,
         "PROJECT_ID_CONFLICT"
     );
-    store.retire_deleted_project(&marker).unwrap();
+    store.complete_deleted_project_identity(&marker).unwrap();
     assert!(store.list().await.unwrap().is_empty());
-    assert_eq!(
-        store.project_root(&project.id).unwrap(),
-        project.project_root
-    );
-    assert_eq!(
-        enumerate_project_roots(store.workspace_root()).unwrap(),
-        vec![(project.id.clone(), project.project_root)]
-    );
+    assert!(!state_path(&store, &project.id).exists());
+    assert!(store.pending_deletion(&project.id).unwrap().is_none());
+    assert!(enumerate_project_roots(store.workspace_root())
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -389,84 +360,6 @@ async fn migration_requires_explicit_rebinding_and_preserves_the_actual_basename
         Some(epoch.as_str())
     );
     assert_eq!(target.list().await.unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn migrated_retired_bindings_rebase_only_the_path_without_reviving_the_project() {
-    for legacy in [false, true] {
-        let (_source_temp, source) = fixture();
-        let project = create_fixture(&source, "Disposable retired migration").await;
-        let mut original_root = project.project_root.clone();
-        if legacy {
-            let root = source.workspace_root().join("projects").join(&project.id);
-            fs::rename(&original_root, &root).unwrap();
-            let mut record = state(&source, &project.id);
-            record["projectRoot"] = json!(root);
-            record.as_object_mut().unwrap().remove("directoryName");
-            save_state(&source, &project.id, &record);
-            original_root = root;
-        }
-        let epoch = Uuid::new_v4().to_string();
-        source.unregister_lifecycle(&project.id, &epoch).unwrap();
-        let retained = source.workspace_root().join("retained-trash-project");
-        fs::rename(&original_root, &retained).unwrap();
-        let mut original = state(&source, &project.id);
-        original["futureDiagnostic"] = json!({"preserve":true});
-        // A path-only rebase must not upgrade legacy identity representations.
-        original["rootIdentity"] = json!([
-            original["rootIdentity"]["device"],
-            original["rootIdentity"]["inode"]
-        ]);
-        save_state(&source, &project.id, &original);
-        let source_bytes = fs::read(state_path(&source, &project.id)).unwrap();
-        let retired_bytes = fs::read(source.retirement_path(&project.id)).unwrap();
-        let (_target_temp, target) = fixture();
-        fs::copy(
-            state_path(&source, &project.id),
-            state_path(&target, &project.id),
-        )
-        .unwrap();
-        ensure_dir(target.retirement_path(&project.id).parent().unwrap()).unwrap();
-        fs::write(target.retirement_path(&project.id), &retired_bytes).unwrap();
-        assert!(target.project_root(&project.id).is_err());
-        assert!(target
-            .rebase_retired_registration_after_migration(
-                &project.id,
-                Path::new("/unrelated/workspace")
-            )
-            .is_err());
-        target
-            .rebase_retired_registration_after_migration(&project.id, source.workspace_root())
-            .unwrap();
-        let destination = target
-            .workspace_root()
-            .join("projects")
-            .join(original_root.file_name().unwrap());
-        let mut expected = original;
-        expected["projectRoot"] = json!(destination);
-        assert_eq!(state(&target, &project.id), expected);
-        assert_eq!(target.project_root(&project.id).unwrap(), destination);
-        assert_eq!(
-            fs::read(target.retirement_path(&project.id)).unwrap(),
-            retired_bytes
-        );
-        assert_eq!(
-            fs::read(state_path(&source, &project.id)).unwrap(),
-            source_bytes
-        );
-        assert!(target.project(&project.id).is_err());
-        assert!(target.list().await.unwrap().is_empty());
-        assert!(!destination.exists());
-        assert!(retained.join("data/main.sqlite").is_file());
-        let rebound_bytes = fs::read(state_path(&target, &project.id)).unwrap();
-        target
-            .rebase_retired_registration_after_migration(&project.id, source.workspace_root())
-            .unwrap();
-        assert_eq!(
-            fs::read(state_path(&target, &project.id)).unwrap(),
-            rebound_bytes
-        );
-    }
 }
 
 #[tokio::test]
@@ -510,65 +403,6 @@ fn exclusive_publication_keeps_an_existing_empty_destination_and_the_candidate()
     publish_directory_noreplace(&candidate, &existing).unwrap();
     assert!(existing.join("candidate.txt").is_file());
     assert!(!candidate.exists());
-}
-
-#[tokio::test]
-async fn stale_migrated_retired_registration_does_not_block_unrelated_create_or_touch_old_roots() {
-    for legacy in [false, true] {
-        for old_exists in [false, true] {
-            let (_old_temp, old) = fixture();
-            let project = create_fixture(&old, "Disposable pre-migration retired owner").await;
-            let mut old_root = project.project_root.clone();
-            if legacy {
-                old_root = old.workspace_root().join("projects").join(&project.id);
-                fs::rename(&project.project_root, &old_root).unwrap();
-                let mut record = state(&old, &project.id);
-                record["projectRoot"] = json!(old_root);
-                record.as_object_mut().unwrap().remove("directoryName");
-                save_state(&old, &project.id, &record);
-            }
-            old.unregister_lifecycle(&project.id, &Uuid::new_v4().to_string())
-                .unwrap();
-            let registration = fs::read(state_path(&old, &project.id)).unwrap();
-            let retired = fs::read(old.retirement_path(&project.id)).unwrap();
-            let original_manifest = fs::read(old_root.join("project.json")).unwrap();
-            if !old_exists {
-                fs::remove_dir_all(&old_root).unwrap();
-            }
-            let (_target_temp, target) = fixture();
-            fs::write(state_path(&target, &project.id), &registration).unwrap();
-            ensure_dir(target.retirement_path(&project.id).parent().unwrap()).unwrap();
-            fs::write(target.retirement_path(&project.id), &retired).unwrap();
-            let fresh = create_fixture(&target, "Disposable unrelated new project").await;
-            assert!(fresh.project_root.join("data/main.sqlite").is_file());
-            assert_ne!(fresh.project_root.file_name(), old_root.file_name());
-            assert_eq!(
-                target.project_root(&project.id).unwrap_err().code,
-                "PROJECT_DIRECTORY_MAPPING_INVALID"
-            );
-            assert_eq!(target.list().await.unwrap().len(), 1);
-            assert_eq!(
-                fs::read(state_path(&target, &project.id)).unwrap(),
-                registration
-            );
-            assert_eq!(
-                fs::read(target.retirement_path(&project.id)).unwrap(),
-                retired
-            );
-            assert_eq!(
-                fs::read(state_path(&old, &project.id)).unwrap(),
-                registration
-            );
-            if old_exists {
-                assert_eq!(
-                    fs::read(old_root.join("project.json")).unwrap(),
-                    original_manifest
-                );
-            } else {
-                assert!(!old_root.exists());
-            }
-        }
-    }
 }
 
 #[tokio::test]
@@ -642,8 +476,8 @@ async fn stale_claim_does_not_resolve_old_absolute_path_or_a_claimed_current_sym
 }
 
 #[tokio::test]
-async fn orphan_retirement_deletion_and_reservation_markers_keep_their_names_after_restart() {
-    for kind in ["retired", "deleting", "reservations"] {
+async fn orphan_deletion_and_reservation_markers_keep_their_names_after_restart() {
+    for kind in ["deleting", "reservations"] {
         let (_temp, store) = fixture();
         let owner = "prj_3123456789abcdef0123456789abcdef";
         let id = "prj_4123456789abcdef0123456789abcdef";
@@ -655,7 +489,8 @@ async fn orphan_retirement_deletion_and_reservation_markers_keep_their_names_aft
             .join(kind)
             .join(format!("{owner}.json"));
         ensure_dir(path.parent().unwrap()).unwrap();
-        let marker = json!({"projectId":owner,"taskId":"task_old_marker","directoryName":candidate,"documentEpoch":Uuid::new_v4().to_string(),"retired":true});
+        let marker =
+            json!({"projectId":owner,"taskId":"task_disposable_marker","directoryName":candidate});
         fs::write(&path, serde_json::to_vec_pretty(&marker).unwrap()).unwrap();
         let original = fs::read(&path).unwrap();
         let reopened = ProjectStore::new(store.workspace_root().to_owned()).unwrap();
@@ -747,7 +582,7 @@ async fn maximal_retained_basename_is_kept_without_expanding_it_for_unrelated_ne
 
 #[tokio::test]
 async fn malformed_retained_name_markers_never_make_a_protected_name_reusable() {
-    for kind in ["retired", "deleting", "reservations"] {
+    for kind in ["deleting", "reservations"] {
         for damage in ["json", "owner", "name", "root"] {
             let (_temp, store) = fixture();
             let owner = "prj_6123456789abcdef0123456789abcdef";

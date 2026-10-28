@@ -216,7 +216,22 @@ pub(crate) fn claim_source_after_verified_migration(
     claim_source_path(data_root, workspace.to_path_buf(), id, source)
 }
 
+pub(crate) fn require_new_web_project_location(data_root: &Path, location: &Path) -> Result<()> {
+    require_source_ancestors(data_root, location, None).map_err(|error| {
+        if error.code == "NODE_SOURCE_ALREADY_OWNED" {
+            ApiError::new(
+                "PROJECT_DIRECTORY_OWNED_BY_NODE",
+                "项目目录位于另一个 Node 项目的源码内，请选择独立的工作区。",
+            )
+            .detail("cause", json!(error))
+        } else {
+            error
+        }
+    })
+}
+
 fn require_source_ancestors(data_root: &Path, source: &Path, id: Option<&str>) -> Result<()> {
+    crate::web_export_claims::require_source_unoccupied(data_root, source)?;
     for ancestor in source.ancestors().skip(1) {
         if let Some(owner) = source_owner(data_root, ancestor)? {
             if id != Some(owner.app_id.as_str()) {
@@ -266,6 +281,21 @@ fn require_source_ancestors(data_root: &Path, source: &Path, id: Option<&str>) -
     }
     Ok(())
 }
+pub(crate) fn with_source_ownership_admission<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _guard = SOURCE_OWNERSHIP_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .map_err(|_| fail("源码归属锁不可用。"))?;
+    work()
+}
+pub(crate) fn require_export_location_unclaimed(data_root: &Path, parent: &Path) -> Result<()> {
+    for ancestor in parent.ancestors() {
+        if source_owner(data_root, ancestor)?.is_some() {
+            return Err(source_already_owned());
+        }
+    }
+    Ok(())
+}
 
 fn claim_source_path(data_root: &Path, workspace: PathBuf, id: &str, source: &Path) -> Result<()> {
     if Uuid::parse_str(id).is_err() {
@@ -275,6 +305,7 @@ fn claim_source_path(data_root: &Path, workspace: PathBuf, id: &str, source: &Pa
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .map_err(|_| fail("源码归属锁不可用。"))?;
+    crate::project_tool_boundary::require_source_excludes_global_tools(data_root, source)?;
     require_source_ancestors(data_root, source, Some(id))?;
     let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
         data_root.to_path_buf(),
@@ -460,9 +491,24 @@ impl NodeApps {
         source_owner(&self.data_root, source)
     }
 
+    pub(super) fn require_external_source_boundary(&self, source: &Path) -> Result<()> {
+        let workspace = self.deletion_workspace();
+        for name in ["projects", ".platform", "project-sources", "backups"] {
+            let managed = workspace.join(name);
+            if source.starts_with(&managed) || managed.starts_with(source) {
+                return Err(ApiError::new(
+                    "NODE_SOURCE_ALREADY_OWNED",
+                    "这个文件夹属于平台管理的项目或材料，请选择独立的外部文件夹。",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Registration checks before allocating an instance or its private files.
     /// The normal same-app registration shortcut runs before this method.
     pub(super) fn require_unclaimed_source(&self, source: &Path) -> Result<()> {
+        self.require_external_source_boundary(source)?;
         if self.is_published_source(source) {
             return Err(source_already_owned());
         }
@@ -723,6 +769,9 @@ impl NodeApps {
             ));
         }
         let runtime_manifest = self.manifest(&record)?;
+        if !self.is_published_source(&source) {
+            self.require_external_source_boundary(&source)?;
+        }
         let source_manifest = self.load_source(&source)?;
         crate::node_development_git::require_source_restore_clear(&source)?;
         if runtime_manifest.app.id != source_manifest.app.id {

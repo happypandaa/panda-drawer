@@ -56,6 +56,7 @@ pub(crate) struct ProjectControl {
     path: PathBuf,
     backup_directory: PathBuf,
     state: Mutex<ControlState>,
+    persist: bool,
     pub frozen: AtomicBool,
 }
 impl ProjectControl {
@@ -76,6 +77,25 @@ impl ProjectControl {
             path,
             backup_directory: workspace.join("backups").join(id),
             state: Mutex::new(state),
+            persist: true,
+            frozen: AtomicBool::new(false),
+        }))
+    }
+    pub(crate) fn volatile_for_deletion(workspace: &Path, id: &str) -> Result<Arc<Self>, ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        Ok(Arc::new(Self {
+            path: workspace
+                .join(".platform/project-state/maintenance")
+                .join(format!("{id}.json")),
+            backup_directory: workspace.join("backups").join(id),
+            state: Mutex::new(ControlState {
+                mode: "unknown".into(),
+                recovery_required: true,
+                ..ControlState::default()
+            }),
+            persist: false,
             frozen: AtomicBool::new(false),
         }))
     }
@@ -83,6 +103,12 @@ impl ProjectControl {
         self.state.lock().unwrap().clone()
     }
     pub fn set(&self, state: ControlState) -> Result<(), ApiError> {
+        if !self.persist {
+            return Err(ApiError::new(
+                "CONTROL_READ_ONLY",
+                "Deletion-only control state cannot be persisted",
+            ));
+        }
         let mut current = self.state.lock().unwrap();
         atomic_json(&self.path, &state)?;
         *current = state;
@@ -96,9 +122,11 @@ impl ProjectControl {
         state.recovery_required = true;
         state.ready_for_changes = false;
         state.last_error = Some(error.clone());
-        if let Err(persistence) = atomic_json(&self.path, &*state) {
-            error = error.detail("controlPersistenceError", serde_json::json!(persistence));
-            state.last_error = Some(error.clone());
+        if self.persist {
+            if let Err(persistence) = atomic_json(&self.path, &*state) {
+                error = error.detail("controlPersistenceError", serde_json::json!(persistence));
+                state.last_error = Some(error.clone());
+            }
         }
         error
     }

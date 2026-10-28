@@ -488,7 +488,7 @@ impl StorageManager {
         )
         .unwrap_or(Value::Null);
         let project_identity = root_identity(&root)?;
-        let registration_switch = self.store.session_generation(id)?;
+        let registration_switch = self.store.registered_epoch(id)?;
         let mut generations = self.generations.lock().unwrap();
         let generation = generations.entry(id.into()).or_insert_with(|| {
             (

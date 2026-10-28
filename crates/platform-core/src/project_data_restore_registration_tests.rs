@@ -151,7 +151,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn data_restore_guard_blocks_cached_business_diagnostics_deletion_migration_and_identity_bypasses(
+async fn data_restore_guard_blocks_business_diagnostics_migration_and_identity_bypasses_but_allows_delete_admission(
 ) {
     let fixture = Fixture::new().await;
     let id = &fixture.project.manifest.id;
@@ -176,10 +176,12 @@ async fn data_restore_guard_blocks_cached_business_diagnostics_deletion_migratio
         "PROJECT_DATA_RESTORE_PENDING"
     );
     assert!(fixture.store.check_development_available(id).is_err());
-    assert!(fixture
-        .store
-        .reserve_delete_task(id, "task_forbidden_delete")
-        .is_err());
+    drop(
+        fixture
+            .store
+            .reserve_delete_task(id, "task_permitted_delete")
+            .unwrap(),
+    );
     assert!(fixture
         .store
         .reserve_identity(id, "task_forbidden_identity")
@@ -189,7 +191,6 @@ async fn data_restore_guard_blocks_cached_business_diagnostics_deletion_migratio
     assert!(crate::workspace::validate_idle(&fixture.paths).is_err());
     let epoch = Uuid::new_v4().to_string();
     for error in [
-        fixture.store.unregister_lifecycle(id, &epoch).unwrap_err(),
         fixture
             .store
             .register_lifecycle(id, &epoch, "task_foreign", true)
@@ -198,22 +199,6 @@ async fn data_restore_guard_blocks_cached_business_diagnostics_deletion_migratio
         fixture
             .store
             .retain_migrated_diagnostic(id, ApiError::new("TEST", "foreign migration"))
-            .unwrap_err(),
-        fixture
-            .store
-            .rebase_retired_registration_after_migration(
-                id,
-                &fixture.paths.workspace_root().join("old"),
-            )
-            .unwrap_err(),
-        fixture
-            .store
-            .begin_deletion(
-                id,
-                "task_foreign",
-                &epoch,
-                &FileIdentity::capture(&fixture.project.root).unwrap(),
-            )
             .unwrap_err(),
     ] {
         assert_eq!(error.code, "PROJECT_DATA_RESTORE_PENDING");

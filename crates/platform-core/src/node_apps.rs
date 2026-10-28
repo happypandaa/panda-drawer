@@ -545,6 +545,7 @@ impl NodeApps {
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<Value> {
         check()?;
+        self.require_external_source_boundary(&source)?;
         let manifest = if let Some(expected) = expected_manifest {
             let bytes = read_small(&source.join("local-app.json"))?;
             if format!("{:x}", Sha256::digest(&bytes)) != expected {

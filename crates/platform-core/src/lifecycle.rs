@@ -10,7 +10,7 @@ use crate::{
     file_identity::PersistedIdentity,
     maintenance::MaintenanceManager,
     projects::{check_no_symlinks, valid_id, validate_manifest, ProjectTaskLease},
-    ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
+    ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord, TaskStatus,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -64,6 +64,13 @@ struct Operation {
     result: Value,
 }
 
+#[cfg(test)]
+type DeleteCleanupCheckpoint = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+    bool,
+);
+
 pub(crate) struct LifecycleManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
@@ -85,6 +92,8 @@ pub(crate) struct LifecycleManager {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    #[cfg(test)]
+    delete_cleanup_checkpoint: Mutex<Option<DeleteCleanupCheckpoint>>,
     stopping: AtomicBool,
     events: broadcast::Sender<String>,
 }
@@ -229,6 +238,7 @@ impl LifecycleManager {
         let operations = paths.workspace_root().join(".platform/operations");
         check_no_symlinks(&operations, true)?;
         fs::create_dir_all(operations)?;
+        store.set_node_source_data_root(paths.data_root().to_path_buf());
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
             paths,
@@ -241,6 +251,8 @@ impl LifecycleManager {
             import_inspection_pause: Mutex::new(None),
             #[cfg(test)]
             import_cleanup_pause: Mutex::new(None),
+            #[cfg(test)]
+            delete_cleanup_checkpoint: Mutex::new(None),
             stopping: AtomicBool::new(false),
             events,
         });
@@ -283,6 +295,98 @@ impl LifecycleManager {
         self.remember(operation)?;
         self.tasks.phase(&operation.task_id, phase)
     }
+    pub(crate) fn task_for_project(
+        &self,
+        task_id: &str,
+        project_id: &str,
+        kind: &str,
+    ) -> Result<TaskRecord, ApiError> {
+        if !valid_id(project_id)
+            || !task_id.strip_prefix("task_").is_some_and(|suffix| {
+                suffix.len() == 32
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+            || kind.is_empty()
+            || kind.len() > 128
+        {
+            return Err(ApiError::new(
+                "INVALID_INPUT",
+                "Explicit task, project and type are required.",
+            ));
+        }
+        let operations = self.operations.lock().map_err(|_| {
+            ApiError::new(
+                "LIFECYCLE_STATE_FAILED",
+                "Current operation ownership is unavailable",
+            )
+        })?;
+        let active = operations
+            .get(task_id)
+            .filter(|operation| !operation.resolved);
+        if active
+            .is_some_and(|operation| operation.project_id != project_id || operation.kind != kind)
+        {
+            return Err(ApiError::new(
+                "TASK_IDENTITY_CHANGED",
+                "Task does not belong to the requested project and type.",
+            ));
+        }
+        let mut record = match self.tasks.task(task_id) {
+            Ok(record) => record,
+            Err(error) if error.code == "TASK_NOT_FOUND" => {
+                if active.is_some_and(|operation| {
+                    operation.project_id == project_id && operation.kind == kind && kind == "delete"
+                }) {
+                    return Ok(deletion_task_receipt(task_id, project_id, false));
+                }
+                if kind == "delete"
+                    && !self.store.has_active_project_work(project_id)
+                    && self.store.deleted_project_identity_absent(project_id)?
+                    && crate::web_project_cleanup::project_materials_absent(
+                        &self.paths,
+                        &self.tasks,
+                        project_id,
+                    )?
+                {
+                    return Ok(deletion_task_receipt(task_id, project_id, true));
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if record.project_id.as_deref() != Some(project_id) || record.task_type != kind {
+            return Err(ApiError::new(
+                "TASK_IDENTITY_CHANGED",
+                "Task does not belong to the requested project and type.",
+            ));
+        }
+        if kind == "delete" {
+            if active.is_some() {
+                record.status = TaskStatus::Running;
+                record.phase = "deleting-project-records".into();
+                record.result = None;
+                record.error = None;
+            } else if record.status == TaskStatus::Succeeded {
+                // A successful delete has no saved task. A saved success can
+                // only be the interruption window before final cleanup.
+                record.status = TaskStatus::Failed;
+                record.phase = "delete-finalization-required".into();
+                record.result = None;
+                record.error = Some(
+                    ApiError::new(
+                        "PROJECT_DELETE_INCOMPLETE",
+                        "Project deletion cleanup must be retried.",
+                    )
+                    .outcome("delete_incomplete")
+                    .detail("finalCleanupPending", true),
+                );
+            }
+        }
+        Ok(record)
+    }
+
     fn check_running(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
             Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"))
@@ -363,6 +467,71 @@ impl LifecycleManager {
                 "Unknown project lifecycle operation",
             ));
         }
+        if kind == "delete" && self.store.deleted_project_identity_absent(id)? {
+            if self.store.has_active_project_work(id) {
+                return Err(ApiError::new(
+                    "PROJECT_BUSY",
+                    "Project work has not finished.",
+                ));
+            }
+            if crate::web_project_cleanup::project_materials_absent(&self.paths, &self.tasks, id)? {
+                return Ok(deletion_task_receipt(
+                    &format!("task_{}", Uuid::new_v4().simple()),
+                    id,
+                    true,
+                ));
+            }
+            let lease = self
+                .store
+                .reserve_transient_operation(id, "delete-finalization")?;
+            let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            );
+            ownership.initialize(id)?;
+            for task in self.tasks.project_task_ids(id) {
+                let path = self
+                    .paths
+                    .workspace_root()
+                    .join(".platform/tasks")
+                    .join(&task);
+                if path.try_exists()? {
+                    if ownership
+                        .task_directory_identity(id, &task)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        ownership.verify_task_directory(id, &task)?;
+                        continue;
+                    }
+                    let task_file = path.join("task.json");
+                    check_no_symlinks(&task_file, false)?;
+                    let saved: TaskRecord = read_json(&task_file)?;
+                    if saved.task_id != task
+                        || saved.project_id.as_deref() != Some(id)
+                        || !saved.status.is_final()
+                    {
+                        return Err(ApiError::new(
+                            "TASK_IDENTITY_CHANGED",
+                            "Remaining task ownership is not confirmed.",
+                        ));
+                    }
+                    ownership.record_task(id, &task)?;
+                    ownership.capture_task_directory(id, &task, &persistent_identity(&path)?)?;
+                } else {
+                    ownership.record_task(id, &task)?;
+                }
+            }
+            let record = self.tasks.create_readonly_operation(id, "delete")?;
+            let mut operation = Self::operation_state(&record, "delete", id);
+            operation.committed = true;
+            operation.result =
+                json!({"projectId":id,"operationOutcome":"deleted","restoreAvailable":false});
+            self.remember(&operation)?;
+            self.launch(&mut running, operation, input, vec![lease]);
+            return Ok(record);
+        }
         let deletion = (kind == "delete")
             .then(|| self.store.deletion_root(id))
             .transpose()?;
@@ -394,16 +563,24 @@ impl LifecycleManager {
                 "Export and copy require a valid project manifest",
             ));
         }
-        let (mut record, source_lease) = if kind == "delete" {
-            self.tasks.create_delete_operation(id)?
-        } else {
-            self.tasks.create_operation(id, kind)?
-        };
         let target = if kind == "copy" {
             format!("prj_{}", Uuid::new_v4().simple())
         } else {
             id.into()
         };
+        if kind == "copy" {
+            self.store.initialize_project_ownership(&target)?;
+        }
+        let admitted = if kind == "delete" {
+            self.tasks.create_delete_operation(id)
+        } else {
+            self.tasks.create_operation(&target, kind)
+        };
+        let (mut record, source_lease) = admitted.inspect_err(|_| {
+            if kind == "copy" {
+                let _ = self.store.discard_unpublished_ownership(&target);
+            }
+        })?;
         let mut operation = Self::operation_state(&record, kind, &target);
         operation.source_project_id = Some(id.into());
         operation.destination = input.destination_path.clone();
@@ -420,15 +597,35 @@ impl LifecycleManager {
             } else {
                 self.authorize(id, input.maintenance_id.as_deref())?;
             }
+            if kind == "export" {
+                let destination = self.export_destination(
+                    input.destination_path.as_deref().unwrap(),
+                    &root,
+                    false,
+                )?;
+                crate::web_project_ownership::WebProjectOwnership::new(
+                    self.paths.data_root().into(),
+                    self.paths.workspace_root().into(),
+                )
+                .reserve_export_destination(id, &record.task_id, &destination)?;
+                operation.destination = Some(destination);
+            }
             self.remember(&operation)?;
             if kind == "copy" {
-                leases.push(self.store.reserve_task(&target, &record.task_id)?);
+                leases.push(self.store.reserve_task(id, &record.task_id)?);
                 self.store.reserve_identity(&target, &record.task_id)?;
                 record.result = Some(json!({"targetProjectId":target}));
             }
             Ok::<(), ApiError>(())
         })();
         if let Err(error) = prepare {
+            if kind == "export" {
+                let _ = crate::web_project_ownership::WebProjectOwnership::new(
+                    self.paths.data_root().into(),
+                    self.paths.workspace_root().into(),
+                )
+                .cancel_unpublished_export(id, &record.task_id);
+            }
             self.tasks.finish(&record.task_id, Err(error.clone()))?;
             return Err(error);
         }
@@ -440,9 +637,16 @@ impl LifecycleManager {
         id: &str,
         maintenance: Option<&str>,
     ) -> Result<ControlState, ApiError> {
-        crate::source_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
-        crate::data_restore_guard::check_development_available(self.paths.workspace_root(), id)?;
-        self.authorize(id, maintenance)
+        let state = self.store.control_for_deletion(id)?.get();
+        if (state.mode == "maintenance" && maintenance != state.maintenance_id.as_deref())
+            || (state.mode == "ready" && maintenance.is_some())
+        {
+            return Err(ApiError::new(
+                "MAINTENANCE_ID_MISMATCH",
+                "Provide the current maintenanceId for this operation",
+            ));
+        }
+        Ok(state)
     }
     async fn owned_operation<T, F, W>(self: &Arc<Self>, work: W) -> Result<T, ApiError>
     where
@@ -489,19 +693,10 @@ impl LifecycleManager {
             .archive_path
             .clone()
             .ok_or_else(|| ApiError::new("INVALID_INPUT", "archivePath is required"))?;
-        // Ordinary imports create an independent local instance. Preserving an
-        // archive's identity is an explicit recovery choice, never an update.
-        let mode = input.mode.as_deref().unwrap_or("copy");
-        if !matches!(mode, "original" | "copy") {
+        if input.mode.as_deref().is_some_and(|mode| mode != "copy") {
             return Err(ApiError::new(
                 "INVALID_INPUT",
-                "mode must be original or copy",
-            ));
-        }
-        if mode == "original" && input.name.is_some() {
-            return Err(ApiError::new(
-                "INVALID_INPUT",
-                "Original import preserves the archive name",
+                "Every import creates a new project identity; mode can only be copy",
             ));
         }
         if !archive.is_absolute() {
@@ -529,12 +724,8 @@ impl LifecycleManager {
         .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         let mut running = self.running.lock().unwrap();
         self.check_running()?;
-        let mode = input.mode.as_deref().unwrap_or("copy");
-        let target = if mode == "copy" {
-            format!("prj_{}", Uuid::new_v4().simple())
-        } else {
-            metadata.project_id.clone()
-        };
+        let target = format!("prj_{}", Uuid::new_v4().simple());
+        self.store.initialize_project_ownership(&target)?;
         self.store.check_identity_available(&target, None)?;
         let (mut record, lease) = self.tasks.create_operation(&target, "import")?;
         let mut operation = Self::operation_state(&record, "import", &target);
@@ -574,7 +765,19 @@ impl LifecycleManager {
     ) {
         let manager = self.clone();
         let runner = tokio::spawn(async move {
-            let mut result = manager.run(&mut operation, input).await;
+            use futures_util::FutureExt;
+            let accepted_task = manager.tasks.task(&operation.task_id).ok();
+            let mut retirement =
+                DeleteOperationRetirement::new(manager.clone(), &operation, accepted_task.clone());
+            let mut result = std::panic::AssertUnwindSafe(manager.run(&mut operation, input))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| {
+                    Err(ApiError::new(
+                        "LIFECYCLE_WORKER_FAILED",
+                        "Project operation stopped unexpectedly.",
+                    ))
+                });
             if let Err(error) = &result {
                 let _ = manager.remember(&operation);
                 match manager.reconcile(&mut operation) {
@@ -596,12 +799,86 @@ impl LifecycleManager {
                     }
                 }
             }
-            let _ = manager.tasks.finish(&operation.task_id, result);
+            let deleted = operation.kind == "delete"
+                && operation.committed
+                && operation.result["operationOutcome"] == "deleted";
+            if deleted {
+                operation.phase = "deleting-project-records".into();
+                let _ = manager.remember(&operation);
+                result = Ok(operation.result.clone());
+            }
+            let finished = manager.tasks.finish(&operation.task_id, result);
+            // Keep workspace migration/cleanup behind this accepted worker even
+            // after the project lease ends for identity finalization.
+            let _finalization_lease = if deleted {
+                manager
+                    .store
+                    .reserve_transient_operation(
+                        &format!("project-delete-finalization:{}", operation.project_id),
+                        "project-delete",
+                    )
+                    .ok()
+            } else {
+                None
+            };
+            drop(leases);
+            if deleted {
+                let cleanup_manager = manager.clone();
+                let cleanup_operation = operation.clone();
+                let cleanup = async {
+                    #[cfg(test)]
+                    {
+                        let checkpoint =
+                            { manager.delete_cleanup_checkpoint.lock().unwrap().take() };
+                        if let Some((entered, release, fail)) = checkpoint {
+                            let _ = entered.send(());
+                            let _ = release.await;
+                            if fail {
+                                return Err(ApiError::new(
+                                    "DISPOSABLE_DELETE_CLEANUP_FAILURE",
+                                    "Artificial cleanup failure after task finish.",
+                                ));
+                            }
+                        }
+                    }
+                    tokio::task::spawn_blocking(move || {
+                        cleanup_manager.finish_deleted_project(&cleanup_operation)
+                    })
+                    .await
+                    .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))
+                    .and_then(|result| result)
+                }
+                .await;
+                if let Err(error) = cleanup {
+                    let remaining = crate::web_project_cleanup::project_material_paths(
+                        &manager.paths,
+                        &operation.project_id,
+                    )
+                    .unwrap_or_default();
+                    manager.persist_delete_failure(
+                        accepted_task.as_ref(),
+                        error
+                            .outcome("delete_incomplete")
+                            .detail("finalCleanupPending", true)
+                            .detail("remainingPaths", json!(remaining)),
+                    );
+                } else {
+                    retirement.disarm();
+                    manager
+                        .operations
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .retain(|_, existing| existing.project_id != operation.project_id);
+                }
+                let _ = manager.finish_operation(&mut operation);
+            } else if let Err(error) = finished {
+                eprintln!("Lifecycle result persistence failed: {}", error.code);
+            }
             manager.notify(&operation.project_id);
             if let Some(source) = &operation.source_project_id {
                 manager.notify(source);
             }
-            drop(leases);
+            retirement.disarm();
         });
         running.push(runner);
     }
@@ -621,7 +898,7 @@ impl LifecycleManager {
         &self,
         path: &Path,
         source: &Path,
-        overwrite: bool,
+        _overwrite: bool,
     ) -> Result<PathBuf, ApiError> {
         if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(ApiError::new(
@@ -649,10 +926,10 @@ impl LifecycleManager {
                 "Export destination cannot be inside a project or platform-managed data",
             ));
         }
-        if target.exists() && (!target.is_file() || !overwrite) {
+        if target.exists() {
             return Err(ApiError::new(
                 "EXPORT_DESTINATION_EXISTS",
-                "Choose a new filename or explicitly request overwrite",
+                "请选择新的导出文件名，现有或已登记的目标不能覆盖。",
             )
             .detail("path", json!(target)));
         }
@@ -708,6 +985,26 @@ impl LifecycleManager {
         Ok(prepared)
     }
     async fn export(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
+        let result = self.export_inner(operation, input).await;
+        if result.is_err() {
+            let cleanup = crate::web_project_ownership::WebProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            )
+            .cancel_unpublished_export(&operation.project_id, &operation.task_id);
+            if let (Err(error), Err(cleanup)) = (&result, cleanup) {
+                return Err(error
+                    .clone()
+                    .detail("exportOwnershipCleanupError", json!(cleanup)));
+            }
+        }
+        result
+    }
+    async fn export_inner(
+        &self,
+        operation: &mut Operation,
+        input: Input,
+    ) -> Result<Value, ApiError> {
         let source = operation.project_id.clone();
         let root = self.store.metadata_root(&source)?.0;
         let destination = self.export_destination(
@@ -721,7 +1018,8 @@ impl LifecycleManager {
             .parent()
             .unwrap()
             .join(format!(".export-{}.partial", operation.task_id));
-        let staged = stage.clone();
+        let archive = self.operation(&operation.task_id).join("export.zip");
+        let staged = archive.clone();
         let snapshot_root = snapshot.root.clone();
         let snapshot_identity = persistent_identity(&snapshot_root)?;
         self.phase(operation, "archive-verify")?;
@@ -729,20 +1027,42 @@ impl LifecycleManager {
             tokio::task::spawn_blocking(move || backups::publish_snapshot(&snapshot, &staged))
                 .await
                 .map_err(|e| ApiError::new("EXPORT_FAILED", e.to_string()))??;
+        let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        let copy_owner = ownership.clone();
+        let copy_project = source.clone();
+        let copy_task = operation.task_id.clone();
+        let copy_archive = archive.clone();
+        let copy_stage = stage.clone();
+        tokio::task::spawn_blocking(move || {
+            write_owned_export_stage(
+                &copy_owner,
+                &copy_project,
+                &copy_task,
+                &copy_archive,
+                &copy_stage,
+            )
+        })
+        .await
+        .map_err(|error| ApiError::new("EXPORT_FAILED", error.to_string()))??;
         operation.published_sha256 = Some(sha256(&stage)?);
         operation.result = json!({"projectId":source,"path":destination,"backupId":info.manifest.backup_id,"createdAt":info.manifest.created_at,"snapshotState":info.manifest.snapshot_state,"pendingBuild":info.manifest.pending_build,"verified":true,"diagnostics":info.database,"operationOutcome":"exported"});
         self.phase(operation, "export-publish")?;
         self.export_destination(&destination, &root, input.overwrite)?;
-        if input.overwrite {
-            fs::rename(&stage, &destination)?;
-        } else {
-            fs::hard_link(&stage, &destination)?;
-            fs::remove_file(&stage)?;
-        }
+        ownership.bind_export_destination(&source, &operation.task_id, &destination, &stage)?;
+        publish_export_file(&stage, &destination)?;
         sync_parent(&destination)?;
+        ownership.commit_export_destination(&source, &operation.task_id)?;
         operation.committed = true;
         operation.resolved = true;
         self.remember(operation)?;
+        if let Err(error) = ownership.forget_export_stage(&source, &operation.task_id) {
+            operation.result["cleanupWarning"] =
+                json!(format!("导出已完成，临时材料登记清理失败：{error}"));
+        }
+        let _ = fs::remove_file(&archive);
         let cleaned = tokio::task::spawn_blocking(move || {
             crate::history_cleanup::remove_owned_directory(&snapshot_root, &snapshot_identity)
         })
@@ -813,14 +1133,11 @@ impl LifecycleManager {
         .await
         .map_err(|e| ApiError::new("IMPORT_FAILED", e.to_string()))??;
         let mut manifest = validated.project_manifest;
-        let original = manifest.id == operation.project_id;
-        if !original {
-            manifest.id = operation.project_id.clone();
-            manifest.name = input
-                .name
-                .unwrap_or_else(|| format!("{} · 副本", manifest.name));
-            builds::atomic_json(&candidate.join("project.json"), &manifest)?;
+        manifest.id = operation.project_id.clone();
+        if let Some(name) = input.name {
+            manifest.name = name;
         }
+        builds::atomic_json(&candidate.join("project.json"), &manifest)?;
         self.prepare_install(operation, candidate, manifest, validated.manifest)
             .await?;
         if operation.cleanup_temporary_files {
@@ -897,15 +1214,30 @@ impl LifecycleManager {
     async fn delete(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
         self.phase(operation, "delete-freeze")?;
         let id = operation.project_id.clone();
-        let control = self.store.control(&id)?;
+        if operation.committed && self.store.deleted_project_identity_absent(&id)? {
+            return Ok(operation.result.clone());
+        }
+        let control = self.store.control_for_deletion(&id)?;
         let _freeze = Freeze::new(control.clone());
         self.notify(&id);
         let gate = self.store.gate(&id);
         let _guard = gate.write().await;
         self.store.close_database(&id).await?;
-        crate::source_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
-        crate::data_restore_guard::check_development_available(self.paths.workspace_root(), &id)?;
         self.check_protection(&id, Some(&operation.task_id))?;
+        let owner_directory = crate::web_project_ownership::WebProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        )
+        .directory(&id)?;
+        match fs::symlink_metadata(&owner_directory) {
+            Ok(_) => {
+                check_no_symlinks(&owner_directory, false)?;
+                let owner = crate::durable_writer::WriterOwner::web(self.paths.data_root(), &id)?;
+                crate::durable_writer::require_owner_clear(&owner)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
         let (root, expected) = self.store.deletion_root(&id)?;
         if root
             != operation_project_root(
@@ -967,18 +1299,61 @@ impl LifecycleManager {
                 "Another operation owns the deletion target; its files and state were retained",
             ));
         }
-        self.store.retire_deleted_project(&marker)?;
-        MaintenanceManager::invalidate_storage(self.paths.workspace_root(), &operation.project_id)?;
+        let root = operation_project_root(
+            self.paths.workspace_root(),
+            &operation.project_id,
+            operation.directory_name.as_deref(),
+        )?;
+        if root.try_exists()? {
+            return Err(ApiError::new(
+                "PROJECT_DELETE_INCOMPLETE",
+                "Project files remain; deletion is incomplete.",
+            ));
+        }
+        File::open(root.parent().unwrap())?.sync_all()?;
         operation.committed = true;
         operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false});
-        self.finish_operation(operation)?;
-
-        self.store.finish_deletion_marker(
+        self.remember(operation)?;
+        Ok(operation.result.clone())
+    }
+    fn persist_delete_failure(&self, accepted: Option<&TaskRecord>, error: ApiError) {
+        if let Some(accepted) = accepted {
+            let result = self.tasks.restore_failed_project_task(accepted, error);
+            if let Err(error) = result {
+                eprintln!("Deletion failure persistence failed: {}", error.code);
+            }
+        }
+    }
+    fn finish_deleted_project(&self, operation: &Operation) -> Result<(), ApiError> {
+        crate::web_project_cleanup::remove_project_materials(
+            &self.paths,
+            &self.store,
+            &self.tasks,
             &operation.project_id,
             &operation.task_id,
-            &operation.target_epoch,
         )?;
-        Ok(operation.result.clone())
+        if let Some(marker) = self.store.pending_deletion(&operation.project_id)? {
+            if marker.task_id != operation.task_id || marker.target_epoch != operation.target_epoch
+            {
+                return Err(ApiError::new(
+                    "PROJECT_IDENTITY_CHANGED",
+                    "Another deletion owns this project.",
+                ));
+            }
+            self.store.complete_deleted_project_identity(&marker)?;
+        } else if !self
+            .store
+            .deleted_project_identity_absent(&operation.project_id)?
+        {
+            return Err(ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "Deletion identity is incomplete.",
+            ));
+        }
+        self.tasks
+            .forget_owned_tasks(std::slice::from_ref(&operation.task_id))?;
+        crate::web_project_cleanup::finish_project_ownership(&self.paths, &operation.project_id)?;
+        Ok(())
     }
     fn reconcile_direct_delete(&self, operation: &mut Operation) -> Result<Value, ApiError> {
         let marker = self.store.pending_deletion(&operation.project_id)?;
@@ -991,25 +1366,6 @@ impl LifecycleManager {
                     .is_some_and(|identity| identity.matches_captured(&marker.root_identity))
         });
         if operation.resolved {
-            // Removing a completed marker is bookkeeping only. A later instance
-            // or retry's marker must never be touched by historical recovery.
-            if operation.committed && owned {
-                self.store.finish_deletion_marker(
-                    &operation.project_id,
-                    &operation.task_id,
-                    &operation.target_epoch,
-                )?;
-            }
-            return Ok(operation.result.clone());
-        }
-        if operation.committed
-            && marker.is_none()
-            && operation.result["operationOutcome"] == "deleted"
-        {
-            // An in-process completion may outlive a later same-ID import. Its
-            // result is historical; it must not reset the new owner's state.
-            operation.resolved = true;
-            self.remember(operation)?;
             return Ok(operation.result.clone());
         }
         let mut outcome = "not_deleted";
@@ -1300,6 +1656,80 @@ impl LifecycleManager {
     }
 }
 
+fn write_owned_export_stage(
+    ownership: &crate::web_project_ownership::WebProjectOwnership,
+    project: &str,
+    task: &str,
+    archive: &Path,
+    stage: &Path,
+) -> Result<(), ApiError> {
+    ownership.reserve_export_stage(project, task, stage)?;
+    let mut output = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(stage)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            ownership.forget_export_stage(project, task)?;
+            return Err(error.into());
+        }
+    };
+    let identity = PersistedIdentity::from_file(&output)
+        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))?;
+    ownership.capture_export_stage(project, task, stage, &identity)?;
+    let mut input = File::open(archive)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.sync_all()?;
+    sync_parent(stage)
+}
+fn publish_export_file(stage: &Path, destination: &Path) -> Result<(), ApiError> {
+    use std::{ffi::CString, os::fd::AsRawFd};
+    if stage.parent() != destination.parent() {
+        return Err(ApiError::new(
+            "EXPORT_FAILED",
+            "导出发布必须在同一目录原子完成。",
+        ));
+    }
+    let parent = crate::files::root(stage.parent().unwrap())?;
+    let from = CString::new(stage.file_name().unwrap().as_encoded_bytes())
+        .map_err(|_| ApiError::new("INVALID_EXPORT_PATH", "导出文件名无效。"))?;
+    let to = CString::new(destination.file_name().unwrap().as_encoded_bytes())
+        .map_err(|_| ApiError::new("INVALID_EXPORT_PATH", "导出文件名无效。"))?;
+    #[cfg(target_os = "macos")]
+    let result = unsafe {
+        libc::renameatx_np(
+            parent.as_raw_fd(),
+            from.as_ptr(),
+            parent.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::renameat2(
+            parent.as_raw_fd(),
+            from.as_ptr(),
+            parent.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result = -1;
+    if result != 0 {
+        return Err(ApiError::new(
+            "EXPORT_DESTINATION_EXISTS",
+            "导出目标已存在或无法独占发布，未覆盖。",
+        ));
+    }
+    parent.sync_all()?;
+    Ok(())
+}
+
 fn clear_project_provenance(workspace: &Path, id: &str) -> Result<(), ApiError> {
     let path = workspace
         .join(".platform/project-state/builds")
@@ -1368,3 +1798,56 @@ fn initialize_candidate(
 #[cfg(test)]
 #[path = "lifecycle_tests.rs"]
 mod tests;
+
+fn deletion_task_receipt(task_id: &str, project_id: &str, completed: bool) -> TaskRecord {
+    TaskRecord { task_id:task_id.into(),project_id:Some(project_id.into()),task_type:"delete".into(),status:if completed {TaskStatus::Succeeded}else{TaskStatus::Running},phase:if completed {"completed"}else{"deleting-project-records"}.into(),result:completed.then(||json!({"projectId":project_id,"operationOutcome":"deleted","alreadyAbsent":true,"restoreAvailable":false})),error:None }
+}
+
+/// Losing an IPC waiter never owns retirement. An unwinding worker reports its
+/// current task as failed before removing the temporary running projection.
+struct DeleteOperationRetirement {
+    manager: Arc<LifecycleManager>,
+    task_id: String,
+    accepted: Option<TaskRecord>,
+    armed: bool,
+}
+impl DeleteOperationRetirement {
+    fn new(
+        manager: Arc<LifecycleManager>,
+        operation: &Operation,
+        accepted: Option<TaskRecord>,
+    ) -> Self {
+        Self {
+            manager,
+            task_id: operation.task_id.clone(),
+            accepted,
+            armed: operation.kind == "delete",
+        }
+    }
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for DeleteOperationRetirement {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.manager.persist_delete_failure(
+                self.accepted.as_ref(),
+                ApiError::new(
+                    "PROJECT_DELETE_INCOMPLETE",
+                    "Deletion worker stopped before cleanup completed.",
+                )
+                .outcome("delete_incomplete")
+                .detail("finalCleanupPending", true),
+            );
+        }));
+        self.manager
+            .operations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&self.task_id);
+    }
+}

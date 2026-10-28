@@ -636,3 +636,128 @@ fn uninstall_scope_rejects_replaced_payload_and_does_not_claim_foreign_staging_c
     );
     fixture.assert_outside();
 }
+
+#[test]
+fn terminal_task_json_unlink_before_rmdir_does_not_block_loader_or_replay_targets() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.stage_all().unwrap();
+    journal.remove_staged_all().unwrap();
+    journal.mark_completed().unwrap();
+    let directory = journal.directory.clone();
+    fs::remove_file(directory.join(RECORD_NAME)).unwrap();
+    drop(journal);
+    assert!(local_cleanup_owned_paths(&fixture.data)
+        .unwrap()
+        .contains(&directory));
+    assert!(NodeDeletionJournal::list(&fixture.data).unwrap().is_empty());
+    assert!(!directory.exists());
+    let apps = crate::node_apps::NodeApps::new(
+        fixture.data.clone(),
+        "/disposable/nonexistent-node".into(),
+    )
+    .unwrap();
+    assert!(apps.deletion_tasks().unwrap().is_empty());
+    fixture.assert_outside();
+}
+
+#[test]
+fn removed_payload_with_cleaned_stage_does_not_complete_when_its_expected_volume_is_unavailable() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.stage_all().unwrap();
+    journal.remove_staged_all().unwrap();
+    journal.cleanup_staging().unwrap();
+    journal.record.targets[1]
+        .identity
+        .as_mut()
+        .unwrap()
+        .volume_uuid = Some(Uuid::new_v4().to_string());
+    journal.persist().unwrap();
+    assert!(local_cleanup_owned_paths(&fixture.data).is_err());
+    assert!(journal.reconcile().is_err());
+    assert!(journal.mark_completed().is_err());
+    assert_ne!(journal.phase(), "deleted");
+    assert!(journal.directory.exists());
+    fixture.assert_outside();
+}
+
+#[test]
+fn remove_intent_with_both_paths_missing_needs_the_expected_payload_volume() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.stage_all().unwrap();
+    journal.remove_next_staged().unwrap();
+    assert!(journal
+        .remove_next_with(|point| if point == JournalPoint::Removed {
+            Err(interrupted())
+        } else {
+            Ok(())
+        })
+        .is_err());
+    assert_eq!(journal.record.targets[1].state, TargetState::Removing);
+    journal.record.targets[1]
+        .identity
+        .as_mut()
+        .unwrap()
+        .volume_uuid = Some(Uuid::new_v4().to_string());
+    assert!(journal.reconcile().is_err());
+    assert_eq!(journal.record.targets[1].state, TargetState::Removing);
+    fixture.assert_outside();
+}
+
+#[test]
+fn originally_missing_target_retains_its_known_parent_volume_requirement() {
+    let fixture = Fixture::new();
+    let missing = fixture
+        .workspace
+        .join(".platform/sources")
+        .join(format!("src_{}", Uuid::new_v4().simple()));
+    fs::create_dir_all(missing.parent().unwrap()).unwrap();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.source, missing]);
+    let mut journal = NodeDeletionJournal::create(&fixture.data, metadata).unwrap();
+    journal.record.targets[2]
+        .parent_identity
+        .as_mut()
+        .unwrap()
+        .volume_uuid = Some(Uuid::new_v4().to_string());
+    assert!(journal.reconcile().is_err());
+    assert!(fixture.slot.exists());
+    assert!(fixture.source.exists());
+    fixture.assert_outside();
+}
+
+#[test]
+fn refresh_does_not_turn_a_known_offline_volume_target_into_missing() {
+    let fixture = Fixture::new();
+    let ledger = fixture
+        .data
+        .join("node-project-ownership")
+        .join(&fixture.id);
+    fs::create_dir_all(&ledger).unwrap();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.source, ledger]);
+    metadata["ownedTaskIds"] = json!([]);
+    let mut journal = NodeDeletionJournal::create(&fixture.data, metadata).unwrap();
+    let retained = fixture
+        .outside
+        .with_file_name("disposable-offline-volume-payload");
+    fs::rename(&fixture.source, &retained).unwrap();
+    journal.record.targets[1]
+        .identity
+        .as_mut()
+        .unwrap()
+        .volume_uuid = Some(Uuid::new_v4().to_string());
+    assert!(journal
+        .refresh_owned_paths(
+            vec![fixture.slot.clone(), fixture.source.clone(), ledger],
+            vec![],
+            None,
+            vec![]
+        )
+        .is_err());
+    assert!(journal.record.targets[1].identity.is_some());
+    assert!(retained.join("edited-by-ai").exists());
+    fixture.assert_outside();
+}

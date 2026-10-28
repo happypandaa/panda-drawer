@@ -62,6 +62,7 @@ pub struct GitEnvironmentManager {
     settings_path: PathBuf,
     managed_root: Option<PathBuf>,
     processes: OwnedProcessRegistry,
+    project_boundary: Option<crate::project_tool_boundary::ProjectToolBoundary>,
 }
 pub(crate) enum PreparedGitSelection {
     Local(PathBuf),
@@ -93,7 +94,20 @@ impl GitEnvironmentManager {
             settings_path: data_root.join("git-toolchain.json"),
             managed_root,
             processes,
+            project_boundary: None,
         }
+    }
+    pub(crate) fn with_project_boundary(mut self, workspace: PathBuf) -> Self {
+        self.project_boundary = Some(crate::project_tool_boundary::ProjectToolBoundary::new(
+            self.settings_path.parent().unwrap().into(),
+            workspace,
+        ));
+        self
+    }
+    pub(crate) fn with_process_registry(&self, processes: OwnedProcessRegistry) -> Self {
+        let mut scoped = self.clone();
+        scoped.processes = processes;
+        scoped
     }
     fn configured(&self) -> Result<Option<PathBuf>, ApiError> {
         let Some(bytes) = read_settings_bytes(&self.settings_path)? else {
@@ -113,16 +127,33 @@ impl GitEnvironmentManager {
         crate::platform_support::require_runtime().map_err(ApiError::from)?;
         // Check an existing settings file before replacement; never follow links.
         read_settings_bytes(&self.settings_path)?;
-        if let Some(path) = &path {
-            probe_local(path, &self.processes, Arc::new(())).await?;
-        }
-        crate::builds::atomic_json(
-            &self.settings_path,
-            &Settings {
-                schema_version: 1,
-                git_path: path,
-            },
-        )?;
+        let tools = if let Some(path) = &path {
+            if let Some(boundary) = &self.project_boundary {
+                boundary.require_path(path)?;
+            }
+            let git = local_git_path(path, &self.processes, Arc::new(())).await?;
+            if let Some(boundary) = &self.project_boundary {
+                boundary.require_path(&git)?;
+            }
+            Some(probe_git(git, None, None, &self.processes, Arc::new(())).await?)
+        } else {
+            None
+        };
+        crate::node_apps::development::with_source_ownership_admission(|| {
+            if let (Some(boundary), Some(path), Some(tools)) =
+                (&self.project_boundary, &path, &tools)
+            {
+                boundary.require_path(path)?;
+                boundary.require_path(&tools.git.path)?;
+            }
+            crate::builds::atomic_json(
+                &self.settings_path,
+                &Settings {
+                    schema_version: 1,
+                    git_path: path,
+                },
+            )
+        })?;
         Ok(self.doctor().await)
     }
     pub async fn doctor(&self) -> GitEnvironmentInfo {
@@ -638,6 +669,48 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test]
+    async fn global_git_selection_rejects_project_paths_and_both_symlink_directions_without_execution(
+    ) {
+        use std::os::unix::fs::symlink;
+        let (_temporary, root) = disposable();
+        let data = root.join("data");
+        let workspace = root.join("workspace");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let manager =
+            GitEnvironmentManager::new(data.clone(), None).with_project_boundary(workspace.clone());
+        let external = fake_git(&root);
+        manager.configure_git(Some(external.clone())).await.unwrap();
+        let settings = fs::read(data.join("git-toolchain.json")).unwrap();
+        let source = workspace.join("projects/disposable");
+        fs::create_dir_all(&source).unwrap();
+        let marker = root.join("project-git-was-executed");
+        let project_git = script(
+            &source,
+            "git",
+            &format!(
+                "touch '{}'\nprintf 'git version 2.50.1\\n'",
+                marker.display()
+            ),
+        );
+        let outside_alias = root.join("outside-git-alias");
+        symlink(&project_git, &outside_alias).unwrap();
+        let inside_alias = source.join("external-git-alias");
+        symlink(&external, &inside_alias).unwrap();
+        for selected in [&project_git, &outside_alias, &inside_alias] {
+            assert_eq!(
+                manager
+                    .configure_git(Some(selected.clone()))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "GLOBAL_TOOL_PROJECT_OWNED"
+            );
+            assert_eq!(fs::read(data.join("git-toolchain.json")).unwrap(), settings);
+        }
+        assert!(!marker.exists(), "a rejected project Git must not execute");
+    }
     #[tokio::test]
     async fn explicit_choice_wins_and_disappearance_never_falls_back() {
         let (_temp, root) = disposable();

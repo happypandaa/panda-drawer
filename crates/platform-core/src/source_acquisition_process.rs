@@ -99,7 +99,10 @@ pub(super) async fn resolve_source_git(
     // counting unrelated clones of the source scope. Await resolution itself:
     // dropping its future could abandon managed verification's blocking I/O.
     let hold = Arc::new(control.scope.clone());
-    let result = environment.resolve_with_keep_alive(hold.clone()).await;
+    let result = environment
+        .with_process_registry(control.processes.clone())
+        .resolve_with_keep_alive(hold.clone())
+        .await;
     if let Err(issue) = &result {
         if issue.code == "PROCESS_CLEANUP_PENDING" {
             if let Some(scope) = &control.scope {

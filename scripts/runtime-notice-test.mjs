@@ -196,12 +196,8 @@ assert.equal(confirmation.hidden, true);
 confirmReload.listeners.click();
 assert.equal(reloads, 1);
 assertDraftPreserved();
-await changeState({ mode: 'normal', reloadRequired: true, trashed: true });
-assert.match(heading.textContent, /历史保留项目/);
-assert.equal(reload.hidden, true);
-assertDraftPreserved();
 for (const [flag, titlePattern] of [
-  ['deleted', /项目已永久删除/],
+  ['removed', /项目已永久删除/],
   ['deletionIncomplete', /项目删除未完成/],
 ]) {
   await changeState({ mode: 'normal', reloadRequired: true, [flag]: true });
@@ -222,8 +218,7 @@ assert.equal(reload.hidden, true);
 assertDraftPreserved();
 for (const [code, titlePattern] of [
   ['WORKSPACE_MIGRATING', /工作区正在迁移/],
-  ['PROJECT_TRASHED', /历史保留项目/],
-  ['PROJECT_DELETED', /项目已永久删除/],
+  ['PROJECT_REMOVED', /项目已永久删除/],
   ['PROJECT_DELETE_INCOMPLETE', /项目删除未完成/],
   ['SERVICE_INSTANCE_CHANGED', /服务已切换/],
   ['INVALID_SESSION', /连接已失效/],
@@ -238,18 +233,18 @@ for (const [code, titlePattern] of [
   reload.listeners.click();
   confirmReload.listeners.click();
   assert.equal(reloads, 1, 'old instances, deleted projects, legacy trash, and migration cannot reload the old URL');
-  if (code === 'PROJECT_DELETED' || code === 'PROJECT_DELETE_INCOMPLETE') {
+  if (code === 'PROJECT_REMOVED' || code === 'PROJECT_DELETE_INCOMPLETE') {
     assert.doesNotMatch(detail.textContent, /请在.*恢复|回收站恢复/);
     assert.equal(platformEvents.at(-1).detail.reloadRequired, true);
   }
   assertDraftPreserved();
 }
 responseError = null;
-await changeState({ mode: 'normal', trashed: true, reloadRequired: true });
+await changeState({ mode: 'normal', removed: true, reloadRequired: true });
 responseError = 'INVALID_SESSION';
 retry.listeners.click();
 await flush();
-assert.match(heading.textContent, /连接已失效/, 'an expired session cannot keep claiming an old trash state');
+assert.match(heading.textContent, /连接已失效/, 'an expired session releases the previous document state');
 assertDraftPreserved();
 responseError = null;
 state = { mode: 'normal', reloadRequired: false };
@@ -285,7 +280,7 @@ console.log(JSON.stringify({
     'only final confirmation reloads without native dialogs',
     'new maintenance cancels pending reload',
     'permanent and partial deletion preserve drafts, block reload and signal media shutdown',
-    'legacy retained projects, migration and old instance notices via events and errors',
+    'permanent project removal, migration and old instance notices via events and errors',
     'immutable document epoch',
     'read-only requests',
     'back/forward cache reconnection',

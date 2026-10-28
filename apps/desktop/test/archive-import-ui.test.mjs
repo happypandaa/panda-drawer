@@ -70,19 +70,21 @@ async function begin() { await change(document.querySelector('.path-input input'
 async function tick() { await act(async () => { for (const fn of [...intervals.values()]) fn(); }); }
 async function escape() { await act(async () => document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))); }
 
-test('Archive import is a modal and defaults to a new identity with opt-in scoped cleanup', async () => {
+test('Archive import always creates a new identity with scoped cleanup', async () => {
   const fixture = await setup();
   assert.equal(document.querySelector('[role=dialog] h2').textContent, '导入完整项目');
-  assert.equal(document.querySelector('input[name=import-mode]:checked').value, 'copy');
+  assert.equal(document.querySelector('input[name=import-mode]'), null);
+  assert.doesNotMatch(document.body.textContent, /保留原 ID/);
   await change(document.querySelector('form > label input'), 'Independent copy'); await begin();
-  assert.deepEqual(fixture.calls[0], ['project_import', { input: { archivePath: '/disposable/project.zip', mode: 'copy', cleanupTemporaryFiles: true, name: 'Independent copy' } }]);
+  assert.deepEqual(fixture.calls[0], ['project_import', { input: { archivePath: '/disposable/project.zip', cleanupTemporaryFiles: true, name: 'Independent copy' } }]);
   assert.ok(document.body.textContent.includes('导入成功')); assert.equal(fixture.completed, 1); assert.equal(fixture.opened.length, 0);
   assert.deepEqual(commands(fixture), ['project_import']);
 });
-test('Preserving the original identity is explicit and omits the copy name', async () => {
-  const fixture = await setup(); await change(document.querySelector('form > label input'), 'Ignored copy name');
-  await click(document.querySelector('input[value=original]')); await begin();
-  assert.deepEqual(fixture.calls[0][1], { input: { archivePath: '/disposable/project.zip', mode: 'original', cleanupTemporaryFiles: true } });
+test('Repeated archive imports expose no original-identity option', async () => {
+  const fixture = await setup();
+  assert.equal(document.querySelector('input[value=original]'), null);
+  await begin();
+  assert.deepEqual(fixture.calls[0][1], { input: { archivePath: '/disposable/project.zip', cleanupTemporaryFiles: true } });
 });
 test('The modal tracks real cleanup before showing success and blocks closing or duplicate submissions', async () => {
   let latest = task({ final: false, status: 'running', phase: 'archive-copy', result: { targetProjectId: projectId } });

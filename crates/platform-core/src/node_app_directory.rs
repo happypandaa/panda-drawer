@@ -189,6 +189,7 @@ impl NodeApps {
     fn directory_path(&self, source: &Path) -> Result<PathBuf> {
         ordinary_path(source, true)?;
         let source = source.canonicalize()?;
+        self.require_external_source_boundary(&source)?;
         let data = self.data_root.canonicalize()?;
         if source.starts_with(&data) || data.starts_with(&source) {
             return Err(directory_error(

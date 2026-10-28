@@ -69,7 +69,10 @@ pub(crate) fn group_has_other_members(pid: u32) -> Result<bool, ApiError> {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct OwnedProcessRegistry(Arc<RegistryInner>);
+pub(crate) struct OwnedProcessRegistry(
+    Arc<RegistryInner>,
+    Option<crate::durable_writer::WriterOwner>,
+);
 #[derive(Default)]
 struct RegistryInner {
     state: Mutex<RegistryState>,
@@ -236,6 +239,7 @@ struct Resources<T, G> {
     output: Option<T>,
     exit: Option<ExitStatus>,
     keep_alive: Option<G>,
+    writer_guard: Option<crate::durable_writer::WriterGuard>,
 }
 struct Record<T, G> {
     registry: Weak<RegistryInner>,
@@ -333,6 +337,9 @@ async fn pump_output(
 }
 
 impl OwnedProcessRegistry {
+    pub(crate) fn with_writer_owner(&self, owner: crate::durable_writer::WriterOwner) -> Self {
+        Self(self.0.clone(), Some(owner))
+    }
     pub(crate) fn shares_registry(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -373,9 +380,25 @@ impl OwnedProcessRegistry {
         let (stdin, stdout, stderr) = prepare_stdio(&mut command)?;
         #[cfg(unix)]
         command.process_group(0);
-        let child = command.as_std_mut().spawn().map_err(|_| {
-            not_started("PROCESS_SPAWN_FAILED", "Could not start the owned command")
-        })?;
+        let mut writer_guard = self
+            .1
+            .as_ref()
+            .map(|owner| owner.begin(&options.component))
+            .transpose()?;
+        let child = match command.as_std_mut().spawn() {
+            Ok(child) => child,
+            Err(_) => {
+                // std::process::Command returned no child. This is the sole
+                // no-spawn path that can explicitly retire a prepared guard.
+                if let Some(guard) = &mut writer_guard {
+                    guard.finish()?;
+                }
+                return Err(not_started(
+                    "PROCESS_SPAWN_FAILED",
+                    "Could not start the owned command",
+                ));
+            }
+        };
         let pid = child.id();
         drop(command);
         let (cancel, stop) = watch::channel(false);
@@ -410,6 +433,7 @@ impl OwnedProcessRegistry {
                 output: None,
                 exit: None,
                 keep_alive: Some(keep_alive),
+                writer_guard,
             }),
             driver: tokio::sync::Mutex::new(None),
             reply: Mutex::new(Some(reply)),
@@ -732,6 +756,13 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                             "A process owner failed; previous failure cannot be erased",
                         ));
                     }
+                    if let Some(guard) = &mut resources.writer_guard {
+                        // A task status or dropped Arc is never a closure
+                        // receipt. Only this reaped group + joined-I/O branch
+                        // may retire its crash-surviving writer admission.
+                        guard.finish()?;
+                    }
+                    resources.writer_guard.take();
                     let result = match operation_error {
                         Some(error) => Err(error),
                         None => Ok(ProcessOutput {
@@ -741,6 +772,9 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                             })?,
                         }),
                     };
+                    // An error receipt must not retain a completed session's
+                    // project output in the shared closed-process registry.
+                    resources.output.take();
                     resources.keep_alive.take();
                     self.update(|m| {
                         let resolved = std::mem::take(&mut m.issues);

@@ -105,7 +105,7 @@ pub(crate) struct ProjectDeletion {
     pub(crate) root_identity: FileIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     directory_name: Option<String>,
-    source_epoch: Option<String>,
+    pub(crate) source_epoch: Option<String>,
 }
 
 #[derive(Clone)]
@@ -121,7 +121,6 @@ pub struct ProjectHandle {
     pub(crate) maintenance_id: Option<String>,
     pub(crate) diagnostic: bool,
     workspace_paused: Arc<AtomicBool>,
-    retirement_path: PathBuf,
     deletion_path: PathBuf,
 }
 impl ProjectHandle {
@@ -138,11 +137,8 @@ impl ProjectHandle {
             .outcome("not_started"));
         }
         check_deletion_marker(&self.deletion_path)?;
-        if self.retirement_path.is_file() {
-            let retired: Value = read_json(&self.retirement_path)?;
-            if retired["retired"] == true {
-                return Err(project_removed_error(&retired).outcome("not_started"));
-            }
+        if !self.state_path.try_exists()? {
+            return Err(removed_project_error(&self.manifest.id));
         }
         check_no_symlinks(&self.root, false)?;
         if !identity_matches(&self.registration.root_identity, &self.root)? {
@@ -266,8 +262,11 @@ fn registration_root(
     {
         return Err(directory_mapping_error());
     }
-    // An old absolute path alone never opts a project into a new directory name.
-    let root = bound_root(workspace, state.directory_name.as_deref().unwrap_or(id))?;
+    let name = state
+        .directory_name
+        .as_deref()
+        .ok_or_else(directory_mapping_error)?;
+    let root = bound_root(workspace, name)?;
     if state.project_root != root {
         return Err(directory_mapping_error());
     }
@@ -314,8 +313,8 @@ fn retain_directory_claims(
     Ok(())
 }
 
-/// Resolve only platform-owned bindings, with the original exact-ID layout as
-/// the compatibility fallback. A manifest never supplies its own location.
+/// Resolve only current platform-owned bindings. A directory or manifest cannot
+/// introduce or revive an identity without explicit registration.
 pub(crate) fn resolve_project_root(workspace: &Path, id: &str) -> Result<PathBuf, ApiError> {
     if !valid_id(id) {
         return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
@@ -331,7 +330,7 @@ pub(crate) fn resolve_project_root(workspace: &Path, id: &str) -> Result<PathBuf
     } else {
         None
     };
-    for kind in ["reservations", "deleting", "retired"] {
+    for kind in ["reservations", "deleting"] {
         let path = workspace
             .join(".platform/project-state")
             .join(kind)
@@ -347,8 +346,8 @@ pub(crate) fn resolve_project_root(workspace: &Path, id: &str) -> Result<PathBuf
         if kind == "reservations" && record["taskId"].as_str().is_none_or(|task| !valid_id(task)) {
             return Err(directory_mapping_error());
         }
-        // A same-ID explicit import may replace a retired binding. Its durable
-        // reservation owns the new destination until registration commits.
+        // A durable reservation owns its fresh destination until registration
+        // commits. Existing project identities are never imported again.
         if kind != "reservations" {
             if let Some(root) = &registered {
                 return Ok(root.clone());
@@ -363,12 +362,15 @@ pub(crate) fn resolve_project_root(workspace: &Path, id: &str) -> Result<PathBuf
     }
     match registered {
         Some(root) => Ok(root),
-        None => bound_root(workspace, id),
+        None => Err(ApiError::new(
+            "PROJECT_NOT_REGISTERED",
+            "Project identity is not registered",
+        )),
     }
 }
 
-/// Registered IDs are the discovery index. Only exact legacy ID directories
-/// may be discovered without registration; arbitrary slug manifests are ignored.
+/// Current registrations are the complete discovery index. Unregistered
+/// directories never become projects through inspection.
 pub(crate) fn enumerate_project_roots(
     workspace: &Path,
 ) -> Result<Vec<(String, PathBuf)>, ApiError> {
@@ -395,31 +397,6 @@ pub(crate) fn enumerate_project_roots(
         }
         roots.insert(id.into(), root);
     }
-    let projects = workspace.join("projects");
-    check_no_symlinks(&projects, false)?;
-    for entry in fs::read_dir(projects)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !valid_id(&name) || roots.contains_key(&name) || owners.contains_key(&entry.path()) {
-            continue;
-        }
-        if !entry.file_type()?.is_dir() && !entry.file_type()?.is_symlink() {
-            continue;
-        }
-        let root = resolve_project_root(workspace, &name)?;
-        if root != entry.path() {
-            continue;
-        }
-        // Legacy discovery requires the original exact ID/declaration match.
-        // A readable directory containing somebody else's ID cannot claim it.
-        if read_json::<ProjectManifest>(&root.join("project.json"))
-            .ok()
-            .is_none_or(|manifest| manifest.id != name)
-        {
-            continue;
-        }
-        roots.insert(name, root);
-    }
     let mut roots: Vec<_> = roots.into_iter().collect();
     roots.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(roots)
@@ -439,6 +416,7 @@ impl Drop for NodeDeletionBarrier {
             .remove(&self.token);
     }
 }
+type ProjectIdentityRemoved = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct ProjectStore {
     workspace: PathBuf,
     processes: crate::owned_process::OwnedProcessRegistry,
@@ -456,6 +434,8 @@ pub struct ProjectStore {
     active_tasks: Arc<Mutex<HashMap<String, ProjectOperation>>>,
     pending_node_deletions: Arc<Mutex<HashMap<String, String>>>,
     resources: Option<Arc<crate::resources::ProjectResources>>,
+    identity_removed: Mutex<Vec<ProjectIdentityRemoved>>,
+    node_source_data_root: Mutex<Option<PathBuf>>,
 }
 impl ProjectStore {
     pub fn new(workspace: PathBuf) -> Result<Self, ApiError> {
@@ -480,6 +460,19 @@ impl ProjectStore {
         ] {
             ensure_dir(&path)?;
         }
+        #[cfg(test)]
+        let default_data_root = Some(
+            if workspace
+                .file_name()
+                .is_some_and(|name| name == "workspace")
+            {
+                workspace.parent().unwrap().to_path_buf()
+            } else {
+                workspace.clone()
+            },
+        );
+        #[cfg(not(test))]
+        let default_data_root = None;
         Ok(Self {
             workspace,
             processes,
@@ -497,13 +490,69 @@ impl ProjectStore {
             controls: Mutex::new(HashMap::new()),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             pending_node_deletions: Arc::new(Mutex::new(HashMap::new())),
+            identity_removed: Mutex::new(vec![]),
+            node_source_data_root: Mutex::new(default_data_root),
         })
+    }
+    pub(crate) fn set_node_source_data_root(&self, data_root: PathBuf) {
+        *self.node_source_data_root.lock().unwrap() = Some(data_root);
+    }
+    fn require_new_project_location(&self, location: &Path) -> Result<(), ApiError> {
+        if let Some(data_root) = self.node_source_data_root.lock().unwrap().as_ref() {
+            crate::node_apps::development::require_new_web_project_location(data_root, location)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn initialize_project_ownership(&self, id: &str) -> Result<(), ApiError> {
+        if let Some(data_root) = self.node_source_data_root.lock().unwrap().as_ref() {
+            crate::web_project_ownership::WebProjectOwnership::new(
+                data_root.clone(),
+                self.workspace.clone(),
+            )
+            .initialize(id)?;
+        }
+        Ok(())
+    }
+    fn record_project_root_ownership(&self, id: &str, root: &Path) -> Result<(), ApiError> {
+        if let Some(data_root) = self.node_source_data_root.lock().unwrap().as_ref() {
+            crate::web_project_ownership::WebProjectOwnership::new(
+                data_root.clone(),
+                self.workspace.clone(),
+            )
+            .record_project_root(id, root)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn discard_unpublished_ownership(&self, id: &str) -> Result<(), ApiError> {
+        if let Some(data_root) = self.node_source_data_root.lock().unwrap().as_ref() {
+            crate::web_project_ownership::WebProjectOwnership::new(
+                data_root.clone(),
+                self.workspace.clone(),
+            )
+            .discard_unpublished(id)?;
+        }
+        Ok(())
     }
     pub fn workspace_root(&self) -> &Path {
         &self.workspace
     }
     pub(crate) fn processes(&self) -> crate::owned_process::OwnedProcessRegistry {
         self.processes.clone()
+    }
+    pub(crate) fn project_processes(
+        &self,
+        id: &str,
+    ) -> Result<crate::owned_process::OwnedProcessRegistry, ApiError> {
+        let data = self.node_source_data_root.lock().unwrap();
+        let data = data.as_ref().ok_or_else(|| {
+            ApiError::new(
+                "PROJECT_WRITER_UNCONFIRMED",
+                "项目写入者缺少固定数据根归属。",
+            )
+        })?;
+        Ok(self
+            .processes
+            .with_writer_owner(crate::durable_writer::WriterOwner::web(data, id)?))
     }
     fn accepting(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
@@ -538,7 +587,13 @@ impl ProjectStore {
         self.check_workspace_available()?;
         let id = format!("prj_{}", Uuid::new_v4().simple());
         let creation_task = format!("task_create_{}", Uuid::new_v4().simple());
-        let root = self.reserve_named_identity_locked(&id, &creation_task, name)?;
+        self.initialize_project_ownership(&id)?;
+        let root = self
+            .reserve_named_identity_locked(&id, &creation_task, name)
+            .map_err(|error| {
+                let cleanup = self.discard_unpublished_ownership(&id);
+                error.detail("cleanupError", cleanup.err().map(|error| json!(error)))
+            })?;
         let staging = self
             .workspace
             .join("projects")
@@ -591,6 +646,7 @@ impl ProjectStore {
                 fs::Permissions::from_mode(0o600),
             )?;
             publish_directory_noreplace(&staging, &root)?;
+            self.record_project_root_ownership(&id, &root)?;
             File::open(root.parent().unwrap())?.sync_all()?;
             let state = Registration {
                 schema_version: 1,
@@ -624,7 +680,6 @@ impl ProjectStore {
     pub async fn list(&self) -> Result<Vec<ProjectInfo>, ApiError> {
         let mut results = Vec::new();
         let mut ids = std::collections::BTreeSet::new();
-        let mut bound = std::collections::HashSet::new();
         for entry in fs::read_dir(self.workspace.join(".platform/project-state"))? {
             let path = entry?.path();
             if path.extension().is_none_or(|extension| extension != "json") {
@@ -636,25 +691,6 @@ impl ProjectStore {
                 .filter(|id| valid_id(id))
             {
                 ids.insert(id.to_owned());
-                if let Ok(root) = self.project_root(id) {
-                    bound.insert(root);
-                }
-            }
-        }
-        for entry in fs::read_dir(self.workspace.join("projects"))? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !valid_id(&name) || ids.contains(&name) || bound.contains(&entry.path()) {
-                continue;
-            }
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            if read_json::<ProjectManifest>(&entry.path().join("project.json"))
-                .ok()
-                .is_some_and(|manifest| manifest.id == name)
-            {
-                ids.insert(name);
             }
         }
         for id in ids {
@@ -782,24 +818,10 @@ impl ProjectStore {
             }
             state
         } else {
-            if self.workspace_paused() {
-                return Err(ApiError::new(
-                    "WORKSPACE_MIGRATING",
-                    "Project registration is paused during migration",
-                ));
-            }
-            let state = Registration {
-                schema_version: 1,
-                id: id.into(),
-                project_root: root.clone(),
-                directory_name: None,
-                root_identity: identity(&root)?,
-                database_path: manifest.database.clone(),
-                database_identity: identity(&database)?,
-                document_epoch: Uuid::new_v4().to_string(),
-            };
-            publish_registration(&state_path, &state)?;
-            state
+            return Err(ApiError::new(
+                "PROJECT_NOT_REGISTERED",
+                "Project identity is not registered",
+            ));
         };
         let operation_gate = self
             .gates
@@ -820,7 +842,6 @@ impl ProjectStore {
             maintenance_id: None,
             diagnostic: false,
             workspace_paused: self.workspace_paused.clone(),
-            retirement_path: self.retirement_path(id),
             deletion_path: self.deletion_path(id),
         })
     }
@@ -998,6 +1019,15 @@ impl ProjectStore {
         &self,
         id: &str,
     ) -> Result<Arc<crate::control::ProjectControl>, ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        if !registration_path(&self.workspace, id).try_exists()?
+            && !self.reservation_path(id).try_exists()?
+            && !self.deletion_path(id).try_exists()?
+        {
+            return Err(removed_project_error(id));
+        }
         let mut controls = self.controls.lock().unwrap();
         if let Some(control) = controls.get(id) {
             return Ok(control.clone());
@@ -1005,6 +1035,34 @@ impl ProjectStore {
         let control = crate::control::ProjectControl::load(&self.workspace, id)?;
         controls.insert(id.into(), control.clone());
         Ok(control)
+    }
+    pub(crate) fn control_for_deletion(
+        &self,
+        id: &str,
+    ) -> Result<Arc<crate::control::ProjectControl>, ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        if !registration_path(&self.workspace, id).try_exists()?
+            && !self.reservation_path(id).try_exists()?
+            && !self.deletion_path(id).try_exists()?
+        {
+            return Err(removed_project_error(id));
+        }
+        let mut controls = self.controls.lock().unwrap();
+        if let Some(control) = controls.get(id) {
+            return Ok(control.clone());
+        }
+        match crate::control::ProjectControl::load(&self.workspace, id) {
+            Ok(control) => {
+                controls.insert(id.into(), control.clone());
+                Ok(control)
+            }
+            Err(error) if error.code == "INVALID_JSON" => {
+                crate::control::ProjectControl::volatile_for_deletion(&self.workspace, id)
+            }
+            Err(error) => Err(error),
+        }
     }
     pub(crate) fn gate(&self, id: &str) -> Arc<RwLock<()>> {
         self.gates
@@ -1056,9 +1114,6 @@ impl ProjectStore {
         task: &str,
     ) -> Result<ProjectTaskLease, ApiError> {
         let lease = self.reserve_operation(id, ProjectOperation::Task(task.into()))?;
-        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
-        crate::source_restore_guard::check_development_available(&self.workspace, id)?;
-        crate::project_git::check_data_operations_available(&self.workspace, id)?;
         self.deletion_root(id)?;
         Ok(lease)
     }
@@ -1115,10 +1170,21 @@ impl ProjectStore {
                 ProjectOperation::Transient(label) => error.detail("operation", label.clone()),
             });
         }
+        let writer_owner = if id.starts_with("prj_") {
+            self.node_source_data_root
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|data| crate::durable_writer::WriterOwner::web(data, id))
+                .transpose()?
+        } else {
+            None
+        };
         active.insert(id.into(), operation);
         Ok(ProjectTaskLease {
             active: self.active_tasks.clone(),
             id: id.into(),
+            writer_owner,
         })
     }
     #[cfg(test)]
@@ -1324,11 +1390,6 @@ impl ProjectStore {
         self.workspace_cleaning.store(false, Ordering::Release);
         self.workspace_migrating.store(false, Ordering::Release);
     }
-    fn retirement_path(&self, id: &str) -> PathBuf {
-        self.workspace
-            .join(".platform/project-state/retired")
-            .join(format!("{id}.json"))
-    }
     fn deletion_path(&self, id: &str) -> PathBuf {
         self.workspace
             .join(".platform/project-state/deleting")
@@ -1418,7 +1479,7 @@ impl ProjectStore {
             {
                 return Err(ApiError::new("PROJECT_IDENTITY_CHANGED", "The registered project no longer owns this deletion; existing files and records were retained"));
             }
-        } else if marker.as_ref().is_some_and(|m| m.source_epoch.is_some()) {
+        } else if actual.is_some() && marker.as_ref().is_some_and(|m| m.source_epoch.is_some()) {
             return Err(ApiError::new(
                 "PROJECT_IDENTITY_CHANGED",
                 "The registered deletion identity is missing; retained files need inspection",
@@ -1464,7 +1525,6 @@ impl ProjectStore {
         epoch: &str,
         expected: &FileIdentity,
     ) -> Result<ProjectDeletion, ApiError> {
-        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let (_, actual) = self.deletion_root(id)?;
         if !expected.matches_captured(&actual) {
             return Err(ApiError::new(
@@ -1500,48 +1560,102 @@ impl ProjectStore {
         crate::builds::atomic_json(&self.deletion_path(id), &marker)?;
         Ok(marker)
     }
-    /// The marker blocks same-ID registration until the final journal is durable.
-    pub(crate) fn retire_deleted_project(&self, marker: &ProjectDeletion) -> Result<(), ApiError> {
-        crate::data_restore_guard::check_development_available(
-            &self.workspace,
-            &marker.project_id,
-        )?;
-        let (root, _) = self.deletion_root(&marker.project_id)?;
-        if root.try_exists()? {
-            return Err(ApiError::new(
-                "PROJECT_DELETE_INCOMPLETE",
-                "Project files remain; explicit deletion retry is required",
-            ));
+    pub(crate) fn deleted_project_identity_absent(&self, id: &str) -> Result<bool, ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
-        let current = self.pending_deletion(&marker.project_id)?.ok_or_else(|| {
-            ApiError::new(
-                "PROJECT_IDENTITY_CHANGED",
-                "Deletion ownership marker is missing",
-            )
-        })?;
-        if current.task_id != marker.task_id || current.target_epoch != marker.target_epoch {
-            return Err(ApiError::new(
-                "PROJECT_IDENTITY_CHANGED",
-                "A later deletion owns the retained marker",
-            ));
+        let root = match self.project_root(id) {
+            Ok(root) => root,
+            Err(error) if error.code == "PROJECT_NOT_REGISTERED" => {
+                bound_root(&self.workspace, id)?
+            }
+            Err(error) => return Err(error),
+        };
+        for path in [
+            root,
+            registration_path(&self.workspace, id),
+            self.reservation_path(id),
+            self.deletion_path(id),
+        ] {
+            check_no_symlinks(&path, true)?;
+            match fs::symlink_metadata(path) {
+                Ok(_) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
         }
-        self.unregister_lifecycle(&marker.project_id, &marker.target_epoch)
+        Ok(true)
     }
-    pub(crate) fn finish_deletion_marker(
+    pub(crate) fn has_active_project_work(&self, id: &str) -> bool {
+        self.workers.lock().unwrap().contains_key(id)
+            || self.active_tasks.lock().unwrap().contains_key(id)
+    }
+    pub(crate) fn on_project_identity_removed(&self, observer: ProjectIdentityRemoved) {
+        self.identity_removed.lock().unwrap().push(observer);
+    }
+    /// All writers and their actual database worker must already have joined.
+    /// The deletion marker stays authoritative until every identity is cleared.
+    pub(crate) fn complete_deleted_project_identity(
         &self,
-        id: &str,
-        task: &str,
-        epoch: &str,
+        marker: &ProjectDeletion,
     ) -> Result<(), ApiError> {
+        let id = &marker.project_id;
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
         let _lock = self.registration_lock.lock().unwrap();
-        if let Some(marker) = self.pending_deletion(id)? {
-            if marker.task_id != task || marker.target_epoch != epoch {
+        let current = self.pending_deletion(id)?;
+        if let Some(current) = &current {
+            if current.task_id != marker.task_id
+                || current.target_epoch != marker.target_epoch
+                || !current
+                    .root_identity
+                    .matches_captured(&marker.root_identity)
+            {
                 return Err(ApiError::new(
                     "PROJECT_IDENTITY_CHANGED",
-                    "A later operation owns the deletion marker",
+                    "A different deletion owns this project",
                 ));
             }
-            let path = self.deletion_path(id);
+            if self.project_root(id)?.try_exists()? {
+                return Err(ApiError::new(
+                    "PROJECT_DELETE_INCOMPLETE",
+                    "Project files remain; retry deletion",
+                ));
+            }
+        } else if registration_path(&self.workspace, id).try_exists()?
+            || self.reservation_path(id).try_exists()?
+        {
+            return Err(ApiError::new(
+                "PROJECT_IDENTITY_CHANGED",
+                "Deletion ownership marker is missing",
+            ));
+        }
+        let workers = self.workers.lock().unwrap();
+        let active = self.active_tasks.lock().unwrap();
+        if workers.contains_key(id) || active.contains_key(id) {
+            return Err(ApiError::new(
+                "PROJECT_BUSY",
+                "Project writers must finish before removing its identity",
+            ));
+        }
+        for path in [
+            registration_path(&self.workspace, id),
+            self.reservation_path(id),
+        ] {
+            check_no_symlinks(&path, true)?;
+            if path.try_exists()? {
+                fs::remove_file(&path)?;
+                File::open(path.parent().unwrap())?.sync_all()?;
+            }
+        }
+        self.controls.lock().unwrap().remove(id);
+        self.gates.lock().unwrap().remove(id);
+        for observer in self.identity_removed.lock().unwrap().clone() {
+            observer(id);
+        }
+        let path = self.deletion_path(id);
+        if path.try_exists()? {
             fs::remove_file(&path)?;
             File::open(path.parent().unwrap())?.sync_all()?;
         }
@@ -1552,51 +1666,20 @@ impl ProjectStore {
             .join(".platform/project-state/reservations")
             .join(format!("{id}.json"))
     }
-    pub(crate) fn is_retired(&self, id: &str) -> Result<Option<Value>, ApiError> {
-        if !valid_id(id) {
-            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
-        }
-        let path = self.retirement_path(id);
-        check_no_symlinks(&path, true)?;
-        if path.is_file() {
-            let record: Value = read_json(&path)?;
-            if record["retired"] == true {
-                return Ok(Some(record));
-            }
-        }
-        Ok(None)
-    }
     fn is_active_identity(&self, id: &str) -> Result<bool, ApiError> {
         let path = self.reservation_path(id);
         check_no_symlinks(&path, true)?;
-        Ok(!path.exists() && self.is_retired(id)?.is_none())
+        Ok(!path.exists())
     }
     fn require_active_identity(&self, id: &str) -> Result<(), ApiError> {
-        let reservation = self.reservation_path(id);
-        check_no_symlinks(&reservation, true)?;
-        if reservation.exists() {
+        if !self.is_active_identity(id)? {
             return Err(ApiError::new(
                 "PROJECT_REGISTRATION_PENDING",
                 "Project registration is being committed",
             )
             .outcome("not_started"));
         }
-        if let Some(record) = self.is_retired(id)? {
-            return Err(project_removed_error(&record).outcome("not_started"));
-        }
         Ok(())
-    }
-    pub(crate) fn session_generation(&self, id: &str) -> Result<Option<String>, ApiError> {
-        if !valid_id(id) {
-            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
-        }
-        let path = self.retirement_path(id);
-        check_no_symlinks(&path, true)?;
-        if !path.exists() {
-            return Ok(None);
-        }
-        let value: Value = read_json(&path)?;
-        Ok(value["documentEpoch"].as_str().map(str::to_owned))
     }
     pub(crate) fn registered_epoch(&self, id: &str) -> Result<Option<String>, ApiError> {
         if !valid_id(id) {
@@ -1607,7 +1690,8 @@ impl ProjectStore {
             .join(".platform/project-state")
             .join(format!("{id}.json"));
         check_no_symlinks(&path, true)?;
-        if !path.is_file() || !self.is_active_identity(id)? {
+        if !path.is_file() || !self.is_active_identity(id)? || self.pending_deletion(id)?.is_some()
+        {
             return Ok(None);
         }
         let registration: Registration = read_json(&path)?;
@@ -1619,6 +1703,21 @@ impl ProjectStore {
             return Ok(None);
         }
         Ok(Some(registration.document_epoch))
+    }
+    /// Keep identity validation and a synchronous cache admission ordered with
+    /// permanent removal. The callback may acquire cache locks, but must not
+    /// re-enter registration methods or await while this lock is held.
+    pub(crate) fn with_registered_epoch<T>(
+        &self,
+        id: &str,
+        epoch: &str,
+        admit: impl FnOnce() -> Result<T, ApiError>,
+    ) -> Result<Option<T>, ApiError> {
+        let _registration = self.registration_lock.lock().unwrap();
+        if self.registered_epoch(id)?.as_deref() != Some(epoch) {
+            return Ok(None);
+        }
+        admit().map(Some)
     }
     pub(crate) fn metadata_root(
         &self,
@@ -1659,12 +1758,18 @@ impl ProjectStore {
                 .detail("conflict", record));
             }
         }
-        let root = self.project_root(id)?;
+        let root = match self.project_root(id) {
+            Ok(root) => root,
+            Err(error) if error.code == "PROJECT_NOT_REGISTERED" => {
+                bound_root(&self.workspace, id)?
+            }
+            Err(error) => return Err(error),
+        };
         let registered = self
             .workspace
             .join(".platform/project-state")
             .join(format!("{id}.json"));
-        if root.exists() || (registered.exists() && self.is_retired(id)?.is_none()) {
+        if root.exists() || registered.exists() {
             let name = read_json::<ProjectManifest>(&root.join("project.json"))
                 .map(|m| m.name)
                 .unwrap_or_else(|_| id.into());
@@ -1726,7 +1831,7 @@ impl ProjectStore {
     ) -> Result<std::collections::HashSet<String>, ApiError> {
         let mut names = std::collections::HashSet::new();
         let states = self.workspace.join(".platform/project-state");
-        for kind in ["", "reservations", "retired", "deleting"] {
+        for kind in ["", "reservations", "deleting"] {
             let directory = states.join(kind);
             check_no_symlinks(&directory, true)?;
             if !directory.try_exists()? {
@@ -1819,11 +1924,13 @@ impl ProjectStore {
                 // Reinspection or a display-name edit never changes a task's
                 // already durable destination, including after publication.
                 self.check_not_deleting(id)?;
-                return self.project_root(id);
+                let root = self.project_root(id)?;
+                self.require_new_project_location(&root)?;
+                return Ok(root);
             }
         }
         self.check_identity_locked(id, Some(task))?;
-        // A fresh same-ID import may receive a new readable directory name.
+        // Every newly allocated identity receives a fresh readable destination.
         let base = crate::project_directory_name::readable_directory_name(name, id);
         checked_directory_name(&base)?;
         let retained_names = self.retained_directory_names(None, &reservation_path)?;
@@ -1836,6 +1943,7 @@ impl ProjectStore {
             let occupied = retained_names.contains(&directory_name)
                 || bound_root(&self.workspace, &directory_name)?.try_exists()?;
             if !occupied {
+                self.require_new_project_location(&root)?;
                 crate::builds::atomic_json(
                     &reservation_path,
                     &json!({"projectId":id,"taskId":task,"directoryName":directory_name}),
@@ -1878,37 +1986,6 @@ impl ProjectStore {
         }
         Ok(())
     }
-    pub(crate) fn unregister_lifecycle(&self, id: &str, epoch: &str) -> Result<(), ApiError> {
-        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
-        let _lock = self.registration_lock.lock().unwrap();
-        if !valid_id(id) || Uuid::parse_str(epoch).is_err() {
-            return Err(ApiError::new(
-                "INVALID_PROJECT_ID",
-                "Invalid project identity",
-            ));
-        }
-        // Even damaged projects retain the retired epoch, so a later same-ID import cannot revive old documents.
-        let directory_name = self
-            .project_root(id)?
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        crate::builds::atomic_json(
-            &self.retirement_path(id),
-            &json!({"projectId":id,"documentEpoch":epoch,"retired":true,"directoryName":directory_name}),
-        )?;
-        let path = self
-            .workspace
-            .join(".platform/project-state")
-            .join(format!("{id}.json"));
-        if path.is_file() {
-            let mut registration: Registration = read_json(&path)?;
-            registration.document_epoch = epoch.into();
-            crate::builds::atomic_json(&path, &registration)?;
-        }
-        Ok(())
-    }
     pub(crate) fn register_lifecycle(
         &self,
         id: &str,
@@ -1930,7 +2007,6 @@ impl ProjectStore {
             if registration.document_epoch == epoch
                 && registration.project_root == root
                 && identity_matches(&registration.root_identity, &root)?
-                && self.is_retired(id)?.is_none()
             {
                 let matches = if registration.database_path.is_empty() {
                     allow_damaged
@@ -1970,6 +2046,7 @@ impl ProjectStore {
         allow_damaged: bool,
     ) -> Result<(), ApiError> {
         let root = self.project_root(id)?;
+        self.record_project_root_ownership(id, &root)?;
         self.write_lifecycle_registration_at(id, epoch, allow_damaged, root)
     }
     fn write_lifecycle_registration_at(
@@ -2056,10 +2133,7 @@ impl ProjectStore {
                 .join(format!("{id}.json")),
             &state,
         )?;
-        crate::builds::atomic_json(
-            &self.retirement_path(id),
-            &json!({"projectId":id,"documentEpoch":epoch,"retired":false}),
-        )
+        Ok(())
     }
     pub(crate) fn retain_migrated_diagnostic(
         &self,
@@ -2086,55 +2160,6 @@ impl ProjectStore {
         state.last_error=Some(ApiError::new("MIGRATED_PROJECT_DIAGNOSTIC","Source project was already blocked; migration preserved its files and did not declare it healthy").detail("sourceIssue",serde_json::json!(error)));
         control.set(state)
     }
-    /// A verified workspace migration also copies retired registrations. Rebase
-    /// their path without creating a project, changing epochs/file identities,
-    /// or clearing the retirement record. Only the public migration calls this.
-    pub(crate) fn rebase_retired_registration_after_migration(
-        &self,
-        id: &str,
-        source_workspace: &Path,
-    ) -> Result<(), ApiError> {
-        crate::data_restore_guard::check_development_available(&self.workspace, id)?;
-        let _lock = self.registration_lock.lock().unwrap();
-        if !valid_id(id) {
-            return Err(directory_mapping_error());
-        }
-        self.check_not_deleting(id)?;
-        let retired = self.is_retired(id)?.ok_or_else(directory_mapping_error)?;
-        if retired["projectId"] != id {
-            return Err(directory_mapping_error());
-        }
-        let path = registration_path(&self.workspace, id);
-        check_no_symlinks(&path, true)?;
-        if !path.try_exists()? {
-            return Ok(());
-        }
-        // Change only the path in the raw record, preserving even legacy
-        // identity representations and optional/unknown diagnostic fields.
-        let mut value: Value = read_json(&path)?;
-        let registration: Registration = serde_json::from_value(value.clone())?;
-        if registration.schema_version != 1
-            || registration.id != id
-            || Uuid::parse_str(&registration.document_epoch)
-                .map(|epoch| epoch.to_string() != registration.document_epoch)
-                .unwrap_or(true)
-        {
-            return Err(directory_mapping_error());
-        }
-        let directory_name = registration.directory_name.as_deref().unwrap_or(id);
-        checked_directory_name(directory_name)?;
-        let root = bound_root(&self.workspace, directory_name)?;
-        if registration.project_root == root {
-            return Ok(());
-        }
-        let source = source_workspace.join("projects").join(directory_name);
-        if registration.project_root != source {
-            return Err(directory_mapping_error());
-        }
-        value["projectRoot"] = json!(root);
-        crate::builds::atomic_json(&path, &value)
-    }
-
     pub(crate) fn rebind_migrated(&self, id: &str, epoch: &str) -> Result<(), ApiError> {
         crate::data_restore_guard::check_development_available(&self.workspace, id)?;
         let _lock = self.registration_lock.lock().unwrap();
@@ -2145,37 +2170,34 @@ impl ProjectStore {
         check_no_symlinks(&path, true)?;
         // Only the verified migration workflow may rebase a copied absolute
         // root. Normal lookup deliberately rejects an old-workspace path.
-        let mut previous = if path.try_exists()? {
-            Some(read_json::<Registration>(&path)?)
-        } else {
-            None
-        };
-        let directory_name = if let Some(state) = &previous {
-            if state.schema_version != 1 || state.id != id {
-                return Err(directory_mapping_error());
-            }
-            let name = state.directory_name.as_deref().unwrap_or(id);
-            checked_directory_name(name)?;
-            if state
-                .project_root
-                .file_name()
-                .and_then(|name| name.to_str())
-                != Some(name)
-            {
-                return Err(directory_mapping_error());
-            }
-            name.to_owned()
-        } else {
-            id.into()
-        };
-        let root = bound_root(&self.workspace, &directory_name)?;
+        if !path.try_exists()? {
+            return Err(ApiError::new(
+                "PROJECT_NOT_REGISTERED",
+                "Migration requires a current project registration",
+            ));
+        }
+        let mut previous: Registration = read_json(&path)?;
+        if previous.schema_version != 1 || previous.id != id {
+            return Err(directory_mapping_error());
+        }
+        let name = previous
+            .directory_name
+            .as_deref()
+            .ok_or_else(directory_mapping_error)?;
+        checked_directory_name(name)?;
+        if previous
+            .project_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(name)
+        {
+            return Err(directory_mapping_error());
+        }
+        let root = bound_root(&self.workspace, name)?;
         if !root.exists() {
-            if let Some(mut registration) = previous.take() {
-                registration.project_root = root;
-                registration.document_epoch = epoch.into();
-                return crate::builds::atomic_json(&path, &registration);
-            }
-            return Ok(());
+            previous.project_root = root;
+            previous.document_epoch = epoch.into();
+            return crate::builds::atomic_json(&path, &previous);
         }
         self.write_lifecycle_registration_at(id, epoch, true, root)
     }
@@ -2215,6 +2237,12 @@ enum ProjectOperation {
 pub(crate) struct ProjectTaskLease {
     active: Arc<Mutex<HashMap<String, ProjectOperation>>>,
     id: String,
+    writer_owner: Option<crate::durable_writer::WriterOwner>,
+}
+impl ProjectTaskLease {
+    pub(crate) fn writer_owner(&self) -> Option<crate::durable_writer::WriterOwner> {
+        self.writer_owner.clone()
+    }
 }
 impl Drop for ProjectTaskLease {
     fn drop(&mut self) {
@@ -2333,11 +2361,12 @@ fn check_deletion_marker(path: &Path) -> Result<(), ApiError> {
     }
     Ok(())
 }
-pub(crate) fn project_removed_error(_record: &Value) -> ApiError {
+fn removed_project_error(id: &str) -> ApiError {
     ApiError::new(
-        "PROJECT_DELETED",
-        "This project has been permanently deleted; this window can no longer save",
+        "PROJECT_REMOVED",
+        "This project was permanently removed; open another project from the platform",
     )
+    .detail("projectId", id)
 }
 pub(crate) fn check_pending_deletions(workspace: &Path) -> Result<(), ApiError> {
     let deleting = workspace.join(".platform/project-state/deleting");
@@ -3114,5 +3143,65 @@ mod tests {
                 .code,
             "UNSAFE_DATABASE_PATH"
         );
+    }
+    #[tokio::test]
+    async fn final_identity_removal_requires_joined_writers_and_clears_every_current_identity_cache(
+    ) {
+        let (temporary, store) = store();
+        let project = create(&store, "Disposable complete identity").await;
+        let retained_handle = store.project(&project.id).unwrap();
+        store.schema(&project.id, None).await.unwrap();
+        assert!(store.workers.lock().unwrap().contains_key(&project.id));
+        let marker = store
+            .begin_deletion(
+                &project.id,
+                "task_disposable_identity_delete",
+                &Uuid::new_v4().to_string(),
+                &identity(&project.project_root).unwrap(),
+            )
+            .unwrap();
+        let moved = temporary.path().join("disposable-owned-deletion-stage");
+        fs::rename(&project.project_root, &moved).unwrap();
+        assert_eq!(
+            store
+                .complete_deleted_project_identity(&marker)
+                .unwrap_err()
+                .code,
+            "PROJECT_BUSY"
+        );
+        store.close_database(&project.id).await.unwrap();
+        let active = store
+            .reserve_transient_operation(&project.id, "disposable actual writer owner")
+            .unwrap();
+        assert_eq!(
+            store
+                .complete_deleted_project_identity(&marker)
+                .unwrap_err()
+                .code,
+            "PROJECT_BUSY"
+        );
+        drop(active);
+        fs::remove_dir_all(moved).unwrap();
+        store.complete_deleted_project_identity(&marker).unwrap();
+        store.complete_deleted_project_identity(&marker).unwrap();
+        assert!(store.deleted_project_identity_absent(&project.id).unwrap());
+        assert!(store.registered_epoch(&project.id).unwrap().is_none());
+        assert!(!store.controls.lock().unwrap().contains_key(&project.id));
+        assert!(!store.gates.lock().unwrap().contains_key(&project.id));
+        assert!(!store.workers.lock().unwrap().contains_key(&project.id));
+        assert!(!store.active_tasks.lock().unwrap().contains_key(&project.id));
+        assert_eq!(retained_handle.check().unwrap_err().code, "PROJECT_REMOVED");
+        assert_eq!(
+            store.control(&project.id).err().unwrap().code,
+            "PROJECT_REMOVED"
+        );
+        for kind in ["", "reservations", "retired", "deleting"] {
+            assert!(!store
+                .workspace
+                .join(".platform/project-state")
+                .join(kind)
+                .join(format!("{}.json", project.id))
+                .exists());
+        }
     }
 }

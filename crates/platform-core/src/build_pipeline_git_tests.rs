@@ -377,18 +377,19 @@ async fn manager_shutdown_cancels_git_guard_before_waiting_for_build_runner() {
     .unwrap();
     let manager = BuildManager::new(paths, store.clone(), "http://127.0.0.1:1234".into()).unwrap();
     let task = manager.submit(&project.manifest.id).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !pid_path.exists() {
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(pid) = fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    let pid: i32 = fs::read_to_string(pid_path)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
     tokio::time::timeout(Duration::from_secs(3), manager.shutdown())
         .await
         .unwrap();

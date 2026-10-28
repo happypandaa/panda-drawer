@@ -1014,6 +1014,26 @@ async fn project_copy(
 }
 
 #[tauri::command]
+async fn project_delete_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            io_app
+                .state::<AppState>()
+                .handle
+                .project_delete_preview(&project_id)
+                .await
+        })
+        .await?
+}
+
+#[tauri::command]
 async fn project_delete(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -2045,6 +2065,8 @@ async fn task_get(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     task_id: String,
+    project_id: Option<String>,
+    task_type: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     let io_lease = state.handle.io_lifetime().admit_cleanup()?;
@@ -2052,7 +2074,19 @@ async fn task_get(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            state.handle.task(&task_id).await
+            match (project_id.as_deref(), task_type.as_deref()) {
+                (Some(project_id), Some(task_type)) => {
+                    state
+                        .handle
+                        .task_for_project(&task_id, project_id, task_type)
+                        .await
+                }
+                (None, None) => state.handle.task(&task_id).await,
+                _ => Err(ApiError::new(
+                    "INVALID_INPUT",
+                    "任务查询的项目身份和类型必须同时提供。",
+                )),
+            }
         })
         .await?
 }
@@ -2333,6 +2367,7 @@ fn main() {
             project_import,project_import_cleanup,
             project_copy,
             project_delete,
+            project_delete_preview,
             workspace_info,
             workspace_migrate,
             project_list,

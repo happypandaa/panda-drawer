@@ -69,6 +69,12 @@ struct BoundPath {
     directory: bool,
     parents: Vec<(PathBuf, PersistedIdentity)>,
 }
+struct WebOwnedFile {
+    project_id: String,
+    path: PathBuf,
+    identity: PersistedIdentity,
+    staging_path: Option<PathBuf>,
+}
 impl BoundPath {
     fn capture(path: PathBuf) -> Result<Self, ApiError> {
         let directory = ordinary(&path)?.is_dir();
@@ -120,6 +126,7 @@ pub struct LocalCleanupPlan {
     metadata: BTreeMap<PathBuf, String>,
     preserved: Vec<PathBuf>,
     project_owned_paths: BTreeSet<PathBuf>,
+    web_owned_files: Vec<WebOwnedFile>,
 }
 
 impl LocalCleanupPlan {
@@ -127,6 +134,7 @@ impl LocalCleanupPlan {
     /// project database, attachment or code file.
     pub fn prepare(paths: &RuntimePaths, runtime: &RuntimeService) -> Result<Self, ApiError> {
         crate::platform_support::require_runtime()?;
+        crate::durable_writer::require_all_clear(paths.data_root())?;
         let info = runtime.info();
         if info.data_root != paths.data_root()
             || info.workspace_root != paths.workspace_root()
@@ -143,6 +151,7 @@ impl LocalCleanupPlan {
         }
         let (metadata, preserved) = scope_metadata(paths, &workspace_roots)?;
         let project_owned_paths = project_owned_paths(paths)?;
+        let web_owned_files = web_owned_files(paths)?;
         let mut target_paths = BTreeSet::new();
         for entry in fs::read_dir(paths.data_root())? {
             let entry = entry?;
@@ -178,6 +187,9 @@ impl LocalCleanupPlan {
             (
                 target.path == paths.data_root().join("settings.json"),
                 target.path.starts_with(paths.data_root()),
+                ["web-project-ownership", "node-project-ownership"]
+                    .iter()
+                    .any(|name| target.path == paths.data_root().join(name)),
                 target.path.clone(),
             )
         });
@@ -202,6 +214,7 @@ impl LocalCleanupPlan {
             metadata,
             preserved,
             project_owned_paths,
+            web_owned_files,
         };
         plan.verify_scope()?;
         Ok(plan)
@@ -304,6 +317,20 @@ impl LocalCleanupPlan {
     /// processes/proxies and native sessions. Core checks its actual owned
     /// shutdown state, never a caller-supplied JSON report or boolean.
     pub fn execute_after_shutdown(self, runtime: &RuntimeService) -> Result<Value, ApiError> {
+        self.execute_with(runtime, crate::web_file_deletion::remove_owned_file)
+    }
+
+    fn execute_with(
+        self,
+        runtime: &RuntimeService,
+        mut remove_web_file: impl FnMut(
+            &crate::web_project_ownership::WebProjectOwnership,
+            &str,
+            &Path,
+            &PersistedIdentity,
+        ) -> Result<(), ApiError>,
+    ) -> Result<Value, ApiError> {
+        crate::durable_writer::require_all_clear(self.paths.data_root())?;
         let info = runtime.info();
         if info.instance_id != self.instance_id
             || info.data_root != self.paths.data_root()
@@ -317,12 +344,40 @@ impl LocalCleanupPlan {
         self.verify_scope()
             .map_err(|error| error.outcome("not_started"))?;
         let result = (|| -> Result<(), ApiError> {
+            let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            );
+            let mut removed_file_paths = BTreeSet::new();
+            // Keep every owner index until all externally placed material has
+            // finished. A failed capture must remain recoverable by a fresh
+            // explicit preview, even after this runtime has shut down.
+            for file in &self.web_owned_files {
+                self.verify_controls()?;
+                remove_web_file(&ownership, &file.project_id, &file.path, &file.identity)?;
+                ownership.mark_material_removed(&file.project_id, &file.path, &file.identity)?;
+                removed_file_paths.insert(file.path.clone());
+                if let Some(stage) = &file.staging_path {
+                    removed_file_paths.insert(stage.clone());
+                }
+            }
             for target in &self.targets {
                 self.verify_controls()?;
+                if removed_file_paths.contains(&target.path)
+                    && target
+                        .identity
+                        .absent_on_expected_volume(&target.path)
+                        .map_err(|error| fail(error.to_string()))?
+                {
+                    continue;
+                }
                 target.verify()?;
                 if target.directory {
                     crate::history_cleanup::remove_owned_directory(&target.path, &target.identity)?;
                 } else {
+                    if !target.path.starts_with(self.paths.data_root()) {
+                        return Err(fail("外部普通文件缺少已受理的项目文件删除归属，未删除。"));
+                    }
                     remove_bound_file(target)?;
                 }
             }
@@ -344,6 +399,28 @@ impl LocalCleanupPlan {
             .filter(|target| fs::symlink_metadata(&target.path).is_ok())
             .map(|target| target.path.clone())
             .collect::<BTreeSet<_>>();
+        if result.is_err() {
+            let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            );
+            for project_id in self
+                .web_owned_files
+                .iter()
+                .map(|file| &file.project_id)
+                .collect::<BTreeSet<_>>()
+            {
+                if let Ok(plans) = ownership.file_deletion_plans(project_id) {
+                    for plan in plans {
+                        for path in [plan.original, plan.staging_path] {
+                            if fs::symlink_metadata(&path).is_ok() {
+                                remaining.insert(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Ok(entries) = fs::read_dir(self.paths.data_root()) {
             for entry in entries.flatten() {
                 if !RETAINED.iter().any(|name| entry.file_name() == *name) {
@@ -410,6 +487,15 @@ fn scope_metadata(
     let owned_scopes = ownership.all_owned_scopes()?;
     let owned_paths = project_owned_paths(paths)?;
     files.extend(owned_scopes.into_iter().map(|(path, _)| path));
+    files.extend(
+        crate::web_project_ownership::WebProjectOwnership::new(
+            paths.data_root().into(),
+            paths.workspace_root().into(),
+        )
+        .all_owned_scopes()?
+        .into_iter()
+        .map(|(path, _)| path),
+    );
     files.extend(
         crate::node_deletion_journal::local_cleanup_owned_paths(paths.data_root())?
             .into_iter()
@@ -759,7 +845,85 @@ fn project_owned_paths(paths: &RuntimePaths) -> Result<BTreeSet<PathBuf>, ApiErr
     owned.extend(crate::node_deletion_journal::local_cleanup_owned_paths(
         paths.data_root(),
     )?);
+    owned.extend(
+        crate::web_project_ownership::WebProjectOwnership::new(
+            paths.data_root().into(),
+            paths.workspace_root().into(),
+        )
+        .all_owned_scopes()?
+        .into_iter()
+        .flat_map(|(_, paths)| paths),
+    );
     Ok(owned)
+}
+
+fn web_owned_files(paths: &RuntimePaths) -> Result<Vec<WebOwnedFile>, ApiError> {
+    let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    let mut files: BTreeMap<PathBuf, WebOwnedFile> = BTreeMap::new();
+    for (record, _) in ownership.all_owned_scopes()? {
+        let project_id = record
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or_else(changed)?
+            .to_string();
+        for plan in ownership.file_deletion_plans(&project_id)? {
+            plan.validate()?;
+            if plan.original.starts_with(paths.data_root()) {
+                continue;
+            }
+            if files.contains_key(&plan.original) {
+                return Err(changed());
+            }
+            files.insert(
+                plan.original.clone(),
+                WebOwnedFile {
+                    project_id: project_id.clone(),
+                    path: plan.original,
+                    identity: plan.expected,
+                    staging_path: Some(plan.staging_path),
+                },
+            );
+        }
+        for path in ownership.material_paths(&project_id)? {
+            if path.starts_with(paths.data_root()) {
+                continue;
+            }
+            if let Some(previous) = files.get(&path) {
+                if previous.project_id != project_id {
+                    return Err(changed());
+                }
+                continue;
+            }
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let identity = ownership
+                .material_identity(&project_id, &path)?
+                .ok_or_else(changed)?;
+            if !identity.matches_path(&path).unwrap_or(false) {
+                return Err(changed());
+            }
+            files.insert(
+                path.clone(),
+                WebOwnedFile {
+                    project_id: project_id.clone(),
+                    path,
+                    identity,
+                    staging_path: None,
+                },
+            );
+        }
+    }
+    Ok(files.into_values().collect())
 }
 fn add_preserved_unless_owned(
     preserved: &mut BTreeSet<PathBuf>,

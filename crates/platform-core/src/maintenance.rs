@@ -58,7 +58,7 @@ impl MaintenanceManager {
         let status = self
             .status(id)
             .unwrap_or(json!({"mode":"maintenance","recoveryRequired":true}));
-        json!({"mode":if status["mode"]=="ready"{json!("normal")}else{status["mode"].clone()},"busy":status["busy"],"recoveryRequired":status["recoveryRequired"],"reloadRequired":status["documentEpoch"].as_str()!=Some(epoch),"trashed":self.store.is_retired(id).ok().flatten().is_some(),"workspaceMigrating":self.store.workspace_paused()})
+        json!({"mode":if status["mode"]=="ready"{json!("normal")}else{status["mode"].clone()},"busy":status["busy"],"recoveryRequired":status["recoveryRequired"],"reloadRequired":status["documentEpoch"].as_str()!=Some(epoch),"removed":self.store.deleted_project_identity_absent(id).unwrap_or(false),"workspaceMigrating":self.store.workspace_paused()})
     }
     pub(crate) fn invalidate_storage(workspace: &Path, id: &str) -> Result<(), ApiError> {
         if !valid_id(id) {

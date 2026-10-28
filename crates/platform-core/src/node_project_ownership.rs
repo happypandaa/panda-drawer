@@ -649,7 +649,13 @@ impl NodeProjectOwnership {
                         )));
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if let Some(identity) = identity {
+                        identity
+                            .absent_on_expected_volume(&path)
+                            .map_err(|error| invalid(error.to_string()))?;
+                    }
+                }
                 Err(error) => return Err(error.into()),
             }
             paths.push(path);
@@ -665,7 +671,12 @@ impl NodeProjectOwnership {
                     if metadata.is_dir()
                         && source.identity.matches_path(&source.path).unwrap_or(false) => {}
                 Ok(_) => return Err(invalid("项目受管材料目录身份已变化。")),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    source
+                        .identity
+                        .absent_on_expected_volume(&source.path)
+                        .map_err(|error| invalid(error.to_string()))?;
+                }
                 Err(error) => return Err(error.into()),
             }
             if !paths.contains(&source.path) {
@@ -716,6 +727,52 @@ impl NodeProjectOwnership {
         }
         scopes.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(scopes)
+    }
+    /// Global tool admission uses exact owned roots, without inspecting any
+    /// project's contents or requiring unrelated materials to be healthy.
+    pub(crate) fn require_global_tool_unowned(&self, candidate: &Path) -> Result<()> {
+        fn contains(candidate: &Path, root: &Path, identity: Option<&PersistedIdentity>) -> bool {
+            candidate.starts_with(root)
+                || identity.is_some_and(|identity| {
+                    candidate
+                        .ancestors()
+                        .any(|ancestor| identity.matches_path(ancestor).unwrap_or(false))
+                })
+        }
+        check_no_symlinks(&self.root(), true)?;
+        if !self.root().try_exists()? {
+            return Ok(());
+        }
+        for entry in fs::read_dir(self.root())? {
+            let id = entry?.file_name().to_string_lossy().into_owned();
+            if id == ".pending-deletions" {
+                continue;
+            }
+            let record = self.read(&id)?;
+            for (key, identity) in &record.artifacts {
+                if contains(candidate, &self.resolve(&id, key)?, identity.as_ref()) {
+                    return Err(crate::project_tool_boundary::project_owned());
+                }
+            }
+            for source in record
+                .generated_source
+                .iter()
+                .chain(record.retained_materials.iter())
+            {
+                if contains(candidate, &source.path, Some(&source.identity)) {
+                    return Err(crate::project_tool_boundary::project_owned());
+                }
+            }
+            for restore in &record.source_restores {
+                for (name, identity) in &restore.directories {
+                    let path = restore.source_root.join(".git").join(name);
+                    if contains(candidate, &path, identity.as_ref()) {
+                        return Err(crate::project_tool_boundary::project_owned());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 fn rebind_material(
@@ -784,7 +841,14 @@ fn validate_owned_directory(path: &Path, identity: Option<&PersistedIdentity>) -
             Ok(())
         }
         Ok(_) => Err(invalid("源码恢复材料目录归属尚未核实。")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(identity) = identity {
+                identity
+                    .absent_on_expected_volume(path)
+                    .map_err(|error| invalid(error.to_string()))?;
+            }
+            Ok(())
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -889,6 +953,31 @@ mod tests {
         assert!(!ownership.has_generated_source(&id, &external).unwrap());
         assert!(ownership.record_generated_source(&id, &external).is_err());
         assert!(ownership.owned_paths(&id).is_err());
+    }
+    #[test]
+    fn missing_known_generated_material_on_another_volume_is_not_deleted() {
+        let (temporary, owner, id) = fixture();
+        let root = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("disposable-offline-source");
+        fs::create_dir(&root).unwrap();
+        owner.record_generated_source(&id, &root).unwrap();
+        fs::remove_dir(&root).unwrap();
+        owner.owned_paths(&id).unwrap();
+        owner
+            .update(&id, false, |record| {
+                let expected = &mut record.generated_source.as_mut().unwrap().identity;
+                if expected.volume_uuid.is_some() {
+                    expected.volume_uuid = Some(Uuid::new_v4().to_string());
+                } else {
+                    expected.device ^= 1;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(owner.owned_paths(&id).is_err());
     }
     fn claimed_source(ownership: &NodeProjectOwnership, id: &str, source: &Path) {
         fs::create_dir_all(source.join(".git")).unwrap();

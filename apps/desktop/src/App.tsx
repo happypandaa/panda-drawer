@@ -79,7 +79,7 @@ function App() {
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
   const nodeRequestToken = useRef(0);
   const nodeListRevision = useRef(0);
-  const deletedNodeIds = useRef(new Set<string>());
+  const deletedProjectIds = useRef(new Set<string>());
   const nodeInteraction = useRef({ pending: false, modal: false });
   nodeInteraction.current = { pending: nodeDraft.pending, modal: nodeModalOpen };
   const [loading, setLoading] = useState(true);
@@ -157,13 +157,13 @@ function App() {
     setPage(value);
   }
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
-    if (deletedNodeIds.current.has(app.id)) return;
+    if (deletedProjectIds.current.has(app.id)) return;
     nodeListRevision.current++;
     setNodeApps((current) => current.some((value) => value.id === app.id) ? current.map((value) => value.id === app.id ? app : value) : [...current, app]);
   }, []);
   const acceptNodeDeletion = useCallback((appId: string, result: NodeAppDeleteResult) => {
     nodeListRevision.current++;
-    deletedNodeIds.current.add(appId);
+    deletedProjectIds.current.add(appId);
     setNodeApps((current) => current.filter((value) => value.id !== appId));
     setNodeRequest(null);
     const origin = capture();
@@ -182,7 +182,7 @@ function App() {
     setNodeDeletionTasks(previous => {
       const tasks = new Map(previous.map(task => [task.taskId, task]));
       for (const task of values) {
-        if (deletedNodeIds.current.has(task.appId) || task.phase === 'deleted') continue;
+        if (deletedProjectIds.current.has(task.appId) || task.phase === 'deleted') continue;
         const current = tasks.get(task.taskId);
         if (!current || task.appId === current.appId && task.targetRevision === current.targetRevision && task.journalRevision >= current.journalRevision
           && (task.journalRevision > current.journalRevision || task.phase === current.phase) && (!current.renamedAny || task.renamedAny)
@@ -192,7 +192,7 @@ function App() {
     });
   }, []);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'configure' | 'details' | 'delete') {
-    if (deletedNodeIds.current.has(app.id) || nodeDraft.pending || nodeModalOpen || deleteProject) return;
+    if (deletedProjectIds.current.has(app.id) || nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
   const clearHandoff = useCallback(() => {
@@ -223,7 +223,7 @@ function App() {
   const workspaceBusy = migrating || paused || cleanupBusy || localDataLocked;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
-    if (task.projectId && deletedNodeIds.current.has(task.projectId)) return;
+    if (task.projectId && deletedProjectIds.current.has(task.projectId)) return;
     setLifecycleTasks((current) => mergeLifecycleTask(current, task));
   }, []);
 
@@ -241,7 +241,7 @@ function App() {
       // concrete startup error, rather than a missing native command state.
       let runtime = await invoke<BootstrapInfo>('bootstrap_info');
       if (localDataLock.current || current !== requestId.current) return;
-      const [list, currentWorkspace, nodeResult] = await Promise.all([
+      const [rawList, currentWorkspace, nodeResult] = await Promise.all([
         invoke<ProjectInfo[]>('project_list'), invoke<WorkspaceInfo>('workspace_info'),
         invoke<NodeAppDetail[]>('node_app_list').then((value) => ({ value, error: '' })).catch(() => ({ value: null, error: '带本地服务的项目暂时无法读取，请刷新后核对。已有项目保留。' })),
       ]);
@@ -253,9 +253,10 @@ function App() {
         clearHandoff();
         setBuildResults({});
         setNodeDeletionTasks([]);
-        deletedNodeIds.current.clear();
+        deletedProjectIds.current.clear();
         showError(origin, '工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
+      const list = rawList.filter(project => !deletedProjectIds.current.has(project.id));
       const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
       if (selectedOverviewId.current && (!selectedProject || selectedProject.projectRoot !== selectedOverviewRoot.current)) clearHandoff();
       selectedOverviewRoot.current = selectedProject?.projectRoot ?? null;
@@ -286,7 +287,7 @@ function App() {
       if (current !== requestId.current) return;
       setInfo(runtime);
       setProjects(list);
-      if (nodeResult.value) setNodeApps(nodeResult.value);
+      if (nodeResult.value) setNodeApps(nodeResult.value.filter(app => !deletedProjectIds.current.has(app.id)));
       nodeListRevision.current++;
       if (nodeResult.error) showError(origin, nodeResult.error, 'node-list', { backgroundKey: 'node-list' });
       else recover('node-list');
@@ -443,7 +444,7 @@ function App() {
       void Promise.all(pending.map(async (previous) => {
         const origin = capture();
         try {
-          const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
+          const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId, ...(previous.type === 'delete' && previous.projectId ? { projectId: previous.projectId, taskType: 'delete' } : {}) });
           if (cancelled || !previous.projectId || scopes[previous.projectId] !== projectScopes.current[previous.projectId]) return;
           if (['build', 'storageScan'].includes(previous.type) && dataRecoveryGates.current[previous.projectId]) return;
           if (previous.type === 'build' && revisions[previous.projectId] !== buildRevisions.current[previous.projectId]) return;
@@ -481,7 +482,7 @@ function App() {
       void Promise.all(pending.map(async (previous) => {
         const origin = capture();
         try {
-          const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId });
+          const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId, ...(previous.type === 'delete' && previous.projectId ? { projectId: previous.projectId, taskType: 'delete' } : {}) });
           if (cancelled) return;
           recover(`lifecycle:${previous.taskId}`);
           acceptLifecycleTask(task);
@@ -559,6 +560,7 @@ function App() {
   }
 
   function acceptTask(task: TaskRecord, deletionTarget?: ProjectInfo) {
+    if (task.projectId && deletedProjectIds.current.has(task.projectId)) return;
     if (!task.projectId) { acceptLifecycleTask(task); return; }
     if (task.type === 'delete') {
       const target = deletionTarget ?? projects.find(project => project.id === task.projectId);
@@ -574,14 +576,31 @@ function App() {
     if (task?.taskId !== requestedDelete.taskId || task.projectId !== requestedDelete.projectId || task.type !== 'delete' || !task.final) return;
     if (task.result?.operationOutcome === 'deleted' && requestedDelete.instanceId === info?.instanceId) {
       const matchesTarget = (project: ProjectInfo) => project.id === requestedDelete.projectId && project.projectRoot === requestedDelete.projectRoot && project.documentEpoch === requestedDelete.documentEpoch;
+      const deletedId = requestedDelete.projectId;
+      const replacement = projects.some(project => project.id === deletedId && !matchesTarget(project));
       setProjects((current) => current.filter((project) => !matchesTarget(project)));
+      if (!replacement) {
+        deletedProjectIds.current.add(deletedId);
+        setTasks(current => Object.fromEntries(Object.entries(current).filter(([id, task]) => id !== deletedId && task.projectId !== deletedId)));
+        setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => task.projectId !== deletedId)));
+        setBuildResults(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== deletedId)));
+        setMaintenance(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== deletedId)));
+        setBuilding(current => current.filter(id => id !== deletedId));
+        buildPending.current.delete(deletedId);
+        delete buildRevisions.current[deletedId];
+        delete projectScopes.current[deletedId];
+        delete dataRecoveryGates.current[deletedId];
+      } else {
+        setTasks(current => Object.fromEntries(Object.entries(current).filter(([, value]) => value.taskId !== task.taskId)));
+        setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== task.taskId)));
+      }
       void refresh();
       if (isCurrent(requestedDelete.origin)) {
         const matchesDialog = Boolean(deleteProject && matchesTarget(projects.find(project => project.id === deleteProject.id) ?? deleteProject));
         const matchesOverview = Boolean(selectedOverviewId.current === requestedDelete.projectId && overview && matchesTarget(projects.find(project => project.id === overview.project.id) ?? overview.project));
         if (matchesDialog) setDeleteProject(null);
         if (matchesOverview) dismissOverview();
-        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，本次删除不可撤销。平台未为本次删除保存可恢复副本；操作记录和外部导出文件另行保留。', 'main', `${page}:page`);
+        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，其平台管理的源码、数据、构建、恢复和任务材料也已清除，本次删除不可撤销。', 'main', `${page}:page`);
       }
     }
     setRequestedDelete(null);
@@ -688,7 +707,7 @@ function App() {
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
             {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => { setSourcesMounted(true); setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
-      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (task.projectId && deletedNodeIds.current.has(task.projectId)) return; sourceTaskIds.current.add(task.taskId); if (task.projectId) sourceTaskOwners.current.set(task.taskId, task.projectId); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
+      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (task.projectId && deletedProjectIds.current.has(task.projectId)) return; sourceTaskIds.current.add(task.taskId); if (task.projectId) sourceTaskOwners.current.set(task.taskId, task.projectId); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>

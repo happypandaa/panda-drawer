@@ -858,6 +858,18 @@ impl NodeApps {
         if self.inner.lock().await.running.contains_key(&id) {
             return Err(fail("应用仍有资源未停止，未移动删除目录。"));
         }
+        let owner_path = self.project_ownership().directory(&id)?;
+        match fs::symlink_metadata(&owner_path) {
+            Ok(_) => {
+                ordinary_path(&owner_path, true)?;
+                let owner = crate::durable_writer::WriterOwner::node(&self.data_root, &id)?;
+                crate::durable_writer::require_owner_clear(&owner)?;
+            }
+            // A resumed journal may already own the staged ledger. Never
+            // recreate its original namespace while completing deletion.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
         let apps = self.clone();
         let task = task.clone();
         tokio::task::spawn_blocking(move || apps.finish_deletion_files(&task))

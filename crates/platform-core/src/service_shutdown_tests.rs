@@ -171,6 +171,53 @@ async fn owned_process_registry_and_pending_owner_survive_real_workspace_migrati
         .unwrap()
         .join("disposable-owned-process-selected-workspace");
     std::fs::create_dir(&destination).unwrap();
+    let first = submit_migration(
+        service.shared.clone(),
+        service.shared.snapshot(),
+        crate::workspace::MigrationInput {
+            destination_path: destination.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.shared.migration_active.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        service.info().instance_id,
+        instance,
+        "pending writer prevents switching the workspace"
+    );
+    let blocked = crate::workspace::task(&paths, &first.task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(blocked.status, crate::TaskStatus::Failed);
+    assert!(blocked.error.unwrap().message.contains("写入进程"));
+    assert!(
+        std::fs::read_dir(&destination).unwrap().next().is_none(),
+        "no destination copy starts before real writer closure"
+    );
+    assert_eq!(service.shared.processes.snapshot()[0].id, process_id);
+    assert!(service.store().processes().shares_registry(&registry));
+    assert_eq!(
+        service.shared.processes.snapshot()[0].phase,
+        crate::owned_process::ProcessPhase::CleanupPending
+    );
+    assert!(!registry.snapshot()[0].resource_closed());
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while registry.snapshot()[0].phase != crate::owned_process::ProcessPhase::Closed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    crate::durable_writer::require_all_clear(paths.data_root()).unwrap();
+    // Only an explicit retry after the actual group/readers finish may migrate.
     submit_migration(
         service.shared.clone(),
         service.shared.snapshot(),
@@ -191,20 +238,6 @@ async fn owned_process_registry_and_pending_owner_survive_real_workspace_migrati
     .unwrap();
     assert_eq!(service.shared.processes.snapshot()[0].id, process_id);
     assert!(service.store().processes().shares_registry(&registry));
-    assert_eq!(
-        service.shared.processes.snapshot()[0].phase,
-        crate::owned_process::ProcessPhase::CleanupPending
-    );
-    let failed = service.quiesce().await;
-    assert!(!failed.resource_closed);
-    release.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while registry.snapshot()[0].phase != crate::owned_process::ProcessPhase::Closed {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
     assert!(service.quiesce().await.is_complete());
     service.shutdown().await.unwrap();
 }
@@ -716,7 +749,11 @@ async fn import_inspection_shutdown_case(drop_request: bool) {
     let (_temporary, paths, service, _client) = super::super::tests::start().await;
     let project = super::super::tests::create(&service, "Disposable import shutdown").await;
     let lifecycle = service.shared.snapshot().lifecycle.clone();
-    let archive = paths.data_root().join("artificial-shutdown-import.zip");
+    let archive = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("artificial-shutdown-import.zip");
     let export = lifecycle
         .submit_project(&project.id, "export", json!({"destinationPath":archive}))
         .await

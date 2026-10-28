@@ -253,6 +253,11 @@ pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Valu
         clean_absolute(destination)?;
         check_no_symlinks(destination, false)?;
         let target = destination.canonicalize()?;
+        crate::node_apps::development::require_new_web_project_location(
+            paths.data_root(),
+            &target.join("projects"),
+        )
+        .map_err(anyhow::Error::new)?;
         let source = paths.workspace_root().canonicalize()?;
         if target == source || target.starts_with(&source) || source.starts_with(&target) {
             bail!("Target must be separate from the source, its parents and its children")
@@ -515,6 +520,7 @@ pub(crate) fn save_journal(paths: &RuntimePaths, j: &MigrationJournal) -> Result
     builds::atomic_json(&journal_path(paths.data_root(), &j.task_id), j)
 }
 pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
+    crate::durable_writer::require_all_clear(paths.data_root())?;
     crate::node_apps::development::require_source_restores_clear_for_migration(
         paths.data_root(),
         paths.workspace_root(),
@@ -588,7 +594,7 @@ pub(crate) fn copy_and_commit(
         }
         // Epochs are journaled before settings commit, then applied idempotently.
         for (id, path) in crate::projects::enumerate_project_roots(&j.source_path)? {
-            if path.is_dir() && store.is_retired(&id)?.is_none() {
+            if path.is_dir() {
                 j.epochs.insert(id, Uuid::new_v4().to_string());
             }
         }
@@ -596,7 +602,7 @@ pub(crate) fn copy_and_commit(
             let p = entry?.path();
             if p.extension().is_some_and(|e| e == "json") {
                 if let Some(id) = p.file_stem().and_then(|s| s.to_str()) {
-                    if valid_id(id) && store.is_retired(id)?.is_none() {
+                    if valid_id(id) {
                         j.epochs
                             .entry(id.into())
                             .or_insert_with(|| Uuid::new_v4().to_string());
@@ -679,25 +685,6 @@ pub(crate) fn initialize_selected(
             store.retain_migrated_diagnostic(id, error.clone())?;
         }
     }
-    // Retired registrations remain restoration/ownership evidence. Rebase only
-    // their copied absolute root after this explicit migration, without giving
-    // them a new epoch, database identity or active status.
-    for entry in fs::read_dir(paths.workspace_root().join(".platform/project-state"))? {
-        let path = entry?.path();
-        if path.extension().is_none_or(|extension| extension != "json") {
-            continue;
-        }
-        let Some(id) = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .filter(|id| valid_id(id))
-        else {
-            continue;
-        };
-        if store.is_retired(id)?.is_some() {
-            store.rebase_retired_registration_after_migration(id, &j.source_path)?;
-        }
-    }
     j.epochs_applied = true;
     crate::node_apps::development::rebind_published_after_migration(
         paths.data_root(),
@@ -705,6 +692,11 @@ pub(crate) fn initialize_selected(
         &j.destination_path,
     )?;
     crate::node_project_ownership::NodeProjectOwnership::rebind_after_migration(
+        paths.data_root(),
+        &j.source_path,
+        &j.destination_path,
+    )?;
+    crate::web_project_ownership::WebProjectOwnership::rebind_after_migration(
         paths.data_root(),
         &j.source_path,
         &j.destination_path,

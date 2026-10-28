@@ -235,6 +235,12 @@ mod macos {
                     continue;
                 }
                 canonical_uuid(&name)?;
+                // Current terminal purge unlinks task.json before rmdir. Its
+                // empty, private UUID container is no remaining delete plan.
+                if empty_published_task(&entry.path())? {
+                    remove_empty_published_task(&entry.path())?;
+                    continue;
+                }
                 result.push(Self::load(data_root, &name)?);
             }
             result.sort_by(|a, b| a.task_id().cmp(b.task_id()));
@@ -319,6 +325,9 @@ mod macos {
                     {
                         return Err(error("已受理删除目录被替换，未使用新的目录身份。"));
                     }
+                    if identity.is_none() {
+                        absent_with_identity(&original, Some(previous))?;
+                    }
                 }
                 let parent_identity = optional_identity(original.parent().unwrap())?;
                 if let Some(previous) = self
@@ -333,6 +342,9 @@ mod macos {
                         .is_some_and(|current| !previous.matches_captured(current))
                     {
                         return Err(error("已受理删除目标的父目录身份变化。"));
+                    }
+                    if parent_identity.is_none() {
+                        absent_with_identity(original.parent().unwrap(), Some(previous))?;
                     }
                 }
                 let name = format!("target-{index}");
@@ -417,7 +429,7 @@ mod macos {
             for index in 0..self.record.targets.len() {
                 let target = &self.record.targets[index];
                 if target.state == TargetState::Missing {
-                    if !absent(&target.original)? {
+                    if !absent_with_identity(&target.original, target.parent_identity.as_ref())? {
                         return Err(error(format!(
                             "确认时不存在的目录已经出现，未扩大删除范围：{}",
                             target.original.display()
@@ -428,12 +440,18 @@ mod macos {
                 if target.state == TargetState::Planned {
                     continue;
                 }
-                if target.state == TargetState::Removed && absent(&target.staging_directory)? {
+                if target.state == TargetState::Removed
+                    && absent_with_identity(
+                        &target.staging_directory,
+                        target.staging_identity.as_ref(),
+                    )?
+                {
                     // Final cleanup may remove the now-empty private staging
                     // directory before the terminal journal write commits.
-                    if !absent(&target.original)? {
+                    if !absent_with_identity(&target.original, target.identity.as_ref())? {
                         return Err(error("已删除目标位置重新出现目录，未报告完成。"));
                     }
+                    absent_with_identity(&target.staged, target.identity.as_ref())?;
                     continue;
                 }
                 self.verify_staging_parent(index)?;
@@ -449,6 +467,12 @@ mod macos {
                 let staged_matches = staged
                     .as_ref()
                     .is_some_and(|current| expected.matches_captured(current));
+                if source.is_none() {
+                    absent_with_identity(&target.original, Some(expected))?;
+                }
+                if staged.is_none() {
+                    absent_with_identity(&target.staged, Some(expected))?;
+                }
                 match target.state {
                     TargetState::RenameIntent if source_matches && staged.is_none() => {
                         self.record.targets[index].state = TargetState::Planned;
@@ -666,7 +690,10 @@ mod macos {
             if !self.is_terminal() {
                 return Err(error("删除尚未结束，不能移除恢复任务。"));
             }
-            if absent(&self.directory)? {
+            if absent_with_identity(
+                &self.directory,
+                Some(&self.record.journal_directory_identity),
+            )? {
                 directory_file(&self.data_root.join("node-deletion-tasks"))?.sync_all()?;
                 return Ok(());
             }
@@ -833,7 +860,7 @@ mod macos {
                     continue;
                 };
                 if !removed.insert(target.staging_directory.clone())
-                    || absent(&target.staging_directory)?
+                    || absent_with_identity(&target.staging_directory, Some(expected))?
                 {
                     continue;
                 }
@@ -873,13 +900,15 @@ mod macos {
                     continue;
                 }
                 let path = target.staging_directory.parent().unwrap();
-                if !parents.insert(path.to_path_buf()) || absent(path)? {
-                    continue;
-                }
                 let expected = target
                     .staging_parent_identity
                     .as_ref()
                     .ok_or_else(|| error("待清理容器归属缺失。"))?;
+                if !parents.insert(path.to_path_buf())
+                    || absent_with_identity(path, Some(expected))?
+                {
+                    continue;
+                }
                 if !expected.matches_path(path).map_err(fs_error)? {
                     return Err(error("待清理容器被替换，未删除其他目录。"));
                 }
@@ -1048,13 +1077,21 @@ mod macos {
                 paths.insert(entry.path());
                 continue;
             }
+            canonical_uuid(&name)?;
+            if empty_published_task(&entry.path())? {
+                paths.insert(entry.path());
+                continue;
+            }
             let journal = NodeDeletionJournal::load(data_root, &name)?;
             paths.insert(journal.directory.clone());
             paths.insert(journal.directory.join(RECORD_NAME));
             let mut parents = std::collections::BTreeSet::new();
             for target in &journal.record.targets {
                 for path in [&target.original, &target.staged] {
-                    if absent(path)? {
+                    if absent_with_identity(
+                        path,
+                        target.identity.as_ref().or(target.parent_identity.as_ref()),
+                    )? {
                         continue;
                     }
                     let expected = target
@@ -1067,7 +1104,7 @@ mod macos {
                     paths.insert(path.clone());
                 }
                 if let Some(expected) = &target.staging_identity {
-                    if !absent(&target.staging_directory)? {
+                    if !absent_with_identity(&target.staging_directory, Some(expected))? {
                         if !expected
                             .matches_path(&target.staging_directory)
                             .map_err(fs_error)?
@@ -1092,13 +1129,15 @@ mod macos {
                     continue;
                 }
                 let parent = target.staging_directory.parent().unwrap();
-                if !parents.insert(parent.to_path_buf()) || absent(parent)? {
-                    continue;
-                }
                 let expected = target
                     .staging_parent_identity
                     .as_ref()
                     .ok_or_else(|| error("删除任务暂存容器归属缺失。"))?;
+                if !parents.insert(parent.to_path_buf())
+                    || absent_with_identity(parent, Some(expected))?
+                {
+                    continue;
+                }
                 if !expected.matches_path(parent).map_err(fs_error)? {
                     return Err(error("删除任务暂存容器身份变化。"));
                 }
@@ -1147,6 +1186,26 @@ mod macos {
             "publicationCause",
             serde_json::to_value(cause).unwrap_or(Value::Null),
         )
+    }
+    fn empty_published_task(directory: &Path) -> Result<bool> {
+        check_private_directory(directory)?;
+        Ok(fs::read_dir(directory)?.next().is_none())
+    }
+    fn remove_empty_published_task(directory: &Path) -> Result<()> {
+        let identity = PersistedIdentity::capture(directory).map_err(fs_error)?;
+        let opened = directory_file(directory)?;
+        if !identity.matches_captured(&PersistedIdentity::from_file(&opened).map_err(fs_error)?)
+            || !empty_published_task(directory)?
+        {
+            return Err(error("终态任务容器已变化，未清理其他材料。"));
+        }
+        let parent = directory_file(directory.parent().unwrap())?;
+        let name = c_name(directory)?;
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        parent.sync_all()?;
+        Ok(())
     }
     struct UnpublishedTask {
         directory: PathBuf,
@@ -1361,6 +1420,12 @@ mod macos {
             return Err(error("删除路径不是预期的普通对象。"));
         }
         Ok(())
+    }
+    fn absent_with_identity(path: &Path, expected: Option<&PersistedIdentity>) -> Result<bool> {
+        match expected {
+            Some(expected) => expected.absent_on_expected_volume(path).map_err(fs_error),
+            None => absent(path),
+        }
     }
     fn absent(path: &Path) -> Result<bool> {
         normalized(path)?;
