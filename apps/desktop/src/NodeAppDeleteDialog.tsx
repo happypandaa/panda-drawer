@@ -3,17 +3,9 @@ import { TriangleAlert, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { DeleteProgress } from './DeleteProgress';
 import { Modal } from './Modal';
-import type { NodeAppDeletePreview, NodeAppDeleteResult } from './node-app-types';
+import type { NodeAppDeletePreview, NodeAppDeleteResult, NodeDeletionTaskSnapshot } from './node-app-types';
+import { nodeDeletionActive, nodeDeletionLabel, validNodeDeletionTask } from './node-deletion-task-state';
 import { messageFrom } from './ui-utils';
-
-type DeleteStatus = { active: boolean; phase: 'waiting' | 'stopping' | 'deleting' | null; waitingFor: string[] };
-
-function progressDetail(value: DeleteStatus): string {
-  if (!value || value.active !== true || !['waiting', 'stopping', 'deleting'].includes(value.phase ?? '')
-    || !Array.isArray(value.waitingFor) || !value.waitingFor.every(name => typeof name === 'string' && name.trim())) return '';
-  if (value.phase === 'waiting') return value.waitingFor.length ? `等待${[...new Set(value.waitingFor)].join('、')}完成` : '等待已有操作完成';
-  return value.phase === 'stopping' ? '正在关闭窗口并停止应用…' : '正在删除文件…';
-}
 
 function validPreview(value: NodeAppDeletePreview, appId: string): boolean {
   return Boolean(value && value.appId === appId && typeof value.name === 'string' && value.name
@@ -47,115 +39,147 @@ function PathGroups({ paths, base }: { paths: string[]; base: string }) {
   </li>)}</ul>;
 }
 
-export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendingChange, onDeleted }: {
+export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onClose, onPendingChange, onDeleted, onTaskChanged, onAbandoned }: {
   app: { id: string; name: string };
   enabled: boolean;
   instanceId?: string;
+  initialTask?: NodeDeletionTaskSnapshot;
   onClose: () => void;
   onPendingChange: (pending: boolean) => void;
   onDeleted: (appId: string, result: NodeAppDeleteResult) => void;
+  onTaskChanged?: (task: NodeDeletionTaskSnapshot) => void;
+  onAbandoned?: (task: NodeDeletionTaskSnapshot) => void;
 }) {
   const [preview, setPreview] = useState<NodeAppDeletePreview | null>(null);
+  const [task, setTask] = useState<NodeDeletionTaskSnapshot | null>(null);
   const [verified, setVerified] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState('');
+  const [observationError, setObservationError] = useState('');
   const [errorTitle, setErrorTitle] = useState('无法核对删除范围');
-  const [pending, setPending] = useState<'preview' | 'delete' | null>(null);
-  const [stage, setStage] = useState('');
+  const [request, setRequest] = useState<'preview' | 'submit' | 'retry' | 'abandon' | null>(null);
   const alive = useRef(true);
-  const operation = useRef<'preview' | 'delete' | null>(null);
+  const operation = useRef<typeof request>(null);
+  const taskRef = useRef<NodeDeletionTaskSnapshot | null>(null);
   const sequence = useRef(0);
+  const delivered = useRef(new Set<string>());
   const errorPanel = useRef<HTMLDivElement>(null);
+  const refreshStatus = useRef<(() => void) | null>(null);
   const approval = useRef<{ appId: string; instanceId?: string; revision: string; sequence: number } | null>(null);
   const context = useRef({ appId: app.id, instanceId, enabled }); context.current = { appId: app.id, instanceId, enabled };
-  const callbacks = useRef({ onClose, onPendingChange, onDeleted }); callbacks.current = { onClose, onPendingChange, onDeleted };
-  const blocked = !enabled || pending !== null;
+  const callbacks = useRef({ onClose, onPendingChange, onDeleted, onTaskChanged, onAbandoned }); callbacks.current = { onClose, onPendingChange, onDeleted, onTaskChanged, onAbandoned };
+  const active = Boolean(task && nodeDeletionActive(task));
+  const busy = active || Boolean(request && request !== 'preview');
+  const blocked = !enabled || request !== null || active;
+  const pending = request === 'preview' ? 'preview' : busy ? 'delete' : null;
 
+  function isCurrent(origin: typeof context.current, generation: number) {
+    return alive.current && sequence.current === generation && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
+  }
+  function acceptTask(value: NodeDeletionTaskSnapshot, origin: typeof context.current, generation: number) {
+    if (!isCurrent(origin, generation)) return;
+    if (!validNodeDeletionTask(value, origin.appId)) throw new Error('删除结果尚不能确认。请保留当前记录并重新核对，不要重复提交。');
+    const previous = taskRef.current;
+    if (previous && (value.taskId !== previous.taskId || value.targetRevision !== previous.targetRevision || value.ownership !== previous.ownership)) throw new Error('删除任务身份已变化，请重新读取原任务。');
+    if (previous && value.journalRevision < previous.journalRevision) return;
+    if (previous && (previous.renamedAny && !value.renamedAny || value.journalRevision === previous.journalRevision && value.phase !== previous.phase)) throw new Error('删除任务状态无法核实，请刷新原任务。');
+    if (!previous && approval.current && (value.targetRevision !== approval.current.revision || value.ownership !== preview?.ownership)) throw new Error('删除任务与已确认范围不符，请查看原任务。');
+    if (!previous || value.journalRevision > previous.journalRevision) setError('');
+    taskRef.current = value; setTask(value); setVerified(false); setAcknowledged(false); setObservationError('');
+    callbacks.current.onTaskChanged?.(value);
+    const terminal = `${value.taskId}:${value.phase}`;
+    if (value.phase === 'deleted' && !delivered.current.has(terminal)) {
+      delivered.current.add(terminal); callbacks.current.onDeleted(value.appId, value.result!);
+    } else if (value.phase === 'abandoned' && !delivered.current.has(terminal)) {
+      delivered.current.add(terminal); callbacks.current.onAbandoned?.(value);
+    }
+  }
   function close() {
-    if (operation.current === 'delete') return;
+    if (busy || operation.current && operation.current !== 'preview') return;
     sequence.current++; approval.current = null; operation.current = null;
-    callbacks.current.onPendingChange(false);
-    callbacks.current.onClose();
+    callbacks.current.onPendingChange(false); callbacks.current.onClose();
   }
   async function readPreview() {
-    if (!context.current.enabled || operation.current) return;
-    operation.current = 'preview'; setPending('preview'); callbacks.current.onPendingChange(true);
+    if (!context.current.enabled || operation.current || taskRef.current) return;
+    operation.current = 'preview'; setRequest('preview');
     approval.current = null; setVerified(false); setAcknowledged(false); setError(''); setErrorTitle('无法核对删除范围');
-    const revision = ++sequence.current; const origin = context.current;
-    const current = () => alive.current && sequence.current === revision && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
+    const generation = ++sequence.current; const origin = context.current;
     try {
       const value = await invoke<NodeAppDeletePreview>('node_app_delete_preview', { appId: origin.appId });
-      if (!current() || !context.current.enabled) return;
+      if (!isCurrent(origin, generation) || !context.current.enabled) return;
       if (!validPreview(value, origin.appId)) throw new Error('删除范围不完整或项目身份不符，请重新核对。');
       setPreview(value);
       if (value.blocker) { setErrorTitle('暂时无法删除'); setError(messageFrom(value.blocker)); return; }
-      approval.current = { appId: origin.appId, instanceId: origin.instanceId, revision: value.expectedRevision, sequence: revision };
+      approval.current = { appId: origin.appId, instanceId: origin.instanceId, revision: value.expectedRevision, sequence: generation };
       setVerified(true);
-    } catch (cause) { if (current() && context.current.enabled) setError(messageFrom(cause)); }
-    finally {
-      if (current()) { operation.current = null; setPending(null); callbacks.current.onPendingChange(false); }
-    }
+    } catch (cause) { if (isCurrent(origin, generation) && context.current.enabled) setError(messageFrom(cause)); }
+    finally { if (isCurrent(origin, generation)) { operation.current = null; setRequest(null); } }
   }
   async function deleteApp() {
-    const approvedContext = approval.current;
-    if (blocked || operation.current || !preview || !verified || !acknowledged || preview.appId !== context.current.appId
-      || !approvedContext || approvedContext.appId !== context.current.appId || approvedContext.instanceId !== context.current.instanceId
-      || approvedContext.revision !== preview.expectedRevision || approvedContext.sequence !== sequence.current) return;
-    const approved = preview; const origin = context.current; const revision = sequence.current;
-    const current = () => alive.current && sequence.current === revision && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
-    operation.current = 'delete'; setPending('delete'); setStage(''); callbacks.current.onPendingChange(true); setError(''); setErrorTitle('删除未完成');
-    try {
-      const result = await invoke<NodeAppDeleteResult>('node_app_delete', { appId: approved.appId, input: { expectedRevision: approved.expectedRevision } });
-      if (!current()) return;
-      if (!result || result.appId !== approved.appId || result.operationOutcome !== 'deleted' || result.ownership !== approved.ownership || result.sourcePreserved !== true || result.evidenceRetained !== true) throw new Error('删除结果尚不能确认。请保留当前记录并重新核对，不要重复提交。');
-      approval.current = null; setVerified(false); setAcknowledged(false);
-      callbacks.current.onDeleted(approved.appId, result);
-    } catch (cause) {
-      if (current()) { approval.current = null; setError(messageFrom(cause)); setVerified(false); setAcknowledged(false); }
-    } finally {
-      if (current()) { operation.current = null; setPending(null); callbacks.current.onPendingChange(false); }
-    }
+    const approved = approval.current;
+    if (blocked || operation.current || !preview || !verified || !acknowledged || !approved || approved.appId !== context.current.appId
+      || approved.instanceId !== context.current.instanceId || approved.revision !== preview.expectedRevision || approved.sequence !== sequence.current) return;
+    const origin = context.current; const generation = sequence.current;
+    operation.current = 'submit'; setRequest('submit'); setError(''); setErrorTitle('删除未完成');
+    try { acceptTask(await invoke<NodeDeletionTaskSnapshot>('node_app_delete_submit', { appId: approved.appId, input: { expectedRevision: approved.revision } }), origin, generation); }
+    catch (cause) { if (isCurrent(origin, generation)) { setError(messageFrom(cause)); setVerified(false); setAcknowledged(false); approval.current = null; } }
+    finally { if (isCurrent(origin, generation)) { operation.current = null; setRequest(null); } }
+  }
+  async function actOnTask(action: 'retry' | 'abandon') {
+    const current = taskRef.current;
+    if (!enabled || operation.current || !current || action === 'retry' && (!current.canRetry || nodeDeletionActive(current)) || action === 'abandon' && (!current.canAbandon || current.renamedAny)) return;
+    const origin = context.current; const generation = sequence.current;
+    operation.current = action; setRequest(action); setError(''); setErrorTitle(action === 'abandon' || current.abandonRequested ? '放弃删除未完成' : '删除未完成');
+    try { acceptTask(await invoke<NodeDeletionTaskSnapshot>(`node_app_delete_${action}`, { taskId: current.taskId, appId: current.appId, observedRevision: current.journalRevision }), origin, generation); }
+    catch (cause) { if (isCurrent(origin, generation)) setError(messageFrom(cause)); }
+    finally { if (isCurrent(origin, generation)) { operation.current = null; setRequest(null); } }
   }
 
   useEffect(() => {
     alive.current = true;
-    void readPreview();
+    if (initialTask) {
+      try { acceptTask(initialTask, context.current, sequence.current); }
+      catch (cause) { setError(messageFrom(cause)); }
+    } else void readPreview();
     return () => { alive.current = false; sequence.current++; approval.current = null; operation.current = null; callbacks.current.onPendingChange(false); };
   }, []);
+  useEffect(() => { callbacks.current.onPendingChange(busy || request === 'preview'); }, [busy, request]);
   useEffect(() => {
-    if (!enabled && operation.current !== 'delete') {
-      sequence.current++; approval.current = null; operation.current = null; setPending(null); callbacks.current.onPendingChange(false); callbacks.current.onClose();
+    if (!enabled && !busy) {
+      sequence.current++; approval.current = null; operation.current = null; setRequest(null); callbacks.current.onPendingChange(false); callbacks.current.onClose();
     }
-  }, [enabled]);
+  }, [enabled, busy]);
   useEffect(() => {
-    const origin = approval.current;
-    if (pending !== 'delete' || !origin || origin.appId !== app.id || origin.instanceId !== instanceId) { setStage(''); return; }
+    const observed = taskRef.current;
+    if (!observed || ['deleted', 'abandoned'].includes(observed.phase)) return;
     let cancelled = false; let reading = false;
-    const current = () => !cancelled && alive.current && operation.current === 'delete' && sequence.current === origin.sequence
-      && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
+    const origin = context.current; const generation = sequence.current;
     const observe = async () => {
-      if (reading || !current()) return;
+      if (reading || cancelled || !isCurrent(origin, generation)) return;
       reading = true;
       try {
-        const value = await invoke<DeleteStatus>('node_app_delete_status', { appId: origin.appId });
-        if (current()) setStage(progressDetail(value));
-      } catch { /* A status read cannot change the pending deletion's outcome or release its owner. */ }
+        const value = await invoke<NodeDeletionTaskSnapshot>('node_app_delete_status', { taskId: observed.taskId, appId: observed.appId });
+        if (!cancelled) acceptTask(value, origin, generation);
+      } catch (cause) { if (!cancelled && isCurrent(origin, generation)) setObservationError(`删除状态暂未更新：${messageFrom(cause)}。任务仍保留，请刷新原任务。`); }
       finally { reading = false; }
     };
-    const timer = window.setInterval(() => void observe(), 1000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [pending, app.id, instanceId]);
-  useEffect(() => { if (error && pending === null) errorPanel.current?.focus(); }, [error, pending]);
+    const refresh = () => void observe();
+    refreshStatus.current = refresh;
+    const timer = window.setInterval(refresh, 1000);
+    return () => { cancelled = true; if (refreshStatus.current === refresh) refreshStatus.current = null; window.clearInterval(timer); };
+  }, [task?.taskId, task?.phase, app.id, instanceId]);
+  useEffect(() => { if ((error || task?.phase === 'failed') && !busy && request === null) errorPanel.current?.focus(); }, [error, task?.phase, busy, request]);
 
   const preserved = preview ? [...new Set(preview.preservedPaths)] : [];
   const source = preview && preserved.includes(preview.sourcePath) ? preview.sourcePath : null;
   const otherPreserved = preserved.filter(path => path !== source);
   const base = preview ? commonDir([...preview.deletePaths, ...otherPreserved]) : '/';
   const recheck = <button type="button" className="text-button node-delete-recheck" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>;
+  const failure = error || (task?.phase === 'failed' ? messageFrom(task.error ?? { message: '删除未完成，请核对剩余内容后重试。' }) : '');
 
-  return <Modal title="删除项目" titleIcon={<Trash2 size={22} aria-hidden="true" />} className="project-delete-modal node-delete-modal" closeDisabled={pending === 'delete'} onClose={close}>
+  return <Modal title={task ? '删除任务' : '删除项目'} titleIcon={<Trash2 size={22} aria-hidden="true" />} className="project-delete-modal node-delete-modal" closeDisabled={busy} onClose={close}>
     <section className="node-delete-confirmation" aria-label="永久删除 Node 项目确认">
-      <div className="node-delete-body" hidden={pending !== null} aria-busy={pending !== null}>
+      {!task && <div className="node-delete-body" hidden={pending !== null} aria-busy={pending !== null}>
         <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
         <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
         <p>会关闭应用窗口，未保存的内容将丢失。</p>
@@ -163,25 +187,35 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
           <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
           <div className="node-delete-scope">
             <p className="node-delete-base">平台目录 <code title={base}>{base === '/' ? '/' : `${base}/`}</code></p>
-            <section className="node-delete-removed">
-              <div className="node-delete-scope-heading"><h4>将删除</h4>{verified && recheck}</div>
-              <PathGroups paths={preview.deletePaths} base={base} />
-            </section>
-            <section className="node-delete-kept">
-              <div className="node-delete-scope-heading"><h4>继续保留</h4></div>
+            <section className="node-delete-removed"><div className="node-delete-scope-heading"><h4>将删除</h4>{verified && recheck}</div><PathGroups paths={preview.deletePaths} base={base} /></section>
+            <section className="node-delete-kept"><div className="node-delete-scope-heading"><h4>继续保留</h4></div>
               {source && <p className="node-delete-source"><span>{preview.ownership === 'managed' ? '来源副本' : '原始应用目录'}</span><code data-path={source} title={source}>{source}</code></p>}
               {otherPreserved.length > 0 && <PathGroups paths={otherPreserved} base={base} />}
               <p className="node-delete-footnote">历史备份、旧版保留项目、迁移旧目录及操作与恢复证据也不会自动清理。</p>
             </section>
-          </div>
-          <p className="node-delete-id">项目 ID：<code>{preview.appId}</code></p>
+          </div><p className="node-delete-id">项目 ID：<code>{preview.appId}</code></p>
         </>}
-      </div>
-      {pending !== null && <DeleteProgress name={preview?.name ?? app.name} checking={pending === 'preview'} detail={pending === 'delete' ? stage : undefined} />}
-      <div className="node-delete-footer" hidden={pending === 'delete'}>
-        {error && <div ref={errorPanel} className="node-delete-error" role="alert" tabIndex={-1}><strong>{errorTitle}</strong><p>{error}</p><p>处理上述问题后，重新核对删除范围；本次不会自动重试。</p></div>}
-        <label className="checkbox-label" hidden={!verified || pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已核对上述范围，并理解会关闭应用窗口、丢失未保存内容且永久删除无法撤销</label>
-        <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button>{!verified && pending !== 'preview' && <button className="primary-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>}<button className="danger-button" hidden={!verified || pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+      </div>}
+      {pending !== null && <DeleteProgress name={task?.name ?? preview?.name ?? app.name} checking={pending === 'preview'} title={request === 'abandon' || task?.abandonRequested ? '正在放弃删除…' : undefined} detail={request === 'abandon' || request === 'retry' && task?.abandonRequested ? '正在放弃删除，等待安全收尾…' : task ? nodeDeletionLabel(task) : undefined} />}
+      {task && !active && request === null && <div className="node-delete-body"><h3>{nodeDeletionLabel(task)} · {task.name}</h3>{task.phase === 'abandoned' && <p>已停止本次删除，不会自动启动应用。运行状态将重新核对。</p>}{task.phase === 'deleted' && <p>已按确认范围完成删除。</p>}</div>}
+      {task && <section className="node-delete-task" aria-label="删除任务实际范围">
+        <p className="node-delete-id">任务 ID：<code>{task.taskId}</code></p>
+        {task.remaining.length > 0 && <><h4>尚未完成</h4>{task.remaining.map(item => <p key={item.path}><code>{item.path}</code>{item.stagedPath && item.state !== 'planned' && <code>待清理位置：{item.stagedPath}</code>}{item.reason && <span>{item.reason}</span>}</p>)}</>}
+        {task.preservedPaths.length > 0 && <><h4>继续保留</h4><PathGroups paths={task.preservedPaths} base={commonDir(task.preservedPaths)} /></>}
+      </section>}
+      {observationError && <p className="task-error" role="status">{observationError}</p>}
+      <div className="node-delete-footer" hidden={!task && pending === 'delete'}>
+        {failure && <div ref={errorPanel} className="node-delete-error" role="alert" tabIndex={-1}><strong>{error ? errorTitle : task?.abandonRequested ? '放弃删除未完成' : '删除未完成'}</strong><p>{failure}</p><p>{task?.abandonRequested ? '重试只会继续放弃删除的安全收尾，不会开始删除或启动应用。' : task ? '重试会继续本次已确认的任务，不会重新启动应用。' : '处理上述问题后，重新核对删除范围；本次不会自动重试。'}</p></div>}
+        {task ? <div className="confirmation-actions">
+          {task.phase === 'failed' && <button className="primary-button" disabled={!enabled || request !== null || busy || !task.canRetry} onClick={() => void actOnTask('retry')}>{task.abandonRequested ? '重试放弃删除' : '重试删除'}</button>}
+          {task.phase === 'failed' && !active && !task.canRetry && <button className="refresh-button" disabled={request !== null} onClick={() => refreshStatus.current?.()}>重新读取任务</button>}
+          {task.canAbandon && !task.renamedAny && <button className="refresh-button" disabled={!enabled || request !== null} onClick={() => void actOnTask('abandon')}>{request === 'abandon' ? '正在放弃删除…' : '放弃删除'}</button>}
+          {task.phase === 'failed' && !task.canAbandon && !task.abandonRequested && <p className="project-help">{task.renamedAny ? '已有内容进入待清理位置，不能再放弃删除。' : '正在核对移动或收尾结果，暂不能放弃删除。'}</p>}
+          <button className="refresh-button" disabled={busy} onClick={close}>关闭</button>
+        </div> : <>
+          <label className="checkbox-label" hidden={!verified || pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已核对上述范围，并理解会关闭应用窗口、丢失未保存内容且永久删除无法撤销</label>
+          <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button>{!verified && pending !== 'preview' && <button className="primary-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>}<button className="danger-button" hidden={!verified || pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+        </>}
       </div>
     </section>
   </Modal>;

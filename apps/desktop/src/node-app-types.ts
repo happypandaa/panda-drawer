@@ -30,6 +30,30 @@ export interface NodeAppDeleteResult {
   warning?: string | null;
 }
 
+export type NodeDeletionPhase = 'waiting' | 'stopping' | 'staging' | 'removing' | 'failed' | 'deleted' | 'abandoned';
+export interface NodeDeletionTarget { path: string; stagedPath?: string; state: string; reason?: string; }
+export interface NodeDeletionTaskSnapshot {
+  taskId: string;
+  appId: string;
+  name: string;
+  targetRevision: string;
+  journalRevision: number;
+  phase: NodeDeletionPhase;
+  active: boolean;
+  ownership: 'managed' | 'external';
+  sourcePath: string;
+  waitingFor: string[];
+  renamedAny: boolean;
+  canAbandon: boolean;
+  canRetry: boolean;
+  abandonRequested?: boolean;
+  targets: NodeDeletionTarget[];
+  remaining: NodeDeletionTarget[];
+  preservedPaths: string[];
+  error: { code: string; message: string; details?: Record<string, unknown> } | null;
+  result: NodeAppDeleteResult | null;
+}
+
 export interface NodeConfigurationField {
   name: string;
   label: string;
