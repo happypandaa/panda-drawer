@@ -108,6 +108,7 @@ pub type NativeProjectCleanup = Arc<
 >;
 
 pub(crate) struct ProjectCleanupCoordinator {
+    stores: crate::webview_storage::StoreLedger,
     windows: Arc<WindowSizeStore>,
     storage: Mutex<Vec<Weak<crate::storage::StorageManager>>>,
     history: Mutex<Vec<Weak<crate::history_cleanup::CleanupManager>>>,
@@ -116,6 +117,7 @@ pub(crate) struct ProjectCleanupCoordinator {
 impl ProjectCleanupCoordinator {
     pub(crate) fn new(data: &std::path::Path) -> Arc<Self> {
         Arc::new(Self {
+            stores: crate::webview_storage::StoreLedger::new(data.into()),
             windows: Arc::new(WindowSizeStore::new(data)),
             storage: Mutex::new(vec![]),
             history: Mutex::new(vec![]),
@@ -124,6 +126,9 @@ impl ProjectCleanupCoordinator {
     }
     pub(crate) fn windows(&self) -> Arc<WindowSizeStore> {
         self.windows.clone()
+    }
+    pub(crate) fn stores(&self) -> crate::webview_storage::StoreLedger {
+        self.stores.clone()
     }
     pub(crate) fn set_native(&self, hook: NativeProjectCleanup) {
         *self.native.write().unwrap_or_else(|p| p.into_inner()) = Some(hook);
@@ -161,6 +166,13 @@ impl ProjectCleanupCoordinator {
         };
         if let Some(hook) = hook {
             hook(stage, notice.clone()).await?;
+        } else if stage != NativeCleanupStage::Committed
+            && self.stores.contains(notice.kind, &notice.id)?
+        {
+            return Err(ApiError::new(
+                "WEBVIEW_NATIVE_HOST_REQUIRED",
+                "此项目的浏览器存储需要桌面平台收到系统清理确认后才能删除，请启动桌面平台重试。",
+            ));
         }
         Ok(())
     }
@@ -188,7 +200,15 @@ impl ProjectCleanupCoordinator {
         Ok(notice)
     }
     pub(crate) async fn purge(&self, notice: &DeletedProjectNotice) -> Result<()> {
-        self.native(NativeCleanupStage::Purge, notice).await
+        self.native(NativeCleanupStage::Purge, notice).await?;
+        if self.stores.contains(notice.kind, &notice.id)? {
+            return Err(ApiError::new(
+                "WEBVIEW_STORE_CLEANUP_UNCONFIRMED",
+                "项目浏览器存储仍未确认清理，已保留删除记录，请重试。",
+            ));
+        }
+        self.stores.sync_absence(notice.kind, &notice.id)?;
+        Ok(())
     }
     pub(crate) async fn committed(&self, notice: &DeletedProjectNotice) {
         if let Err(error) = self.windows.finish_forget(notice.kind.as_str(), &notice.id) {

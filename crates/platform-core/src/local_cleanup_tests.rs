@@ -13,6 +13,43 @@ async fn fixture() -> (tempfile::TempDir, RuntimePaths, RuntimeService) {
     (temporary, paths, service)
 }
 
+#[tokio::test]
+async fn native_store_receipts_must_be_cleared_before_uninstall_can_remove_disk_authority() {
+    let (_temporary, paths, service) = fixture().await;
+    let project = service
+        .store()
+        .create(CreateProjectInput {
+            name: "Disposable native uninstall owner".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let ledger = crate::webview_storage::StoreLedger::new(paths.data_root().into());
+    ledger
+        .record(crate::project_cleanup::ProjectKind::Web, &project.id)
+        .unwrap();
+    let blocked = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    let after_receipt = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    assert!(service.quiesce().await.is_complete());
+    blocked.verify_before_native_cleanup(&service).unwrap();
+    assert_eq!(
+        blocked.execute_after_shutdown(&service).unwrap_err().code,
+        "WEBVIEW_STORE_CLEANUP_REQUIRED"
+    );
+    assert!(project.project_root.exists());
+    assert!(ledger
+        .contains(crate::project_cleanup::ProjectKind::Web, &project.id)
+        .unwrap());
+    // No WK store is created by this core fixture; this simulates only the
+    // separately tested native receipt, while exercising the real disk plan.
+    ledger
+        .forget_confirmed(crate::project_cleanup::ProjectKind::Web, &project.id)
+        .unwrap();
+    after_receipt.execute_after_shutdown(&service).unwrap();
+    assert!(!project.project_root.exists());
+    assert!(!ledger.directory().exists());
+}
+
 async fn owned_export_fixture() -> (
     tempfile::TempDir,
     RuntimePaths,

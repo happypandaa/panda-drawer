@@ -344,3 +344,47 @@ fn shutdown_cannot_unregister_a_replacement_session_or_synthesize_a_missing_rece
     );
     assert!(windows.owns(id, &replacement));
 }
+
+#[tokio::test]
+async fn project_purge_removes_only_closed_session_keys_and_late_callbacks_cannot_recreate_them() {
+    let windows = Arc::new(NodeWindows::default());
+    let a = fresh_session(Phase::Running);
+    let b = fresh_session(Phase::Running);
+    put(&windows, "disposable-a", a.clone());
+    put(&windows, "disposable-b", b.clone());
+    let a_operation = windows.instance_operation("disposable-a").await;
+    let b_operation = windows.instance_operation("disposable-b").await;
+    let b_key = windows.existing_instance_mutex("disposable-b").unwrap();
+    windows.seal_project("disposable-a");
+    assert!(closing(&a));
+    assert!(b.lock().unwrap().phase == Phase::Running);
+    assert!(windows.forget_project("disposable-a").is_err());
+    let queued_windows = windows.clone();
+    let queued_a = a.clone();
+    let (queued, observed) = oneshot::channel();
+    let callback = tokio::spawn(async move {
+        let key = queued_windows
+            .existing_instance_mutex("disposable-a")
+            .unwrap();
+        queued.send(()).unwrap();
+        let _operation = key.lock_owned().await;
+        assert!(!queued_windows.owns("disposable-a", &queued_a));
+    });
+    observed.await.unwrap();
+    windows.sessions.lock().unwrap().remove("disposable-a");
+    windows.forget_project("disposable-a").unwrap();
+    drop(a_operation);
+    callback.await.unwrap();
+    assert!(windows
+        .existing_instance_operation("disposable-a")
+        .await
+        .is_none());
+    assert!(windows.try_instance_operation("disposable-a").is_none());
+    assert_eq!(windows.instance_operations.lock().unwrap().len(), 1);
+    assert!(Arc::ptr_eq(
+        &windows.existing_instance_mutex("disposable-b").unwrap(),
+        &b_key
+    ));
+    assert!(windows.owns("disposable-b", &b));
+    drop(b_operation);
+}

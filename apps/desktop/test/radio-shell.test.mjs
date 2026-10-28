@@ -625,3 +625,33 @@ test('Disposable validation projects collapse into a test-project group unless s
   assert.deepEqual(names(), ['M5 可丢弃 · 样本 B']);
   assert.equal(toggle(), null);
 });
+
+test('Full cleanup locks the real shell before native preference clearing and later status renders do not restore storage', async () => {
+  const plan = { planId: 'disposable-native-clear', instanceId: bootstrap.instanceId, expiresAt: Date.now() + 60_000, confirmationText: '删除全部本机数据', dataRoot: bootstrap.dataRoot, workspaceRoot: bootstrap.workspaceRoot, deletePaths: [{ path: bootstrap.workspaceRoot, label: 'Disposable project files' }], preservedPaths: [], warnings: [] };
+  let phase = 'stopping';
+  const report = () => ({ operationId: plan.planId, status: phase, message: 'Disposable cleanup fixture', remainingPaths: [] });
+  await setup({ overrides: {
+    local_data_cleanup_preview: () => plan,
+    local_data_cleanup_start: () => { window.localStorage.clear(); return report(); },
+    local_data_cleanup_status: () => report(),
+  } });
+  assert.ok(window.localStorage.length > 0, 'normal shell preferences were initialized');
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(byText('卸载前清除数据', dialog()));
+  await click(byText('清理所有本机项目内容'));
+  await click(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]'));
+  await click(byText('已了解，继续第二次确认'));
+  await change(document.querySelector('.local-data-cleanup-modal input:not([type="checkbox"])'), '删除全部本机数据');
+  await click(byText('永久清理所有本机数据'));
+  assert.equal(window.localStorage.length, 0);
+  assert.equal(document.querySelector('[aria-label="切换暗色主题"]'), null);
+  assert.equal(document.querySelector('.project-group-toggle'), null);
+  phase = 'deleting';
+  await click(byText('查看清理状态'));
+  assert.equal(window.localStorage.length, 0);
+  phase = 'completed';
+  await click(byText('查看清理状态'));
+  assert.match(document.querySelector('.local-data-cleanup-result').textContent, /项目网页存储已收到系统删除确认/);
+  assert.equal(window.localStorage.length, 0);
+  assert.equal(document.querySelector('[aria-label="设置"]').disabled, true);
+});

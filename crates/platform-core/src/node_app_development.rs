@@ -232,6 +232,9 @@ pub(crate) fn require_new_web_project_location(data_root: &Path, location: &Path
 
 fn require_source_ancestors(data_root: &Path, source: &Path, id: Option<&str>) -> Result<()> {
     crate::web_export_claims::require_source_unoccupied(data_root, source)?;
+    crate::web_project_ownership::WebProjectOwnership::require_source_unoccupied(
+        data_root, source,
+    )?;
     for ancestor in source.ancestors().skip(1) {
         if let Some(owner) = source_owner(data_root, ancestor)? {
             if id != Some(owner.app_id.as_str()) {

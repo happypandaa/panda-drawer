@@ -236,20 +236,73 @@ impl LocalDataCleanup {
         let app = app.clone();
         let runtime = state.runtime.clone();
         inner.worker = Some(tauri::async_runtime::handle().inner().spawn(async move {
-            let result = tauri::async_runtime::spawn_blocking(move || plan.execute_after_shutdown(&runtime)).await;
+            let result = execute_native_then_disk(&app, plan, runtime).await;
             let state = app.state::<AppState>();
-            let mut inner = state.local_data_cleanup.0.lock().unwrap_or_else(|p| p.into_inner());
-            match result {
-                Ok(result) => inner.report.finish(result),
-                Err(_) => {
-                    inner.report.status = Status::Failed;
-                    inner.report.message = "清理工作异常结束，结果未知。部分内容可能已经删除；请核对错误信息和剩余目录，不会自动重试。".into();
-                    inner.report.error = Some("LOCAL_CLEANUP_WORKER_UNKNOWN".into());
-                }
-            }
+            state
+                .local_data_cleanup
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .report
+                .finish(result);
         }));
         true
     }
+}
+
+async fn execute_native_then_disk(
+    app: &tauri::AppHandle,
+    plan: LocalCleanupPlan,
+    runtime: std::sync::Arc<platform_core::RuntimeService>,
+) -> Result<Value, ApiError> {
+    // Verify writer closure and the exact user-reviewed scope before erasing
+    // native data, then repeat disk verification after the OS callbacks.
+    let (plan, runtime) = tauri::async_runtime::spawn_blocking(move || {
+        plan.verify_before_native_cleanup(&runtime)?;
+        Ok::<_, ApiError>((plan, runtime))
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "LOCAL_CLEANUP_PREFLIGHT_UNKNOWN",
+            "未能确认清理前置条件，没有开始删除。",
+        )
+        .outcome("not_started")
+    })??;
+    let ledger = app.state::<AppState>().handle.webview_stores();
+    let mut native_started = false;
+    let native_result = async {
+        for record in ledger.records()? {
+            native_started = true;
+            super::native_stores::purge_identifier(app, record.identifier).await?;
+            ledger.forget_confirmed(record.kind, &record.id)?;
+        }
+        native_started = true;
+        super::native_stores::clear_identifier_and_verify(
+            app,
+            platform_core::webview_storage::manager_identifier(),
+        )
+        .await?;
+        Ok::<(), ApiError>(())
+    }
+    .await;
+    if let Err(error) = native_result {
+        return Err(error.outcome(if native_started {
+            "delete_incomplete"
+        } else {
+            "not_started"
+        }));
+    }
+    tauri::async_runtime::spawn_blocking(move || plan.execute_after_shutdown(&runtime))
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "LOCAL_CLEANUP_WORKER_UNKNOWN",
+                "清理工作意外结束，部分数据可能已经删除。",
+            )
+            .outcome("unknown")
+        })?
+        .map_err(|error| error.outcome("delete_incomplete"))
 }
 
 #[tauri::command]

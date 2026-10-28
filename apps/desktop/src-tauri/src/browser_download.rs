@@ -1,17 +1,26 @@
 //! WKWebView downloads need an explicit handler. Download to an owned private
 //! staging directory, then ask where to save with a non-blocking native dialog.
-use platform_core::{io_lifetime::TrackedIo, projects::check_no_symlinks, ApiError, RuntimeHandle};
+use platform_core::{
+    io_lifetime::TrackedIo, native_project_io::NativeProjectIoGuard, projects::check_no_symlinks,
+    ApiError, RuntimeHandle,
+};
 use std::{
     collections::HashMap,
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    fs::{self, File},
+    io,
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
+};
+#[cfg(test)]
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+    os::unix::fs::OpenOptionsExt,
 };
 use tauri::{webview::DownloadEvent, AppHandle, Url, Webview};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -50,16 +59,43 @@ struct PendingDownload {
     directory_identity: Identity,
     file: PathBuf,
     suggested_name: String,
+    writer: Option<NativeProjectIoGuard>,
+    engine_accepted: AtomicBool,
+    engine_finished: AtomicBool,
 }
 impl PendingDownload {
+    fn create_owned(writer: NativeProjectIoGuard, suggested_name: &str) -> Result<Self, ApiError> {
+        let result = writer
+            .stage_parent()
+            .and_then(|parent| Self::create_at(&parent, suggested_name));
+        match result {
+            Ok(mut stage) => {
+                stage.writer = Some(writer);
+                Ok(stage)
+            }
+            Err(error) => {
+                let _ = writer.finish();
+                Err(error)
+            }
+        }
+    }
+    #[cfg(test)]
     fn create(data_root: &Path, suggested_name: &str) -> Result<Self, ApiError> {
-        let parent = data_root.join("runtime/native-downloads");
-        check_no_symlinks(&parent, true)?;
+        Self::create_at(&data_root.join("native-downloads"), suggested_name)
+    }
+    fn create_at(parent: &Path, suggested_name: &str) -> Result<Self, ApiError> {
+        check_no_symlinks(parent, true)?;
         fs::DirBuilder::new()
-            .recursive(true)
             .mode(0o700)
-            .create(&parent)?;
-        check_no_symlinks(&parent, false)?;
+            .create(parent)
+            .or_else(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })?;
+        check_no_symlinks(parent, false)?;
         let directory = parent.join(unique_name());
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
         let directory_identity = identity(&fs::symlink_metadata(&directory)?);
@@ -76,6 +112,9 @@ impl PendingDownload {
             directory,
             directory_identity,
             suggested_name,
+            writer: None,
+            engine_accepted: AtomicBool::new(false),
+            engine_finished: AtomicBool::new(false),
         })
     }
     fn validate_directory(&self) -> Result<(), ApiError> {
@@ -87,6 +126,14 @@ impl PendingDownload {
         Ok(())
     }
     fn open_file(&self) -> Result<File, ApiError> {
+        if self.engine_accepted.load(Ordering::Acquire)
+            && !self.engine_finished.load(Ordering::Acquire)
+        {
+            return Err(invalid("Browser download has not confirmed Finished"));
+        }
+        if let Some(writer) = &self.writer {
+            writer.validate()?;
+        }
         self.validate_directory()?;
         check_no_symlinks(&self.file, false)?;
         let metadata = fs::symlink_metadata(&self.file)?;
@@ -103,26 +150,37 @@ impl PendingDownload {
         {
             return Err(invalid("Temporary download changed before saving"));
         }
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         Ok(file)
     }
-    fn cleanup(&self) {
-        if self.validate_directory().is_err() {
-            return;
-        }
+    fn cleanup(&self) -> Result<(), ApiError> {
+        self.validate_directory()?;
         if fs::symlink_metadata(&self.file)
             .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         {
-            let _ = fs::remove_file(&self.file);
+            fs::remove_file(&self.file)?;
         }
         // Do not recursively remove unrelated files or replaced directories.
-        let _ = fs::remove_dir(&self.directory);
+        fs::remove_dir(&self.directory)?;
+        File::open(self.directory.parent().unwrap())?.sync_all()?;
+        Ok(())
     }
 }
 
 impl Drop for PendingDownload {
     fn drop(&mut self) {
-        // Closing a WebView may drop its callback before Finished is delivered.
-        self.cleanup();
+        if self.engine_accepted.load(Ordering::Acquire)
+            && !self.engine_finished.load(Ordering::Acquire)
+        {
+            return;
+        }
+        if self.cleanup().is_ok() {
+            if let Some(writer) = self.writer.take() {
+                if let Err(error) = writer.finish() {
+                    eprintln!("Native download writer receipt: {}", error.code);
+                }
+            }
+        }
     }
 }
 
@@ -131,11 +189,18 @@ impl Drop for PendingDownload {
 // evidence and the busy lease in that exceptional case, rather than deleting
 // the engine's file and falsely reporting a drained service.
 struct EngineDownload {
-    resource: Option<TrackedIo<PendingDownload>>,
+    resource: Option<ProjectDownload>,
     ticket: Option<super::engine_downloads::EngineTicket>,
 }
+type ProjectDownload = TrackedIo<TrackedIo<PendingDownload>>;
+fn pending_stage(value: &ProjectDownload) -> &PendingDownload {
+    value.resource().resource()
+}
 impl EngineDownload {
-    fn finished(mut self) -> TrackedIo<PendingDownload> {
+    fn finished(mut self) -> ProjectDownload {
+        pending_stage(self.resource.as_ref().expect("owned download"))
+            .engine_finished
+            .store(true, Ordering::Release);
         self.ticket.take().expect("owned engine ticket").finished();
         self.resource.take().expect("owned download")
     }
@@ -178,6 +243,7 @@ fn permitted_url(base: &Url, id: &str, current: &Url, requested: &Url) -> bool {
         && !requested.path().contains("%5C")
 }
 
+#[cfg(test)]
 fn destination_identity(path: &Path) -> Result<Option<Identity>, ApiError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
@@ -189,16 +255,23 @@ fn destination_identity(path: &Path) -> Result<Option<Identity>, ApiError> {
     }
 }
 
+#[cfg(test)]
 fn publish_copy(
     stage: &PendingDownload,
     destination: &Path,
     validate: impl Fn(&Path) -> Result<(), ApiError>,
 ) -> Result<(), ApiError> {
-    publish_file(stage.open_file()?, destination, validate)
+    publish_file(stage.open_file()?, destination, |path| {
+        if let Some(writer) = &stage.writer {
+            writer.validate()?;
+        }
+        validate(path)
+    })
 }
 
 /// Publish a completed attachment or browser download after native save consent.
 /// The caller keeps any project operation lease alive until this returns.
+#[cfg(test)]
 pub(crate) fn publish_file(
     mut source: File,
     destination: &Path,
@@ -272,12 +345,22 @@ pub fn handler(
     app: AppHandle,
     handle: RuntimeHandle,
     id: String,
+    epoch: String,
     engines: Arc<super::engine_downloads::EngineDownloads>,
 ) -> impl Fn(Webview, DownloadEvent<'_>) -> bool + Send + Sync + 'static {
     let pending = Arc::new(Mutex::new(HashMap::<String, EngineDownload>::new()));
+    let window_admission = engines.bind_handler(&id);
     move |webview, event| match event {
         DownloadEvent::Requested { url, destination } => {
-            let Ok((io_lease, mut ticket)) = engines.admit(|| handle.io_lifetime().admit()) else {
+            let Ok(((io_lease, writer), project_lease, mut ticket)) =
+                engines.admit_project(&id, || {
+                    window_admission.check()?;
+                    let lease = handle.io_lifetime().admit()?;
+                    let writer =
+                        handle.native_project_io(&id, &epoch, "native-webview-download")?;
+                    Ok((lease, writer))
+                })
+            else {
                 return false;
             };
             let info = handle.info();
@@ -285,35 +368,33 @@ pub fn handler(
                 .ok()
                 .zip(webview.url().ok())
                 .is_some_and(|(base, current)| permitted_url(&base, &id, &current, &url));
-            if !permitted
-                || handle
-                    .store()
-                    .project(&id)
-                    .and_then(|project| project.validate_epoch(None))
-                    .is_err()
-            {
+            if !permitted {
+                let _ = writer.finish();
                 return false;
             }
             let Ok(mut downloads) = pending.lock() else {
+                let _ = writer.finish();
                 return false;
             };
             let key = url.to_string();
             // Finished.path is unavailable on macOS; URL is our completion key.
             if downloads.contains_key(&key) {
+                let _ = writer.finish();
                 return false;
             }
             let suggested = destination
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("download.bin");
-            match PendingDownload::create(&info.data_root, suggested) {
+            match PendingDownload::create_owned(writer, suggested) {
                 Ok(stage) => {
                     *destination = stage.file.clone();
                     ticket.started();
+                    stage.engine_accepted.store(true, Ordering::Release);
                     downloads.insert(
                         key,
                         EngineDownload {
-                            resource: Some(io_lease.hold(stage)),
+                            resource: Some(project_lease.hold(io_lease.hold(stage))),
                             ticket: Some(ticket),
                         },
                     );
@@ -334,16 +415,19 @@ pub fn handler(
                 return false;
             };
             let stage = stage.finished();
+            if !engines.project_open(&id) {
+                return false;
+            }
             if !success {
                 notify_error(&app, &invalid("Browser download did not complete"));
                 return false;
             }
-            if let Err(error) = stage.resource().open_file() {
+            if let Err(error) = pending_stage(&stage).open_file() {
                 notify_error(&app, &error);
                 return false;
             }
-            let suggested_name = stage.resource().suggested_name.clone();
-            let Ok(deferred) = handle.io_lifetime().defer(stage) else {
+            let suggested_name = pending_stage(&stage).suggested_name.clone();
+            let Ok(deferred) = engines.defer_project(&id, stage) else {
                 return false;
             };
             let app = app.clone();
@@ -368,9 +452,15 @@ pub fn handler(
                             .into_path()
                             .map_err(|error| invalid(&error.to_string()))
                             .and_then(|destination| {
-                                publish_copy(stage.resource(), &destination, |path| {
-                                    handle.validate_download_destination(path)
-                                })
+                                let pending = pending_stage(&stage);
+                                let writer = pending.writer.as_ref().ok_or_else(|| {
+                                    invalid("Project writer admission is missing")
+                                })?;
+                                handle.publish_native_file(
+                                    writer,
+                                    pending.open_file()?,
+                                    &destination,
+                                )
                             });
                         if let Err(error) = result {
                             notify_error(&app, &error);
@@ -440,7 +530,7 @@ mod tests {
         fs::write(&unknown, b"preserve").unwrap();
         symlink(&unknown, &stage.file).unwrap();
         assert!(stage.open_file().is_err());
-        stage.cleanup();
+        let _ = stage.cleanup();
         assert_eq!(fs::read(&unknown).unwrap(), b"preserve");
         assert!(stage.directory.exists());
         fs::remove_file(&stage.file).unwrap();
@@ -449,7 +539,7 @@ mod tests {
             .set_len(MAX_DOWNLOAD_BYTES + 1)
             .unwrap();
         assert!(stage.open_file().is_err());
-        stage.cleanup();
+        let _ = stage.cleanup();
         assert!(!stage.directory.exists());
         let stage = PendingDownload::create(&root, "test").unwrap();
         let held = stage.directory.with_extension("held");
@@ -457,7 +547,7 @@ mod tests {
         fs::create_dir(&stage.directory).unwrap();
         fs::write(stage.directory.join("unknown"), b"preserve").unwrap();
         assert!(stage.open_file().is_err());
-        stage.cleanup();
+        let _ = stage.cleanup();
         assert!(stage.directory.join("unknown").exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -475,8 +565,31 @@ mod tests {
         fs::write(&stage.file, b"updated").unwrap();
         publish_copy(&stage, &output, |_| Ok(())).unwrap();
         assert_eq!(fs::read(&output).unwrap(), b"updated");
-        stage.cleanup();
+        let _ = stage.cleanup();
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn accepted_stage_requires_a_real_finished_receipt_before_reading_or_cleanup() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let stage = PendingDownload::create(&root, "disposable.txt").unwrap();
+        let directory = stage.directory.clone();
+        fs::write(&stage.file, b"unfinished engine bytes").unwrap();
+        stage.engine_accepted.store(true, Ordering::Release);
+        assert!(stage.open_file().is_err());
+        drop(stage);
+        assert!(
+            directory.join("payload").exists(),
+            "Drop must not fabricate Finished"
+        );
+        let stage = PendingDownload::create(&root, "disposable-finished.txt").unwrap();
+        let directory = stage.directory.clone();
+        fs::write(&stage.file, b"confirmed engine bytes").unwrap();
+        stage.engine_accepted.store(true, Ordering::Release);
+        stage.engine_finished.store(true, Ordering::Release);
+        drop(stage.open_file().unwrap());
+        drop(stage);
+        assert!(!directory.exists());
     }
     #[tokio::test]
     async fn stopped_save_dialog_cleans_private_stage_and_cannot_publish_later() {
@@ -530,13 +643,15 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap();
         let engines = Arc::new(super::super::engine_downloads::EngineDownloads::default());
         let io = platform_core::io_lifetime::IoLifetime::default();
-        let (lease, mut ticket) = engines.admit(|| io.admit()).unwrap();
+        let (lease, project_lease, mut ticket) = engines
+            .admit_project("prj_disposable_download", || io.admit())
+            .unwrap();
         let stage = PendingDownload::create(&root, "artificial.txt").unwrap();
         let directory = stage.directory.clone();
         fs::write(&stage.file, b"artificial engine content").unwrap();
         ticket.started();
         let engine = EngineDownload {
-            resource: Some(lease.hold(stage)),
+            resource: Some(project_lease.hold(lease.hold(stage))),
             ticket: Some(ticket),
         };
         engines.close();
@@ -560,13 +675,15 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap();
         let engines = Arc::new(super::super::engine_downloads::EngineDownloads::default());
         let io = platform_core::io_lifetime::IoLifetime::default();
-        let (lease, mut ticket) = engines.admit(|| io.admit()).unwrap();
+        let (lease, project_lease, mut ticket) = engines
+            .admit_project("prj_disposable_download", || io.admit())
+            .unwrap();
         let stage = PendingDownload::create(&root, "artificial.txt").unwrap();
         let file = stage.file.clone();
         fs::write(&file, b"artificial unfinished engine content").unwrap();
         ticket.started();
         let engine = EngineDownload {
-            resource: Some(lease.hold(stage)),
+            resource: Some(project_lease.hold(lease.hold(stage))),
             ticket: Some(ticket),
         };
         engines.close();

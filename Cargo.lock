@@ -2849,6 +2849,10 @@ name = "platform-desktop"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
+ "objc2",
+ "objc2-foundation",
+ "objc2-web-kit",
  "platform-core",
  "platform-update-handoff",
  "serde",

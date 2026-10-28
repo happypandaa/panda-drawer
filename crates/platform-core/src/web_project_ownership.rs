@@ -60,6 +60,7 @@ struct ExportTarget {
 struct ExportStage {
     path: PathBuf,
     parent_identity: PersistedIdentity,
+    ancestor_identities: Vec<PersistedIdentity>,
     identity: Option<PersistedIdentity>,
 }
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -164,6 +165,13 @@ impl WebProjectOwnership {
         }
         for (task, stage) in &record.export_stages {
             validate_export_stage(task, &stage.path)?;
+            if !stage
+                .ancestor_identities
+                .first()
+                .is_some_and(|identity| identity.matches_captured(&stage.parent_identity))
+            {
+                return Err(invalid("临时文件的父目录归属链不完整。"));
+            }
         }
         for (key, export) in &record.exports {
             absolute(&export.path)?;
@@ -384,6 +392,14 @@ impl WebProjectOwnership {
         }
         let parent_identity = PersistedIdentity::capture(path.parent().unwrap())
             .map_err(|error| invalid(error.to_string()))?;
+        let ancestor_identities = path
+            .parent()
+            .unwrap()
+            .ancestors()
+            .map(|path| {
+                PersistedIdentity::capture(path).map_err(|error| invalid(error.to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         self.update(id, false, |record| {
             if !record.tasks.contains_key(task) {
                 return Err(invalid("导出任务尚未登记归属。"));
@@ -396,6 +412,7 @@ impl WebProjectOwnership {
                 ExportStage {
                     path: path.into(),
                     parent_identity,
+                    ancestor_identities,
                     identity: None,
                 },
             );
@@ -438,6 +455,31 @@ impl WebProjectOwnership {
     pub(crate) fn forget_export_stage(&self, id: &str, task: &str) -> Result<()> {
         self.update(id, false, |record| {
             record.export_stages.remove(task);
+            Ok(())
+        })
+    }
+    /// Native copies reserve an ownership key without creating a BuildManager
+    /// task directory. Only this empty reservation may disappear on delivery.
+    pub(crate) fn forget_native_copy_task(&self, id: &str, task: &str) -> Result<()> {
+        task_id(task)?;
+        self.update(id, false, |record| {
+            if record.export_stages.contains_key(task)
+                || record.exports.values().any(|export| export.task_id == task)
+                || record.tasks.get(task).is_some_and(Option::is_some)
+            {
+                return Err(invalid("本次原生复制仍有未清理的任务材料。"));
+            }
+            for path in [
+                self.workspace.join(".platform/tasks").join(task),
+                self.workspace.join(".platform/operations").join(task),
+            ] {
+                match fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                    Ok(_) => return Err(invalid("本次原生复制已有任务目录，未清除其归属。")),
+                }
+            }
+            record.tasks.remove(task);
             Ok(())
         })
     }
@@ -698,6 +740,60 @@ impl WebProjectOwnership {
                 });
             if bound || fixed || stage || export {
                 return Err(crate::project_tool_boundary::project_owned());
+            }
+        }
+        Ok(())
+    }
+    /// Admission only: a newly claimed source root must not absorb another
+    /// project's live external copy stage or an exact retained migration copy.
+    pub(crate) fn require_source_unoccupied(data: &Path, source: &Path) -> Result<()> {
+        check_no_symlinks(source, true)?;
+        let source_identity = match fs::symlink_metadata(source) {
+            Ok(_) => Some(
+                PersistedIdentity::capture(source).map_err(|error| invalid(error.to_string()))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let ownership = Self::new(data.into(), PathBuf::new());
+        check_no_symlinks(&ownership.root(), true)?;
+        if !ownership.root().try_exists()? {
+            return Ok(());
+        }
+        for entry in fs::read_dir(ownership.root())? {
+            let id = entry?.file_name().to_string_lossy().into_owned();
+            let record = ownership.read(&id)?;
+            let stages = record.export_stages.values().any(|stage| {
+                stage.path.starts_with(source)
+                    || source.starts_with(&stage.path)
+                    || source_identity.as_ref().is_some_and(|identity| {
+                        stage
+                            .ancestor_identities
+                            .iter()
+                            .any(|ancestor| ancestor.matches_captured(identity))
+                    })
+            });
+            let bound = record
+                .project_root
+                .iter()
+                .chain(record.prior_project_roots.iter())
+                .chain(record.retained.iter())
+                .filter(|bound| !record.removed_materials.contains_key(&bound.path))
+                .any(|bound| {
+                    bound.path.starts_with(source)
+                        || (bound.directory && source.starts_with(&bound.path))
+                        || source_identity.as_ref().is_some_and(|identity| {
+                            bound
+                                .path
+                                .ancestors()
+                                .any(|ancestor| identity.matches_path(ancestor).unwrap_or(false))
+                        })
+                });
+            if stages || bound {
+                return Err(ApiError::new(
+                    "PROJECT_DIRECTORY_OWNED",
+                    "此目录包含另一个项目独占的代码或临时材料，请选择独立目录。",
+                ));
             }
         }
         Ok(())

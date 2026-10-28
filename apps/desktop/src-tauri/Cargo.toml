@@ -9,10 +9,16 @@ default-run = "local-projects-desktop-dev"
 name = "local-projects-desktop-dev"
 path = "src/main.rs"
 
+[[bin]]
+name = "native-store-fixture"
+path = "src/bin/native_store_fixture.rs"
+required-features = ["native-store-fixture"]
+
 [features]
 default = []
 production-profile = ["platform-core/production-profile"]
 production-resource-anchors = ["production-profile", "platform-core/production-resource-anchors"]
+native-store-fixture = ["tauri/test", "objc2-foundation/NSBundle", "objc2-foundation/NSUUID"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -25,10 +31,14 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 platform-update-handoff = { path = "../../../crates/platform-update-handoff" }
+objc2 = "0.6.5"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDate", "NSSet", "NSString"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebsiteDataStore", "WKWebsiteDataRecord", "block2"] }
 
 [dev-dependencies]
 tempfile = "3"

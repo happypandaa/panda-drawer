@@ -22,6 +22,8 @@ mod maintenance;
 mod managed_git;
 mod managed_toolchain;
 mod metadata;
+mod native_project_files;
+pub mod native_project_io;
 pub mod node_app_configuration;
 pub mod node_app_install;
 pub mod node_app_manifest;
@@ -66,6 +68,7 @@ mod web_export_claims;
 mod web_file_deletion;
 mod web_project_cleanup;
 mod web_project_ownership;
+pub mod webview_storage;
 mod workspace;
 pub use tasks::{TaskRecord, TaskStatus};
 

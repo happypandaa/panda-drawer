@@ -111,6 +111,11 @@ pub(crate) fn project_materials_absent(
     tasks: &BuildManager,
     id: &str,
 ) -> Result<bool> {
+    if crate::webview_storage::StoreLedger::new(paths.data_root().into())
+        .contains(crate::project_cleanup::ProjectKind::Web, id)?
+    {
+        return Ok(false);
+    }
     let ownership =
         WebProjectOwnership::new(paths.data_root().into(), paths.workspace_root().into());
     check_no_symlinks(&ownership.directory(id)?, true)?;
