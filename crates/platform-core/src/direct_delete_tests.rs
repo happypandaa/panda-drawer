@@ -2,16 +2,15 @@
 use super::*;
 
 #[tokio::test]
-async fn permanent_delete_removes_only_owned_payload_and_preserves_historical_evidence() {
+async fn permanent_delete_removes_owned_exports_and_records_but_preserves_external_originals() {
     let fixture = Fixture::new().await;
     let original = fixture.store.project(&fixture.id).unwrap();
     let archive = fixture.export_path("disposable-before-delete.zip");
-    good(
-        &fixture
-            .project("export", json!({"destinationPath":archive}))
-            .await,
-    );
-    let archive_bytes = fs::read(&archive).unwrap();
+    let exported = fixture
+        .project("export", json!({"destinationPath":archive}))
+        .await;
+    good(&exported);
+    assert!(archive.is_file());
     let history = fixture
         .paths
         .workspace_root()
@@ -21,7 +20,9 @@ async fn permanent_delete_removes_only_owned_payload_and_preserves_historical_ev
     let recovery = fixture
         .paths
         .workspace_root()
-        .join(".platform/operations/task_historical/original/keep.txt");
+        .join(".platform/operations")
+        .join(&exported.task_id)
+        .join("original/keep.txt");
     let external = fixture.paths.data_root().join("external-source/keep.txt");
     for path in [&history, &recovery, &external] {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -45,18 +46,31 @@ async fn permanent_delete_removes_only_owned_payload_and_preserves_historical_ev
         .pending_deletion(&fixture.id)
         .unwrap()
         .is_none());
-    assert_eq!(fs::read(&archive).unwrap(), archive_bytes);
+    assert!(!archive.exists());
     assert!(!fixture
         .paths
         .workspace_root()
         .join(".platform/trash")
         .exists());
-    for path in [&history, &recovery, &external] {
-        assert_eq!(
-            fs::read(path).unwrap(),
-            b"preserve independently owned evidence"
-        );
+    for path in [&history, &recovery] {
+        assert!(!path.exists());
     }
+    assert_eq!(
+        fs::read(&external).unwrap(),
+        b"preserve independently owned evidence"
+    );
+    assert!(fixture
+        .store
+        .deleted_project_identity_absent(&fixture.id)
+        .unwrap());
+    assert!(fixture.tasks.task(&deleted.task_id).is_err());
+    assert!(fixture
+        .lifecycle
+        .operations
+        .lock()
+        .unwrap()
+        .values()
+        .all(|operation| operation.project_id != fixture.id));
     assert!(!fixture
         .lifecycle
         .operation(&deleted.task_id)
@@ -119,7 +133,7 @@ async fn permanent_delete_refuses_a_replaced_registered_root_without_touching_ei
 }
 
 #[tokio::test]
-async fn permanent_delete_requires_the_displayed_epoch_and_rejects_a_later_same_id_instance() {
+async fn permanent_delete_requires_confirmation_and_reimport_uses_an_independent_identity() {
     let fixture = Fixture::new().await;
     let displayed = fixture.store.project(&fixture.id).unwrap();
     let missing = fixture
@@ -134,6 +148,10 @@ async fn permanent_delete_requires_the_displayed_epoch_and_rejects_a_later_same_
             .project("export", json!({"destinationPath":archive}))
             .await,
     );
+    // A user-created independent copy is an import original, not a second
+    // platform-owned export of the removed project.
+    let import_original = fixture.export_path("disposable-user-import-original.zip");
+    fs::copy(&archive, &import_original).unwrap();
     good(
         &fixture
             .project(
@@ -144,11 +162,13 @@ async fn permanent_delete_requires_the_displayed_epoch_and_rejects_a_later_same_
     );
     let imported = fixture
         .lifecycle
-        .submit_import(json!({"archivePath":archive,"mode":"original"}))
+        .submit_import(json!({"archivePath":import_original}))
         .await
         .unwrap();
-    good(&fixture.wait(&imported).await);
-    let current = fixture.store.project(&fixture.id).unwrap();
+    let imported = fixture.wait(&imported).await;
+    let new_id = good(&imported)["projectId"].as_str().unwrap();
+    assert_ne!(new_id, fixture.id);
+    let current = fixture.store.project(new_id).unwrap();
     assert_ne!(current.document_epoch, displayed.document_epoch);
     let before = fs::read(current.root.join("data/attachments/original.txt")).unwrap();
     let stale = fixture
@@ -159,8 +179,9 @@ async fn permanent_delete_requires_the_displayed_epoch_and_rejects_a_later_same_
             json!({"expectedDocumentEpoch":displayed.document_epoch}),
         )
         .await
-        .unwrap_err();
-    assert_eq!(stale.code, "PROJECT_DELETE_CONFIRMATION_CHANGED");
+        .unwrap();
+    assert_eq!(good(&stale)["operationOutcome"], "deleted");
+    assert_eq!(good(&stale)["alreadyAbsent"], true);
     assert_eq!(
         fs::read(current.root.join("data/attachments/original.txt")).unwrap(),
         before
@@ -287,6 +308,8 @@ async fn removed_payload_requires_explicit_finalization_before_a_later_import() 
             .project("export", json!({"destinationPath":archive}))
             .await,
     );
+    let import_original = fixture.export_path("disposable-user-copy-after-finalization.zip");
+    fs::copy(&archive, &import_original).unwrap();
     let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
     let mut journal = LifecycleManager::operation_state(&task, "delete", &fixture.id);
@@ -317,24 +340,26 @@ async fn removed_payload_requires_explicit_finalization_before_a_later_import() 
     );
     let imported = fixture
         .lifecycle
-        .submit_import(json!({"archivePath":archive,"mode":"original"}))
+        .submit_import(json!({"archivePath":import_original}))
         .await
         .unwrap();
-    good(&fixture.wait(&imported).await);
-    let project = fixture.store.project(&fixture.id).unwrap();
+    let imported = fixture.wait(&imported).await;
+    let new_id = good(&imported)["projectId"].as_str().unwrap();
+    assert_ne!(new_id, fixture.id);
+    let project = fixture.store.project(new_id).unwrap();
     let epoch = project.document_epoch.clone();
     let identity = persistent_identity(&project.root).unwrap();
-    let control = fixture.store.control(&fixture.id).unwrap().get();
+    let control = fixture.store.control(new_id).unwrap().get();
     assert!(!fixture
         .lifecycle
         .operation(&task.task_id)
         .join("lifecycle.json")
         .exists());
-    let current = fixture.store.project(&fixture.id).unwrap();
+    let current = fixture.store.project(new_id).unwrap();
     assert_eq!(current.document_epoch, epoch);
     assert!(identity.matches_path(&current.root).unwrap());
     assert_eq!(
-        json!(fixture.store.control(&fixture.id).unwrap().get()),
+        json!(fixture.store.control(new_id).unwrap().get()),
         json!(control)
     );
     fixture.stop().await;
@@ -371,5 +396,422 @@ async fn real_partial_delete_reports_failure_blocks_runtime_and_requires_explici
     let deleted = fixture.project("delete", json!({})).await;
     assert_eq!(good(&deleted)["operationOutcome"], "deleted");
     assert!(!original.root.exists());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn deleted_task_receipt_is_recovered_after_response_loss_without_leaving_any_task() {
+    let fixture = Fixture::new().await;
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    let gate = fixture.store.gate(&fixture.id);
+    let writer = gate.read_owned().await;
+    let task = fixture
+        .lifecycle
+        .submit_project(
+            &fixture.id,
+            "delete",
+            json!({"expectedDocumentEpoch":fixture.store.registered_epoch(&fixture.id).unwrap()}),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    assert!(root.exists());
+    let waiting = fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "delete")
+        .unwrap();
+    assert!(!waiting.status.is_final());
+    let manager = fixture.lifecycle.clone();
+    let task_id = task.task_id.clone();
+    let project_id = fixture.id.clone();
+    let waiter = tokio::spawn(async move {
+        loop {
+            if manager
+                .task_for_project(&task_id, &project_id, "delete")
+                .unwrap()
+                .status
+                .is_final()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    });
+    waiter.abort();
+    drop(writer);
+    let done = fixture.wait(&task).await;
+    assert_eq!(good(&done)["operationOutcome"], "deleted");
+    assert!(fixture.tasks.task(&task.task_id).is_err());
+    assert!(!root.exists());
+    let receipt = fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "delete")
+        .unwrap();
+    assert_eq!(good(&receipt)["alreadyAbsent"], true);
+    assert!(fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "build")
+        .is_err());
+    let fixture = fixture.restart_saved().await;
+    let receipt = fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "delete")
+        .unwrap();
+    assert_eq!(good(&receipt)["alreadyAbsent"], true);
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn finalizing_success_is_hidden_and_cleanup_failure_is_retryable() {
+    let fixture = Fixture::new().await;
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *fixture.lifecycle.delete_cleanup_checkpoint.lock().unwrap() =
+        Some((entered_tx, release_rx, true));
+    let task = fixture
+        .lifecycle
+        .submit_project(
+            &fixture.id,
+            "delete",
+            json!({"expectedDocumentEpoch":fixture.store.registered_epoch(&fixture.id).unwrap()}),
+        )
+        .await
+        .unwrap();
+    entered_rx.await.unwrap();
+    assert_eq!(
+        fixture.tasks.task(&task.task_id).unwrap().status,
+        TaskStatus::Succeeded
+    );
+    let pending = fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "delete")
+        .unwrap();
+    assert_eq!(pending.status, TaskStatus::Running);
+    assert!(pending.result.is_none());
+    assert!(fixture
+        .store
+        .pending_deletion(&fixture.id)
+        .unwrap()
+        .is_some());
+    release_tx.send(()).unwrap();
+    let failed = fixture.wait(&task).await;
+    assert_eq!(failed.status, TaskStatus::Failed);
+    assert_eq!(
+        failed.error.as_ref().unwrap().details["finalCleanupPending"],
+        true
+    );
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(fixture.tasks.task(&task.task_id).is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn persisted_success_before_purge_is_failure_after_restart_until_explicit_finalization() {
+    let fixture = Fixture::new().await;
+    let (root, identity) = fixture.store.deletion_root(&fixture.id).unwrap();
+    let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
+    let epoch = Uuid::new_v4().to_string();
+    fixture
+        .store
+        .begin_deletion(&fixture.id, &task.task_id, &epoch, &identity)
+        .unwrap();
+    crate::history_cleanup::remove_owned_directory(&root, &identity).unwrap();
+    fixture
+        .tasks
+        .finish(
+            &task.task_id,
+            Ok(json!({"projectId":fixture.id,"operationOutcome":"deleted"})),
+        )
+        .unwrap();
+    drop(lease);
+    let fixture = fixture.restart_saved().await;
+    let projected = fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "delete")
+        .unwrap();
+    assert_eq!(projected.status, TaskStatus::Failed);
+    assert_eq!(projected.error.unwrap().code, "PROJECT_DELETE_INCOMPLETE");
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(fixture.tasks.task(&task.task_id).is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn existing_task_context_must_match_and_pending_recovery_is_deleted_as_material() {
+    let fixture = Fixture::new().await;
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    let task = fixture
+        .tasks
+        .create_readonly_operation(&fixture.id, "storageScan")
+        .unwrap();
+    fixture.tasks.finish(&task.task_id, Ok(json!({}))).unwrap();
+    assert_eq!(
+        fixture
+            .lifecycle
+            .task_for_project(&task.task_id, &fixture.id, "delete")
+            .unwrap_err()
+            .code,
+        "TASK_IDENTITY_CHANGED"
+    );
+    assert_eq!(
+        fixture
+            .lifecycle
+            .task_for_project(&task.task_id, "prj_other", "storageScan")
+            .unwrap_err()
+            .code,
+        "TASK_IDENTITY_CHANGED"
+    );
+    for relative in [
+        ".platform/project-state/source-restore",
+        ".platform/project-state/data-restore",
+    ] {
+        let path = fixture
+            .paths
+            .workspace_root()
+            .join(relative)
+            .join(&fixture.id)
+            .join("pending.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"disposable pending recovery material").unwrap();
+    }
+    fixture
+        .store
+        .control(&fixture.id)
+        .unwrap()
+        .mark_recovery_required(ApiError::new("DISPOSABLE_RECOVERY", "pending fixture"));
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(!root.exists());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn cleanup_only_retry_removes_a_terminal_task_after_identity_and_owner_are_gone() {
+    let fixture = Fixture::new().await;
+    let (root, identity) = fixture.store.deletion_root(&fixture.id).unwrap();
+    let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
+    let epoch = Uuid::new_v4().to_string();
+    let marker = fixture
+        .store
+        .begin_deletion(&fixture.id, &task.task_id, &epoch, &identity)
+        .unwrap();
+    crate::history_cleanup::remove_owned_directory(&root, &identity).unwrap();
+    fixture
+        .tasks
+        .finish(
+            &task.task_id,
+            Ok(json!({"projectId":fixture.id,"operationOutcome":"deleted"})),
+        )
+        .unwrap();
+    drop(lease);
+    crate::web_project_cleanup::remove_project_materials(
+        &fixture.paths,
+        &fixture.store,
+        &fixture.tasks,
+        &fixture.id,
+        &task.task_id,
+    )
+    .unwrap();
+    fixture
+        .store
+        .complete_deleted_project_identity(&marker)
+        .unwrap();
+    crate::web_project_cleanup::finish_project_ownership(&fixture.paths, &fixture.id).unwrap();
+    let fixture = fixture.restart_saved().await;
+    assert!(fixture
+        .store
+        .deleted_project_identity_absent(&fixture.id)
+        .unwrap());
+    assert_eq!(
+        fixture
+            .lifecycle
+            .task_for_project(&task.task_id, &fixture.id, "delete")
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(fixture.tasks.task(&task.task_id).is_err());
+    assert!(crate::web_project_cleanup::project_materials_absent(
+        &fixture.paths,
+        &fixture.tasks,
+        &fixture.id
+    )
+    .unwrap());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn partial_own_task_directory_is_removed_after_restart_using_accepted_owner_identity() {
+    let fixture = Fixture::new().await;
+    let (root, identity) = fixture.store.deletion_root(&fixture.id).unwrap();
+    let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
+    let epoch = Uuid::new_v4().to_string();
+    let marker = fixture
+        .store
+        .begin_deletion(&fixture.id, &task.task_id, &epoch, &identity)
+        .unwrap();
+    crate::history_cleanup::remove_owned_directory(&root, &identity).unwrap();
+    fixture
+        .tasks
+        .finish(
+            &task.task_id,
+            Ok(json!({"projectId":fixture.id,"operationOutcome":"deleted"})),
+        )
+        .unwrap();
+    drop(lease);
+    crate::web_project_cleanup::remove_project_materials(
+        &fixture.paths,
+        &fixture.store,
+        &fixture.tasks,
+        &fixture.id,
+        &task.task_id,
+    )
+    .unwrap();
+    fixture
+        .store
+        .complete_deleted_project_identity(&marker)
+        .unwrap();
+    let task_dir = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/tasks")
+        .join(&task.task_id);
+    fs::remove_file(task_dir.join("task.json")).unwrap();
+    fs::write(
+        task_dir.join("partial-tail"),
+        b"remaining accepted task directory",
+    )
+    .unwrap();
+    let fixture = fixture.restart_saved().await;
+    assert!(fixture.tasks.task(&task.task_id).is_err());
+    assert!(fixture
+        .lifecycle
+        .task_for_project(&task.task_id, &fixture.id, "delete")
+        .is_err());
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(!task_dir.exists());
+    assert!(crate::web_project_cleanup::project_materials_absent(
+        &fixture.paths,
+        &fixture.tasks,
+        &fixture.id
+    )
+    .unwrap());
+    fixture.stop().await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn owner_last_removal_failure_restores_failed_task_and_can_retry_after_restart() {
+    let fixture = Fixture::new().await;
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *fixture.lifecycle.delete_cleanup_checkpoint.lock().unwrap() =
+        Some((entered_tx, release_rx, false));
+    let task = fixture
+        .lifecycle
+        .submit_project(
+            &fixture.id,
+            "delete",
+            json!({"expectedDocumentEpoch":fixture.store.registered_epoch(&fixture.id).unwrap()}),
+        )
+        .await
+        .unwrap();
+    entered_rx.await.unwrap();
+    let owner_dir = crate::web_project_ownership::WebProjectOwnership::new(
+        fixture.paths.data_root().into(),
+        fixture.paths.workspace_root().into(),
+    )
+    .directory(&fixture.id)
+    .unwrap();
+    let blocked = owner_dir.join("zz-disposable-owner-tail");
+    fs::write(&blocked, b"blocked only during this fixture").unwrap();
+    let immutable = ImmutableFile::new(&blocked);
+    release_tx.send(()).unwrap();
+    let failed = fixture.wait(&task).await;
+    assert_eq!(failed.status, TaskStatus::Failed, "{failed:?}");
+    assert_eq!(
+        failed.error.as_ref().unwrap().details["finalCleanupPending"],
+        true
+    );
+    assert!(fixture
+        .store
+        .deleted_project_identity_absent(&fixture.id)
+        .unwrap());
+    assert!(owner_dir.exists());
+    assert!(fixture.tasks.task(&task.task_id).is_ok());
+    drop(immutable);
+    let fixture = fixture.restart_saved().await;
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(!owner_dir.exists());
+    assert!(fixture.tasks.task(&task.task_id).is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn corrupt_maintenance_json_and_database_do_not_block_confirmed_full_deletion() {
+    let fixture = Fixture::new().await;
+    let project = fixture.store.project(&fixture.id).unwrap();
+    let root = project.root.clone();
+    let control = fixture
+        .paths
+        .workspace_root()
+        .join(".platform/project-state/maintenance")
+        .join(format!("{}.json", fixture.id));
+    fs::create_dir_all(control.parent().unwrap()).unwrap();
+    fs::write(&control, b"disposable unreadable maintenance JSON").unwrap();
+    fs::write(
+        root.join("data/main.sqlite"),
+        b"disposable corrupt database",
+    )
+    .unwrap();
+    let fixture = fixture.restart_saved().await;
+    assert_eq!(
+        fixture.store.control(&fixture.id).err().unwrap().code,
+        "INVALID_JSON"
+    );
+    let volatile = fixture.store.control_for_deletion(&fixture.id).unwrap();
+    assert_eq!(volatile.get().mode, "unknown");
+    assert_eq!(
+        fixture.store.control(&fixture.id).err().unwrap().code,
+        "INVALID_JSON"
+    );
+    let deleted = fixture
+        .project(
+            "delete",
+            json!({"expectedDocumentEpoch":project.document_epoch}),
+        )
+        .await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(!root.exists());
+    assert!(!control.exists());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn same_boot_unconfirmed_web_writer_blocks_root_deletion_without_guessing_pid_liveness() {
+    let fixture = Fixture::new().await;
+    let root = fixture.store.project(&fixture.id).unwrap().root;
+    let owner =
+        crate::durable_writer::WriterOwner::web(fixture.paths.data_root(), &fixture.id).unwrap();
+    let marker = owner.fixture_mark_unconfirmed().unwrap();
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(deleted.status, TaskStatus::Failed);
+    assert_eq!(
+        deleted.error.as_ref().unwrap().code,
+        "PROJECT_WRITER_UNCONFIRMED"
+    );
+    assert!(root.exists());
+    assert!(marker.exists());
+    assert!(fixture
+        .store
+        .pending_deletion(&fixture.id)
+        .unwrap()
+        .is_none());
     fixture.stop().await;
 }

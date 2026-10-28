@@ -1050,3 +1050,32 @@ async fn pending_source_restore_marker_is_deleted_without_requiring_recovery_fir
     fixture.assert_source();
     assert!(fixture.apps.deletion_tasks().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn same_boot_orphan_writer_marker_blocks_deletion_before_scope_refresh_or_any_move() {
+    let fixture = Fixture::new();
+    let id = fixture.register().await;
+    let owner = crate::durable_writer::WriterOwner::node(&fixture.data, &id).unwrap();
+    let marker = owner.fixture_mark_unconfirmed().unwrap();
+    let slot = fixture.data.join("node-apps").join(&id);
+    let task = fixture
+        .apps
+        .submit_deletion(&id, fixture.input(&id).await)
+        .await
+        .unwrap();
+    let failed = phase(&fixture.apps, &task, "failed").await;
+    assert_eq!(failed["error"]["code"], "PROJECT_WRITER_UNCONFIRMED");
+    assert_eq!(failed["renamedAny"], false);
+    assert!(slot.exists());
+    assert!(marker.exists());
+    fixture.assert_source();
+    fixture.apps.wait_deletion_workers().await.unwrap();
+    let restarted =
+        NodeApps::new(fixture.data.clone(), "/disposable/nonexistent-node".into()).unwrap();
+    restarted.resume_deletions().await.unwrap();
+    restarted.wait_deletion_workers().await.unwrap();
+    let still_blocked = phase(&restarted, &task, "failed").await;
+    assert_eq!(still_blocked["error"]["code"], "PROJECT_WRITER_UNCONFIRMED");
+    assert!(slot.exists());
+    assert!(marker.exists());
+}

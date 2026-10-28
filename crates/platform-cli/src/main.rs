@@ -202,6 +202,11 @@ enum TaskCommand {
 struct TaskOptions {
     #[arg(long)]
     task: String,
+    /// Supply with --task-type when querying a project task after deletion.
+    #[arg(long, requires = "task_type")]
+    project: Option<String>,
+    #[arg(long, requires = "project")]
+    task_type: Option<String>,
     #[command(flatten)]
     output: OutputOptions,
 }
@@ -239,13 +244,13 @@ enum ProjectCommand {
     Export(ProjectInputOptions),
     /// Import archivePath as a fresh project by default; never overwrites a project.
     ///
-    /// JSON mode defaults to copy. Set original only to recover an archived project identity.
+    /// Every import receives a new identity; JSON mode may be omitted or set to copy.
     Import(InputOptions),
     /// Create an independent project copy, optionally choosing a name in JSON.
     Copy(ProjectMutationOptions),
     /// Permanently delete this project's files without using platform or system trash.
     ///
-    /// This cannot be undone. Retained recovery evidence and other projects are unaffected.
+    /// This cannot be undone. Project recovery records and owned tasks are deleted too.
     /// Omitted expectedDocumentEpoch is read from current project info before submission.
     Delete(ProjectMutationOptions),
 }
@@ -754,11 +759,11 @@ fn prepare_project_import_input(mut input: Value) -> Result<Value> {
     validate_path_field(&input, "archivePath")?;
     match input.get("mode") {
         None => input["mode"] = json!("copy"),
-        Some(Value::String(mode)) if matches!(mode.as_str(), "original" | "copy") => {}
+        Some(Value::String(mode)) if mode == "copy" => {}
         Some(_) => {
             return Err(CliError::new(
                 "INPUT_INVALID",
-                "Import mode must be original or copy; omit it to create a fresh project.",
+                "Import mode must be copy or omitted; every import creates a fresh project.",
             ));
         }
     }
@@ -864,17 +869,20 @@ fn submit_project_deletion(
             ));
         }
     } else {
-        let info = request("GET", "", None)?;
+        let info = request("GET", "/deletion-preview", None)?;
         if info["ok"] != true {
             return Ok(info);
         }
-        let epoch = info["data"]["documentEpoch"]
+        if info["data"]["alreadyAbsent"] == true || info["data"]["cleanupOnly"] == true {
+            return request("POST", "/deletions", Some(input));
+        }
+        let epoch = info["data"]["expectedDocumentEpoch"]
             .as_str()
             .filter(|epoch| !epoch.is_empty())
             .ok_or_else(|| {
                 CliError::new(
                     "SERVICE_PROTOCOL_ERROR",
-                    "Project info did not provide a current documentEpoch. No deletion was submitted.",
+                    "Deletion preview did not provide a current expectedDocumentEpoch. No deletion was submitted.",
                 )
             })?;
         input["expectedDocumentEpoch"] = json!(epoch);
@@ -1032,10 +1040,17 @@ fn node_command(command: NodeCommand) -> (bool, Result<Value>) {
 
 fn task_command(command: TaskCommand) -> (bool, Result<Value>) {
     match command {
-        TaskCommand::Get(options) => (options.output.json, task_request(&options.task)),
+        TaskCommand::Get(options) => (
+            options.output.json,
+            task_request_scoped(&options.task, task_context(&options)),
+        ),
         TaskCommand::Wait { task, timeout } => (
             task.output.json,
-            wait_for_task(&task.task, Duration::from_secs(timeout)),
+            wait_for_task_scoped(
+                &task.task,
+                Duration::from_secs(timeout),
+                task_context(&task),
+            ),
         ),
     }
 }
@@ -1081,19 +1096,70 @@ fn validate_task_response(value: &Value, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn task_request(id: &str) -> Result<Value> {
+fn task_context(options: &TaskOptions) -> Option<(&str, &str)> {
+    options.project.as_deref().zip(options.task_type.as_deref())
+}
+fn task_route(id: &str, context: Option<(&str, &str)>) -> Result<String> {
     validate_task_id(id)?;
-    let value = business_request("GET", &format!("/api/v1/tasks/{id}"), None, None)?;
-    validate_task_response(&value, id)?;
+    let mut route = format!("/api/v1/tasks/{id}");
+    if let Some((project, kind)) = context {
+        validate_project_id(project)?;
+        if kind.is_empty()
+            || kind.len() > 128
+            || !kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err(CliError::new(
+                "INPUT_INVALID",
+                "--task-type must be an explicit task type without URL characters.",
+            ));
+        }
+        route.push_str(&format!("?projectId={project}&taskType={kind}"));
+    }
+    Ok(route)
+}
+fn validate_scoped_task_response(
+    value: &Value,
+    id: &str,
+    context: Option<(&str, &str)>,
+) -> Result<()> {
+    validate_task_response(value, id)?;
+    if let Some((project, kind)) = context {
+        if value["ok"] == true
+            && (value["data"]["projectId"] != project || value["data"]["type"] != kind)
+        {
+            return Err(CliError::new(
+                "SERVICE_PROTOCOL_ERROR",
+                "The returned task does not match the requested project and task type.",
+            ));
+        }
+    }
+    Ok(())
+}
+fn task_request_scoped(id: &str, context: Option<(&str, &str)>) -> Result<Value> {
+    let route = task_route(id, context)?;
+    let value = business_request("GET", &route, None, None)?;
+    validate_scoped_task_response(&value, id, context)?;
     Ok(value)
 }
-
-fn wait_for_task(id: &str, timeout: Duration) -> Result<Value> {
+fn wait_for_task_scoped(
+    id: &str,
+    timeout: Duration,
+    context: Option<(&str, &str)>,
+) -> Result<Value> {
     validate_task_id(id)?;
     let connection = BusinessConnection::connect()?;
-    wait_for_connected_task(&connection, id, timeout)
+    wait_for_connected_task_scoped_with_discovery(
+        &connection,
+        id,
+        timeout,
+        context,
+        BusinessConnection::connect,
+    )
 }
 
+#[cfg(test)]
 fn wait_for_connected_task(
     connection: &BusinessConnection,
     id: &str,
@@ -1102,13 +1168,24 @@ fn wait_for_connected_task(
     wait_for_connected_task_with_discovery(connection, id, timeout, BusinessConnection::connect)
 }
 
+#[cfg(test)]
 fn wait_for_connected_task_with_discovery(
     connection: &BusinessConnection,
     id: &str,
     timeout: Duration,
+    rediscover: impl FnMut() -> Result<BusinessConnection>,
+) -> Result<Value> {
+    wait_for_connected_task_scoped_with_discovery(connection, id, timeout, None, rediscover)
+}
+
+fn wait_for_connected_task_scoped_with_discovery(
+    connection: &BusinessConnection,
+    id: &str,
+    timeout: Duration,
+    context: Option<(&str, &str)>,
     mut rediscover: impl FnMut() -> Result<BusinessConnection>,
 ) -> Result<Value> {
-    let route = format!("/api/v1/tasks/{id}");
+    let route = task_route(id, context)?;
     let deadline = Instant::now() + timeout;
     let initial_timeout = if timeout.is_zero() {
         Duration::from_secs(3)
@@ -1117,7 +1194,7 @@ fn wait_for_connected_task_with_discovery(
     };
     let mut refreshed_connection = None;
     let mut current = connection.request("GET", &route, None, None, initial_timeout)?;
-    validate_task_response(&current, id)?;
+    validate_scoped_task_response(&current, id, context)?;
     while current["ok"] == true && current["data"]["final"] == false {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -1164,7 +1241,7 @@ fn wait_for_connected_task_with_discovery(
         }
         match response {
             Ok(next) => {
-                validate_task_response(&next, id)?;
+                validate_scoped_task_response(&next, id, context)?;
                 current = next;
             }
             Err(_) if Instant::now() >= deadline => break,
@@ -1212,7 +1289,7 @@ fn parse_input(reader: impl Read) -> Result<Value> {
     Ok(value)
 }
 
-fn project_request(id: &str, method: &str, suffix: &str, body: Option<Value>) -> Result<Value> {
+fn validate_project_id(id: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > 64
         || !id.as_bytes()[0].is_ascii_lowercase()
@@ -1225,6 +1302,11 @@ fn project_request(id: &str, method: &str, suffix: &str, body: Option<Value>) ->
             "--project must be a valid explicit project ID.",
         ));
     }
+    Ok(())
+}
+
+fn project_request(id: &str, method: &str, suffix: &str, body: Option<Value>) -> Result<Value> {
+    validate_project_id(id)?;
     business_request(
         method,
         &format!("/api/v1/projects/{id}{suffix}"),
@@ -1907,7 +1989,7 @@ mod tests {
             |method, suffix, body| {
                 calls.push((method.to_owned(), suffix.to_owned(), body));
                 if method == "GET" {
-                    Ok(json!({"ok":true,"data":{"documentEpoch":"current-disposable-epoch"}}))
+                    Ok(json!({"ok":true,"data":{"expectedDocumentEpoch":"current-disposable-epoch"}}))
                 } else {
                     Ok(accepted.clone())
                 }
@@ -1918,7 +2000,7 @@ mod tests {
         assert_eq!(
             calls,
             vec![
-                ("GET".into(), "".into(), None),
+                ("GET".into(), "/deletion-preview".into(), None),
                 (
                     "POST".into(),
                     "/deletions".into(),
@@ -1928,6 +2010,30 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn already_absent_deletion_preview_can_submit_idempotent_cleanup_without_an_epoch() {
+        for state in ["alreadyAbsent", "cleanupOnly"] {
+            let mut calls = vec![];
+            let value = submit_project_deletion(json!({}), |method, suffix, body| {
+                calls.push((method.to_owned(), suffix.to_owned(), body));
+                if method == "GET" {
+                    let mut info = json!({"ok":true,"data":{"expectedDocumentEpoch":null}});
+                    info["data"][state] = json!(true);
+                    Ok(info)
+                } else {
+                    Ok(json!({"ok":true,"data":{"result":{"operationOutcome":"deleted"}}}))
+                }
+            })
+            .unwrap();
+            assert_eq!(value["data"]["result"]["operationOutcome"], "deleted");
+            assert_eq!(calls[0].1, "/deletion-preview");
+            assert_eq!(
+                calls[1],
+                ("POST".into(), "/deletions".into(), Some(json!({})))
+            );
+        }
     }
 
     #[test]
@@ -1963,9 +2069,9 @@ mod tests {
     fn permanent_delete_never_writes_when_current_identity_cannot_be_read() {
         for info in [
             json!({"ok":true,"data":{}}),
-            json!({"ok":true,"data":{"documentEpoch":null}}),
-            json!({"ok":true,"data":{"documentEpoch":""}}),
-            json!({"ok":true,"data":{"documentEpoch":42}}),
+            json!({"ok":true,"data":{"expectedDocumentEpoch":null}}),
+            json!({"ok":true,"data":{"expectedDocumentEpoch":""}}),
+            json!({"ok":true,"data":{"expectedDocumentEpoch":42}}),
         ] {
             let mut calls = 0;
             assert_eq!(
@@ -2028,11 +2134,10 @@ mod tests {
         expected["mode"] = json!("copy");
         assert_eq!(prepare_project_import_input(input).unwrap(), expected);
 
-        for mode in ["copy", "original"] {
-            let input = json!({"archivePath":archive,"mode":mode,"name":"Shared project"});
-            assert_eq!(prepare_project_import_input(input.clone()).unwrap(), input);
-        }
+        let input = json!({"archivePath":archive,"mode":"copy","name":"Shared project"});
+        assert_eq!(prepare_project_import_input(input.clone()).unwrap(), input);
         for mode in [
+            json!("original"),
             json!(null),
             json!(true),
             json!(1),
@@ -2114,6 +2219,62 @@ mod tests {
             "archivePath"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn deletion_task_context_is_explicit_and_validated() {
+        let parsed = Cli::try_parse_from([
+            "cli",
+            "task",
+            "wait",
+            "--task",
+            "task_example",
+            "--project",
+            "prj_example",
+            "--task-type",
+            "delete",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::Task { .. }));
+        assert!(Cli::try_parse_from([
+            "cli",
+            "task",
+            "wait",
+            "--task",
+            "task_example",
+            "--project",
+            "prj_example"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "cli",
+            "task",
+            "get",
+            "--task",
+            "task_example",
+            "--task-type",
+            "delete"
+        ])
+        .is_err());
+        assert_eq!(
+            task_route("task_example", Some(("prj_example", "delete"))).unwrap(),
+            "/api/v1/tasks/task_example?projectId=prj_example&taskType=delete"
+        );
+        let mut result = json!({"ok":true,"data":{"taskId":"task_example","projectId":"prj_example","type":"delete","status":"succeeded","final":true}});
+        assert!(validate_scoped_task_response(
+            &result,
+            "task_example",
+            Some(("prj_example", "delete"))
+        )
+        .is_ok());
+        result["data"]["projectId"] = json!("prj_other");
+        assert!(validate_scoped_task_response(
+            &result,
+            "task_example",
+            Some(("prj_example", "delete"))
+        )
+        .is_err());
+        assert!(task_route("task_example", Some(("prj_example", "delete&other=true"))).is_err());
     }
 
     #[test]

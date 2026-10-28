@@ -215,12 +215,14 @@ impl BuildManager {
                 paths.data_root().to_path_buf(),
                 managed_node,
                 store.processes(),
-            ),
+            )
+            .with_project_boundary(paths.workspace_root().into()),
             git_environment: GitEnvironmentManager::with_processes(
                 paths.data_root().to_path_buf(),
                 managed_git,
                 store.processes(),
-            ),
+            )
+            .with_project_boundary(paths.workspace_root().into()),
             git_stop: watch::channel(false).0,
             paths,
             store,
@@ -310,6 +312,7 @@ impl BuildManager {
             result: None,
             error: None,
         };
+        self.record_web_task(&record)?;
         ensure_dir(&self.task_dir(&record.task_id))?;
         // The admission record starts final: if pointer persistence fails (or
         // the process exits before acceptance), no queued orphan is retained.
@@ -463,6 +466,7 @@ impl BuildManager {
             result: None,
             error: None,
         };
+        self.record_web_task(&record)?;
         ensure_dir(&self.task_dir(&record.task_id))?;
         atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
         self.registry
@@ -493,6 +497,7 @@ impl BuildManager {
             result: None,
             error: None,
         };
+        self.record_web_task(&record)?;
         ensure_dir(&self.task_dir(&record.task_id))?;
         atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
         self.registry
@@ -503,6 +508,101 @@ impl BuildManager {
         Ok(record)
     }
     /// Persist project ownership before accepting any Node/source work.
+    fn record_web_task(&self, record: &TaskRecord) -> Result<(), ApiError> {
+        if let Some(id) = record
+            .project_id
+            .as_deref()
+            .filter(|id| id.starts_with("prj_"))
+        {
+            let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            );
+            ownership.record_task(id, &record.task_id)?;
+            fs::create_dir(self.task_dir(&record.task_id))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(
+                    self.task_dir(&record.task_id),
+                    fs::Permissions::from_mode(0o700),
+                )?;
+            }
+            let identity =
+                crate::file_identity::PersistedIdentity::capture(&self.task_dir(&record.task_id))
+                    .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))?;
+            ownership.capture_task_directory(id, &record.task_id, &identity)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn project_task_ids(&self, id: &str) -> Vec<String> {
+        let mut ids = self
+            .registry
+            .lock()
+            .unwrap()
+            .records
+            .values()
+            .filter(|task| task.project_id.as_deref() == Some(id))
+            .map(|task| task.task_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    pub(crate) fn restore_failed_project_task(
+        &self,
+        snapshot: &TaskRecord,
+        error: ApiError,
+    ) -> Result<(), ApiError> {
+        let project = snapshot
+            .project_id
+            .as_deref()
+            .filter(|id| id.starts_with("prj_"))
+            .ok_or_else(|| ApiError::new("INVALID_PROJECT_ID", "删除回执缺少网页项目归属。"))?;
+        let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        let path = self.task_dir(&snapshot.task_id);
+        check_no_symlinks(&path, true)?;
+        let recorded = ownership.path(project)?.exists();
+        if path.exists() {
+            if !recorded {
+                return Err(ApiError::new(
+                    "WEB_PROJECT_OWNERSHIP_INVALID",
+                    "已有任务目录缺少当期归属。",
+                ));
+            }
+            ownership.verify_task_directory(project, &snapshot.task_id)?;
+        } else {
+            let previous = if recorded {
+                ownership.task_directory_identity(project, &snapshot.task_id)?
+            } else {
+                None
+            };
+            fs::create_dir(&path)?;
+            let identity = crate::file_identity::PersistedIdentity::capture(&path)
+                .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))?;
+            if recorded {
+                ownership.rebind_recreated_task_directory(
+                    project,
+                    &snapshot.task_id,
+                    previous.as_ref(),
+                    &identity,
+                )?;
+            }
+        }
+        let mut failed = snapshot.clone();
+        failed.status = TaskStatus::Failed;
+        failed.phase = "failed".into();
+        failed.error = Some(error);
+        atomic_json(&path.join("task.json"), &failed)?;
+        self.registry
+            .lock()
+            .unwrap()
+            .records
+            .insert(failed.task_id.clone(), failed);
+        Ok(())
+    }
     pub(crate) fn create_node_operation(
         &self,
         app_id: &str,
@@ -575,14 +675,38 @@ impl BuildManager {
             let path = self.task_dir(id);
             crate::projects::check_no_symlinks(&path, true)?;
             if path.exists() {
-                let saved: TaskRecord = serde_json::from_slice(&fs::read(path.join("task.json"))?)?;
-                if saved.task_id != *id || !saved.status.is_final() {
-                    return Err(ApiError::new(
-                        "NODE_PROJECT_TASK_CHANGED",
-                        "项目任务身份或状态已变化。",
-                    ));
+                let web_project = registry
+                    .records
+                    .get(id)
+                    .and_then(|record| record.project_id.as_deref())
+                    .filter(|project| project.starts_with("prj_"));
+                if let Some(project) = web_project {
+                    let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+                        self.paths.data_root().into(),
+                        self.paths.workspace_root().into(),
+                    );
+                    ownership.verify_task_directory(project, id)?;
+                    let identity =
+                        ownership
+                            .task_directory_identity(project, id)?
+                            .ok_or_else(|| {
+                                ApiError::new(
+                                    "WEB_PROJECT_OWNERSHIP_INVALID",
+                                    "任务目录身份未捕获。",
+                                )
+                            })?;
+                    crate::history_cleanup::remove_owned_directory(&path, &identity)?;
+                } else {
+                    let saved: TaskRecord =
+                        serde_json::from_slice(&fs::read(path.join("task.json"))?)?;
+                    if saved.task_id != *id || !saved.status.is_final() {
+                        return Err(ApiError::new(
+                            "NODE_PROJECT_TASK_CHANGED",
+                            "项目任务身份或状态已变化。",
+                        ));
+                    }
+                    fs::remove_dir_all(&path)?;
                 }
-                fs::remove_dir_all(&path)?;
                 fs::File::open(path.parent().unwrap())?.sync_all()?;
             }
             registry.records.remove(id);
@@ -839,18 +963,20 @@ impl BuildManager {
         });
         project.check()?;
         self.store.check_development_available(project_id)?;
+        let processes = self.store.project_processes(project_id)?;
         self.phase(id, "git-build-check")?;
         let git_guard = BuildGitGuard::capture_with_keep_alive(
             &project,
             &self.git_environment,
             self.git_stop.subscribe(),
-            self.store.processes(),
+            processes.clone(),
             protection.clone(),
         )
         .await?;
         self.phase(id, "environment")?;
         let tools = self
             .environment
+            .with_process_registry(processes.clone())
             .resolve_with_keepalive(protection.clone())
             .await?;
 
@@ -1003,7 +1129,7 @@ impl BuildManager {
             .recheck_with_keep_alive(
                 project,
                 self.git_stop.subscribe(),
-                self.store.processes(),
+                self.store.project_processes(&project.manifest.id)?,
                 process_protection,
             )
             .await?;
@@ -1069,7 +1195,15 @@ impl BuildManager {
         keep_alive: G,
     ) -> Result<(), ApiError> {
         self.checkpoint(start)?;
-        let cache = self.paths.workspace_root().join(".platform/cache/npm");
+        let project = self
+            .task(id)?
+            .project_id
+            .ok_or_else(|| ApiError::new("BUILD_OWNER_INVALID", "构建任务缺少项目归属。"))?;
+        let cache = self
+            .paths
+            .workspace_root()
+            .join(".platform/cache/npm")
+            .join(&project);
         ensure_dir(&cache)?;
         let mut command = Command::new(&tools.node.path);
         command
@@ -1110,7 +1244,7 @@ impl BuildManager {
             .take_if(|fixture| args.first().copied() == Some(fixture.operation.as_str()));
         let mut run = self
             .store
-            .processes()
+            .project_processes(&project)?
             .start(
                 command,
                 ProcessOptions::new("web-build/npm", remaining),

@@ -1292,17 +1292,9 @@ impl CleanupManager {
             }
         }
         for id in projects {
-            if self.store.is_retired(&id)?.is_some() {
-                // A permanently deleted project has no current copy. Its files
-                // in the old workspace are the only remaining copy; keep them.
-                return Err(error(
-                    "The old workspace holds the only copy of a project deleted after migration",
-                ));
-            } else {
-                let project = self.store.project(&id)?;
-                self.check_database_copy(&project.root.join(&project.manifest.database))?;
-                directory_identity(&project.root.join(&project.manifest.attachments_dir))?;
-            }
+            let project = self.store.project(&id)?;
+            self.check_database_copy(&project.root.join(&project.manifest.database))?;
+            directory_identity(&project.root.join(&project.manifest.attachments_dir))?;
         }
         Ok(())
     }

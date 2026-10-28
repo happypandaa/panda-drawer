@@ -117,7 +117,7 @@ impl NodeDevelopmentTasks {
                 source_lease.validate()?;
                 let source = source_lease.source().clone();
                 let owner: Arc<dyn Send + Sync> = Arc::new((lease.clone(), source_lease.keep_alive(), apps.clone()));
-                let processes = crate::node_development_build::NodeProcessScope::new(manager.store.processes(), owner.clone()).with_project_ownership(crate::node_project_ownership::NodeProjectOwnership::new(manager.paths.data_root().into(), manager.paths.workspace_root().into()), app_id.clone());
+                let processes = crate::node_development_build::NodeProcessScope::new(manager.store.processes(), owner.clone()).with_project_ownership(crate::node_project_ownership::NodeProjectOwnership::new(manager.paths.data_root().into(), manager.paths.workspace_root().into()), app_id.clone())?;
                 let git = crate::node_development_git::NodeGit::new(manager.git.clone()).with_stop(stop.clone())
                     .with_process_scope(processes.processes.clone(), processes.owner.clone());
                 let before = git.status(&source.source_root).await?;
@@ -127,7 +127,7 @@ impl NodeDevelopmentTasks {
                 manager.tasks.phase(&task_id, "building-source")?;
                 // Managed verification can use blocking I/O: await the real
                 // work before checking cancellation, never drop it via select.
-                let tools = manager.tasks.environment().resolve_with_keepalive(owner).await.map_err(crate::node_development_build::NodeProcessScope::resolution_error)?;
+                let tools = manager.tasks.environment().with_process_registry(processes.processes.clone()).resolve_with_keepalive(owner).await.map_err(crate::node_development_build::NodeProcessScope::resolution_error)?;
                 check(&stop)?; check(&cancel)?;
                 let build_root = manager.paths.data_root().join("node-development-builds");
                 if !build_root.try_exists()? { std::fs::create_dir(&build_root)?; }

@@ -13,7 +13,7 @@ await mkdir(outputParent, { recursive: true });
 const output = await mkdtemp(path.join(outputParent, 'ui-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true;\n');
+await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : command === "project_delete_preview" ? globalThis.__UI_DELETE_PREVIEW__(...args) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true;\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {
@@ -69,12 +69,25 @@ const { ProjectDeleteDialog } = await component('ProjectDeleteDialog.tsx');
 const { ProjectTask } = await component('ProjectTask.tsx');
 let root;
 let render;
+let previewState = null;
+const previewContexts = new Map();
+function previewFixture(value, status = normalStatus, instanceId = 'preview-fixture') {
+  return { projectId: value.id, instanceId, projectRoot: value.projectRoot, expectedDocumentEpoch: value.documentEpoch || '22222222-2222-4222-8222-222222222222', mode: status?.mode ?? 'ready', maintenanceId: status?.maintenanceId ?? null, deletePaths: [value.projectRoot, `/disposable/owned-material/${value.id}`], alreadyAbsent: false, cleanupOnly: false };
+}
 async function setup() {
+  previewState = null; previewContexts.clear();
+  globalThis.__UI_DELETE_PREVIEW__ = async ({ projectId }) => {
+    const context = previewContexts.get(projectId);
+    if (context) return previewFixture(context.project, context.status, context.instanceId);
+    const current = previewState?.projects.find(value => value.id === projectId);
+    if (current) return previewFixture(current, normalStatus, previewState.instanceId ?? 'instance_dom_fixture');
+    throw new Error('No reviewed fixture identity');
+  };
   document.body.innerHTML = '<button id="trigger">Open details</button><aside id="already-inert" inert></aside><div id="root"></div>';
   document.body.style.overflow = 'auto';
   document.getElementById('trigger').focus();
   root = createRoot(document.getElementById('root'));
-  render = async (tree) => { await act(async () => { root.render(tree); }); };
+  render = async (tree) => { if (tree?.props?.project) previewContexts.set(tree.props.project.id, tree.props); await act(async () => { root.render(tree); }); };
 }
 async function click(element) { assert.ok(element); await act(async () => { element.click(); }); }
 async function key(keyValue, shiftKey = false) {
@@ -106,7 +119,7 @@ afterEach(async () => {
 });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
-test('Project import defaults to a new identity and preserves the original only after explicit selection', async () => {
+test('Project import always requests a new independent identity', async () => {
   await setup(); const calls = []; const tasks = [];
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     assert.equal(command, 'project_import'); calls.push(args);
@@ -115,22 +128,20 @@ test('Project import defaults to a new identity and preserves the original only 
   };
   const props = { disabled: false, onTask(value) { tasks.push(value); }, onClose() {} };
   await render(h(ImportPanel, props));
-  assert.equal(document.querySelector('input[name="import-mode"]:checked').value, 'copy');
+  assert.equal(document.querySelector('input[name="import-mode"]'), null);
   assert.match(document.querySelector('.project-help').textContent, /重复导入可以并存/);
   await inputValue(document.querySelector('.path-input input'), '/disposable/shared-project.zip');
   await inputValue(document.querySelector('form > label input'), 'My independent project');
   await click(buttonNamed('校验并导入'));
-  assert.deepEqual(calls, [{ input: { archivePath: '/disposable/shared-project.zip', mode: 'copy', cleanupTemporaryFiles: true, name: 'My independent project' } }]);
+  assert.deepEqual(calls, [{ input: { archivePath: '/disposable/shared-project.zip', cleanupTemporaryFiles: true, name: 'My independent project' } }]);
   assert.match(dialog().textContent, /导入成功/);
   await act(async () => root.unmount()); root = null;
   await setup(); await render(h(ImportPanel, props));
   await inputValue(document.querySelector('.path-input input'), '/disposable/shared-project.zip');
-  await click(document.querySelector('input[value="original"]'));
-  assert.equal(document.querySelector('input[name="import-mode"]:checked').value, 'original');
-  assert.match(document.querySelector('.project-help').textContent, /拒绝导入，不会覆盖或合并/);
-  assert.equal(document.querySelector('form > label input'), null);
+  assert.equal(document.querySelector('input[value="original"]'), null);
+  assert.match(document.querySelector('.project-help').textContent, /每次导入都生成新 ID/);
   await click(buttonNamed('校验并导入'));
-  assert.deepEqual(calls[1], { input: { archivePath: '/disposable/shared-project.zip', mode: 'original', cleanupTemporaryFiles: true } });
+  assert.deepEqual(calls[1], { input: { archivePath: '/disposable/shared-project.zip', cleanupTemporaryFiles: true } });
   assert.equal(tasks.length, 2);
 });
 
@@ -438,7 +449,7 @@ test('Modal pending gate blocks every close path and uses current props without 
   assert.equal(closes, 1); assert.equal(guards, 1);
 });
 
-const project = { id: 'prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
+const project = { id: 'prj_ui_test', projectRoot: '/disposable/workspace/projects/prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
 const normalStatus = { mode: 'ready', readyForChanges: false, recoveryRequired: false };
 async function inputValue(input, value) {
   assert.ok(input);
@@ -650,15 +661,61 @@ test('Overview tabs support keyboard navigation without opening deletion from th
   assert.equal(document.querySelector('[aria-label="删除项目确认"]'), null);
 });
 
-test('Permanent deletion requires a known project epoch and never submits a missing identity', async () => {
+test('Permanent deletion never submits when the read-only identity preview cannot be verified', async () => {
   await setup(); const calls = [];
+  globalThis.__UI_DELETE_PREVIEW__ = async () => { throw new Error('Disposable ownership cannot be verified'); };
   globalThis.__UI_TEST_INVOKE__ = async (...args) => { calls.push(args); throw new Error('A missing identity must not submit'); };
-  await render(h(ProjectDeleteDialog, { project: { ...project, projectRoot: '/disposable/missing-epoch', documentEpoch: '' }, status: normalStatus, onTask() {}, onClose() {}, disabled: false }));
-  assert.match(dialog().textContent, /项目身份尚未读取.*刷新项目列表/);
+  await render(h(ProjectDeleteDialog, { project: { ...project, documentEpoch: null }, status: undefined, onTask() {}, onClose() {}, disabled: false }));
+  assert.match(dialog().textContent, /无法核对删除范围.*ownership cannot be verified/);
   assert.equal(document.querySelector('.project-delete-confirmation input').disabled, true);
-  assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(buttonNamed('确认永久删除项目'));
   assert.deepEqual(calls, []);
+});
+
+test('A damaged project without a business epoch can delete using its private identity preview', async () => {
+  await setup(); const calls = []; const expectedEpoch = '22222222-2222-4222-8222-222222222222';
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => { calls.push([command, args]); return { taskId: 'task_damaged_preview', projectId: project.id, type: 'delete', status: 'queued', final: false, phase: 'queued' }; };
+  await render(h(ProjectDeleteDialog, { project: { ...project, documentEpoch: null }, status: undefined, onTask() {}, onClose() {}, disabled: false }));
+  assert.equal(document.querySelector('.project-delete-confirmation input').disabled, false);
+  await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: expectedEpoch } }]]);
+});
+
+test('Deletion preview rejects a mismatched root or service and never sends filesystem paths', async () => {
+  for (const changed of [{ projectRoot: '/disposable/foreign-project' }, { instanceId: 'foreign-service' }, { alreadyAbsent: true }]) {
+    await setup(); const writes = [];
+    globalThis.__UI_DELETE_PREVIEW__ = async args => { assert.deepEqual(args, { projectId: project.id }); return { ...previewFixture(project, normalStatus, 'reviewed-service'), ...changed }; };
+    globalThis.__UI_TEST_INVOKE__ = async (...args) => { writes.push(args); throw new Error('A mismatched preview cannot authorize a write'); };
+    await render(h(ProjectDeleteDialog, { project, status: normalStatus, instanceId: 'reviewed-service', disabled: false, onTask() {}, onClose() {} }));
+    assert.match(dialog().textContent, /删除范围或项目身份不符/);
+    assert.equal(buttonNamed('确认永久删除项目').disabled, true);
+    assert.deepEqual(writes, []);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
+test('A late read-only deletion preview cannot authorize the next selected project', async () => {
+  await setup(); const old = deferred(); const next = { ...project, id: 'prj_next_preview', projectRoot: '/disposable/next-preview', documentEpoch: '33333333-3333-4333-8333-333333333333' };
+  globalThis.__UI_DELETE_PREVIEW__ = async ({ projectId }) => projectId === project.id ? old.promise : previewFixture(next);
+  const props = { project, disabled: false, onTask() {}, onClose() {} };
+  await render(h(ProjectDeleteDialog, props));
+  assert.match(dialog().textContent, /正在核对删除范围/);
+  assert.equal(buttonNamed('取消，保留项目').disabled, false);
+  await render(h(ProjectDeleteDialog, { ...props, project: next }));
+  await act(async () => old.resolve(previewFixture(project)));
+  assert.ok(dialog().textContent.includes(next.projectRoot));
+  assert.equal(document.querySelector('.project-delete-confirmation input').disabled, false);
+  assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
+});
+
+test('A cleanup-only deletion preview permits finalization without inventing an epoch', async () => {
+  await setup(); const writes = [];
+  globalThis.__UI_DELETE_PREVIEW__ = async () => ({ ...previewFixture(project), projectRoot: null, expectedDocumentEpoch: null, cleanupOnly: true, deletePaths: ['/disposable/remaining-owned-task'] });
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => { writes.push([command, args]); return { taskId: 'task_cleanup_only', projectId: project.id, type: 'delete', status: 'queued', final: false, phase: 'queued' }; };
+  await render(h(ProjectDeleteDialog, { project: { ...project, documentEpoch: null }, disabled: false, onTask() {}, onClose() {} }));
+  assert.match(dialog().textContent, /只清除已核实归属的剩余材料/);
+  await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+  assert.deepEqual(writes, [['project_delete', { projectId: project.id, input: {} }]]);
 });
 
 test('Deletion acknowledgment is revoked for changed ID, epoch, root or service and submits only the current identity', async () => {
@@ -713,9 +770,7 @@ test('The deletion dialog keeps status gates and submits the currently reviewed 
   };
   for (const gate of [
     { disabled: true, status: normalStatus },
-    { disabled: false, status: undefined },
     { status: { ...normalStatus, activeTask: 'task_other_project_operation' } },
-    { status: { ...normalStatus, recoveryRequired: true } },
   ]) {
     props = { ...props, ...gate }; await render(h(ProjectDeleteDialog, props));
     assert.equal(document.querySelector('.project-delete-confirmation input').disabled, true);
@@ -725,7 +780,6 @@ test('The deletion dialog keeps status gates and submits the currently reviewed 
   assert.deepEqual(calls, []);
   for (const temporaryStatus of [
     { ...normalStatus, activeTask: 'task_temporary_project_operation' },
-    { ...normalStatus, recoveryRequired: true },
   ]) {
     props = { ...props, disabled: false, status: normalStatus };
     await render(h(ProjectDeleteDialog, props));
@@ -748,6 +802,16 @@ test('The deletion dialog keeps status gates and submits the currently reviewed 
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
   assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: project.documentEpoch, maintenanceId: 'maintenance_current_confirmation' } }]]);
+});
+
+test('Static recovery evidence is included in permanent deletion without requiring recovery first', async () => {
+  await setup(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => { calls.push([command, args]); return { taskId: 'task_delete_recovery', projectId: project.id, type: 'delete', status: 'queued', final: false, phase: 'queued' }; };
+  await render(h(ProjectDeleteDialog, { project, status: { ...normalStatus, recoveryRequired: true }, disabled: false, onTask() {}, onClose() {} }));
+  assert.match(dialog().textContent, /恢复材料也会随项目永久删除/);
+  assert.equal(document.querySelector('.project-delete-confirmation input').disabled, false);
+  await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: project.documentEpoch } }]]);
 });
 
 test('An accepted deletion keeps its closing lock across name and maintenance refreshes until its final task', async () => {
@@ -1222,6 +1286,7 @@ test('A failed migration submission still settles after leaving and returning to
 
 const appProject = (id, name) => ({ ...project, id, name, description: '', projectRoot: `/disposable/workspace/projects/${id}`, manifest: metadata.manifest });
 function mockApp(state, custom = async (command) => { throw new Error(`Unexpected native request: ${command}`); }) {
+  previewState = state;
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     if (command === 'bootstrap_info') return { displayName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.happypandaa.pandadrawer', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
     if (command === 'project_list') return state.projects;
@@ -1579,7 +1644,7 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.equal(dialog().querySelector('[role="tablist"]'), null);
   assert.doesNotMatch(dialog().textContent, /复制提示词|在 Codex 打开|构建更新/);
   assert.match(dialog().textContent, /永久删除.*无法撤销/);
-  assert.match(dialog().textContent, /迁移前的旧工作区.*不会自动删除/);
+  assert.match(dialog().textContent, /恢复、任务材料及迁移前的项目副本/);
   assert.ok(dialog().textContent.includes(state.projects[0].projectRoot));
   assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(document.querySelector('.project-delete-confirmation input'));
@@ -1611,7 +1676,7 @@ test('A final project-task deletion result ends loading while its lifecycle poll
       const task = { taskId: `task_single_poll_${status}`, type: 'delete', projectId: fixture.id, status: 'queued', final: false, phase: 'queued', result: null, error: null };
       mockApp(state, async (command, args) => {
         if (command === 'project_delete') return task;
-        assert.equal(command, 'task_get'); assert.equal(args.taskId, task.taskId);
+        assert.equal(command, 'task_get'); assert.deepEqual(args, { taskId: task.taskId, projectId: task.projectId, taskType: 'delete' });
         if (++polls > 1) return stalled.promise;
         if (status === 'succeeded') state.projects = [];
         return { ...task, status, final: true, phase: status === 'succeeded' ? 'completed' : status, result: { operationOutcome: status === 'succeeded' ? 'deleted' : status === 'failed' ? 'not_deleted' : 'unknown' }, ...(status === 'succeeded' ? {} : { error: { code: 'DISPOSABLE_SINGLE_POLL', message: `Deletion ${status} from project poll` } }) };
@@ -1634,6 +1699,29 @@ test('A final project-task deletion result ends loading while its lifecycle poll
       }
       await act(async () => root.unmount()); root = null;
     }
+  } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
+});
+
+test('A missing successful deletion task receipt clears project state and ignores a stale list response', async () => {
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 0;
+  window.setInterval = (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; };
+  window.clearInterval = id => timers.delete(id);
+  try {
+    await setup(); const fixture = appProject('prj_absent_delete', 'Disposable absent deletion');
+    const task = { taskId: 'task_absent_delete', type: 'delete', projectId: fixture.id, status: 'running', final: false, phase: 'delete-intent', result: null, error: null };
+    mockApp({ projects: [fixture] }, async (command, args) => {
+      if (command === 'project_delete') return task;
+      assert.equal(command, 'task_get'); assert.deepEqual(args, { taskId: task.taskId, projectId: fixture.id, taskType: 'delete' });
+      return { ...task, status: 'succeeded', final: true, phase: 'completed', result: { projectId: fixture.id, operationOutcome: 'deleted', alreadyAbsent: true } };
+    });
+    await render(h(App)); await openProjectMenu(fixture.name); await click(document.querySelector(`[aria-label="删除项目「${fixture.name}」"]`));
+    await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
+    await act(async () => { for (const timer of [...timers.values()].filter(timer => timer.delay === 1000)) timer.callback(); });
+    assert.equal(dialog(), null);
+    assert.equal(document.querySelector(`[aria-label="进入项目「${fixture.name}」"]`), null);
+    await click(document.querySelector('.radio-task-button'));
+    assert.match(document.querySelector('.task-center-panel').textContent, /暂无任务/);
+    assert.equal(document.body.textContent.includes(task.taskId), false);
   } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
 });
 

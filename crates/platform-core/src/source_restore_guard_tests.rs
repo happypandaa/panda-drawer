@@ -562,13 +562,17 @@ async fn source_restore_guard_pending_keeps_webpage_sql_attachments_and_metadata
             .project_copy(&project.id, json!({"name":"blocked copy"}))
             .await
             .unwrap_err(),
-        handle
-            .project_delete(&project.id, json!({}))
-            .await
-            .unwrap_err(),
     ] {
         assert_eq!(error.code, "PROJECT_SOURCE_RESTORE_PENDING");
     }
+    assert_eq!(
+        handle
+            .project_delete(&project.id, json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        "PROJECT_DELETE_CONFIRMATION_REQUIRED"
+    );
     let store = service.store();
     let pending = inspect(paths.workspace_root(), &project.id)
         .pending

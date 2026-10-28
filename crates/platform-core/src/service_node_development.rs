@@ -151,7 +151,15 @@ impl RuntimeHandle {
                     lease.active.0.paths.workspace_root().to_path_buf(),
                 ),
             )
-            .with_process_scope(lease.active.0.store.processes(), lease.keep_alive());
+            .with_process_scope(
+                lease.active.0.store.processes().with_writer_owner(
+                    crate::durable_writer::WriterOwner::node(
+                        lease.active.0.paths.data_root(),
+                        app_id,
+                    )?,
+                ),
+                lease.keep_alive(),
+            );
         let root = &lease.source.source_root;
         let scope = crate::node_development_git::NodeRestoreScope {
             app_id: app_id.into(),

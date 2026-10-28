@@ -1,6 +1,7 @@
 //! Disposable lifecycle evidence; all workspaces and exports belong to TempDir.
 use super::*;
 use crate::{CreateProjectInput, TaskStatus};
+use std::time::Duration;
 
 struct Fixture {
     _temporary: tempfile::TempDir,
@@ -56,11 +57,17 @@ impl Fixture {
         }
     }
     fn export_path(&self, name: &str) -> PathBuf {
-        self.paths.data_root().join(name)
+        self.paths.data_root().parent().unwrap().join(name)
     }
     async fn wait(&self, task: &TaskRecord) -> TaskRecord {
         for _ in 0..2000 {
-            let record = self.tasks.task(&task.task_id).unwrap();
+            let record = if task.task_type == "delete" {
+                self.lifecycle
+                    .task_for_project(&task.task_id, task.project_id.as_deref().unwrap(), "delete")
+                    .unwrap()
+            } else {
+                self.tasks.task(&task.task_id).unwrap()
+            };
             if record.status.is_final() {
                 // The runner drops source/target leases after saving the final record.
                 tokio::task::yield_now().await;
@@ -72,16 +79,14 @@ impl Fixture {
     }
     async fn project(&self, kind: &str, mut input: Value) -> TaskRecord {
         if kind == "delete" && input.get("expectedDocumentEpoch").is_none() {
-            input["expectedDocumentEpoch"] = json!(self
-                .store
-                .registered_epoch(&self.id)
-                .unwrap()
-                .or_else(|| self
-                    .store
+            if let Some(epoch) = self.store.registered_epoch(&self.id).unwrap().or_else(|| {
+                self.store
                     .pending_deletion(&self.id)
                     .unwrap()
-                    .map(|marker| marker.target_epoch))
-                .unwrap());
+                    .map(|marker| marker.target_epoch)
+            }) {
+                input["expectedDocumentEpoch"] = json!(epoch);
+            }
         }
         let task = self
             .lifecycle
@@ -94,6 +99,34 @@ impl Fixture {
         self.lifecycle.shutdown().await;
         self.tasks.shutdown().await;
         self.store.shutdown().await;
+    }
+    async fn restart_saved(self) -> Self {
+        self.lifecycle.shutdown().await;
+        self.tasks.shutdown().await;
+        self.store.shutdown().await;
+        let store = Arc::new(ProjectStore::new(self.paths.workspace_root().into()).unwrap());
+        let tasks = BuildManager::new(
+            self.paths.clone(),
+            store.clone(),
+            "http://127.0.0.1:9".into(),
+        )
+        .unwrap();
+        let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
+        let lifecycle = LifecycleManager::new(
+            self.paths.clone(),
+            store.clone(),
+            tasks.clone(),
+            maintenance,
+        )
+        .unwrap();
+        Self {
+            _temporary: self._temporary,
+            paths: self.paths,
+            store,
+            tasks,
+            lifecycle,
+            id: self.id,
+        }
     }
     async fn restart_task(self, mut task: TaskRecord) -> Self {
         self.lifecycle.shutdown().await;
@@ -156,10 +189,10 @@ async fn export_copy_import_preserve_data_metadata_and_independent_files_without
         .submit_import(json!({"archivePath":archive,"mode":"original"}))
         .await
         .unwrap_err();
-    assert_eq!(conflict.code, "PROJECT_ID_CONFLICT");
+    assert_eq!(conflict.code, "INVALID_INPUT");
     let submitted = fixture
         .lifecycle
-        .submit_import(json!({"archivePath":archive,"mode":"copy","name":"Imported copy"}))
+        .submit_import(json!({"archivePath":archive,"name":"Imported copy"}))
         .await
         .unwrap();
     let new_id = submitted.result.as_ref().unwrap()["targetProjectId"]
@@ -349,16 +382,31 @@ async fn export_collision_and_project_destination_leave_original_files_unchanged
         "INVALID_EXPORT_PATH"
     );
     assert_eq!(fs::read(&archive).unwrap(), b"previous export");
-    good(
-        &fixture
-            .project(
+    assert_eq!(
+        fixture
+            .lifecycle
+            .submit_project(
+                &fixture.id,
                 "export",
                 json!({"destinationPath":archive,"overwrite":true}),
             )
+            .await
+            .unwrap_err()
+            .code,
+        "EXPORT_DESTINATION_EXISTS",
+    );
+    assert_eq!(fs::read(&archive).unwrap(), b"previous export");
+    let independent = fixture.export_path("new-exclusive-export.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":independent}))
             .await,
     );
     assert_eq!(
-        backups::read_info(&archive).unwrap().manifest.project_id,
+        backups::read_info(&independent)
+            .unwrap()
+            .manifest
+            .project_id,
         fixture.id
     );
     fixture.stop().await;
@@ -523,7 +571,15 @@ async fn opt_in_import_reports_cleanup_before_success_and_preserves_original_arc
         .submit_import(json!({"archivePath":archive,"cleanupTemporaryFiles":true}))
         .await
         .unwrap();
-    arrived.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), arrived)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "Import did not reach cleanup: {:?}",
+                fixture.tasks.task(&submitted.task_id)
+            )
+        })
+        .unwrap();
     let active = fixture.tasks.task(&submitted.task_id).unwrap();
     assert_eq!(active.phase, "cleanup");
     assert!(!active.status.is_final());
@@ -584,7 +640,15 @@ async fn import_cleanup_failure_keeps_committed_project_and_retries_only_bound_m
         .submit_import(json!({"archivePath":archive,"cleanupTemporaryFiles":true}))
         .await
         .unwrap();
-    arrived.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), arrived)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "Import did not reach cleanup: {:?}",
+                fixture.tasks.task(&submitted.task_id)
+            )
+        })
+        .unwrap();
     let operation = fixture.lifecycle.operation(&submitted.task_id);
     let temporary = operation.join("import-temporary");
     let bound = operation.join("disposable-held-temporary");

@@ -26,7 +26,14 @@ async fn fixture() -> (tempfile::TempDir, RuntimePaths, RuntimeService, String) 
 async fn wait(handle: &RuntimeHandle, task: Value) -> Value {
     let id = task["taskId"].as_str().unwrap();
     for _ in 0..1000 {
-        let t = handle.task(id).await.unwrap();
+        let t = if task["type"] == "delete" {
+            handle
+                .task_for_project(id, task["projectId"].as_str().unwrap(), "delete")
+                .await
+                .unwrap()
+        } else {
+            handle.task(id).await.unwrap()
+        };
         if t["final"] == true {
             return t;
         }
@@ -73,11 +80,13 @@ async fn browser_sql(base: &str, id: &str, cookie: &str, epoch: &str, sql: &str)
         .unwrap()
 }
 #[tokio::test]
-async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archives() {
+async fn permanent_delete_requires_bound_route_and_removes_owned_exported_archives() {
     let (_temp, paths, service, id) = fixture().await;
     let handle = service.handle();
     let archive = paths
         .data_root()
+        .parent()
+        .unwrap()
         .join("disposable-before-permanent-delete.zip");
     let exported = wait(
         &handle,
@@ -88,7 +97,7 @@ async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archive
     )
     .await;
     assert_eq!(exported["status"], "succeeded");
-    let bytes = std::fs::read(&archive).unwrap();
+    assert!(archive.is_file());
     let root = service.store().project(&id).unwrap().root;
     let expected_epoch = service.store().registered_epoch(&id).unwrap().unwrap();
     let client = reqwest::Client::new();
@@ -158,7 +167,7 @@ async fn permanent_delete_requires_explicit_new_route_and_keeps_exported_archive
     assert_eq!(deleted["result"]["restoreAvailable"], false);
     assert!(!root.exists());
     assert!(!paths.workspace_root().join(".platform/trash").exists());
-    assert_eq!(std::fs::read(&archive).unwrap(), bytes);
+    assert!(!archive.exists());
     service.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -283,5 +292,71 @@ async fn target_disappearing_before_commit_resumes_only_source_without_invalidat
     )
     .await;
     assert_eq!(data["ok"], true, "{data}");
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn deletion_preview_uses_private_identity_without_opening_a_broken_database() {
+    let (_temp, paths, service, id) = fixture().await;
+    let store = service.store();
+    let root = store.project(&id).unwrap().root;
+    let epoch = store.registered_epoch(&id).unwrap().unwrap();
+    let registration = paths
+        .workspace_root()
+        .join(".platform/project-state")
+        .join(format!("{id}.json"));
+    let registration_bytes = std::fs::read(&registration).unwrap();
+    let database = root.join("data/main.sqlite");
+    std::fs::write(
+        &database,
+        b"disposable invalid database for deletion preview",
+    )
+    .unwrap();
+    let database_bytes = std::fs::read(&database).unwrap();
+    assert!(!store.has_active_project_work(&id));
+    let token = service.shared.snapshot().token.clone();
+    let url = format!(
+        "{}/api/v1/projects/{id}/deletion-preview",
+        service.info().base_url
+    );
+    let client = reqwest::Client::new();
+    assert_eq!(
+        client.get(&url).send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = client.get(&url).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    let preview = &response["data"];
+    assert_eq!(preview["projectId"], id);
+    assert_eq!(preview["expectedDocumentEpoch"], epoch);
+    assert_eq!(preview["projectRoot"], json!(root));
+    assert!(preview["deletePaths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(root)));
+    assert_eq!(std::fs::read(&registration).unwrap(), registration_bytes);
+    assert_eq!(std::fs::read(&database).unwrap(), database_bytes);
+    assert!(
+        !store.has_active_project_work(&id),
+        "preview must not create a database worker"
+    );
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn deletion_preview_never_accepts_a_replacement_project_directory() {
+    let (_temp, paths, service, id) = fixture().await;
+    let root = service.store().project(&id).unwrap().root;
+    let displaced = paths.data_root().join("disposable-displaced-web-project");
+    std::fs::rename(&root, &displaced).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("foreign-sentinel"), b"keep foreign replacement").unwrap();
+    assert!(service.handle().project_delete_preview(&id).await.is_err());
+    assert_eq!(
+        std::fs::read(root.join("foreign-sentinel")).unwrap(),
+        b"keep foreign replacement"
+    );
+    assert!(displaced.join("data/main.sqlite").exists());
     service.shutdown().await.unwrap();
 }

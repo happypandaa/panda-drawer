@@ -43,9 +43,17 @@ impl NodeProcessScope {
         mut self,
         ownership: crate::node_project_ownership::NodeProjectOwnership,
         app_id: String,
-    ) -> Self {
+    ) -> Result<Self, ApiError> {
+        let directory = ownership.directory(&app_id)?;
+        let data = directory
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| ApiError::new("PROJECT_WRITER_UNCONFIRMED", "项目写入者归属无效。"))?;
+        self.processes = self
+            .processes
+            .with_writer_owner(crate::durable_writer::WriterOwner::node(data, &app_id)?);
         self.material = Some((ownership, app_id));
-        self
+        Ok(self)
     }
     pub fn standalone() -> Self {
         Self::new(OwnedProcessRegistry::default(), Arc::new(()))

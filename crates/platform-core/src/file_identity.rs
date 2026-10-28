@@ -125,6 +125,46 @@ impl PersistedIdentity {
         }
         Ok(false)
     }
+
+    /// Missing material is an absent target only while its expected volume can
+    /// still be observed. An unplugged old workspace must not count as deletion.
+    pub(crate) fn absent_on_expected_volume(&self, path: &Path) -> Result<bool> {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+        {
+            bail!("Expected an absolute material path without traversal")
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        for ancestor in path.ancestors().skip(1) {
+            match std::fs::symlink_metadata(ancestor) {
+                Ok(metadata) if metadata.is_dir() => {
+                    let observed = Self::capture(ancestor)?;
+                    let same_volume = match &self.volume_uuid {
+                        Some(expected) => valid_uuid(expected).is_some_and(|expected| {
+                            observed.volume_uuid.as_deref().and_then(valid_uuid) == Some(expected)
+                        }),
+                        None => self.device == observed.device,
+                    };
+                    if !same_volume {
+                        bail!("The material's expected volume is unavailable or a different volume is mounted")
+                    }
+                    return Ok(true);
+                }
+                Ok(_) => {
+                    bail!("The material's nearest existing ancestor is not an ordinary directory")
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        bail!("The material's expected volume cannot be verified")
+    }
 }
 
 fn valid_uuid(value: &str) -> Option<Uuid> {
@@ -259,6 +299,29 @@ mod tests {
             inode,
             volume_uuid: volume_uuid.map(str::to_owned),
         }
+    }
+    #[test]
+    fn missing_material_requires_its_expected_volume_and_never_follows_an_ancestor_link() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let file = root.join("disposable-known-file");
+        fs::write(&file, b"known").unwrap();
+        let expected = PersistedIdentity::capture(&file).unwrap();
+        assert!(!expected.absent_on_expected_volume(&file).unwrap());
+        fs::remove_file(&file).unwrap();
+        assert!(expected.absent_on_expected_volume(&file).unwrap());
+        let mut wrong = expected.clone();
+        if wrong.volume_uuid.is_some() {
+            wrong.volume_uuid = Some(Uuid::new_v4().to_string());
+        } else {
+            wrong.device ^= 1;
+        }
+        assert!(wrong.absent_on_expected_volume(&file).is_err());
+        let linked = root.join("linked");
+        symlink(&root, &linked).unwrap();
+        assert!(expected
+            .absent_on_expected_volume(&linked.join("missing"))
+            .is_err());
     }
 
     #[test]

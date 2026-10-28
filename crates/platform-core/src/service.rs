@@ -87,7 +87,7 @@ struct Ticket {
 }
 struct Session {
     project_id: String,
-    lifecycle_generation: Option<String>,
+    document_epoch: String,
 }
 #[derive(Clone)]
 struct Change {
@@ -508,7 +508,35 @@ impl RuntimeHandle {
         if let Some(task) = crate::workspace::task(&state.paths, id)? {
             return Ok(json!(task));
         }
-        Ok(json!(state.builds.task(id)?))
+        let task = state.builds.task(id)?;
+        if task.task_type == "delete" {
+            if let Some(project) = task.project_id.as_deref() {
+                return Ok(json!(state
+                    .lifecycle
+                    .task_for_project(id, project, "delete")?));
+            }
+        }
+        Ok(json!(task))
+    }
+    pub async fn task_for_project(
+        &self,
+        id: &str,
+        project_id: &str,
+        task_type: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        if let Some(task) = crate::workspace::task(&state.paths, id)? {
+            if task.project_id.as_deref() != Some(project_id) || task.task_type != task_type {
+                return Err(ApiError::new(
+                    "TASK_IDENTITY_CHANGED",
+                    "Task does not belong to the requested project and type.",
+                ));
+            }
+            return Ok(json!(task));
+        }
+        Ok(json!(state
+            .lifecycle
+            .task_for_project(id, project_id, task_type)?))
     }
     pub async fn environment(&self) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().builds.environment().doctor().await))
@@ -1096,6 +1124,9 @@ impl RuntimeHandle {
                 .await?
         ))
     }
+    pub async fn project_delete_preview(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        web_delete_preview(&self.current(), id)
+    }
     pub async fn project_delete(
         &self,
         id: &str,
@@ -1159,7 +1190,9 @@ impl RuntimeService {
         let listener = bind_loopback(paths.last_port()?).await?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(RuntimeSwitch {
-            processes: crate::owned_process::OwnedProcessRegistry::default(),
+            processes: crate::owned_process::OwnedProcessRegistry::default().with_writer_owner(
+                crate::durable_writer::WriterOwner::platform(paths.data_root())?,
+            ),
             shutdown_issues: Mutex::new(Vec::new()),
             io_lifetime: crate::io_lifetime::IoLifetime::default(),
             current: StdRwLock::new(None),
@@ -1289,6 +1322,7 @@ fn make_state(
             processes.clone(),
         )?),
     };
+    store.set_node_source_data_root(paths.data_root().to_path_buf());
     anyhow::ensure!(
         store.processes().shares_registry(&processes),
         "Project store must share the runtime process registry"
@@ -1343,7 +1377,8 @@ fn make_state(
             .as_ref()
             .map(|resources| resources.development_git_root()),
         processes.clone(),
-    );
+    )
+    .with_project_boundary(paths.workspace_root().into());
     // Corrupt source evidence must not prevent existing applications opening.
     // Keep the feature error and preserve its files for explicit inspection.
     let source_acquisition = crate::source_acquisition::SourceAcquisitionManager::new(
@@ -1409,6 +1444,22 @@ fn make_state(
         drained: Notify::new(),
         stop,
     });
+    let removed_state = Arc::downgrade(&state);
+    state.store.on_project_identity_removed(Arc::new(move |id| {
+        if let Some(state) = removed_state.upgrade() {
+            state
+                .sessions
+                .lock()
+                .unwrap()
+                .retain(|_, session| session.project_id != id);
+            state
+                .tickets
+                .lock()
+                .unwrap()
+                .retain(|_, ticket| ticket.project_id != id);
+            state.project_uploads.lock().unwrap().remove(id);
+        }
+    }));
     for mut receiver in [state.maintenance.subscribe(), state.lifecycle.subscribe()] {
         let weak = Arc::downgrade(&state);
         tokio::spawn(async move {
@@ -1762,22 +1813,30 @@ fn launch(state: &HttpState, id: &str) -> std::result::Result<LaunchInfo, ApiErr
         )
     })?;
     let ticket = secret();
-    let mut tickets = state.tickets.lock().unwrap();
-    tickets.retain(|_, value| value.expires > Instant::now());
-    if tickets.len() >= 1024 {
-        return Err(ApiError::new(
-            "SERVICE_BUSY",
-            "Too many unconsumed launch tickets",
-        ));
-    }
-    tickets.insert(
-        ticket.clone(),
-        Ticket {
-            project_id: id.into(),
-            epoch: project.document_epoch.clone(),
-            expires: Instant::now() + Duration::from_secs(60),
-        },
-    );
+    state
+        .store
+        .with_registered_epoch(id, &project.document_epoch, || {
+            let mut tickets = state.tickets.lock().unwrap();
+            tickets.retain(|_, value| value.expires > Instant::now());
+            if tickets.len() >= 1024 {
+                return Err(ApiError::new(
+                    "SERVICE_BUSY",
+                    "Too many unconsumed launch tickets",
+                ));
+            }
+            tickets.insert(
+                ticket.clone(),
+                Ticket {
+                    project_id: id.into(),
+                    epoch: project.document_epoch.clone(),
+                    expires: Instant::now() + Duration::from_secs(60),
+                },
+            );
+            Ok(())
+        })?
+        .ok_or_else(|| {
+            ApiError::new("PROJECT_REMOVED", "The launch project is no longer active")
+        })?;
     Ok(LaunchInfo {
         project_id: id.into(),
         url: format!("{}/p/{id}/", state.info.base_url),
@@ -1874,7 +1933,7 @@ fn status(error: &ApiError) -> StatusCode {
         | "STORAGE_CURSOR_INVALID"
         | "PROJECT_RELOAD_REQUIRED"
         | "PROJECT_ID_CONFLICT"
-        | "PROJECT_TRASHED"
+        | "PROJECT_REMOVED"
         | "PROJECT_DELETED"
         | "PROJECT_DELETE_INCOMPLETE"
         | "PROJECT_DELETE_CONFIRMATION_CHANGED"
@@ -2036,6 +2095,82 @@ async fn managed_input<T: DeserializeOwned>(
     };
     Ok((serde_json::from_value(value)?, maintenance))
 }
+/// Read only private identity and ownership; a broken business database must not
+/// prevent the user from reviewing permanent deletion.
+fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value, ApiError> {
+    let ownership = crate::web_project_ownership::WebProjectOwnership::new(
+        state.paths.data_root().into(),
+        state.paths.workspace_root().into(),
+    );
+    let owner_directory = ownership.directory(id)?;
+    let owner_file = ownership.path(id)?;
+    crate::projects::check_no_symlinks(&owner_file, true)?;
+    let identity_absent = state.store.deleted_project_identity_absent(id)?;
+    let mut paths = if owner_file.exists() {
+        crate::web_project_cleanup::project_material_paths(&state.paths, id)?
+    } else {
+        let mut paths = crate::web_project_ownership::fixed_paths(state.paths.workspace_root(), id);
+        for task in state.builds.project_task_ids(id) {
+            paths.push(
+                state
+                    .paths
+                    .workspace_root()
+                    .join(".platform/tasks")
+                    .join(&task),
+            );
+            paths.push(
+                state
+                    .paths
+                    .workspace_root()
+                    .join(".platform/operations")
+                    .join(task),
+            );
+        }
+        paths
+    };
+    paths.push(owner_directory);
+    let (root, epoch, mode, maintenance_id) = if identity_absent {
+        (None, None, "ready".to_string(), None)
+    } else {
+        let (root, _) = state.store.deletion_root(id)?;
+        let pending = state.store.pending_deletion(id)?;
+        let epoch = state
+            .store
+            .registered_epoch(id)?
+            .or_else(|| pending.map(|marker| marker.source_epoch.unwrap_or(marker.target_epoch)))
+            .ok_or_else(|| {
+                ApiError::new(
+                    "PROJECT_DELETE_CONFIRMATION_REQUIRED",
+                    "项目登记身份无法核实，未授权删除。",
+                )
+            })?;
+        paths.insert(0, root.clone());
+        let (mode, maintenance_id) = match state.store.control_for_deletion(id) {
+            Ok(control) => {
+                let value = control.get();
+                (value.mode, value.maintenance_id)
+            }
+            Err(_) => ("unknown".into(), None),
+        };
+        (Some(root), Some(epoch), mode, maintenance_id)
+    };
+    let mut existing = Vec::new();
+    for path in paths {
+        crate::projects::check_no_symlinks(&path, true)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) if !existing.contains(&path) => existing.push(path),
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let already_absent = identity_absent
+        && crate::web_project_cleanup::project_materials_absent(&state.paths, &state.builds, id)?;
+    Ok(
+        json!({"projectId":id,"instanceId":state.info.instance_id,"projectRoot":root,"expectedDocumentEpoch":epoch,"mode":mode,"maintenanceId":maintenance_id,"deletePaths":existing,"alreadyAbsent":already_absent,"cleanupOnly":identity_absent&&!already_absent}),
+    )
+}
+
 async fn management(
     State(state): State<Arc<HttpState>>,
     Path(tail): Path<String>,
@@ -2306,6 +2441,15 @@ async fn management(
             (Method::POST, ["projects", id, "copies"]) => {
                 handle.project_copy(id, optional_json(request).await?).await
             }
+            (Method::GET, ["projects", id, "deletion-preview"]) => {
+                if !query(&request)?.is_empty() {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Deletion preview does not accept query parameters.",
+                    ));
+                }
+                web_delete_preview(&state, id)
+            }
             (Method::POST, ["projects", id, "deletions"]) => {
                 handle
                     .project_delete(id, optional_json(request).await?)
@@ -2325,7 +2469,26 @@ async fn management(
             }
             (Method::GET, ["projects", id, "maintenance"]) => handle.maintenance_status(id).await,
             (Method::GET, ["projects", id, "handoff"]) => handle.handoff(id).await,
-            (Method::GET, ["tasks", id]) => handle.task(id).await,
+            (Method::GET, ["tasks", id]) => {
+                let parameters = query(&request)?;
+                if parameters
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "projectId" | "taskType"))
+                {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Only projectId and taskType are accepted for task context.",
+                    ));
+                }
+                match (parameters.get("projectId"), parameters.get("taskType")) {
+                    (Some(project), Some(kind)) => handle.task_for_project(id, project, kind).await,
+                    (None, None) => handle.task(id).await,
+                    _ => Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "projectId and taskType must be supplied together.",
+                    )),
+                }
+            }
             (Method::GET, ["projects", id, "db", "schema"]) => {
                 Ok(json!(state.store.schema(id, None).await?))
             }
@@ -2428,13 +2591,12 @@ fn session(
                 "Project session has expired; reopen from the platform",
             )
         })?;
-    if let Some(retired) = state.store.is_retired(id)? {
-        return Err(crate::projects::project_removed_error(&retired));
-    }
-    if _session.lifecycle_generation != state.store.session_generation(id)? {
+    let session_epoch = _session.document_epoch.clone();
+    drop(sessions);
+    if state.store.registered_epoch(id)?.as_deref() != Some(session_epoch.as_str()) {
         return Err(ApiError::new(
             "INVALID_SESSION",
-            "This project was re-registered; obtain a new launch session from the platform",
+            "This project identity is no longer active; reopen it from the platform",
         ));
     }
     let project = state.store.project(id)?;
@@ -2587,23 +2749,42 @@ async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Resp
                     "Launch ticket expired or was already used; reopen the project",
                 )
             })?;
+        if state.store.registered_epoch(&ticket.project_id)?.as_deref()
+            != Some(ticket.epoch.as_str())
+        {
+            return Err(ApiError::new(
+                "INVALID_TICKET",
+                "The launch project identity is no longer active; reopen it from the platform",
+            ));
+        }
         let project = state.store.project(&ticket.project_id)?;
         project.validate_epoch(Some(&ticket.epoch))?;
         let token = secret();
-        let mut sessions = state.sessions.lock().unwrap();
-        if sessions.len() >= 4096 {
-            return Err(ApiError::new(
-                "SERVICE_BUSY",
-                "Too many project sessions; restart the platform",
-            ));
-        }
-        sessions.insert(
-            token.clone(),
-            Session {
-                project_id: ticket.project_id.clone(),
-                lifecycle_generation: state.store.session_generation(&ticket.project_id)?,
-            },
-        );
+        state
+            .store
+            .with_registered_epoch(&ticket.project_id, &ticket.epoch, || {
+                let mut sessions = state.sessions.lock().unwrap();
+                if sessions.len() >= 4096 {
+                    return Err(ApiError::new(
+                        "SERVICE_BUSY",
+                        "Too many project sessions; restart the platform",
+                    ));
+                }
+                sessions.insert(
+                    token.clone(),
+                    Session {
+                        project_id: ticket.project_id.clone(),
+                        document_epoch: ticket.epoch.clone(),
+                    },
+                );
+                Ok(())
+            })?
+            .ok_or_else(|| {
+                ApiError::new(
+                    "INVALID_TICKET",
+                    "The launch project identity is no longer active",
+                )
+            })?;
         Ok((ticket.project_id, token))
     }
     .await;
@@ -3042,21 +3223,28 @@ async fn upload(
             "Two uploads are already active; try again after completion",
         )
     })?;
+    let _lease = project.operation_gate.read().await;
+    project.validate_epoch(Some(epoch))?;
     let semaphore = state
-        .project_uploads
-        .lock()
-        .unwrap()
-        .entry(project.manifest.id.clone())
-        .or_insert_with(|| Arc::new(Semaphore::new(1)))
-        .clone();
+        .store
+        .with_registered_epoch(&project.manifest.id, epoch, || {
+            Ok(state
+                .project_uploads
+                .lock()
+                .unwrap()
+                .entry(project.manifest.id.clone())
+                .or_insert_with(|| Arc::new(Semaphore::new(1)))
+                .clone())
+        })?
+        .ok_or_else(|| {
+            ApiError::new("PROJECT_REMOVED", "The upload project is no longer active")
+        })?;
     let _local = semaphore.try_acquire_owned().map_err(|_| {
         ApiError::new(
             "SERVICE_BUSY",
             "An upload is already active for this project",
         )
     })?;
-    let _lease = project.operation_gate.read().await;
-    project.validate_epoch(Some(epoch))?;
     let projectfd = files::root(&project.root)?;
     // Descriptor-based mkdir/open prevents staging links from escaping a project.
     let temporary_name = format!(".upload-{}", Uuid::new_v4().simple());
@@ -3157,7 +3345,7 @@ async fn events(state: Arc<HttpState>, project: ProjectHandle, epoch: String) ->
                     _=stop.changed()=>return None,
                     value=receiver.recv()=>{
                         let (event, data)=match value{
-                            Ok(change) if change.project_id==project.manifest.id=>{let data=if change.event=="project.state.changed"{let current=project.control.get();json!({"projectId":change.project_id,"mode":current.mode,"busy":project.control.frozen.load(Ordering::Acquire),"reloadRequired":project.document_epoch!=epoch||project.check().is_err_and(|e|matches!(e.code.as_str(),"PROJECT_RELOAD_REQUIRED"|"PROJECT_IDENTITY_CHANGED")),"workspaceMigrating":project.is_workspace_paused(),"trashed":project.check().is_err_and(|e|e.code=="PROJECT_TRASHED")})}else{json!({"projectId":change.project_id,"requestId":change.request_id,"taskId":if change.source=="build" {Some(&change.request_id)} else {None},"source":change.source})};(change.event,data)},
+                            Ok(change) if change.project_id==project.manifest.id=>{let data=if change.event=="project.state.changed"{let current=project.control.get();json!({"projectId":change.project_id,"mode":current.mode,"busy":project.control.frozen.load(Ordering::Acquire),"reloadRequired":project.document_epoch!=epoch||project.check().is_err_and(|e|matches!(e.code.as_str(),"PROJECT_RELOAD_REQUIRED"|"PROJECT_IDENTITY_CHANGED")),"workspaceMigrating":project.is_workspace_paused(),"removed":project.check().is_err_and(|e|e.code=="PROJECT_REMOVED")})}else{json!({"projectId":change.project_id,"requestId":change.request_id,"taskId":if change.source=="build" {Some(&change.request_id)} else {None},"source":change.source})};(change.event,data)},
                             Ok(_)=>continue,
                             Err(broadcast::error::RecvError::Lagged(_))=>("data.changed".into(),json!({"projectId":project.manifest.id,"source":"resync"})),
                             Err(broadcast::error::RecvError::Closed)=>return None,
@@ -3515,6 +3703,350 @@ mod tests {
         );
         restarted.shutdown().await.unwrap();
     }
+    #[tokio::test]
+    async fn browser_cache_admission_is_ordered_with_permanent_identity_removal() {
+        let (_temporary, _paths, service, _client) = start().await;
+        let project = create(&service, "Disposable ordered browser cache").await;
+        let state = service.shared.snapshot();
+        let id = project.id.clone();
+        let epoch = project.document_epoch.clone();
+        let (entered, entered_rx) = oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let admitted = state.clone();
+        let admitted_id = id.clone();
+        let admitted_epoch = epoch.clone();
+        let admission = tokio::task::spawn_blocking(move || {
+            admitted
+                .store
+                .with_registered_epoch(&admitted_id, &admitted_epoch, || {
+                    admitted.tickets.lock().unwrap().insert(
+                        "disposable-late-ticket".into(),
+                        Ticket {
+                            project_id: admitted_id.clone(),
+                            epoch: admitted_epoch.clone(),
+                            expires: Instant::now() + Duration::from_secs(60),
+                        },
+                    );
+                    admitted.sessions.lock().unwrap().insert(
+                        "disposable-late-session".into(),
+                        Session {
+                            project_id: admitted_id.clone(),
+                            document_epoch: admitted_epoch.clone(),
+                        },
+                    );
+                    admitted
+                        .project_uploads
+                        .lock()
+                        .unwrap()
+                        .insert(admitted_id.clone(), Arc::new(Semaphore::new(1)));
+                    entered.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(())
+                })
+        });
+        entered_rx.await.unwrap();
+        let (removing, removing_rx) = oneshot::channel();
+        let removed = state.clone();
+        let removed_id = id.clone();
+        let root = project.project_root.clone();
+        let deletion = tokio::task::spawn_blocking(move || {
+            removing.send(()).unwrap();
+            let marker = removed
+                .store
+                .begin_deletion(
+                    &removed_id,
+                    "task_disposable_ordered_cache_delete",
+                    &Uuid::new_v4().to_string(),
+                    &crate::file_identity::PersistedIdentity::capture(&root).unwrap(),
+                )
+                .unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            removed
+                .store
+                .complete_deleted_project_identity(&marker)
+                .unwrap();
+        });
+        removing_rx.await.unwrap();
+        assert!(!deletion.is_finished());
+        release.send(()).unwrap();
+        assert_eq!(admission.await.unwrap().unwrap(), Some(()));
+        deletion.await.unwrap();
+        assert_eq!(
+            state
+                .store
+                .with_registered_epoch(&id, &epoch, || {
+                    panic!("A delayed cache insertion must not run after identity removal")
+                })
+                .unwrap(),
+            None::<()>
+        );
+        assert!(state
+            .tickets
+            .lock()
+            .unwrap()
+            .values()
+            .all(|ticket| ticket.project_id != id));
+        assert!(state
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .all(|session| session.project_id != id));
+        assert!(!state.project_uploads.lock().unwrap().contains_key(&id));
+        service.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn project_deletion_revokes_browser_identity_and_recreation_uses_a_fresh_id() {
+        let (_temp, paths, service, client) = start().await;
+        let project = create(&service, "Disposable browser deletion identity").await;
+        let cookie = connect(&service, &client, &project.id).await;
+        let events_response = client
+            .get(format!(
+                "{}/p/{}/api/v1/events?documentEpoch={}",
+                service.info().base_url,
+                project.id,
+                project.document_epoch
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(events_response.status(), StatusCode::OK);
+        let mut events = events_response.bytes_stream();
+        let unused = service.launch(&project.id).await.unwrap();
+        let ticket = unused
+            .launch_url
+            .split("#ticket=")
+            .nth(1)
+            .unwrap()
+            .to_owned();
+        let state = service.shared.snapshot();
+        state
+            .project_uploads
+            .lock()
+            .unwrap()
+            .insert(project.id.clone(), Arc::new(Semaphore::new(1)));
+        let retained_handle = service.store().project(&project.id).unwrap();
+        let handle = service.handle();
+        let task = handle
+            .project_delete(
+                &project.id,
+                json!({"expectedDocumentEpoch":project.document_epoch}),
+            )
+            .await
+            .unwrap();
+        let deleted = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let record = handle
+                    .task_for_project(task["taskId"].as_str().unwrap(), &project.id, "delete")
+                    .await
+                    .unwrap();
+                if record["final"] == true {
+                    break record;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(deleted["status"], "succeeded", "{deleted}");
+        let removed_event = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut received = String::new();
+            loop {
+                received.push_str(&String::from_utf8_lossy(
+                    &events.next().await.unwrap().unwrap(),
+                ));
+                if received.contains("\"removed\":true") {
+                    break received;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!removed_event.contains("\"trashed\""));
+        drop(events);
+
+        assert_eq!(retained_handle.check().unwrap_err().code, "PROJECT_REMOVED");
+        assert!(state
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .all(|session| session.project_id != project.id));
+        assert!(state
+            .tickets
+            .lock()
+            .unwrap()
+            .values()
+            .all(|ticket| ticket.project_id != project.id));
+        assert!(!state
+            .project_uploads
+            .lock()
+            .unwrap()
+            .contains_key(&project.id));
+        for kind in ["", "reservations", "retired", "deleting"] {
+            assert!(!paths
+                .workspace_root()
+                .join(".platform/project-state")
+                .join(kind)
+                .join(format!("{}.json", project.id))
+                .exists());
+        }
+        let base = service.info().base_url;
+        assert_eq!(
+            client
+                .post(format!("{base}/_platform/session"))
+                .header("origin", &base)
+                .json(&json!({"ticket":ticket}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/p/{}/api/v1/context", project.id))
+                .header("cookie", &cookie)
+                .header("x-platform-document-epoch", &project.document_epoch)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let recreated = create(&service, "Disposable browser deletion identity").await;
+        assert_ne!(recreated.id, project.id);
+        assert_eq!(
+            client
+                .get(format!("{base}/p/{}/api/v1/context", recreated.id))
+                .header("cookie", cookie)
+                .header("x-platform-document-epoch", recreated.document_epoch)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        service.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn cached_browser_session_never_reregisters_a_missing_project_identity() {
+        let (_temp, paths, service, client) = start().await;
+        let project = create(&service, "Disposable absent registration").await;
+        let cookie = connect(&service, &client, &project.id).await;
+        let registration = paths
+            .workspace_root()
+            .join(".platform/project-state")
+            .join(format!("{}.json", project.id));
+        std::fs::remove_file(&registration).unwrap();
+        let base = service.info().base_url;
+        let response = client
+            .get(format!("{base}/p/{}/api/v1/context", project.id))
+            .header("cookie", cookie)
+            .header("x-platform-document-epoch", project.document_epoch)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(!registration.exists());
+        assert!(project.project_root.is_dir());
+        service.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn task_http_context_preserves_deleted_receipts_and_rejects_identity_mismatch() {
+        let (_temp, _paths, service, client) = start().await;
+        let project = create(&service, "Disposable task context").await;
+        let state = service.shared.snapshot();
+        let task = state
+            .builds
+            .create_readonly_operation(&project.id, "storageScan")
+            .unwrap();
+        state.builds.finish(&task.task_id, Ok(json!({}))).unwrap();
+        let base = service.info().base_url;
+        let route = format!("{base}/api/v1/tasks/{}", task.task_id);
+        for (query, code) in [
+            (
+                format!("?projectId={}&taskType=delete", project.id),
+                "TASK_IDENTITY_CHANGED",
+            ),
+            (format!("?projectId={}", project.id), "INVALID_INPUT"),
+            ("?other=1".into(), "INVALID_INPUT"),
+        ] {
+            let response: Value = client
+                .get(format!("{route}{query}"))
+                .bearer_auth(&state.token)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(response["error"]["code"], code, "{response}");
+        }
+        let handle = service.handle();
+        let submitted = handle
+            .project_delete(
+                &project.id,
+                json!({"expectedDocumentEpoch":project.document_epoch}),
+            )
+            .await
+            .unwrap();
+        let task_id = submitted["taskId"].as_str().unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let value = handle
+                    .task_for_project(task_id, &project.id, "delete")
+                    .await
+                    .unwrap();
+                if value["final"] == true {
+                    assert_eq!(value["status"], "succeeded", "{value}");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let response: Value = client
+            .get(format!(
+                "{base}/api/v1/tasks/{task_id}?projectId={}&taskType=delete",
+                project.id
+            ))
+            .bearer_auth(&state.token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(response["data"]["result"]["alreadyAbsent"], true);
+        let unscoped: Value = client
+            .get(format!("{base}/api/v1/tasks/{task_id}"))
+            .bearer_auth(&state.token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(unscoped["error"]["code"], "TASK_NOT_FOUND");
+        let other: Value = client
+            .get(format!(
+                "{base}/api/v1/tasks/{task_id}?projectId={}&taskType=build",
+                project.id
+            ))
+            .bearer_auth(&state.token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(other["error"]["code"], "TASK_NOT_FOUND");
+        service.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn attachment_publication_conflicts_ranges_and_static_boundaries() {
         let (_temp, _paths, service, client) = start().await;

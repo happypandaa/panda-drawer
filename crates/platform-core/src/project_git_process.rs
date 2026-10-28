@@ -63,7 +63,10 @@ impl Context {
         processes: OwnedProcessRegistry,
         operation: Arc<ProjectTaskLease>,
     ) {
-        self.processes = processes;
+        self.processes = match operation.writer_owner() {
+            Some(owner) => processes.with_writer_owner(owner),
+            None => processes,
+        };
         self.operation = Some(operation);
     }
     pub(super) fn bind_keep_alive(
@@ -106,6 +109,7 @@ impl Context {
     ) -> Result<GitToolchain, ApiError> {
         self.checkpoint().map_err(|error| closure(error, true))?;
         let keep_alive = self.keep_alive();
+        let environment = environment.with_process_registry(self.processes.clone());
         // Resource verification is real blocking I/O before a process record
         // exists. Product callers retain this request until prepare truly ends.
         let prepared = environment

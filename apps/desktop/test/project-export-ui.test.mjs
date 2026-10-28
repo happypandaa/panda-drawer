@@ -56,6 +56,13 @@ async function key(value, shiftKey = false) { await act(async () => document.act
 async function setup({ commands = {}, props = {}, strict = false, parentModal = false } = {}) {
   const calls = []; const tasks = []; const drafts = []; const parentCloses = [];
   globalThis.__PROJECT_EXPORT_INVOKE__ = async (command, args) => {
+    if (command === 'project_delete_preview' && !commands[command]) return {
+      projectId: current.project.id, instanceId: current.instanceId,
+      projectRoot: current.project.projectRoot,
+      expectedDocumentEpoch: current.project.documentEpoch,
+      mode: current.status.mode, maintenanceId: current.status.maintenanceId,
+      deletePaths: [current.project.projectRoot], alreadyAbsent: false, cleanupOnly: false,
+    };
     calls.push([command, args]);
     if (commands[command]) return commands[command](args);
     throw new Error(`Unexpected disposable command: ${command}`);
@@ -84,6 +91,7 @@ test('More actions contains two concise rows and only explains export after open
   assert.match(exportDialog().textContent, /源码与项目资料.*当前应用文件.*数据库和用户文件/);
   assert.match(exportDialog().textContent, /不包含 Git 历史、开发依赖、缓存和平台历史备份/);
   assert.match(exportDialog().textContent, /包含当前业务数据/);
+  assert.match(exportDialog().textContent, /导出的 ZIP 属于本项目，删除项目时会一并删除/);
   assert.equal(exportDialog().getAttribute('aria-modal'), 'true');
   assert.equal(document.activeElement.tagName, 'H2');
   assert.equal(drafts.at(-1).pending, true);
@@ -113,24 +121,26 @@ test('Chooser and submission lock duplicate actions and closing until the real t
   assert.doesNotMatch(document.body.textContent, /导出成功/);
 });
 
-test('Overwrite is offered only for a real destination collision and requires an explicit second action', async () => {
+test('A destination collision requires a new filename and never offers overwrite', async () => {
   let exports = 0;
   const { calls, tasks } = await setup({ commands: {
-    choose_path: () => '/disposable/already-exists.zip',
+    choose_path: () => exports ? '/disposable/new-exclusive-export.zip' : '/disposable/already-exists.zip',
     project_export: ({ input }) => {
-      if (++exports === 1) { assert.equal(input.overwrite, false); throw { code: 'EXPORT_DESTINATION_EXISTS', message: 'Choose a new filename or explicitly request overwrite' }; }
-      assert.equal(input.overwrite, true); return task;
+      assert.equal(input.overwrite, false);
+      if (++exports === 1) throw { code: 'EXPORT_DESTINATION_EXISTS', message: '请选择新文件名' };
+      return task;
     },
   } });
   await click(button('导出 ZIP'));
   assert.equal(document.querySelector('[aria-label="替换已有 ZIP 确认"]'), null);
   await click(button('选择位置并导出'));
   assert.equal(tasks.length, 0); assert.equal(exports, 1);
-  const confirmation = document.querySelector('[aria-label="替换已有 ZIP 确认"]');
+  const confirmation = document.querySelector('[aria-label="导出位置已占用"]');
   assert.match(confirmation.textContent, /\/disposable\/already-exists.zip/);
-  await click(button('确认替换并导出'));
+  assert.equal(button('确认替换并导出'), undefined);
+  await click(button('选择其他位置'));
   assert.equal(exports, 2); assert.equal(exportDialog(), null);
-  assert.deepEqual(calls.filter(([name]) => name === 'project_export').map(([, args]) => args.input.overwrite), [false, true]);
+  assert.deepEqual(calls.filter(([name]) => name === 'project_export').map(([, args]) => args.input.overwrite), [false, false]);
 });
 
 test('Chooser errors, request errors and failed tasks stay visible and never pretend the archive succeeded', async () => {

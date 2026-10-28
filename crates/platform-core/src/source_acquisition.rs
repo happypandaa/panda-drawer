@@ -810,7 +810,13 @@ impl SourceAcquisitionManager {
             cancel,
             deadline: Instant::now() + TIMEOUT,
             monitor: self.root().join(&record.source_id),
-            processes: self.store.processes(),
+            processes: self.store.processes().with_writer_owner(
+                crate::durable_writer::WriterOwner::node(
+                    self.paths.data_root(),
+                    &record.owner_app_id,
+                )
+                .expect("source admission verified its Node owner"),
+            ),
             scope: Some(scope.clone()),
             #[cfg(test)]
             hooks: self.hooks.clone(),

@@ -47,6 +47,7 @@ pub struct EnvironmentManager {
     settings_path: PathBuf,
     managed_root: Option<PathBuf>,
     processes: OwnedProcessRegistry,
+    project_boundary: Option<crate::project_tool_boundary::ProjectToolBoundary>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -70,7 +71,20 @@ impl EnvironmentManager {
             settings_path: data_root.join("toolchain.json"),
             managed_root,
             processes,
+            project_boundary: None,
         }
+    }
+    pub(crate) fn with_project_boundary(mut self, workspace: PathBuf) -> Self {
+        self.project_boundary = Some(crate::project_tool_boundary::ProjectToolBoundary::new(
+            self.settings_path.parent().unwrap().into(),
+            workspace,
+        ));
+        self
+    }
+    pub(crate) fn with_process_registry(&self, processes: OwnedProcessRegistry) -> Self {
+        let mut scoped = self.clone();
+        scoped.processes = processes;
+        scoped
     }
     fn configured(&self) -> Result<Option<PathBuf>, ApiError> {
         check_no_symlinks(&self.settings_path, true)?;
@@ -88,22 +102,42 @@ impl EnvironmentManager {
     }
     pub async fn configure_node(&self, path: Option<PathBuf>) -> Result<EnvironmentInfo, ApiError> {
         crate::platform_support::require_runtime().map_err(ApiError::from)?;
-        if let Some(path) = &path {
+        let tools = if let Some(path) = &path {
             if !path.is_absolute() {
                 return Err(ApiError::new(
                     "INVALID_NODE_PATH",
                     "Choose an absolute path to the Node executable",
                 ));
             }
-            probe_owned(path, &self.processes, ()).await?;
-        }
-        crate::builds::atomic_json(
-            &self.settings_path,
-            &Settings {
-                schema_version: 1,
-                node_path: path,
-            },
-        )?;
+            Some(
+                probe_with_boundary(path, &self.processes, (), self.project_boundary.as_ref())
+                    .await?,
+            )
+        } else {
+            None
+        };
+        crate::node_apps::development::with_source_ownership_admission(|| {
+            if let (Some(boundary), Some(path), Some(tools)) =
+                (&self.project_boundary, &path, &tools)
+            {
+                for selected in [path, &tools.node.path, &tools.npm.path] {
+                    boundary.require_path(selected)?;
+                }
+                if let Some(npm) = npm_entry_candidates(path, &tools.node.path)
+                    .into_iter()
+                    .find(|path| fs::canonicalize(path).is_ok_and(|path| path.is_file()))
+                {
+                    boundary.require_dependency_path(&npm)?;
+                }
+            }
+            crate::builds::atomic_json(
+                &self.settings_path,
+                &Settings {
+                    schema_version: 1,
+                    node_path: path,
+                },
+            )
+        })?;
         Ok(self.doctor().await)
     }
     pub async fn doctor(&self) -> EnvironmentInfo {
@@ -324,11 +358,22 @@ async fn probe_owned<G: Clone + Send + 'static>(
     processes: &OwnedProcessRegistry,
     keep_alive: G,
 ) -> Result<Toolchain, ApiError> {
+    probe_with_boundary(candidate, processes, keep_alive, None).await
+}
+async fn probe_with_boundary<G: Clone + Send + 'static>(
+    candidate: &Path,
+    processes: &OwnedProcessRegistry,
+    keep_alive: G,
+    boundary: Option<&crate::project_tool_boundary::ProjectToolBoundary>,
+) -> Result<Toolchain, ApiError> {
     if !candidate.is_absolute() || !candidate.is_file() {
         return Err(ApiError::new(
             "NODE_NOT_FOUND",
             format!("Node executable not found: {}", candidate.display()),
         ));
+    }
+    if let Some(boundary) = boundary {
+        boundary.require_path(candidate)?;
     }
     let node_path = fs::canonicalize(candidate)?;
     let mut command = Command::new(&node_path);
@@ -342,28 +387,20 @@ async fn probe_owned<G: Clone + Send + 'static>(
     }
     // npm must belong to this installation, and is executed by the selected Node, not its shebang.
     // Prefer the JS entry before npm shims: some installations use ordinary shell files.
-    let npm_candidates = [
-        candidate
-            .parent()
-            .unwrap()
-            .join("../lib/node_modules/npm/bin/npm-cli.js"),
-        node_path
-            .parent()
-            .unwrap()
-            .join("../lib/node_modules/npm/bin/npm-cli.js"),
-        candidate.parent().unwrap().join("npm"),
-        node_path.parent().unwrap().join("npm"),
-    ];
-    let npm = npm_candidates
+    let (npm_entry, npm) = npm_entry_candidates(candidate, &node_path)
         .into_iter()
-        .filter_map(|path| fs::canonicalize(path).ok())
-        .find(|path| path.is_file())
+        .filter_map(|path| fs::canonicalize(&path).ok().map(|actual| (path, actual)))
+        .find(|(_, path)| path.is_file())
         .ok_or_else(|| {
             ApiError::new(
                 "NPM_NOT_FOUND",
                 "No npm JavaScript entry was found beside the selected Node",
             )
         })?;
+    if let Some(boundary) = boundary {
+        boundary.require_dependency_path(&npm_entry)?;
+        boundary.require_path(&npm)?;
+    }
     let path = tool_path(&node_path);
     let mut command = Command::new(&node_path);
     command.arg(&npm).arg("--version").env("PATH", &path);
@@ -386,6 +423,20 @@ async fn probe_owned<G: Clone + Send + 'static>(
         },
         path,
     })
+}
+pub(crate) fn npm_entry_candidates(candidate: &Path, node_path: &Path) -> [PathBuf; 4] {
+    [
+        candidate
+            .parent()
+            .unwrap()
+            .join("../lib/node_modules/npm/bin/npm-cli.js"),
+        node_path
+            .parent()
+            .unwrap()
+            .join("../lib/node_modules/npm/bin/npm-cli.js"),
+        candidate.parent().unwrap().join("npm"),
+        node_path.parent().unwrap().join("npm"),
+    ]
 }
 
 async fn probe_managed<G: Clone + Send + 'static>(
@@ -514,6 +565,63 @@ mod tests {
         for v in ["22.11.9", "20.19.0", "23.0.0", "25.0.0", "24.0.0-rc.1"] {
             assert!(!supported_node(v));
         }
+    }
+    #[tokio::test]
+    async fn global_node_selection_rejects_project_paths_and_project_owned_npm_before_execution() {
+        use std::os::unix::fs::symlink;
+        let (_temporary, root) = disposable();
+        let data = root.join("data");
+        let workspace = root.join("workspace");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let manager =
+            EnvironmentManager::new(data.clone()).with_project_boundary(workspace.clone());
+        let external = probe_stub(&root.join("external-tools"));
+        manager
+            .configure_node(Some(external.clone()))
+            .await
+            .unwrap();
+        let settings = fs::read(data.join("toolchain.json")).unwrap();
+        let project_node = probe_stub(&workspace.join("projects/disposable"));
+        let marker = root.join("project-tool-was-executed");
+        fs::write(
+            &project_node,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf 'v24.22.0\\n'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let outside_alias = root.join("outside-node-alias");
+        symlink(&project_node, &outside_alias).unwrap();
+        let inside_alias = project_node.with_extension("outside-alias");
+        symlink(&external, &inside_alias).unwrap();
+        for selected in [&project_node, &outside_alias, &inside_alias] {
+            assert_eq!(
+                manager
+                    .configure_node(Some(selected.clone()))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "GLOBAL_TOOL_PROJECT_OWNED"
+            );
+            assert_eq!(fs::read(data.join("toolchain.json")).unwrap(), settings);
+        }
+        assert!(!marker.exists(), "a rejected project Node must not execute");
+        let npm_target = workspace.join("projects/disposable/project-npm.js");
+        fs::write(&npm_target, "not executed").unwrap();
+        let npm_entry = root.join("external-tools/lib/node_modules/npm/bin/npm-cli.js");
+        fs::remove_file(&npm_entry).unwrap();
+        symlink(&npm_target, npm_entry).unwrap();
+        assert_eq!(
+            manager
+                .configure_node(Some(external))
+                .await
+                .unwrap_err()
+                .code,
+            "GLOBAL_TOOL_PROJECT_OWNED"
+        );
+        assert_eq!(fs::read(data.join("toolchain.json")).unwrap(), settings);
     }
 
     #[tokio::test]
