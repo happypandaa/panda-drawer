@@ -353,6 +353,65 @@ async fn delete_preview_blocks_unowned_run_evidence_before_confirmation_and_pres
 }
 
 #[tokio::test]
+async fn legacy_marker_allows_external_delete_without_signaling_host_or_touching_other_apps() {
+    let fixture = Fixture::new();
+    let external = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = external["id"].as_str().unwrap();
+    let other = fixture.install().await;
+    let other_registration =
+        fs::read(fixture.slot(&other.app_id).join("registration.json")).unwrap();
+    let source_sentinel = fixture.source.join("disposable-external-folder-sentinel");
+    fs::write(&source_sentinel, b"preserve external author files").unwrap();
+    let mut child = tokio::process::Command::new("/bin/sleep")
+        .arg("60")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    fs::write(
+        &marker,
+        serde_json::to_vec(&json!({
+            "version":1,"hostPid":child.id().unwrap(),
+            "runDirectory":fixture.slot(id).join("runs/disposable-old-run")
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let preview = fixture.manager.delete_preview(id).await.unwrap();
+    assert!(preview["blocker"].is_null());
+    assert!(marker.is_file(), "preview must not mutate the old marker");
+    let input =
+        serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap();
+    let result = fixture.manager.delete(id, input).await.unwrap();
+    assert_eq!(result["operationOutcome"], "deleted");
+    assert!(!marker.exists());
+    for relative in ["data", "configuration", "cache", "registration.json"] {
+        assert!(!fixture.slot(id).join(relative).exists(), "{relative}");
+    }
+    assert!(child.try_wait().unwrap().is_none());
+    assert_eq!(
+        fs::read(&source_sentinel).unwrap(),
+        b"preserve external author files"
+    );
+    assert_eq!(
+        fs::read(fixture.slot(&other.app_id).join("registration.json")).unwrap(),
+        other_registration
+    );
+    let list = fixture.manager.list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], other.app_id);
+    // Cleanup follows the disposable Child handle, never the legacy JSON PID.
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_and_evidence() {
     let fixture = Fixture::new();
     let external = fixture
