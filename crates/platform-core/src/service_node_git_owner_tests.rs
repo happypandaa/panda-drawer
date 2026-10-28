@@ -151,10 +151,23 @@ else: raise RuntimeError('artificial probe fixture never executes repository com
                 .code,
             "NODE_DEVELOPMENT_BUSY"
         );
-        assert_eq!(
-            self.apps.delete_preview(&self.id).await.unwrap_err().code,
-            "NODE_DEVELOPMENT_BUSY"
+        let registration = self
+            .paths
+            .data_root()
+            .join("node-apps")
+            .join(&self.id)
+            .join("registration.json");
+        let before = fs::read(&registration).unwrap();
+        assert!(self.apps.delete_preview(&self.id).await.unwrap()["blocker"].is_null());
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        let deletion = self.apps.begin_delete_operation(&self.id).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), deletion.wait_ready())
+                .await
+                .is_err()
         );
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        drop(deletion);
         assert_eq!(
             self.apps.start(&self.id).await.unwrap_err().code,
             "NODE_DEVELOPMENT_BUSY"

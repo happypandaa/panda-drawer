@@ -528,10 +528,22 @@ async fn cancelling_service_build_drains_group_and_releases_instance_without_pub
         handle.node_install_require_idle().unwrap_err().code,
         "NODE_DEVELOPMENT_BUSY"
     );
+    assert!(apps.delete_preview(id).await.unwrap()["blocker"].is_null());
     assert_eq!(
-        apps.delete_preview(id).await.unwrap_err().code,
-        "NODE_DEVELOPMENT_BUSY"
+        fs::read(slot.join("registration.json")).unwrap(),
+        registration
     );
+    let deletion = apps.begin_delete_operation(id).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), deletion.wait_ready())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(slot.join("registration.json")).unwrap(),
+        registration
+    );
+    drop(deletion);
     assert_eq!(apps.list().await.unwrap().len(), 1);
     apps.stop_runtime(id).await.unwrap();
     handle

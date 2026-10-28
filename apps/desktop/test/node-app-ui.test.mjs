@@ -119,6 +119,20 @@ function deletionProgress(title) {
   return progress;
 }
 
+async function withDeletionStatusTimers(run) {
+  const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 1_000_000;
+  window.setInterval = (callback, delay, ...args) => {
+    if (delay !== 1000) return originalInterval.call(window, callback, delay, ...args);
+    const id = ++timerId; timers.set(id, () => callback(...args)); return id;
+  };
+  window.clearInterval = id => { if (!timers.delete(id)) originalClear.call(window, id); };
+  try { await run({ tick: () => act(async () => { for (const callback of [...timers.values()]) callback(); }), count: () => timers.size }); }
+  finally {
+    if (root) await act(async () => root.unmount()); root = null;
+    window.setInterval = originalInterval; window.clearInterval = originalClear;
+  }
+}
+
 test('Node deletion reads ownership-specific scope, requires acknowledgment and sends no filesystem paths', async () => {
   for (const ownership of ['managed', 'external']) {
     const value = app(); const preview = deletionPreview(value, ownership); const finished = deferred(); const calls = []; const deleted = [];
@@ -133,6 +147,8 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     const dialog = deleteDialog();
     const confirmation = document.querySelector('[aria-label="永久删除 Node 项目确认"]');
     assert.match(confirmation.textContent, /不会为本次删除保存可恢复副本/);
+    assert.match(confirmation.textContent, /会关闭应用窗口，未保存的内容将丢失/);
+    assert.doesNotMatch(confirmation.querySelector('.checkbox-label').textContent, /我已关闭项目窗口/);
     assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本实例的程序、业务数据、应用配置与密钥/ : /原始应用目录及其中的全部文件保持原样/);
     const listed = [...confirmation.querySelectorAll('[data-path]')].map(element => element.getAttribute('data-path'));
     for (const path of [...preview.deletePaths, ...preview.preservedPaths]) assert.ok(listed.includes(path), `missing ${path}`);
@@ -158,6 +174,82 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     assert.deepEqual(deleted, [value.id]); assert.equal(document.querySelector('[role=dialog]'), null);
     await act(async () => root.unmount()); root = null;
   }
+});
+
+test('Pending Node deletion shows the current wait, stop and file stages without releasing its submission gate', async () => {
+  await withDeletionStatusTimers(async ({ tick, count }) => {
+    const value = app({ state: 'running' }); const finished = deferred(); const calls = [];
+    let status = { active: true, phase: 'waiting', waitingFor: ['Git 操作', '源码发布', 'Git 操作'] };
+    await setup(async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'node_app_delete_preview') return deletionPreview(value);
+      if (command === 'node_app_delete') return finished.promise;
+      if (command === 'node_app_delete_status') return status;
+      throw new Error(command);
+    }, { instanceId: 'same', request: { app: value, intent: 'delete', token: 1 } });
+    await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    assert.equal(count(), 1);
+    await tick();
+    assert.equal(deletionProgress('正在永久删除…').querySelector('.delete-progress-stage').textContent, '等待Git 操作、源码发布完成');
+    assert.deepEqual(calls.at(-1), ['node_app_delete_status', { appId: value.id }]);
+    assert.equal(byText('取消，保留项目').disabled, true);
+    assert.equal(deleteDialog().querySelector('.modal-close').disabled, true);
+    assert.equal(document.querySelector('.node-delete-footer').hidden, true);
+    await click(byText('正在永久删除…'));
+    assert.equal(calls.filter(([command]) => command === 'node_app_delete').length, 1);
+    status = { active: true, phase: 'stopping', waitingFor: [] }; await tick();
+    assert.equal(deletionProgress('正在永久删除…').querySelector('.delete-progress-stage').textContent, '正在关闭窗口并停止应用…');
+    status = { active: true, phase: 'deleting', waitingFor: [] }; await tick();
+    assert.equal(deletionProgress('正在永久删除…').querySelector('.delete-progress-stage').textContent, '正在删除文件…');
+    await act(async () => finished.resolve({ appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true }));
+    assert.equal(document.querySelector('[role=dialog]'), null); assert.equal(count(), 0);
+  });
+});
+
+test('A pending Node deletion coalesces status reads and ignores their late result after failure', async () => {
+  await withDeletionStatusTimers(async ({ tick, count }) => {
+    const value = app(); const finished = deferred(); const observation = deferred(); let reads = 0;
+    await setup(async command => {
+      if (command === 'node_app_delete_preview') return deletionPreview(value);
+      if (command === 'node_app_delete') return finished.promise;
+      if (command === 'node_app_delete_status') { reads++; return observation.promise; }
+      throw new Error(command);
+    }, { instanceId: 'same', request: { app: value, intent: 'delete', token: 1 } });
+    await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    await tick(); await tick(); assert.equal(reads, 1, 'One unresolved observation cannot start overlapping reads');
+    await act(async () => finished.reject({ code: 'DISPOSABLE_STOP_FAILED', message: 'Disposable application could not stop' }));
+    assert.equal(count(), 0); assert.equal(deleteDialog().querySelector('.delete-progress'), null);
+    const feedback = deleteDialog().querySelector('.node-delete-footer .node-delete-error');
+    assert.match(feedback.textContent, /Disposable application could not stop/); assert.equal(document.activeElement, feedback);
+    await act(async () => observation.resolve({ active: true, phase: 'waiting', waitingFor: ['迟到的旧操作'] }));
+    assert.equal(deleteDialog().querySelector('.delete-progress'), null);
+    assert.doesNotMatch(deleteDialog().textContent, /迟到的旧操作/);
+    assert.equal(document.activeElement, feedback); assert.equal(byText('取消，保留项目').disabled, false);
+  });
+});
+
+test('A late Node deletion stage cannot contaminate a new app confirmation after the old deletion completes', async () => {
+  await withDeletionStatusTimers(async ({ tick }) => {
+    const first = app(); const next = app({ id: 'another-disposable-node', name: 'Another disposable Node' });
+    const finished = deferred(); const observation = deferred(); const props = { enabled: true, instanceId: 'same', onDraftStateChange() {}, request: { app: first, intent: 'delete', token: 1 } };
+    let activeId = first.id;
+    await setup(async (command, args) => {
+      if (command === 'node_app_delete_preview') return deletionPreview(args.appId === first.id ? first : next);
+      if (command === 'node_app_delete') return finished.promise;
+      if (command === 'node_app_delete_status') { assert.equal(args.appId, activeId); return observation.promise; }
+      throw new Error(command);
+    }, props);
+    await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目')); await tick();
+    await act(async () => finished.resolve({ appId: first.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: true, evidenceRetained: true }));
+    activeId = next.id;
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, request: { app: next, intent: 'delete', token: 2 } })));
+    assert.match(deleteDialog().textContent, /Another disposable Node/);
+    await act(async () => observation.resolve({ active: true, phase: 'deleting', waitingFor: ['迟到的旧项目'] }));
+    assert.equal(deleteDialog().querySelector('.delete-progress'), null);
+    assert.doesNotMatch(deleteDialog().textContent, /迟到的旧项目|正在删除文件/);
+    assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
+    assert.equal(byText('确认永久删除项目').disabled, true);
+  });
 });
 
 test('A standalone Node deletion preview keeps cancellation available without offering an unreviewed delete action', async () => {

@@ -6,6 +6,15 @@ import { Modal } from './Modal';
 import type { NodeAppDeletePreview, NodeAppDeleteResult } from './node-app-types';
 import { messageFrom } from './ui-utils';
 
+type DeleteStatus = { active: boolean; phase: 'waiting' | 'stopping' | 'deleting' | null; waitingFor: string[] };
+
+function progressDetail(value: DeleteStatus): string {
+  if (!value || value.active !== true || !['waiting', 'stopping', 'deleting'].includes(value.phase ?? '')
+    || !Array.isArray(value.waitingFor) || !value.waitingFor.every(name => typeof name === 'string' && name.trim())) return '';
+  if (value.phase === 'waiting') return value.waitingFor.length ? `等待${[...new Set(value.waitingFor)].join('、')}完成` : '等待已有操作完成';
+  return value.phase === 'stopping' ? '正在关闭窗口并停止应用…' : '正在删除文件…';
+}
+
 function validPreview(value: NodeAppDeletePreview, appId: string): boolean {
   return Boolean(value && value.appId === appId && typeof value.name === 'string' && value.name
     && ['managed', 'external'].includes(value.ownership) && typeof value.expectedRevision === 'string' && value.expectedRevision
@@ -52,6 +61,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
   const [error, setError] = useState('');
   const [errorTitle, setErrorTitle] = useState('无法核对删除范围');
   const [pending, setPending] = useState<'preview' | 'delete' | null>(null);
+  const [stage, setStage] = useState('');
   const alive = useRef(true);
   const operation = useRef<'preview' | 'delete' | null>(null);
   const sequence = useRef(0);
@@ -93,7 +103,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       || approvedContext.revision !== preview.expectedRevision || approvedContext.sequence !== sequence.current) return;
     const approved = preview; const origin = context.current; const revision = sequence.current;
     const current = () => alive.current && sequence.current === revision && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
-    operation.current = 'delete'; setPending('delete'); callbacks.current.onPendingChange(true); setError(''); setErrorTitle('删除未完成');
+    operation.current = 'delete'; setPending('delete'); setStage(''); callbacks.current.onPendingChange(true); setError(''); setErrorTitle('删除未完成');
     try {
       const result = await invoke<NodeAppDeleteResult>('node_app_delete', { appId: approved.appId, input: { expectedRevision: approved.expectedRevision } });
       if (!current()) return;
@@ -117,6 +127,24 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       sequence.current++; approval.current = null; operation.current = null; setPending(null); callbacks.current.onPendingChange(false); callbacks.current.onClose();
     }
   }, [enabled]);
+  useEffect(() => {
+    const origin = approval.current;
+    if (pending !== 'delete' || !origin || origin.appId !== app.id || origin.instanceId !== instanceId) { setStage(''); return; }
+    let cancelled = false; let reading = false;
+    const current = () => !cancelled && alive.current && operation.current === 'delete' && sequence.current === origin.sequence
+      && context.current.appId === origin.appId && context.current.instanceId === origin.instanceId;
+    const observe = async () => {
+      if (reading || !current()) return;
+      reading = true;
+      try {
+        const value = await invoke<DeleteStatus>('node_app_delete_status', { appId: origin.appId });
+        if (current()) setStage(progressDetail(value));
+      } catch { /* A status read cannot change the pending deletion's outcome or release its owner. */ }
+      finally { reading = false; }
+    };
+    const timer = window.setInterval(() => void observe(), 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [pending, app.id, instanceId]);
   useEffect(() => { if (error && pending === null) errorPanel.current?.focus(); }, [error, pending]);
 
   const preserved = preview ? [...new Set(preview.preservedPaths)] : [];
@@ -130,6 +158,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
       <div className="node-delete-body" hidden={pending !== null} aria-busy={pending !== null}>
         <h3>永久删除「{preview?.name ?? app.name}」？此操作无法撤销。</h3>
         <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
+        <p>会关闭应用窗口，未保存的内容将丢失。</p>
         {preview && <>
           <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
           <div className="node-delete-scope">
@@ -148,10 +177,10 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, onClose, onPendi
           <p className="node-delete-id">项目 ID：<code>{preview.appId}</code></p>
         </>}
       </div>
-      {pending !== null && <DeleteProgress name={preview?.name ?? app.name} checking={pending === 'preview'} />}
+      {pending !== null && <DeleteProgress name={preview?.name ?? app.name} checking={pending === 'preview'} detail={pending === 'delete' ? stage : undefined} />}
       <div className="node-delete-footer" hidden={pending === 'delete'}>
         {error && <div ref={errorPanel} className="node-delete-error" role="alert" tabIndex={-1}><strong>{errorTitle}</strong><p>{error}</p><p>处理上述问题后，重新核对删除范围；本次不会自动重试。</p></div>}
-        <label className="checkbox-label" hidden={!verified || pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已关闭项目窗口、核对上述范围，并理解永久删除无法撤销</label>
+        <label className="checkbox-label" hidden={!verified || pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已核对上述范围，并理解会关闭应用窗口、丢失未保存内容且永久删除无法撤销</label>
         <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button>{!verified && pending !== 'preview' && <button className="primary-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>}<button className="danger-button" hidden={!verified || pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
       </div>
     </section>

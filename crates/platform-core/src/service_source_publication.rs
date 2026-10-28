@@ -2,6 +2,7 @@ use super::*;
 use crate::projects::ProjectTaskLease;
 
 struct PublicationScope {
+    _operation: crate::node_apps::NodeOperationPermit,
     _active: Active,
     _publication: ProjectTaskLease,
     _source: ProjectTaskLease,
@@ -84,6 +85,7 @@ impl RuntimeHandle {
         let (source_id, digest) = acquired_identity(&task, &source_task_id)?;
         let lease_id = format!("source-publication:{app_id}");
         let scope = PublicationScope {
+            _operation: apps.admit_operation(&app_id, "源码发布")?,
             _active: active,
             _publication: state
                 .store
@@ -151,6 +153,7 @@ impl RuntimeHandle {
             &source_id,
             &digest,
             &generation,
+            &_scope._operation,
         )
         .await?;
         Ok(

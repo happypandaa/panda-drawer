@@ -20,14 +20,14 @@ async fn delayed_old_cleanup_cannot_stop_a_replacement_generation() {
     let windows = Arc::new(NodeWindows::default());
     let old = fresh_session(Phase::Closing);
     put(&windows, "same-application", old.clone());
-    let operation = windows.operations.lock().await;
+    let operation = windows.instance_operation("same-application").await;
     let stopped = Arc::new(AtomicUsize::new(0));
     let (queued, observed) = oneshot::channel();
     let cleanup_windows = windows.clone();
     let cleanup_stopped = stopped.clone();
     let cleanup = tokio::spawn(async move {
         queued.send(()).unwrap();
-        let _operation = cleanup_windows.operations.lock().await;
+        let _operation = cleanup_windows.instance_operation("same-application").await;
         if cleanup_windows.owns("same-application", &old) {
             cleanup_stopped.fetch_add(1, Ordering::SeqCst);
         }
@@ -47,14 +47,14 @@ async fn delayed_cleanup_still_stops_its_own_generation() {
     let windows = Arc::new(NodeWindows::default());
     let current = fresh_session(Phase::Closing);
     put(&windows, "same-application", current.clone());
-    let operation = windows.operations.lock().await;
+    let operation = windows.instance_operation("same-application").await;
     let stopped = Arc::new(AtomicUsize::new(0));
     let (queued, observed) = oneshot::channel();
     let cleanup_windows = windows.clone();
     let cleanup_stopped = stopped.clone();
     let cleanup = tokio::spawn(async move {
         queued.send(()).unwrap();
-        let _operation = cleanup_windows.operations.lock().await;
+        let _operation = cleanup_windows.instance_operation("same-application").await;
         if cleanup_windows.owns("same-application", &current) {
             cleanup_stopped.fetch_add(1, Ordering::SeqCst);
         }
@@ -63,6 +63,100 @@ async fn delayed_cleanup_still_stops_its_own_generation() {
     drop(operation);
     cleanup.await.unwrap();
     assert_eq!(stopped.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn one_instance_waiter_does_not_hold_shared_or_other_instance_operations() {
+    let windows = Arc::new(NodeWindows::default());
+    let first = windows
+        .instance_operation("first-disposable-instance")
+        .await;
+    let queued_windows = windows.clone();
+    let (queued, observed) = oneshot::channel();
+    let waiter = tokio::spawn(async move {
+        queued.send(()).unwrap();
+        queued_windows
+            .instance_operation("first-disposable-instance")
+            .await
+    });
+    observed.await.unwrap();
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        windows.instance_operation("second-disposable-instance"),
+    )
+    .await
+    .unwrap();
+    assert!(windows
+        .try_instance_operation("first-disposable-instance")
+        .is_none());
+    let shared = windows
+        .operations
+        .try_lock()
+        .expect("instance waits must leave shared coordination available");
+    assert!(!waiter.is_finished());
+    drop(shared);
+    drop(second);
+    drop(first);
+    drop(waiter.await.unwrap());
+}
+
+#[tokio::test]
+async fn destroyed_receipt_completes_before_cleanup_can_take_the_same_instance_lock() {
+    let windows = Arc::new(NodeWindows::default());
+    let lifetimes = Arc::new(super::super::business_window_lifetime::WindowLifetimes::default());
+    let id = "00000000-0000-4000-8000-000000000003";
+    let receipt = lifetimes.reserve(&label(id).unwrap()).unwrap();
+    let operation = windows.instance_operation(id).await;
+    let cleanup_windows = windows.clone();
+    let delivered = receipt.clone();
+    let callback = tokio::spawn(async move {
+        // The native callback records Destroyed synchronously. Only its later
+        // runtime/session cleanup queues behind the operation that requested it.
+        lifetimes.destroyed(&delivered, || {});
+        let _cleanup = cleanup_windows.instance_operation(id).await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), wait_destroyed(receipt))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!callback.is_finished());
+    drop(operation);
+    callback.await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_snapshot_waits_for_queued_native_creation_without_blocking_instance_stop() {
+    let windows = Arc::new(NodeWindows::default());
+    let registration = windows.operations.clone().lock_owned().await;
+    let (release, queued) = oneshot::channel();
+    let native = tokio::spawn(async move {
+        // Production moves this owned guard into the queued main-thread
+        // closure, so dropping its caller cannot release the reservation.
+        let _registration = registration;
+        queued.await.unwrap();
+    });
+    let snapshot_windows = windows.clone();
+    let (started, observed) = oneshot::channel();
+    let snapshot = tokio::spawn(async move {
+        started.send(()).unwrap();
+        let _shared = snapshot_windows.operations.lock().await;
+        snapshot_windows.freeze_for_shutdown()
+    });
+    observed.await.unwrap();
+    assert!(!snapshot.is_finished());
+    // Native close/stop acquires only this keyed operation, independently of
+    // the shared creation/snapshot lock.
+    let stopping = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        windows.instance_operation("another-disposable-stopping-instance"),
+    )
+    .await
+    .unwrap();
+    assert!(!snapshot.is_finished());
+    drop(stopping);
+    release.send(()).unwrap();
+    native.await.unwrap();
+    snapshot.await.unwrap();
 }
 
 #[tokio::test]

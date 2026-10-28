@@ -177,12 +177,8 @@ async fn runtime_reader_failure_keeps_running_owner_and_marker_after_group_exit(
     fixture.manager.start(id).await.unwrap();
     fixture
         .manager
-        .inner
-        .lock()
+        .fixture_running(id)
         .await
-        .running
-        .get_mut(id)
-        .unwrap()
         .runtime
         .fixture_reader_failure();
     assert!(fixture.manager.stop_all().await.is_err());
@@ -247,17 +243,14 @@ async fn failed_detail_during_reuse_does_not_stop_the_already_running_instance()
     assert!(fixture.manager.start(id).await.is_err());
     assert_eq!(fixture.manager.running_ids().await, [id]);
     assert_eq!(unsafe { libc::kill(original_pid as i32, 0) }, 0);
-    {
-        let inner = fixture.manager.inner.lock().await;
-        inner
-            .running
-            .get(id)
-            .unwrap()
-            .runtime
-            .verify_health()
-            .await
-            .unwrap();
-    }
+    fixture
+        .manager
+        .fixture_running(id)
+        .await
+        .runtime
+        .verify_health()
+        .await
+        .unwrap();
     assert!(fixture.slot(id).join("active.json").exists());
     fixture.manager.stop_runtime(id).await.unwrap();
     assert!(!fixture.slot(id).join("active.json").exists());
@@ -447,8 +440,8 @@ async fn control_failure_with_closed_group_and_io_does_not_preserve_a_running_ma
     let id = registered["id"].as_str().unwrap();
     fixture.manager.start(id).await.unwrap();
     {
-        let mut inner = fixture.manager.inner.lock().await;
-        let runtime = &mut inner.running.get_mut(id).unwrap().runtime;
+        let mut running = fixture.manager.fixture_running(id).await;
+        let runtime = &mut running.runtime;
         runtime.ping().await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while runtime.status().unwrap().state != "failed" {
@@ -560,17 +553,14 @@ async fn deleting_a_forced_stop_preserves_external_source_and_another_running_in
         fs::read(fixture.slot(second_id).join("registration.json")).unwrap(),
         registration_before
     );
-    {
-        let mut inner = fixture.manager.inner.lock().await;
-        inner
-            .running
-            .get_mut(second_id)
-            .unwrap()
-            .runtime
-            .ping()
-            .await
-            .unwrap();
-    }
+    fixture
+        .manager
+        .fixture_running(second_id)
+        .await
+        .runtime
+        .ping()
+        .await
+        .unwrap();
     fixture.manager.stop_runtime(second_id).await.unwrap();
 }
 
@@ -631,14 +621,14 @@ async fn proxy_drain_failure_retains_running_even_after_the_actual_runtime_exits
     let marker = fixture.slot(id).join("active.json");
     let evidence = fixture.slot(id).join("data/artificial-preserved-value");
     fs::write(&evidence, b"artificial retained business bytes").unwrap();
-    {
-        let inner = fixture.manager.inner.lock().await;
-        inner.running[id]
-            .proxy
-            .as_ref()
-            .unwrap()
-            .fixture_serve_panic();
-    }
+    fixture
+        .manager
+        .fixture_running(id)
+        .await
+        .proxy
+        .as_ref()
+        .unwrap()
+        .fixture_serve_panic();
     assert_eq!(
         fixture.manager.stop_all().await.unwrap_err().code,
         "NODE_APP_PROXY_DRAIN_BLOCKED"
@@ -646,12 +636,11 @@ async fn proxy_drain_failure_retains_running_even_after_the_actual_runtime_exits
     assert_eq!(fixture.manager.owned_process_ids().await, [id]);
     assert!(fixture.manager.running_ids().await.is_empty());
     {
-        let mut inner = fixture.manager.inner.lock().await;
-        let running = inner.running.get_mut(id).unwrap();
+        let mut running = fixture.manager.fixture_running(id).await;
         assert!(running.runtime.status().unwrap().process_group_exited);
         assert!(running.proxy.is_some());
-        assert!(running.cleanup_pending);
     }
+    assert!(fixture.manager.inner.lock().await.running[id].cleanup_pending());
     assert!(marker.exists());
     assert!(fs::read(evidence).unwrap() == b"artificial retained business bytes");
     assert!(fixture.manager.start(id).await.is_err());
@@ -690,14 +679,14 @@ async fn one_blocked_proxy_does_not_prevent_the_other_real_runtime_from_stopping
     }
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
-    {
-        let inner = fixture.manager.inner.lock().await;
-        inner.running[&ids[0]]
-            .proxy
-            .as_ref()
-            .unwrap()
-            .fixture_read_pause(entered, blocked);
-    }
+    fixture
+        .manager
+        .fixture_running(&ids[0])
+        .await
+        .proxy
+        .as_ref()
+        .unwrap()
+        .fixture_read_pause(entered, blocked);
     let pids = ids.iter().map(|id| fixture.pid(id)).collect::<Vec<_>>();
     let (client, origin, cookie) = proxy_test_browser(&fixture.manager, &ids[0]).await;
     let request = tokio::spawn(
@@ -742,14 +731,14 @@ async fn losing_node_stop_waiter_preserves_running_and_proxy_until_actual_file_c
     let marker = fixture.slot(&id).join("active.json");
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
-    {
-        let inner = fixture.manager.inner.lock().await;
-        inner.running[&id]
-            .proxy
-            .as_ref()
-            .unwrap()
-            .fixture_read_pause(entered, blocked);
-    }
+    fixture
+        .manager
+        .fixture_running(&id)
+        .await
+        .proxy
+        .as_ref()
+        .unwrap()
+        .fixture_read_pause(entered, blocked);
     let (client, origin, cookie) = proxy_test_browser(&fixture.manager, &id).await;
     let request = tokio::spawn(
         client
@@ -781,6 +770,165 @@ async fn losing_node_stop_waiter_preserves_running_and_proxy_until_actual_file_c
 }
 
 #[tokio::test]
+async fn blocked_instance_stop_keeps_status_and_another_instance_available_after_waiter_loss() {
+    let fixture = Fixture::new("normal");
+    let other = Fixture::new("normal");
+    let first = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let second = fixture
+        .manager
+        .register(other.source.clone())
+        .await
+        .unwrap();
+    let id = first["id"].as_str().unwrap().to_owned();
+    let other_id = second["id"].as_str().unwrap().to_owned();
+    fixture.manager.start(&id).await.unwrap();
+    fixture.manager.start(&other_id).await.unwrap();
+    let pid = fixture.pid(&id);
+    let other_pid = fixture.pid(&other_id);
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    fixture
+        .manager
+        .fixture_running(&id)
+        .await
+        .proxy
+        .as_ref()
+        .unwrap()
+        .fixture_read_pause(entered, blocked);
+    let (client, origin, cookie) = proxy_test_browser(&fixture.manager, &id).await;
+    let request = tokio::spawn(
+        client
+            .get(format!("{origin}/"))
+            .header(reqwest::header::COOKIE, cookie)
+            .send(),
+    );
+    ready.await.unwrap();
+    let manager = fixture.manager.clone();
+    let stop_id = id.clone();
+    let stopping = tokio::spawn(async move { manager.stop_runtime(&stop_id).await });
+    wait_artificial_process_gone(pid).await;
+    assert!(!stopping.is_finished());
+    let snapshot = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        fixture.manager.status(&id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(snapshot["state"], "stopping");
+    assert_eq!(snapshot["configuration"]["canStart"], false);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.manager.start(&other_id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(process_is_live(other_pid as i32));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        fixture.manager.stop_runtime(&other_id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!process_is_live(other_pid as i32));
+    stopping.abort();
+    assert!(stopping.await.unwrap_err().is_cancelled());
+    assert!(fixture.slot(&id).join("active.json").is_file());
+    release.send(()).unwrap();
+    if let Ok(Ok(response)) = request.await {
+        drop(response);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        while !fixture.manager.owned_process_ids().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!fixture.slot(&id).join("active.json").exists());
+    assert!(fixture.source.join("server/fixture.mjs").is_file());
+    assert!(other.source.join("server/fixture.mjs").is_file());
+}
+
+#[tokio::test]
+async fn lost_start_waiter_remains_owned_without_blocking_another_instance_or_shutdown() {
+    let fixture = Fixture::new("normal");
+    let other = Fixture::new("normal");
+    let first = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = first["id"].as_str().unwrap().to_owned();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, blocked) = tokio::sync::oneshot::channel();
+    *fixture.manager.start_intent_pause.lock().unwrap() = Some((entered, blocked));
+    let manager = fixture.manager.clone();
+    let start_id = id.clone();
+    let starting = tokio::spawn(async move { manager.start(&start_id).await });
+    ready.await.unwrap();
+    let snapshot = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        fixture.manager.status(&id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(snapshot["state"], "starting");
+    assert_eq!(snapshot["configuration"]["canStart"], false);
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        fixture.manager.register(other.source.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let other_id = second["id"].as_str().unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        fixture.manager.start(other_id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    fixture.manager.stop_runtime(other_id).await.unwrap();
+    starting.abort();
+    assert!(starting.await.unwrap_err().is_cancelled());
+    assert_eq!(fixture.manager.owned_process_ids().await, [id.as_str()]);
+    let manager = fixture.manager.clone();
+    let shutdown = tokio::spawn(async move { manager.stop_all().await });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !fixture.manager.inner.lock().await.shutting_down {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!shutdown.is_finished());
+    release.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(8), shutdown)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(!fixture.slot(&id).join("active.json").exists());
+    assert!(fixture
+        .manager
+        .processes
+        .snapshot()
+        .iter()
+        .all(|record| record.resource_closed()));
+    assert!(fixture.source.join("server/fixture.mjs").is_file());
+}
+
+#[tokio::test]
 async fn marker_retirement_failure_keeps_closed_runtime_blocked_and_preserves_replacement() {
     use std::os::unix::fs::MetadataExt;
     for replace in [false, true] {
@@ -800,14 +948,14 @@ async fn marker_retirement_failure_keeps_closed_runtime_blocked_and_preserves_re
         fs::write(&sentinel, b"business data must survive failed retirement").unwrap();
         let (entered, ready) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
-        {
-            let inner = fixture.manager.inner.lock().await;
-            inner.running[id]
-                .proxy
-                .as_ref()
-                .unwrap()
-                .fixture_read_pause(entered, blocked);
-        }
+        fixture
+            .manager
+            .fixture_running(id)
+            .await
+            .proxy
+            .as_ref()
+            .unwrap()
+            .fixture_read_pause(entered, blocked);
         let (client, origin, cookie) = proxy_test_browser(&fixture.manager, id).await;
         let request = tokio::spawn(
             client
@@ -836,20 +984,17 @@ async fn marker_retirement_failure_keeps_closed_runtime_blocked_and_preserves_re
         assert!(!process_is_live(pid as i32));
         assert_eq!(fixture.manager.owned_process_ids().await, [id]);
         assert!(fixture.manager.running_ids().await.is_empty());
-        {
-            let mut inner = fixture.manager.inner.lock().await;
-            assert!(
-                inner
-                    .running
-                    .get_mut(id)
-                    .unwrap()
-                    .runtime
-                    .status()
-                    .unwrap()
-                    .process_group_exited
-            );
-            assert!(inner.markers.contains_key(id));
-        }
+        assert!(
+            fixture
+                .manager
+                .fixture_running(id)
+                .await
+                .runtime
+                .status()
+                .unwrap()
+                .process_group_exited
+        );
+        assert!(fixture.manager.inner.lock().await.markers.contains_key(id));
         for detail in [
             fixture.manager.configuration(id).await.unwrap(),
             fixture.manager.status(id).await.unwrap(),

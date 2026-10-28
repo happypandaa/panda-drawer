@@ -167,6 +167,11 @@ impl NodeInstallTasks {
         input: PrepareNodeInstallInput,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord> {
+        let operation = input
+            .target_app_id
+            .as_deref()
+            .map(|id| node_apps.admit_operation(id, "安装准备"))
+            .transpose()?;
         self.installer()?;
         self.accepting(&stop)?;
         let sources = self.sources.as_ref().map_err(Clone::clone)?.clone();
@@ -242,7 +247,7 @@ impl NodeInstallTasks {
                 cancel,
                 crate::node_development_build::NodeProcessScope::new(
                     manager.store.processes(),
-                    Arc::new((lease, sources)),
+                    Arc::new((lease, sources, operation)),
                 ),
             ))
             .catch_unwind()
@@ -429,6 +434,7 @@ impl NodeInstallTasks {
     ) -> Result<TaskRecord> {
         let installer = self.installer()?;
         let app_id = self.target_app_id(candidate_id)?;
+        let _operation = node_apps.admit_operation(&app_id, "安装提交")?;
         let (task, lease, cancel) = {
             let _submission = self.submission.lock().unwrap();
             self.accepting(&stop)?;

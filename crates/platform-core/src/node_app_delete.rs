@@ -87,7 +87,6 @@ impl NodeApps {
     /// opens private configuration, so damaged applications remain removable.
     pub async fn delete_preview(&self, id: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
-        self.require_no_development_operation(id)?;
         self.require_no_source_restore(id)?;
         let record = self.registration(id)?;
         let slot = self.root.join(id);
@@ -126,13 +125,39 @@ impl NodeApps {
         )
     }
 
-    /// The blocking owner keeps the application lock until removal and final
-    /// registration cleanup have finished, even when the caller disappears.
+    /// The instance reservation, rather than a global lock, follows the actual
+    /// worker until the operation completes even if the caller disappears.
     pub async fn delete(&self, id: &str, input: DeleteNodeAppInput) -> Result<Value> {
-        let mut inner = self.inner.clone().lock_owned().await;
+        let permit = self.begin_delete_operation(id)?;
+        self.delete_with_permit(id, input, permit).await
+    }
+
+    pub async fn delete_with_permit(
+        &self,
+        id: &str,
+        input: DeleteNodeAppInput,
+        permit: NodeDeletionPermit,
+    ) -> Result<Value> {
+        let apps = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            permit.wait_ready().await;
+            permit.validate(&apps, &id)?;
+            apps.delete_admitted(&id, input, permit).await
+        })
+        .await
+        .map_err(|_| fail("删除工作意外结束，请保留现场并重新核对实际结果。"))?
+    }
+
+    async fn delete_admitted(
+        &self,
+        id: &str,
+        input: DeleteNodeAppInput,
+        permit: NodeDeletionPermit,
+    ) -> Result<Value> {
         self.require_no_development_operation(id)?;
         self.require_no_source_restore(id)?;
-        if inner.shutting_down {
+        if self.inner.lock().await.shutting_down {
             return Err(fail("平台正在退出，不能删除项目。"));
         }
         let record = self.registration(id)?;
@@ -145,7 +170,9 @@ impl NodeApps {
                 "项目登记已变化，请重新核对删除范围。",
             ));
         }
-        self.stop_locked(id, &mut inner).await?;
+        permit.set_phase("stopping");
+        self.stop_runtime(id).await?;
+        let inner = self.inner.lock().await;
         if let Some(error) = run_recovery_blocker(&slot, inner.running.contains_key(id))? {
             return Err(error);
         }
@@ -154,6 +181,7 @@ impl NodeApps {
                 fail("应用尚未完成安全关闭，未删除文件；请保留运行现场。").outcome("not_deleted")
             );
         }
+        drop(inner);
         let managed = record.managed.is_some();
         let root_identity =
             PersistedIdentity::capture(&slot).map_err(|error| fail(error.to_string()))?;
@@ -163,7 +191,10 @@ impl NodeApps {
         let identity = root_identity;
         let removal_id = id.to_owned();
         let ownership = if managed { "managed" } else { "external" };
-        tokio::task::spawn_blocking(move || -> Result<Value> {
+        permit.set_phase("deleting");
+        let worker_permit = permit.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<Value> {
+            let _permit = worker_permit;
             let removal = (|| -> Result<bool> {
                 let mut checked = Vec::new();
                 for target in owned {
@@ -209,17 +240,25 @@ impl NodeApps {
                 Ok(durable) => durable,
                 Err(mut error) => {
                     error.message = format!("项目删除未完成，部分文件可能已永久删除。请重新核对剩余内容后明确重试；平台不会自动继续删除。原因：{}", error.message);
-                    inner.errors.insert(removal_id.clone(), error.message.clone());
                     return Err(error.outcome("delete_incomplete").detail("platformRoot", json!(remove_slot)));
                 }
             };
-            inner.errors.remove(&removal_id);
             Ok(json!({"appId":removal_id,"operationOutcome":"deleted","ownership":ownership,
                 "sourcePreserved":true,"evidenceRetained":true,"metadataCleanupPending":!durable,
                 "durabilityConfirmed":durable,
                 "warning":if durable { Value::Null } else { json!("文件及登记已移除，但目录落盘尚未确认；请刷新或重开核对结果。") }}))
         })
         .await
-        .unwrap_or_else(|error| Err(fail(error.to_string())))
+        .unwrap_or_else(|error| Err(fail(error.to_string())));
+        let mut inner = self.inner.lock().await;
+        match &result {
+            Ok(_) => {
+                inner.errors.remove(id);
+            }
+            Err(error) => {
+                inner.errors.insert(id.into(), error.message.clone());
+            }
+        }
+        result
     }
 }

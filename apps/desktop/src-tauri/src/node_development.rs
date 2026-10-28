@@ -17,7 +17,8 @@ pub(super) async fn node_development_info(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "读取开发信息")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             state
                 .handle
                 .node_development_info(&state.node_apps, &app_id)
@@ -38,7 +39,8 @@ pub(super) async fn node_development_bind(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "绑定源码")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             state.handle.node_install_require_idle()?;
             state
                 .node_apps
@@ -59,7 +61,8 @@ pub(super) async fn node_development_reveal(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "显示源码目录")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             let lease = state
                 .handle
                 .node_development_lease(&state.node_apps, &app_id, false)
@@ -84,7 +87,8 @@ pub(super) async fn node_development_git(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "源码版本操作")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             let value = input.unwrap_or(Value::Null);
             let parse =
                 |error: serde_json::Error| ApiError::new("INVALID_INPUT", error.to_string());
@@ -122,7 +126,8 @@ pub(super) async fn node_development_handoff(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "准备开发说明")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             state
                 .handle
                 .node_development_handoff(&state.node_apps, &app_id)
@@ -144,7 +149,8 @@ pub(super) async fn node_development_open_codex(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "打开源码编辑器")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             let lease = state
                 .handle
                 .node_development_lease(&state.node_apps, &app_id, true)
@@ -176,7 +182,8 @@ pub(super) async fn node_development_build(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "构建应用")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             state
                 .handle
                 .node_development_build(state.node_apps.clone(), app_id)
