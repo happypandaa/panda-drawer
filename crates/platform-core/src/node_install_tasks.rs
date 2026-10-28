@@ -61,8 +61,9 @@ impl NodeInstallTasks {
         sources: Result<Arc<SourceAcquisitionManager>>,
     ) -> Arc<Self> {
         let mut issues = Vec::new();
-        let installer =
-            NodeAppInstaller::new(paths.data_root().to_path_buf()).and_then(|installer| {
+        let installer = NodeAppInstaller::new(paths.data_root().to_path_buf())
+            .map(|installer| installer.with_workspace(paths.workspace_root().to_path_buf()))
+            .and_then(|installer| {
                 for result in installer.recover(&tasks)? {
                     if result["state"] == "needs-attention" {
                         issues.push(
@@ -167,11 +168,6 @@ impl NodeInstallTasks {
         input: PrepareNodeInstallInput,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord> {
-        let operation = input
-            .target_app_id
-            .as_deref()
-            .map(|id| node_apps.admit_operation(id, "安装准备"))
-            .transpose()?;
         self.installer()?;
         self.accepting(&stop)?;
         let sources = self.sources.as_ref().map_err(Clone::clone)?.clone();
@@ -185,14 +181,35 @@ impl NodeInstallTasks {
                 .await
                 .map_err(|_| interrupted())??;
         require_node_source(&source)?;
-        let target = node_apps
+        let owner_app_id = sources.owner_app_id(&input.source_id)?;
+        let operation = node_apps.admit_operation(&owner_app_id, "安装准备")?;
+        if input
+            .target_app_id
+            .as_ref()
+            .is_some_and(|id| id != &owner_app_id)
+        {
+            return Err(ApiError::new(
+                "SOURCE_PROJECT_EXCLUSIVE",
+                "此来源只属于原项目，不能用于另一个项目。请重新下载。",
+            ));
+        }
+        let mut target = node_apps
             .install_target_snapshot(input.target_app_id.as_deref())
             .await?;
+        if input.target_app_id.is_none() {
+            target.app_id = owner_app_id.clone();
+            if node_apps.configuration(&owner_app_id).await.is_ok() {
+                return Err(ApiError::new(
+                    "SOURCE_PROJECT_EXCLUSIVE",
+                    "此来源已用于原项目，不能再创建另一个实例。请重新下载。",
+                ));
+            }
+        }
         let _submission = self.submission.lock().unwrap();
         self.accepting(&stop)?;
         let task = self
             .tasks
-            .create_workspace_operation("nodeInstallPrepare")?;
+            .create_node_operation(&owner_app_id, "nodeInstallPrepare")?;
         let lease = match self
             .store
             .reserve_task(&format!("source:{}", input.source_id), &task.task_id)
@@ -218,7 +235,7 @@ impl NodeInstallTasks {
             .join(format!("{}.json", task.task_id));
         let saved = crate::projects::check_no_symlinks(&binding, true).and_then(|()| {
             crate::builds::atomic_json(&binding, &json!({
-                "sourceId":input.source_id,"prepareTaskId":task.task_id,"targetAppId":input.target_app_id
+                "sourceId":input.source_id,"prepareTaskId":task.task_id,"targetAppId":owner_app_id
             }))
         });
         if let Err(error) = saved {
@@ -234,22 +251,33 @@ impl NodeInstallTasks {
         let task_id = task.task_id.clone();
         let runner = tokio::spawn(async move {
             let lease = Arc::new(lease);
+            let writer_owner: Arc<dyn Send + Sync> =
+                Arc::new((lease.clone(), sources.clone(), operation));
             let _active = ActiveTask {
                 manager: manager.clone(),
                 task_id: task_id.clone(),
             };
-            let result = AssertUnwindSafe(manager.run_prepare(
-                &task_id,
-                sources.clone(),
-                input,
-                target,
-                stop,
-                cancel,
-                crate::node_development_build::NodeProcessScope::new(
-                    manager.store.processes(),
-                    Arc::new((lease, sources, operation)),
+            let result = AssertUnwindSafe(
+                manager.run_prepare(
+                    &task_id,
+                    sources.clone(),
+                    input,
+                    target,
+                    stop,
+                    cancel,
+                    crate::node_development_build::NodeProcessScope::new(
+                        manager.store.processes(),
+                        writer_owner.clone(),
+                    )
+                    .with_project_ownership(
+                        crate::node_project_ownership::NodeProjectOwnership::new(
+                            manager.paths.data_root().into(),
+                            manager.paths.workspace_root().into(),
+                        ),
+                        owner_app_id,
+                    ),
                 ),
-            ))
+            )
             .catch_unwind()
             .await;
             let error = match result {
@@ -260,6 +288,8 @@ impl NodeInstallTasks {
             if let Some(error) = error {
                 manager.finish_error(&task_id, None, error);
             }
+            drop(writer_owner);
+            drop(lease);
         });
         let mut runners = self.runners.lock().unwrap();
         // Preserve completed outcomes for the shutdown join; panic is not success.
@@ -341,6 +371,11 @@ impl NodeInstallTasks {
                 std::fs::create_dir(&build_root)?;
             }
             crate::projects::check_no_symlinks(&build_root, false)?;
+            crate::node_project_ownership::NodeProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            )
+            .record_build(&target.app_id, task_id)?;
             self.tasks.phase(task_id, "building-source")?;
             let output = crate::node_development_build::build_repository_scoped(
                 &source_root,
@@ -438,7 +473,9 @@ impl NodeInstallTasks {
         let (task, lease, cancel) = {
             let _submission = self.submission.lock().unwrap();
             self.accepting(&stop)?;
-            let task = self.tasks.create_workspace_operation("nodeInstallApply")?;
+            let task = self
+                .tasks
+                .create_node_operation(&app_id, "nodeInstallApply")?;
             let lease = match self
                 .store
                 .reserve_task(&format!("node-install:{app_id}"), &task.task_id)

@@ -98,3 +98,5 @@
 既有 project-v1 的交接仍优先选择项目自己的 skill，但每次“复制 AI 接手说明”／`project handoff` 都额外要求阅读当前安装的窗口约束，`runtimeConstraintsPath` 返回包内 `references/app-window-runtime.md` 的实际路径，文本同时明确单窗口、开窗后台启动 Node、关窗停止和禁止弹新窗口。这样旧项目无需被覆盖，也能获得当前平台约束补充；新项目 README 默认说明原生窗口运行，HTTP／浏览器入口仅供必要诊断。安装资源缺失或被替换为链接时不伪造可读取路径，交接明确提示修复安装资源。
 
 已有项目的 skill、SDK 和文档保持原样，不为发布新约束覆盖用户资料。当前独立 Node 源码槽不自动生成 project-v1 的 AGENTS、SQLite 文档或交接命令；作者先维护自己的 `documentation.readme`／`documentation.development`，不要虚构已经实现的 Node CLI／导出／迁移接口。
+
+- [项目完整删除：独占归属与四批实施](project-complete-deletion.md)：2026-10-28 新确认，不兼容旧项目，按四批完成完整项目删除。

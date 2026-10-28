@@ -44,6 +44,7 @@ struct Created {
     length: usize,
 }
 struct GeneratedDirectory {
+    app_id: String,
     original: Preview,
     root: File,
     created: Vec<Created>,
@@ -413,7 +414,11 @@ impl NodeApps {
         before_create: impl FnMut(&Path) -> Result<()>,
     ) -> Result<Value> {
         self.generate_directory_with_hook(source, input, before_create)
-            .map(|generated| generated.ready.response())
+            .map(|generated| {
+                let mut response = generated.ready.response();
+                response["pendingAppId"] = json!(generated.app_id);
+                response
+            })
     }
     fn generate_directory_with_hook(
         &self,
@@ -443,6 +448,17 @@ impl NodeApps {
         let actual = PersistedIdentity::from_file(&root).map_err(|_| stale())?;
         if !preview.identity.matches_captured(&actual) || !entries(&root)?.is_empty() {
             return Err(stale());
+        }
+        self.require_unclaimed_source(&preview.source)?;
+        let instance_id = Uuid::new_v4().to_string();
+        let ownership = self.project_ownership();
+        ownership.initialize(&instance_id)?;
+        ownership.record_generated_source(&instance_id, &preview.source)?;
+        if let Err(error) = self.claim_source_directory(&instance_id, &preview.source) {
+            let cleanup = self.discard_pending_generated_source(&instance_id, &preview.source);
+            return Err(error
+                .detail("appId", instance_id)
+                .detail("cleanupError", cleanup.err().map(|error| json!(error))));
         }
         let app_id = format!("local.generated.{}", Uuid::new_v4().simple());
         let manifest = serde_json::to_vec_pretty(&json!({
@@ -538,31 +554,37 @@ impl NodeApps {
                     )
                 })?;
                 created_paths.push(relative.into());
-                output.write_all(contents)?;
-                output.sync_all()?;
-                parent.sync_all()?;
                 created.push(Created {
                     path: relative.into(),
                     directory: false,
                     identity: PersistedIdentity::from_file(&output).map_err(|_| stale())?,
-                    digest: Some(Sha256::digest(contents).to_vec()),
-                    length: contents.len(),
+                    digest: Some(Sha256::digest([]).to_vec()),
+                    length: 0,
                 });
+                let entry = created.last_mut().ok_or_else(stale)?;
+                while entry.length < contents.len() {
+                    let written = output.write(&contents[entry.length..])?;
+                    if written == 0 {
+                        return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+                    }
+                    entry.length += written;
+                    entry.digest = Some(Sha256::digest(&contents[..entry.length]).to_vec());
+                }
+                output.sync_all()?;
+                parent.sync_all()?;
             }
             verify_initialization_root(&preview, &root, &created)?;
             Ok(())
         })();
         if let Err(error) = result {
-            return Err(error
-                .outcome(if created_paths.is_empty() {
-                    "not_started"
-                } else {
-                    "initialization_incomplete"
-                })
-                .detail("createdPaths", json!(created_paths))
-                .detail("partialFilesRetained", !created_paths.is_empty())
-                .detail("sourcePath", json!(preview.source))
-                .detail("rootIdentity", json!(preview.identity)));
+            return Err(self.initialization_failed(
+                error,
+                &instance_id,
+                &preview,
+                &root,
+                &created,
+                &created_paths,
+            ));
         }
         let ready = self
             .directory_preview(&preview.source)
@@ -580,18 +602,59 @@ impl NodeApps {
                 }
             })
             .map_err(|error| {
-                error
-                    .outcome("initialized_needs_review")
-                    .detail("createdPaths", json!(created_paths))
-                    .detail("partialFilesRetained", true)
+                self.initialization_failed(
+                    error,
+                    &instance_id,
+                    &preview,
+                    &root,
+                    &created,
+                    &created_paths,
+                )
             })?;
         Ok(GeneratedDirectory {
+            app_id: instance_id,
             original: preview,
             root,
             created,
             ready,
         })
     }
+    fn initialization_failed(
+        &self,
+        error: ApiError,
+        id: &str,
+        preview: &Preview,
+        root: &File,
+        created: &[Created],
+        paths: &[PathBuf],
+    ) -> ApiError {
+        let rollback = rollback_generated_entries(preview, root, created);
+        let cleanup = if rollback.is_ok() {
+            self.discard_pending_generated_source(id, &preview.source)
+        } else {
+            Ok(())
+        };
+        let retained = rollback.is_err();
+        error
+            .outcome(if retained {
+                "initialization_incomplete"
+            } else {
+                "not_started"
+            })
+            .detail("createdPaths", json!(paths))
+            .detail("partialFilesRetained", retained)
+            .detail("sourcePath", json!(preview.source))
+            .detail("appId", id)
+            .detail("rootIdentity", json!(preview.identity))
+            .detail(
+                "cleanupError",
+                rollback
+                    .err()
+                    .or_else(|| cleanup.err())
+                    .map(|error| json!(error)),
+            )
+    }
+
     pub async fn initialize_and_register_directory(
         &self,
         source: PathBuf,
@@ -661,6 +724,7 @@ impl NodeApps {
             directory_error("NODE_DIRECTORY_ADD_FAILED", "起始项目文件已生成，但添加结果需要核对。请保留文件并重新检查登记状态；不要再次生成或直接重复添加。")
                 .outcome(outcome)
                 .detail("sourcePath", json!(generated.ready.source))
+                .detail("appId", generated.app_id)
                 .detail("initializationCompleted", true)
                 .detail("partialFilesRetained", true)
                 .detail("requiresRecheck", true)
@@ -778,6 +842,84 @@ fn verify_parent(
     }
     Ok(())
 }
+/// Undo only entries whose captured identity and bytes still match this write.
+/// Concurrent author edits and replacement directories are never removed.
+fn rollback_generated_entries(preview: &Preview, root: &File, created: &[Created]) -> Result<()> {
+    if !preview
+        .identity
+        .matches_path(&preview.source)
+        .map_err(|_| stale())?
+    {
+        return Err(stale());
+    }
+    let mut incomplete = false;
+    for entry in created.iter().rev() {
+        let result = (|| -> Result<()> {
+            let parent = relative_parent(root, &entry.path)?;
+            verify_parent(preview, &parent, &entry.path, created)?;
+            let name = c_name(entry.path.file_name().ok_or_else(stale)?)?;
+            let file = opened(unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK
+                        | libc::O_CLOEXEC
+                        | if entry.directory {
+                            libc::O_DIRECTORY
+                        } else {
+                            0
+                        },
+                )
+            })?;
+            if !entry
+                .identity
+                .matches_captured(&PersistedIdentity::from_file(&file).map_err(|_| stale())?)
+            {
+                return Err(stale());
+            }
+            let metadata = file.metadata()?;
+            if entry.directory {
+                if !metadata.is_dir() || !entries(&file)?.is_empty() {
+                    return Err(stale());
+                }
+            } else {
+                if !metadata.is_file() || metadata.nlink() != 1 {
+                    return Err(stale());
+                }
+                let mut bytes = Vec::new();
+                file.take(entry.length as u64 + 1).read_to_end(&mut bytes)?;
+                if Some(Sha256::digest(&bytes).to_vec()) != entry.digest {
+                    return Err(stale());
+                }
+            }
+            if unsafe {
+                libc::unlinkat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    if entry.directory {
+                        libc::AT_REMOVEDIR
+                    } else {
+                        0
+                    },
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            parent.sync_all()?;
+            Ok(())
+        })();
+        incomplete |= result.is_err();
+    }
+    if incomplete {
+        Err(stale())
+    } else {
+        Ok(())
+    }
+}
+
 fn verify_initialization_root(preview: &Preview, root: &File, created: &[Created]) -> Result<()> {
     if !preview
         .identity

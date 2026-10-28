@@ -119,6 +119,7 @@ pub struct LocalCleanupPlan {
     workspace_roots: Vec<PathBuf>,
     metadata: BTreeMap<PathBuf, String>,
     preserved: Vec<PathBuf>,
+    project_owned_paths: BTreeSet<PathBuf>,
 }
 
 impl LocalCleanupPlan {
@@ -141,6 +142,7 @@ impl LocalCleanupPlan {
             return Err(fail("固定应用身份或实例锁不是普通文件。"));
         }
         let (metadata, preserved) = scope_metadata(paths, &workspace_roots)?;
+        let project_owned_paths = project_owned_paths(paths)?;
         let mut target_paths = BTreeSet::new();
         for entry in fs::read_dir(paths.data_root())? {
             let entry = entry?;
@@ -151,6 +153,11 @@ impl LocalCleanupPlan {
         for path in &workspace_roots {
             safe_workspace_root(path, paths.data_root())?;
             if !path.starts_with(paths.data_root()) {
+                target_paths.insert(path.clone());
+            }
+        }
+        for path in &project_owned_paths {
+            if path.exists() {
                 target_paths.insert(path.clone());
             }
         }
@@ -194,6 +201,7 @@ impl LocalCleanupPlan {
             workspace_roots,
             metadata,
             preserved,
+            project_owned_paths,
         };
         plan.verify_scope()?;
         Ok(plan)
@@ -251,7 +259,9 @@ impl LocalCleanupPlan {
             let resolved = resolve_external(source)?;
             if self.targets.iter().any(|target| {
                 [source, &resolved].iter().any(|source| {
-                    source.starts_with(&target.path) || target.path.starts_with(source)
+                    source.starts_with(&target.path)
+                        || (target.path.starts_with(source)
+                            && !self.project_owned_paths.contains(&target.path))
                 })
             }) {
                 return Err(fail(
@@ -393,6 +403,18 @@ fn scope_metadata(
         files.push(entry?.path().join("journal.json"));
     }
     let mut preserved = BTreeSet::new();
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    let owned_scopes = ownership.all_owned_scopes()?;
+    let owned_paths = project_owned_paths(paths)?;
+    files.extend(owned_scopes.into_iter().map(|(path, _)| path));
+    files.extend(
+        crate::node_deletion_journal::local_cleanup_owned_paths(paths.data_root())?
+            .into_iter()
+            .filter(|path| path.is_file()),
+    );
     let node_root = paths.data_root().join("node-apps");
     crate::projects::check_no_symlinks(&node_root, true)?;
     if node_root.try_exists()? {
@@ -406,7 +428,7 @@ fn scope_metadata(
                 }
                 let value: Value = serde_json::from_slice(&read_small(&registration)?)?;
                 for external in node_references(&node_root, &entry.path(), name, value)? {
-                    add_preserved(&mut preserved, &external, paths)?;
+                    add_preserved_unless_owned(&mut preserved, &external, paths, &owned_paths)?;
                 }
                 files.push(registration);
             }
@@ -415,10 +437,14 @@ fn scope_metadata(
         crate::projects::check_no_symlinks(&installations, true)?;
         if installations.try_exists()? {
             for entry in fs::read_dir(&installations)? {
-                let path = entry?.path().join("install.json");
+                let entry = entry?;
+                if entry.file_name() == ".pending-deletions" {
+                    continue;
+                }
+                let path = entry.path().join("install.json");
                 let value: Value = serde_json::from_slice(&read_small(&path)?)?;
                 for external in installation_references(&node_root, &path, &value)? {
-                    add_preserved(&mut preserved, &external, paths)?;
+                    add_preserved_unless_owned(&mut preserved, &external, paths, &owned_paths)?;
                 }
                 files.push(path);
             }
@@ -442,7 +468,7 @@ fn scope_metadata(
             // original author tree; that payload is part of this cleanup.
             if value["capturePolicy"] != "node-development-build-v1" {
                 if let Some(external) = value["localSourcePath"].as_str() {
-                    add_preserved(&mut preserved, external, paths)?;
+                    add_preserved_unless_owned(&mut preserved, external, paths, &owned_paths)?;
                 }
             }
             files.push(source);
@@ -719,6 +745,33 @@ fn add_preserved(
     }
     preserved.insert(path);
     Ok(())
+}
+fn project_owned_paths(paths: &RuntimePaths) -> Result<BTreeSet<PathBuf>, ApiError> {
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    let mut owned: BTreeSet<_> = ownership
+        .all_owned_scopes()?
+        .into_iter()
+        .flat_map(|(_, paths)| paths)
+        .collect();
+    owned.extend(crate::node_deletion_journal::local_cleanup_owned_paths(
+        paths.data_root(),
+    )?);
+    Ok(owned)
+}
+fn add_preserved_unless_owned(
+    preserved: &mut BTreeSet<PathBuf>,
+    external: &str,
+    paths: &RuntimePaths,
+    owned: &BTreeSet<PathBuf>,
+) -> Result<(), ApiError> {
+    let source = PathBuf::from(external);
+    if owned.iter().any(|root| source.starts_with(root)) {
+        return Ok(());
+    }
+    add_preserved(preserved, external, paths)
 }
 
 fn resolve_external(path: &Path) -> Result<PathBuf, ApiError> {

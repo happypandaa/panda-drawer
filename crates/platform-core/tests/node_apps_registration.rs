@@ -118,11 +118,12 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
     assert_eq!(detail["state"], "stopped");
     let layout = &detail["objectLayout"];
     assert_eq!(layout["kind"], "local-node-source");
-    assert_eq!(layout["source"]["state"], "unverified");
+    assert_eq!(layout["source"]["state"], "available");
     assert_eq!(layout["source"]["path"], json!(fixture.source));
-    assert_eq!(layout["versioning"]["state"], "not-integrated");
-    assert!(detail["development"].is_null());
-    assert!(!fixture
+    assert_eq!(layout["versioning"]["state"], "source-git");
+    assert_eq!(detail["development"]["sourcePath"], json!(fixture.source));
+    assert_eq!(detail["development"]["runtimeIsSource"], true);
+    assert!(fixture
         .data
         .join("node-apps")
         .join(id(&detail))

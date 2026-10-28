@@ -245,7 +245,7 @@ async fn source_build_requires_explicit_authority_before_creating_any_build_or_i
 }
 
 #[tokio::test]
-async fn incompatible_data_contract_never_runs_an_explicit_source_build() {
+async fn another_project_source_is_rejected_before_an_explicit_source_build() {
     let fixture = Fixture::new("exit 79");
     let app = fixture
         .nodes
@@ -268,9 +268,21 @@ async fn incompatible_data_contract_never_runs_an_explicit_source_build() {
     manifest["dataContract"]["version"] = json!(2);
     atomic_json(&path, &manifest).unwrap();
     let source = fixture.capture().await;
-    let task = fixture.submit_build(&source, Some(app_id), true).await;
-    let done = fixture.wait_task(&task.task_id).await;
-    assert_eq!(done.error.unwrap().code, "NODE_INSTALL_DATA_INCOMPATIBLE");
+    let error = fixture
+        .installs
+        .prepare(
+            fixture.nodes.clone(),
+            PrepareNodeInstallInput {
+                source_id: source.source_id.clone(),
+                expected_source_digest: source.content_digest.clone().unwrap(),
+                target_app_id: Some(app_id),
+                build_source: true,
+            },
+            fixture.stop.subscribe(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "SOURCE_PROJECT_EXCLUSIVE");
     assert!(!fixture
         .paths
         .data_root()
@@ -379,9 +391,7 @@ async fn failed_explicit_source_build_retains_its_operation_and_never_prepares_a
     let data = slot(&fixture, &app_id).join("data/disposable-existing-data.txt");
     fs::write(&data, "preserved existing application data").unwrap();
     let source = fixture.capture().await;
-    let task = fixture
-        .submit_build(&source, Some(app_id.clone()), true)
-        .await;
+    let task = fixture.submit_build(&source, None, true).await;
     let done = fixture.wait_task(&task.task_id).await;
     assert!(done.error.is_some());
     let operation = fixture
@@ -479,10 +489,18 @@ async fn a_trusted_prebuilt_source_never_runs_its_development_script_again_even_
     )
     .await
     .unwrap();
+    let owner = uuid::Uuid::new_v4().to_string();
+    crate::node_project_ownership::NodeProjectOwnership::new(
+        fixture.paths.data_root().into(),
+        fixture.paths.workspace_root().into(),
+    )
+    .initialize(&owner)
+    .unwrap();
     let task = fixture
         .sources
         .capture_built_output(
             output,
+            owner,
             Some("disposable trusted prebuilt source".into()),
             None,
             fixture.stop.subscribe(),
@@ -812,7 +830,8 @@ async fn restart_list_restores_new_and_update_candidates_while_isolating_a_bad_r
         .as_str()
         .unwrap()
         .to_owned();
-    let fresh = fixture.ready(&source).await;
+    let fresh_source = fixture.capture().await;
+    let fresh = fixture.ready(&fresh_source).await;
     let broken = format!("install_{}", "c".repeat(32));
     let evidence = fixture
         .paths

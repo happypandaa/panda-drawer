@@ -164,7 +164,8 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
         .unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let source = source(&root);
-    let apps = Arc::new(NodeApps::new(paths.data_root().into(), runtime_node).unwrap());
+    let apps =
+        Arc::new(NodeApps::with_runtime(paths.data_root().into(), runtime_node, &handle).unwrap());
     let registered = apps.register(source.clone()).await.unwrap();
     let id = registered["id"].as_str().unwrap();
     let configuration: SaveConfigurationRequest = serde_json::from_value(
@@ -310,6 +311,27 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
         &next,
     ))
     .await;
+    let git_head = fs::read(source.join(".git/HEAD")).unwrap();
+    let git_index = fs::read(source.join(".git/index")).unwrap();
+    let restore_roots = [
+        source.join(".git/local-projects-node-restores"),
+        source.join(".git/local-projects-node-restore-preparing"),
+    ];
+    assert!(restore_roots.iter().all(|path| path.is_dir()));
+    let preview = apps.delete_preview(id).await.unwrap();
+    apps.delete(
+        id,
+        crate::node_apps::DeleteNodeAppInput {
+            expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(source.is_dir());
+    assert!(source.join(".git").is_dir());
+    assert_eq!(fs::read(source.join(".git/HEAD")).unwrap(), git_head);
+    assert_eq!(fs::read(source.join(".git/index")).unwrap(), git_index);
+    assert!(restore_roots.iter().all(|path| !path.exists()));
     apps.stop_all().await.unwrap();
     service.shutdown().await.unwrap();
 }

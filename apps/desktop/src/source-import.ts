@@ -10,7 +10,7 @@ export interface SourceCandidate {
   inspection?: { kind: string; name?: string; requiresBuild?: boolean; issues: unknown[] };
 }
 export interface ImportCleanupResult {
-  completed: boolean; sourceId: string; sourceRetained: boolean; removedPaths: string[];
+  completed: boolean; alreadyAbsent?: boolean; sourceId: string | null; sourceRetained: boolean; removedPaths: string[];
   failures: { path: string; error: unknown }[];
 }
 export interface PublishedImportSource {
@@ -195,7 +195,8 @@ export class SourceImportSession {
     if (!this.sourceTaskId) throw new SourceImportError('没有本次下载任务可供清理。');
     if (this.installed) { this.phase = 'cleanup'; this.changed(); }
     const value = await this.call<ImportCleanupResult>('source_import_cleanup', { sourceTaskId: this.sourceTaskId });
-    if (!value || typeof value.completed !== 'boolean' || typeof value.sourceId !== 'string' || this.source && value.sourceId !== this.source.sourceId || typeof value.sourceRetained !== 'boolean' || !Array.isArray(value.removedPaths) || !Array.isArray(value.failures)) {
+    const absent = value?.alreadyAbsent === true && value.completed === true && value.sourceId === null && value.sourceRetained === false;
+    if (!value || typeof value.completed !== 'boolean' || !absent && (typeof value.sourceId !== 'string' || this.source && value.sourceId !== this.source.sourceId) || typeof value.sourceRetained !== 'boolean' || !Array.isArray(value.removedPaths) || !Array.isArray(value.failures) || absent && (value.removedPaths.length !== 0 || value.failures.length !== 0)) {
       throw new SourceImportError('清理结果不完整，请重试清理。');
     }
     if (!value.completed) throw new SourceImportError(`部分临时文件未清理：${value.failures.map(item => messageFrom(item.error)).join('；') || '请重试清理。'}`);

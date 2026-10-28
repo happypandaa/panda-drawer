@@ -79,6 +79,7 @@ function App() {
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
   const nodeRequestToken = useRef(0);
   const nodeListRevision = useRef(0);
+  const deletedNodeIds = useRef(new Set<string>());
   const nodeInteraction = useRef({ pending: false, modal: false });
   nodeInteraction.current = { pending: nodeDraft.pending, modal: nodeModalOpen };
   const [loading, setLoading] = useState(true);
@@ -104,12 +105,14 @@ function App() {
   const [archiveImportOpen, setArchiveImportOpen] = useState(false);
   const [sourceRepositories, setSourceRepositories] = useState<{ url: string; appId: string; name: string }[]>([]);
   const sourceTaskIds = useRef(new Set<string>());
+  const sourceTaskOwners = useRef(new Map<string, string>());
   function closeSourceFlow(options?: { keepSession: boolean }) {
     setShowSources(false);
     if (options?.keepSession) return;
     setSourcesMounted(false);
     setSourceNeedsAttention(false);
     sourceTaskIds.current.clear();
+    sourceTaskOwners.current.clear();
   }
   useEffect(() => {
     if (!showSources || !info) return;
@@ -154,15 +157,24 @@ function App() {
     setPage(value);
   }
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
+    if (deletedNodeIds.current.has(app.id)) return;
     nodeListRevision.current++;
     setNodeApps((current) => current.some((value) => value.id === app.id) ? current.map((value) => value.id === app.id ? app : value) : [...current, app]);
   }, []);
   const acceptNodeDeletion = useCallback((appId: string, result: NodeAppDeleteResult) => {
     nodeListRevision.current++;
+    deletedNodeIds.current.add(appId);
     setNodeApps((current) => current.filter((value) => value.id !== appId));
     setNodeRequest(null);
     const origin = capture();
-    const outcome = result.ownership === 'external' ? '项目已从平台移除。原目录和文件未改动。' : '项目文件已永久删除。原始来源目录未删除。';
+    setNodeDeletionTasks(current => current.filter(task => task.appId !== appId));
+    setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => task.projectId !== appId)));
+    setTasks(current => Object.fromEntries(Object.entries(current).filter(([id, task]) => id !== appId && task.projectId !== appId)));
+    setSourceRepositories(current => current.filter(source => source.appId !== appId));
+    for (const [taskId, owner] of sourceTaskOwners.current) {
+      if (owner === appId) { sourceTaskIds.current.delete(taskId); sourceTaskOwners.current.delete(taskId); }
+    }
+    const outcome = result.ownership === 'external' ? '本项目的平台管理内容已永久删除。外部原目录保持原样。' : '本项目的文件、源码及关联任务材料已永久删除。';
     if (result.metadataCleanupPending || result.durabilityConfirmed === false) showError(origin, `${outcome} 但删除后的磁盘同步收尾尚未完成。${result.warning ?? '请刷新并核对当前目录。'} 不要再次提交删除。`, 'main', { nextScope: 'projects:page' });
     else showSuccess(origin, outcome, 'main', 'projects:page');
   }, [capture, showError, showSuccess]);
@@ -170,6 +182,7 @@ function App() {
     setNodeDeletionTasks(previous => {
       const tasks = new Map(previous.map(task => [task.taskId, task]));
       for (const task of values) {
+        if (deletedNodeIds.current.has(task.appId) || task.phase === 'deleted') continue;
         const current = tasks.get(task.taskId);
         if (!current || task.appId === current.appId && task.targetRevision === current.targetRevision && task.journalRevision >= current.journalRevision
           && (task.journalRevision > current.journalRevision || task.phase === current.phase) && (!current.renamedAny || task.renamedAny)
@@ -179,7 +192,7 @@ function App() {
     });
   }, []);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'configure' | 'details' | 'delete') {
-    if (nodeDraft.pending || nodeModalOpen || deleteProject) return;
+    if (deletedNodeIds.current.has(app.id) || nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
   }
   const clearHandoff = useCallback(() => {
@@ -210,6 +223,7 @@ function App() {
   const workspaceBusy = migrating || paused || cleanupBusy || localDataLocked;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
+    if (task.projectId && deletedNodeIds.current.has(task.projectId)) return;
     setLifecycleTasks((current) => mergeLifecycleTask(current, task));
   }, []);
 
@@ -239,6 +253,7 @@ function App() {
         clearHandoff();
         setBuildResults({});
         setNodeDeletionTasks([]);
+        deletedNodeIds.current.clear();
         showError(origin, '工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
       const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
@@ -673,7 +688,7 @@ function App() {
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
             {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => { setSourcesMounted(true); setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
-      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { sourceTaskIds.current.add(task.taskId); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
+      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (task.projectId && deletedNodeIds.current.has(task.projectId)) return; sourceTaskIds.current.add(task.taskId); if (task.projectId) sourceTaskOwners.current.set(task.taskId, task.projectId); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
             <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>

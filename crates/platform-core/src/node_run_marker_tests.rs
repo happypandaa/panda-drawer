@@ -18,10 +18,8 @@ fn fixture() -> (tempfile::TempDir, NodeApps, String, PathBuf) {
 async fn previous_boot_markers_are_retired_without_touching_app_files() {
     let (_temporary, manager, id, slot) = fixture();
     let marker = slot.join("active.json");
-    for value in [
-        json!({"version":1,"hostPid":std::process::id(),"runDirectory":slot.join("runs/old")}),
-        serde_json::to_value(RunMarker::launching(&id, slot.join("runs/new"))).unwrap(),
-    ] {
+    {
+        let value = serde_json::to_value(RunMarker::launching(&id, slot.join("runs/new"))).unwrap();
         let _owner = StartIntentOwnership::create(&marker, &value).unwrap();
         let future_boot = marker.metadata().unwrap().created().unwrap() + Duration::from_secs(1);
         let report = manager.reconcile_run_markers_at(future_boot).await.unwrap();
@@ -57,54 +55,16 @@ async fn same_boot_incomplete_v2_and_unsupported_records_remain_unknown() {
         assert_eq!(report["unconfirmed"], 1);
         assert!(manager.stop_runtime(&id).await.is_err());
         assert_eq!(fs::read(&marker).unwrap(), original);
+        if value.get("appId").is_none() {
+            let future_boot =
+                marker.metadata().unwrap().created().unwrap() + Duration::from_secs(1);
+            assert!(matches!(
+                inspect(&slot, &id, future_boot).unwrap().state,
+                RunState::Unconfirmed
+            ));
+        }
         owner.remove_if_owned(&marker).unwrap();
     }
-}
-
-#[tokio::test]
-async fn same_boot_legacy_marker_is_discarded_without_signaling_its_live_host_pid() {
-    let (_temporary, manager, id, slot) = fixture();
-    let mut child = tokio::process::Command::new("/bin/sleep")
-        .arg("60")
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let child_pid = child.id().unwrap();
-    let boot = node_process_identity::boot_time().unwrap();
-    for action in ["startup", "stop"] {
-        let marker = slot.join("active.json");
-        let _owner = StartIntentOwnership::create(
-            &marker,
-            &json!({"version":1,"hostPid":child_pid,"runDirectory":slot.join("runs/old")}),
-        )
-        .unwrap();
-        assert!(marker.metadata().unwrap().created().unwrap() >= boot);
-        assert!(matches!(
-            inspect(&slot, &id, boot).unwrap().state,
-            RunState::LegacyDiscardable
-        ));
-        match action {
-            "startup" => {
-                let report = manager.reconcile_run_markers_at(boot).await.unwrap();
-                assert_eq!(report["retired"], 1);
-                assert_eq!(report["unconfirmed"], 0);
-            }
-            "stop" => manager.stop_runtime(&id).await.unwrap(),
-            _ => unreachable!(),
-        }
-        assert!(!marker.exists(), "{action} retained the legacy marker");
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "{action} signaled the unrelated process referenced by the legacy marker"
-        );
-        assert_eq!(
-            fs::read(slot.join("data/sentinel")).unwrap(),
-            b"preserve disposable data"
-        );
-    }
-    // Only the Child handle created by this fixture authorizes its cleanup.
-    child.kill().await.unwrap();
-    child.wait().await.unwrap();
 }
 
 #[test]

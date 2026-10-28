@@ -1093,7 +1093,10 @@ counter=pathlib.Path({counter:?})
 count=int(counter.read_text())+1 if counter.exists() else 1
 counter.write_text(str(count))
 if count==2:
-    pathlib.Path({admitted:?}).write_text(str(os.getpid()))
+    admitted=pathlib.Path({admitted:?})
+    preparing=admitted.with_suffix('.preparing')
+    preparing.write_text(str(os.getpid()))
+    os.replace(preparing,admitted)
     time.sleep(60)
 print('v24.22.0',flush=True)
 "#,
@@ -1474,4 +1477,68 @@ async fn cleanup_gate_keeps_an_actual_running_backend_visible_and_blocks_new_sta
     let stopped = fixture.manager.configuration(id).await.unwrap();
     assert_eq!(stopped["state"], "failed");
     assert_eq!(stopped["configuration"]["canStart"], false);
+}
+
+#[tokio::test]
+async fn deletion_after_public_workspace_migration_uses_current_task_registry_and_scope() {
+    let source_fixture = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let service = crate::RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    let apps = NodeApps::with_runtime(
+        paths.data_root().into(),
+        source_fixture.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    let registered = apps.register(source_fixture.source.clone()).await.unwrap();
+    let id = registered["id"].as_str().unwrap();
+    let previous = apps.current_node_task_manager().unwrap().unwrap();
+    let destination = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-current-node-registry-workspace");
+    fs::create_dir(&destination).unwrap();
+    let migration = handle
+        .workspace_migrate(json!({"destinationPath":destination}))
+        .await
+        .unwrap();
+    let migration_id = migration["taskId"].as_str().unwrap();
+    let final_task = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let record = handle.task(migration_id).await.unwrap();
+            if record["final"] == true {
+                break record;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(final_task["status"], "succeeded", "{final_task}");
+    assert_eq!(apps.deletion_workspace(), destination);
+    let current = apps.current_node_task_manager().unwrap().unwrap();
+    assert!(!Arc::ptr_eq(&previous, &current));
+    let task = current
+        .create_node_operation(id, "nodeDevelopmentBuild")
+        .unwrap();
+    current
+        .finish(&task.task_id, Ok(json!({"operationOutcome":"prepared"})))
+        .unwrap();
+    let task_path = destination.join(".platform/tasks").join(&task.task_id);
+    assert!(task_path.is_dir());
+    let preview = apps.delete_preview(id).await.unwrap();
+    let input =
+        serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap();
+    apps.delete(id, input).await.unwrap();
+    assert!(!task_path.exists());
+    assert!(
+        current.task(&task.task_id).is_err(),
+        "the current registry must forget the deleted project task"
+    );
+    assert!(source_fixture.source.is_dir(), "external original remains");
+    service.shutdown().await.unwrap();
 }

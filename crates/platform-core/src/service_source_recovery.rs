@@ -9,7 +9,7 @@ fn task_name(task: &str) -> Result<std::ffi::CString, ApiError> {
     if !crate::projects::valid_id(task) || !task.starts_with("task_") {
         return Err(invalid());
     }
-    std::ffi::CString::new(format!("{task}.json")).map_err(|_| invalid())
+    std::ffi::CString::new(task).map_err(|_| invalid())
 }
 fn imports_dir(state: &HttpState, create: bool) -> Result<Option<fs::File>, ApiError> {
     use std::os::fd::{AsRawFd, FromRawFd};
@@ -39,9 +39,34 @@ fn imports_dir(state: &HttpState, create: bool) -> Result<Option<fs::File>, ApiE
     }
     Ok(Some(dir))
 }
-fn read_record(dir: &fs::File, task: &str) -> Result<Value, ApiError> {
+fn task_dir(dir: &fs::File, task: &str, create: bool) -> Result<Option<fs::File>, ApiError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
     let name = task_name(task)?;
-    let file = crate::files::read(dir, name.to_str().map_err(|_| invalid())?)?;
+    if create {
+        let result = unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) };
+        if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+            return Err(invalid());
+        }
+        dir.sync_all()?;
+    }
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        if !create && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(invalid());
+    }
+    Ok(Some(unsafe { fs::File::from_raw_fd(fd) }))
+}
+fn read_record(dir: &fs::File, task: &str) -> Result<Value, ApiError> {
+    let target = task_dir(dir, task, false)?.ok_or_else(invalid)?;
+    let file = crate::files::read(&target, "record.json")?;
     let mut bytes = vec![];
     file.take(4097).read_to_end(&mut bytes)?;
     if bytes.len() > 4096 {
@@ -83,15 +108,20 @@ fn recorded_tasks(dir: &fs::File) -> Result<Vec<String>, ApiError> {
             break;
         }
         let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_string_lossy();
-        if let Some(task) = name.strip_suffix(".json") {
-            task_name(task)?;
-            names.push(task.into());
+        if name.starts_with("task_") {
+            task_name(&name)?;
+            names.push(name.into_owned());
         }
     }
     Ok(names)
 }
 impl RuntimeHandle {
-    pub fn remember_source_import(&self, task_id: &str, _url: &str) -> Result<(), ApiError> {
+    pub fn remember_source_import(
+        &self,
+        apps: Arc<crate::node_apps::NodeApps>,
+        task_id: &str,
+        _url: &str,
+    ) -> Result<(), ApiError> {
         use std::{
             io::Write,
             os::fd::{AsRawFd, FromRawFd},
@@ -108,8 +138,21 @@ impl RuntimeHandle {
             .into_iter()
             .find(|s| s.task_id == task_id)
             .ok_or_else(invalid)?;
-        let dir = imports_dir(&state, true)?.ok_or_else(invalid)?;
-        let name = task_name(task_id)?;
+        let manager = state.source_acquisition.as_ref().map_err(Clone::clone)?;
+        let owner = manager.owner_app_id(&source.source_id)?;
+        let _operation = apps.admit_operation(&owner, "添加记录")?;
+        let _writer = state
+            .store
+            .reserve_transient_operation(&format!("source-onboarding:{owner}"), task_id)?;
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            state.paths.data_root().into(),
+            state.paths.workspace_root().into(),
+        );
+        ownership.record_onboarding(&owner, task_id)?;
+        let imports = imports_dir(&state, true)?.ok_or_else(invalid)?;
+        let dir = task_dir(&imports, task_id, true)?.ok_or_else(invalid)?;
+        ownership.record_onboarding(&owner, task_id)?;
+        let name = c"record.json";
         let value = json!({"version":1,"taskId":task_id,"sourceId":source.source_id,"url":source.url,"identifier":APP_IDENTIFIER});
         let fd = unsafe {
             libc::openat(
@@ -121,7 +164,7 @@ impl RuntimeHandle {
         };
         if fd < 0 {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST)
-                && read_record(&dir, task_id)? == value
+                && read_record(&imports, task_id)? == value
             {
                 return Ok(());
             }
@@ -134,59 +177,24 @@ impl RuntimeHandle {
         Ok(())
     }
     pub fn complete_source_import(&self, task_id: &str) -> Result<(), ApiError> {
-        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::fd::AsRawFd;
         let state = self.current();
-        let Some(dir) = imports_dir(&state, false)? else {
+        let Some(imports) = imports_dir(&state, false)? else {
             return Ok(());
         };
-        let name = task_name(task_id)?;
-        match read_record(&dir, task_id) {
-            Ok(_) => (),
-            Err(error) if error.code == "FILE_NOT_FOUND" => return Ok(()),
-            Err(error) => return Err(error),
-        }
-        let made = unsafe { libc::mkdirat(dir.as_raw_fd(), c"completed".as_ptr(), 0o700) };
-        if made != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
-            return Err(invalid());
-        }
-        let fd = unsafe {
-            libc::openat(
-                dir.as_raw_fd(),
-                c"completed".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
+        let Some(dir) = task_dir(&imports, task_id, false)? else {
+            return Ok(());
         };
-        if fd < 0 {
-            return Err(invalid());
-        }
-        let completed = unsafe { fs::File::from_raw_fd(fd) };
-        #[cfg(target_os = "macos")]
-        let moved = unsafe {
-            libc::renameatx_np(
-                dir.as_raw_fd(),
-                name.as_ptr(),
-                completed.as_raw_fd(),
-                name.as_ptr(),
-                libc::RENAME_EXCL,
-            )
-        };
-        #[cfg(target_os = "linux")]
-        let moved = unsafe {
-            libc::renameat2(
-                dir.as_raw_fd(),
-                name.as_ptr(),
-                completed.as_raw_fd(),
-                name.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let moved = -1;
-        if moved != 0 {
+        read_record(&imports, task_id)?;
+        if unsafe { libc::unlinkat(dir.as_raw_fd(), c"record.json".as_ptr(), 0) } != 0 {
             return Err(invalid());
         }
         dir.sync_all()?;
-        completed.sync_all()?;
+        let name = task_name(task_id)?;
+        if unsafe { libc::unlinkat(imports.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
+            return Err(invalid());
+        }
+        imports.sync_all()?;
         Ok(())
     }
     pub async fn recover_source_imports(
@@ -268,7 +276,13 @@ mod tests {
         external: &Path,
     ) -> SyntheticSource {
         let state = handle.current();
-        let task = state.builds.create_workspace_operation(kind).unwrap();
+        let owner = Uuid::new_v4().to_string();
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            state.paths.data_root().into(),
+            state.paths.workspace_root().into(),
+        );
+        ownership.initialize(&owner).unwrap();
+        let task = state.builds.create_node_operation(&owner, kind).unwrap();
         let id = format!("src_{}", Uuid::new_v4().simple());
         let slot = state
             .paths
@@ -286,19 +300,24 @@ mod tests {
         )
         .unwrap();
         crate::builds::atomic_json(&slot.join("source.json"), &json!({
-            "schemaVersion":1,"sourceId":id,"taskId":task.task_id,"name":"disposable recovery source",
+            "schemaVersion":1,"sourceId":id,"ownerAppId":owner,"taskId":task.task_id,"name":"disposable recovery source",
             "status":if finished {"ready"}else{"acquiring"},"phase":if finished {"completed"}else{"downloading"},
             "url":url,"provider":"github","branch":null,"localSourcePath":external,"capturePolicy":null,
             "buildSourceDigest":null,"excludedPaths":[],"createdAt":1,"completedAt":if finished {Some(2)}else{None},
             "repository":"repository","shallow":true,"git":null,"commit":null,"fileCount":1,"totalBytes":25,
             "contentDigest":"a".repeat(64),"inspection":null,"error":null
         })).unwrap();
+        ownership.record_source(&owner, &id).unwrap();
+        state
+            .builds
+            .record_node_source(&task.task_id, &owner, &id)
+            .unwrap();
         if finished {
             state
                 .builds
                 .finish(
                     &task.task_id,
-                    Ok(json!({"sourceId":id,"contentDigest":"a".repeat(64)})),
+                    Ok(json!({"sourceId":id,"ownerAppId":owner,"contentDigest":"a".repeat(64)})),
                 )
                 .unwrap();
         }
@@ -322,7 +341,8 @@ mod tests {
         paths
             .data_root()
             .join("onboarding/imports")
-            .join(format!("{task}.json"))
+            .join(task)
+            .join("record.json")
     }
     fn external(root: &Path) -> PathBuf {
         let path = root
@@ -335,8 +355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_requires_an_explicit_source_acquire_marker_and_completion_archives_exact_bytes(
-    ) {
+    async fn recovery_requires_an_explicit_source_acquire_marker_and_completion_removes_it() {
         let (temporary, paths, service, _client) = super::super::tests::start().await;
         let handle = service.handle();
         let apps = nodes(&paths);
@@ -350,7 +369,7 @@ mod tests {
         assert!(acquired.slot.join("repository/app.js").is_file());
         assert_eq!(
             handle
-                .remember_source_import(&captured.task, &captured.url)
+                .remember_source_import(apps.clone(), &captured.task, &captured.url)
                 .unwrap_err()
                 .code,
             "SOURCE_IMPORT_INVALID"
@@ -358,7 +377,11 @@ mod tests {
         assert!(!marker_path(&paths, &captured.task).exists());
 
         handle
-            .remember_source_import(&acquired.task, "https://example.invalid/untrusted-argument")
+            .remember_source_import(
+                apps.clone(),
+                &acquired.task,
+                "https://example.invalid/untrusted-argument",
+            )
             .unwrap();
         let path = marker_path(&paths, &acquired.task);
         let original = fs::read(&path).unwrap();
@@ -366,19 +389,13 @@ mod tests {
         assert_eq!(record["sourceId"], acquired.id);
         assert_eq!(record["url"], acquired.url);
         handle
-            .remember_source_import(&acquired.task, &acquired.url)
+            .remember_source_import(apps.clone(), &acquired.task, &acquired.url)
             .unwrap();
         assert_eq!(fs::read(&path).unwrap(), original);
         handle.complete_source_import(&acquired.task).unwrap();
-        let archived = path
-            .parent()
-            .unwrap()
-            .join("completed")
-            .join(path.file_name().unwrap());
         assert!(!path.exists());
-        assert_eq!(fs::read(&archived).unwrap(), original);
+        assert!(!path.parent().unwrap().exists());
         handle.complete_source_import(&acquired.task).unwrap();
-        assert_eq!(fs::read(&archived).unwrap(), original);
         assert_eq!(
             handle.recover_source_imports(apps.clone()).await.unwrap(),
             json!([])
@@ -406,14 +423,14 @@ mod tests {
             .unwrap()
             .join("disposable-marker-outside");
         fs::create_dir_all(outside.join("imports")).unwrap();
-        let private = outside
-            .join("imports")
-            .join(format!("{}.json", acquired.task));
+        let private_dir = outside.join("imports").join(&acquired.task);
+        fs::create_dir(&private_dir).unwrap();
+        let private = private_dir.join("record.json");
         fs::write(&private, b"outside marker content must remain").unwrap();
         let onboarding = paths.data_root().join("onboarding");
         symlink(&outside, &onboarding).unwrap();
         assert!(handle
-            .remember_source_import(&acquired.task, &acquired.url)
+            .remember_source_import(apps.clone(), &acquired.task, &acquired.url)
             .is_err());
         assert!(handle.complete_source_import(&acquired.task).is_err());
         assert!(handle.recover_source_imports(apps.clone()).await.is_err());
@@ -427,9 +444,10 @@ mod tests {
         fs::remove_file(&onboarding).unwrap();
         let directory = onboarding.join("imports");
         fs::create_dir_all(&directory).unwrap();
+        fs::create_dir(directory.join(&acquired.task)).unwrap();
         symlink(&private, marker_path(&paths, &acquired.task)).unwrap();
         assert!(handle
-            .remember_source_import(&acquired.task, &acquired.url)
+            .remember_source_import(apps.clone(), &acquired.task, &acquired.url)
             .is_err());
         assert!(handle.complete_source_import(&acquired.task).is_err());
         assert!(handle.recover_source_imports(apps.clone()).await.is_err());
@@ -453,7 +471,7 @@ mod tests {
         let running = source(&handle, "sourceAcquire", false, &author);
         let other = source(&handle, "sourceAcquire", true, &author);
         handle
-            .remember_source_import(&running.task, &running.url)
+            .remember_source_import(apps.clone(), &running.task, &running.url)
             .unwrap();
         let result = handle.recover_source_imports(apps.clone()).await.unwrap();
         assert_eq!(result.as_array().unwrap().len(), 1);
@@ -467,7 +485,7 @@ mod tests {
         let state = handle.current();
         state
             .builds
-            .finish(&running.task, Ok(json!({"sourceId":running.id})))
+            .finish(&running.task, Ok(json!({"sourceId":running.id,"ownerAppId":state.builds.task(&running.task).unwrap().result.unwrap()["ownerAppId"]})))
             .unwrap();
         let path = marker_path(&paths, &running.task);
         let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -520,26 +538,16 @@ mod tests {
         let other = source(&handle, "sourceAcquire", true, &author);
         let other_record = fs::read(other.slot.join("source.json")).unwrap();
         handle
-            .remember_source_import(&acquired.task, &acquired.url)
+            .remember_source_import(apps.clone(), &acquired.task, &acquired.url)
             .unwrap();
         let path = marker_path(&paths, &acquired.task);
-        let marker = fs::read(&path).unwrap();
         let result = handle.recover_source_imports(apps.clone()).await.unwrap();
         assert_eq!(result.as_array().unwrap().len(), 1);
         assert_eq!(result[0]["status"], "cleaned", "{result}");
         assert_eq!(result[0]["taskId"], acquired.task);
         assert!(!acquired.slot.exists());
         assert!(!path.exists());
-        assert_eq!(
-            fs::read(
-                path.parent()
-                    .unwrap()
-                    .join("completed")
-                    .join(path.file_name().unwrap())
-            )
-            .unwrap(),
-            marker
-        );
+        assert!(!path.parent().unwrap().exists());
         assert_eq!(
             fs::read(other.slot.join("source.json")).unwrap(),
             other_record

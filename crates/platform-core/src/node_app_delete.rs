@@ -1,5 +1,5 @@
 //! Permanent removal is limited to named platform-owned paths. External source
-//! directories and retained run/installation/recovery evidence are never targets.
+//! directories are preserved; platform-owned source and every instance file are targets.
 use super::*;
 use crate::file_identity::PersistedIdentity;
 
@@ -18,19 +18,6 @@ pub(super) fn revision(slot: &Path) -> Result<String> {
     digest.update(serde_json::to_vec(&json!({"inode":identity.inode,
         "volume":identity.volume_uuid,"device":if identity.volume_uuid.is_none(){Some(identity.device)}else{None}}))?);
     Ok(format!("{:x}", digest.finalize()))
-}
-
-fn targets(slot: &Path, managed: bool) -> Vec<PathBuf> {
-    let mut result = vec![
-        slot.join("configuration"),
-        slot.join("data"),
-        slot.join("cache"),
-        slot.join("logs"),
-    ];
-    if managed {
-        result.push(slot.join("generations"));
-    }
-    result
 }
 
 fn has_active_marker(slot: &Path) -> Result<bool> {
@@ -57,9 +44,7 @@ fn run_recovery_blocker(slot: &Path, owns_runtime: bool) -> Result<Option<ApiErr
         if !matches!(
             inspected,
             Ok(run_marker::Inspection {
-                state: run_marker::RunState::LegacyDiscardable
-                    | run_marker::RunState::Stopped
-                    | run_marker::RunState::Orphaned(_),
+                state: run_marker::RunState::Stopped | run_marker::RunState::Orphaned(_),
                 ..
             })
         ) {
@@ -75,14 +60,14 @@ impl NodeApps {
     /// opens private configuration, so damaged applications remain removable.
     pub async fn delete_preview(&self, id: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
-        self.require_no_source_restore(id)?;
         let record = self.registration(id)?;
         let slot = self.root.join(id);
         ordinary_path(&slot, true)?;
         let expected_revision = revision(&slot)?;
         let blocker = run_recovery_blocker(&slot, inner.running.contains_key(id))?
             .map(|error| json!({"code":error.code,"message":error.message}));
-        let managed = record.managed.is_some();
+        let managed =
+            record.managed.is_some() || self.project_ownership().generated_source(id)?.is_some();
         // The name is display metadata, not permission to execute this program.
         // `manifest()` verifies every installed file, which can make opening the
         // confirmation scan all of node_modules while holding the Node lock.
@@ -100,12 +85,12 @@ impl NodeApps {
                     .unwrap_or("项目")
                     .into()
             });
-        let mut preserved = vec![slot.join("runs"), self.root.join(".installations")];
+        let mut preserved = vec![];
         if !managed {
             preserved.push(record.source_path.clone());
         }
-        let mut delete_paths = targets(&slot, managed);
-        delete_paths.push(slot.join("registration.json"));
+        let mut delete_paths = vec![slot.clone()];
+        delete_paths.extend(self.project_ownership().owned_paths(id)?);
         Ok(
             json!({"appId":id,"name":name,"ownership":if managed {"managed"} else {"external"},
             "platformRoot":slot,"sourcePath":record.source_path,"deletePaths":delete_paths,
@@ -113,7 +98,7 @@ impl NodeApps {
         )
     }
 
-    /// Compatibility API for callers that wait for the actual final result.
+    /// Await the final result for callers that do not consume the task API.
     /// Native task submission uses submit_deletion_with instead.
     pub async fn delete(&self, id: &str, input: DeleteNodeAppInput) -> Result<Value> {
         let task = self.submit_deletion(id, input).await?;

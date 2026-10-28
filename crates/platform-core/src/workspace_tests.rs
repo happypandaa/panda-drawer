@@ -66,6 +66,116 @@ async fn commit(
 }
 
 #[tokio::test]
+async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_owned() {
+    use crate::node_project_ownership::NodeProjectOwnership;
+    let (_temporary, paths, store, _web_id, destination) = fixture().await;
+    let owner = Uuid::new_v4().to_string();
+    let ownership =
+        NodeProjectOwnership::new(paths.data_root().into(), paths.workspace_root().into());
+    ownership.initialize(&owner).unwrap();
+    let task = format!("task_{}", Uuid::new_v4().simple());
+    let source = format!("src_{}", Uuid::new_v4().simple());
+    let relative = [
+        PathBuf::from(".platform/tasks").join(&task),
+        PathBuf::from(".platform/sources").join(&source),
+        PathBuf::from(".platform/source-publications").join(&owner),
+        PathBuf::from("project-sources/disposable-owned-node"),
+    ];
+    for relative in &relative {
+        let path = paths.workspace_root().join(relative);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(
+            path.join("project-payload"),
+            "disposable per-project migration material",
+        )
+        .unwrap();
+    }
+    ownership.record_task(&owner, &task).unwrap();
+    ownership.record_source(&owner, &source).unwrap();
+    ownership.record_publication(&owner).unwrap();
+    ownership
+        .reserve_published_source_identity(
+            &owner,
+            "disposable-owned-node",
+            &crate::file_identity::PersistedIdentity::capture(
+                &paths
+                    .workspace_root()
+                    .join("project-sources/disposable-owned-node"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let original = paths.workspace_root().join("disposable-original-author");
+    fs::create_dir_all(original.join(".git")).unwrap();
+    fs::write(original.join(".git/HEAD"), "ordinary author Git remains").unwrap();
+    crate::node_apps::development::claim_source_after_verified_migration(
+        paths.data_root(),
+        paths.workspace_root(),
+        &owner,
+        &original,
+    )
+    .unwrap();
+    ownership.record_source_restore(&owner, &original).unwrap();
+    for name in [
+        "local-projects-node-restores",
+        "local-projects-node-restore-preparing",
+    ] {
+        let path = original.join(".git").join(name);
+        fs::create_dir(&path).unwrap();
+        ownership
+            .capture_source_restore_directory(
+                &owner,
+                &original,
+                name,
+                &crate::file_identity::PersistedIdentity::capture(&path).unwrap(),
+            )
+            .unwrap();
+        fs::write(path.join("operation.guard"), "platform recovery material").unwrap();
+    }
+    let (selected, mut journal) = commit(&paths, &store, &destination).await;
+    let reopened = ProjectStore::new(destination.clone()).unwrap();
+    initialize_selected(&selected, &reopened, &mut journal).unwrap();
+    initialize_selected(&selected, &reopened, &mut journal).unwrap();
+    let migrated = NodeProjectOwnership::new(paths.data_root().into(), destination.clone());
+    let targets = migrated.owned_paths(&owner).unwrap();
+    assert_eq!(
+        migrated.external_owned_paths(&owner).unwrap().len(),
+        relative.len() + 3
+    );
+    for relative in &relative {
+        assert!(targets.contains(&paths.workspace_root().join(relative)));
+        assert!(targets.contains(&destination.join(relative)));
+    }
+    let copied = destination.join("disposable-original-author");
+    assert!(!targets.contains(&original));
+    assert!(targets.contains(&copied));
+    assert!(targets.contains(&original.join(".git/local-projects-node-restores")));
+    assert!(!targets
+        .iter()
+        .any(|path| path != &copied && path.starts_with(&copied)));
+    // Only the project's persisted scope is removed. The public migration's
+    // global journal and both workspace container roots remain.
+    for target in targets {
+        fs::remove_dir_all(target).unwrap();
+    }
+    for relative in &relative {
+        assert!(!paths.workspace_root().join(relative).exists());
+        assert!(!destination.join(relative).exists());
+    }
+    assert!(journal_path(paths.data_root(), &journal.task_id).exists());
+    assert!(paths.workspace_root().exists());
+    assert!(destination.exists());
+    assert_eq!(
+        fs::read_to_string(original.join(".git/HEAD")).unwrap(),
+        "ordinary author Git remains"
+    );
+    assert!(!original.join(".git/local-projects-node-restores").exists());
+    assert!(!copied.exists());
+    reopened.shutdown().await;
+    store.shutdown().await;
+}
+
+#[tokio::test]
 async fn source_restore_guard_blocks_pending_migration_and_preserves_completed_evidence() {
     let (_temp, paths, store, id, dest) = fixture().await;
     let relative = PathBuf::from(".platform/project-state/source-restore")

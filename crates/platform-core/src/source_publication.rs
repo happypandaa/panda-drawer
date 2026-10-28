@@ -389,6 +389,34 @@ fn publication_identity(publication: &Publication, directory: &File) -> Result<(
     }
     Ok(())
 }
+fn with_publication_reservation(
+    ownership: &crate::node_project_ownership::NodeProjectOwnership,
+    app: &str,
+    publication: &Publication,
+    publish: impl FnOnce() -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    if let Err(error) = ownership.reserve_published_source_identity(
+        app,
+        &publication.directory,
+        &publication.payload_identity,
+    ) {
+        ownership.forget_unpublished_source_identity(
+            app,
+            &publication.directory,
+            &publication.payload_identity,
+        )?;
+        return Err(error);
+    }
+    let result = publish();
+    if result.is_err() {
+        ownership.forget_unpublished_source_identity(
+            app,
+            &publication.directory,
+            &publication.payload_identity,
+        )?;
+    }
+    result
+}
 fn publish_exclusive(from: &File, payload: &str, to: &File, name: &str) -> Result<(), ApiError> {
     let from_name = c_name(payload.as_bytes())?;
     let to_name = c_name(name.as_bytes())?;
@@ -438,6 +466,13 @@ impl SourceAcquisitionManager {
         {
             return Err(invalid("应用标识无效。"));
         }
+        if self.owner_app_id(&source.source_id)? != app_id {
+            return Err(invalid("来源只属于原项目，不能发布给另一个实例。"));
+        }
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
         let digest = source
             .content_digest
             .as_deref()
@@ -464,10 +499,12 @@ impl SourceAcquisitionManager {
         original.verify()?;
         let workspace = Anchor::open(self.paths.workspace_root().into())?;
         let root = workspace.child("project-sources", true)?;
+        ownership.record_publication(app_id)?;
         let receipt = workspace
             .child(".platform", false)?
             .child("source-publications", true)?
             .child(app_id, true)?;
+        ownership.record_publication(app_id)?;
         let mut bytes = record_bytes(&receipt.file)?;
         let base: String = repository.chars().take(80).collect();
         let base = if base.is_empty() { "project" } else { &base };
@@ -519,6 +556,11 @@ impl SourceAcquisitionManager {
                     workspace.verify()?;
                     publication.phase = "published".into();
                     save_publication(&receipt, &mut bytes, &publication)?;
+                    ownership.reserve_published_source_identity(
+                        app_id,
+                        &publication.directory,
+                        &publication.payload_identity,
+                    )?;
                     return Ok(destination.path);
                 }
             }
@@ -527,6 +569,11 @@ impl SourceAcquisitionManager {
                     "发布后的源码位置被替换，请保留现场，不会再复制一份。",
                 ));
             }
+            ownership.forget_unpublished_source_identity(
+                app_id,
+                &publication.directory,
+                &publication.payload_identity,
+            )?;
             publication.directory = available_name(&root.file, base)?;
             save_publication(&receipt, &mut bytes, &publication)?;
         }
@@ -578,12 +625,14 @@ impl SourceAcquisitionManager {
         receipt.verify()?;
         stage.verify()?;
         original.verify()?;
-        publish_exclusive(
-            &receipt.file,
-            &publication.payload,
-            &root.file,
-            &publication.directory,
-        )?;
+        with_publication_reservation(&ownership, app_id, &publication, || {
+            publish_exclusive(
+                &receipt.file,
+                &publication.payload,
+                &root.file,
+                &publication.directory,
+            )
+        })?;
         let destination = root.child(&publication.directory, false)?;
         publication_identity(&publication, &destination.file)?;
         root.verify()?;
@@ -591,6 +640,11 @@ impl SourceAcquisitionManager {
         workspace.verify()?;
         publication.phase = "published".into();
         save_publication(&receipt, &mut bytes, &publication)?;
+        ownership.reserve_published_source_identity(
+            app_id,
+            &publication.directory,
+            &publication.payload_identity,
+        )?;
         Ok(destination.path)
     }
 }
@@ -598,6 +652,96 @@ impl SourceAcquisitionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_identity_reservation_never_adopts_a_racing_destination_and_survives_rename() {
+        use crate::node_project_ownership::NodeProjectOwnership;
+        for mode in 0..4 {
+            let temporary = tempfile::tempdir().unwrap();
+            let base = temporary.path().canonicalize().unwrap();
+            let data = base.join("data");
+            let workspace = base.join("workspace");
+            fs::create_dir(&data).unwrap();
+            fs::create_dir(&workspace).unwrap();
+            let owner = Uuid::new_v4().to_string();
+            let ownership = NodeProjectOwnership::new(data, workspace.clone());
+            ownership.initialize(&owner).unwrap();
+            ownership.record_publication(&owner).unwrap();
+            let receipt_path = workspace.join(".platform/source-publications").join(&owner);
+            fs::create_dir_all(receipt_path.join("payload_disposable")).unwrap();
+            ownership.record_publication(&owner).unwrap();
+            fs::write(
+                receipt_path.join("payload_disposable/payload"),
+                "our source",
+            )
+            .unwrap();
+            let root_path = workspace.join("project-sources");
+            fs::create_dir(&root_path).unwrap();
+            let destination = root_path.join("disposable-author");
+            let publication = Publication {
+                schema_version: 1,
+                source_id: format!("src_{}", Uuid::new_v4().simple()),
+                source_task_id: format!("task_{}", Uuid::new_v4().simple()),
+                source_digest: "a".repeat(64),
+                author_digest: "b".repeat(64),
+                app_id: owner.clone(),
+                directory: "disposable-author".into(),
+                phase: "ready".into(),
+                payload: "payload_disposable".into(),
+                payload_identity: PersistedIdentity::capture(
+                    &receipt_path.join("payload_disposable"),
+                )
+                .unwrap(),
+                retained_payloads: vec![],
+            };
+            if mode == 2 {
+                ownership
+                    .reserve_published_source_identity(
+                        &owner,
+                        &publication.directory,
+                        &publication.payload_identity,
+                    )
+                    .unwrap();
+            }
+            let foreign = || {
+                fs::create_dir(&destination).unwrap();
+                fs::write(destination.join("foreign"), "another project's source").unwrap();
+            };
+            if mode == 0 || mode == 2 {
+                foreign();
+            }
+            let receipt = Anchor::open(receipt_path).unwrap();
+            let root = Anchor::open(root_path).unwrap();
+            let result = with_publication_reservation(&ownership, &owner, &publication, || {
+                if mode == 1 {
+                    foreign();
+                }
+                publish_exclusive(
+                    &receipt.file,
+                    &publication.payload,
+                    &root.file,
+                    &publication.directory,
+                )
+            });
+            let paths = ownership.owned_paths(&owner).unwrap();
+            if mode == 3 {
+                result.unwrap();
+                // No post-rename capture is needed: the expected payload inode
+                // was persisted before moving its nonempty directory.
+                assert!(paths.contains(&destination));
+            } else {
+                assert!(result.is_err());
+                assert!(!paths.contains(&destination));
+                for path in paths {
+                    fs::remove_dir_all(path).unwrap();
+                }
+                assert_eq!(
+                    fs::read_to_string(destination.join("foreign")).unwrap(),
+                    "another project's source"
+                );
+            }
+        }
+    }
 
     fn ready_source(manager: &SourceAcquisitionManager, tasks: &BuildManager) -> SourceCandidate {
         let task = tasks.create_workspace_operation("sourceAcquire").unwrap();
@@ -611,6 +755,7 @@ mod tests {
         let record = SourceRecord {
             schema_version: 1,
             source_id: id.clone(),
+            owner_app_id: Uuid::new_v4().to_string(),
             task_id: task.task_id.clone(),
             name: "可丢弃·源码发布".into(),
             status: "ready".into(),
@@ -635,6 +780,17 @@ mod tests {
             error: None,
             legacy_build_inspection: false,
         };
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            manager.paths.data_root().into(),
+            manager.paths.workspace_root().into(),
+        );
+        ownership.initialize(&record.owner_app_id).unwrap();
+        ownership
+            .record_task(&record.owner_app_id, &record.task_id)
+            .unwrap();
+        ownership
+            .record_source(&record.owner_app_id, &record.source_id)
+            .unwrap();
         manager.save_record(&record).unwrap();
         let candidate = manager.info(&id).unwrap();
         tasks
@@ -647,7 +803,7 @@ mod tests {
     async fn published_author_git_survives_restart_and_retry_preserves_later_user_edits() {
         let (_temp, paths, store, tasks, manager) = super::super::tests::fixture();
         let source = ready_source(&manager, &tasks);
-        let app = Uuid::new_v4().to_string();
+        let app = manager.owner_app_id(&source.source_id).unwrap();
         let lease = store
             .reserve_task(&format!("source:{}", source.source_id), "publication-test")
             .unwrap();
@@ -704,7 +860,11 @@ mod tests {
             .reserve_task(&format!("source:{}", source.source_id), "publication-test")
             .unwrap();
         let path = manager
-            .publish_author_source(&source, &Uuid::new_v4().to_string(), "publication-test")
+            .publish_author_source(
+                &source,
+                &manager.owner_app_id(&source.source_id).unwrap(),
+                "publication-test",
+            )
             .unwrap();
         assert_eq!(path.file_name().unwrap(), "disposable-repo-2");
         assert_eq!(
@@ -721,7 +881,7 @@ mod tests {
     async fn unfinished_copy_is_retained_privately_and_retry_publishes_one_complete_repository() {
         let (_temp, paths, store, tasks, manager) = super::super::tests::fixture();
         let source = ready_source(&manager, &tasks);
-        let app = Uuid::new_v4().to_string();
+        let app = manager.owner_app_id(&source.source_id).unwrap();
         let lease = store
             .reserve_task(&format!("source:{}", source.source_id), "publication-test")
             .unwrap();
@@ -738,6 +898,18 @@ mod tests {
         // Artificially reproduce a durable copying plan plus a partial payload.
         let partial = receipt_path.join(&publication.payload);
         fs::rename(&destination, &partial).unwrap();
+        // The simulated crash happened before publication. Its author path was
+        // reserved but had never captured a successfully published directory.
+        let owner_path = paths
+            .data_root()
+            .join("node-project-ownership")
+            .join(&app)
+            .join("ownership.json");
+        let mut ownership: serde_json::Value =
+            serde_json::from_slice(&fs::read(&owner_path).unwrap()).unwrap();
+        ownership["artifacts"][format!("author:{}", publication.directory)] =
+            serde_json::Value::Null;
+        atomic_json(&owner_path, &ownership).unwrap();
         fs::remove_file(partial.join("app.js")).unwrap();
         publication.phase = "copying".into();
         atomic_json(&receipt_path.join("publication.json"), &publication).unwrap();
@@ -798,7 +970,7 @@ mod tests {
     async fn git_links_and_unleased_publication_are_rejected_before_formal_source_creation() {
         let (_temp, paths, store, tasks, manager) = super::super::tests::fixture();
         let source = ready_source(&manager, &tasks);
-        let app = Uuid::new_v4().to_string();
+        let app = manager.owner_app_id(&source.source_id).unwrap();
         assert_eq!(
             manager
                 .publish_author_source(&source, &app, "publication-test")

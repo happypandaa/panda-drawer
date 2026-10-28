@@ -60,7 +60,9 @@ impl Fixture {
         let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
         let tasks =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1".into()).unwrap();
-        let installer = NodeAppInstaller::new(paths.data_root().to_path_buf()).unwrap();
+        let installer = NodeAppInstaller::new(paths.data_root().to_path_buf())
+            .unwrap()
+            .with_workspace(paths.workspace_root().to_path_buf());
         Self {
             _temp: temp,
             paths,
@@ -70,6 +72,11 @@ impl Fixture {
             source,
             tools,
         }
+    }
+    fn fresh_target(&self) -> InstallTargetSnapshot {
+        let target = InstallTargetSnapshot::fresh();
+        self.installer.ownership.initialize(&target.app_id).unwrap();
+        target
     }
     fn source(&self) -> VerifiedNodeSource {
         VerifiedNodeSource::new(
@@ -151,11 +158,103 @@ fn live_control() -> (watch::Sender<bool>, watch::Sender<bool>, InstallControl) 
 const NPM_OK: &str = "mkdir -p node_modules; printf '{}' > node_modules/.package-lock.json";
 
 #[tokio::test]
+async fn deletion_waits_for_final_install_journal_and_task_writes_after_process_scope_closes() {
+    use crate::{
+        node_apps::NodeApps, node_development_build::process_scope::NodeReaderFault,
+        owned_process::ProcessPhase,
+    };
+    let fixture = Arc::new(Fixture::new(NPM_OK));
+    let target = fixture.fresh_target();
+    let id = target.app_id.clone();
+    let apps = NodeApps::new(
+        fixture.paths.data_root().into(),
+        "/disposable-must-not-start-node".into(),
+    )
+    .unwrap();
+    let operation = apps
+        .admit_operation(&id, "disposable installation finalization")
+        .unwrap();
+    let task = fixture
+        .tasks
+        .create_node_operation(&id, "nodeInstallPrepare")
+        .unwrap();
+    let source = fixture.source();
+    let key = format!("source:{}", source.source_id);
+    let lease = fixture.store.reserve_task(&key, &task.task_id).unwrap();
+    let registry = fixture.store.processes();
+    let (entered, blocked) = tokio::sync::oneshot::channel();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    let scope = NodeProcessScope::new(registry.clone(), Arc::new((lease, operation)))
+        .with_reader_fault(NodeReaderFault {
+            component: "node-install/finalize".into(),
+            step: "journal".into(),
+            entered,
+            release: Some(wait),
+            panic: false,
+            writer: None,
+        });
+    let work = {
+        let fixture = fixture.clone();
+        let task = task.task_id.clone();
+        tokio::spawn(async move {
+            let (_stop, _cancel, control) = live_control();
+            fixture
+                .installer
+                .prepare_with_scope(
+                    &task,
+                    source,
+                    target,
+                    fixture.tools.clone(),
+                    control,
+                    &fixture.tasks,
+                    scope,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), blocked)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(registry
+        .snapshot()
+        .iter()
+        .all(|process| process.phase == ProcessPhase::Closed));
+    let candidate = fs::read_dir(fixture.installer.operations())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let journal: Value =
+        serde_json::from_slice(&fs::read(candidate.join("install.json")).unwrap()).unwrap();
+    assert_eq!(journal["state"], "preparing");
+    assert!(!fixture.tasks.task(&task.task_id).unwrap().status.is_final());
+    let deletion = apps.begin_delete_operation(&id).unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), deletion.wait_ready())
+            .await
+            .is_err()
+    );
+    assert!(candidate.join("program/local-app.json").exists());
+    assert!(fixture.store.active_task(&key).is_some());
+    release.send(()).unwrap();
+    work.await.unwrap().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), deletion.wait_ready())
+        .await
+        .unwrap();
+    assert!(fixture.tasks.task(&task.task_id).unwrap().status.is_final());
+    assert!(fixture.store.active_task(&key).is_none());
+    fixture.tasks.shutdown().await;
+    fixture.store.shutdown().await;
+}
+
+#[tokio::test]
 async fn bundled_platform_tools_are_preserved_hashed_and_not_executed() {
     let fixture = Fixture::new(&format!(
         "{NPM_OK}\nmkdir -p node_modules/platform-tools\nprintf 'MZ-disposable-windows-tool' > node_modules/platform-tools/service.exe\nprintf 'MZ-disposable-windows-library' > node_modules/platform-tools/service.DLL\nprintf 'disposable-library' > node_modules/platform-tools/library.so\nprintf 'disposable-library' > node_modules/platform-tools/library.dylib\nprintf '#!/bin/sh\\nexit 91\\n' > node_modules/platform-tools/tool.EXE\nchmod +x node_modules/platform-tools/tool.EXE"
     ));
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let prepared = fixture.prepare(target.clone()).await;
     let installed = fixture.apply(&prepared, &target);
     let program = fixture
@@ -203,7 +302,7 @@ async fn third_party_node_addons_still_reject_before_registration_and_keep_evide
             .tasks
             .create_workspace_operation("nodeInstallPrepare")
             .unwrap();
-        let target = InstallTargetSnapshot::fresh();
+        let target = fixture.fresh_target();
         let (_stop, _cancel, control) = live_control();
         let error = fixture
             .installer
@@ -287,7 +386,7 @@ fn assert_no_task_logs(paths: &RuntimePaths, task_id: &str) {
 #[tokio::test]
 async fn install_and_compatible_update_keep_uuid_configuration_data_and_old_program() {
     let fixture = Fixture::new(NPM_OK);
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let prepared = fixture.prepare(target.clone()).await;
     assert_eq!(
         fixture
@@ -355,7 +454,7 @@ async fn install_and_compatible_update_keep_uuid_configuration_data_and_old_prog
 #[tokio::test]
 async fn incompatible_or_unknown_data_contract_stops_before_npm_and_retains_old_slot() {
     let fixture = Fixture::new(NPM_OK);
-    let fresh = InstallTargetSnapshot::fresh();
+    let fresh = fixture.fresh_target();
     let installed = fixture.apply(&fixture.prepare(fresh.clone()).await, &fresh);
     let target = fixture.update_target(&installed, 7);
     let slot = fixture.installer.slot(&installed.app_id).unwrap();
@@ -437,7 +536,7 @@ async fn retained_prepared_updates_are_rechecked_but_legacy_committed_history_st
             manifest.as_object_mut().unwrap().remove("dataContract");
             atomic_json(&source_manifest, &manifest).unwrap();
         }
-        let fresh = InstallTargetSnapshot::fresh();
+        let fresh = fixture.fresh_target();
         let first = fixture.prepare(fresh.clone()).await;
         let installed = fixture.apply(&first, &fresh);
         let target = fixture.update_target(&installed, 7);
@@ -456,7 +555,7 @@ async fn retained_prepared_updates_are_rechecked_but_legacy_committed_history_st
         }
         // Model a preparation persisted by the earlier, app/config-only policy.
         // Its actual copied bytes are valid, but today's update policy rejects it.
-        let candidate = fixture.prepare(InstallTargetSnapshot::fresh()).await;
+        let candidate = fixture.prepare(fixture.fresh_target()).await;
         let mut journal = fixture.installer.journal(&candidate.candidate_id).unwrap();
         journal.target = target.clone();
         journal.prepared.as_mut().unwrap().app_id = installed.app_id.clone();
@@ -544,7 +643,7 @@ async fn retained_prepared_updates_are_rechecked_but_legacy_committed_history_st
 #[tokio::test]
 async fn npm_failure_retains_candidate_and_never_registers_or_rewrites_existing_slot() {
     let mut fixture = Fixture::new(NPM_OK);
-    let first = InstallTargetSnapshot::fresh();
+    let first = fixture.fresh_target();
     let installed = fixture.apply(&fixture.prepare(first.clone()).await, &first);
     let slot = fixture.installer.slot(&installed.app_id).unwrap();
     let files = sentinels(&slot);
@@ -618,7 +717,7 @@ async fn successful_npm_with_stderr_warnings_stays_successful_without_retaining_
     let fixture = Fixture::new(&format!(
         "{NPM_OK}\nprintf 'npm warn deprecated artificial-warning\n' >&2"
     ));
-    let prepared = fixture.prepare(InstallTargetSnapshot::fresh()).await;
+    let prepared = fixture.prepare(fixture.fresh_target()).await;
     let task_id = fixture
         .installer
         .journal(&prepared.candidate_id)
@@ -637,7 +736,7 @@ async fn successful_npm_with_stderr_warnings_stays_successful_without_retaining_
 #[tokio::test]
 async fn cancellation_terminates_npm_before_reporting_completion_and_preserves_evidence() {
     let fixture = Fixture::new("printf 'stdout-before-cancel\n'; printf 'stderr-before-cancel\n' >&2; printf '%s' \"$$\" > npm-fixture-pid; /bin/sleep 60 & wait");
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let task = fixture
         .tasks
         .create_workspace_operation("nodeInstallPrepare")
@@ -705,7 +804,7 @@ async fn npm_output_limit_discards_text_and_stops_the_process_group() {
             .tasks
             .create_workspace_operation("nodeInstallPrepare")
             .unwrap();
-        let target = InstallTargetSnapshot::fresh();
+        let target = fixture.fresh_target();
         let slot = fixture.installer.slot(&target.app_id).unwrap();
         let (_stop, _cancel, mut control) = live_control();
         control.deadline = Instant::now() + Duration::from_secs(5);
@@ -765,7 +864,7 @@ async fn npm_runtime_space_limits_stop_the_group_and_preserve_old_installation()
     ];
     for (case, body, budget) in cases {
         let fixture = Fixture::new(NPM_OK);
-        let target = InstallTargetSnapshot::fresh();
+        let target = fixture.fresh_target();
         let previous = fixture.apply(&fixture.prepare(target.clone()).await, &target);
         let slot = fixture.installer.slot(&previous.app_id).unwrap();
         let original_pointer = fs::read(slot.join("registration.json")).unwrap();
@@ -829,7 +928,7 @@ async fn npm_runtime_space_limits_stop_the_group_and_preserve_old_installation()
 #[tokio::test]
 async fn insufficient_space_before_npm_preserves_candidate_without_starting_a_process() {
     let fixture = Fixture::new("printf started > must-not-start");
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let expected_slot = fixture.installer.slot(&target.app_id).unwrap();
     let task = fixture
         .tasks
@@ -866,7 +965,7 @@ async fn insufficient_space_before_npm_preserves_candidate_without_starting_a_pr
 #[tokio::test]
 async fn cancellation_before_preparation_and_stale_apply_are_final_failures() {
     let fixture = Fixture::new(NPM_OK);
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let task = fixture
         .tasks
         .create_workspace_operation("nodeInstallPrepare")
@@ -957,7 +1056,7 @@ async fn recovery_uses_pointer_commit_point_and_never_reverts_configuration_or_d
         CommitPoint::AfterPointer,
     ] {
         let fixture = Fixture::new(NPM_OK);
-        let target = InstallTargetSnapshot::fresh();
+        let target = fixture.fresh_target();
         let installed = fixture.apply(&fixture.prepare(target.clone()).await, &target);
         let slot = fixture.installer.slot(&installed.app_id).unwrap();
         let files = sentinels(&slot);
@@ -1026,7 +1125,7 @@ async fn recovery_uses_pointer_commit_point_and_never_reverts_configuration_or_d
 #[tokio::test]
 async fn cancellation_after_pointer_commit_cannot_relabel_an_installed_generation() {
     let fixture = Fixture::new(NPM_OK);
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let prepared = fixture.prepare(target).await;
     let task = fixture
         .tasks
@@ -1060,7 +1159,7 @@ async fn cancellation_after_pointer_commit_cannot_relabel_an_installed_generatio
 #[tokio::test]
 async fn tampered_recovery_records_are_not_reported_as_committed() {
     let fixture = Fixture::new(NPM_OK);
-    let prepared = fixture.prepare(InstallTargetSnapshot::fresh()).await;
+    let prepared = fixture.prepare(fixture.fresh_target()).await;
     let path = fixture
         .installer
         .operation(&prepared.candidate_id)
@@ -1079,7 +1178,7 @@ async fn tampered_recovery_records_are_not_reported_as_committed() {
 #[tokio::test]
 async fn recovery_records_unknown_when_registration_cannot_be_verified() {
     let fixture = Fixture::new(NPM_OK);
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let prepared = fixture.prepare(target).await;
     let task = fixture
         .tasks
@@ -1133,7 +1232,7 @@ async fn selected_real_tools(fixture: &Fixture) -> Toolchain {
 async fn real_npm_prepares_a_dependency_free_program_with_distinct_empty_configs() {
     let mut fixture = Fixture::new(NPM_OK);
     fixture.tools = selected_real_tools(&fixture).await;
-    fixture.prepare(InstallTargetSnapshot::fresh()).await;
+    fixture.prepare(fixture.fresh_target()).await;
     fixture.shutdown().await;
 }
 
@@ -1245,7 +1344,7 @@ async fn real_npm_download_failure_leaves_an_unregistered_candidate() {
         .unwrap();
     let (_stop, _cancel, mut control) = live_control();
     control.deadline = Instant::now() + Duration::from_secs(120);
-    let target = InstallTargetSnapshot::fresh();
+    let target = fixture.fresh_target();
     let slot = fixture.installer.slot(&target.app_id).unwrap();
     let error = fixture
         .installer
@@ -1282,7 +1381,7 @@ mod policy;
 #[tokio::test]
 async fn late_start_cleanup_gate_blocks_pointer_publication_and_preserves_existing_data() {
     let fixture = Fixture::new(NPM_OK);
-    let fresh = InstallTargetSnapshot::fresh();
+    let fresh = fixture.fresh_target();
     let installed = fixture.apply(&fixture.prepare(fresh.clone()).await, &fresh);
     let slot = fixture.installer.slot(&installed.app_id).unwrap();
     let files = sentinels(&slot);

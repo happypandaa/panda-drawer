@@ -145,6 +145,12 @@ impl RuntimeHandle {
         };
         let git = crate::node_development_git::NodeGit::new(lease.active.0.git_environment.clone())
             .with_stop(lease.active.0.stop.subscribe())
+            .with_source_restore_ownership(
+                crate::node_project_ownership::NodeProjectOwnership::new(
+                    lease.active.0.paths.data_root().to_path_buf(),
+                    lease.active.0.paths.workspace_root().to_path_buf(),
+                ),
+            )
             .with_process_scope(lease.active.0.store.processes(), lease.keep_alive());
         let root = &lease.source.source_root;
         let scope = crate::node_development_git::NodeRestoreScope {

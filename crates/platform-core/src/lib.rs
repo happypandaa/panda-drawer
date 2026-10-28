@@ -32,6 +32,7 @@ pub mod node_development_build;
 pub mod node_development_tasks;
 pub mod node_install_tasks;
 mod node_process_identity;
+mod node_project_ownership;
 pub use project_git::node_development_git;
 mod node_runtime_log;
 pub mod node_runtime_trial;

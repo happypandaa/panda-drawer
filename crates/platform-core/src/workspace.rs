@@ -515,6 +515,10 @@ pub(crate) fn save_journal(paths: &RuntimePaths, j: &MigrationJournal) -> Result
     builds::atomic_json(&journal_path(paths.data_root(), &j.task_id), j)
 }
 pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
+    crate::node_apps::development::require_source_restores_clear_for_migration(
+        paths.data_root(),
+        paths.workspace_root(),
+    )?;
     crate::projects::check_pending_deletions(paths.workspace_root())?;
     crate::source_restore_guard::check_workspace_available(paths.workspace_root())?;
     crate::data_restore_guard::check_workspace_available(paths.workspace_root())?;
@@ -696,6 +700,11 @@ pub(crate) fn initialize_selected(
     }
     j.epochs_applied = true;
     crate::node_apps::development::rebind_published_after_migration(
+        paths.data_root(),
+        &j.source_path,
+        &j.destination_path,
+    )?;
+    crate::node_project_ownership::NodeProjectOwnership::rebind_after_migration(
         paths.data_root(),
         &j.source_path,
         &j.destination_path,
