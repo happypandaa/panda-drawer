@@ -1322,7 +1322,7 @@ test('Creating a project opens its details and offers AI handoff without copying
   assert.equal(document.querySelector('.create-project-form'), null);
   assert.equal(handoffs, 0); assert.deepEqual(copied, []);
   assert.equal(buttonNamed('复制提示词').disabled, false);
-  assert.equal(buttonNamed('在 Codex 打开').disabled, false);
+  assert.equal(buttonNamed('在 Codex 打开'), undefined);
   assert.equal(buttonNamed('构建更新').disabled, false);
   await click(buttonNamed('复制提示词'));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
@@ -1392,163 +1392,126 @@ test('A refreshed project removal invalidates an in-flight AI handoff without di
   assert.equal(document.querySelector('.detail-metadata-form input').value, 'Preserve handoff fixture draft');
 });
 
-const codexHandoff = (project, text = 'Fresh project instructions', instanceId = 'instance_dom_fixture') => ({ text, projectRoot: project.projectRoot, instanceId });
-const codexButton = () => buttonNamed('在 Codex 打开');
+const completeHandoff = (project, text = 'Fresh project instructions', instanceId = 'instance_dom_fixture') => ({ text, projectRoot: project.projectRoot, instanceId });
 
-test('Codex handoff explicitly fetches fresh instructions, copies them, then opens only the checked project', async () => {
+test('The shared handoff expands fresh text and project paths without copying until requested', async () => {
   await setup(); const events = []; let handoffs = 0;
-  const project = appProject('prj_codex', 'Codex disposable fixture');
+  const project = appProject('prj_handoff', 'Handoff disposable fixture');
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { events.push(['copy', text]); } } });
   mockApp({ projects: [project] }, async (command, args) => {
-    events.push([command, args]);
-    if (command === 'project_handoff') return codexHandoff(project, `Fresh handoff ${++handoffs}`);
-    assert.equal(command, 'project_open_codex');
-    return { projectRoot: project.projectRoot, requested: true };
+    events.push([command, args]); assert.equal(command, 'project_handoff');
+    return completeHandoff(project, `Fresh handoff ${++handoffs}`);
   });
   await render(h(App)); await openDetails(project.name);
   assert.deepEqual(events, []);
+  assert.equal(buttonNamed('在 Codex 打开'), undefined);
   await click(buttonNamed('查看交接说明'));
   assert.match(document.querySelector('.detail-handoff-help').textContent, /自行发送/);
-  await click(codexButton());
-  assert.deepEqual(events, [
-    ['project_handoff', { projectId: project.id }], ['copy', 'Fresh handoff 1'],
-    ['project_open_codex', { projectId: project.id, expectedProjectRoot: project.projectRoot, expectedInstanceId: 'instance_dom_fixture' }],
-  ]);
+  assert.deepEqual(events, [['project_handoff', { projectId: project.id }]]);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Fresh handoff 1');
   assert.ok(document.querySelector('.handoff-preview').textContent.includes(project.projectRoot));
-  assert.match(dialog().querySelector('[role="status"]').textContent, /已请求 Codex.*自行发送/);
-  assert.doesNotMatch(dialog().textContent, /AI 已接手|接手已完成|任务已提交/);
-  await click(codexButton());
-  assert.equal(handoffs, 2);
-  assert.equal(events.filter(([name]) => name === 'project_open_codex').length, 2);
+  assert.doesNotMatch(dialog().textContent, /Codex|完成后构建更新/);
   await click(buttonNamed('复制提示词'));
-  assert.equal(handoffs, 3);
-  assert.equal(events.filter(([name]) => name === 'project_open_codex').length, 2, 'Generic copy never opens Codex');
+  assert.deepEqual(events.at(-1), ['copy', 'Fresh handoff 2']);
+  assert.match(dialog().querySelector('[role="status"]').textContent, /已复制/);
+  assert.equal(handoffs, 2);
 });
 
-test('Codex can open when clipboard permission fails, retaining selectable instructions and honest feedback', async () => {
-  await setup(); const project = appProject('prj_codex_clipboard', 'Clipboard fallback'); const opened = [];
+test('Shared handoff clipboard failure retains selectable instructions and paths', async () => {
+  await setup(); const project = appProject('prj_handoff_clipboard', 'Clipboard fallback'); const commands = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Clipboard denied'); } } });
-  mockApp({ projects: [project] }, async (command, args) => {
-    if (command === 'project_handoff') return codexHandoff(project, 'Retain these complete instructions');
-    assert.equal(command, 'project_open_codex'); opened.push(args); return { projectRoot: project.projectRoot, requested: true };
+  mockApp({ projects: [project] }, async command => {
+    commands.push(command); assert.equal(command, 'project_handoff');
+    return completeHandoff(project, 'Retain these complete instructions');
   });
-  await render(h(App)); await openDetails(project.name); await click(codexButton());
-  assert.equal(opened.length, 1);
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
   const text = document.querySelector('[aria-label="给 AI 的完整说明"]');
   assert.equal(text.value, 'Retain these complete instructions');
   await act(async () => text.focus());
   assert.equal(text.selectionStart, 0); assert.equal(text.selectionEnd, text.value.length);
-  assert.match(dialog().querySelector('[role="status"]').textContent, /剪贴板未能写入.*手动复制/);
-  assert.doesNotMatch(dialog().querySelector('[role="status"]').textContent, /说明已复制/);
-});
-
-test('A Codex opening failure retains the full handoff and path, and retry refreshes the handoff', async () => {
-  await setup(); const project = appProject('prj_codex_missing', 'Codex opening failure'); const copied = []; let handoffs = 0; let opens = 0;
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copied.push(text); } } });
-  mockApp({ projects: [project] }, async command => {
-    if (command === 'project_handoff') return codexHandoff(project, `Retained handoff ${++handoffs}`);
-    assert.equal(command, 'project_open_codex'); opens++;
-    throw { code: 'CODEX_NOT_INSTALLED', message: '未找到已安装的 Codex' };
-  });
-  await render(h(App)); await openDetails(project.name); await click(codexButton());
-  assert.equal(opens, 1); assert.equal(handoffs, 1);
-  assert.match(dialog().querySelector('[role="alert"]').textContent, /未找到已安装的 Codex/);
-  assert.match(dialog().querySelector('[role="status"]').textContent, /说明已复制.*手动打开 Codex/);
-  assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Retained handoff 1');
   assert.ok(document.querySelector('.handoff-preview').textContent.includes(project.projectRoot));
-  assert.equal(codexButton().disabled, false);
-  await click(codexButton());
-  assert.equal(opens, 2); assert.equal(handoffs, 2);
-  assert.deepEqual(copied, ['Retained handoff 1', 'Retained handoff 2']);
+  assert.match(dialog().querySelector('[role="status"]').textContent, /选中.*复制/);
+  assert.doesNotMatch(dialog().querySelector('[role="status"]').textContent, /已复制/);
+  assert.deepEqual(commands, ['project_handoff']);
 });
 
-test('Codex handoff and native-open pending phases each reject duplicate and generic submissions', async () => {
-  await setup(); const project = appProject('prj_codex_pending', 'Codex pending fixture'); const handoff = deferred(); const opened = deferred(); const calls = [];
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+test('Shared handoff failures release the action and retry fetches fresh instructions', async () => {
+  await setup(); const project = appProject('prj_handoff_retry', 'Handoff retry'); let handoffs = 0;
   mockApp({ projects: [project] }, async command => {
-    calls.push(command);
-    if (command === 'project_handoff') return handoff.promise;
-    assert.equal(command, 'project_open_codex'); return opened.promise;
+    assert.equal(command, 'project_handoff');
+    if (++handoffs === 1) throw { code: 'DISPOSABLE_READ_FAILED', message: '人工交接读取失败' };
+    return completeHandoff(project, 'Retried instructions');
   });
-  await render(h(App)); await openDetails(project.name); await click(codexButton());
-  assert.equal(buttonNamed('正在准备并打开…').disabled, true);
-  assert.equal(buttonNamed('复制提示词').disabled, true);
-  await click(buttonNamed('正在准备并打开…')); await click(buttonNamed('复制提示词'));
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('查看交接说明'));
+  assert.match(dialog().querySelector('[role="alert"]').textContent, /人工交接读取失败/);
+  assert.equal(buttonNamed('复制提示词').disabled, false);
+  await click(buttonNamed('复制提示词'));
+  assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Retried instructions');
+  assert.equal(handoffs, 2);
+});
+
+test('Shared handoff preparation and clipboard phases reject duplicate submissions', async () => {
+  await setup(); const project = appProject('prj_handoff_pending', 'Handoff pending fixture'); const handoff = deferred(); const write = deferred(); const calls = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => write.promise } });
+  mockApp({ projects: [project] }, async command => { calls.push(command); assert.equal(command, 'project_handoff'); return handoff.promise; });
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
+  assert.equal(buttonNamed('正在准备说明…').disabled, true);
+  await click(buttonNamed('正在准备说明…')); await click(buttonNamed('查看交接说明'));
   assert.deepEqual(calls, ['project_handoff']);
-  await act(async () => handoff.resolve(codexHandoff(project)));
-  assert.equal(buttonNamed('正在准备并打开…').disabled, true);
+  await act(async () => handoff.resolve(completeHandoff(project)));
+  assert.equal(buttonNamed('正在准备说明…').disabled, true);
   assert.equal(buttonNamed('收起全文').disabled, true);
-  await click(buttonNamed('正在准备并打开…'));
-  assert.deepEqual(calls, ['project_handoff', 'project_open_codex']);
-  await act(async () => opened.resolve({ projectRoot: project.projectRoot, requested: true }));
-  assert.equal(codexButton().disabled, false);
+  await click(buttonNamed('正在准备说明…'));
+  assert.deepEqual(calls, ['project_handoff']);
+  await act(async () => write.resolve());
+  assert.equal(buttonNamed('复制提示词').disabled, false);
 });
 
-test('Closing a Codex request before handoff returns prevents copying or opening the old project', async () => {
-  await setup(); const project = appProject('prj_codex_old', 'Old Codex fixture'); const next = appProject('prj_codex_new', 'New Codex fixture'); const prepared = deferred(); const copied = []; const opens = [];
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copied.push(text); } } });
+test('Closing a request before handoff returns prevents copying the old project', async () => {
+  await setup(); const project = appProject('prj_handoff_old', 'Old handoff fixture'); const next = appProject('prj_handoff_new', 'New handoff fixture'); const prepared = deferred(); const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
   mockApp({ projects: [project, next] }, async (command, args) => {
-    if (command === 'project_handoff') return args.projectId === project.id ? prepared.promise : codexHandoff(next, 'Current handoff');
-    assert.equal(command, 'project_open_codex'); opens.push(args); return { projectRoot: project.projectRoot, requested: true };
+    assert.equal(command, 'project_handoff'); return args.projectId === project.id ? prepared.promise : completeHandoff(next, 'Current handoff');
   });
-  await render(h(App)); await openDetails(project.name); await click(codexButton());
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
   await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制提示词'));
-  await act(async () => prepared.resolve(codexHandoff(project, 'Stale handoff')));
-  assert.deepEqual(copied, ['Current handoff']); assert.deepEqual(opens, []);
+  await act(async () => prepared.resolve(completeHandoff(project, 'Stale handoff')));
+  assert.deepEqual(copied, ['Current handoff']);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current handoff');
-  assert.doesNotMatch(dialog().textContent, /Stale handoff|已请求 Codex/);
+  assert.doesNotMatch(dialog().textContent, /Stale handoff/);
 });
 
-test('A changed instance or project root during a clipboard write invalidates the pending Codex open', async () => {
+test('A changed instance or project root invalidates a pending handoff clipboard response', async () => {
   for (const change of ['instance', 'root']) {
-    await setup(); const project = appProject(`prj_codex_${change}`, `Codex ${change} fixture`); const write = deferred(); const opens = [];
+    await setup(); const project = appProject(`prj_handoff_${change}`, `Handoff ${change} fixture`); const write = deferred();
     const state = { projects: [project] };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => write.promise } });
-    mockApp(state, async (command, args) => {
-      if (command === 'project_handoff') return codexHandoff(project);
-      assert.equal(command, 'project_open_codex'); opens.push(args); return { projectRoot: project.projectRoot, requested: true };
-    });
-    await render(h(App)); await openDetails(project.name); await click(codexButton());
+    mockApp(state, async command => { assert.equal(command, 'project_handoff'); return completeHandoff(project); });
+    await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
     assert.ok(document.querySelector('[aria-label="给 AI 的完整说明"]'));
     if (change === 'instance') state.instanceId = 'instance_after_migration';
     else state.projects = [{ ...project, projectRoot: '/disposable/migrated/projects/current' }];
-    await click(hubTab('空间与文件'));
-    await click(buttonNamed('重新扫描'));
+    await click(hubTab('空间与文件')); await click(buttonNamed('重新扫描'));
     assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
     await act(async () => write.resolve());
-    assert.deepEqual(opens, []);
-    assert.equal(codexButton().disabled, false);
+    assert.equal(buttonNamed('复制提示词').disabled, false);
+    assert.doesNotMatch(dialog().textContent, /已复制/);
     await act(async () => root.unmount()); root = null;
   }
 });
 
-test('A late Codex launch response cannot replace the new project handoff or report its success there', async () => {
-  await setup(); const project = appProject('prj_codex_launch_old', 'Old launch fixture'); const next = appProject('prj_codex_launch_new', 'Current launch fixture'); const opened = deferred();
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
-  mockApp({ projects: [project, next] }, async (command, args) => {
-    if (command === 'project_handoff') return codexHandoff(args.projectId === project.id ? project : next, args.projectId === project.id ? 'Old instructions' : 'Current instructions');
-    assert.equal(command, 'project_open_codex'); return opened.promise;
-  });
-  await render(h(App)); await openDetails(project.name); await click(codexButton());
-  await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制提示词'));
-  await act(async () => opened.resolve({ projectRoot: project.projectRoot, requested: true }));
-  assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current instructions');
-  assert.doesNotMatch(dialog().querySelector('[role="status"]').textContent, /已请求 Codex/);
-});
-
-test('A mismatched fresh handoff preserves its text but is never copied or used to open Codex', async () => {
-  await setup(); const project = appProject('prj_codex_changed', 'Changed handoff fixture'); const copied = []; const commands = [];
+test('A mismatched fresh handoff preserves its text but is never copied', async () => {
+  await setup(); const project = appProject('prj_handoff_changed', 'Changed handoff fixture'); const copied = []; const commands = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
   mockApp({ projects: [project] }, async command => {
     commands.push(command); assert.equal(command, 'project_handoff');
     return { text: 'Current service instructions', projectRoot: '/disposable/moved/project', instanceId: 'new_instance' };
   });
-  await render(h(App)); await openDetails(project.name); await click(codexButton());
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
   assert.deepEqual(commands, ['project_handoff']); assert.deepEqual(copied, []);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current service instructions');
   assert.match(dialog().querySelector('[role="alert"]').textContent, /项目目录或服务信息已变化/);
-  assert.equal(codexButton().disabled, false);
+  assert.equal(buttonNamed('复制提示词').disabled, false);
 });
 
 test('Automatic storage scans do not hide a failed build or replace the result of its explicit retry', async () => {

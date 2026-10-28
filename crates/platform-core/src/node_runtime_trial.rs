@@ -6,6 +6,7 @@
 //! registration layer, separate from this retained direct-Child owner.
 
 use crate::node_process_identity::{self, RuntimeProcessIdentity, RUN_IDENTITY_ENV};
+use crate::node_runtime_log::{DiagnosticLines, RuntimeLog};
 use crate::owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions};
 use crate::ApiError;
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,6 @@ use uuid::Uuid;
 pub const EXPECTED_NODE_VERSION: &str = "24.22.0";
 const MESSAGE_LIMIT: usize = 8192;
 const HTTP_LIMIT: usize = 16384;
-const STDERR_LIMIT: u64 = 65536;
 // Used only by the macOS ownership path. Keep unsupported-target compilation
 // independent of libc's platform-specific signal constant exports.
 const SIGNAL_TERM: i32 = 15;
@@ -54,6 +54,8 @@ pub struct RuntimeLaunchConfig {
     pub working_directory: PathBuf,
     pub trial_root: PathBuf,
     pub business_env: BTreeMap<String, String>,
+    pub control_directory: PathBuf,
+    pub redaction_values: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -64,7 +66,8 @@ pub struct TrialStatus {
     pub state: String,
     pub port: Option<u16>,
     pub exit_code: Option<i32>,
-    pub stderr_bytes_discarded: u64,
+    pub stderr_bytes_received: u64,
+    pub log_error: Option<String>,
     pub forced: bool,
     pub stopping_observed: bool,
     /// True after no live owned-group members remain and the leader is reaped.
@@ -97,6 +100,35 @@ enum ControlMessage {
     },
 }
 
+/// Fixed platform reasons contain no application configuration or error text.
+#[derive(Clone, Copy)]
+pub enum RuntimeStopReason {
+    UserRequest,
+    WindowClosed,
+    Restart,
+    PlatformExit,
+    StartupRollback,
+    HealthCheckFailed,
+    ControlProtocolFailed,
+    Deletion,
+    OwnerDropped,
+}
+impl RuntimeStopReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::UserRequest => "user-request",
+            Self::WindowClosed => "window-closed",
+            Self::Restart => "restart",
+            Self::PlatformExit => "platform-exit",
+            Self::StartupRollback => "startup-rollback",
+            Self::HealthCheckFailed => "health-check-failed",
+            Self::ControlProtocolFailed => "control-protocol-failed",
+            Self::Deletion => "project-deletion",
+            Self::OwnerDropped => "runtime-owner-dropped",
+        }
+    }
+}
+
 pub struct NodeRuntimeTrial {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -110,11 +142,15 @@ pub struct NodeRuntimeTrial {
     stopping: Arc<AtomicBool>,
     control_failed: Arc<AtomicBool>,
     ownership: Arc<ProcessOwnership>,
+    log: RuntimeLog,
+    termination_logged: Arc<AtomicBool>,
+    exit_logged: bool,
 }
 
 #[derive(Clone, Copy)]
 struct ExitObservation {
     code: Option<i32>,
+    signal: Option<i32>,
 }
 
 struct ProcessOwnership {
@@ -224,6 +260,11 @@ fn observe_without_reaping(pid: u32) -> TrialResult<Option<ExitObservation>> {
             } else {
                 Ok(Some(ExitObservation {
                     code: if info.si_code == libc::CLD_EXITED {
+                        Some(unsafe { info.si_status() })
+                    } else {
+                        None
+                    },
+                    signal: if matches!(info.si_code, libc::CLD_KILLED | libc::CLD_DUMPED) {
                         Some(unsafe { info.si_status() })
                     } else {
                         None
@@ -736,6 +777,7 @@ impl NodeRuntimeTrial {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(run_directory.join("tmp"), fs::Permissions::from_mode(0o700))?;
         }
+        let log = RuntimeLog::start(&config.control_directory)?;
         let mut command = Command::new(node);
         command
             .arg(entry)
@@ -770,6 +812,7 @@ impl NodeRuntimeTrial {
         let pid = child
             .id()
             .ok_or_else(|| fail("TRIAL_PROCESS_FAILED", "Trial process has no identity"))?;
+        log.event("started", json!({"pid":pid,"instanceId":instance_id}));
         let stdin = child.stdin.take();
         let stdout = child
             .stdout
@@ -781,12 +824,15 @@ impl NodeRuntimeTrial {
             .ok_or_else(|| fail("TRIAL_PROCESS_FAILED", "Missing diagnostic stream"))?;
         let (sender, messages) = mpsc::channel(16);
         let ownership = Arc::new(ProcessOwnership::new(pid));
-        let diagnostic_sender = sender.clone();
+
         let stopping = Arc::new(AtomicBool::new(false));
         let control_failed = Arc::new(AtomicBool::new(false));
         let reader_stopping = stopping.clone();
         let reader_failed = control_failed.clone();
         let reader_ownership = ownership.clone();
+        let reader_log = log.clone();
+        let termination_logged = Arc::new(AtomicBool::new(false));
+        let reader_termination = termination_logged.clone();
         let control_reader = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -799,6 +845,13 @@ impl NodeRuntimeTrial {
                 let terminal = result.is_err();
                 if terminal && !reader_stopping.load(Ordering::Acquire) {
                     reader_failed.store(true, Ordering::Release);
+                    if reader_ownership.observe().ok().flatten().is_none() {
+                        log_termination(
+                            &reader_log,
+                            &reader_termination,
+                            RuntimeStopReason::ControlProtocolFailed,
+                        );
+                    }
                     terminate_unexpected(&reader_ownership, &reader_stopping).await;
                 }
                 if sender.send(result).await.is_err() || terminal {
@@ -808,32 +861,28 @@ impl NodeRuntimeTrial {
         });
         let stderr_count = Arc::new(AtomicU64::new(0));
         let counter = stderr_count.clone();
-        let diagnostic_stopping = stopping.clone();
-        let diagnostic_failed = control_failed.clone();
-        let diagnostic_ownership = ownership.clone();
+        let diagnostic_log = log.clone();
+        let mut redaction_values = config.redaction_values;
+        redaction_values.extend([token.clone(), identity_nonce.clone()]);
         let diagnostic_reader = tokio::spawn(async move {
+            let mut lines = DiagnosticLines::new(diagnostic_log.clone(), redaction_values);
             let mut chunk = [0u8; 4096];
-            while let Ok(n) = stderr.read(&mut chunk).await {
-                if n == 0 {
-                    break;
-                }
-                // Never retain or print application diagnostics: they may contain keys.
-                counter.store(
-                    counter.load(Ordering::Relaxed).saturating_add(n as u64),
-                    Ordering::Relaxed,
-                );
-                if counter.load(Ordering::Relaxed) > STDERR_LIMIT {
-                    diagnostic_failed.store(true, Ordering::Release);
-                    terminate_unexpected(&diagnostic_ownership, &diagnostic_stopping).await;
-                    let _ = diagnostic_sender
-                        .send(Err(fail(
-                            "TRIAL_LOG_LIMIT",
-                            "Trial diagnostic output exceeded its 64 KiB budget",
-                        )))
-                        .await;
-                    break;
+            loop {
+                match stderr.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        counter.fetch_add(n as u64, Ordering::Relaxed);
+                        // A full log rolls over. A write failure is retained while
+                        // this reader continues draining without killing the app.
+                        lines.push(&chunk[..n]);
+                    }
+                    Err(_) => {
+                        diagnostic_log.event("stderr-read-failed", json!({}));
+                        break;
+                    }
                 }
             }
+            lines.finish();
         });
         let mut runtime = Self {
             child: Some(child),
@@ -847,13 +896,17 @@ impl NodeRuntimeTrial {
             stopping,
             control_failed,
             ownership,
+            log,
+            termination_logged,
+            exit_logged: false,
             status: TrialStatus {
                 instance_id,
                 pid,
                 state: "starting".into(),
                 port: None,
                 exit_code: None,
-                stderr_bytes_discarded: 0,
+                stderr_bytes_received: 0,
+                log_error: None,
                 forced: false,
                 stopping_observed: false,
                 process_group_exited: false,
@@ -873,7 +926,10 @@ impl NodeRuntimeTrial {
             Ok(())
         }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Trial was not ready within 10 seconds")));
         if let Err(error) = started {
-            match runtime.stop().await {
+            match runtime
+                .stop_with_reason(RuntimeStopReason::StartupRollback)
+                .await
+            {
                 Ok(status) if status.process_group_exited => {
                     *cleanup = FailedLaunchCleanup::ResourcesStopped;
                 }
@@ -967,11 +1023,13 @@ impl NodeRuntimeTrial {
         if self.child.is_some() {
             if let Some(exit) = self.ownership.observe()? {
                 self.status.exit_code = exit.code;
+                self.record_exit(exit.code, exit.signal);
                 self.status.state = "failed".into();
             }
         }
         let mut status = self.status.clone();
-        status.stderr_bytes_discarded = self.stderr_count.load(Ordering::Relaxed);
+        status.stderr_bytes_received = self.stderr_count.load(Ordering::Relaxed);
+        status.log_error = self.log.error().map(|error| error.message);
         Ok(status)
     }
 
@@ -1036,9 +1094,19 @@ impl NodeRuntimeTrial {
     }
 
     pub async fn stop(&mut self) -> TrialResult<TrialStatus> {
+        self.stop_with_reason(RuntimeStopReason::UserRequest).await
+    }
+
+    pub async fn stop_with_reason(
+        &mut self,
+        reason: RuntimeStopReason,
+    ) -> TrialResult<TrialStatus> {
         if self.child.is_none() {
             self.finish_readers().await?;
             return self.status();
+        }
+        if self.ownership.observe()?.is_none() {
+            log_termination(&self.log, &self.termination_logged, reason);
         }
         self.status.state = "stopping".into();
         self.stopping.store(true, Ordering::Release);
@@ -1092,6 +1160,7 @@ impl NodeRuntimeTrial {
         }
         // A clean main-process exit alone does not prove its ordinary children exited.
         let descendants_exited = if self.ownership.has_descendants()? {
+            log_termination(&self.log, &self.termination_logged, reason);
             self.status.forced = true;
             self.ownership.signal_with_reobserve(SIGNAL_TERM).await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1126,6 +1195,14 @@ impl NodeRuntimeTrial {
             .await
             .map_err(|_| fail("TRIAL_STOP_FAILED", "Could not reap the owned trial leader"))?;
         self.status.exit_code = exit.code();
+        #[cfg(unix)]
+        let signal = {
+            use std::os::unix::process::ExitStatusExt;
+            exit.signal()
+        };
+        #[cfg(not(unix))]
+        let signal = None;
+        self.record_exit(exit.code(), signal);
         self.status.state = if self.status.forced
             || self.control_failed.load(Ordering::Acquire)
             || !self.status.stopping_observed
@@ -1142,6 +1219,14 @@ impl NodeRuntimeTrial {
         self.identity_nonce.clear();
         self.finish_readers().await?;
         self.status()
+    }
+
+    fn record_exit(&mut self, code: Option<i32>, signal: Option<i32>) {
+        if !self.exit_logged {
+            self.log
+                .event("exited", json!({"exitCode":code,"signal":signal}));
+            self.exit_logged = true;
+        }
     }
 
     async fn finish_readers(&mut self) -> TrialResult<()> {
@@ -1221,6 +1306,12 @@ async fn terminate_unexpected(ownership: &ProcessOwnership, stopping: &AtomicBoo
     }
 }
 
+fn log_termination(log: &RuntimeLog, recorded: &AtomicBool, reason: RuntimeStopReason) {
+    if !recorded.swap(true, Ordering::AcqRel) {
+        log.event("termination-requested", json!({"reason":reason.label()}));
+    }
+}
+
 impl Drop for NodeRuntimeTrial {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
@@ -1231,11 +1322,39 @@ impl Drop for NodeRuntimeTrial {
         if let Some(mut child) = self.child.take() {
             // Signal only while waitid proves ownership. Disarm before moving
             // the final wait into another task (or Tokio's orphan reaper).
-            let _ = self.ownership.signal(SIGNAL_KILL);
+            let terminate = match self.ownership.observe() {
+                Ok(None) => true,
+                Ok(Some(exit)) => {
+                    self.record_exit(exit.code, exit.signal);
+                    self.ownership.has_descendants().unwrap_or(false)
+                }
+                Err(_) => false,
+            };
+            if terminate {
+                log_termination(
+                    &self.log,
+                    &self.termination_logged,
+                    RuntimeStopReason::OwnerDropped,
+                );
+                let _ = self.ownership.signal(SIGNAL_KILL);
+            }
             self.ownership.disarm_before_reap();
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let log = self.log.clone();
+                let exit_logged = self.exit_logged;
                 handle.spawn(async move {
-                    let _ = child.wait().await;
+                    if let Ok(exit) = child.wait().await {
+                        #[cfg(unix)]
+                        let signal = {
+                            use std::os::unix::process::ExitStatusExt;
+                            exit.signal()
+                        };
+                        #[cfg(not(unix))]
+                        let signal = None;
+                        if !exit_logged {
+                            log.event("exited", json!({"exitCode":exit.code(),"signal":signal}));
+                        }
+                    }
                 });
             }
         }
@@ -1283,7 +1402,7 @@ assert os.path.isdir(os.environ['APP_DATA_DIR']) and os.path.isdir(os.environ['A
 if behavior == 'runtime-identity':
     with open(os.path.join(os.environ['APP_DATA_DIR'], 'artificial-process-identity.json'), 'w') as output:
         json.dump({'pid':os.getpid(), 'pgid':os.getpgrp(), 'nonce':identity_nonce}, output)
-if behavior == 'leak-descendants':
+if behavior in ['leak-descendants', 'exit-with-descendants']:
     import subprocess,time
     grand = "import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);open(os.path.join(os.environ['APP_DATA_DIR'],'grandchild-pid'),'w').write(str(os.getpid()));time.sleep(60)"
     child = "import os,signal,subprocess,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);open(os.path.join(os.environ['APP_DATA_DIR'],'child-pid'),'w').write(str(os.getpid()));subprocess.Popen(['/usr/bin/python3','-c'," + repr(grand) + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);time.sleep(60)"
@@ -1317,6 +1436,11 @@ server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 print(json.dumps({'protocolVersion':1,'type':'ready','instanceId':instance,'host':'127.0.0.1','port':server.server_address[1]}), flush=True)
 print('artificial-secret-for-log-test', file=sys.stderr, flush=True)
+print('control-token=' + token + ' identity-nonce=' + identity_nonce, file=sys.stderr, flush=True)
+if behavior == 'verbose-stderr':
+    for i in range(1024):
+        print(str(i) + ' artificial-secret-for-log-test ' + ('x' * 1024), file=sys.stderr)
+    print('newest-diagnostic', file=sys.stderr, flush=True)
 for line in sys.stdin:
     msg = json.loads(line)
     if msg['type'] == 'ping':
@@ -1325,7 +1449,7 @@ for line in sys.stdin:
             import time
             while True: time.sleep(1)
         print(json.dumps({'protocolVersion':1,'type':'pong','instanceId':instance,'requestId':msg['requestId']}), flush=True)
-        if behavior == 'exit-after-pong': sys.exit(0)
+        if behavior in ['exit-after-pong', 'exit-with-descendants']: sys.exit(0)
     elif msg['type'] == 'shutdown':
         if behavior == 'hang-stop':
             import subprocess
@@ -1350,6 +1474,8 @@ server.shutdown(); server.server_close()
                 working_directory: app,
                 trial_root,
                 business_env: BTreeMap::from([("TRIAL_BEHAVIOR".into(), behavior.into())]),
+                control_directory: root,
+                redaction_values: vec!["artificial-secret-for-log-test".into()],
             },
         )
     }
@@ -1358,6 +1484,7 @@ server.shutdown(); server.server_close()
     #[tokio::test]
     async fn real_mock_process_health_control_and_repeated_stop() {
         let (_fixture, config) = protocol_fixture("");
+        let control = config.control_directory.clone();
         let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
         runtime.ping().await.unwrap();
         runtime.verify_health().await.unwrap();
@@ -1365,6 +1492,7 @@ server.shutdown(); server.server_close()
         let (port, token) = runtime.proxy_target().unwrap();
         assert_eq!(Some(port), running.port);
         assert_eq!(token.len(), 64);
+        let identity_nonce = runtime.identity_nonce.clone();
         assert_eq!(running.state, "running");
         assert!(!serde_json::to_string(&running)
             .unwrap()
@@ -1377,6 +1505,127 @@ server.shutdown(); server.server_close()
         assert!(!group_exists(stopped.pid));
         assert_eq!(runtime.stop().await.unwrap().state, "stopped");
         assert!(runtime.proxy_target().is_err());
+        let output = fs::read_to_string(control.join("logs/current.log")).unwrap();
+        assert!(!output.contains(&token));
+        assert!(!output.contains(&identity_nonce));
+        assert!(!output.contains("artificial-secret-for-log-test"));
+        assert!(output.contains("control-token=*** identity-nonce=***"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn large_stderr_keeps_runtime_alive_and_rotates_private_redacted_logs() {
+        use std::os::unix::fs::PermissionsExt;
+        let (fixture, config) = protocol_fixture("verbose-stderr");
+        let control = config.control_directory.clone();
+        let mut next = RuntimeLaunchConfig {
+            node_path: config.node_path.clone(),
+            expected_node_sha256: config.expected_node_sha256.clone(),
+            entry_path: config.entry_path.clone(),
+            working_directory: config.working_directory.clone(),
+            trial_root: control.join("node-runtime-trial-next"),
+            business_env: BTreeMap::new(),
+            control_directory: control.clone(),
+            redaction_values: config.redaction_values.clone(),
+        };
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        // The fixture handles ping only after more than 1 MiB of stderr.
+        runtime.ping().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let bytes = fs::read(control.join("logs/current.log")).unwrap();
+                if bytes
+                    .windows(b"newest-diagnostic".len())
+                    .any(|w| w == b"newest-diagnostic")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let status = runtime.status().unwrap();
+        assert_eq!(status.state, "running");
+        assert!(status.stderr_bytes_received > 1024 * 1024);
+        assert!(status.log_error.is_none());
+        runtime
+            .stop_with_reason(RuntimeStopReason::Restart)
+            .await
+            .unwrap();
+        let previous = fs::read_to_string(control.join("logs/current.log")).unwrap();
+        assert!(previous.len() <= crate::node_runtime_log::LOG_LIMIT);
+        assert!(!previous.contains("artificial-secret-for-log-test"));
+        assert!(previous.contains("***"));
+        assert!(previous.contains("\"reason\":\"restart\""));
+        assert!(previous.contains("\"exitCode\":0"));
+        assert_eq!(previous.matches("\"platformEvent\":\"exited\"").count(), 1);
+        assert_eq!(
+            fs::metadata(control.join("logs"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(control.join("logs/current.log"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        fs::create_dir(&next.trial_root).unwrap();
+        // Read-only preflight must not rotate the completed run.
+        let data = control.join("preflight-data");
+        let cache = control.join("preflight-cache");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&cache).unwrap();
+        NodeRuntimeTrial::preflight(&next, &data, &cache)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(control.join("logs/current.log")).unwrap(),
+            previous
+        );
+        next.business_env.insert("TRIAL_BEHAVIOR".into(), "".into());
+        let mut restarted = NodeRuntimeTrial::launch(next).await.unwrap();
+        assert_eq!(
+            fs::read_to_string(control.join("logs/previous.log")).unwrap(),
+            previous
+        );
+        assert_eq!(
+            fs::metadata(control.join("logs/previous.log"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        restarted.stop().await.unwrap();
+        drop(fixture);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn runtime_log_failure_is_reported_while_stderr_is_still_drained() {
+        let (_fixture, config) = protocol_fixture("verbose-stderr");
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        {
+            // A real failing file descriptor (read-only), without a disk-full
+            // requirement or touching any user files.
+            let path = runtime.status.run_directory.join("read-only-log-fixture");
+            fs::write(&path, b"read only").unwrap();
+            runtime
+                .log
+                .fixture_replace_file(fs::File::open(path).unwrap());
+            runtime.log.line(b"artificial write failure\n");
+        }
+        runtime.ping().await.unwrap();
+        assert_eq!(runtime.status().unwrap().state, "running");
+        assert!(runtime.status().unwrap().log_error.is_some());
+        assert!(runtime.stop().await.unwrap().process_group_exited);
     }
 
     #[cfg(target_os = "macos")]
@@ -1458,6 +1707,8 @@ server.shutdown(); server.server_close()
             working_directory: config.working_directory.clone(),
             business_env: config.business_env.clone(),
             trial_root: second_root,
+            control_directory: config.control_directory.clone(),
+            redaction_values: config.redaction_values.clone(),
         };
         let mut first = NodeRuntimeTrial::launch_with_storage(config, data.clone(), cache.clone())
             .await
@@ -1649,6 +1900,7 @@ server.shutdown(); server.server_close()
     #[tokio::test]
     async fn lost_control_channel_closes_the_existing_instance() {
         let (_fixture, config) = protocol_fixture("close-on-ping");
+        let control = config.control_directory.clone();
         let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
         assert_eq!(
             runtime.ping().await.unwrap_err().code,
@@ -1658,6 +1910,9 @@ server.shutdown(); server.server_close()
         let stopped = runtime.stop().await.unwrap();
         assert_eq!(stopped.state, "failed");
         assert!(!group_exists(stopped.pid));
+        let log = fs::read_to_string(control.join("logs/current.log")).unwrap();
+        assert!(log.contains("control-protocol-failed"));
+        assert!(log.contains("\"signal\":15") || log.contains("\"signal\":9"));
     }
 
     #[cfg(target_os = "macos")]
@@ -1711,8 +1966,32 @@ server.shutdown(); server.server_close()
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
+    async fn descendant_cleanup_logs_reason_after_leader_already_exited() {
+        let (_fixture, config) = protocol_fixture("exit-with-descendants");
+        let control = config.control_directory.clone();
+        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        runtime.ping().await.unwrap();
+        assert!(
+            wait_for_owned_exit(&runtime.ownership, Duration::from_secs(2))
+                .await
+                .unwrap()
+        );
+        runtime.status().unwrap();
+        let stopped = runtime
+            .stop_with_reason(RuntimeStopReason::HealthCheckFailed)
+            .await
+            .unwrap();
+        assert!(stopped.forced && stopped.process_group_exited);
+        let output = fs::read_to_string(control.join("logs/current.log")).unwrap();
+        assert!(output.contains("health-check-failed"));
+        assert_eq!(output.matches("\"platformEvent\":\"exited\"").count(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
     async fn exited_leader_stays_owned_across_repeated_status_and_delayed_drop() {
         let (_fixture, config) = protocol_fixture("exit-after-pong");
+        let control = config.control_directory.clone();
         let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
         runtime.ping().await.unwrap();
         assert!(
@@ -1742,6 +2021,9 @@ server.shutdown(); server.server_close()
         .unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(owner.signals_sent.load(Ordering::Relaxed), signals);
+        let output = fs::read_to_string(control.join("logs/current.log")).unwrap();
+        assert!(!output.contains("runtime-owner-dropped"));
+        assert_eq!(output.matches("\"platformEvent\":\"exited\"").count(), 1);
     }
 
     #[cfg(target_os = "macos")]

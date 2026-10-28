@@ -100,8 +100,14 @@ test('Process diagnostics retain useful errors beyond the issue limit and bound 
 test('Update and external-start requests use the matching next action without performing a Git rollback', () => {
   const update = buildProjectAiPrompt({ mode: 'update-failed', sourceKind: 'managed', sourcePath: '/disposable/author' });
   const external = buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local', sourcePath: '/disposable/author' });
-  assert.match(update, /不要直接编辑平台准备的运行程序/); assert.match(update, /构建并更新/);
-  assert.match(external, /不得覆盖未保存改动/); assert.match(external, /提醒用户重新打开应用/);
+  assert.match(update, /不要直接编辑平台准备的运行程序/); assert.match(update, /应用修改/); assert.doesNotMatch(update, /构建并更新|Codex/);
+  assert.match(external, /保留已有未提交改动/); assert.match(external, /提醒用户重新打开应用/);
+});
+
+test('Runtime problem prompts include real log paths, Git recovery and the stdout protocol limit', () => {
+  const prompt = buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local', sourcePath: '/disposable/author', runtimeLogPaths: { current: '/disposable/control/logs/current.log', previous: '/disposable/control/logs/previous.log' } });
+  for (const expected of ['/disposable/control/logs/current.log', '/disposable/control/logs/previous.log', '修改前先用 Git 保存当前版本', '用户要求回退时，用 Git 恢复到之前的版本', 'stdout 只能输出平台控制协议消息', 'console.error', '协议错误并终止应用']) assert.ok(prompt.includes(expected), expected);
+  assert.doesNotMatch(prompt, /Codex|构建并更新/);
 });
 
 test('Review excerpts reject secret/data paths, escaped paths, duplicates and oversized content', () => {
@@ -179,6 +185,17 @@ test('Only a verified installed Codex exposes the draft action and opening it ne
   assert.deepEqual(fixture.calls.find(([name]) => name === 'source_review_open_codex')[1], { sourcePath: '/disposable/author' });
   assert.match(document.body.textContent, /未发送草稿/);
   assert.equal(fixture.calls.some(([name]) => /send|message/.test(name)), false);
+});
+
+test('Node detail failure help suppresses Codex capability checks and actions', async () => {
+  const fixture = await setup({ mode: 'start-failed', sourceKind: 'managed', sourcePath: '/disposable/author' }, { source_review_capabilities: () => ({ codexAvailable: true }) });
+  await fixture.render({ allowCodex: false });
+  await click(button('复制说明给 AI'));
+  assert.equal(button('在 Codex 中打开草稿'), undefined);
+  assert.equal(fixture.calls.some(([name]) => name === 'source_review_capabilities'), false);
+  assert.equal(fixture.calls.some(([name]) => name === 'source_review_open_codex'), false);
+  assert.equal(fixture.copies.length, 1);
+  assert.match(fixture.copies[0], /应用修改/);
 });
 
 test('Clipboard failure retains a full selectable explanation without pretending it was copied', async () => {

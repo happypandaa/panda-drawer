@@ -6,7 +6,7 @@ use crate::{
     node_app_install::{self, InstallTargetSnapshot, ManagedNodeRegistration},
     node_app_manifest::{TrialManifest, TrialRuntime},
     node_app_proxy::NodeAppProxy,
-    node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, TrialStatus},
+    node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, RuntimeStopReason, TrialStatus},
     ApiError,
 };
 use serde::{Deserialize, Serialize};
@@ -409,7 +409,9 @@ impl NodeApps {
             self.load_source(&record.source_path)?
         };
         if digest_manifest(&record.source_path)? != record.manifest_digest {
-            return Err(fail("应用说明已更改，请从开发工具构建并更新后再打开。"));
+            return Err(fail(
+                "应用说明已更改，当前登记无法核对。请让 AI 检查并恢复已登记的说明后再进入项目。",
+            ));
         }
         Ok(manifest)
     }
@@ -1022,6 +1024,8 @@ impl NodeApps {
                 working_directory: cwd,
                 trial_root,
                 business_env: snapshot.environment,
+                control_directory: slot.clone(),
+                redaction_values: snapshot.redaction_values,
             };
             let entry = Arc::new(RuntimeEntry::new(
                 snapshot.revision,
@@ -1069,7 +1073,14 @@ impl NodeApps {
         if result.is_err() {
             // Failed first open must not leave a windowless backend. A reused
             // entry returned above and is never stopped by this rollback.
-            let _ = self.stop_entry(id, &entry, &mut resources).await;
+            let _ = self
+                .stop_entry(
+                    id,
+                    &entry,
+                    &mut resources,
+                    RuntimeStopReason::StartupRollback,
+                )
+                .await;
         }
         result
     }
@@ -1194,7 +1205,10 @@ impl NodeApps {
             })
         };
         if let Err(error) = binding {
-            let stopped = self.stop_entry(id, entry, resources).await.is_ok();
+            let stopped = self
+                .stop_entry(id, entry, resources, RuntimeStopReason::StartupRollback)
+                .await
+                .is_ok();
             return Err(ApiError::new(
                 "NODE_APP_RUN_IDENTITY_UNCONFIRMED",
                 "应用运行身份未能完整保存，本次启动已停止或保留收尾句柄，不能报告启动成功。",
@@ -1206,7 +1220,9 @@ impl NodeApps {
         let (port, token) = match target {
             Ok(target) => target,
             Err(error) => {
-                let _ = self.stop_entry(id, entry, resources).await;
+                let _ = self
+                    .stop_entry(id, entry, resources, RuntimeStopReason::StartupRollback)
+                    .await;
                 return Err(error);
             }
         };
@@ -1221,7 +1237,10 @@ impl NodeApps {
             Ok(proxy) => resources.as_mut().unwrap().proxy = Some(proxy),
             Err(failure) => {
                 resources.as_mut().unwrap().proxy = Some(failure.proxy);
-                let cleanup = self.stop_entry(id, entry, resources).await.err();
+                let cleanup = self
+                    .stop_entry(id, entry, resources, RuntimeStopReason::StartupRollback)
+                    .await
+                    .err();
                 let mut error = failure.error;
                 if let Some(cleanup) = cleanup {
                     error = error
@@ -1235,7 +1254,10 @@ impl NodeApps {
         Ok(())
     }
 
-    async fn stop_resources(running: &mut Running) -> (Result<()>, Result<TrialStatus>) {
+    async fn stop_resources(
+        running: &mut Running,
+        reason: RuntimeStopReason,
+    ) -> (Result<()>, Result<TrialStatus>) {
         let Running { runtime, proxy } = running;
         if let Some(proxy) = proxy.as_ref() {
             proxy.request_stop();
@@ -1247,17 +1269,17 @@ impl NodeApps {
                     None => Ok(()),
                 }
             },
-            runtime.stop()
+            runtime.stop_with_reason(reason)
         )
     }
 
     /// Caller owns this instance's runtime-operation guard. No global lock is
     /// held while waiting for its original resource owner or orphan stop.
-    async fn stop_admitted(&self, id: &str) -> Result<()> {
+    async fn stop_admitted(&self, id: &str, reason: RuntimeStopReason) -> Result<()> {
         let entry = self.inner.lock().await.running.get(id).cloned();
         if let Some(entry) = entry {
             let mut resources = entry.resources.lock().await;
-            return self.stop_entry(id, &entry, &mut resources).await;
+            return self.stop_entry(id, &entry, &mut resources, reason).await;
         }
         let result =
             run_marker::inspect(&self.root.join(id), id, run_marker::boot_time_or_unknown())
@@ -1277,12 +1299,13 @@ impl NodeApps {
         id: &str,
         entry: &Arc<RuntimeEntry>,
         resources: &mut Option<Running>,
+        reason: RuntimeStopReason,
     ) -> Result<()> {
         entry.set_phase(RUNTIME_STOPPING);
         let _phase = RuntimePhaseGuard(entry.clone());
         let result = match resources {
             Some(running) => {
-                let (proxy, process) = Self::stop_resources(running).await;
+                let (proxy, process) = Self::stop_resources(running, reason).await;
                 let mut inner = self.inner.lock().await;
                 self.finish_stop(id, entry, &mut inner, proxy, process)
             }
@@ -1381,11 +1404,20 @@ impl NodeApps {
 
     /// Closing is always admitted, including after the deletion gate seals.
     pub async fn stop_runtime(&self, id: &str) -> Result<()> {
+        self.stop_runtime_with_reason(id, RuntimeStopReason::UserRequest)
+            .await
+    }
+
+    pub async fn stop_runtime_with_reason(
+        &self,
+        id: &str,
+        reason: RuntimeStopReason,
+    ) -> Result<()> {
         let apps = self.clone();
         let id = id.to_owned();
         tokio::spawn(async move {
             let _operation = apps.runtime_operation(&id)?.lock_owned().await;
-            apps.stop_admitted(&id).await
+            apps.stop_admitted(&id, reason).await
         })
         .await
         .map_err(|_| fail("应用停止任务异常结束，已保留运行记录供核对。"))?
@@ -1412,7 +1444,7 @@ impl NodeApps {
         tokio::spawn(async move {
             let _permit = permit;
             let _operation = apps.runtime_operation(&id)?.lock_owned().await;
-            apps.stop_admitted(&id).await?;
+            apps.stop_admitted(&id, RuntimeStopReason::Restart).await?;
             apps.start_admitted(&id).await
         })
         .await
@@ -1441,12 +1473,32 @@ impl NodeApps {
             let mut resources = entry.resources.lock().await;
             let healthy = match resources.as_mut() {
                 Some(run) => {
-                    run.runtime.status().is_ok_and(|s| s.state == "running")
+                    let status = run.runtime.status();
+                    if let Ok(status) = &status {
+                        if let Some(error) = &status.log_error {
+                            self.inner
+                                .lock()
+                                .await
+                                .errors
+                                .insert(id.clone(), error.clone());
+                        }
+                    }
+                    status.is_ok_and(|s| s.state == "running")
                         && run.runtime.verify_health().await.is_ok()
                 }
                 None => false,
             };
-            if !healthy && self.stop_entry(&id, &entry, &mut resources).await.is_ok() {
+            if !healthy
+                && self
+                    .stop_entry(
+                        &id,
+                        &entry,
+                        &mut resources,
+                        RuntimeStopReason::HealthCheckFailed,
+                    )
+                    .await
+                    .is_ok()
+            {
                 self.inner.lock().await.errors.insert(
                     id,
                     "应用运行状态异常，已关闭页面入口并确认后台进程已停止。".into(),
@@ -1514,8 +1566,11 @@ impl NodeApps {
                 .lock()
                 .map_err(|_| fail("目录初始化锁不可用。"))?;
         }
-        let results =
-            futures_util::future::join_all(ids.iter().map(|id| self.stop_runtime(id))).await;
+        let results = futures_util::future::join_all(
+            ids.iter()
+                .map(|id| self.stop_runtime_with_reason(id, RuntimeStopReason::PlatformExit)),
+        )
+        .await;
         results.into_iter().collect::<Result<Vec<_>>>()?;
         self.wait_deletion_workers().await
     }

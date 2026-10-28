@@ -72,7 +72,7 @@ print(json.dumps({'protocolVersion':1,'type':'ready','instanceId':ready_instance
 def graceful_term(*args):
     print(json.dumps({'protocolVersion':1,'type':'stopping','instanceId':instance}),flush=True)
     server.shutdown();server.server_close();sys.exit(0)
-if os.environ['TRIAL_BEHAVIOR'] == 'log-budget-graceful': signal.signal(signal.SIGTERM,graceful_term)
+if os.environ['TRIAL_BEHAVIOR'] == 'protocol-failure-graceful': signal.signal(signal.SIGTERM,graceful_term)
 for line in sys.stdin:
     command = json.loads(line)
     if command['type'] == 'shutdown':
@@ -84,7 +84,11 @@ for line in sys.stdin:
         break
     if command['type'] == 'ping':
         print(json.dumps({'protocolVersion':1,'type':'pong','instanceId':instance,'requestId':command['requestId']}),flush=True)
-        if os.environ['TRIAL_BEHAVIOR'] == 'log-budget-graceful': print('x'*65537,file=sys.stderr,flush=True)
+        if os.environ['TRIAL_BEHAVIOR'] == 'protocol-failure-graceful':
+            # Preserve a delivered stopping acknowledgement before deliberately
+            # violating stdout. The control reader ends at the invalid line.
+            print(json.dumps({'protocolVersion':1,'type':'stopping','instanceId':instance}),flush=True)
+            print('artificial ordinary log on protocol stdout',flush=True)
 server.shutdown(); server.server_close()
 "#).unwrap();
         let node = root.join("artificial-node-interpreter");
@@ -431,7 +435,7 @@ async fn unconfirmed_ownership_retains_cleanup_handle_and_blocks_a_second_instan
 
 #[tokio::test]
 async fn control_failure_with_closed_group_and_io_does_not_preserve_a_running_marker() {
-    let fixture = Fixture::new("log-budget-graceful");
+    let fixture = Fixture::new("protocol-failure-graceful");
     let registered = fixture
         .manager
         .register(fixture.source.clone())

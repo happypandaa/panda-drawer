@@ -47,6 +47,7 @@ fn local_save_reload_launch_and_private_permissions_without_secret_echo() {
     let snapshot = reopened.launch_snapshot(&manifest()).unwrap();
     assert_eq!(snapshot.revision, 1);
     assert_eq!(snapshot.environment["API_KEY"], credential);
+    assert_eq!(snapshot.redaction_values, [credential]);
     assert_eq!(snapshot.environment["COUNT"], "0");
     assert_eq!(snapshot.environment["ENABLED"], "false");
 }

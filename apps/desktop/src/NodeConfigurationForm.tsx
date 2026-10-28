@@ -15,7 +15,7 @@ function hasHelp(field: NodeConfigurationField) {
   return Boolean(field.description.trim() || field.howToGet.some((step) => step.trim()) || field.helpUrl || field.default !== undefined);
 }
 
-export function NodeConfigurationForm({ app, draft, active, disabled, dirty, saving, onOrdinaryChange, onSecretChange, onSave, onReload, onOpenHelp }: {
+export function NodeConfigurationForm({ app, draft, active, disabled, dirty, saving, onOrdinaryChange, onSecretChange, onSave, savedNotice, onRestart, restartDisabled, onOpenHelp }: {
   app: NodeAppDetail;
   draft: NodeConfigurationDraft;
   active: boolean;
@@ -25,7 +25,9 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
   onOrdinaryChange: (name: string, value: string) => void;
   onSecretChange: (name: string, edit: NodeConfigurationDraft['secrets'][string]) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
-  onReload: () => void;
+  savedNotice?: string;
+  onRestart?: () => void;
+  restartDisabled?: boolean;
   onOpenHelp: (name: string) => void;
 }) {
   const base = useId();
@@ -119,7 +121,7 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
         </div>;
       })}
       {!app.fields.length && <p className="project-help">此应用无需配置。</p>}
-      <div className="node-config-save"><span role="status">{dirty ? '有未保存的修改' : '已保存'}</span><div><button className="refresh-button" type="button" disabled={disabled} onClick={onReload}>重新读取配置</button><button className="primary-button" type="submit" disabled={disabled || !dirty}><Save size={15} />{saving ? '保存中…' : '保存配置'}</button></div></div>
+      <div className="node-config-save"><span role="status">{dirty ? '有未保存的修改' : savedNotice ?? '已保存'}</span><div>{onRestart && <button className="refresh-button" type="button" disabled={disabled || restartDisabled} onClick={onRestart}>立即重启</button>}<button className="primary-button" type="submit" disabled={disabled || !dirty}><Save size={15} />{saving ? '保存中…' : '保存配置'}</button></div></div>
     </form>
     {active && help?.kind === 'general' && <Modal title="配置与密钥说明" className="node-field-help-modal" onClose={() => setHelp(null)}>
       <div className="node-field-help"><p>留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。</p><p>每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。</p><p>保存配置不会自动启动或重启应用。</p></div>

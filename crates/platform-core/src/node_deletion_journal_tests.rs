@@ -30,7 +30,7 @@ impl Fixture {
         let app_id = Uuid::new_v4().to_string();
         let slot = root.join("node-apps").join(&app_id);
         fs::create_dir_all(&slot).unwrap();
-        for name in ["configuration", "data", "cache", "runs"] {
+        for name in ["configuration", "data", "cache", "logs", "runs"] {
             fs::create_dir(slot.join(name)).unwrap();
             fs::write(
                 slot.join(name).join("sentinel"),
@@ -147,8 +147,8 @@ fn all_managed_targets_stage_and_remove_separately_and_keep_registration_and_run
     assert_eq!(journal.snapshot()["renamedAny"], true);
     assert!(!journal.can_abandon().unwrap());
     assert!(journal.abandon().is_err());
-    assert_eq!(journal.snapshot()["remaining"].as_array().unwrap().len(), 4);
-    for name in ["configuration", "data", "cache", "generations"] {
+    assert_eq!(journal.snapshot()["remaining"].as_array().unwrap().len(), 5);
+    for name in ["configuration", "data", "cache", "logs", "generations"] {
         assert!(!fixture.slot.join(name).exists());
     }
     fixture.assert_preserved();
@@ -163,6 +163,54 @@ fn all_managed_targets_stage_and_remove_separately_and_keep_registration_and_run
     let loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
     assert!(loaded.is_terminal());
     assert_eq!(loaded.phase(), "deleted");
+    fixture.assert_preserved();
+}
+
+#[test]
+fn version_one_deletions_resume_with_their_original_reviewed_targets() {
+    for managed in [false, true] {
+        let fixture = Fixture::new(managed);
+        // The old format predates runtime logs; model its original filesystem
+        // and target list rather than widening a persisted deletion on upgrade.
+        fs::remove_dir_all(fixture.slot.join("logs")).unwrap();
+        let mut journal = fixture.journal(managed);
+        journal.record.version = 1;
+        journal
+            .record
+            .targets
+            .retain(|target| target.name != "logs");
+        journal.persist().unwrap();
+        journal.stage_next().unwrap();
+        let task_id = journal.task_id().to_owned();
+        drop(journal);
+
+        let mut loaded = NodeDeletionJournal::load(&fixture.root, &task_id).unwrap();
+        assert_eq!(loaded.record.version, 1);
+        assert_eq!(loaded.record.targets.len(), if managed { 4 } else { 3 });
+        loaded.stage_all().unwrap();
+        loaded.remove_staged_all().unwrap();
+        loaded.mark_completed().unwrap();
+        assert!(NodeDeletionJournal::load(&fixture.root, &task_id)
+            .unwrap()
+            .is_terminal());
+        fixture.assert_preserved();
+    }
+}
+
+#[test]
+fn version_two_deletion_cannot_omit_the_runtime_logs_target() {
+    let fixture = Fixture::new(false);
+    let mut journal = fixture.journal(false);
+    assert_eq!(journal.record.version, 2);
+    journal
+        .record
+        .targets
+        .retain(|target| target.name != "logs");
+    assert_eq!(
+        journal.validate().unwrap_err().code,
+        "NODE_DELETION_JOURNAL_UNCONFIRMED"
+    );
+    assert!(fixture.slot.join("logs/sentinel").is_file());
     fixture.assert_preserved();
 }
 
@@ -432,18 +480,17 @@ fn tampered_ranges_and_replaced_record_are_rejected_without_deleting_any_source(
 #[test]
 fn source_symlinks_are_never_followed_and_external_source_is_not_a_target() {
     use std::os::unix::fs::symlink;
-    let fixture = Fixture::new(false);
-    fs::rename(
-        fixture.slot.join("data"),
-        fixture.slot.join("retained-data"),
-    )
-    .unwrap();
-    symlink(&fixture.source, fixture.slot.join("data")).unwrap();
-    let metadata = json!({"appId":fixture.app_id,"name":"Disposable symlink test","ownership":"external","sourcePath":fixture.source,"expectedRegistrationRevision":"b".repeat(64),"preservedPaths":[fixture.source]});
-    assert!(NodeDeletionJournal::create(&fixture.root, metadata).is_err());
-    assert!(NodeDeletionJournal::list(&fixture.root).unwrap().is_empty());
-    assert!(fixture.slot.join("retained-data/sentinel").is_file());
-    fixture.assert_preserved();
+    for name in ["data", "logs"] {
+        let fixture = Fixture::new(false);
+        let retained = fixture.slot.join(format!("retained-{name}"));
+        fs::rename(fixture.slot.join(name), &retained).unwrap();
+        symlink(&fixture.source, fixture.slot.join(name)).unwrap();
+        let metadata = json!({"appId":fixture.app_id,"name":"Disposable symlink test","ownership":"external","sourcePath":fixture.source,"expectedRegistrationRevision":"b".repeat(64),"preservedPaths":[fixture.source]});
+        assert!(NodeDeletionJournal::create(&fixture.root, metadata).is_err());
+        assert!(NodeDeletionJournal::list(&fixture.root).unwrap().is_empty());
+        assert!(retained.join("sentinel").is_file());
+        fixture.assert_preserved();
+    }
 }
 
 #[test]

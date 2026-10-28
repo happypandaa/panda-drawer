@@ -269,9 +269,13 @@ pub fn node_layout(source: &Path, slot: &Path, manifest: Option<&TrialManifest>)
     let data = slot
         .as_ref()
         .and_then(|slot| checked_boundary(slot.join("data"), true, &mut issues));
-    let configuration = slot
-        .as_ref()
-        .and_then(|slot| checked_boundary(slot.join("configuration"), true, &mut issues));
+    let configuration = slot.as_ref().and_then(|slot| {
+        checked_boundary(
+            slot.join("configuration/configuration.json"),
+            false,
+            &mut issues,
+        )
+    });
     json!({
         "kind":"local-node-source",
         "source":source_description(source.as_deref(), false),
@@ -468,7 +472,7 @@ mod tests {
         assert_eq!(layout["runtime"]["external"], true);
         assert_eq!(
             layout["configurationPath"],
-            json!(slot.join("configuration"))
+            json!(slot.join("configuration/configuration.json"))
         );
         assert_eq!(layout["data"]["root"], json!(slot.join("data")));
         assert!(layout["data"]["database"].is_null());

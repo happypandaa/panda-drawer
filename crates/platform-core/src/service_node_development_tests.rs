@@ -208,6 +208,14 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
         .as_str()
         .unwrap()
         .contains("直接运行此文件夹"));
+    assert!(external_handoff["text"]
+        .as_str()
+        .unwrap()
+        .contains(slot.join("logs/current.log").to_string_lossy().as_ref()));
+    assert!(external_handoff["text"]
+        .as_str()
+        .unwrap()
+        .contains("stdout 只能输出平台控制协议消息"));
     let installed = build_install(&handle, apps.clone(), id).await;
     assert_eq!(installed["appId"], id);
     let detail = apps.configuration(id).await.unwrap();
@@ -232,7 +240,13 @@ async fn pinned_tools_single_repository_build_update_and_runtime_roundtrip() {
     let binding = handle.node_development_info(&apps, id).await.unwrap();
     assert_eq!(binding["sourceRoot"], json!(source));
     assert_eq!(binding["runtimeIsSource"], false);
-    handle.node_development_handoff(&apps, id).await.unwrap();
+    let managed_handoff = handle.node_development_handoff(&apps, id).await.unwrap();
+    let text = managed_handoff["text"].as_str().unwrap();
+    assert!(text.contains("点击“应用修改”"));
+    assert!(text.contains(slot.join("logs/current.log").to_string_lossy().as_ref()));
+    assert!(text.contains(slot.join("logs/previous.log").to_string_lossy().as_ref()));
+    assert!(!text.contains("Codex"));
+    assert!(!text.contains("构建并更新"));
     assert_eq!(apps.start(id).await.unwrap()["state"], "running");
     assert_eq!(apps.stop(id).await.unwrap()["state"], "stopped");
     fs::write(

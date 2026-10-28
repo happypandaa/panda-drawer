@@ -10,11 +10,12 @@ export type { ProjectAiHelpContext } from './project-ai-help';
 
 let clipboardQueue = Promise.resolve();
 
-export function AiProjectHelp({ context, label, disabled = false, className = 'text-button' }: {
+export function AiProjectHelp({ context, label, disabled = false, className = 'text-button', allowCodex = true }: {
   context: ProjectAiHelpContext;
   label?: string;
   disabled?: boolean;
   className?: string;
+  allowCodex?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(context.sourcePath ?? context.url ?? '');
@@ -65,13 +66,13 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   }, [signature]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !allowCodex) return;
     let cancelled = false;
     void invoke<{ codexAvailable: boolean }>('source_review_capabilities').then(value => {
       if (!cancelled && alive.current && latest.current.signature === signature) setCodexAvailable(value?.codexAvailable === true);
     }).catch(() => { /* Unavailable capability checks never imply an installed app. */ });
     return () => { cancelled = true; };
-  }, [open, signature]);
+  }, [open, signature, allowCodex]);
 
   useEffect(() => {
     const request = ++readSequence.current;
@@ -138,7 +139,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     });
   }
   function openCodex() {
-    if (!sourcePath || !codexAvailable || reading) return;
+    if (!allowCodex || !sourcePath || !codexAvailable || reading) return;
     void run('codex', async current => {
       const copied = await copy(text, current).catch(() => false);
       if (!current()) return;
@@ -178,7 +179,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
           {excerpt && <><ul className="project-ai-file-list">{excerpt.files.map(file => <li key={file.path}><label><input type="checkbox" checked={selectedFiles.includes(file.path)} disabled={locked} onChange={event => setSelectedFiles(value => event.target.checked ? [...value, file.path] : value.filter(path => path !== file.path))} /><code>{file.path}</code></label></li>)}</ul><p className="project-help">已选择 {selectedFiles.length} 份摘录。{excerpt.truncated ? '部分内容因大小限制未附带。' : ''}摘录不代表完整工程；源文件也可能写有私人内容，请先预览。</p></>}
           <p className="project-help">不要发送整个项目、真实 .env、数据库、上传文件或账号信息。</p>
         </section>}
-        <div className="confirmation-actions"><button type="button" className="primary-button" disabled={locked || reading} onClick={copyPrompt}><Copy size={15} />{pending === 'copy' ? '正在复制…' : evaluation ? '复制评估说明' : '复制完整说明'}</button><button type="button" className="refresh-button" disabled={locked} onClick={() => setPreview(value => !value)}>{preview ? '收起全文' : '预览全文'}</button>{sourcePath && codexAvailable && <button type="button" className="refresh-button" disabled={locked || reading} onClick={openCodex}><ExternalLink size={15} />在 Codex 中打开草稿</button>}</div>
+        <div className="confirmation-actions"><button type="button" className="primary-button" disabled={locked || reading} onClick={copyPrompt}><Copy size={15} />{pending === 'copy' ? '正在复制…' : evaluation ? '复制评估说明' : '复制完整说明'}</button><button type="button" className="refresh-button" disabled={locked} onClick={() => setPreview(value => !value)}>{preview ? '收起全文' : '预览全文'}</button>{allowCodex && sourcePath && codexAvailable && <button type="button" className="refresh-button" disabled={locked || reading} onClick={openCodex}><ExternalLink size={15} />在 Codex 中打开草稿</button>}</div>
         {notice && <p className="workspace-inline-notice" role="status">{notice}</p>}
         {error && <p className="task-error" role="alert">{error}</p>}
         {preview && <div className="project-ai-preview"><label htmlFor={`${id}-prompt`}>给 AI 的完整说明</label><textarea ref={promptField} id={`${id}-prompt`} readOnly rows={12} value={text} onFocus={event => event.currentTarget.select()} /><button type="button" className="text-button" onClick={() => { promptField.current?.focus(); promptField.current?.select(); }}>选择完整说明</button></div>}

@@ -117,11 +117,11 @@ impl NodeDevelopmentSourceLease<'_> {
     pub fn registration_digest(&self) -> &str {
         &self.registration_digest
     }
+    pub fn control_path(&self) -> PathBuf {
+        self.apps.root.join(&self.source.app_id)
+    }
     pub fn source_restore_control_path(&self) -> PathBuf {
-        self.apps
-            .root
-            .join(&self.source.app_id)
-            .join("source-restore.json")
+        self.control_path().join("source-restore.json")
     }
     pub fn validate(&self) -> Result<()> {
         self.apps.require_not_removing(&self.source.app_id)?;
@@ -405,7 +405,7 @@ impl NodeApps {
         let record = self.registration(id)?;
         if record.managed.is_none() && source != record.source_path {
             return Err(fail(
-                "此应用的源码目录已由原登记确定，请先构建并更新运行副本。",
+                "此应用直接运行原登记目录，不能更换源码目录。请在原项目文件夹中修改。",
             ));
         }
         let runtime_manifest = self.manifest(&record)?;

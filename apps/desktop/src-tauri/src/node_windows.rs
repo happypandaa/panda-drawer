@@ -2,6 +2,7 @@
 //! can create it; closing the container revokes its page and stops its backend.
 use super::{ApiError, AppState};
 use platform_core::app_windows::{AppWindowConfig, WindowIdentity, MIN_HEIGHT, MIN_WIDTH};
+use platform_core::node_runtime_trial::RuntimeStopReason;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -314,11 +315,17 @@ pub(super) async fn open(
     }
     let detail = state.node_apps.start(id).await?;
     if let Err(error) = alive(state) {
-        let _ = state.node_apps.stop_runtime(id).await;
+        let _ = state
+            .node_apps
+            .stop_runtime_with_reason(id, RuntimeStopReason::StartupRollback)
+            .await;
         return Err(error);
     }
     if let Err(error) = state.node_apps.admit_operation(id, "创建应用窗口") {
-        let _ = state.node_apps.stop_runtime(id).await;
+        let _ = state
+            .node_apps
+            .stop_runtime_with_reason(id, RuntimeStopReason::StartupRollback)
+            .await;
         return Err(error);
     }
     let opened = build(app, state, id, &detail, _admission.clone()).await;
@@ -326,7 +333,10 @@ pub(super) async fn open(
         if let Some(current) = session(state, id) {
             phase(&current, Phase::Failed, None);
         }
-        let cleanup = state.node_apps.stop_runtime(id).await;
+        let cleanup = state
+            .node_apps
+            .stop_runtime_with_reason(id, RuntimeStopReason::StartupRollback)
+            .await;
         return Err(if cleanup.is_err() {
             error("窗口未能打开，服务关闭状态需要核对。请在平台查看运行状态，不要重复启动。")
         } else {
@@ -538,7 +548,17 @@ async fn teardown_locked(
     if let Some(deletion) = deletion {
         deletion.set_phase("stopping");
     }
-    let stopped = state.node_apps.stop_runtime(id).await;
+    let stopped = state
+        .node_apps
+        .stop_runtime_with_reason(
+            id,
+            if deletion.is_some() {
+                RuntimeStopReason::Deletion
+            } else {
+                RuntimeStopReason::WindowClosed
+            },
+        )
+        .await;
     if let Some(issue) = window_issue {
         return Err(issue);
     }
@@ -588,7 +608,10 @@ pub(super) async fn restart(
     phase(&current, Phase::Restarting, None);
     let _ = window.set_title("应用 · 正在重启");
     if let Err(error) = blank(&window).await {
-        let _ = state.node_apps.stop_runtime(id).await;
+        let _ = state
+            .node_apps
+            .stop_runtime_with_reason(id, RuntimeStopReason::Restart)
+            .await;
         if !closing(&current) {
             phase(&current, Phase::Failed, None);
             let _ = window.destroy();
@@ -599,7 +622,10 @@ pub(super) async fn restart(
         return Err(error("应用正在关闭，已取消重启。"));
     }
     let result = async {
-        state.node_apps.stop_runtime(id).await?;
+        state
+            .node_apps
+            .stop_runtime_with_reason(id, RuntimeStopReason::Restart)
+            .await?;
         if !state.node_windows.restart_allowed(id, &current) {
             return Err(error("应用正在关闭，已取消重启。"));
         }
@@ -634,7 +660,10 @@ pub(super) async fn restart(
     }
     .await;
     if result.is_err() {
-        let _ = state.node_apps.stop_runtime(id).await;
+        let _ = state
+            .node_apps
+            .stop_runtime_with_reason(id, RuntimeStopReason::Restart)
+            .await;
         if !closing(&current) {
             phase(&current, Phase::Failed, None);
             let _ = window.destroy();
@@ -712,7 +741,12 @@ fn destroyed_generation(app: &tauri::AppHandle, id: &str, current: &Arc<Mutex<Se
         if !owned(&state, &id, &current) {
             return;
         }
-        if state.node_apps.stop_runtime(&id).await.is_err() {
+        if state
+            .node_apps
+            .stop_runtime_with_reason(&id, RuntimeStopReason::WindowClosed)
+            .await
+            .is_err()
+        {
             return;
         }
         let mut sessions = state

@@ -1,5 +1,7 @@
 # 私有 Node 与 radio 首次受管试验
 
+2026-10-28 最新确认：Node 详情与运行日志规则由[详情精简与运行日志](node-detail-simplification.md)覆盖；下方历史实现／验证按当时版本保留，不代表新行为已验证。
+
 更新日期：2026-10-20
 
 用户已授权开始尝试并允许修改 `/Users/ethan/dev/radio-bob`。本次实现限定为 macOS Apple Silicon 的私有运行时准备、实验清单读取、一次性 Rust 受管进程与 radio 源码适配；不是正式应用安装或平台界面交付。固定开发身份、数据根、既有项目格式和 Windows 运行门禁保持。

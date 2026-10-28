@@ -120,6 +120,7 @@ pub struct ConfigurationView {
 pub struct LaunchConfigurationSnapshot {
     pub revision: u64,
     pub environment: BTreeMap<String, String>,
+    pub redaction_values: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -303,6 +304,7 @@ impl NodeConfigurationStore {
         }
         let fields = checked_fields(manifest)?;
         let mut environment = BTreeMap::new();
+        let mut redaction_values = Vec::new();
         for (name, value) in &view.values {
             environment.insert(name.clone(), environment_value(value)?);
         }
@@ -310,6 +312,7 @@ impl NodeConfigurationStore {
             if let Some(binding) = record.secrets.get(&field.name) {
                 let credential = self.vault.get(self.instance, entry_uuid(binding)?)?;
                 validate_secret(&credential)?;
+                redaction_values.push(credential.clone());
                 environment.insert(field.name.clone(), credential);
             }
         }
@@ -324,6 +327,7 @@ impl NodeConfigurationStore {
         Ok(LaunchConfigurationSnapshot {
             revision: record.revision,
             environment,
+            redaction_values,
         })
     }
 

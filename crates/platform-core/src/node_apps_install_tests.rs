@@ -425,6 +425,13 @@ async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_a
         fs::read(fixture.slot(&installed.app_id).join("registration.json")).unwrap();
     let source = fs::read(fixture.source.join("local-app.json")).unwrap();
     let slot = fixture.slot(id);
+    fs::create_dir(slot.join("logs")).unwrap();
+    fs::write(slot.join("logs/current.log"), b"disposable current output").unwrap();
+    fs::write(
+        slot.join("logs/previous.log"),
+        b"disposable previous output",
+    )
+    .unwrap();
     fs::write(
         slot.join("data/private.sqlite"),
         b"disposable private database",
@@ -442,13 +449,23 @@ async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_a
         .unwrap();
     let preview = fixture.manager.delete_preview(id).await.unwrap();
     assert_eq!(preview["ownership"], "external");
+    assert!(preview["deletePaths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(slot.join("logs"))));
     let result = fixture
         .manager
         .delete(id, delete_input(&fixture.manager, id).await)
         .await
         .unwrap();
     assert_eq!(result["operationOutcome"], "deleted");
-    for relative in ["data", "configuration", "cache", "registration.json"] {
+    for relative in [
+        "data",
+        "configuration",
+        "cache",
+        "logs",
+        "registration.json",
+    ] {
         assert!(!slot.join(relative).exists(), "{relative} was retained");
     }
     assert_eq!(
@@ -485,6 +502,13 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
     let installed = fixture.install().await;
     let id = &installed.app_id;
     let slot = fixture.slot(id);
+    fs::create_dir(slot.join("logs")).unwrap();
+    fs::write(slot.join("logs/current.log"), b"disposable current output").unwrap();
+    fs::write(
+        slot.join("logs/previous.log"),
+        b"disposable previous output",
+    )
+    .unwrap();
     let history = fixture.paths.data_root().join("node-apps/.installations");
     fs::write(
         history.join("retained-recovery.txt"),
@@ -497,10 +521,12 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
     )
     .unwrap();
     let source = fs::read(fixture.source.join("local-app.json")).unwrap();
-    assert_eq!(
-        fixture.manager.delete_preview(id).await.unwrap()["ownership"],
-        "managed"
-    );
+    let preview = fixture.manager.delete_preview(id).await.unwrap();
+    assert_eq!(preview["ownership"], "managed");
+    assert!(preview["deletePaths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(slot.join("logs"))));
     fixture
         .manager
         .delete(id, delete_input(&fixture.manager, id).await)
@@ -509,6 +535,7 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
     assert!(!slot.join("generations").exists());
     assert!(!slot.join("data").exists());
     assert!(!slot.join("configuration").exists());
+    assert!(!slot.join("logs").exists());
     assert_eq!(
         fs::read(history.join("retained-recovery.txt")).unwrap(),
         b"old installation evidence"
@@ -1131,7 +1158,7 @@ async fn external_source_promotes_to_managed_generation_without_moving_author_gi
     assert!(edited_source["lastError"]
         .as_str()
         .unwrap()
-        .contains("构建并更新"));
+        .contains("应用说明已更改"));
     let (target, prepared) = fixture.prepare(Some(id)).await;
     assert_eq!(
         target.external_registration,

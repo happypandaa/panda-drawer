@@ -25,6 +25,7 @@ fn targets(slot: &Path, managed: bool) -> Vec<PathBuf> {
         slot.join("configuration"),
         slot.join("data"),
         slot.join("cache"),
+        slot.join("logs"),
     ];
     if managed {
         result.push(slot.join("generations"));
