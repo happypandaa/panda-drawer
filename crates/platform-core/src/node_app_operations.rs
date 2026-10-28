@@ -3,7 +3,7 @@
 //! take over the same gate in batch two.
 use super::*;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex as SyncMutex,
 };
 use tokio::sync::Notify;
@@ -21,6 +21,7 @@ struct InstanceAdmission {
 #[derive(Default)]
 struct Admission {
     operations: BTreeMap<u64, String>,
+    window_operations: std::collections::BTreeSet<u64>,
     deletion: Option<(u64, String)>,
 }
 
@@ -34,12 +35,14 @@ struct OperationOwner {
 }
 impl Drop for OperationOwner {
     fn drop(&mut self) {
-        self.instance
+        let mut state = self
+            .instance
             .state
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .operations
-            .remove(&self.token);
+            .unwrap_or_else(|p| p.into_inner());
+        state.operations.remove(&self.token);
+        state.window_operations.remove(&self.token);
+        drop(state);
         self.instance.changed.notify_waiters();
     }
 }
@@ -62,6 +65,7 @@ struct DeletionOwner {
     instance: Arc<InstanceAdmission>,
     app_id: String,
     token: u64,
+    abandon_requested: AtomicBool,
 }
 impl Drop for DeletionOwner {
     fn drop(&mut self) {
@@ -82,6 +86,60 @@ impl Drop for DeletionOwner {
     }
 }
 impl NodeDeletionPermit {
+    pub(super) fn request_abandon(&self) {
+        self.0.abandon_requested.store(true, Ordering::Release);
+        self.0.instance.changed.notify_waiters();
+    }
+    pub fn is_abandon_requested(&self) -> bool {
+        self.0.abandon_requested.load(Ordering::Acquire)
+    }
+    pub async fn wait_abandon_requested(&self) {
+        loop {
+            let changed = self.0.instance.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.is_abandon_requested() {
+                return;
+            }
+            changed.await;
+        }
+    }
+    pub async fn wait_window_operations(&self) {
+        loop {
+            let changed = self.0.instance.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self
+                .0
+                .instance
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .window_operations
+                .is_empty()
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+    pub(super) fn release_gate(&self) {
+        let mut state = self
+            .0
+            .instance
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if state
+            .deletion
+            .as_ref()
+            .is_some_and(|(token, _)| *token == self.0.token)
+        {
+            state.deletion = None;
+        }
+        drop(state);
+        self.0.instance.changed.notify_waiters();
+    }
     pub async fn wait_ready(&self) {
         loop {
             let changed = self.0.instance.changed.notified();
@@ -156,6 +214,14 @@ impl NodeOperationCoordinator {
             .clone())
     }
     fn admit(self: &Arc<Self>, id: &str, label: &str) -> Result<NodeOperationPermit> {
+        self.admit_kind(id, label, false)
+    }
+    fn admit_kind(
+        self: &Arc<Self>,
+        id: &str,
+        label: &str,
+        window: bool,
+    ) -> Result<NodeOperationPermit> {
         let instance = self.instance(id)?;
         let mut state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.deletion.is_some() {
@@ -163,6 +229,9 @@ impl NodeOperationCoordinator {
         }
         let token = self.next.fetch_add(1, Ordering::Relaxed);
         state.operations.insert(token, label.into());
+        if window {
+            state.window_operations.insert(token);
+        }
         drop(state);
         Ok(NodeOperationPermit(Arc::new(OperationOwner {
             coordinator: self.clone(),
@@ -185,6 +254,7 @@ impl NodeOperationCoordinator {
             instance,
             app_id: id.into(),
             token,
+            abandon_requested: AtomicBool::new(false),
         })))
     }
     fn snapshot(&self, id: &str) -> Result<Value> {
@@ -199,6 +269,9 @@ impl NodeOperationCoordinator {
 impl NodeApps {
     pub fn admit_operation(&self, id: &str, label: &str) -> Result<NodeOperationPermit> {
         self.operations.admit(id, label)
+    }
+    pub fn admit_window_operation(&self, id: &str, label: &str) -> Result<NodeOperationPermit> {
+        self.operations.admit_kind(id, label, true)
     }
     pub fn begin_delete_operation(&self, id: &str) -> Result<NodeDeletionPermit> {
         self.operations.deletion(id)
@@ -237,6 +310,39 @@ impl NodeApps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn abandonment_waits_for_actual_window_owner_but_not_a_long_git_owner() {
+        let ops = Arc::new(NodeOperationCoordinator::default());
+        let id = Uuid::new_v4().to_string();
+        let _git = ops.admit(&id, "Git 操作").unwrap();
+        let window = ops.admit_kind(&id, "创建应用窗口", true).unwrap();
+        let native_closure = window.keep_alive();
+        let deletion = ops.deletion(&id).unwrap();
+        deletion.request_abandon();
+        deletion.wait_abandon_requested().await;
+        drop(window);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            deletion.wait_window_operations()
+        )
+        .await
+        .is_err());
+        drop(native_closure);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            deletion.wait_window_operations(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ops.snapshot(&id).unwrap()["waitingFor"],
+            json!(["Git 操作"])
+        );
+        assert!(ops.admit(&id, "新打开").is_err());
+        deletion.release_gate();
+        assert!(ops.admit(&id, "用户后来打开").is_ok());
+    }
+
     #[tokio::test]
     async fn deletion_seals_new_admission_and_waits_for_actual_shared_owner() {
         let ops = Arc::new(NodeOperationCoordinator::default());

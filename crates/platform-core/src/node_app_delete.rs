@@ -2,7 +2,6 @@
 //! directories and retained run/installation/recovery evidence are never targets.
 use super::*;
 use crate::file_identity::PersistedIdentity;
-use std::os::unix::fs::MetadataExt;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -10,7 +9,7 @@ pub struct DeleteNodeAppInput {
     pub expected_revision: String,
 }
 
-fn revision(slot: &Path) -> Result<String> {
+pub(super) fn revision(slot: &Path) -> Result<String> {
     let identity = PersistedIdentity::capture(slot).map_err(|error| fail(error.to_string()))?;
     let mut digest = Sha256::new();
     digest.update(read_small(&slot.join("registration.json"))?);
@@ -31,20 +30,6 @@ fn targets(slot: &Path, managed: bool) -> Vec<PathBuf> {
         result.push(slot.join("generations"));
     }
     result
-}
-
-fn check_root(slot: &Path, expected: &PersistedIdentity) -> Result<()> {
-    ordinary_path(slot, true)?;
-    if !expected
-        .matches_path(slot)
-        .map_err(|error| fail(error.to_string()))?
-    {
-        return Err(ApiError::new(
-            "NODE_APP_DELETE_CHANGED",
-            "项目目录身份已变化，未继续删除。",
-        ));
-    }
-    Ok(())
 }
 
 fn has_active_marker(slot: &Path) -> Result<bool> {
@@ -125,140 +110,17 @@ impl NodeApps {
         )
     }
 
-    /// The instance reservation, rather than a global lock, follows the actual
-    /// worker until the operation completes even if the caller disappears.
+    /// Compatibility API for callers that wait for the actual final result.
+    /// Native task submission uses submit_deletion_with instead.
     pub async fn delete(&self, id: &str, input: DeleteNodeAppInput) -> Result<Value> {
-        let permit = self.begin_delete_operation(id)?;
-        self.delete_with_permit(id, input, permit).await
-    }
-
-    pub async fn delete_with_permit(
-        &self,
-        id: &str,
-        input: DeleteNodeAppInput,
-        permit: NodeDeletionPermit,
-    ) -> Result<Value> {
-        let apps = self.clone();
-        let id = id.to_owned();
-        tokio::spawn(async move {
-            permit.wait_ready().await;
-            permit.validate(&apps, &id)?;
-            apps.delete_admitted(&id, input, permit).await
-        })
-        .await
-        .map_err(|_| fail("删除工作意外结束，请保留现场并重新核对实际结果。"))?
-    }
-
-    async fn delete_admitted(
-        &self,
-        id: &str,
-        input: DeleteNodeAppInput,
-        permit: NodeDeletionPermit,
-    ) -> Result<Value> {
-        self.require_no_development_operation(id)?;
-        self.require_no_source_restore(id)?;
-        if self.inner.lock().await.shutting_down {
-            return Err(fail("平台正在退出，不能删除项目。"));
+        let task = self.submit_deletion(id, input).await?;
+        let task_id = task["taskId"]
+            .as_str()
+            .ok_or_else(|| fail("删除任务身份缺失。"))?;
+        if task["phase"] == "failed" && task["canRetry"] == true {
+            self.retry_deletion(task_id, id, task["journalRevision"].as_u64().unwrap_or(0))
+                .await?;
         }
-        let record = self.registration(id)?;
-        let slot = self.root.join(id);
-        ordinary_path(&slot, true)?;
-        let current_revision = revision(&slot)?;
-        if current_revision != input.expected_revision {
-            return Err(ApiError::new(
-                "NODE_APP_DELETE_CHANGED",
-                "项目登记已变化，请重新核对删除范围。",
-            ));
-        }
-        permit.set_phase("stopping");
-        self.stop_runtime(id).await?;
-        let inner = self.inner.lock().await;
-        if let Some(error) = run_recovery_blocker(&slot, inner.running.contains_key(id))? {
-            return Err(error);
-        }
-        if inner.running.contains_key(id) || has_active_marker(&slot)? {
-            return Err(
-                fail("应用尚未完成安全关闭，未删除文件；请保留运行现场。").outcome("not_deleted")
-            );
-        }
-        drop(inner);
-        let managed = record.managed.is_some();
-        let root_identity =
-            PersistedIdentity::capture(&slot).map_err(|error| fail(error.to_string()))?;
-        check_root(&slot, &root_identity)?;
-        let owned = targets(&slot, managed);
-        let remove_slot = slot.clone();
-        let identity = root_identity;
-        let removal_id = id.to_owned();
-        let ownership = if managed { "managed" } else { "external" };
-        permit.set_phase("deleting");
-        let worker_permit = permit.clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<Value> {
-            let _permit = worker_permit;
-            let removal = (|| -> Result<bool> {
-                let mut checked = Vec::new();
-                for target in owned {
-                    check_root(&remove_slot, &identity)?;
-                    crate::projects::check_no_symlinks(&target, true)?;
-                    match fs::symlink_metadata(&target) {
-                        Ok(metadata) if metadata.is_dir() => {
-                            if metadata.dev() != fs::symlink_metadata(&remove_slot)?.dev() {
-                                return Err(fail("平台数据路径跨越挂载点，未继续删除。"));
-                            }
-                            let target_identity = PersistedIdentity::capture(&target)
-                                .map_err(|error| fail(error.to_string()))?;
-                            checked.push((target, target_identity));
-                        }
-                        Ok(_) => return Err(fail("平台数据路径不是普通目录，未开始删除。")),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                check_root(&remove_slot, &identity)?;
-                if revision(&remove_slot)? != current_revision {
-                    return Err(ApiError::new("NODE_APP_DELETE_CHANGED", "删除前登记发生变化，请重新核对。"));
-                }
-                let registration_path = remove_slot.join("registration.json");
-                let mut current: Value = serde_json::from_slice(&read_small(&registration_path)?)?;
-                if current["removalPending"] != true {
-                    current["removalPending"] = true.into();
-                    crate::builds::atomic_json(&registration_path, &current)?;
-                }
-                let pending_revision = revision(&remove_slot)?;
-                for (target, target_identity) in checked {
-                    check_root(&remove_slot, &identity)?;
-                    crate::history_cleanup::remove_owned_directory(&target, &target_identity)?;
-                }
-                check_root(&remove_slot, &identity)?;
-                if revision(&remove_slot)? != pending_revision {
-                    return Err(ApiError::new("NODE_APP_DELETE_CHANGED", "删除期间登记发生变化，请重新核对剩余内容。"));
-                }
-                fs::remove_file(registration_path)?;
-                Ok(fs::File::open(&remove_slot).and_then(|directory| directory.sync_all()).is_ok())
-            })();
-            let durable = match removal {
-                Ok(durable) => durable,
-                Err(mut error) => {
-                    error.message = format!("项目删除未完成，部分文件可能已永久删除。请重新核对剩余内容后明确重试；平台不会自动继续删除。原因：{}", error.message);
-                    return Err(error.outcome("delete_incomplete").detail("platformRoot", json!(remove_slot)));
-                }
-            };
-            Ok(json!({"appId":removal_id,"operationOutcome":"deleted","ownership":ownership,
-                "sourcePreserved":true,"evidenceRetained":true,"metadataCleanupPending":!durable,
-                "durabilityConfirmed":durable,
-                "warning":if durable { Value::Null } else { json!("文件及登记已移除，但目录落盘尚未确认；请刷新或重开核对结果。") }}))
-        })
-        .await
-        .unwrap_or_else(|error| Err(fail(error.to_string())));
-        let mut inner = self.inner.lock().await;
-        match &result {
-            Ok(_) => {
-                inner.errors.remove(id);
-            }
-            Err(error) => {
-                inner.errors.insert(id.into(), error.message.clone());
-            }
-        }
-        result
+        self.wait_deletion_result(task_id, id).await
     }
 }

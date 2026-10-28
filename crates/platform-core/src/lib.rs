@@ -27,6 +27,7 @@ pub mod node_app_install;
 pub mod node_app_manifest;
 mod node_app_proxy;
 pub mod node_apps;
+mod node_deletion_journal;
 pub mod node_development_build;
 pub mod node_development_tasks;
 pub mod node_install_tasks;

@@ -197,16 +197,84 @@ pub(super) async fn delete(
     id: &str,
     input: platform_core::node_apps::DeleteNodeAppInput,
 ) -> Result<Value, ApiError> {
+    let mut task = submit_delete(app, state, id, input).await?;
+    if task["phase"] == "failed" && task["canRetry"] == true {
+        task = retry_delete(
+            app,
+            state,
+            task["taskId"].as_str().unwrap_or_default(),
+            id,
+            task["journalRevision"].as_u64().unwrap_or(0),
+        )
+        .await?;
+    }
+    let task_id = task["taskId"]
+        .as_str()
+        .ok_or_else(|| error("未取得删除任务身份，请查看删除任务后核对。"))?;
+    state.node_apps.wait_deletion_result(task_id, id).await
+}
+
+pub(super) async fn submit_delete(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+    input: platform_core::node_apps::DeleteNodeAppInput,
+) -> Result<Value, ApiError> {
     alive(state)?;
-    let permit = state.node_apps.begin_delete_operation(id)?;
-    permit.wait_ready().await;
-    let _operation = state.node_windows.instance_operation(id).await;
-    alive(state)?;
-    teardown_locked(app, state, id, Some(&permit)).await?;
+    state.node_apps.set_deletion_store(state.handle.store())?;
     state
         .node_apps
-        .delete_with_permit(id, input, permit.clone())
+        .submit_deletion_with(id, input, before_delete_stop(app, id))
         .await
+}
+
+pub(super) async fn retry_delete(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    task_id: &str,
+    id: &str,
+    observed_revision: u64,
+) -> Result<Value, ApiError> {
+    alive(state)?;
+    state.node_apps.set_deletion_store(state.handle.store())?;
+    state
+        .node_apps
+        .retry_deletion_with(task_id, id, observed_revision, before_delete_stop(app, id))
+        .await
+}
+
+fn before_delete_stop(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> platform_core::node_apps::NodeDeletionBeforeStop {
+    let app = app.clone();
+    let id = id.to_owned();
+    Box::new(move |permit| {
+        Box::pin(async move {
+            let state = app.state::<AppState>();
+            let _operation = deletion_window_operation(&state.node_windows, &id, &permit).await;
+            teardown_locked(&app, &state, &id, Some(&permit)).await
+        })
+    })
+}
+
+async fn deletion_window_operation(
+    windows: &NodeWindows,
+    id: &str,
+    permit: &platform_core::node_apps::NodeDeletionPermit,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let operation = windows.instance_operation(id);
+    tokio::pin!(operation);
+    tokio::select! {
+        operation = &mut operation => Some(operation),
+        _ = permit.wait_abandon_requested() => {
+            // Old native/start requests must finish, including queued main
+            // closures. A long unrelated source/Git operation may keep its key
+            // and continue; no new window admission can pass the deletion gate.
+            permit.wait_window_operations().await;
+            None
+        }
+    }
 }
 
 pub(super) async fn open(
@@ -214,7 +282,7 @@ pub(super) async fn open(
     state: &AppState,
     id: &str,
 ) -> Result<Value, ApiError> {
-    let _admission = state.node_apps.admit_operation(id, "打开应用")?;
+    let _admission = state.node_apps.admit_window_operation(id, "打开应用")?;
     let _operation = state.node_windows.instance_operation(id).await;
     alive(state)?;
     let window_label = label(id)?;
@@ -507,7 +575,7 @@ pub(super) async fn restart(
     state: &AppState,
     id: &str,
 ) -> Result<Value, ApiError> {
-    let _admission = state.node_apps.admit_operation(id, "重启应用")?;
+    let _admission = state.node_apps.admit_window_operation(id, "重启应用")?;
     let _operation = state.node_windows.instance_operation(id).await;
     alive(state)?;
     let window = app

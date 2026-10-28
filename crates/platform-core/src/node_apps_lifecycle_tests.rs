@@ -1404,6 +1404,35 @@ async fn residual_intent_cleanup_gate_blocks_reopen_even_without_an_active_marke
             "NODE_APP_RUN_RECOVERY_REQUIRED"
         );
         assert_eq!(fs::read(&sentinel).unwrap(), b"preserve-runtime-data");
+        assert_eq!(
+            fixture.manager.start(id).await.unwrap_err().code,
+            "NODE_APP_DELETING"
+        );
+        let task = fixture
+            .manager
+            .deletion_tasks()
+            .unwrap()
+            .into_iter()
+            .find(|task| task["appId"] == id)
+            .unwrap();
+        let task_id = task["taskId"].as_str().unwrap();
+        fixture
+            .manager
+            .abandon_deletion(task_id, id, task["journalRevision"].as_u64().unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if fixture.manager.deletion_task_status(task_id, id).unwrap()["phase"]
+                    == "abandoned"
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(fixture
             .manager
             .start(id)

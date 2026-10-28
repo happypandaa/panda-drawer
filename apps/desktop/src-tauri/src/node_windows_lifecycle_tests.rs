@@ -16,6 +16,91 @@ fn put(windows: &NodeWindows, id: &str, current: Arc<Mutex<Session>>) {
 }
 
 #[tokio::test]
+async fn abandoning_delete_does_not_wait_for_the_desktop_key_of_a_long_git_operation() {
+    use serde_json::json;
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let data = root.join("disposable-cancel-data");
+    let source = root.join("disposable-cancel-source");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::create_dir_all(source.join("public")).unwrap();
+    std::fs::create_dir(source.join("server")).unwrap();
+    std::fs::write(source.join("public/index.html"), "disposable").unwrap();
+    std::fs::write(source.join("server/main.mjs"), "// never executed").unwrap();
+    std::fs::write(
+        source.join("local-app.json"),
+        serde_json::to_vec(&json!({
+            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
+            "app":{"id":"test.disposable.cancel","name":"Disposable cancellation","version":"1"},
+            "web":{"root":"public","entry":"index.html","routing":"files"},
+            "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let apps = platform_core::node_apps::NodeApps::new(data, "/disposable/no-node".into()).unwrap();
+    let id = apps.register(source.clone()).await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let windows = Arc::new(NodeWindows::default());
+    let _git = apps.admit_operation(&id, "Git 操作").unwrap();
+    let _git_key = windows.instance_operation(&id).await;
+    let input = serde_json::from_value(
+        json!({"expectedRevision":apps.delete_preview(&id).await.unwrap()["expectedRevision"]}),
+    )
+    .unwrap();
+    let before_windows = windows.clone();
+    let before_id = id.clone();
+    let (entered, observed) = oneshot::channel();
+    let task = apps
+        .submit_deletion_with(
+            &id,
+            input,
+            Box::new(move |permit| {
+                Box::pin(async move {
+                    assert!(
+                        deletion_window_operation(&before_windows, &before_id, &permit)
+                            .await
+                            .is_none()
+                    );
+                    entered.send(()).unwrap();
+                    Ok(())
+                })
+            }),
+        )
+        .await
+        .unwrap();
+    apps.abandon_deletion(
+        task["taskId"].as_str().unwrap(),
+        &id,
+        task["journalRevision"].as_u64().unwrap(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), observed)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if apps
+                .deletion_task_status(task["taskId"].as_str().unwrap(), &id)
+                .unwrap()["phase"]
+                == "abandoned"
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(source.join("server/main.mjs").exists());
+    assert!(apps.admit_window_operation(&id, "用户后来打开").is_ok());
+}
+
+#[tokio::test]
 async fn delayed_old_cleanup_cannot_stop_a_replacement_generation() {
     let windows = Arc::new(NodeWindows::default());
     let old = fresh_session(Phase::Closing);

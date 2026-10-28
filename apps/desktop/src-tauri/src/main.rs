@@ -1779,9 +1779,82 @@ async fn node_app_delete_status(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     app_id: String,
+    task_id: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    state.node_apps.deletion_operation_status(&app_id)
+    let _lease = state.handle.io_lifetime().admit_cleanup()?;
+    match task_id {
+        Some(task_id) => state.node_apps.deletion_task_status(&task_id, &app_id),
+        None => state.node_apps.deletion_operation_status(&app_id),
+    }
+}
+#[tauri::command]
+async fn node_app_delete_tasks(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Value>, ApiError> {
+    require_manager(&window)?;
+    let _lease = state.handle.io_lifetime().admit_cleanup()?;
+    state.node_apps.deletion_tasks()
+}
+#[tauri::command]
+async fn node_app_delete_submit(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    input: platform_core::node_apps::DeleteNodeAppInput,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit()?;
+    let owner = window.app_handle().clone();
+    lease
+        .run(async move {
+            let state = owner.state::<AppState>();
+            node_windows::submit_delete(&app, &state, &app_id, input).await
+        })
+        .await?
+}
+#[tauri::command]
+async fn node_app_delete_retry(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    app_id: String,
+    observed_revision: u64,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit()?;
+    let owner = window.app_handle().clone();
+    lease
+        .run(async move {
+            let state = owner.state::<AppState>();
+            node_windows::retry_delete(&app, &state, &task_id, &app_id, observed_revision).await
+        })
+        .await?
+}
+#[tauri::command]
+async fn node_app_delete_abandon(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    app_id: String,
+    observed_revision: u64,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit_cleanup()?;
+    let owner = window.app_handle().clone();
+    lease
+        .run(async move {
+            let state = owner.state::<AppState>();
+            state.node_apps.set_deletion_store(state.handle.store())?;
+            state
+                .node_apps
+                .abandon_deletion(&task_id, &app_id, observed_revision)
+                .await
+        })
+        .await?
 }
 #[tauri::command]
 async fn node_app_delete(
@@ -2253,7 +2326,7 @@ fn main() {
             source_list,source_info,source_inspect,source_acquire,source_cancel,source_import_cleanup,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
-            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete,
+            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete_tasks,node_app_delete_submit,node_app_delete_retry,node_app_delete_abandon,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,
@@ -2324,6 +2397,9 @@ fn main() {
             // Reconcile only obsolete run markers before publishing commands.
             // Unknown records remain visible and never authorize PID-only stop.
             tauri::async_runtime::block_on(node_apps.reconcile_run_markers())?;
+            // Durable deletion consent survives a host restart. Restore its
+            // gates and resume proven cleanup before publishing commands.
+            tauri::async_runtime::block_on(node_apps.resume_deletions())?;
             let monitor = std::sync::Arc::downgrade(&node_apps);
             let node_monitor_app = app.handle().clone();
             let monitor_io = runtime.handle().io_lifetime();
