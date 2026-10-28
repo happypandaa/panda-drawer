@@ -70,10 +70,13 @@ impl NodeDevelopmentTasks {
         app_id: String,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord> {
+        let operation = apps.admit_operation(&app_id, "源码构建")?;
         self.require_idle()?;
         check(&stop)?;
         {
-            let lease = apps.development_build_source_lease(&app_id).await?;
+            let lease = apps
+                .development_build_source_lease_admitted(&app_id, &operation)
+                .await?;
             lease.validate()?;
         }
         let mut runners = self.runners.lock().unwrap();
@@ -110,7 +113,7 @@ impl NodeDevelopmentTasks {
             };
             let result = AssertUnwindSafe(async {
                 check(&stop)?; check(&cancel)?;
-                let source_lease = apps.development_build_source_lease(&app_id).await?;
+                let source_lease = apps.development_build_source_lease_admitted(&app_id, &operation).await?;
                 source_lease.validate()?;
                 let source = source_lease.source().clone();
                 let owner: Arc<dyn Send + Sync> = Arc::new((lease.clone(), source_lease.keep_alive(), apps.clone()));

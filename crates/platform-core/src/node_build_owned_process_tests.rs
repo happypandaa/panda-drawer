@@ -6,10 +6,10 @@ use crate::{node_apps::NodeApps, owned_process::{OwnedProcessRegistry, ProcessPh
 async fn exercise(panic: bool) {
     let mut fixture = Fixture::new(); fixture.npm();
     let fixture = Arc::new(fixture);
-    let (temporary, paths) = RuntimePaths::for_test();
+    let (temporary, runtime_paths) = RuntimePaths::for_test();
     let temporary = Arc::new(temporary);
-    let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
-    let apps = Arc::new(NodeApps::new(paths.data_root().into(), "/nonexistent-disposable-node".into()).unwrap());
+    let store = Arc::new(ProjectStore::new(runtime_paths.workspace_root().into()).unwrap());
+    let apps = Arc::new(NodeApps::new(runtime_paths.data_root().into(), "/nonexistent-disposable-node".into()).unwrap());
     let id = apps.register(fixture.root.clone()).await.unwrap()["id"].as_str().unwrap().to_owned();
     let source_lease = apps.development_build_source_lease(&id).await.unwrap();
     let key = format!("node-development:{id}");
@@ -44,7 +44,14 @@ async fn exercise(panic: bool) {
     assert!(!fixture.operation.join("program").exists());
     if panic {
         assert!(!late_writer.exists());
-        assert_eq!(apps.delete_preview(&id).await.unwrap_err().code, "NODE_DEVELOPMENT_BUSY");
+        let registration = runtime_paths.data_root().join("node-apps").join(&id).join("registration.json");
+        let before = fs::read(&registration).unwrap();
+        assert!(apps.delete_preview(&id).await.unwrap()["blocker"].is_null());
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        let deletion = apps.begin_delete_operation(&id).unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), deletion.wait_ready()).await.is_err());
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        drop(deletion);
         assert!(store.reserve_task(&key, "late-task").is_err());
         let issues = registry.shutdown().await;
         assert!(issues.iter().any(|issue| issue.code == "PROCESS_IO_JOIN_FAILED" && !issue.retryable));

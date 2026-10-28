@@ -26,11 +26,32 @@ struct Session {
 }
 #[derive(Default)]
 pub(super) struct NodeWindows {
-    pub(super) operations: tokio::sync::Mutex<()>,
+    // Native creation shares its short reservation/registration section with
+    // platform exit and shared-source recovery. Process/receipt waits use only
+    // instance locks.
+    pub(super) operations: Arc<tokio::sync::Mutex<()>>,
+    instance_operations: Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
     sessions: Mutex<BTreeMap<String, Arc<Mutex<Session>>>>,
 }
 pub(super) struct ShutdownSessions(Vec<(String, Arc<Mutex<Session>>)>);
 impl NodeWindows {
+    fn instance_mutex(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.instance_operations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(id.into())
+            .or_default()
+            .clone()
+    }
+
+    pub(super) async fn instance_operation(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        self.instance_mutex(id).lock_owned().await
+    }
+
+    fn try_instance_operation(&self, id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.instance_mutex(id).try_lock_owned().ok()
+    }
+
     pub fn freeze_for_shutdown(&self) -> ShutdownSessions {
         let sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         ShutdownSessions(
@@ -153,9 +174,11 @@ pub(super) async fn apply_install(
     state: &AppState,
     candidate_id: &str,
 ) -> Result<Value, ApiError> {
-    let _operation = state.node_windows.operations.lock().await;
     alive(state)?;
     let id = state.handle.node_install_target(candidate_id)?;
+    let _admission = state.node_apps.admit_operation(&id, "应用更新")?;
+    let _operation = state.node_windows.instance_operation(&id).await;
+    alive(state)?;
     if session(state, &id).is_some() || app.get_webview_window(&label(&id)?).is_some() {
         return Err(ApiError::new(
             "NODE_INSTALL_WINDOW_OPEN",
@@ -174,15 +197,16 @@ pub(super) async fn delete(
     id: &str,
     input: platform_core::node_apps::DeleteNodeAppInput,
 ) -> Result<Value, ApiError> {
-    let _operation = state.node_windows.operations.lock().await;
     alive(state)?;
-    if session(state, id).is_some() || app.get_webview_window(&label(id)?).is_some() {
-        return Err(ApiError::new(
-            "NODE_DELETE_WINDOW_OPEN",
-            "请先保存未完成内容并关闭此应用窗口，等待服务停止后再确认永久删除。",
-        ));
-    }
-    state.node_apps.delete(id, input).await
+    let permit = state.node_apps.begin_delete_operation(id)?;
+    permit.wait_ready().await;
+    let _operation = state.node_windows.instance_operation(id).await;
+    alive(state)?;
+    teardown_locked(app, state, id, Some(&permit)).await?;
+    state
+        .node_apps
+        .delete_with_permit(id, input, permit.clone())
+        .await
 }
 
 pub(super) async fn open(
@@ -190,7 +214,8 @@ pub(super) async fn open(
     state: &AppState,
     id: &str,
 ) -> Result<Value, ApiError> {
-    let _operation = state.node_windows.operations.lock().await;
+    let _admission = state.node_apps.admit_operation(id, "打开应用")?;
+    let _operation = state.node_windows.instance_operation(id).await;
     alive(state)?;
     let window_label = label(id)?;
     if session(state, id).is_some_and(|current| {
@@ -224,7 +249,11 @@ pub(super) async fn open(
         let _ = state.node_apps.stop_runtime(id).await;
         return Err(error);
     }
-    let opened = build(app, state, id, &detail).await;
+    if let Err(error) = state.node_apps.admit_operation(id, "创建应用窗口") {
+        let _ = state.node_apps.stop_runtime(id).await;
+        return Err(error);
+    }
+    let opened = build(app, state, id, &detail, _admission.clone()).await;
     if let Err(open_error) = opened {
         if let Some(current) = session(state, id) {
             phase(&current, Phase::Failed, None);
@@ -244,13 +273,22 @@ async fn build(
     state: &AppState,
     id: &str,
     detail: &Value,
+    admission: platform_core::node_apps::NodeOperationPermit,
 ) -> Result<(), ApiError> {
     let launch =
         Url::parse(&state.node_apps.open_url(id).await?).map_err(|_| error("应用入口无效。"))?;
+    // A shutdown snapshot must see either the completed native window or no
+    // reservation at all. Keep only this short native dispatch/creation section
+    // shared; runtime start and open_url have already completed above.
+    let registration = state.node_windows.operations.clone().lock_owned().await;
     alive(state)?;
     let id = id.to_owned();
     let detail = detail.clone();
     super::native_ui(app, move |app, state| {
+        // Queued native work owns admission independently of its HTTP/Tauri
+        // waiter. Deletion cannot finish and reopen its gate before this runs.
+        let _admission = admission;
+        let _registration = registration;
         build_on_main(app, state, &id, &detail, launch)
     })
     .await
@@ -262,6 +300,20 @@ fn build_on_main(
     detail: &Value,
     launch: Url,
 ) -> Result<(), ApiError> {
+    state
+        .node_apps
+        .with_operation_admission(id, "创建应用窗口", || {
+            build_on_main_admitted(app, state, id, detail, launch)
+        })
+}
+fn build_on_main_admitted(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+    detail: &Value,
+    launch: Url,
+) -> Result<(), ApiError> {
+    alive(state)?;
     let receipt = state
         .window_lifetimes
         .reserve(&label(id)?)
@@ -356,12 +408,20 @@ async fn blank(window: &tauri::WebviewWindow) -> Result<(), ApiError> {
     Err(error("应用页面尚未完成关闭，请重试。"))
 }
 
+async fn wait_destroyed(
+    receipt: Arc<super::business_window_lifetime::Receipt>,
+) -> Result<(), ApiError> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), receipt.wait())
+        .await
+        .map_err(|_| error("应用窗口尚未确认关闭，请重试停止。"))
+}
+
 pub(super) async fn close(
     app: &tauri::AppHandle,
     state: &AppState,
     id: &str,
 ) -> Result<Value, ApiError> {
-    let _operation = state.node_windows.operations.lock().await;
+    let _operation = state.node_windows.instance_operation(id).await;
     close_locked(app, state, id).await
 }
 async fn close_locked(
@@ -369,25 +429,55 @@ async fn close_locked(
     state: &AppState,
     id: &str,
 ) -> Result<Value, ApiError> {
+    teardown_locked(app, state, id, None).await?;
+    state.node_apps.configuration(id).await
+}
+
+// The caller already owns this instance's desktop operation. Deletion reuses
+// this teardown without calling public close or reading configuration afterward.
+async fn teardown_locked(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    id: &str,
+    deletion: Option<&platform_core::node_apps::NodeDeletionPermit>,
+) -> Result<(), ApiError> {
+    if let Some(deletion) = deletion {
+        deletion.set_phase("stopping");
+    }
     let current = session(state, id);
     if let Some(current) = &current {
         phase(current, Phase::Closing, None);
     }
     let window = app.get_webview_window(&label(id)?);
+    let receipt_required = window.is_some() || current.is_some();
+    let receipt = state.window_lifetimes.receipt(&label(id)?);
     if let Some(window) = &window {
         let _ = window.set_title("应用 · 正在关闭");
         let _ = blank(window).await;
     }
-    let stopped = state.node_apps.stop_runtime(id).await;
     // The visible container must not keep a live document after its backend is
-    // stopped. Destroy is also requested when blank navigation could not finish.
+    // stopped. Request destroy first, including when blanking did not finish.
+    // A window failure must not skip stopping the known owned backend.
+    let mut window_issue = None;
     if let Some(window) = window {
         if window.destroy().is_err() {
             if let Some(current) = &current {
                 phase(current, Phase::Failed, None);
             }
-            return Err(error("应用窗口尚未关闭，请再次关闭窗口并核对服务状态。"));
+            window_issue = Some(error("应用窗口尚未关闭，请再次关闭窗口并核对服务状态。"));
         }
+    }
+    if let Some(deletion) = deletion {
+        deletion.set_phase("stopping");
+    }
+    let stopped = state.node_apps.stop_runtime(id).await;
+    if let Some(issue) = window_issue {
+        return Err(issue);
+    }
+    if receipt_required {
+        let receipt = receipt
+            .ok_or_else(|| error("应用窗口关闭记录缺失，未继续删除，请重新启动平台后核对。"))?;
+        wait_destroyed(receipt).await?;
     }
     stopped?;
     if let Some(current) = current {
@@ -409,7 +499,7 @@ async fn close_locked(
             }
         }
     }
-    state.node_apps.configuration(id).await
+    Ok(())
 }
 
 pub(super) async fn restart(
@@ -417,7 +507,8 @@ pub(super) async fn restart(
     state: &AppState,
     id: &str,
 ) -> Result<Value, ApiError> {
-    let _operation = state.node_windows.operations.lock().await;
+    let _admission = state.node_apps.admit_operation(id, "重启应用")?;
+    let _operation = state.node_windows.instance_operation(id).await;
     alive(state)?;
     let window = app
         .get_webview_window(&label(id)?)
@@ -451,21 +542,26 @@ pub(super) async fn restart(
         }
         let launch = Url::parse(&state.node_apps.open_url(id).await?)
             .map_err(|_| error("应用入口无效。"))?;
-        {
-            let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
-            if current.phase == Phase::Closing {
-                return Err(error("应用正在关闭，已取消重启。"));
-            }
-            current.phase = Phase::Running;
-            current.origin = Some(launch.clone());
-        }
-        window
-            .navigate(launch)
-            .map_err(|_| error("无法重新加载应用窗口。"))?;
-        let _ = window.set_title(&super::project_title(
-            detail["name"].as_str().unwrap_or("应用"),
-        ));
-        focus(&window)?;
+        state
+            .node_apps
+            .with_operation_admission(id, "重启应用窗口", || {
+                alive(state)?;
+                {
+                    let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
+                    if current.phase == Phase::Closing {
+                        return Err(error("应用正在关闭，已取消重启。"));
+                    }
+                    current.phase = Phase::Running;
+                    current.origin = Some(launch.clone());
+                }
+                window
+                    .navigate(launch)
+                    .map_err(|_| error("无法重新加载应用窗口。"))?;
+                let _ = window.set_title(&super::project_title(
+                    detail["name"].as_str().unwrap_or("应用"),
+                ));
+                focus(&window)
+            })?;
         Ok(detail)
     }
     .await;
@@ -510,7 +606,7 @@ fn close_requested_generation(
     let id = id.to_owned();
     tauri::async_runtime::spawn(io_lease.hold(Box::pin(async move {
         let state = app.state::<AppState>();
-        let _operation = state.node_windows.operations.lock().await;
+        let _operation = state.node_windows.instance_operation(&id).await;
         if !owned(&state, &id, &current) {
             return;
         }
@@ -544,7 +640,7 @@ fn destroyed_generation(app: &tauri::AppHandle, id: &str, current: &Arc<Mutex<Se
     let id = id.to_owned();
     tauri::async_runtime::spawn(io_lease.hold(Box::pin(async move {
         let state = app.state::<AppState>();
-        let _operation = state.node_windows.operations.lock().await;
+        let _operation = state.node_windows.instance_operation(&id).await;
         if !owned(&state, &id, &current) {
             return;
         }
@@ -572,10 +668,6 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
     if alive(&state).is_err() {
         return;
     }
-    let _operation = state.node_windows.operations.lock().await;
-    if alive(&state).is_err() {
-        return;
-    }
     let active = state.node_apps.running_ids().await;
     let stale: Vec<_> = state
         .node_windows
@@ -590,6 +682,17 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
         .map(|(id, current)| (id.clone(), current.clone()))
         .collect();
     for (id, current) in stale {
+        // Reconcile runs on the same monitor loop as health checks. A busy
+        // instance must not delay the next pass for every other application.
+        let Some(_operation) = state.node_windows.try_instance_operation(&id) else {
+            continue;
+        };
+        if alive(&state).is_err() || !owned(&state, &id, &current) {
+            continue;
+        }
+        if state.node_apps.running_ids().await.contains(&id) {
+            continue;
+        }
         phase(&current, Phase::Closing, None);
         if let Ok(label) = label(&id) {
             if let Some(window) = app.get_webview_window(&label) {

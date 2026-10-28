@@ -19,7 +19,10 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -27,6 +30,9 @@ use uuid::Uuid;
 #[path = "node_app_delete.rs"]
 mod deletion;
 pub use deletion::DeleteNodeAppInput;
+#[path = "node_app_operations.rs"]
+mod operations;
+pub use operations::{NodeDeletionPermit, NodeOperationPermit};
 #[path = "node_app_directory.rs"]
 mod directory;
 #[path = "node_run_marker.rs"]
@@ -77,12 +83,61 @@ impl From<ExternalRegistration> for Registration {
 struct Running {
     runtime: NodeRuntimeTrial,
     proxy: Option<NodeAppProxy>,
-    revision: u64,
-    cleanup_pending: bool,
 }
+
+const RUNTIME_STARTING: u8 = 0;
+const RUNTIME_RUNNING: u8 = 1;
+const RUNTIME_STOPPING: u8 = 2;
+const RUNTIME_FAILED: u8 = 3;
+
+/// The stable entry stays in the table throughout launch and cleanup. Its
+/// resource lock is per instance; status reads use only the small phase snapshot.
+struct RuntimeEntry {
+    resources: Arc<Mutex<Option<Running>>>,
+    revision: u64,
+    registration_digest: String,
+    phase: AtomicU8,
+}
+impl RuntimeEntry {
+    fn new(revision: u64, registration_digest: String) -> Self {
+        Self {
+            resources: Arc::new(Mutex::new(None)),
+            revision,
+            registration_digest,
+            phase: AtomicU8::new(RUNTIME_STARTING),
+        }
+    }
+    fn phase(&self) -> u8 {
+        self.phase.load(Ordering::Acquire)
+    }
+    fn set_phase(&self, phase: u8) {
+        self.phase.store(phase, Ordering::Release);
+    }
+    fn cleanup_pending(&self) -> bool {
+        self.phase() >= RUNTIME_STOPPING
+    }
+}
+/// Unexpected cancellation/panic leaves a visible retryable cleanup state;
+/// the map, not this guard, continues to own every actual resource.
+struct RuntimePhaseGuard(Arc<RuntimeEntry>);
+impl Drop for RuntimePhaseGuard {
+    fn drop(&mut self) {
+        if matches!(self.0.phase(), RUNTIME_STARTING | RUNTIME_STOPPING) {
+            self.0.set_phase(RUNTIME_FAILED);
+        }
+    }
+}
+
+struct PreparedRuntimeStart {
+    record: Registration,
+    manifest: TrialManifest,
+    slot: PathBuf,
+    config: RuntimeLaunchConfig,
+}
+
 #[derive(Default)]
 struct Inner {
-    running: BTreeMap<String, Running>,
+    running: BTreeMap<String, Arc<RuntimeEntry>>,
     markers: BTreeMap<String, StartIntentOwnership>,
     errors: BTreeMap<String, String>,
     shutting_down: bool,
@@ -94,6 +149,7 @@ type StartIntentPause = (
     tokio::sync::oneshot::Receiver<()>,
 );
 
+#[derive(Clone)]
 pub struct NodeApps {
     root: PathBuf,
     data_root: PathBuf,
@@ -101,12 +157,14 @@ pub struct NodeApps {
     digest: String,
     processes: crate::owned_process::OwnedProcessRegistry,
     inner: Arc<Mutex<Inner>>,
+    operations: Arc<operations::NodeOperationCoordinator>,
+    runtime_operations: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
     development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-    directory_changes: std::sync::Mutex<()>,
-    directory_stopping: std::sync::atomic::AtomicBool,
-    source_workspace: std::sync::RwLock<Option<PathBuf>>,
+    directory_changes: Arc<std::sync::Mutex<()>>,
+    directory_stopping: Arc<std::sync::atomic::AtomicBool>,
+    source_workspace: Arc<std::sync::RwLock<Option<PathBuf>>>,
     #[cfg(test)]
-    start_intent_pause: std::sync::Mutex<Option<StartIntentPause>>,
+    start_intent_pause: Arc<std::sync::Mutex<Option<StartIntentPause>>>,
 }
 
 impl NodeApps {
@@ -165,12 +223,14 @@ impl NodeApps {
             digest,
             processes,
             inner: Arc::new(Mutex::new(Inner::default())),
+            operations: Arc::new(operations::NodeOperationCoordinator::default()),
+            runtime_operations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
-            directory_changes: std::sync::Mutex::new(()),
-            directory_stopping: std::sync::atomic::AtomicBool::new(false),
-            source_workspace: std::sync::RwLock::new(None),
+            directory_changes: Arc::new(std::sync::Mutex::new(())),
+            directory_stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            source_workspace: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
-            start_intent_pause: std::sync::Mutex::new(None),
+            start_intent_pause: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -347,6 +407,7 @@ impl NodeApps {
     }
 
     fn store(&self, id: &str) -> Result<NodeConfigurationStore> {
+        self.require_configuration_access(id)?;
         self.require_not_removing(id)?;
         let directory = self.root.join(id).join("configuration");
         let instance = Uuid::parse_str(id).map_err(|_| fail("应用标识无效。"))?;
@@ -374,21 +435,24 @@ impl NodeApps {
         let running = inner
             .running
             .get(&record.id)
-            .filter(|run| !run.cleanup_pending);
+            .filter(|run| !run.cleanup_pending());
         let marker = self
             .root
             .join(&record.id)
             .join("active.json")
             .try_exists()?;
+        let runtime_phase = inner.running.get(&record.id).map(|run| run.phase());
         let retained_cleanup = inner
             .running
             .get(&record.id)
-            .is_some_and(|run| run.cleanup_pending);
+            .is_some_and(|run| run.cleanup_pending());
         let cleanup_pending =
             retained_cleanup || has_start_intent_cleanup(&self.root.join(&record.id))?;
         let error = if cleanup_pending {
             inner.errors.get(&record.id).cloned().or_else(|| {
-                Some(if retained_cleanup {
+                Some(if runtime_phase == Some(RUNTIME_STOPPING) {
+                    "正在停止应用，等待进程、网页连接和文件工作完成收尾。".into()
+                } else if retained_cleanup {
                     "应用进程或运行标记尚未确认完整收尾，请重试停止；当前不能再次启动。".into()
                 } else if running.is_some() {
                     "应用仍在运行，启动收尾记录需要核对；已阻止再次启动，请保留运行记录。".into()
@@ -402,7 +466,11 @@ impl NodeApps {
                     .then(|| "上次运行尚未核对完成，已阻止再次启动。请查看运行状态。".into())
             })
         };
-        let state = if running.is_some() {
+        let state = if runtime_phase == Some(RUNTIME_STOPPING) {
+            "stopping"
+        } else if running.is_some_and(|r| r.phase() == RUNTIME_STARTING) {
+            "starting"
+        } else if running.is_some() {
             "running"
         } else if error.is_some() {
             "failed"
@@ -461,7 +529,7 @@ impl NodeApps {
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
-                "missingRequired":view.missing_required,"canStart":view.can_start && !cleanup_pending && (!marker || running.is_some()) && !inner.shutting_down},
+                "missingRequired":view.missing_required,"canStart":view.can_start && runtime_phase != Some(RUNTIME_STARTING) && !cleanup_pending && (!marker || running.is_some()) && !inner.shutting_down},
             "fields":inspected["configuration"]["fields"]
         }))
     }
@@ -586,6 +654,9 @@ impl NodeApps {
         &self,
         id: Option<&str>,
     ) -> Result<InstallTargetSnapshot> {
+        let _permit = id
+            .map(|id| self.admit_operation(id, "准备更新"))
+            .transpose()?;
         let inner = self.inner.lock().await;
         if inner.shutting_down {
             return Err(fail("平台正在关闭，不能准备安装。"));
@@ -681,6 +752,7 @@ impl NodeApps {
         commit: impl FnOnce(&InstallTargetSnapshot) -> Result<T>,
     ) -> Result<T> {
         expected.validate()?;
+        let _operation = self.runtime_operation(&expected.app_id)?.lock_owned().await;
         let mut inner = self.inner.lock().await;
         self.require_install_stopped(&expected.app_id, &inner)?;
         let fresh = if expected.registration_digest.is_some() {
@@ -725,8 +797,7 @@ impl NodeApps {
     }
 
     pub async fn list(&self) -> Result<Vec<Value>> {
-        let mut inner = self.inner.lock().await;
-        self.monitor(&mut inner).await;
+        let inner = self.inner.lock().await;
         Ok(self
             .registrations()?
             .iter()
@@ -796,17 +867,51 @@ impl NodeApps {
                 value["runRecovery"] = view;
             }
         }
+        if let Ok(deletion) = self.deletion_operation_status(&record.id) {
+            if deletion["active"] == true {
+                let waiting = deletion["waitingFor"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    })
+                    .unwrap_or_default();
+                let message = if waiting.is_empty() {
+                    match deletion["phase"].as_str() {
+                        Some("stopping") => "正在关闭窗口并停止应用",
+                        Some("deleting") => "正在删除",
+                        _ => "正在核对操作归属",
+                    }
+                    .to_owned()
+                } else {
+                    format!("等待{waiting}完成")
+                };
+                value["state"] = json!("stopping");
+                value["lastError"] = json!(message);
+                value["configuration"]["canStart"] = json!(false);
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("runRecovery");
+                }
+            }
+        }
         value
     }
 
     pub async fn configuration(&self, id: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
-        self.require_not_removing(id)?;
+        if self.deletion_operation_status(id)?["active"] != true {
+            self.require_not_removing(id)?;
+        }
         let record = self.registration(id)?;
         Ok(self.available_detail(&record, &inner))
     }
 
     pub async fn save(&self, id: &str, input: SaveConfigurationRequest) -> Result<Value> {
+        let _permit = self.admit_operation(id, "保存配置")?;
+        let _operation = self.runtime_operation(id)?.lock_owned().await;
         let inner = self.inner.lock().await;
         self.require_no_development_operation(id)?;
         let record = self.registration(id)?;
@@ -817,72 +922,161 @@ impl NodeApps {
         self.detail(&record, &manifest, &inner)
     }
 
+    fn runtime_operation(&self, id: &str) -> Result<Arc<Mutex<()>>> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("应用标识无效。"));
+        }
+        Ok(self
+            .runtime_operations
+            .lock()
+            .map_err(|_| fail("应用操作锁不可用。"))?
+            .entry(id.into())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone())
+    }
+
+    /// The detached worker owns its permit and entry even if the caller stops
+    /// waiting. It never carries the global table lock through resource waits.
     pub async fn start(&self, id: &str) -> Result<Value> {
-        let mut inner = self.inner.lock().await;
-        let was_running = inner.running.contains_key(id);
-        self.start_locked(id, &mut inner).await?;
-        let result = (|| {
+        let permit = self.admit_operation(id, "启动应用")?;
+        {
+            let inner = self.inner.lock().await;
+            if inner.shutting_down {
+                return Err(fail("平台正在关闭，不能启动应用。"));
+            }
+            if inner
+                .running
+                .get(id)
+                .is_some_and(|entry| entry.cleanup_pending())
+            {
+                return Err(fail(
+                    "此应用尚未确认完整收尾，请先重试停止，不能启动第二个实例。",
+                ));
+            }
+        }
+        let apps = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _operation = apps.runtime_operation(&id)?.lock_owned().await;
+            apps.start_admitted(&id).await
+        })
+        .await
+        .map_err(|_| fail("应用启动任务异常结束，已保留运行记录供核对。"))?
+    }
+
+    async fn start_admitted(&self, id: &str) -> Result<Value> {
+        let (entry, record, manifest, slot, config) = {
+            let mut inner = self.inner.lock().await;
+            self.require_no_development_operation(id)?;
+            if inner.shutting_down {
+                return Err(fail("平台正在关闭，不能启动应用。"));
+            }
+            if let Some(entry) = inner.running.get(id) {
+                if entry.phase() != RUNTIME_RUNNING {
+                    return Err(fail(
+                        "此应用尚未确认完成启动或收尾，请先重试停止，不能启动第二个实例。",
+                    ));
+                }
+                let record = self.registration(id)?;
+                return self.detail(&record, &self.manifest(&record)?, &inner);
+            }
             let record = self.registration(id)?;
-            self.detail(&record, &self.manifest(&record)?, &inner)
-        })();
-        if result.is_err() && !was_running {
-            // Source/configuration can disappear after the process becomes
-            // ready. A failed first open must not leave a windowless backend.
-            // Never stop an older instance reused by this request. Cleanup
-            // failure retains active.json so another writer cannot be started.
-            let _ = self.stop_locked(id, &mut inner).await;
+            let manifest = self.manifest(&record)?;
+            let slot = self.root.join(id);
+            if has_start_intent_cleanup(&slot)? {
+                return Err(fail(
+                    "上次启动标记清理尚未确认完成，已阻止再次启动。请保留清理记录以便恢复。",
+                ));
+            }
+            if fs::symlink_metadata(slot.join("active.json")).is_ok() {
+                return Err(fail(
+                    "上次运行尚未核对完成，已阻止再次启动。请查看运行状态。",
+                ));
+            }
+            let snapshot = self
+                .store(id)?
+                .launch_snapshot(&manifest)
+                .map_err(|e| fail(e.to_string()))?;
+            let (backend, cwd) = manifest
+                .resolve_backend(&record.source_path)
+                .map_err(|e| fail(e.to_string()))?;
+            let trial_root = slot
+                .join("runs")
+                .join(format!("node-runtime-trial-{}", Uuid::new_v4()));
+            private_dir(&trial_root)?;
+            let config = RuntimeLaunchConfig {
+                node_path: self.node_path.clone(),
+                expected_node_sha256: self.digest.clone(),
+                entry_path: backend,
+                working_directory: cwd,
+                trial_root,
+                business_env: snapshot.environment,
+            };
+            let entry = Arc::new(RuntimeEntry::new(
+                snapshot.revision,
+                node_app_install::registration_digest(&slot)?
+                    .ok_or_else(|| fail("应用登记已失联。"))?,
+            ));
+            inner.running.insert(id.into(), entry.clone());
+            (entry, record, manifest, slot, config)
+        };
+        let _phase = RuntimePhaseGuard(entry.clone());
+        let mut resources = entry.resources.lock().await;
+        let launched = self
+            .launch_entry(
+                id,
+                &entry,
+                PreparedRuntimeStart {
+                    record,
+                    manifest,
+                    slot,
+                    config,
+                },
+                &mut resources,
+            )
+            .await;
+        if let Err(error) = launched {
+            entry.set_phase(RUNTIME_FAILED);
+            if resources.is_none() {
+                let mut inner = self.inner.lock().await;
+                if inner
+                    .running
+                    .get(id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &entry))
+                {
+                    inner.running.remove(id);
+                }
+            }
+            return Err(error);
+        }
+        entry.set_phase(RUNTIME_RUNNING);
+        let result = {
+            let inner = self.inner.lock().await;
+            self.registration(id)
+                .and_then(|record| self.detail(&record, &self.manifest(&record)?, &inner))
+        };
+        if result.is_err() {
+            // Failed first open must not leave a windowless backend. A reused
+            // entry returned above and is never stopped by this rollback.
+            let _ = self.stop_entry(id, &entry, &mut resources).await;
         }
         result
     }
 
-    async fn start_locked(&self, id: &str, inner: &mut Inner) -> Result<()> {
-        self.require_no_development_operation(id)?;
-        if inner.shutting_down {
-            return Err(fail("平台正在关闭，不能启动应用。"));
-        }
-        if inner.running.get(id).is_some_and(|run| run.cleanup_pending) {
-            return Err(fail(
-                "此应用进程尚未确认全部关闭，请先重试停止，不能启动第二个实例。",
-            ));
-        }
-        if inner.running.contains_key(id) {
-            return Ok(());
-        }
-        let record = self.registration(id)?;
-        let manifest = self.manifest(&record)?;
-        let slot = self.root.join(id);
-        let marker = slot.join("active.json");
-        // A failed/crashed intent cleanup is a persistent gate, including a
-        // malformed file or symlink in place of the private cleanup directory.
-        if has_start_intent_cleanup(&slot)? {
-            return Err(fail(
-                "上次启动标记清理尚未确认完成，已阻止再次启动。请保留清理记录以便恢复。",
-            ));
-        }
-        if marker.try_exists()? {
-            return Err(fail(
-                "上次运行没有正常关闭，已阻止再次启动。请保留运行记录以便恢复。",
-            ));
-        }
-        let snapshot = self
-            .store(id)?
-            .launch_snapshot(&manifest)
-            .map_err(|e| fail(e.to_string()))?;
-        let (entry, cwd) = manifest
-            .resolve_backend(&record.source_path)
-            .map_err(|e| fail(e.to_string()))?;
-        let trial_root = slot
-            .join("runs")
-            .join(format!("node-runtime-trial-{}", Uuid::new_v4()));
-        private_dir(&trial_root)?;
-        let config = RuntimeLaunchConfig {
-            node_path: self.node_path.clone(),
-            expected_node_sha256: self.digest.clone(),
-            entry_path: entry,
-            working_directory: cwd,
-            trial_root: trial_root.clone(),
-            business_env: snapshot.environment,
-        };
+    async fn launch_entry(
+        &self,
+        id: &str,
+        entry: &Arc<RuntimeEntry>,
+        plan: PreparedRuntimeStart,
+        resources: &mut Option<Running>,
+    ) -> Result<()> {
+        let PreparedRuntimeStart {
+            record,
+            manifest,
+            slot,
+            config,
+        } = plan;
         NodeRuntimeTrial::preflight_with_processes(
             &config,
             &slot.join("data"),
@@ -890,10 +1084,23 @@ impl NodeApps {
             &self.processes,
         )
         .await?;
-        // Write intent before spawning. A host hard crash fails closed; no PID guessing.
-        let mut run_record = run_marker::RunMarker::launching(id, trial_root);
-        let intent = StartIntentOwnership::create(&marker, &run_record)?;
-        inner.markers.insert(id.into(), intent);
+        let marker = slot.join("active.json");
+        let mut run_record = run_marker::RunMarker::launching(id, config.trial_root.clone());
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.shutting_down {
+                return Err(fail("平台正在关闭，不能启动应用。"));
+            }
+            // Existing admitted work may finish, but publication still uses its
+            // original registration and exact intent; it never adopts a swap.
+            if node_app_install::registration_digest(&slot)?.as_deref()
+                != Some(entry.registration_digest.as_str())
+            {
+                return Err(fail("应用登记已变化，不能继续启动。"));
+            }
+            let intent = StartIntentOwnership::create(&marker, &run_record)?;
+            inner.markers.insert(id.into(), intent);
+        }
         #[cfg(test)]
         {
             let pause = self.start_intent_pause.lock().unwrap().take();
@@ -912,8 +1119,9 @@ impl NodeApps {
         )
         .await;
         let runtime = match launched {
-            Ok(value) => value,
+            Ok(runtime) => runtime,
             Err(error) => {
+                let mut inner = self.inner.lock().await;
                 if let Some(runtime) = pending {
                     if let Ok(identity) = runtime.process_identity() {
                         run_record.bind(identity);
@@ -923,30 +1131,19 @@ impl NodeApps {
                             .unwrap()
                             .publish(&marker, &run_record);
                     }
-                    inner.running.insert(
-                        id.into(),
-                        Running {
-                            runtime,
-                            proxy: None,
-                            revision: snapshot.revision,
-                            cleanup_pending: true,
-                        },
-                    );
+                    *resources = Some(Running {
+                        runtime,
+                        proxy: None,
+                    });
                 }
-                // Only a positive launch receipt and this exact intent's file
-                // identity/content permit removal. Never infer safety from an
-                // empty pending handle, an empty directory or an absent PID.
                 if cleanup.permits_intent_removal() {
-                    if let Err(ownership_error) =
-                        inner.markers.get(id).unwrap().remove_if_owned(&marker)
-                    {
+                    if let Err(ownership) = self.retire_owned_marker(id, &mut inner) {
                         inner.errors.insert(
                             id.into(),
                             "启动标记归属发生变化，已保留记录并阻止再次启动。".into(),
                         );
-                        return Err(ownership_error.detail("launchCauseCode", error.code));
+                        return Err(ownership.detail("launchCauseCode", error.code));
                     }
-                    inner.markers.remove(id);
                     inner.errors.insert(
                         id.into(),
                         format!(
@@ -969,25 +1166,25 @@ impl NodeApps {
                 ));
             }
         };
-        let binding = runtime.process_identity().and_then(|identity| {
-            run_record.bind(identity);
-            inner
-                .markers
-                .get_mut(id)
-                .unwrap()
-                .publish(&marker, &run_record)
+        // Persist the owner before proxy creation or any subsequent cleanup wait.
+        *resources = Some(Running {
+            runtime,
+            proxy: None,
         });
+        let binding = {
+            let runtime = &resources.as_ref().unwrap().runtime;
+            let mut inner = self.inner.lock().await;
+            runtime.process_identity().and_then(|identity| {
+                run_record.bind(identity);
+                inner
+                    .markers
+                    .get_mut(id)
+                    .unwrap()
+                    .publish(&marker, &run_record)
+            })
+        };
         if let Err(error) = binding {
-            inner.running.insert(
-                id.into(),
-                Running {
-                    runtime,
-                    proxy: None,
-                    revision: snapshot.revision,
-                    cleanup_pending: true,
-                },
-            );
-            let stopped = self.stop_locked(id, inner).await.is_ok();
+            let stopped = self.stop_entry(id, entry, resources).await.is_ok();
             return Err(ApiError::new(
                 "NODE_APP_RUN_IDENTITY_UNCONFIRMED",
                 "应用运行身份未能完整保存，本次启动已停止或保留收尾句柄，不能报告启动成功。",
@@ -995,16 +1192,15 @@ impl NodeApps {
             .detail("identityCauseCode", error.code)
             .detail("launchCleanupConfirmed", stopped));
         }
-        let (port, token) = match runtime.proxy_target() {
+        let target = resources.as_ref().unwrap().runtime.proxy_target();
+        let (port, token) = match target {
             Ok(target) => target,
             Err(error) => {
-                let _ = self
-                    .finish_failed_start(id, runtime, None, snapshot.revision, inner)
-                    .await;
+                let _ = self.stop_entry(id, entry, resources).await;
                 return Err(error);
             }
         };
-        let proxy = match NodeAppProxy::start_retaining_failed(
+        match NodeAppProxy::start_retaining_failed(
             record.source_path.join(&manifest.web.root),
             manifest.web.entry.clone(),
             port,
@@ -1012,57 +1208,25 @@ impl NodeApps {
         )
         .await
         {
-            Ok(proxy) => proxy,
+            Ok(proxy) => resources.as_mut().unwrap().proxy = Some(proxy),
             Err(failure) => {
-                let shutdown = self
-                    .finish_failed_start(id, runtime, Some(failure.proxy), snapshot.revision, inner)
-                    .await;
+                resources.as_mut().unwrap().proxy = Some(failure.proxy);
+                let cleanup = self.stop_entry(id, entry, resources).await.err();
                 let mut error = failure.error;
-                if let Some(shutdown) = shutdown {
+                if let Some(cleanup) = cleanup {
                     error = error
-                        .detail("shutdownIssues", shutdown.details["shutdownIssues"].clone())
-                        .detail("proxyShutdown", json!(shutdown));
+                        .detail("shutdownIssues", cleanup.details["shutdownIssues"].clone())
+                        .detail("proxyShutdown", json!(cleanup));
                 }
                 return Err(error);
             }
-        };
-        inner.errors.remove(id);
-        inner.running.insert(
-            id.into(),
-            Running {
-                runtime,
-                proxy: Some(proxy),
-                revision: snapshot.revision,
-                cleanup_pending: false,
-            },
-        );
+        }
+        self.inner.lock().await.errors.remove(id);
         Ok(())
     }
 
-    async fn finish_failed_start(
-        &self,
-        id: &str,
-        runtime: NodeRuntimeTrial,
-        proxy: Option<NodeAppProxy>,
-        revision: u64,
-        inner: &mut Inner,
-    ) -> Option<ApiError> {
-        let running = Running {
-            runtime,
-            proxy,
-            revision,
-            cleanup_pending: true,
-        };
-        // Retain the owner before awaiting cleanup so cancellation cannot drop
-        // the only retryable runtime/proxy handle.
-        inner.running.insert(id.into(), running);
-        let (proxy, process) = Self::stop_resources(inner.running.get_mut(id).unwrap()).await;
-        let shutdown = proxy.as_ref().err().cloned();
-        let cleanup = self.finish_stop(id, inner, proxy, process).err();
-        shutdown.or(cleanup)
-    }
     async fn stop_resources(running: &mut Running) -> (Result<()>, Result<TrialStatus>) {
-        let Running { runtime, proxy, .. } = running;
+        let Running { runtime, proxy } = running;
         if let Some(proxy) = proxy.as_ref() {
             proxy.request_stop();
         }
@@ -1076,16 +1240,14 @@ impl NodeApps {
             runtime.stop()
         )
     }
-    async fn stop_locked(&self, id: &str, inner: &mut Inner) -> Result<()> {
-        if let Some(running) = inner.running.get_mut(id) {
-            running.cleanup_pending = true;
-            // Proxy connections/files and the runtime drain independently. A
-            // failed proxy cannot suppress process stop or release its owner.
-            let (proxy, process) = Self::stop_resources(running).await;
-            return self.finish_stop(id, inner, proxy, process);
-        }
-        if has_start_intent_cleanup(&self.root.join(id))? {
-            return Err(run_marker::unknown());
+
+    /// Caller owns this instance's runtime-operation guard. No global lock is
+    /// held while waiting for its original resource owner or orphan stop.
+    async fn stop_admitted(&self, id: &str) -> Result<()> {
+        let entry = self.inner.lock().await.running.get(id).cloned();
+        if let Some(entry) = entry {
+            let mut resources = entry.resources.lock().await;
+            return self.stop_entry(id, &entry, &mut resources).await;
         }
         let result =
             run_marker::inspect(&self.root.join(id), id, run_marker::boot_time_or_unknown())
@@ -1093,22 +1255,78 @@ impl NodeApps {
                 .stop_and_retire(&self.root.join(id))
                 .await;
         if result.is_ok() {
+            let mut inner = self.inner.lock().await;
             inner.errors.remove(id);
             inner.markers.remove(id);
         }
         result
     }
+
+    async fn stop_entry(
+        &self,
+        id: &str,
+        entry: &Arc<RuntimeEntry>,
+        resources: &mut Option<Running>,
+    ) -> Result<()> {
+        entry.set_phase(RUNTIME_STOPPING);
+        let _phase = RuntimePhaseGuard(entry.clone());
+        let result = match resources {
+            Some(running) => {
+                let (proxy, process) = Self::stop_resources(running).await;
+                let mut inner = self.inner.lock().await;
+                self.finish_stop(id, entry, &mut inner, proxy, process)
+            }
+            None => {
+                let result = run_marker::inspect(
+                    &self.root.join(id),
+                    id,
+                    run_marker::boot_time_or_unknown(),
+                )
+                .map_err(|_| run_marker::unknown())?
+                .stop_and_retire(&self.root.join(id))
+                .await;
+                if result.is_ok() {
+                    let mut inner = self.inner.lock().await;
+                    if inner
+                        .running
+                        .get(id)
+                        .is_some_and(|current| Arc::ptr_eq(current, entry))
+                    {
+                        inner.running.remove(id);
+                    }
+                    inner.errors.remove(id);
+                    inner.markers.remove(id);
+                }
+                result
+            }
+        };
+        if result.is_ok() {
+            resources.take();
+        } else {
+            entry.set_phase(RUNTIME_FAILED);
+        }
+        result
+    }
+
     fn finish_stop(
         &self,
         id: &str,
+        entry: &Arc<RuntimeEntry>,
         inner: &mut Inner,
         proxy: Result<()>,
         process: Result<TrialStatus>,
     ) -> Result<()> {
+        if !inner
+            .running
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, entry))
+        {
+            return Err(fail("应用运行归属已变化，未清理替代实例。"));
+        }
         let status = match process {
             Ok(status) if status.process_group_exited => status,
             result => {
-                inner.errors.insert(id.into(),"应用进程尚未确认全部关闭，已保留受管句柄。请重试停止；平台暂不允许退出或启动第二个实例。".into());
+                inner.errors.insert(id.into(), "应用进程尚未确认全部关闭，已保留受管句柄。请重试停止；平台暂不允许退出或启动第二个实例。".into());
                 return Err(result
                     .err()
                     .unwrap_or_else(|| fail("无法确认应用进程组已关闭。")));
@@ -1145,16 +1363,22 @@ impl NodeApps {
     }
 
     pub async fn stop(&self, id: &str) -> Result<Value> {
-        let mut inner = self.inner.lock().await;
-        self.stop_locked(id, &mut inner).await?;
+        self.stop_runtime(id).await?;
+        let inner = self.inner.lock().await;
         let record = self.registration(id)?;
         Ok(self.available_detail(&record, &inner))
     }
 
-    /// Window teardown must remain possible even when source files disappear.
+    /// Closing is always admitted, including after the deletion gate seals.
     pub async fn stop_runtime(&self, id: &str) -> Result<()> {
-        let mut inner = self.inner.lock().await;
-        self.stop_locked(id, &mut inner).await
+        let apps = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let _operation = apps.runtime_operation(&id)?.lock_owned().await;
+            apps.stop_admitted(&id).await
+        })
+        .await
+        .map_err(|_| fail("应用停止任务异常结束，已保留运行记录供核对。"))?
     }
 
     pub async fn running_ids(&self) -> Vec<String> {
@@ -1163,57 +1387,87 @@ impl NodeApps {
             .await
             .running
             .iter()
-            .filter(|(_, run)| !run.cleanup_pending)
+            .filter(|(_, run)| run.phase() == RUNTIME_RUNNING)
             .map(|(id, _)| id.clone())
             .collect()
     }
-
-    /// Includes failed/closing handles whose exact process group still needs
-    /// cleanup. Normal platform exit is blocked while this list is nonempty.
     pub async fn owned_process_ids(&self) -> Vec<String> {
         self.inner.lock().await.running.keys().cloned().collect()
     }
 
     pub async fn restart(&self, id: &str) -> Result<Value> {
-        let mut inner = self.inner.lock().await;
-        self.stop_locked(id, &mut inner).await?;
-        self.start_locked(id, &mut inner).await?;
-        let record = self.registration(id)?;
-        self.detail(&record, &self.manifest(&record)?, &inner)
+        let permit = self.admit_operation(id, "重启应用")?;
+        let apps = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _operation = apps.runtime_operation(&id)?.lock_owned().await;
+            apps.stop_admitted(&id).await?;
+            apps.start_admitted(&id).await
+        })
+        .await
+        .map_err(|_| fail("应用重启任务异常结束，已保留运行记录供核对。"))?
     }
 
-    async fn monitor(&self, inner: &mut Inner) {
-        let ids: Vec<_> = inner.running.keys().cloned().collect();
-        for id in ids {
-            let run = inner.running.get_mut(&id).unwrap();
-            let healthy = run.runtime.status().is_ok_and(|s| s.state == "running")
-                && run.runtime.verify_health().await.is_ok();
-            if !healthy && self.stop_locked(&id, inner).await.is_ok() {
-                inner.errors.insert(
+    async fn monitor(&self) {
+        let entries = self
+            .inner
+            .lock()
+            .await
+            .running
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect::<Vec<_>>();
+        for (id, entry) in entries {
+            if entry.phase() != RUNTIME_RUNNING {
+                continue;
+            }
+            let Ok(operation) = self.runtime_operation(&id) else {
+                continue;
+            };
+            let Ok(_operation) = operation.try_lock_owned() else {
+                continue;
+            };
+            let mut resources = entry.resources.lock().await;
+            let healthy = match resources.as_mut() {
+                Some(run) => {
+                    run.runtime.status().is_ok_and(|s| s.state == "running")
+                        && run.runtime.verify_health().await.is_ok()
+                }
+                None => false,
+            };
+            if !healthy && self.stop_entry(&id, &entry, &mut resources).await.is_ok() {
+                self.inner.lock().await.errors.insert(
                     id,
                     "应用运行状态异常，已关闭页面入口并确认后台进程已停止。".into(),
                 );
             }
-            // A failed cleanup keeps its precise pending-ownership error.
-            // A forced but confirmed cleanup keeps its business/recovery
-            // failure. Neither may be replaced with a false clean message.
         }
     }
 
     pub async fn status(&self, id: &str) -> Result<Value> {
-        let mut inner = self.inner.lock().await;
-        self.monitor(&mut inner).await;
+        let inner = self.inner.lock().await;
         let record = self.registration(id)?;
         Ok(self.available_detail(&record, &inner))
     }
 
     pub async fn open_url(&self, id: &str) -> Result<String> {
-        let mut inner = self.inner.lock().await;
-        self.monitor(&mut inner).await;
-        inner
+        let _permit = self.admit_operation(id, "打开应用页面")?;
+        let _operation = self.runtime_operation(id)?.lock_owned().await;
+        let entry = self
+            .inner
+            .lock()
+            .await
             .running
-            .get_mut(id)
-            .filter(|r| !r.cleanup_pending)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| fail("请先启动应用，再打开页面。"))?;
+        if entry.phase() != RUNTIME_RUNNING {
+            return Err(fail("应用正在启动或停止，暂时不能打开页面。"));
+        }
+        let mut resources = entry.resources.lock().await;
+        resources
+            .as_mut()
             .and_then(|r| r.proxy.as_mut())
             .map(|proxy| proxy.open_url())
             .ok_or_else(|| fail("请先启动应用，再打开页面。"))
@@ -1232,43 +1486,43 @@ impl NodeApps {
     }
 
     pub async fn stop_all(&self) -> Result<()> {
-        self.directory_stopping
-            .store(true, std::sync::atomic::Ordering::Release);
-        let mut inner = self.inner.lock().await;
-        inner.shutting_down = true;
+        let apps = self.clone();
+        tokio::spawn(async move { apps.stop_all_owned().await })
+            .await
+            .map_err(|_| fail("平台停止任务异常结束，运行归属仍保留。"))?
+    }
+    async fn stop_all_owned(&self) -> Result<()> {
+        self.directory_stopping.store(true, Ordering::Release);
+        let ids = {
+            let mut inner = self.inner.lock().await;
+            inner.shutting_down = true;
+            inner.running.keys().cloned().collect::<Vec<_>>()
+        };
         {
-            // Finish accepted local initialization before completing shutdown;
-            // queued initialization checks directory_stopping after admission.
             let _directory = self
                 .directory_changes
                 .lock()
                 .map_err(|_| fail("目录初始化锁不可用。"))?;
         }
-        for running in inner.running.values() {
-            if let Some(proxy) = &running.proxy {
-                proxy.request_stop();
-            }
-        }
-        let drains = inner.running.iter_mut().map(|(id, running)| {
-            running.cleanup_pending = true;
-            let id = id.clone();
-            async move { (id, Self::stop_resources(running).await) }
-        });
-        // Poll every application's runtime and proxy before awaiting any one
-        // blocked file/connection. Keep each Running in the owned map throughout.
-        let results = futures_util::future::join_all(drains).await;
-        let mut error = None;
-        for (id, (proxy, process)) in results {
-            if let Err(failure) = self.finish_stop(&id, &mut inner, proxy, process) {
-                error = Some(failure);
-            }
-        }
-        error.map_or(Ok(()), Err)
+        let results =
+            futures_util::future::join_all(ids.iter().map(|id| self.stop_runtime(id))).await;
+        results.into_iter().collect::<Result<Vec<_>>>().map(|_| ())
     }
 
     pub async fn monitor_tick(&self) {
-        let mut inner = self.inner.lock().await;
-        self.monitor(&mut inner).await;
+        let apps = self.clone();
+        let _ = tokio::spawn(async move { apps.monitor().await }).await;
+    }
+
+    #[cfg(test)]
+    async fn fixture_running(
+        &self,
+        id: &str,
+    ) -> tokio::sync::OwnedMappedMutexGuard<Option<Running>, Running> {
+        let resources = self.inner.lock().await.running[id].resources.clone();
+        tokio::sync::OwnedMutexGuard::map(resources.lock_owned().await, |value| {
+            value.as_mut().unwrap()
+        })
     }
 }
 

@@ -93,6 +93,7 @@ pub struct NodeDevelopmentSourceLease<'a> {
 struct DevelopmentActiveToken {
     active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     id: String,
+    _operation: NodeOperationPermit,
 }
 impl Drop for DevelopmentActiveToken {
     fn drop(&mut self) {
@@ -284,10 +285,30 @@ impl NodeApps {
         self.source_lease(id, true).await
     }
 
+    pub(crate) async fn development_build_source_lease_admitted(
+        &self,
+        id: &str,
+        permit: &NodeOperationPermit,
+    ) -> Result<NodeDevelopmentSourceLease<'_>> {
+        permit.validate(self, id)?;
+        self.source_lease_admitted(id, true, permit.clone()).await
+    }
+
     async fn source_lease(
         &self,
         id: &str,
         require_stopped: bool,
+    ) -> Result<NodeDevelopmentSourceLease<'_>> {
+        let permit = self.admit_operation(id, "Git 或源码操作")?;
+        self.source_lease_admitted(id, require_stopped, permit)
+            .await
+    }
+
+    async fn source_lease_admitted(
+        &self,
+        id: &str,
+        require_stopped: bool,
+        permit: NodeOperationPermit,
     ) -> Result<NodeDevelopmentSourceLease<'_>> {
         let inner = self.inner.lock().await;
         if inner.shutting_down {
@@ -330,6 +351,7 @@ impl NodeApps {
             active: Arc::new(DevelopmentActiveToken {
                 active: self.development_active.clone(),
                 id: id.into(),
+                _operation: permit,
             }),
         };
         lease.validate()?;
@@ -339,6 +361,7 @@ impl NodeApps {
     /// Binding is explicit and never clones, initializes Git, or changes source
     /// files. An external application already has its authoritative source.
     pub async fn bind_development_source(&self, id: &str, source: PathBuf) -> Result<Value> {
+        let _operation = self.admit_operation(id, "源码绑定")?;
         let inner = self.inner.lock().await;
         self.bind_development_source_locked(id, source, &inner)
     }
@@ -350,7 +373,9 @@ impl NodeApps {
         expected_source_id: &str,
         expected_digest: &str,
         expected_generation: &str,
+        permit: &NodeOperationPermit,
     ) -> Result<Value> {
+        permit.validate(self, id)?;
         let inner = self.inner.lock().await;
         self.require_not_removing(id)?;
         let record = self.registration(id)?;

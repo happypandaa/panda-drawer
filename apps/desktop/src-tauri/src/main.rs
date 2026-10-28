@@ -1775,6 +1775,15 @@ async fn node_app_delete_preview(
         .await?
 }
 #[tauri::command]
+async fn node_app_delete_status(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    state.node_apps.deletion_operation_status(&app_id)
+}
+#[tauri::command]
 async fn node_app_delete(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -2244,7 +2253,7 @@ fn main() {
             source_list,source_info,source_inspect,source_acquire,source_cancel,source_import_cleanup,
             source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
             project_git_status,project_git_versions,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
-            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete,
+            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             choose_path,
             project_export,

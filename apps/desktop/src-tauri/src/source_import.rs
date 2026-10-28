@@ -23,6 +23,8 @@ pub(super) async fn source_import_recover(
     lease
         .run(async move {
             let state = app.state::<AppState>();
+            // Recovery coordinates shared source transactions. Runtime stops
+            // use instance locks and never wait for this shared mutex.
             let _operation = state.node_windows.operations.lock().await;
             state
                 .handle
@@ -45,7 +47,8 @@ pub(super) async fn source_import_publish(
     lease
         .run(async move {
             let state = app.state::<AppState>();
-            let _operation = state.node_windows.operations.lock().await;
+            let _admission = state.node_apps.admit_operation(&app_id, "发布源码")?;
+            let _operation = state.node_windows.instance_operation(&app_id).await;
             state
                 .handle
                 .source_import_publish(state.node_apps.clone(), source_task_id, app_id)

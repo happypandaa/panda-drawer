@@ -103,10 +103,22 @@ async fn owned_node_git_pending_and_dropped_request_keep_source_token_task_and_o
             apps.start(&id).await.unwrap_err().code,
             "NODE_DEVELOPMENT_BUSY"
         );
-        assert_eq!(
-            apps.delete_preview(&id).await.unwrap_err().code,
-            "NODE_DEVELOPMENT_BUSY"
+        let registration = paths
+            .data_root()
+            .join("node-apps")
+            .join(&id)
+            .join("registration.json");
+        let before = fs::read(&registration).unwrap();
+        assert!(apps.delete_preview(&id).await.unwrap()["blocker"].is_null());
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        let deletion = apps.begin_delete_operation(&id).unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), deletion.wait_ready())
+                .await
+                .is_err()
         );
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        drop(deletion);
         release.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(4), async {
             while registry

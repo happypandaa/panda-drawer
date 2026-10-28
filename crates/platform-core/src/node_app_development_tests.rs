@@ -22,10 +22,7 @@ async fn owned_node_source_token_outlives_borrowed_lease_without_opening_instanc
         fixture.apps.start(&id).await.unwrap_err().code,
         "NODE_DEVELOPMENT_BUSY"
     );
-    assert_eq!(
-        fixture.apps.delete_preview(&id).await.unwrap_err().code,
-        "NODE_DEVELOPMENT_BUSY"
-    );
+    assert!(fixture.apps.delete_preview(&id).await.unwrap()["blocker"].is_null());
     assert!(fixture
         .apps
         .development_build_source_lease(&id)
@@ -111,10 +108,7 @@ async fn source_operation_does_not_hold_global_mutex_and_blocks_instance_mutatio
         "NODE_DEVELOPMENT_BUSY"
     );
     assert!(fixture.apps.development_source_lease(&id).await.is_err());
-    assert_eq!(
-        fixture.apps.delete_preview(&id).await.unwrap_err().code,
-        "NODE_DEVELOPMENT_BUSY"
-    );
+    assert!(fixture.apps.delete_preview(&id).await.unwrap()["blocker"].is_null());
     assert_eq!(fixture.apps.list().await.unwrap().len(), 1);
     fixture.apps.stop_runtime(&id).await.unwrap();
     lease.validate().unwrap();
@@ -123,6 +117,212 @@ async fn source_operation_does_not_hold_global_mutex_and_blocks_instance_mutatio
         .apps
         .install_target_snapshot(Some(&id))
         .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn deletion_waits_for_real_source_owner_and_preserves_admitted_work_and_other_instance() {
+    use std::time::Duration;
+
+    let fixture = Fixture::new();
+    let id = fixture.register().await;
+    let sentinel = fixture.source.join("disposable-author-sentinel");
+    fs::write(&sentinel, b"external source survives stop and delete").unwrap();
+    let source_before = fs::read(fixture.source.join("server/main.mjs")).unwrap();
+    let lease = fixture
+        .apps
+        .development_build_source_lease(&id)
+        .await
+        .unwrap();
+    let worker = lease.keep_alive();
+    let preview = fixture.apps.delete_preview(&id).await.unwrap();
+    let registration = fixture.apps.root.join(&id).join("registration.json");
+    let registration_before = fs::read(&registration).unwrap();
+    let deletion = fixture.apps.delete(
+        &id,
+        DeleteNodeAppInput {
+            expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+        },
+    );
+    tokio::pin!(deletion);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut deletion)
+            .await
+            .is_err()
+    );
+    let status = fixture.apps.deletion_operation_status(&id).unwrap();
+    assert_eq!(status["active"], true);
+    assert_eq!(status["phase"], "waiting");
+    assert_eq!(status["waitingFor"], json!(["Git 或源码操作"]));
+    assert!(
+        fixture.apps.inner.try_lock().is_ok(),
+        "waiting for a source owner must release the global table"
+    );
+
+    // The existing capability stays valid while new capabilities are sealed.
+    lease.validate().unwrap();
+    assert_eq!(
+        fixture.apps.start(&id).await.unwrap_err().code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture.apps.restart(&id).await.unwrap_err().code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture
+            .apps
+            .development_source_lease(&id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture
+            .apps
+            .development_build_source_lease(&id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture
+            .apps
+            .development_restore_source_lease(&id)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture
+            .apps
+            .install_target_snapshot(Some(&id))
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture
+            .apps
+            .bind_development_source(&id, fixture.source.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    assert_eq!(
+        fixture
+            .apps
+            .save(
+                &id,
+                SaveConfigurationRequest {
+                    revision: 1,
+                    values: BTreeMap::new(),
+                    secrets: BTreeMap::new()
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    let mut opened = false;
+    assert_eq!(
+        fixture
+            .apps
+            .with_operation_admission(&id, "打开窗口", || {
+                opened = true;
+                Ok(())
+            })
+            .unwrap_err()
+            .code,
+        "NODE_APP_DELETING"
+    );
+    assert!(!opened, "a sealed instance must not create a late window");
+    assert_eq!(
+        fixture.apps.begin_delete_operation(&id).err().unwrap().code,
+        "NODE_APP_DELETING"
+    );
+    let detail = fixture.apps.configuration(&id).await.unwrap();
+    assert_eq!(detail["configuration"]["canStart"], false);
+    assert!(detail["lastError"].as_str().unwrap().contains("等待"));
+    assert_eq!(fs::read(&registration).unwrap(), registration_before);
+
+    let other_source = fixture
+        .source
+        .with_file_name("disposable-other-author-tree");
+    copy_artificial_migration_tree(&fixture.source, &other_source);
+    let other_manifest = other_source.join("local-app.json");
+    let mut declaration: Value =
+        serde_json::from_slice(&fs::read(&other_manifest).unwrap()).unwrap();
+    declaration["app"]["id"] = json!("disposable.other-author-tree");
+    crate::builds::atomic_json(&other_manifest, &declaration).unwrap();
+    let other = tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture.apps.register(other_source.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let other_id = other["id"].as_str().unwrap();
+    let other_registration = fixture.apps.root.join(other_id).join("registration.json");
+    let other_before = fs::read(&other_registration).unwrap();
+    let other_lease = tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture.apps.development_source_lease(other_id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    other_lease.validate().unwrap();
+    drop(other_lease);
+
+    // Dropping a borrowed request cannot release the actual worker's token.
+    drop(lease);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut deletion)
+            .await
+            .is_err()
+    );
+    assert_eq!(fs::read(&registration).unwrap(), registration_before);
+    assert_eq!(
+        fs::read(&sentinel).unwrap(),
+        b"external source survives stop and delete"
+    );
+    drop(worker);
+    let result = tokio::time::timeout(Duration::from_secs(3), &mut deletion)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["operationOutcome"], "deleted");
+    assert!(!registration.exists());
+    assert_eq!(
+        fixture.apps.deletion_operation_status(&id).unwrap()["active"],
+        false
+    );
+    assert_eq!(
+        fs::read(&sentinel).unwrap(),
+        b"external source survives stop and delete"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("server/main.mjs")).unwrap(),
+        source_before
+    );
+    assert_eq!(fs::read(&other_registration).unwrap(), other_before);
+    assert!(other_source.join("disposable-author-sentinel").is_file());
+    fixture
+        .apps
+        .development_source_lease(other_id)
+        .await
+        .unwrap()
+        .validate()
         .unwrap();
 }
 
