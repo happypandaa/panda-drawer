@@ -18,8 +18,9 @@ import { TaskCenter } from './TaskCenter';
 import { Modal } from './Modal';
 import { NodeProjectCard, ProjectCard } from './ProjectCard';
 import { NodeAppsPanel } from './NodeAppsPanel';
+import { NodeDeletionTasksNotice } from './NodeDeletionTasksNotice';
 import type { NodeAppRequest } from './NodeAppsPanel';
-import type { NodeAppDeleteResult, NodeAppDetail } from './node-app-types';
+import type { NodeAppDeleteResult, NodeAppDetail, NodeDeletionTaskSnapshot } from './node-app-types';
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
@@ -72,6 +73,7 @@ function App() {
   const settingsBusy = environmentBusy || gitEnvironmentBusy || localDataPending || localDataLocked;
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
+  const [nodeDeletionTasks, setNodeDeletionTasks] = useState<NodeDeletionTaskSnapshot[]>([]);
   const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
   const [nodeAddRequest, setNodeAddRequest] = useState(0);
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
@@ -164,6 +166,18 @@ function App() {
     if (result.metadataCleanupPending || result.durabilityConfirmed === false) showError(origin, `${outcome} 但删除后的磁盘同步收尾尚未完成。${result.warning ?? '请刷新并核对当前目录。'} 不要再次提交删除。`, 'main', { nextScope: 'projects:page' });
     else showSuccess(origin, outcome, 'main', 'projects:page');
   }, [capture, showError, showSuccess]);
+  const acceptNodeDeletionTasks = useCallback((values: NodeDeletionTaskSnapshot[]) => {
+    setNodeDeletionTasks(previous => {
+      const tasks = new Map(previous.map(task => [task.taskId, task]));
+      for (const task of values) {
+        const current = tasks.get(task.taskId);
+        if (!current || task.appId === current.appId && task.targetRevision === current.targetRevision && task.journalRevision >= current.journalRevision
+          && (task.journalRevision > current.journalRevision || task.phase === current.phase) && (!current.renamedAny || task.renamedAny)
+          && (!['deleted', 'abandoned'].includes(current.phase) || task.phase === current.phase)) tasks.set(task.taskId, task);
+      }
+      return [...tasks.values()];
+    });
+  }, []);
   function requestNodeApp(app: NodeAppDetail, intent: 'enter' | 'configure' | 'details' | 'delete') {
     if (nodeDraft.pending || nodeModalOpen || deleteProject) return;
     setNodeRequest({ app, intent, token: ++nodeRequestToken.current });
@@ -224,6 +238,7 @@ function App() {
         origin = reset();
         clearHandoff();
         setBuildResults({});
+        setNodeDeletionTasks([]);
         showError(origin, '工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
       const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
@@ -587,13 +602,15 @@ function App() {
     const ready = projectReady(project);
     return matchesQuery && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
   });
-  const filteredNodeApps = nodeApps.filter((app) => {
+  const deletingNodeIds = new Set(nodeDeletionTasks.filter(task => !['deleted', 'abandoned'].includes(task.phase)).map(task => task.appId));
+  const availableNodeApps = nodeApps.filter(app => !deletingNodeIds.has(app.id));
+  const filteredNodeApps = availableNodeApps.filter((app) => {
     const matches = `${app.name} ${app.id} ${app.sourcePath} Node 服务项目`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
     const ready = nodeReady(app);
     return matches && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
   });
-  const attentionCount = projects.filter((project) => !projectReady(project)).length + nodeApps.filter((app) => !nodeReady(app)).length;
-  const runningCount = nodeApps.filter((app) => app.state === 'running').length;
+  const attentionCount = projects.filter((project) => !projectReady(project)).length + availableNodeApps.filter((app) => !nodeReady(app)).length;
+  const runningCount = availableNodeApps.filter((app) => app.state === 'running').length;
   const filterChoices = [['all', '全部'], ['ready', '可使用'], ['attention', '需要处理']] as const;
   // Disposable validation projects follow the "可丢弃" naming convention; keep them out of the way unless searched for.
   const isDisposable = (name: string) => name.includes('可丢弃');
@@ -603,7 +620,7 @@ function App() {
   const disposableProjects = groupDisposable ? filteredProjects.filter((project) => isDisposable(project.name)) : [];
   const disposableNodeApps = groupDisposable ? filteredNodeApps.filter((app) => isDisposable(app.name)) : [];
   const disposableCount = disposableProjects.length + disposableNodeApps.length;
-  const totalProjects = projects.length + nodeApps.length;
+  const totalProjects = projects.length + availableNodeApps.length;
   const filteredCount = filteredProjects.length + filteredNodeApps.length;
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
   const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
@@ -628,7 +645,8 @@ function App() {
   }, [clearHandoff]);
   const localDataUnavailable = !inDesktop || !info || workspaceBusy || environmentBusy || gitEnvironmentBusy
     || nodeDraft.pending || nodeDraft.dirty || nodeModalOpen || Boolean(overview) || Boolean(deleteProject) || deletePending
-    || creating || Boolean(opening) || building.length > 0 || activeLifecycleTasks.length > 0 || Object.values(tasks).some(task => !task.final);
+    || creating || Boolean(opening) || building.length > 0 || activeLifecycleTasks.length > 0 || Object.values(tasks).some(task => !task.final)
+    || nodeDeletionTasks.some(task => !['deleted', 'abandoned'].includes(task.phase));
   const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending || deletePending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending || deletePending} detailsDisabled={nodeDraft.pending || deletePending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openDelete(project)} />;
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
@@ -660,6 +678,7 @@ function App() {
         <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
+          {info && inDesktop && !localDataLocked && <NodeDeletionTasksNotice instanceId={info.instanceId} revision={refreshVersion} tasks={nodeDeletionTasks} enabled={!workspaceBusy && !nodeDraft.pending && !nodeModalOpen && !deleteProject} onTasks={acceptNodeDeletionTasks} onOpen={task => { if (nodeDraft.pending || nodeModalOpen || deleteProject) return; setNodeRequest({ app: { id: task.appId, name: task.name }, intent: 'delete-task', task, token: ++nodeRequestToken.current }); }} />}
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
           {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>工作区已暂停，需要查看处理</strong><p>请查看迁移任务结果并刷新状态；已有窗口的草稿保留。</p></div></div>}
@@ -680,11 +699,11 @@ function App() {
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
               <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && addActions('empty-add-actions')}</div>
             </section>}
-          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={nodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
+          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={availableNodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
       </main>
       <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `显示 ${filteredCount} / 共 ${totalProjects} 个应用` : `共 ${totalProjects} 个应用`}{runningCount > 0 ? ` · ${runningCount} 个运行中` : ''}</span><span title={info?.workspaceRoot}><ShieldCheck size={12} aria-hidden="true" />数据保存在本机</span></footer>
       {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onOpenHistory={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('history'); }} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onOpenSpace={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('overview'); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} projects={projects} nodeApps={nodeApps} />}
-        {!localDataLocked && <NodeAppsPanel apps={nodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
+        {!localDataLocked && <NodeAppsPanel apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {archiveImportOpen && <ImportPanel disabled={workspaceBusy} instanceId={info?.instanceId} onTask={acceptLifecycleTask} onCompleted={() => void refresh()} onClose={() => setArchiveImportOpen(false)} />}
         {showCreate && <Modal title="新建项目" titleIcon={<Plus size={20} />} description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>

@@ -18,7 +18,7 @@ import { AiProjectHelp } from './AiProjectHelp';
 import type { SourceInstallCandidate } from './NodeInstallPanel';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
-import type { NodeAppDeleteResult, NodeAppDetail, NodeConfigurationInput, NodeSecretChange } from './node-app-types';
+import type { NodeAppDeleteResult, NodeAppDetail, NodeConfigurationInput, NodeDeletionTaskSnapshot, NodeSecretChange } from './node-app-types';
 
 type Draft = NodeConfigurationDraft;
 type SecretDraft = Draft['secrets'][string];
@@ -58,12 +58,14 @@ export function nodeConfigurationInput(app: NodeAppDetail, draft: Draft): NodeCo
   return { revision: app.configuration.revision, values, secrets };
 }
 
-export interface NodeAppRequest { app: NodeAppDetail; intent: 'enter' | 'configure' | 'details' | 'delete'; token: number }
-export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImportArchive, enabled, instanceId, request, addRequest = 0, onAppChanged, onAppDeleted, onModalStateChange, onDraftStateChange, onTask }: {
+export type NodeAppRequest = { app: NodeAppDetail; intent: 'enter' | 'configure' | 'details' | 'delete'; token: number }
+  | { app: Pick<NodeAppDetail, 'id' | 'name'>; intent: 'delete-task'; task: NodeDeletionTaskSnapshot; token: number };
+export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImportArchive, enabled, instanceId, request, addRequest = 0, onAppChanged, onAppDeleted, onDeletionTaskChanged, onDeletionAbandoned, onModalStateChange, onDraftStateChange, onTask }: {
   apps?: NodeAppDetail[]; workspacePath?: string; platformVersion?: string; onImportArchive?: () => void;
   enabled: boolean; request?: NodeAppRequest | null; addRequest?: number;
   instanceId?: string; onTask?: (task: TaskRecord) => void;
   onAppChanged?: (app: NodeAppDetail) => void; onAppDeleted?: (appId: string, result: NodeAppDeleteResult) => void; onModalStateChange?: (open: boolean) => void;
+  onDeletionTaskChanged?: (task: NodeDeletionTaskSnapshot) => void; onDeletionAbandoned?: (task: NodeDeletionTaskSnapshot) => void;
   onDraftStateChange: (state: { dirty: boolean; pending: boolean }) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -90,7 +92,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   const [installPending, setInstallPending] = useState(false);
   const [installTask, setInstallTask] = useState<TaskRecord | null>(null);
   const [installInstance, setInstallInstance] = useState(instanceId);
-  const [deleteTarget, setDeleteTarget] = useState<{ app: NodeAppDetail; token: number; instanceId?: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ app: Pick<NodeAppDetail, 'id' | 'name'>; task?: NodeDeletionTaskSnapshot; token: number; instanceId?: string } | null>(null);
   const [deletionPending, setDeletionPending] = useState(false);
   const deleteTargetRef = useRef(deleteTarget); deleteTargetRef.current = deleteTarget;
   const deletionSequence = useRef(0);
@@ -185,6 +187,12 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     if (deleteTargetRef.current) { seenRequest.current = request.token; return; }
     if (operation.current || directoryPending || developmentPending || gitDraft.pending) return;
     seenRequest.current = request.token;
+    if (request.intent === 'delete-task') {
+      if (!enabled || pendingOperation.current || loading || (dirty && selected.current === request.app.id)) return;
+      statusRead.current++;
+      const target = { app: request.app, task: request.task, token: ++deletionSequence.current, instanceId };
+      deleteTargetRef.current = target; setDeleteTarget(target); return;
+    }
     if (request.intent === 'delete') { openDeletion(request.app); return; }
     if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
     void select(request.app, request.intent === 'enter' || request.intent === 'configure' ? 'configuration' : 'overview', request.intent === 'enter');
@@ -332,7 +340,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     event.preventDefault(); changeTab(values[next]); document.getElementById(`${base}-${values[next]}-tab`)?.focus();
   }
 
-  const deleteDialog = deleteTarget && <NodeAppDeleteDialog key={deleteTarget.token} app={deleteTarget.app} enabled={enabled && !pending && !installPending && !directoryPending && !loading} instanceId={instanceId} onClose={clearDeletion} onPendingChange={value => { if (deleteTargetRef.current?.token === deleteTarget.token) setDeletionPending(value); }} onDeleted={acceptDeletion} />;
+  const deleteDialog = deleteTarget && <NodeAppDeleteDialog key={deleteTarget.token} app={deleteTarget.app} initialTask={deleteTarget.task} enabled={enabled && !pending && !installPending && !directoryPending && !loading} instanceId={instanceId} onClose={clearDeletion} onPendingChange={value => { if (deleteTargetRef.current?.token === deleteTarget.token) setDeletionPending(value); }} onDeleted={acceptDeletion} onTaskChanged={onDeletionTaskChanged} onAbandoned={task => { if (deleteTargetRef.current?.token !== deleteTarget.token || currentInstance.current !== deleteTarget.instanceId) return; clearDeletion(); onDeletionAbandoned?.(task); }} />;
 
   return <>
     {modalOpen && detail && <Modal title={detail.name} titleIcon={<Server size={22} aria-hidden="true" />} description="Node 服务 · 本机独立数据" headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" wide closeDisabled={Boolean(pending) || installPending || deletionPending || developmentPending || gitDraft.pending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
