@@ -16,6 +16,7 @@ export interface NodeAppDeletePreview {
   deletePaths: string[];
   preservedPaths: string[];
   expectedRevision: string;
+  blocker?: { code: string; message: string } | null;
 }
 
 export interface NodeAppDeleteResult {

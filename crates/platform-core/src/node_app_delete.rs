@@ -47,18 +47,49 @@ fn check_root(slot: &Path, expected: &PersistedIdentity) -> Result<()> {
     Ok(())
 }
 
+fn has_active_marker(slot: &Path) -> Result<bool> {
+    // Any object at the marker name is evidence, including a dangling link.
+    // Presence checks never follow it or infer ownership from its contents.
+    match fs::symlink_metadata(slot.join("active.json")) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn run_recovery_blocker(slot: &Path, owns_runtime: bool) -> Result<Option<ApiError>> {
+    let cleanup_pending = has_start_intent_cleanup(slot)?;
+    if cleanup_pending || has_active_marker(slot)? && !owns_runtime {
+        let reason = if cleanup_pending {
+            "上次启动的安全关闭与标记收尾结果无法确认"
+        } else {
+            "上次运行的安全关闭结果无法确认"
+        };
+        return Ok(Some(
+            ApiError::new(
+                "NODE_APP_RUN_RECOVERY_REQUIRED",
+                format!("{reason}，本次未删除文件。请保留应用数据和运行记录，先完成运行现场核对；重复确认删除无法解除此保护。"),
+            )
+            .outcome("not_deleted"),
+        ));
+    }
+    Ok(None)
+}
+
 impl NodeApps {
     /// Preview reads registration, owned directory identity and optional bounded
     /// display metadata. It never verifies the complete installed program or
     /// opens private configuration, so damaged applications remain removable.
     pub async fn delete_preview(&self, id: &str) -> Result<Value> {
-        let _inner = self.inner.lock().await;
+        let inner = self.inner.lock().await;
         self.require_no_development_operation(id)?;
         self.require_no_source_restore(id)?;
         let record = self.registration(id)?;
         let slot = self.root.join(id);
         ordinary_path(&slot, true)?;
         let expected_revision = revision(&slot)?;
+        let blocker = run_recovery_blocker(&slot, inner.running.contains_key(id))?
+            .map(|error| json!({"code":error.code,"message":error.message}));
         let managed = record.managed.is_some();
         // The name is display metadata, not permission to execute this program.
         // `manifest()` verifies every installed file, which can make opening the
@@ -86,7 +117,7 @@ impl NodeApps {
         Ok(
             json!({"appId":id,"name":name,"ownership":if managed {"managed"} else {"external"},
             "platformRoot":slot,"sourcePath":record.source_path,"deletePaths":delete_paths,
-            "preservedPaths":preserved,"expectedRevision":expected_revision}),
+            "preservedPaths":preserved,"expectedRevision":expected_revision,"blocker":blocker}),
         )
     }
 
@@ -110,11 +141,13 @@ impl NodeApps {
             ));
         }
         self.stop_locked(id, &mut inner).await?;
-        if inner.running.contains_key(id)
-            || slot.join("active.json").try_exists()?
-            || has_start_intent_cleanup(&slot)?
-        {
-            return Err(fail("应用尚未完成安全关闭，未删除文件；请保留运行现场。"));
+        if let Some(error) = run_recovery_blocker(&slot, inner.running.contains_key(id))? {
+            return Err(error);
+        }
+        if inner.running.contains_key(id) || has_active_marker(&slot)? {
+            return Err(
+                fail("应用尚未完成安全关闭，未删除文件；请保留运行现场。").outcome("not_deleted")
+            );
         }
         let managed = record.managed.is_some();
         let root_identity =
