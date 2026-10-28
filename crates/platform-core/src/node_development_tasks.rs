@@ -89,7 +89,7 @@ impl NodeDevelopmentTasks {
         }
         let task = self
             .tasks
-            .create_workspace_operation("nodeDevelopmentBuild")?;
+            .create_node_operation(&app_id, "nodeDevelopmentBuild")?;
         let lease = match self
             .store
             .reserve_task(&format!("node-development:{app_id}"), &task.task_id)
@@ -117,7 +117,7 @@ impl NodeDevelopmentTasks {
                 source_lease.validate()?;
                 let source = source_lease.source().clone();
                 let owner: Arc<dyn Send + Sync> = Arc::new((lease.clone(), source_lease.keep_alive(), apps.clone()));
-                let processes = crate::node_development_build::NodeProcessScope::new(manager.store.processes(), owner.clone());
+                let processes = crate::node_development_build::NodeProcessScope::new(manager.store.processes(), owner.clone()).with_project_ownership(crate::node_project_ownership::NodeProjectOwnership::new(manager.paths.data_root().into(), manager.paths.workspace_root().into()), app_id.clone());
                 let git = crate::node_development_git::NodeGit::new(manager.git.clone()).with_stop(stop.clone())
                     .with_process_scope(processes.processes.clone(), processes.owner.clone());
                 let before = git.status(&source.source_root).await?;
@@ -133,6 +133,8 @@ impl NodeDevelopmentTasks {
                 if !build_root.try_exists()? { std::fs::create_dir(&build_root)?; }
                 crate::projects::check_no_symlinks(&build_root, false)?;
                 let operation = build_root.join(&task_id);
+                let ownership = crate::node_project_ownership::NodeProjectOwnership::new(manager.paths.data_root().into(), manager.paths.workspace_root().into());
+                ownership.record_build(&app_id, &task_id)?;
                 let output = crate::node_development_build::build_repository_scoped(&source.source_root, &operation, &tools, stop.clone(), cancel.clone(), &before.scope.included_paths, processes).await?;
                 source.validate()?;
                 source_lease.validate()?;
@@ -145,7 +147,7 @@ impl NodeDevelopmentTasks {
                 check(&cancel)?;
                 let sources = manager.sources.as_ref().map_err(Clone::clone)?;
                 let name = crate::node_app_manifest::TrialManifest::load(&source.source_root).map_err(|_| ApiError::new("NODE_DEVELOPMENT_CHANGED", "源码清单已改变。"))?.app.name;
-                let capture = sources.capture_built_output(output, Some(format!("{name} · 开发构建")), commit.clone(), stop.clone()).await?;
+                let capture = sources.capture_built_output(output, app_id.clone(), Some(format!("{name} · 开发构建")), commit.clone(), stop.clone()).await?;
                 loop {
                     let record = manager.tasks.task(&capture.task_id)?;
                     if record.status.is_final() {
@@ -161,7 +163,17 @@ impl NodeDevelopmentTasks {
                 }
             }).catch_unwind().await;
             let result = result.unwrap_or_else(|_| Err(interrupted()));
+            let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+                manager.paths.data_root().into(),
+                manager.paths.workspace_root().into(),
+            );
+            let result = match ownership.record_build(&app_id, &task_id) {
+                Ok(()) => result,
+                Err(error) => Err(error),
+            };
             let _ = manager.tasks.finish(&task_id, result);
+            drop(operation);
+            drop(lease);
         });
         // Preserve completed outcomes for the shutdown join; panic is not success.
         runners.push(runner);

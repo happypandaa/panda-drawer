@@ -502,6 +502,94 @@ impl BuildManager {
             .insert(record.task_id.clone(), record.clone());
         Ok(record)
     }
+    /// Persist project ownership before accepting any Node/source work.
+    pub(crate) fn create_node_operation(
+        &self,
+        app_id: &str,
+        kind: &str,
+    ) -> Result<TaskRecord, ApiError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
+        }
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        let record = TaskRecord {
+            task_id: format!("task_{}", Uuid::new_v4().simple()),
+            project_id: None,
+            task_type: kind.into(),
+            status: TaskStatus::Queued,
+            phase: "queued".into(),
+            result: None,
+            error: None,
+        };
+        ownership.record_task(app_id, &record.task_id)?;
+        ensure_dir(&self.task_dir(&record.task_id))?;
+        ownership.record_task(app_id, &record.task_id)?;
+        atomic_json(&self.task_dir(&record.task_id).join("task.json"), &record)?;
+        self.registry
+            .lock()
+            .unwrap()
+            .records
+            .insert(record.task_id.clone(), record.clone());
+        Ok(record)
+    }
+    pub(crate) fn record_node_source(
+        &self,
+        task: &str,
+        owner: &str,
+        source: &str,
+    ) -> Result<(), ApiError> {
+        let mut registry = self.registry.lock().unwrap();
+        let record = registry
+            .records
+            .get_mut(task)
+            .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task was not found"))?;
+        if !matches!(record.task_type.as_str(), "sourceAcquire" | "sourceCapture")
+            || record.status.is_final()
+        {
+            return Err(ApiError::new("SOURCE_IMPORT_INVALID", "来源任务身份无效。"));
+        }
+        record.result = Some(json!({"sourceId":source,"ownerAppId":owner}));
+        atomic_json(&self.task_dir(task).join("task.json"), record)
+    }
+    /// Called after project writers have ended. The deletion journal normally
+    /// removed task directories already; this also supports explicit import cleanup.
+    pub(crate) fn forget_owned_tasks(&self, ids: &[String]) -> Result<(), ApiError> {
+        let mut registry = self.registry.lock().unwrap();
+        for id in ids {
+            if !valid_task_id(id) {
+                return Err(ApiError::new("INVALID_TASK_ID", "Invalid task ID"));
+            }
+            if registry
+                .records
+                .get(id)
+                .is_some_and(|task| !task.status.is_final())
+            {
+                return Err(ApiError::new(
+                    "NODE_PROJECT_TASK_ACTIVE",
+                    "项目任务尚未结束，不能清除。",
+                ));
+            }
+            let path = self.task_dir(id);
+            crate::projects::check_no_symlinks(&path, true)?;
+            if path.exists() {
+                let saved: TaskRecord = serde_json::from_slice(&fs::read(path.join("task.json"))?)?;
+                if saved.task_id != *id || !saved.status.is_final() {
+                    return Err(ApiError::new(
+                        "NODE_PROJECT_TASK_CHANGED",
+                        "项目任务身份或状态已变化。",
+                    ));
+                }
+                fs::remove_dir_all(&path)?;
+                fs::File::open(path.parent().unwrap())?.sync_all()?;
+            }
+            registry.records.remove(id);
+            registry.legacy_build_times.remove(id);
+        }
+        Ok(())
+    }
     /// Workspace management holds its own exclusive gate and has no project lease.
     pub(crate) fn create_workspace_operation(&self, kind: &str) -> Result<TaskRecord, ApiError> {
         if self.stopping.load(Ordering::Acquire) {

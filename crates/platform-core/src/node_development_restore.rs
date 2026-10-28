@@ -5,6 +5,7 @@ use crate::source_restore_guard::{PendingSourceRestore, SourceRestoreState};
 use fs2::FileExt;
 
 const RESTORE_ROOT: &str = "local-projects-node-restores";
+const PREPARING_ROOT: &str = "local-projects-node-restore-preparing";
 const MAX_JOURNAL: u64 = 4 * 1024 * 1024;
 const MAX_OPERATIONS: usize = 1000;
 const MAX_JOURNAL_TOTAL: u64 = 16 * 1024 * 1024;
@@ -542,7 +543,35 @@ pub(crate) fn require_clear(root: &Path) -> Result<(), ApiError> {
 struct OperationLock {
     _file: File,
 }
-fn lock(root: &Path) -> Result<OperationLock, ApiError> {
+fn prepare_restore_directory(
+    path: &Path,
+    record: &mut impl FnMut(Option<crate::file_identity::PersistedIdentity>) -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    record(None)?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => record(None)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            // If an outside writer won this name after reservation, fail rather
+            // than capturing its directory as platform-owned recovery material.
+            builder.create(path)?;
+            let identity =
+                crate::file_identity::PersistedIdentity::capture(path).map_err(|_| changed())?;
+            record(Some(identity))?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn lock(
+    root: &Path,
+    mut record_materials: impl FnMut(
+        Option<crate::file_identity::PersistedIdentity>,
+    ) -> Result<(), ApiError>,
+) -> Result<OperationLock, ApiError> {
     let git = root.join(".git");
     check_no_symlinks(&git, false)?;
     if !fs::symlink_metadata(&git)?.is_dir() {
@@ -550,7 +579,7 @@ fn lock(root: &Path) -> Result<OperationLock, ApiError> {
     }
     let parent = operations(root);
     check_no_symlinks(&parent, true)?;
-    private_dir(&parent)?;
+    prepare_restore_directory(&parent, &mut record_materials)?;
     let path = parent.join("operation.guard");
     check_no_symlinks(&path, true)?;
     let file = OpenOptions::new()
@@ -574,6 +603,26 @@ fn lock(root: &Path) -> Result<OperationLock, ApiError> {
 }
 
 impl NodeGit {
+    fn record_restore_materials(
+        &self,
+        root: &Path,
+        scope: &NodeRestoreScope,
+        created: Option<(&str, crate::file_identity::PersistedIdentity)>,
+    ) -> Result<(), ApiError> {
+        validate_scope(scope)?;
+        let ownership = self.restore_ownership.as_ref().ok_or_else(|| {
+            issue(
+                "NODE_PROJECT_OWNERSHIP_INVALID",
+                "源码取回缺少当前项目归属，未写入恢复材料。",
+            )
+        })?;
+        if let Some((name, identity)) = created {
+            ownership.capture_source_restore_directory(&scope.app_id, root, name, &identity)
+        } else {
+            ownership.record_source_restore(&scope.app_id, root)
+        }
+    }
+
     async fn restore_plan(
         &self,
         root: &Path,
@@ -808,7 +857,13 @@ impl NodeGit {
                 "目标源码与当前相同，未创建空操作。",
             ));
         }
-        let operation_lock = Arc::new(lock(root)?);
+        let operation_lock = Arc::new(lock(root, |identity| {
+            self.record_restore_materials(
+                root,
+                scope,
+                identity.map(|identity| (RESTORE_ROOT, identity)),
+            )
+        })?);
         context.retain(operation_lock);
         require_clear(root)?;
         verify_binding(root, &plan.binding)?;
@@ -816,11 +871,15 @@ impl NodeGit {
             return Err(changed());
         }
         let id = format!("restore_{}", uuid::Uuid::new_v4());
-        let staging_parent = root
-            .join(".git")
-            .join("local-projects-node-restore-preparing");
+        let staging_parent = root.join(".git").join(PREPARING_ROOT);
         check_no_symlinks(&staging_parent, true)?;
-        private_dir(&staging_parent)?;
+        prepare_restore_directory(&staging_parent, &mut |identity| {
+            self.record_restore_materials(
+                root,
+                scope,
+                identity.map(|identity| (PREPARING_ROOT, identity)),
+            )
+        })?;
         let retained = staging_parent.join(&id);
         fs::create_dir(&retained)?;
         fs::set_permissions(&retained, fs::Permissions::from_mode(0o700))?;
@@ -963,7 +1022,13 @@ impl NodeGit {
         mut checkpoint: impl FnMut(usize, bool) -> Result<(), ApiError>,
     ) -> Result<Value, ApiError> {
         let (mut context, _senders) = self.context()?;
-        let operation_lock = Arc::new(lock(root)?);
+        let operation_lock = Arc::new(lock(root, |identity| {
+            self.record_restore_materials(
+                root,
+                scope,
+                identity.map(|identity| (RESTORE_ROOT, identity)),
+            )
+        })?);
         context.retain(operation_lock);
         let state = guard_state(root);
         if !state.issues.is_empty()

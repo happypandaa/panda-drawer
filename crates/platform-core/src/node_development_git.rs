@@ -19,6 +19,7 @@ pub use restore::{
 pub struct NodeGit {
     environment: GitEnvironmentManager,
     stop: Option<watch::Receiver<bool>>,
+    restore_ownership: Option<crate::node_project_ownership::NodeProjectOwnership>,
     process_scope: Option<(
         crate::owned_process::OwnedProcessRegistry,
         Arc<dyn Send + Sync>,
@@ -30,12 +31,21 @@ impl NodeGit {
         Self {
             environment,
             stop: None,
+            restore_ownership: None,
             process_scope: None,
         }
     }
 
     pub fn with_stop(mut self, stop: watch::Receiver<bool>) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    pub(crate) fn with_source_restore_ownership(
+        mut self,
+        ownership: crate::node_project_ownership::NodeProjectOwnership,
+    ) -> Self {
+        self.restore_ownership = Some(ownership);
         self
     }
 

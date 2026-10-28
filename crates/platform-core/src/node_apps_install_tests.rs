@@ -89,7 +89,10 @@ impl Fixture {
             "/disposable-nonexistent-fixed-node".into(),
         )
         .unwrap();
-        let installer = NodeAppInstaller::new(paths.data_root().to_path_buf()).unwrap();
+        *manager.task_manager.lock().unwrap() = Some(tasks.clone());
+        let installer = NodeAppInstaller::new(paths.data_root().to_path_buf())
+            .unwrap()
+            .with_workspace(paths.workspace_root().to_path_buf());
         Self {
             _temp: temp,
             paths,
@@ -103,6 +106,10 @@ impl Fixture {
     }
     async fn prepare(&self, id: Option<&str>) -> (InstallTargetSnapshot, PreparedNodeInstall) {
         let target = self.manager.install_target_snapshot(id).await.unwrap();
+        self.manager
+            .project_ownership()
+            .initialize(&target.app_id)
+            .unwrap();
         let task = self
             .tasks
             .create_workspace_operation("nodeInstallPrepare")
@@ -353,66 +360,7 @@ async fn delete_preview_blocks_unowned_run_evidence_before_confirmation_and_pres
 }
 
 #[tokio::test]
-async fn legacy_marker_allows_external_delete_without_signaling_host_or_touching_other_apps() {
-    let fixture = Fixture::new();
-    let external = fixture
-        .manager
-        .register(fixture.source.clone())
-        .await
-        .unwrap();
-    let id = external["id"].as_str().unwrap();
-    let other = fixture.install().await;
-    let other_registration =
-        fs::read(fixture.slot(&other.app_id).join("registration.json")).unwrap();
-    let source_sentinel = fixture.source.join("disposable-external-folder-sentinel");
-    fs::write(&source_sentinel, b"preserve external author files").unwrap();
-    let mut child = tokio::process::Command::new("/bin/sleep")
-        .arg("60")
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let marker = fixture.slot(id).join("active.json");
-    fs::write(
-        &marker,
-        serde_json::to_vec(&json!({
-            "version":1,"hostPid":child.id().unwrap(),
-            "runDirectory":fixture.slot(id).join("runs/disposable-old-run")
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let preview = fixture.manager.delete_preview(id).await.unwrap();
-    assert!(preview["blocker"].is_null());
-    assert!(marker.is_file(), "preview must not mutate the old marker");
-    let input =
-        serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap();
-    let result = fixture.manager.delete(id, input).await.unwrap();
-    assert_eq!(result["operationOutcome"], "deleted");
-    assert!(!marker.exists());
-    for relative in ["data", "configuration", "cache", "registration.json"] {
-        assert!(!fixture.slot(id).join(relative).exists(), "{relative}");
-    }
-    assert!(child.try_wait().unwrap().is_none());
-    assert_eq!(
-        fs::read(&source_sentinel).unwrap(),
-        b"preserve external author files"
-    );
-    assert_eq!(
-        fs::read(fixture.slot(&other.app_id).join("registration.json")).unwrap(),
-        other_registration
-    );
-    let list = fixture.manager.list().await.unwrap();
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0]["id"], other.app_id);
-    // Cleanup follows the disposable Child handle, never the legacy JSON PID.
-    child.kill().await.unwrap();
-    child.wait().await.unwrap();
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_and_evidence() {
+async fn external_delete_removes_entire_private_slot_and_keeps_original_and_other_apps() {
     let fixture = Fixture::new();
     let external = fixture
         .manager
@@ -452,7 +400,7 @@ async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_a
     assert!(preview["deletePaths"]
         .as_array()
         .unwrap()
-        .contains(&json!(slot.join("logs"))));
+        .contains(&json!(slot)));
     let result = fixture
         .manager
         .delete(id, delete_input(&fixture.manager, id).await)
@@ -468,10 +416,13 @@ async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_a
     ] {
         assert!(!slot.join(relative).exists(), "{relative} was retained");
     }
-    assert_eq!(
-        fs::read(slot.join("runs/retained-recovery.txt")).unwrap(),
-        b"keep recovery evidence"
+    assert!(
+        !slot.exists(),
+        "all private recovery material is removed with the slot"
     );
+    assert_eq!(result["sourcePreserved"], true);
+    assert_eq!(result["evidenceRetained"], false);
+    assert!(fixture.manager.deletion_tasks().unwrap().is_empty());
     assert_eq!(
         fs::read(fixture.source.join("local-app.json")).unwrap(),
         source
@@ -497,7 +448,7 @@ async fn external_delete_removes_only_private_data_and_keeps_source_other_apps_a
 }
 
 #[tokio::test]
-async fn managed_delete_removes_program_data_and_config_but_preserves_installation_history() {
+async fn managed_delete_removes_entire_slot_and_project_installation_material() {
     let fixture = Fixture::new();
     let installed = fixture.install().await;
     let id = &installed.app_id;
@@ -509,12 +460,15 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
         b"disposable previous output",
     )
     .unwrap();
-    let history = fixture.paths.data_root().join("node-apps/.installations");
-    fs::write(
-        history.join("retained-recovery.txt"),
-        b"old installation evidence",
-    )
-    .unwrap();
+    let owned_paths = fixture.manager.project_ownership().owned_paths(id).unwrap();
+    assert!(owned_paths.iter().any(|path| path.parent()
+        == Some(
+            fixture
+                .paths
+                .data_root()
+                .join("node-apps/.installations")
+                .as_path()
+        )));
     fs::write(
         slot.join("data/private.sqlite"),
         b"disposable installed database",
@@ -526,7 +480,7 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
     assert!(preview["deletePaths"]
         .as_array()
         .unwrap()
-        .contains(&json!(slot.join("logs"))));
+        .contains(&json!(slot)));
     fixture
         .manager
         .delete(id, delete_input(&fixture.manager, id).await)
@@ -536,10 +490,11 @@ async fn managed_delete_removes_program_data_and_config_but_preserves_installati
     assert!(!slot.join("data").exists());
     assert!(!slot.join("configuration").exists());
     assert!(!slot.join("logs").exists());
-    assert_eq!(
-        fs::read(history.join("retained-recovery.txt")).unwrap(),
-        b"old installation evidence"
-    );
+    assert!(!slot.exists());
+    for path in owned_paths {
+        assert!(!path.exists(), "{}", path.display());
+    }
+    assert!(fixture.manager.deletion_tasks().unwrap().is_empty());
     assert_eq!(
         fs::read(fixture.source.join("local-app.json")).unwrap(),
         source
@@ -591,48 +546,7 @@ async fn delete_refuses_replaced_reviewed_directory_and_changed_registration() {
 }
 
 #[tokio::test]
-async fn legacy_delete_markers_never_reopen_partially_removed_applications() {
-    for phase in ["delete-intent", "delete-incomplete", "deleted"] {
-        let fixture = Fixture::new();
-        let app = fixture
-            .manager
-            .register(fixture.source.clone())
-            .await
-            .unwrap();
-        let id = app["id"].as_str().unwrap();
-        let slot = fixture.slot(id);
-        fixture
-            .manager
-            .save(id, save_request(0, "before-old-delete", true))
-            .await
-            .unwrap();
-        fs::remove_dir_all(slot.join("configuration")).unwrap();
-        let legacy = fixture
-            .paths
-            .data_root()
-            .join("node-apps/.deletions")
-            .join(format!("{id}.json"));
-        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        let bytes = serde_json::to_vec(&json!({"version":1,"appId":id,"phase":phase})).unwrap();
-        fs::write(&legacy, &bytes).unwrap();
-        let restarted = NodeApps::new(
-            fixture.paths.data_root().into(),
-            "/disposable-missing-node".into(),
-        )
-        .unwrap();
-        assert!(restarted.configuration(id).await.is_err());
-        assert!(restarted.start(id).await.is_err());
-        assert!(!slot.join("configuration").exists());
-        assert_eq!(fs::read(&legacy).unwrap(), bytes);
-        let preview = restarted.delete_preview(id).await.unwrap();
-        assert_eq!(preview["appId"], id);
-        restarted.stop_all().await.unwrap();
-        fixture.shutdown().await;
-    }
-}
-
-#[tokio::test]
-async fn partial_delete_current_registration_blocks_reopen_without_deletion_history() {
+async fn incomplete_whole_slot_delete_blocks_reopen_and_retries_from_current_journal() {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let fixture = Fixture::new();
     let external = fixture
@@ -659,9 +573,10 @@ async fn partial_delete_current_registration_blocks_reopen_without_deletion_hist
     assert_eq!(failure.details["operationOutcome"], "delete_incomplete");
     assert!(failure.message.contains("部分文件可能已永久删除"));
     assert!(!slot.join("configuration").exists());
-    let registration: Value =
-        serde_json::from_slice(&fs::read(slot.join("registration.json")).unwrap()).unwrap();
-    assert!(registration["removalPending"].is_null());
+    assert!(
+        !slot.exists(),
+        "the whole instance slot is staged outside its former root"
+    );
     let task = fixture
         .manager
         .deletion_tasks()
@@ -680,16 +595,16 @@ async fn partial_delete_current_registration_blocks_reopen_without_deletion_hist
         .join(task_id)
         .join("task.json")
         .exists());
-    let staged_data = task["targets"]
+    let staged_slot = task["targets"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|target| target["path"] == json!(slot.join("data")))
+        .find(|target| target["path"] == json!(slot))
         .unwrap()["stagedPath"]
         .as_str()
         .unwrap()
         .to_owned();
-    let staged_pipe = PathBuf::from(staged_data).join("disposable-unsupported-pipe");
+    let staged_pipe = PathBuf::from(staged_slot).join("data/disposable-unsupported-pipe");
     assert!(failure.details["deletionRecord"].is_null());
     assert!(!fixture
         .paths
@@ -701,10 +616,7 @@ async fn partial_delete_current_registration_blocks_reopen_without_deletion_hist
         "/disposable-missing-node".into(),
     )
     .unwrap();
-    assert_eq!(
-        restarted.configuration(id).await.unwrap()["configuration"]["canStart"],
-        false
-    );
+    assert!(restarted.configuration(id).await.is_err());
     assert!(restarted
         .save(id, save_request(0, "must-not-create", true))
         .await
@@ -1241,7 +1153,7 @@ async fn managed_install_binds_an_explicit_matching_author_tree_and_rejects_runt
 }
 
 #[tokio::test]
-async fn retained_node_source_restore_blocks_new_build_binding_installation_and_deletion_after_reload(
+async fn retained_node_source_restore_blocks_edits_but_full_deletion_waits_for_writer_and_removes_it(
 ) {
     let fixture = Fixture::new();
     let installed = fixture.install().await;
@@ -1275,11 +1187,39 @@ async fn retained_node_source_restore_blocks_new_build_binding_installation_and_
         "NODE_DEVELOPMENT_BUSY"
     );
     drop(lease);
+    fs::create_dir_all(fixture.source.join(".git")).unwrap();
+    fixture
+        .manager
+        .project_ownership()
+        .record_source_restore(id, &fixture.source)
+        .unwrap();
+    for name in [
+        "local-projects-node-restores",
+        "local-projects-node-restore-preparing",
+    ] {
+        fs::create_dir(fixture.source.join(".git").join(name)).unwrap();
+    }
+    for name in [
+        "local-projects-node-restores",
+        "local-projects-node-restore-preparing",
+    ] {
+        let path = fixture.source.join(".git").join(name);
+        fixture
+            .manager
+            .project_ownership()
+            .capture_source_restore_directory(
+                id,
+                &fixture.source,
+                name,
+                &crate::file_identity::PersistedIdentity::capture(&path).unwrap(),
+            )
+            .unwrap();
+    }
     let interrupted = fixture
         .source
         .join(".git/local-projects-node-restores")
         .join(format!("restore_{}", Uuid::new_v4()));
-    fs::create_dir_all(&interrupted).unwrap();
+    fs::create_dir(&interrupted).unwrap();
     fs::write(
         interrupted.join("journal.json"),
         b"retained artificial unreadable source-restore evidence",
@@ -1296,7 +1236,7 @@ async fn retained_node_source_restore_blocks_new_build_binding_installation_and_
         .await
         .is_err());
     assert!(reloaded.install_target_snapshot(Some(id)).await.is_err());
-    assert!(reloaded.delete_preview(id).await.is_err());
+    assert!(reloaded.delete_preview(id).await.is_ok());
     let control = fixture.slot(id).join("source-restore.json");
     fs::write(&control, b"retained artificial unreadable instance control").unwrap();
     let held_git = fixture.source.with_extension("retained-git-evidence");
@@ -1307,7 +1247,7 @@ async fn retained_node_source_restore_blocks_new_build_binding_installation_and_
         .await
         .is_err());
     assert!(reloaded.install_target_snapshot(Some(id)).await.is_err());
-    assert!(reloaded.delete_preview(id).await.is_err());
+    assert!(reloaded.delete_preview(id).await.is_ok());
     assert!(control.is_file());
     fs::rename(held_git, fixture.source.join(".git")).unwrap();
     // Recovery keeps its own guarded entry; ordinary read-only source information
@@ -1319,6 +1259,53 @@ async fn retained_node_source_restore_blocks_new_build_binding_installation_and_
         registration
     );
     assert!(interrupted.join("journal.json").is_file());
+    *reloaded.task_manager.lock().unwrap() = Some(fixture.tasks.clone());
+    let ownership = reloaded.project_ownership();
+    ownership
+        .record_source_restore(id, &fixture.source)
+        .unwrap();
+    let external_git_file = fixture.source.join(".git/author-owned-git-file");
+    fs::write(&external_git_file, b"external Git content remains").unwrap();
+    let writer = reloaded.development_restore_source_lease(id).await.unwrap();
+    let preview = reloaded.delete_preview(id).await.unwrap();
+    let task = reloaded
+        .submit_deletion(
+            id,
+            serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task["phase"], "waiting");
+    assert!(fixture.slot(id).exists());
+    assert!(interrupted.join("journal.json").exists());
+    assert!(reloaded
+        .admit_operation(id, "later restore writer")
+        .is_err());
+    drop(writer);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reloaded.wait_deletion_result(task["taskId"].as_str().unwrap(), id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result["operationOutcome"], "deleted");
+    assert!(!fixture.slot(id).exists());
+    assert!(!interrupted.parent().unwrap().exists());
+    assert!(!fixture
+        .source
+        .join(".git/local-projects-node-restore-preparing")
+        .exists());
+    assert!(!fixture.source.join(".git/.pending-deletions").exists());
+    assert!(!control.exists());
+    assert_eq!(
+        fs::read(&external_git_file).unwrap(),
+        b"external Git content remains"
+    );
+    assert!(fixture.source.join("local-app.json").exists());
+    assert!(reloaded.deletion_tasks().unwrap().is_empty());
+    reloaded.stop_all().await.unwrap();
     fixture.shutdown().await;
 }
 

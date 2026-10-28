@@ -3,6 +3,18 @@
 use super::*;
 use crate::file_identity::PersistedIdentity;
 
+static SOURCE_OWNERSHIP_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceDirectoryOwner {
+    version: u32,
+    app_id: String,
+    source_root: PathBuf,
+    identity: PersistedIdentity,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct NodeDevelopmentBinding {
@@ -142,6 +154,168 @@ fn development_changed() -> ApiError {
     )
 }
 
+fn source_already_owned() -> ApiError {
+    ApiError::new(
+        "NODE_SOURCE_ALREADY_OWNED",
+        "这个源码文件夹已属于另一个项目，或位于其他项目内，请为新项目使用独立副本。",
+    )
+}
+
+fn source_claim_key(source: &Path) -> Result<(String, PersistedIdentity)> {
+    ordinary_path(source, true)?;
+    let identity = PersistedIdentity::capture(source).map_err(|_| development_changed())?;
+    let key = match &identity.volume_uuid {
+        Some(volume) => json!({"volume":volume,"inode":identity.inode}),
+        None => json!({"device":identity.device,"inode":identity.inode}),
+    };
+    Ok((
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&key)?)),
+        identity,
+    ))
+}
+
+fn source_owner(data_root: &Path, source: &Path) -> Result<Option<SourceDirectoryOwner>> {
+    let (hash, identity) = source_claim_key(source)?;
+    let directory = data_root.join("node-source-owners").join(hash);
+    crate::projects::check_no_symlinks(&directory, true)?;
+    if !directory.try_exists()? {
+        return Ok(None);
+    }
+    ordinary_path(&directory, true)?;
+    let owner: SourceDirectoryOwner =
+        serde_json::from_slice(&read_small(&directory.join("owner.json"))?)?;
+    if owner.version != 1
+        || !owner.identity.matches_captured(&identity)
+        || owner.source_root != source
+        || Uuid::parse_str(&owner.app_id).is_err()
+    {
+        return Err(development_changed());
+    }
+    Ok(Some(owner))
+}
+
+pub(crate) fn require_claimed_source_owner(
+    data_root: &Path,
+    id: &str,
+    source: &Path,
+) -> Result<PersistedIdentity> {
+    let owner = source_owner(data_root, source)?.ok_or_else(development_changed)?;
+    if owner.app_id != id {
+        return Err(source_already_owned());
+    }
+    Ok(owner.identity)
+}
+
+/// The caller must hold the verified public migration and prove this exact copy.
+pub(crate) fn claim_source_after_verified_migration(
+    data_root: &Path,
+    workspace: &Path,
+    id: &str,
+    source: &Path,
+) -> Result<()> {
+    claim_source_path(data_root, workspace.to_path_buf(), id, source)
+}
+
+fn require_source_ancestors(data_root: &Path, source: &Path, id: Option<&str>) -> Result<()> {
+    for ancestor in source.ancestors().skip(1) {
+        if let Some(owner) = source_owner(data_root, ancestor)? {
+            if id != Some(owner.app_id.as_str()) {
+                return Err(source_already_owned());
+            }
+        }
+    }
+    // Admission checks the exclusive owner index in the reverse direction
+    // too: registering a parent must not absorb an existing child project.
+    // Deletion never uses this index scan or retains shared project content.
+    let owners = data_root.join("node-source-owners");
+    crate::projects::check_no_symlinks(&owners, true)?;
+    if !owners.try_exists()? {
+        return Ok(());
+    }
+    ordinary_path(&owners, true)?;
+    for entry in fs::read_dir(&owners)? {
+        let entry = entry?;
+        ordinary_path(&entry.path(), true)?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or_else(development_changed)?;
+        if name == ".pending-deletions" {
+            continue;
+        }
+        if name.len() != 64
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(development_changed());
+        }
+        let owner: SourceDirectoryOwner =
+            serde_json::from_slice(&read_small(&entry.path().join("owner.json"))?)?;
+        if owner.version != 1 || Uuid::parse_str(&owner.app_id).is_err() {
+            return Err(development_changed());
+        }
+        if owner.source_root != source
+            && owner.source_root.starts_with(source)
+            && id != Some(owner.app_id.as_str())
+            && owner
+                .identity
+                .matches_path(&owner.source_root)
+                .unwrap_or(false)
+        {
+            return Err(source_already_owned());
+        }
+    }
+    Ok(())
+}
+
+fn claim_source_path(data_root: &Path, workspace: PathBuf, id: &str, source: &Path) -> Result<()> {
+    if Uuid::parse_str(id).is_err() {
+        return Err(fail("源码归属标识无效。"));
+    }
+    let _guard = SOURCE_OWNERSHIP_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .map_err(|_| fail("源码归属锁不可用。"))?;
+    require_source_ancestors(data_root, source, Some(id))?;
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        data_root.to_path_buf(),
+        workspace,
+    );
+    if let Some(owner) = source_owner(data_root, source)? {
+        if owner.app_id != id {
+            return Err(source_already_owned());
+        }
+        let (hash, _) = source_claim_key(source)?;
+        return ownership.record_source_claim(id, &hash);
+    }
+    let (hash, identity) = source_claim_key(source)?;
+    let root = data_root.join("node-source-owners");
+    private_dir(&root)?;
+    let directory = root.join(&hash);
+    // Record the missing target before mkdir, then capture its identity
+    // before writing any content. Crash recovery never adopts another tree.
+    ownership.record_source_claim(id, &hash)?;
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    if let Err(error) = builder.create(&directory) {
+        ownership.forget_source_claim(id, &hash)?;
+        return Err(error.into());
+    }
+    ownership.record_source_claim(id, &hash)?;
+    write_new_json(
+        &directory.join("owner.json"),
+        &SourceDirectoryOwner {
+            version: 1,
+            app_id: id.into(),
+            source_root: source.into(),
+            identity,
+        },
+    )
+}
+
 impl NodeApps {
     pub(super) fn require_no_development_operation(&self, id: &str) -> Result<()> {
         let active = self
@@ -246,29 +420,167 @@ impl NodeApps {
             }
             return Ok(managed.development_source.clone());
         }
-        // Upgrade legacy metadata only after matching the exact original
-        // declaration. Never guess an earlier configuration schema.
-        self.manifest(record)?;
-        let bytes = read_small(&record.source_path.join("local-app.json"))?;
-        let manifest: Value = serde_json::from_slice(&bytes)?;
+        Ok(None)
+    }
+
+    pub(super) fn initialize_development_binding(
+        &self,
+        record: &ExternalRegistration,
+    ) -> Result<()> {
+        let source = &record.source_path;
+        self.claim_source_directory(&record.id, source)?;
+        let bytes = read_small(&source.join("local-app.json"))?;
+        let manifest = TrialManifest::parse(&bytes).map_err(|_| development_changed())?;
         let binding = NodeDevelopmentBinding {
-            source_root: record.source_path.clone(),
-            manifest_id: manifest["app"]["id"]
-                .as_str()
-                .ok_or_else(development_changed)?
-                .into(),
-            root_identity: PersistedIdentity::capture(&record.source_path)
-                .map_err(|_| development_changed())?,
+            source_root: source.clone(),
+            manifest_id: manifest.app.id,
+            root_identity: PersistedIdentity::capture(source).map_err(|_| development_changed())?,
             registered_manifest_text: String::from_utf8(bytes)
                 .map_err(|_| development_changed())?,
             registered_manifest_digest: record.manifest_digest.clone(),
         };
         binding.validate_record()?;
+        if let Some(previous) = self.read_development_binding(&record.id)? {
+            if previous != binding {
+                return Err(development_changed());
+            }
+            return Ok(());
+        }
         write_new_json(
             &self.root.join(&record.id).join("development-source.json"),
             &binding,
-        )?;
-        Ok(Some(binding))
+        )
+    }
+
+    fn source_claim_key(&self, source: &Path) -> Result<(String, PersistedIdentity)> {
+        source_claim_key(source)
+    }
+
+    fn source_owner(&self, source: &Path) -> Result<Option<SourceDirectoryOwner>> {
+        source_owner(&self.data_root, source)
+    }
+
+    /// Registration checks before allocating an instance or its private files.
+    /// The normal same-app registration shortcut runs before this method.
+    pub(super) fn require_unclaimed_source(&self, source: &Path) -> Result<()> {
+        if self.is_published_source(source) {
+            return Err(source_already_owned());
+        }
+        self.require_source_ancestors(source, None)?;
+        if self.source_owner(source)?.is_some() {
+            return Err(source_already_owned());
+        }
+        Ok(())
+    }
+
+    /// A generated starter is a pending instance from its first accepted write.
+    /// Only its exact durable source proof can reuse that instance for its first
+    /// registration; arbitrary external directories always receive a fresh UUID.
+    pub(super) fn pending_generated_source_id(&self, source: &Path) -> Result<Option<String>> {
+        let Some(owner) = self.source_owner(source)? else {
+            return Ok(None);
+        };
+        if !self
+            .project_ownership()
+            .has_generated_source(&owner.app_id, source)?
+            || self
+                .root
+                .join(&owner.app_id)
+                .join("registration.json")
+                .try_exists()?
+        {
+            return Err(source_already_owned());
+        }
+        self.require_source_ancestors(source, Some(&owner.app_id))?;
+        Ok(Some(owner.app_id))
+    }
+
+    fn require_source_ancestors(&self, source: &Path, id: Option<&str>) -> Result<()> {
+        require_source_ancestors(&self.data_root, source, id)
+    }
+
+    /// A live ownership claim makes author trees exclusive at admission time.
+    /// Deletion consumes this project's recorded claim; it does not scan other
+    /// instances or maintain a shared-source reference count.
+    pub(crate) fn claim_source_directory(&self, id: &str, source: &Path) -> Result<()> {
+        claim_source_path(&self.data_root, self.deletion_workspace(), id, source)
+    }
+
+    pub(super) fn discard_pending_generated_source(&self, id: &str, source: &Path) -> Result<()> {
+        let _guard = SOURCE_OWNERSHIP_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .map_err(|_| fail("源码归属锁不可用。"))?;
+        let ownership = self.project_ownership();
+        if !ownership.has_generated_source(id, source)? {
+            return Err(development_changed());
+        }
+        if self.root.join(id).try_exists()? {
+            return Err(development_changed());
+        }
+        let (hash, _) = self.source_claim_key(source)?;
+        let directory = self.data_root.join("node-source-owners").join(&hash);
+        // The ledger captured the claim directory before owner.json was written;
+        // it also covers a failed write of that file without accepting a foreign
+        // directory whose identity differs from the reservation.
+        let owned = ownership.owned_paths(id)?;
+        if directory.try_exists()? && owned.contains(&directory) {
+            fs::remove_dir_all(&directory)?;
+        }
+        ownership.forget_source_claim(id, &hash)?;
+        let ledger = ownership.directory(id)?;
+        ordinary_path(&ledger, true)?;
+        fs::remove_dir_all(ledger)?;
+        Ok(())
+    }
+
+    /// Before registration publication no runtime can have started. Undo only
+    /// the newly captured private slot; generated source retains its pending
+    /// identity, while ordinary external author directories are never targets.
+    pub(super) fn discard_unpublished_registration(
+        &self,
+        id: &str,
+        slot_identity: Option<&PersistedIdentity>,
+        preserve_pending: bool,
+    ) -> Result<()> {
+        if let Some(identity) = slot_identity {
+            let slot = self.root.join(id);
+            if !identity
+                .matches_path(&slot)
+                .map_err(|_| development_changed())?
+            {
+                return Err(development_changed());
+            }
+            fs::remove_dir_all(&slot)?;
+        }
+        if preserve_pending {
+            return Ok(());
+        }
+        let _guard = SOURCE_OWNERSHIP_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .map_err(|_| fail("源码归属锁不可用。"))?;
+        let ownership = self.project_ownership();
+        let ledger = ownership.directory(id)?;
+        if !ledger.try_exists()? {
+            return Ok(());
+        }
+        let owned = ownership.owned_paths(id)?;
+        if ownership.generated_source(id)?.is_some() {
+            return Err(development_changed());
+        }
+        for path in owned {
+            if path == ledger
+                || path.parent() == Some(self.data_root.join("node-source-owners").as_path())
+            {
+                if path.try_exists()? {
+                    fs::remove_dir_all(path)?;
+                }
+            } else {
+                return Err(development_changed());
+            }
+        }
+        Ok(())
     }
 
     pub async fn development_source_lease(
@@ -338,6 +650,7 @@ impl NodeApps {
             return Err(fail("请选择平台运行目录之外的源码仓库。"));
         }
         source.validate()?;
+        self.claim_source_directory(id, &source.source_root)?;
         let registration_digest = node_app_install::registration_digest(&self.root.join(id))?
             .ok_or_else(development_changed)?;
         self.development_active
@@ -363,7 +676,7 @@ impl NodeApps {
     pub async fn bind_development_source(&self, id: &str, source: PathBuf) -> Result<Value> {
         let _operation = self.admit_operation(id, "源码绑定")?;
         let inner = self.inner.lock().await;
-        self.bind_development_source_locked(id, source, &inner)
+        self.bind_development_source_locked(id, source, &inner, false)
     }
 
     pub(crate) async fn bind_imported_development_source(
@@ -392,7 +705,7 @@ impl NodeApps {
         {
             return Err(development_changed());
         }
-        self.bind_development_source_locked(id, source, &inner)
+        self.bind_development_source_locked(id, source, &inner, true)
     }
 
     fn bind_development_source_locked(
@@ -400,6 +713,7 @@ impl NodeApps {
         id: &str,
         source: PathBuf,
         inner: &Inner,
+        imported_publication: bool,
     ) -> Result<Value> {
         self.require_install_stopped(id, inner)?;
         let record = self.registration(id)?;
@@ -414,6 +728,29 @@ impl NodeApps {
         if runtime_manifest.app.id != source_manifest.app.id {
             return Err(fail("所选源码不属于此应用。"));
         }
+        if self.is_published_source(&source) && !imported_publication {
+            // Only the validated publication flow may establish the first
+            // claim. A public bind cannot take a directory while publication
+            // has made it visible but not yet bound its intended instance.
+            let (hash, identity) = self.source_claim_key(&source)?;
+            let owner_path = self
+                .data_root
+                .join("node-source-owners")
+                .join(hash)
+                .join("owner.json");
+            let owner: SourceDirectoryOwner = serde_json::from_slice(&read_small(&owner_path)?)?;
+            if owner.version != 1
+                || owner.app_id != id
+                || owner.source_root != source
+                || !owner.identity.matches_captured(&identity)
+            {
+                return Err(ApiError::new(
+                    "NODE_SOURCE_ALREADY_OWNED",
+                    "平台发布的源码只能由所属项目使用。",
+                ));
+            }
+        }
+        self.claim_source_directory(id, &source)?;
         let bytes = read_small(&record.source_path.join("local-app.json"))?;
         let identity = PersistedIdentity::capture(&source).map_err(|_| development_changed())?;
         let binding = NodeDevelopmentBinding {
@@ -431,6 +768,154 @@ impl NodeApps {
         )?;
         self.detail(&record, &runtime_manifest, inner)
     }
+}
+
+/// Admission and the final frozen-copy boundary both call this check. Only
+/// this live ownership index supplies source paths; arbitrary author directories
+/// and retired project formats are never searched for recovery files.
+pub(crate) fn require_source_restores_clear_for_migration(
+    data_root: &Path,
+    workspace: &Path,
+) -> Result<()> {
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        data_root.to_path_buf(),
+        workspace.to_path_buf(),
+    );
+    for (ledger, paths) in ownership.all_owned_scopes()? {
+        let id = ledger
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or_else(development_changed)?;
+        for directory in paths
+            .iter()
+            .filter(|path| path.parent() == Some(data_root.join("node-source-owners").as_path()))
+        {
+            if !directory.try_exists()? {
+                continue;
+            }
+            let owner: SourceDirectoryOwner =
+                serde_json::from_slice(&read_small(&directory.join("owner.json"))?)?;
+            require_claimed_source_owner(data_root, id, &owner.source_root)?;
+            crate::node_development_git::require_source_restore_clear(&owner.source_root)
+                .map_err(|error| migration_restore_error(error, id, &owner.source_root))?;
+        }
+        crate::node_development_git::require_source_restore_control_clear(
+            &data_root
+                .join("node-apps")
+                .join(id)
+                .join("source-restore.json"),
+        )
+        .map_err(|error| error.detail("appId", id))?;
+    }
+    Ok(())
+}
+fn migration_restore_error(mut error: ApiError, id: &str, source: &Path) -> ApiError {
+    if error.code == "NODE_SOURCE_RESTORE_PENDING" {
+        error.message = "请先继续或撤回源码取回，或删除该项目，再迁移工作区。".into();
+    }
+    error
+        .detail("appId", id)
+        .detail("sourcePath", json!(source))
+}
+
+/// A generated source may live at an explicitly selected custom workspace path.
+/// Its current registration follows the verified copy, while both copies remain
+/// exclusively owned until this instance is deleted.
+fn rebind_generated_source_after_migration(
+    data_root: &Path,
+    old: &Path,
+    new: &Path,
+    id: &str,
+    binding_path: &Path,
+    binding: &NodeDevelopmentBinding,
+) -> Result<bool> {
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        data_root.to_path_buf(),
+        new.to_path_buf(),
+    );
+    let Some(generated) = ownership.generated_source(id)? else {
+        return Ok(false);
+    };
+    let relative = if let Ok(relative) = generated.strip_prefix(old) {
+        relative
+    } else if let Ok(relative) = generated.strip_prefix(new) {
+        relative
+    } else {
+        return Ok(false);
+    };
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(development_changed());
+    }
+    let previous = old.join(relative);
+    let target = new.join(relative);
+    if binding.source_root != previous && binding.source_root != target {
+        // A managed instance may have explicitly rebound its active author
+        // directory. The earlier generated tree remains owned material, while
+        // its independent external binding keeps its own migration policy.
+        return Ok(false);
+    }
+    binding.validate_record()?;
+    let declared = require_claimed_source_owner(data_root, id, &binding.source_root)?;
+    if !binding.root_identity.matches_captured(&declared) {
+        return Err(development_changed());
+    }
+    ordinary_path(&target, true)?;
+    if !ownership.has_generated_source(id, &generated)? {
+        return Err(development_changed());
+    }
+    let manifest = TrialManifest::load(&target).map_err(|_| development_changed())?;
+    if manifest.app.id != binding.manifest_id {
+        return Err(development_changed());
+    }
+    let registration_path = data_root
+        .join("node-apps")
+        .join(id)
+        .join("registration.json");
+    let mut registration: Value = serde_json::from_slice(&read_small(&registration_path)?)?;
+    if registration["id"] != id {
+        return Err(development_changed());
+    }
+    let mut rebound = binding.clone();
+    rebound.source_root = target.clone();
+    rebound.root_identity =
+        PersistedIdentity::capture(&target).map_err(|_| development_changed())?;
+    match registration["version"].as_u64() {
+        Some(1) => {
+            let mut record: ExternalRegistration = serde_json::from_value(registration)?;
+            if (record.source_path != previous && record.source_path != target)
+                || record.manifest_digest != binding.registered_manifest_digest
+            {
+                return Err(development_changed());
+            }
+            if digest_manifest(&target)? != record.manifest_digest {
+                return Err(development_changed());
+            }
+            record.source_path = target.clone();
+            registration = serde_json::to_value(record)?;
+        }
+        Some(2) => {
+            let mut record: ManagedNodeRegistration = serde_json::from_value(registration)?;
+            if let Some(recorded) = &record.development_source {
+                if recorded.manifest_id != binding.manifest_id
+                    || (recorded.source_root != previous && recorded.source_root != target)
+                {
+                    return Err(development_changed());
+                }
+            }
+            record.development_source = Some(rebound.clone());
+            registration = serde_json::to_value(record)?;
+        }
+        _ => return Err(development_changed()),
+    }
+    claim_source_after_verified_migration(data_root, new, id, &target)?;
+    crate::builds::atomic_json(binding_path, &rebound)?;
+    crate::builds::atomic_json(&registration_path, &registration)?;
+    Ok(true)
 }
 
 /// Called only by the verified public workspace migration, after the target
@@ -457,6 +942,9 @@ pub(crate) fn rebind_published_after_migration(
         }
         ordinary_path(&path, false)?;
         let mut binding: NodeDevelopmentBinding = serde_json::from_slice(&read_small(&path)?)?;
+        if rebind_generated_source_after_migration(data_root, old, new, &id, &path, &binding)? {
+            continue;
+        }
         let (relative, already_rebound) = if let Ok(relative) = binding
             .source_root
             .strip_prefix(old.join("project-sources"))
@@ -509,6 +997,7 @@ pub(crate) fn rebind_published_after_migration(
         binding.root_identity =
             PersistedIdentity::capture(&binding.source_root).map_err(|_| development_changed())?;
         publication["payloadIdentity"] = serde_json::to_value(&binding.root_identity)?;
+        claim_source_path(data_root, new.to_path_buf(), &id, &binding.source_root)?;
         // Rebind the per-instance association before updating its copied receipt.
         // A retry sees the new association and never rebinds an external folder.
         crate::builds::atomic_json(&path, &binding)?;
@@ -555,6 +1044,7 @@ pub(crate) fn rebind_published_after_migration(
                 .matches_path(&target)
                 .map_err(|_| development_changed())?
             {
+                claim_source_path(data_root, new.to_path_buf(), &id, &target)?;
                 continue;
             }
             let previous = old.join("project-sources").join(&name);
@@ -567,6 +1057,7 @@ pub(crate) fn rebind_published_after_migration(
             publication["payloadIdentity"] = serde_json::to_value(
                 PersistedIdentity::capture(&target).map_err(|_| development_changed())?,
             )?;
+            claim_source_path(data_root, new.to_path_buf(), &id, &target)?;
             crate::builds::atomic_json(&path, &publication)?;
         }
     }

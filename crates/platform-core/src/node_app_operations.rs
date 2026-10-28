@@ -201,6 +201,17 @@ fn deleting() -> ApiError {
     )
 }
 impl NodeOperationCoordinator {
+    pub(super) fn forget_instance(&self, id: &str) -> Result<()> {
+        let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(instance) = instances.get(id) {
+            let state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
+            if !state.operations.is_empty() || state.deletion.is_some() {
+                return Err(fail("应用仍有操作归属，不能清理内存状态。"));
+            }
+        }
+        instances.remove(id);
+        Ok(())
+    }
     fn instance(&self, id: &str) -> Result<Arc<InstanceAdmission>> {
         if Uuid::parse_str(id).is_err() {
             return Err(fail("应用标识无效。"));

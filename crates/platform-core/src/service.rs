@@ -209,6 +209,9 @@ impl RuntimeHandle {
     pub fn store(&self) -> Arc<ProjectStore> {
         self.current().store.clone()
     }
+    pub(crate) fn node_task_manager(&self) -> Arc<BuildManager> {
+        self.current().builds.clone()
+    }
     pub async fn launch(&self, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
         launch(&self.current(), id)
     }
@@ -1459,6 +1462,10 @@ async fn submit_migration(
     if shared.closing.load(Ordering::Acquire) {
         return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
     }
+    crate::node_apps::development::require_source_restores_clear_for_migration(
+        state.paths.data_root(),
+        state.paths.workspace_root(),
+    )?;
     if shared.migration_active.swap(true, Ordering::AcqRel) {
         return Err(ApiError::new(
             "WORKSPACE_MIGRATING",

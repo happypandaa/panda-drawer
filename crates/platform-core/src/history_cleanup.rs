@@ -733,6 +733,7 @@ impl CleanupManager {
     }
     fn installer(&self) -> Result<crate::node_app_install::NodeAppInstaller, ApiError> {
         crate::node_app_install::NodeAppInstaller::new(self.paths.data_root().into())
+            .map(|installer| installer.with_workspace(self.paths.workspace_root().into()))
     }
     /// Retained originals of finished Git data/source restores. Unfinished
     /// operations are listed as protected so the user can see why they stay.

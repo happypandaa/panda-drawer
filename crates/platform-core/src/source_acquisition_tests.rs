@@ -311,6 +311,48 @@ pub(super) fn fixture() -> (
         SourceAcquisitionManager::new(paths.clone(), store.clone(), tasks.clone(), git).unwrap();
     (temp, paths, store, tasks, manager)
 }
+
+#[tokio::test]
+async fn rejected_acceptance_removes_its_new_owner_and_task_before_any_worker_starts() {
+    let (_temporary, paths, store, tasks, manager) = fixture();
+    fs::write(manager.root(), "disposable corrupt source container").unwrap();
+    let (stop, _) = watch::channel(false);
+    let error = manager
+        .submit(
+            AcquireSourceInput {
+                url: "https://github.com/example/disposable-rejected-source.git".into(),
+                branch: None,
+                name: None,
+            },
+            stop.subscribe(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.details["acceptanceCleanupError"].is_null(),
+        "{error:?}"
+    );
+    let task = error.details["taskId"].as_str().unwrap();
+    assert_eq!(tasks.task(task).unwrap_err().code, "TASK_NOT_FOUND");
+    assert!(
+        fs::read_dir(paths.data_root().join("node-project-ownership"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(fs::read_dir(paths.workspace_root().join(".platform/tasks"))
+        .unwrap()
+        .next()
+        .is_none());
+    assert_eq!(
+        fs::read_to_string(manager.root()).unwrap(),
+        "disposable corrupt source container"
+    );
+    assert!(!store.has_active_tasks());
+    manager.shutdown().await;
+    tasks.shutdown().await;
+    store.shutdown().await;
+}
 pub(super) fn fake_git(paths: &RuntimePaths, body: &str) -> PathBuf {
     let file = paths.data_root().join("disposable-git");
     fs::write(&file,format!("#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'git version 2.56.0\\n'; exit 0; fi\n{body}\n")).unwrap();
@@ -524,6 +566,7 @@ async fn restart_marks_unfinished_source_and_retains_evidence_without_project_re
         branch: None,
         schema_version: 1,
         source_id: id.clone(),
+        owner_app_id: Uuid::new_v4().to_string(),
         task_id: task.task_id,
         name: "Interrupted disposable".into(),
         status: "acquiring".into(),

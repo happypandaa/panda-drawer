@@ -4,6 +4,7 @@
 use crate::{
     builds::{atomic_json, BuildManager},
     environment::ExecutableInfo,
+    file_identity::PersistedIdentity,
     git_environment::{GitEnvironmentManager, GitToolchain},
     node_app_manifest::{TrialManifest, TrialRuntime},
     node_development_build::NodeDevelopmentBuildOutput,
@@ -104,6 +105,7 @@ pub struct LocalSourceInspection {
 struct SourceRecord {
     schema_version: u32,
     source_id: String,
+    owner_app_id: String,
     task_id: String,
     name: String,
     status: String,
@@ -389,6 +391,13 @@ impl SourceAcquisitionManager {
         }
         Ok(candidate)
     }
+    pub(crate) fn owner_app_id(&self, id: &str) -> Result<String, ApiError> {
+        let record = self.read_record(id)?;
+        if Uuid::parse_str(&record.owner_app_id).is_err() {
+            return Err(invalid("源码项目归属无效。"));
+        }
+        Ok(record.owner_app_id)
+    }
     pub fn list(&self) -> Result<Vec<SourceCandidate>, ApiError> {
         let root = self.root();
         check_no_symlinks(&root, true)?;
@@ -464,7 +473,7 @@ impl SourceAcquisitionManager {
             validate_branch(branch)?;
         }
         let name = input.name.unwrap_or(repository_name);
-        self.start_source(name, url, input.branch, provider, None, stop)
+        self.start_source(name, url, input.branch, provider, None, None, stop)
     }
     pub async fn capture(
         self: &Arc<Self>,
@@ -485,6 +494,7 @@ impl SourceAcquisitionManager {
             None,
             "local".into(),
             Some(CaptureInput::External(source)),
+            None,
             stop,
         )
     }
@@ -493,6 +503,7 @@ impl SourceAcquisitionManager {
     pub(crate) async fn capture_built_output(
         self: &Arc<Self>,
         output: NodeDevelopmentBuildOutput,
+        owner_app_id: String,
         name: Option<String>,
         commit: Option<String>,
         stop: watch::Receiver<bool>,
@@ -510,9 +521,11 @@ impl SourceAcquisitionManager {
             None,
             "local".into(),
             Some(CaptureInput::Built(output, commit)),
+            Some(owner_app_id),
             stop,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn start_source(
         self: &Arc<Self>,
         name: String,
@@ -520,6 +533,7 @@ impl SourceAcquisitionManager {
         branch: Option<String>,
         provider: String,
         local_input: Option<CaptureInput>,
+        owner_app_id: Option<String>,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord, ApiError> {
         if name.trim().is_empty()
@@ -549,12 +563,43 @@ impl SourceAcquisitionManager {
             Some(CaptureInput::Built(output, _)) => Some(output.source_digest.clone()),
             _ => None,
         };
-        let task = self.tasks.create_workspace_operation(if local {
-            "sourceCapture"
+        let fresh_owner = owner_app_id.is_none();
+        let owner_app_id = owner_app_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        if fresh_owner {
+            ownership.initialize(&owner_app_id)?;
         } else {
-            "sourceAcquire"
-        })?;
+            ownership.task_ids(&owner_app_id)?;
+        }
+        let task = match self.tasks.create_node_operation(
+            &owner_app_id,
+            if local {
+                "sourceCapture"
+            } else {
+                "sourceAcquire"
+            },
+        ) {
+            Ok(task) => task,
+            Err(error) => {
+                return Err(self.acceptance_error(&ownership, &owner_app_id, fresh_owner, error))
+            }
+        };
         let id = format!("src_{}", Uuid::new_v4().simple());
+        if let Err(error) = ownership.record_source(&owner_app_id, &id).and_then(|()| {
+            self.tasks
+                .record_node_source(&task.task_id, &owner_app_id, &id)
+        }) {
+            let _ = self.tasks.finish(&task.task_id, Err(error.clone()));
+            return Err(self.acceptance_error(
+                &ownership,
+                &owner_app_id,
+                fresh_owner,
+                error.detail("taskId", task.task_id),
+            ));
+        }
         // This lease is deliberately not a project registration/reservation. The
         // migration gate waits for it through has_active_tasks().
         let lease = match self
@@ -564,13 +609,14 @@ impl SourceAcquisitionManager {
             Ok(lease) => lease,
             Err(error) => {
                 self.tasks.finish(&task.task_id, Err(error.clone()))?;
-                return Err(error);
+                return Err(self.acceptance_error(&ownership, &owner_app_id, fresh_owner, error));
             }
         };
         let record = SourceRecord {
             legacy_build_inspection: false,
             schema_version: 1,
             source_id: id.clone(),
+            owner_app_id: owner_app_id.clone(),
             task_id: task.task_id.clone(),
             name: name.trim().into(),
             status: "acquiring".into(),
@@ -602,7 +648,9 @@ impl SourceAcquisitionManager {
         };
         let prepared = (|| {
             private_dir(&self.root())?;
+            ownership.record_source(&owner_app_id, &id)?;
             new_dir(&self.root().join(&id))?;
+            ownership.record_source(&owner_app_id, &id)?;
             self.save_record(&record)?;
             fs::File::open(self.root().join(&id)).map_err(ApiError::from)
         })();
@@ -610,7 +658,7 @@ impl SourceAcquisitionManager {
             Ok(anchor) => anchor,
             Err(error) => {
                 self.tasks.finish(&task.task_id, Err(error.clone()))?;
-                return Err(error);
+                return Err(self.acceptance_error(&ownership, &owner_app_id, fresh_owner, error));
             }
         };
         let scope = Arc::new(SourceScope::new(
@@ -634,6 +682,61 @@ impl SourceAcquisitionManager {
         // Preserve completed outcomes for the shutdown join; panic is not success.
         runners.push(runner);
         Ok(task)
+    }
+    /// No source worker exists until start_source returns its accepted task.
+    /// A failed acceptance therefore has no writer and can roll back its fresh
+    /// project's exact ledger without leaving an invisible empty project.
+    fn acceptance_error(
+        &self,
+        ownership: &crate::node_project_ownership::NodeProjectOwnership,
+        owner: &str,
+        fresh: bool,
+        error: ApiError,
+    ) -> ApiError {
+        if !fresh {
+            return error;
+        }
+        let cleanup = (|| {
+            let tasks = ownership.task_ids(owner)?;
+            for task in &tasks {
+                if self
+                    .tasks
+                    .task(task)
+                    .is_ok_and(|task| !task.status.is_final())
+                {
+                    let _ = self.tasks.finish(task, Err(error.clone()));
+                }
+            }
+            let paths = ownership.owned_paths(owner)?;
+            let mut targets = vec![];
+            for path in &paths {
+                if path.exists() {
+                    targets.push((
+                        path.clone(),
+                        PersistedIdentity::capture(path)
+                            .map_err(|problem| invalid(&problem.to_string()))?,
+                    ));
+                }
+            }
+            ownership.owned_paths(owner)?;
+            let owner_directory = ownership.directory(owner)?;
+            for (path, identity) in targets.iter().filter(|(path, _)| path != &owner_directory) {
+                crate::history_cleanup::remove_owned_directory(path, identity)?;
+            }
+            self.tasks.forget_owned_tasks(&tasks)?;
+            if let Some((path, identity)) =
+                targets.iter().find(|(path, _)| path == &owner_directory)
+            {
+                crate::history_cleanup::remove_owned_directory(path, identity)?;
+            }
+            Ok::<_, ApiError>(())
+        })();
+        match cleanup {
+            Ok(()) => error,
+            Err(cleanup) => error
+                .detail("ownerAppId", owner)
+                .detail("acceptanceCleanupError", serde_json::json!(cleanup)),
+        }
     }
     pub fn cancel(&self, task_id: &str) -> Result<TaskRecord, ApiError> {
         let task = self.tasks.task(task_id)?;
@@ -681,10 +784,10 @@ impl SourceAcquisitionManager {
                 record.completed_at = Some(now());
                 self.save_record(&record)?;
                 if self.tasks.task(&record.task_id).is_ok() {
-                    self.tasks.reconcile_operation_result(&record.task_id, serde_json::json!({"sourceId":id,"operationOutcome":"interrupted","partialFilesRetained":true,"recovered":true}))?;
+                    self.tasks.reconcile_operation_result(&record.task_id, serde_json::json!({"sourceId":id,"ownerAppId":record.owner_app_id,"operationOutcome":"interrupted","partialFilesRetained":true,"recovered":true}))?;
                 }
             } else if record.status == "ready" && self.tasks.task(&record.task_id).is_ok() {
-                self.tasks.reconcile_operation_result(&record.task_id, serde_json::json!({"sourceId":id,"operationOutcome":"committed","recovered":true}))?;
+                self.tasks.reconcile_operation_result(&record.task_id, serde_json::json!({"sourceId":id,"ownerAppId":record.owner_app_id,"operationOutcome":"committed","recovered":true}))?;
             }
         }
         Ok(())
@@ -737,6 +840,10 @@ impl SourceAcquisitionManager {
                     .and_then(|()| self.save_record(&record))
                     .and_then(|()| self.view(record.clone()))
                     .and_then(|candidate| serde_json::to_value(candidate).map_err(ApiError::from))
+                    .map(|mut value| {
+                        value["ownerAppId"] = serde_json::json!(record.owner_app_id);
+                        value
+                    })
             }
             Err(error) => {
                 record.status = match error.code.as_str() {

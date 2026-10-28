@@ -421,9 +421,17 @@ async fn trusted_build_capture_accepts_platform_output_without_weakening_public_
         )
         .await
         .is_err());
+    let owner = uuid::Uuid::new_v4().to_string();
+    crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    )
+    .initialize(&owner)
+    .unwrap();
     let task = sources
         .capture_built_output(
             output,
+            owner,
             Some("可丢弃构建来源".into()),
             Some("a".repeat(40)),
             stop,

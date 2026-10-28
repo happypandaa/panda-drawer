@@ -235,6 +235,13 @@ test('Successful cleanup finishes an installed import without a persistent recei
   assert.equal(commands(calls).filter(name => name === 'node_install_apply').length, 1);
 });
 
+test('Cleanup accepts an absent response after its successful task and materials were removed', async () => {
+  const { session } = fixture({ source_import_cleanup: () => ({ completed: true, alreadyAbsent: true, sourceId: null, sourceRetained: false, removedPaths: [], failures: [] }) });
+  await session.acquire(input); await session.install(false);
+  assert.equal((await session.cleanup()).alreadyAbsent, true);
+  assert.equal(session.phase, 'done');
+});
+
 test('Cleanup still rejects incomplete responses and a different source identity', async () => {
   const valid = { completed: true, sourceId, sourceRetained: false, removedPaths: [], failures: [] };
   const invalid = Object.keys(valid).map(key => Object.fromEntries(Object.entries(valid).filter(([name]) => name !== key)));

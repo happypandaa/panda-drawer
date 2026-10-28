@@ -1,6 +1,6 @@
-//! Durable two-phase Node run identities. Development-era v1 records are
-//! explicitly discardable and never authorize a signal. Incomplete v2 records
-//! remain gated unless a later system boot proves their processes have ended.
+//! Durable two-phase Node run identities. Only the current marker schema is
+//! recognized. Incomplete current records remain gated unless a later system
+//! boot proves their processes have ended; unknown records never authorize signals.
 use super::*;
 use crate::node_process_identity::{self, Observation, RuntimeProcessIdentity};
 use std::time::SystemTime;
@@ -41,7 +41,6 @@ impl RunMarker {
 
 pub(super) enum RunState {
     Absent,
-    LegacyDiscardable,
     Stopped,
     Orphaned(RuntimeProcessIdentity),
     Unconfirmed,
@@ -79,40 +78,27 @@ pub(super) fn inspect(slot: &Path, id: &str, boot: SystemTime) -> Result<Inspect
         Ok(_) => (),
     }
     let owner = StartIntentOwnership::open_existing(&path)?;
-    // The user explicitly discarded v1 compatibility during development.
-    // This authorizes retiring the record, not observing or signalling hostPid
-    // and not claiming that an old application's processes were verified dead.
-    if serde_json::from_slice::<Value>(&owner.contents)
-        .is_ok_and(|value| value["version"].as_u64() == Some(1))
-    {
-        return Ok(Inspection {
-            state: RunState::LegacyDiscardable,
-            owner: Some(owner),
-        });
-    }
-    if owner.file.metadata()?.created().map_err(|_| unknown())? < boot {
-        return Ok(Inspection {
-            state: RunState::Stopped,
-            owner: Some(owner),
-        });
-    }
     let marker = serde_json::from_slice::<RunMarker>(&owner.contents).ok();
+    let marker = marker.filter(|marker| {
+        marker.version == 2
+            && marker.app_id == id
+            && matches!(marker.phase.as_str(), "launching" | "running")
+            && marker.run_directory.parent() == Some(slot.join("runs").as_path())
+    });
+    // A boot boundary only proves a valid current launch has stopped. Unknown
+    // formats are not an instruction to retire files or signal their old PID.
     let state = match marker {
-        Some(marker)
-            if marker.version == 2
-                && marker.app_id == id
-                && marker.phase == "running"
-                && marker.run_directory.parent() == Some(slot.join("runs").as_path()) =>
-        {
-            match marker.process {
-                Some(process) => match node_process_identity::observe(&process)? {
-                    Observation::Stopped => RunState::Stopped,
-                    Observation::Matching => RunState::Orphaned(process),
-                    Observation::Unconfirmed => RunState::Unconfirmed,
-                },
-                None => RunState::Unconfirmed,
-            }
+        Some(_) if owner.file.metadata()?.created().map_err(|_| unknown())? < boot => {
+            RunState::Stopped
         }
+        Some(marker) if marker.phase == "running" => match marker.process {
+            Some(process) => match node_process_identity::observe(&process)? {
+                Observation::Stopped => RunState::Stopped,
+                Observation::Matching => RunState::Orphaned(process),
+                Observation::Unconfirmed => RunState::Unconfirmed,
+            },
+            None => RunState::Unconfirmed,
+        },
         _ => RunState::Unconfirmed,
     };
     Ok(Inspection {
@@ -158,9 +144,6 @@ impl Inspection {
     pub(super) fn view(&self) -> Option<Value> {
         match self.state {
             RunState::Absent => None,
-            RunState::LegacyDiscardable => Some(
-                json!({"state":"orphaned","canStop":true,"message":"旧版运行记录可直接清理后继续。"}),
-            ),
             RunState::Stopped => Some(
                 json!({"state":"orphaned","canStop":true,"message":"遗留进程组已停止，可清理运行记录后继续。"}),
             ),
@@ -175,7 +158,7 @@ impl Inspection {
     pub(super) async fn stop_and_retire(self, slot: &Path) -> Result<()> {
         match &self.state {
             RunState::Absent => return Ok(()),
-            RunState::LegacyDiscardable | RunState::Stopped => (),
+            RunState::Stopped => (),
             RunState::Orphaned(identity) => {
                 node_process_identity::stop(identity).await?;
             }
@@ -186,9 +169,8 @@ impl Inspection {
 }
 
 impl NodeApps {
-    /// Called once before publishing manager commands. This touches only proven
-    /// obsolete or explicitly discarded v1 markers, never application data,
-    /// configuration or code.
+    /// Called once before publishing manager commands. Retire only current
+    /// markers whose processes are proven stopped, never application contents.
     pub async fn reconcile_run_markers(&self) -> Result<Value> {
         self.reconcile_run_markers_at(boot_time_or_unknown()).await
     }
@@ -215,7 +197,7 @@ impl NodeApps {
             match result {
                 Ok(value) => match value.state {
                     RunState::Absent => (),
-                    RunState::LegacyDiscardable | RunState::Stopped => match value.retire(&slot) {
+                    RunState::Stopped => match value.retire(&slot) {
                         Ok(()) => {
                             retired += 1;
                             inner.errors.remove(&id);

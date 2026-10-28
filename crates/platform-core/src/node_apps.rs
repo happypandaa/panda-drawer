@@ -69,7 +69,6 @@ struct Registration {
     source_path: PathBuf,
     manifest_digest: String,
     managed: Option<ManagedNodeRegistration>,
-    removal_pending: bool,
 }
 impl From<ExternalRegistration> for Registration {
     fn from(record: ExternalRegistration) -> Self {
@@ -78,7 +77,6 @@ impl From<ExternalRegistration> for Registration {
             source_path: record.source_path,
             manifest_digest: record.manifest_digest,
             managed: None,
-            removal_pending: false,
         }
     }
 }
@@ -167,6 +165,8 @@ pub struct NodeApps {
     directory_changes: Arc<std::sync::Mutex<()>>,
     directory_stopping: Arc<std::sync::atomic::AtomicBool>,
     source_workspace: Arc<std::sync::RwLock<Option<PathBuf>>>,
+    task_manager: Arc<std::sync::Mutex<Option<Arc<crate::builds::BuildManager>>>>,
+    runtime: Option<crate::RuntimeHandle>,
     #[cfg(test)]
     start_intent_pause: Arc<std::sync::Mutex<Option<StartIntentPause>>>,
 }
@@ -184,9 +184,10 @@ impl NodeApps {
         node_path: PathBuf,
         runtime: &crate::RuntimeHandle,
     ) -> Result<Self> {
-        let apps = Self::with_processes(data_root, node_path, runtime.store().processes())?;
+        let mut apps = Self::with_processes(data_root, node_path, runtime.store().processes())?;
         apps.set_source_workspace(runtime.info().workspace_root)?;
         apps.set_deletion_store(runtime.store())?;
+        apps.runtime = Some(runtime.clone());
         Ok(apps)
     }
     fn with_processes(
@@ -235,6 +236,8 @@ impl NodeApps {
             directory_changes: Arc::new(std::sync::Mutex::new(())),
             directory_stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             source_workspace: Arc::new(std::sync::RwLock::new(None)),
+            task_manager: Arc::new(std::sync::Mutex::new(None)),
+            runtime: None,
             #[cfg(test)]
             start_intent_pause: Arc::new(std::sync::Mutex::new(None)),
         };
@@ -280,16 +283,25 @@ impl NodeApps {
         Ok(())
     }
     pub(crate) fn is_published_source(&self, source: &Path) -> bool {
-        self.source_workspace
-            .read()
-            .ok()
-            .and_then(|w| w.as_ref().map(|w| w.join("project-sources")))
-            .is_some_and(|root| {
-                source.strip_prefix(root).is_ok_and(|relative| {
-                    relative.components().count() == 1
-                        && matches!(relative.components().next(), Some(Component::Normal(_)))
-                })
+        source
+            .strip_prefix(self.deletion_workspace().join("project-sources"))
+            .is_ok_and(|relative| {
+                relative.components().count() == 1
+                    && matches!(relative.components().next(), Some(Component::Normal(_)))
             })
+    }
+
+    pub(super) fn current_node_task_manager(
+        &self,
+    ) -> Result<Option<Arc<crate::builds::BuildManager>>> {
+        if let Some(runtime) = &self.runtime {
+            return Ok(Some(runtime.node_task_manager()));
+        }
+        Ok(self
+            .task_manager
+            .lock()
+            .map_err(|_| fail("任务管理器不可用。"))?
+            .clone())
     }
 
     fn registrations(&self) -> Result<Vec<Registration>> {
@@ -313,23 +325,9 @@ impl NodeApps {
                 continue;
             }
             let bytes = read_small(&path)?;
-            let mut value: Value = serde_json::from_slice(&bytes)?;
-            let removal_pending = match value
-                .as_object_mut()
-                .and_then(|record| record.remove("removalPending"))
-            {
-                None => false,
-                Some(Value::Bool(value)) => value,
-                Some(_) => return Err(fail("项目当前移除状态无效。")),
-            };
-            // Older releases used a separate deletion receipt. Never interpret
-            // its retained slot as a fresh app after an interrupted deletion.
-            // This only checks the old marker; new deletions never create one.
-            let legacy_deletion = self.root.join(".deletions").join(format!("{name}.json"));
-            crate::projects::check_no_symlinks(&legacy_deletion, true)?;
-            let removal_pending = removal_pending || legacy_deletion.try_exists()?;
+            let value: Value = serde_json::from_slice(&bytes)?;
             let version = value["version"].as_u64();
-            let mut record = match version {
+            let record = match version {
                 Some(1) => {
                     let record: ExternalRegistration = serde_json::from_value(value)?;
                     Registration::from(record)
@@ -342,12 +340,10 @@ impl NodeApps {
                         source_path,
                         manifest_digest: record.manifest_digest.clone(),
                         managed: Some(record),
-                        removal_pending,
                     }
                 }
                 _ => return Err(fail("Node 应用登记版本无效，请保留现场。")),
             };
-            record.removal_pending = removal_pending;
             if record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
             }
@@ -378,22 +374,10 @@ impl NodeApps {
         if !path.try_exists()? {
             return Ok(());
         }
-        if self.registration(id)?.removal_pending {
-            return Err(ApiError::new(
-                "NODE_APP_REMOVAL_PENDING",
-                "项目已开始移除，不能运行或重新创建配置。请重新核对范围后完成移除。",
-            ));
-        }
         Ok(())
     }
 
     fn manifest(&self, record: &Registration) -> Result<TrialManifest> {
-        if record.removal_pending {
-            return Err(ApiError::new(
-                "NODE_APP_REMOVAL_PENDING",
-                "项目已开始移除，请核对范围后完成移除。",
-            ));
-        }
         let manifest = if let Some(managed) = &record.managed {
             let program = node_app_install::verify_managed_program(&self.root, managed)?;
             let manifest =
@@ -598,28 +582,69 @@ impl NodeApps {
                     });
             }
         }
-        let id = Uuid::new_v4().to_string();
+        let pending = self.pending_generated_source_id(&source)?;
+        if pending.is_none() {
+            self.require_unclaimed_source(&source)?;
+        }
+        let id = pending
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let slot = self.root.join(&id);
-        private_dir(&slot)?;
-        for name in ["configuration", "data", "cache", "runs"] {
-            private_dir(&slot.join(name))?;
-        }
-        let manifest_digest = digest_manifest(&source)?;
-        if expected_manifest.is_some_and(|expected| expected != manifest_digest) {
-            return Err(ApiError::new(
-                "NODE_DIRECTORY_CHANGED",
-                "应用声明已变化，请重新检查后登记。",
-            )
-            .outcome("not_started"));
-        }
-        let record = ExternalRegistration {
-            version: 1,
-            id,
-            source_path: source,
-            manifest_digest,
+        let mut slot_identity = None;
+        let preparation = (|| -> Result<ExternalRegistration> {
+            if pending.is_none() {
+                self.project_ownership().initialize(&id)?;
+            }
+            // An instance directory is created once, never adopted by retrying
+            // another registration or by a coincidentally existing UUID path.
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&slot)?;
+            slot_identity = Some(
+                crate::file_identity::PersistedIdentity::capture(&slot)
+                    .map_err(|error| fail(error.to_string()))?,
+            );
+            for name in ["configuration", "data", "cache", "runs"] {
+                private_dir(&slot.join(name))?;
+            }
+            let manifest_digest = digest_manifest(&source)?;
+            if expected_manifest.is_some_and(|expected| expected != manifest_digest) {
+                return Err(ApiError::new(
+                    "NODE_DIRECTORY_CHANGED",
+                    "应用声明已变化，请重新检查后登记。",
+                )
+                .outcome("not_started"));
+            }
+            let record = ExternalRegistration {
+                version: 1,
+                id: id.clone(),
+                source_path: source.clone(),
+                manifest_digest,
+            };
+            // Establish exclusive source ownership with the initial registration.
+            // Detail reads no longer upgrade missing legacy bindings.
+            self.initialize_development_binding(&record)?;
+            check()?;
+            Ok(record)
+        })();
+        let record = match preparation {
+            Ok(record) => record,
+            Err(error) => {
+                let cleanup = self.discard_unpublished_registration(
+                    &id,
+                    slot_identity.as_ref(),
+                    pending.is_some(),
+                );
+                return Err(error
+                    .outcome("not_started")
+                    .detail("appId", id.as_str())
+                    .detail("cleanupError", cleanup.err().map(|error| json!(error))));
+            }
         };
-        // The digest is computed from the explicit source, not a cached declaration.
-        check()?;
         let publication = (|| {
             write_new_json(&slot.join("registration.json"), &record)?;
             self.sync_registration_parents(&record.id)
@@ -932,6 +957,22 @@ impl NodeApps {
             .save(&manifest, input)
             .map_err(|e| fail(e.to_string()))?;
         self.detail(&record, &manifest, &inner)
+    }
+
+    pub(super) async fn forget_deleted_instance(&self, id: &str) -> Result<()> {
+        let mut inner = self.inner.lock().await;
+        if inner.running.contains_key(id) {
+            return Err(fail("应用写入尚未结束，不能清理内存状态。"));
+        }
+        inner.markers.remove(id);
+        inner.errors.remove(id);
+        drop(inner);
+        self.runtime_operations
+            .lock()
+            .map_err(|_| fail("运行操作锁不可用。"))?
+            .remove(id);
+        self.operations.forget_instance(id)?;
+        Ok(())
     }
 
     fn runtime_operation(&self, id: &str) -> Result<Arc<Mutex<()>>> {

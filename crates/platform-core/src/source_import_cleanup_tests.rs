@@ -1,5 +1,5 @@
 use super::*;
-use crate::{builds, TaskStatus};
+use crate::builds;
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -8,6 +8,7 @@ struct Fixture {
     tasks: Arc<BuildManager>,
     cleanup: Arc<CleanupManager>,
     source: String,
+    owner: String,
     task: TaskRecord,
 }
 impl Fixture {
@@ -24,7 +25,18 @@ impl Fixture {
         )
         .unwrap();
         let source = format!("src_{}", Uuid::new_v4().simple());
-        let task = tasks.create_workspace_operation("sourceAcquire").unwrap();
+        let owner = Uuid::new_v4().to_string();
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            paths.data_root().into(),
+            paths.workspace_root().into(),
+        );
+        ownership.initialize(&owner).unwrap();
+        let task = tasks
+            .create_node_operation(&owner, "sourceAcquire")
+            .unwrap();
+        tasks
+            .record_node_source(&task.task_id, &owner, &source)
+            .unwrap();
         let slot = paths
             .workspace_root()
             .join(".platform/sources")
@@ -38,9 +50,13 @@ impl Fixture {
             "download temporary material",
         )
         .unwrap();
-        builds::atomic_json(&slot.join("source.json"), &json!({"schemaVersion":1,"sourceId":source,"taskId":task.task_id,"status":"ready","phase":"completed","error":null})).unwrap();
+        builds::atomic_json(&slot.join("source.json"), &json!({"schemaVersion":1,"sourceId":source,"ownerAppId":owner,"taskId":task.task_id,"status":"ready","phase":"completed","error":null})).unwrap();
+        ownership.record_source(&owner, &source).unwrap();
         tasks
-            .finish(&task.task_id, Ok(json!({"sourceId":source})))
+            .finish(
+                &task.task_id,
+                Ok(json!({"sourceId":source,"ownerAppId":owner})),
+            )
             .unwrap();
         Self {
             _temp,
@@ -49,6 +65,7 @@ impl Fixture {
             tasks,
             cleanup,
             source,
+            owner,
             task,
         }
     }
@@ -61,7 +78,7 @@ impl Fixture {
     fn staging(&self, state: &str) -> PathBuf {
         let prep = self
             .tasks
-            .create_workspace_operation("nodeInstallPrepare")
+            .create_node_operation(&self.owner, "nodeInstallPrepare")
             .unwrap();
         self.tasks
             .finish(
@@ -76,7 +93,7 @@ impl Fixture {
             .join(format!("install_{}", Uuid::new_v4().simple()));
         fs::create_dir_all(path.join("npm-cache")).unwrap();
         fs::write(path.join("npm-cache/payload"), "disposable npm cache").unwrap();
-        builds::atomic_json(&path.join("install.json"), &json!({"version":1,"candidateId":path.file_name().unwrap().to_str().unwrap(),"sourceId":self.source,"prepareTaskId":prep.task_id,"applyTaskId":null,"state":state,"target":crate::node_app_install::InstallTargetSnapshot::fresh(),"prepared":null,"registration":null,"error":null})).unwrap();
+        builds::atomic_json(&path.join("install.json"), &json!({"version":1,"candidateId":path.file_name().unwrap().to_str().unwrap(),"sourceId":self.source,"prepareTaskId":prep.task_id,"applyTaskId":null,"state":state,"target":self.target(),"prepared":null,"registration":null,"error":null})).unwrap();
         let build = self
             .paths
             .data_root()
@@ -92,7 +109,20 @@ impl Fixture {
             &json!({"sourceId":self.source,"prepareTaskId":prep.task_id,"targetAppId":null}),
         )
         .unwrap();
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        ownership
+            .record_installation(&self.owner, path.file_name().unwrap().to_str().unwrap())
+            .unwrap();
+        ownership.record_build(&self.owner, &prep.task_id).unwrap();
         path
+    }
+    fn target(&self) -> crate::node_app_install::InstallTargetSnapshot {
+        let mut target = crate::node_app_install::InstallTargetSnapshot::fresh();
+        target.app_id = self.owner.clone();
+        target
     }
     async fn stop(&self) {
         self.cleanup.shutdown().await;
@@ -130,9 +160,15 @@ async fn failed_import_cleans_only_exact_source_staging_and_build_and_is_idempot
     assert!(repeated["removedPaths"].as_array().unwrap().is_empty());
     assert!(!fixture.paths.data_root().join("cleanup/imports").exists());
     assert_eq!(
-        fixture.tasks.task(&fixture.task.task_id).unwrap().status,
-        TaskStatus::Succeeded
+        fixture.tasks.task(&fixture.task.task_id).unwrap_err().code,
+        "TASK_NOT_FOUND"
     );
+    assert!(!fixture
+        .paths
+        .data_root()
+        .join("node-project-ownership")
+        .join(&fixture.owner)
+        .exists());
     fixture.stop().await;
 }
 
@@ -144,7 +180,7 @@ async fn referenced_import_keeps_formal_source_git_app_data_and_configuration() 
         .paths
         .data_root()
         .join("node-apps")
-        .join(Uuid::new_v4().to_string());
+        .join(&fixture.owner);
     fs::create_dir_all(app.join("data")).unwrap();
     fs::create_dir_all(app.join("configuration")).unwrap();
     fs::write(app.join("data/keep.db"), "persistent business data").unwrap();
@@ -175,7 +211,7 @@ async fn referenced_import_keeps_formal_source_git_app_data_and_configuration() 
 }
 
 #[tokio::test]
-async fn active_leases_and_unknown_installation_outcomes_block_without_deleting() {
+async fn active_leases_block_and_stopped_unregistered_material_is_completely_removed() {
     let fixture = Fixture::new();
     let lease = fixture
         .store
@@ -188,12 +224,15 @@ async fn active_leases_and_unknown_installation_outcomes_block_without_deleting(
     assert!(fixture.source_path().join(".acquiring").exists());
     drop(lease);
     let stage = fixture.staging("committing");
-    assert!(fixture
-        .cleanup
-        .source_import_cleanup(&fixture.task.task_id)
-        .is_err());
-    assert!(stage.join("npm-cache/payload").is_file());
-    assert!(fixture.source_path().join("repository/app.js").is_file());
+    assert_eq!(
+        fixture
+            .cleanup
+            .source_import_cleanup(&fixture.task.task_id)
+            .unwrap()["completed"],
+        true
+    );
+    assert!(!stage.exists());
+    assert!(!fixture.source_path().exists());
     fixture.stop().await;
 }
 
@@ -211,7 +250,7 @@ async fn symlink_targets_and_task_identity_mismatch_are_not_followed() {
         .paths
         .data_root()
         .join("node-apps")
-        .join(Uuid::new_v4().to_string());
+        .join(&fixture.owner);
     builds::atomic_json(
         &app.join("registration.json"),
         &json!({"sourceId":fixture.source}),
@@ -232,7 +271,7 @@ async fn symlink_targets_and_task_identity_mismatch_are_not_followed() {
 }
 
 #[tokio::test]
-async fn partial_staging_without_ownership_is_retained_for_fresh_review() {
+async fn partially_removed_material_is_cleared_using_current_project_ownership() {
     let fixture = Fixture::new();
     let stage = fixture.staging("failed");
     let mut item = Candidate::new(
@@ -260,12 +299,15 @@ async fn partial_staging_without_ownership_is_retained_for_fresh_review() {
     assert_eq!(failed.code, "DISPOSABLE_PARTIAL");
     assert!(stage.exists());
     assert!(!stage.join("install.json").exists());
-    assert!(fixture
-        .cleanup
-        .source_import_cleanup(&fixture.task.task_id)
-        .is_err());
-    assert!(stage.exists());
-    assert!(fixture.source_path().exists());
+    assert_eq!(
+        fixture
+            .cleanup
+            .source_import_cleanup(&fixture.task.task_id)
+            .unwrap()["completed"],
+        true
+    );
+    assert!(!stage.exists());
+    assert!(!fixture.source_path().exists());
     fixture.stop().await;
 }
 
@@ -276,7 +318,7 @@ async fn known_uncommitted_apply_cleans_only_after_the_actual_pointer_is_checked
     let mut journal = read_json(&stage.join("install.json")).unwrap();
     let apply = fixture
         .tasks
-        .create_workspace_operation("nodeInstallApply")
+        .create_node_operation(&fixture.owner, "nodeInstallApply")
         .unwrap();
     fixture
         .tasks

@@ -2,510 +2,407 @@ use super::*;
 
 struct Fixture {
     _temporary: tempfile::TempDir,
-    root: PathBuf,
-    app_id: String,
+    data: PathBuf,
+    workspace: PathBuf,
+    id: String,
     slot: PathBuf,
     source: PathBuf,
+    outside: PathBuf,
 }
 impl Fixture {
-    fn new(managed: bool) -> Self {
+    fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
-        let root = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("disposable-platform-data");
-        let source = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("disposable-author-source");
-        fs::create_dir(&root).unwrap();
-        fs::create_dir(&source).unwrap();
-        fs::write(
-            source.join("author-sentinel"),
-            b"preserve external author files",
-        )
-        .unwrap();
-        let app_id = Uuid::new_v4().to_string();
-        let slot = root.join("node-apps").join(&app_id);
-        fs::create_dir_all(&slot).unwrap();
-        for name in ["configuration", "data", "cache", "logs", "runs"] {
-            fs::create_dir(slot.join(name)).unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let data = root.join("disposable-project-delete-data");
+        let workspace = data.join("workspace");
+        let id = Uuid::new_v4().to_string();
+        let slot = data.join("node-apps").join(&id);
+        let source = workspace.join("project-sources/disposable-source");
+        let outside = root.join("external-author-source");
+        for dir in [&slot, &source, &outside] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        for name in [
+            "configuration/credentials",
+            "data",
+            "cache",
+            "logs",
+            "runs",
+            "generations",
+            "future-private-state",
+        ] {
+            fs::create_dir_all(slot.join(name)).unwrap();
             fs::write(
                 slot.join(name).join("sentinel"),
                 format!("disposable {name}"),
             )
             .unwrap();
         }
-        if managed {
-            fs::create_dir(slot.join("generations")).unwrap();
-            fs::write(
-                slot.join("generations/sentinel"),
-                b"disposable installed program",
-            )
-            .unwrap();
-        }
+        fs::create_dir(source.join(".git")).unwrap();
+        fs::write(source.join(".git/HEAD"), b"uncommitted source version").unwrap();
+        fs::write(source.join("edited-by-ai"), b"later source edits").unwrap();
+        fs::write(outside.join("sentinel"), b"external source stays").unwrap();
         fs::write(
             slot.join("registration.json"),
-            b"registration is a caller-owned final step",
+            b"registration belongs to whole slot",
         )
         .unwrap();
         Self {
             _temporary: temporary,
-            root,
-            app_id,
+            data,
+            workspace,
+            id,
             slot,
             source,
+            outside,
         }
     }
-    fn journal(&self, managed: bool) -> NodeDeletionJournal {
-        NodeDeletionJournal::create(
-            &self.root,
-            json!({
-                "appId":self.app_id,"name":"Disposable journal test",
-                "ownership":if managed { "managed" } else { "external" },
-                "sourcePath":self.source,"expectedRegistrationRevision":"a".repeat(64),
-                "preservedPaths":[self.source,self.slot.join("runs")]
-            }),
-        )
-        .unwrap()
+    fn metadata(&self) -> Value {
+        json!({"appId":self.id,"name":"Disposable complete deletion","ownership":"managed","sourcePath":self.source,
+            "expectedRegistrationRevision":"a".repeat(64),"workspaceRoot":self.workspace,"ownedPaths":[self.slot,self.source],"preservedPaths":[],"externalOwnedPaths":[]})
     }
-    fn assert_preserved(&self) {
+    fn journal(&self) -> NodeDeletionJournal {
+        NodeDeletionJournal::create(&self.data, self.metadata()).unwrap()
+    }
+    fn assert_outside(&self) {
         assert_eq!(
-            fs::read(self.source.join("author-sentinel")).unwrap(),
-            b"preserve external author files"
+            fs::read(self.outside.join("sentinel")).unwrap(),
+            b"external source stays"
         );
-        assert_eq!(
-            fs::read(self.slot.join("runs/sentinel")).unwrap(),
-            b"disposable runs"
-        );
-        assert!(self.slot.join("registration.json").is_file());
+    }
+    fn finish(&self, mut journal: NodeDeletionJournal) {
+        journal.stage_all().unwrap();
+        journal.remove_staged_all().unwrap();
+        journal.mark_completed().unwrap();
+        journal.remove_terminal().unwrap();
+        assert!(!self.slot.exists());
+        assert!(!self.source.exists());
+        assert!(NodeDeletionJournal::list(&self.data).unwrap().is_empty());
+        self.assert_outside();
     }
 }
 fn interrupted() -> ApiError {
-    ApiError::new(
-        "DISPOSABLE_INTERRUPTION",
-        "Simulated interruption in a temporary journal",
-    )
+    ApiError::new("DISPOSABLE_INTERRUPTION", "Artificial interruption")
 }
 
 #[test]
-fn failed_stop_can_be_abandoned_before_any_namespace_move_without_touching_sources() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
+fn complete_deletion_removes_entire_slot_source_git_edits_and_its_own_task() {
+    let fixture = Fixture::new();
+    let journal = fixture.journal();
     assert!(journal
-        .directory
-        .starts_with(fixture.root.join("node-deletion-tasks")));
-    assert!(!journal.directory.starts_with(&fixture.slot));
-    journal.set_phase("stopping").unwrap();
-    journal
-        .mark_failed(&ApiError::new(
-            "TEST_STOP_FAILED",
-            "Disposable stop failure",
-        ))
-        .unwrap();
-    assert_eq!(journal.snapshot()["canRetry"], true);
+        .record
+        .targets
+        .iter()
+        .all(|target| !target.staging_directory.starts_with(&fixture.slot)));
+    fixture.finish(journal);
+}
+
+#[test]
+fn source_edits_after_admission_are_included_without_requiring_download_digest() {
+    let fixture = Fixture::new();
+    let journal = fixture.journal();
+    fs::write(fixture.source.join("edited-by-ai"), b"new uncommitted edit").unwrap();
+    fs::create_dir(fixture.source.join("node_modules")).unwrap();
+    fs::write(
+        fixture.source.join("node_modules/later-dependency"),
+        b"new dependency",
+    )
+    .unwrap();
+    fixture.finish(journal);
+}
+
+#[test]
+fn every_rename_and_remove_crash_boundary_reconciles_the_exact_captured_directories() {
+    for point in [
+        JournalPoint::RenameIntent,
+        JournalPoint::Renamed,
+        JournalPoint::Staged,
+        JournalPoint::RemoveIntent,
+        JournalPoint::Removed,
+    ] {
+        for index in 0..2 {
+            let fixture = Fixture::new();
+            let mut journal = fixture.journal();
+            let task = journal.task_id().to_owned();
+            if matches!(point, JournalPoint::RemoveIntent | JournalPoint::Removed) {
+                journal.stage_all().unwrap();
+                for _ in 0..index {
+                    journal.remove_next_staged().unwrap();
+                }
+                assert!(journal
+                    .remove_next_with(|seen| if seen == point {
+                        Err(interrupted())
+                    } else {
+                        Ok(())
+                    })
+                    .is_err());
+            } else {
+                for _ in 0..index {
+                    journal.stage_next().unwrap();
+                }
+                assert!(journal
+                    .stage_next_with(|seen| if seen == point {
+                        Err(interrupted())
+                    } else {
+                        Ok(())
+                    })
+                    .is_err());
+            }
+            drop(journal);
+            let loaded = NodeDeletionJournal::load(&fixture.data, &task).unwrap();
+            fixture.finish(loaded);
+        }
+    }
+}
+
+#[test]
+fn abandoning_before_namespace_moves_preserves_project_and_removes_the_plan() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.mark_failed(&interrupted()).unwrap();
     assert!(journal.can_abandon().unwrap());
     journal.request_abandon().unwrap();
     assert!(journal.stage_next().is_err());
     journal.abandon().unwrap();
-    journal.abandon().unwrap();
-    let loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert_eq!(loaded.phase(), "abandoned");
-    assert_eq!(loaded.snapshot()["canRetry"], false);
-    assert_eq!(loaded.snapshot()["canAbandon"], false);
-    assert_eq!(NodeDeletionJournal::list(&fixture.root).unwrap().len(), 1);
-    for name in ["configuration", "data", "cache"] {
-        assert!(fixture.slot.join(name).join("sentinel").exists());
-    }
-    fixture.assert_preserved();
+    journal.remove_terminal().unwrap();
+    assert!(fixture.slot.exists());
+    assert!(fixture.source.exists());
+    assert!(NodeDeletionJournal::list(&fixture.data).unwrap().is_empty());
 }
 
 #[test]
-fn legacy_partial_permanent_deletion_does_not_gain_abandonment_from_a_new_journal() {
-    let fixture = Fixture::new(false);
-    let mut metadata = fixture.journal(false).metadata().clone();
-    metadata["legacyIrreversible"] = json!(true);
-    let mut journal = NodeDeletionJournal::create(&fixture.root, metadata).unwrap();
-    journal.mark_failed(&interrupted()).unwrap();
-    assert_eq!(journal.snapshot()["renamedAny"], false);
-    assert_eq!(journal.snapshot()["canAbandon"], false);
-    assert_eq!(journal.snapshot()["canRetry"], true);
+fn cannot_abandon_after_whole_instance_has_been_captured() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.stage_next().unwrap();
     assert!(!journal.can_abandon().unwrap());
-    assert!(journal.request_abandon().is_err());
     assert!(journal.abandon().is_err());
-    fixture.assert_preserved();
+    fixture.finish(journal);
 }
 
 #[test]
-fn all_managed_targets_stage_and_remove_separately_and_keep_registration_and_run_evidence() {
-    let fixture = Fixture::new(true);
-    let mut journal = fixture.journal(true);
-    let before = journal.snapshot()["journalRevision"].as_u64().unwrap();
+fn a_replacement_at_a_removed_original_path_is_never_deleted_or_reported_complete() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
     journal.stage_all().unwrap();
-    assert_eq!(journal.snapshot()["renamedAny"], true);
-    assert!(!journal.can_abandon().unwrap());
-    assert!(journal.abandon().is_err());
-    assert_eq!(journal.snapshot()["remaining"].as_array().unwrap().len(), 5);
-    for name in ["configuration", "data", "cache", "logs", "generations"] {
-        assert!(!fixture.slot.join(name).exists());
-    }
-    fixture.assert_preserved();
-    journal.remove_staged_all().unwrap();
-    assert!(journal.snapshot()["remaining"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    assert!(journal.mark_completed().is_ok());
-    assert_eq!(journal.phase(), "deleted");
-    assert!(journal.snapshot()["journalRevision"].as_u64().unwrap() > before);
-    let loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert!(loaded.is_terminal());
-    assert_eq!(loaded.phase(), "deleted");
-    fixture.assert_preserved();
+    fs::create_dir(&fixture.slot).unwrap();
+    fs::write(fixture.slot.join("foreign"), b"foreign replacement").unwrap();
+    assert!(journal.remove_next_staged().is_err());
+    assert_eq!(
+        fs::read(fixture.slot.join("foreign")).unwrap(),
+        b"foreign replacement"
+    );
+    fixture.assert_outside();
 }
 
 #[test]
-fn version_one_deletions_resume_with_their_original_reviewed_targets() {
-    for managed in [false, true] {
-        let fixture = Fixture::new(managed);
-        // The old format predates runtime logs; model its original filesystem
-        // and target list rather than widening a persisted deletion on upgrade.
-        fs::remove_dir_all(fixture.slot.join("logs")).unwrap();
-        let mut journal = fixture.journal(managed);
-        journal.record.version = 1;
-        journal
-            .record
-            .targets
-            .retain(|target| target.name != "logs");
-        journal.persist().unwrap();
-        journal.stage_next().unwrap();
-        let task_id = journal.task_id().to_owned();
-        drop(journal);
-
-        let mut loaded = NodeDeletionJournal::load(&fixture.root, &task_id).unwrap();
-        assert_eq!(loaded.record.version, 1);
-        assert_eq!(loaded.record.targets.len(), if managed { 4 } else { 3 });
-        loaded.stage_all().unwrap();
-        loaded.remove_staged_all().unwrap();
-        loaded.mark_completed().unwrap();
-        assert!(NodeDeletionJournal::load(&fixture.root, &task_id)
-            .unwrap()
-            .is_terminal());
-        fixture.assert_preserved();
-    }
+fn a_parent_symlink_or_outside_target_is_rejected_before_any_move() {
+    let fixture = Fixture::new();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.outside]);
+    assert!(NodeDeletionJournal::create(&fixture.data, metadata).is_err());
+    assert!(fixture.slot.exists());
+    fixture.assert_outside();
+    let parent = fixture.source.parent().unwrap();
+    let moved = parent.with_file_name("retained-original-parent");
+    fs::rename(parent, &moved).unwrap();
+    std::os::unix::fs::symlink(&fixture.outside, parent).unwrap();
+    assert!(NodeDeletionJournal::create(&fixture.data, fixture.metadata()).is_err());
+    fixture.assert_outside();
 }
 
 #[test]
-fn version_two_deletion_cannot_omit_the_runtime_logs_target() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    assert_eq!(journal.record.version, 2);
+fn nested_targets_and_old_formats_are_rejected_without_compatibility_replay() {
+    let fixture = Fixture::new();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.slot.join("data")]);
+    assert!(NodeDeletionJournal::create(&fixture.data, metadata).is_err());
+    let journal = fixture.journal();
+    let path = journal.directory.join("task.json");
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["version"] = json!(2);
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(NodeDeletionJournal::load(&fixture.data, journal.task_id()).is_err());
+    assert!(fixture.slot.exists());
+}
+
+#[test]
+fn complete_plan_preflight_rejects_a_mounted_target_before_publication() {
+    let fixture = Fixture::new();
+    let result = NodeDeletionJournal::create_checked(
+        &fixture.data,
+        fixture.metadata(),
+        |_| Ok(()),
+        |parent, targets| preflight_targets(parent, targets, |path| Ok(path == fixture.source)),
+    );
+    assert_eq!(
+        result.err().unwrap().code,
+        "NODE_DELETION_TARGET_VOLUME_UNSUPPORTED"
+    );
+    assert!(!fixture.data.join("node-deletion-tasks").exists());
+    assert!(fixture.slot.exists());
+    fixture.assert_outside();
+}
+
+#[test]
+fn symlinks_inside_owned_source_do_not_follow_external_author_files() {
+    let fixture = Fixture::new();
+    std::os::unix::fs::symlink(&fixture.outside, fixture.source.join("external-link")).unwrap();
+    fixture.finish(fixture.journal());
+}
+
+#[test]
+fn missing_directory_appearing_after_admission_requires_a_bound_ledger_refresh() {
+    let fixture = Fixture::new();
+    let ledger = fixture
+        .data
+        .join("node-project-ownership")
+        .join(&fixture.id);
+    fs::create_dir_all(&ledger).unwrap();
+    let candidate = fixture
+        .data
+        .join("node-apps/.installations")
+        .join(format!("install_{}", Uuid::new_v4().simple()));
+    fs::create_dir_all(candidate.parent().unwrap()).unwrap();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.source, candidate, ledger]);
+    metadata["ownedTaskIds"] = json!([]);
+    let mut journal = NodeDeletionJournal::create(&fixture.data, metadata).unwrap();
+    fs::create_dir(&candidate).unwrap();
+    fs::write(
+        candidate.join("partial-build"),
+        b"failed or cancelled writer material",
+    )
+    .unwrap();
+    assert!(journal.reconcile().is_err());
     journal
-        .record
-        .targets
-        .retain(|target| target.name != "logs");
-    assert_eq!(
-        journal.validate().unwrap_err().code,
-        "NODE_DELETION_JOURNAL_UNCONFIRMED"
-    );
-    assert!(fixture.slot.join("logs/sentinel").is_file());
-    fixture.assert_preserved();
+        .refresh_owned_paths(
+            vec![
+                fixture.slot.clone(),
+                fixture.source.clone(),
+                candidate.clone(),
+                ledger.clone(),
+            ],
+            vec![],
+            None,
+            vec![],
+        )
+        .unwrap();
+    fixture.finish(journal);
+    assert!(!candidate.exists());
+    assert!(!ledger.exists());
 }
 
 #[test]
-fn intent_without_move_is_reconciled_before_abandon_is_allowed() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
+fn writer_created_targets_are_added_only_under_the_original_ledger_identity() {
+    let fixture = Fixture::new();
+    let ledger = fixture
+        .data
+        .join("node-project-ownership")
+        .join(&fixture.id);
+    fs::create_dir_all(&ledger).unwrap();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.source, ledger]);
+    metadata["ownedTaskIds"] = json!([]);
+    let mut journal = NodeDeletionJournal::create(&fixture.data, metadata).unwrap();
+    let extra = fixture
+        .data
+        .join("node-development-builds")
+        .join(format!("task_{}", Uuid::new_v4().simple()));
+    fs::create_dir_all(&extra).unwrap();
+    fs::rename(&ledger, ledger.with_extension("retained-original")).unwrap();
+    fs::create_dir(&ledger).unwrap();
     assert!(journal
-        .stage_next_with(|point| if matches!(point, JournalPoint::RenameIntent) {
-            Err(interrupted())
-        } else {
-            Ok(())
-        })
+        .refresh_owned_paths(
+            vec![
+                fixture.slot.clone(),
+                fixture.source.clone(),
+                extra.clone(),
+                ledger
+            ],
+            vec![],
+            None,
+            vec![],
+        )
         .is_err());
-    let mut loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert_eq!(
-        loaded.snapshot()["canAbandon"],
-        false,
-        "a durable intent is initially unresolved"
-    );
-    assert!(loaded.can_abandon().unwrap());
-    loaded.abandon().unwrap();
-    assert!(fixture.slot.join("configuration/sentinel").is_file());
-    fixture.assert_preserved();
+    assert!(fixture.slot.exists());
+    assert!(extra.exists());
+    fixture.assert_outside();
 }
 
 #[test]
-fn crash_after_rename_but_before_record_update_is_irreversible_and_resumes_remaining_targets() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    assert!(journal
-        .stage_next_with(|point| if matches!(point, JournalPoint::Renamed) {
-            Err(interrupted())
+fn staged_object_or_parent_replacement_never_authorizes_removal() {
+    for case in ["object", "symlink", "parent"] {
+        let fixture = Fixture::new();
+        let mut journal = fixture.journal();
+        journal.stage_all().unwrap();
+        let target = &journal.record.targets[0];
+        let staged = target.staged.clone();
+        if case == "parent" {
+            let parent = target.staging_directory.clone();
+            fs::rename(&parent, parent.with_extension("retained-original")).unwrap();
+            fs::create_dir(&parent).unwrap();
         } else {
-            Ok(())
-        })
-        .is_err());
-    assert!(!fixture.slot.join("configuration").exists());
-    let mut loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert_eq!(
-        loaded.snapshot()["renamedAny"],
-        false,
-        "the disk row still has only intent"
-    );
-    assert!(!loaded.can_abandon().unwrap());
-    assert_eq!(loaded.snapshot()["renamedAny"], true);
-    loaded.mark_failed(&interrupted()).unwrap();
-    assert_eq!(loaded.snapshot()["canRetry"], true);
-    assert_eq!(loaded.snapshot()["canAbandon"], false);
-    loaded.stage_all().unwrap();
-    loaded.remove_staged_all().unwrap();
-    loaded.mark_completed().unwrap();
-    fixture.assert_preserved();
+            fs::rename(&staged, staged.with_extension("retained-original")).unwrap();
+            if case == "symlink" {
+                std::os::unix::fs::symlink(&fixture.outside, &staged).unwrap();
+            } else {
+                fs::create_dir(&staged).unwrap();
+                fs::write(staged.join("replacement"), b"keep").unwrap();
+            }
+        }
+        assert!(journal.remove_next_staged().is_err());
+        assert!(journal.mark_completed().is_err());
+        fixture.assert_outside();
+    }
 }
 
 #[test]
-fn removed_directory_before_record_update_is_reconciled_and_retried_without_touching_other_apps() {
-    let fixture = Fixture::new(false);
-    let another = fixture
-        .root
-        .join("node-apps")
-        .join(Uuid::new_v4().to_string());
-    fs::create_dir_all(another.join("data")).unwrap();
-    fs::write(
-        another.join("data/other-app-sentinel"),
-        b"another application remains intact",
-    )
-    .unwrap();
-    let mut journal = fixture.journal(false);
-    journal.stage_all().unwrap();
-    assert!(journal
-        .remove_next_with(|point| if matches!(point, JournalPoint::Removed) {
-            Err(interrupted())
-        } else {
-            Ok(())
-        })
-        .is_err());
-    let mut loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    loaded.reconcile().unwrap();
-    assert_eq!(loaded.record.targets[0].state, TargetState::Removed);
-    loaded.remove_staged_all().unwrap();
-    loaded.mark_completed().unwrap();
-    assert_eq!(
-        fs::read(another.join("data/other-app-sentinel")).unwrap(),
-        b"another application remains intact"
-    );
-    fixture.assert_preserved();
-}
-
-#[test]
-fn changed_source_before_the_first_rename_is_preserved_and_can_still_be_abandoned() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    fs::rename(
-        fixture.slot.join("configuration"),
-        fixture.slot.join("retained-configuration"),
-    )
-    .unwrap();
-    fs::create_dir(fixture.slot.join("configuration")).unwrap();
-    fs::write(
-        fixture.slot.join("configuration/foreign-sentinel"),
-        b"preserve replacement",
-    )
-    .unwrap();
-    assert!(journal.stage_next().is_err());
-    assert!(journal.can_abandon().unwrap());
-    journal.abandon().unwrap();
-    assert_eq!(
-        fs::read(fixture.slot.join("configuration/foreign-sentinel")).unwrap(),
-        b"preserve replacement"
-    );
-    assert!(fixture
-        .slot
-        .join("retained-configuration/sentinel")
-        .is_file());
-    fixture.assert_preserved();
-}
-
-#[test]
-fn changed_staged_object_or_missing_volume_never_authorizes_removal_or_abandonment_of_unknown_intent(
-) {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    assert!(journal
-        .stage_next_with(|point| if matches!(point, JournalPoint::Renamed) {
-            Err(interrupted())
-        } else {
-            Ok(())
-        })
-        .is_err());
-    let staging = journal.record.targets[0].staged.clone();
-    let retained = staging.with_file_name("retained-original-configuration");
-    fs::rename(&staging, &retained).unwrap();
-    fs::create_dir(&staging).unwrap();
-    fs::write(
-        staging.join("foreign-sentinel"),
-        b"foreign staging contents must survive",
-    )
-    .unwrap();
-    let mut loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert!(loaded.can_abandon().is_err());
-    assert!(loaded.remove_next_staged().is_err());
-    assert_eq!(
-        fs::read(staging.join("foreign-sentinel")).unwrap(),
-        b"foreign staging contents must survive"
-    );
-    assert!(retained.join("sentinel").is_file());
-    fixture.assert_preserved();
-}
-
-#[test]
-fn pure_unmoved_plan_can_be_abandoned_when_its_instance_is_unavailable() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    fs::rename(
-        &fixture.slot,
-        fixture.slot.with_file_name("retained-disposable-instance"),
-    )
-    .unwrap();
-    assert!(journal.stage_next().is_err());
-    assert!(journal.can_abandon().unwrap());
-    journal.abandon().unwrap();
-    assert_eq!(journal.phase(), "abandoned");
-    assert!(fixture
-        .slot
-        .with_file_name("retained-disposable-instance")
-        .join("data/sentinel")
-        .is_file());
-    assert_eq!(
-        fs::read(fixture.source.join("author-sentinel")).unwrap(),
-        b"preserve external author files"
-    );
-}
-
-#[test]
-fn staged_directory_disappearing_before_any_remove_intent_is_not_reported_as_deleted() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
+fn staged_object_disappearance_without_remove_intent_never_claims_success() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
     journal.stage_all().unwrap();
     let staged = journal.record.targets[0].staged.clone();
-    let retained = fixture
-        .root
-        .join("retained-disposable-staging-outside-task");
-    fs::rename(staged, &retained).unwrap();
-    let mut loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert!(loaded.reconcile().is_err());
-    assert!(loaded.mark_completed().is_err());
-    assert!(!loaded.can_abandon().unwrap());
-    assert!(retained.join("sentinel").is_file());
-    fixture.assert_preserved();
-}
-
-#[test]
-fn staging_parent_symlink_does_not_write_to_external_source_and_plan_can_be_abandoned() {
-    use std::os::unix::fs::symlink;
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    symlink(&fixture.source, fixture.slot.join(STAGING_NAME)).unwrap();
-    assert!(journal.stage_next().is_err());
-    assert!(journal.can_abandon().unwrap());
-    journal.abandon().unwrap();
-    assert_eq!(fs::read_dir(&fixture.source).unwrap().count(), 1);
-    fixture.assert_preserved();
-}
-
-#[test]
-fn a_directory_missing_from_the_plan_cannot_silently_appear_at_completion() {
-    let fixture = Fixture::new(false);
-    fs::remove_dir_all(fixture.slot.join("cache")).unwrap();
-    let mut journal = fixture.journal(false);
-    fs::create_dir(fixture.slot.join("cache")).unwrap();
-    fs::write(
-        fixture.slot.join("cache/late-sentinel"),
-        b"late directory stays intact",
-    )
-    .unwrap();
-    assert!(journal.stage_all().is_err());
+    fs::rename(&staged, staged.with_extension("retained-original")).unwrap();
+    assert!(journal.reconcile().is_err());
     assert!(journal.mark_completed().is_err());
-    assert!(journal.can_abandon().unwrap());
-    journal.abandon().unwrap();
-    assert_eq!(
-        fs::read(fixture.slot.join("cache/late-sentinel")).unwrap(),
-        b"late directory stays intact"
-    );
-    fixture.assert_preserved();
+    fixture.assert_outside();
 }
 
 #[test]
-fn interruption_after_empty_staging_cleanup_before_terminal_write_can_finish() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
+fn stale_record_writer_and_terminal_state_tampering_are_rejected() {
+    let fixture = Fixture::new();
+    let mut first = fixture.journal();
+    let mut stale = NodeDeletionJournal::load(&fixture.data, first.task_id()).unwrap();
+    first.set_phase("stopping").unwrap();
+    assert!(stale.set_phase("staging").is_err());
+    assert!(fixture.slot.exists());
+    let record = first.directory.join(RECORD_NAME);
+    let mut value: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    value["phase"] = json!("deleted");
+    fs::write(&record, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(NodeDeletionJournal::load(&fixture.data, first.task_id()).is_err());
+    fixture.assert_outside();
+}
+
+#[test]
+fn interrupted_empty_staging_cleanup_can_finish_and_unpublished_scaffolds_do_not_survive() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    let id = journal.task_id().to_owned();
     journal.stage_all().unwrap();
     journal.remove_staged_all().unwrap();
-    let staging = journal.record.targets[0].staging_directory.clone();
     journal.cleanup_staging().unwrap();
-    assert!(!staging.exists());
-    let mut loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    loaded.reconcile().unwrap();
-    loaded.mark_completed().unwrap();
-    assert_eq!(loaded.phase(), "deleted");
-    fixture.assert_preserved();
-}
-
-#[test]
-fn tampered_ranges_and_replaced_record_are_rejected_without_deleting_any_source() {
-    use std::os::unix::fs::PermissionsExt;
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    let path = journal.directory.join(RECORD_NAME);
-    let original = fs::read(&path).unwrap();
-    let mut value: Value = serde_json::from_slice(&original).unwrap();
-    value["targets"][0]["original"] = json!(fixture.source);
-    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(NodeDeletionJournal::load(&fixture.root, journal.task_id()).is_err());
-    assert!(journal.set_phase("stopping").is_err());
-    fs::write(&path, &original).unwrap();
-    let displaced = journal.directory.join("retained-old-task.json");
-    fs::rename(&path, &displaced).unwrap();
-    fs::write(&path, b"foreign journal replacement").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(journal.mark_failed(&interrupted()).is_err());
-    assert_eq!(fs::read(path).unwrap(), b"foreign journal replacement");
-    assert_eq!(fs::read(displaced).unwrap(), original);
-    fixture.assert_preserved();
-}
-
-#[test]
-fn source_symlinks_are_never_followed_and_external_source_is_not_a_target() {
-    use std::os::unix::fs::symlink;
-    for name in ["data", "logs"] {
-        let fixture = Fixture::new(false);
-        let retained = fixture.slot.join(format!("retained-{name}"));
-        fs::rename(fixture.slot.join(name), &retained).unwrap();
-        symlink(&fixture.source, fixture.slot.join(name)).unwrap();
-        let metadata = json!({"appId":fixture.app_id,"name":"Disposable symlink test","ownership":"external","sourcePath":fixture.source,"expectedRegistrationRevision":"b".repeat(64),"preservedPaths":[fixture.source]});
-        assert!(NodeDeletionJournal::create(&fixture.root, metadata).is_err());
-        assert!(NodeDeletionJournal::list(&fixture.root).unwrap().is_empty());
-        assert!(retained.join("sentinel").is_file());
-        fixture.assert_preserved();
-    }
-}
-
-#[test]
-fn unpublished_empty_partial_and_complete_creating_evidence_is_kept_without_blocking_valid_tasks() {
-    use std::os::unix::fs::PermissionsExt;
-    let fixture = Fixture::new(false);
-    let normal = fixture.journal(false);
-    let metadata = normal.metadata().clone();
-    for stop in [
+    drop(journal);
+    fixture.finish(NodeDeletionJournal::load(&fixture.data, &id).unwrap());
+    for point in [
         JournalPoint::TaskDirectoryCreated,
         JournalPoint::BeforeTaskPublication,
     ] {
+        let fixture = Fixture::new();
         assert!(
-            NodeDeletionJournal::create_with(&fixture.root, metadata.clone(), |point| {
-                if point == stop {
+            NodeDeletionJournal::create_with(&fixture.data, fixture.metadata(), |seen| {
+                if seen == point {
                     Err(interrupted())
                 } else {
                     Ok(())
@@ -513,47 +410,44 @@ fn unpublished_empty_partial_and_complete_creating_evidence_is_kept_without_bloc
             })
             .is_err()
         );
-    }
-    let tasks = fixture.root.join("node-deletion-tasks");
-    let creating = fs::read_dir(&tasks)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
+        assert_eq!(
+            fs::read_dir(fixture.data.join("node-deletion-tasks"))
                 .unwrap()
-                .to_string_lossy()
-                .starts_with(".creating-")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(creating.len(), 2);
-    let empty = creating
-        .iter()
-        .find(|path| !path.join(RECORD_NAME).exists())
-        .unwrap();
-    let temporary = empty.join(format!(".write-{}", Uuid::new_v4()));
-    fs::write(&temporary, b"{\"partial-disposable-record\":").unwrap();
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
-    let visible = NodeDeletionJournal::list(&fixture.root).unwrap();
-    assert_eq!(visible.len(), 1);
-    assert_eq!(visible[0].task_id(), normal.task_id());
-    assert_eq!(
-        fs::read(temporary).unwrap(),
-        b"{\"partial-disposable-record\":"
-    );
-    assert!(creating.iter().all(|path| path.is_dir()));
-    for name in ["configuration", "data", "cache"] {
-        assert!(fixture.slot.join(name).join("sentinel").is_file());
+                .count(),
+            0
+        );
+        assert!(fixture.slot.exists());
     }
-    fixture.assert_preserved();
 }
 
 #[test]
-fn published_task_with_unconfirmed_parent_flush_returns_identity_for_adoption_not_a_new_task() {
-    let fixture = Fixture::new(false);
-    let normal = fixture.journal(false);
-    let metadata = normal.metadata().clone();
-    let failure = NodeDeletionJournal::create_with(&fixture.root, metadata.clone(), |point| {
-        if point == JournalPoint::TaskPublished {
+fn unknown_unpublished_names_and_symlinks_are_rejected_without_following_them() {
+    for link in [false, true] {
+        let fixture = Fixture::new();
+        let root = fixture.data.join("node-deletion-tasks");
+        private_directory(&root, false).unwrap();
+        let creating = root.join(format!(".creating-{}", Uuid::new_v4()));
+        private_directory(&creating, true).unwrap();
+        if link {
+            std::os::unix::fs::symlink(
+                fixture.outside.join("sentinel"),
+                creating.join(RECORD_NAME),
+            )
+            .unwrap();
+        } else {
+            fs::write(creating.join("foreign"), b"keep unknown file").unwrap();
+        }
+        assert!(NodeDeletionJournal::list(&fixture.data).is_err());
+        assert!(creating.exists());
+        fixture.assert_outside();
+    }
+}
+
+#[test]
+fn published_but_unconfirmed_task_returns_the_original_identity_for_adoption() {
+    let fixture = Fixture::new();
+    let error = NodeDeletionJournal::create_with(&fixture.data, fixture.metadata(), |seen| {
+        if seen == JournalPoint::TaskPublished {
             Err(interrupted())
         } else {
             Ok(())
@@ -561,193 +455,184 @@ fn published_task_with_unconfirmed_parent_flush_returns_identity_for_adoption_no
     })
     .err()
     .unwrap();
-    assert_eq!(failure.code, "NODE_DELETION_TASK_PUBLICATION_UNCONFIRMED");
-    assert_eq!(failure.details["publicationUnknown"], true);
-    assert_eq!(failure.details["appId"], fixture.app_id);
-    let task_id = failure.details["taskId"].as_str().unwrap();
-    assert_ne!(task_id, normal.task_id());
-    let adopted = NodeDeletionJournal::load(&fixture.root, task_id).unwrap();
-    assert_eq!(adopted.metadata(), &metadata);
-    assert_eq!(adopted.task_id(), task_id);
-    assert_eq!(adopted.phase(), "waiting");
-    assert_eq!(NodeDeletionJournal::list(&fixture.root).unwrap().len(), 2);
-    fixture.assert_preserved();
+    assert_eq!(error.code, "NODE_DELETION_TASK_PUBLICATION_UNCONFIRMED");
+    let task = error.details["taskId"].as_str().unwrap();
+    let journal = NodeDeletionJournal::load(&fixture.data, task).unwrap();
+    assert_eq!(journal.app_id(), fixture.id);
+    fixture.finish(journal);
 }
 
 #[test]
-fn unknown_unpublished_names_or_symlinks_are_not_silently_adopted() {
-    use std::os::unix::fs::symlink;
-    let fixture = Fixture::new(false);
-    let _normal = fixture.journal(false);
-    let root = fixture.root.join("node-deletion-tasks");
-    let unknown = root.join(".creating-not-a-task-id");
-    private_directory(&unknown, true).unwrap();
-    assert!(NodeDeletionJournal::list(&fixture.root).is_err());
-    fs::remove_dir(&unknown).unwrap();
-    let linked = root.join(format!(".creating-{}", Uuid::new_v4()));
-    symlink(&fixture.source, &linked).unwrap();
-    assert!(NodeDeletionJournal::list(&fixture.root).is_err());
-    assert!(fs::symlink_metadata(&linked)
-        .unwrap()
-        .file_type()
-        .is_symlink());
-    fixture.assert_preserved();
+fn unmoved_rename_intent_can_be_abandoned_without_leaving_task_scaffolding() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    assert!(journal
+        .stage_next_with(|seen| if seen == JournalPoint::RenameIntent {
+            Err(interrupted())
+        } else {
+            Ok(())
+        })
+        .is_err());
+    let staging = journal.record.targets[0].staging_directory.clone();
+    assert!(staging.exists());
+    assert!(journal.can_abandon().unwrap());
+    journal.request_abandon().unwrap();
+    journal.abandon().unwrap();
+    journal.remove_terminal().unwrap();
+    assert!(!staging.exists());
+    assert!(fixture.slot.exists());
+    assert!(fixture.source.exists());
+    fixture.assert_outside();
 }
 
 #[test]
-fn simulated_cross_volume_or_known_mount_target_rejects_the_entire_plan_before_publication() {
-    let fixture = Fixture::new(false);
-    let normal = fixture.journal(false);
-    for boundary in 0..3 {
-        let failure = NodeDeletionJournal::create_checked(
-            &fixture.root,
-            normal.metadata().clone(),
+fn a_symlink_at_the_staging_container_never_writes_outside_the_project() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    let staging = fixture.slot.parent().unwrap().join(STAGING_NAME);
+    std::os::unix::fs::symlink(&fixture.outside, &staging).unwrap();
+    assert!(journal.stage_next().is_err());
+    assert!(fixture.slot.exists());
+    assert_eq!(fs::read_dir(&fixture.outside).unwrap().count(), 1);
+    fixture.assert_outside();
+}
+
+#[test]
+fn preflight_checks_each_targets_own_parent_volume() {
+    for mismatch in [false, true] {
+        let fixture = Fixture::new();
+        let result = NodeDeletionJournal::create_checked(
+            &fixture.data,
+            fixture.metadata(),
             |_| Ok(()),
             |parent, targets| {
-                let mut observed = targets.to_vec();
-                assert_eq!(observed[0].name, "configuration");
-                assert_eq!(observed[1].name, "data");
-                match boundary {
-                    0 => {
-                        observed[1].identity.as_mut().unwrap().device =
-                            parent.device.checked_add(1).unwrap()
-                    }
-                    1 => {
-                        observed[1].identity.as_mut().unwrap().volume_uuid =
-                            Some(Uuid::new_v4().to_string())
-                    }
-                    _ => (),
+                let mut simulated = targets.to_vec();
+                simulated[1].identity.as_mut().unwrap().device += 1;
+                if !mismatch {
+                    simulated[1].parent_identity.as_mut().unwrap().device += 1;
                 }
-                preflight_targets(parent, &observed, |path| {
-                    Ok(boundary == 2 && path.file_name().unwrap() == "data")
-                })
+                preflight_targets(parent, &simulated, |_| Ok(false))
             },
-        )
-        .err()
-        .unwrap();
-        assert_eq!(failure.code, "NODE_DELETION_TARGET_VOLUME_UNSUPPORTED");
-        let visible = NodeDeletionJournal::list(&fixture.root).unwrap();
-        assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].task_id(), normal.task_id());
-        assert_eq!(
-            fs::read_dir(fixture.root.join("node-deletion-tasks"))
-                .unwrap()
-                .count(),
-            1
         );
-        assert!(!fixture.slot.join(STAGING_NAME).exists());
-        for name in ["configuration", "data", "cache"] {
-            assert!(fixture.slot.join(name).join("sentinel").is_file());
-        }
-        fixture.assert_preserved();
-    }
-}
-
-#[test]
-fn registration_restore_binding_can_be_persisted_while_abandonment_is_requested() {
-    let fixture = Fixture::new(false);
-    let mut journal = fixture.journal(false);
-    journal.request_abandon().unwrap();
-    let binding = json!({"directoryIdentity":journal.record.journal_directory_identity,"originalIdentity":journal.record.instance_identity,"sha256":"d".repeat(64)});
-    journal.bind_registration_removal(binding.clone()).unwrap();
-    let mut restored = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-    assert!(restored.abandon_requested());
-    assert_eq!(restored.metadata()["registrationRemoval"], binding);
-    restored.abandon().unwrap();
-    assert!(restored
-        .bind_registration_removal(json!({"invalid":"terminal write"}))
-        .is_err());
-    assert_eq!(restored.metadata()["registrationRemoval"], binding);
-    fixture.assert_preserved();
-}
-
-#[test]
-fn terminal_deleted_record_cannot_claim_success_while_targets_are_pending() {
-    let fixture = Fixture::new(false);
-    let journal = fixture.journal(false);
-    let path = journal.directory.join(RECORD_NAME);
-    let mut record = serde_json::to_value(&journal.record).unwrap();
-    record["phase"] = json!("deleted");
-    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
-    assert!(NodeDeletionJournal::load(&fixture.root, journal.task_id()).is_err());
-    for name in ["configuration", "data", "cache"] {
-        assert!(fixture.slot.join(name).join("sentinel").is_file());
-    }
-    fixture.assert_preserved();
-}
-
-#[test]
-fn terminal_abandoned_record_rejects_move_history_unresolved_intent_and_legacy_irreversibility() {
-    for state in [
-        TargetState::RenameIntent,
-        TargetState::Staged,
-        TargetState::Removing,
-        TargetState::Removed,
-    ] {
-        let fixture = Fixture::new(false);
-        let mut journal = fixture.journal(false);
-        journal.prepare_staging(0).unwrap();
-        let mut record = serde_json::to_value(&journal.record).unwrap();
-        record["phase"] = json!("abandoned");
-        record["abandonRequested"] = json!(true);
-        record["targets"][0]["state"] = serde_json::to_value(state).unwrap();
-        record["renamedAny"] = json!(state != TargetState::RenameIntent);
-        fs::write(
-            journal.directory.join(RECORD_NAME),
-            serde_json::to_vec(&record).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            NodeDeletionJournal::load(&fixture.root, journal.task_id()).is_err(),
-            "invalid abandoned target state {state:?}"
-        );
-        fixture.assert_preserved();
-    }
-    for legacy in [false, true] {
-        let fixture = Fixture::new(false);
-        let journal = fixture.journal(false);
-        let mut record = serde_json::to_value(&journal.record).unwrap();
-        record["phase"] = json!("abandoned");
-        record["abandonRequested"] = json!(true);
-        record["renamedAny"] = json!(!legacy);
-        record["metadata"]["legacyIrreversible"] = json!(legacy);
-        fs::write(
-            journal.directory.join(RECORD_NAME),
-            serde_json::to_vec(&record).unwrap(),
-        )
-        .unwrap();
-        assert!(NodeDeletionJournal::load(&fixture.root, journal.task_id()).is_err());
-        fixture.assert_preserved();
-    }
-}
-
-#[test]
-fn normal_terminal_load_does_not_follow_or_remove_later_recreated_target_paths() {
-    for terminal in ["deleted", "abandoned"] {
-        let fixture = Fixture::new(false);
-        let mut journal = fixture.journal(false);
-        if terminal == "deleted" {
-            journal.stage_all().unwrap();
-            journal.remove_staged_all().unwrap();
-            journal.mark_completed().unwrap();
+        if mismatch {
+            assert_eq!(
+                result.err().unwrap().code,
+                "NODE_DELETION_TARGET_VOLUME_UNSUPPORTED"
+            );
+            assert!(fixture.slot.exists());
         } else {
-            journal.abandon().unwrap();
-            fs::rename(
-                fixture.slot.join("configuration"),
-                fixture.slot.join("retained-old-configuration"),
-            )
-            .unwrap();
+            fixture.finish(result.unwrap());
         }
-        fs::create_dir(fixture.slot.join("configuration")).unwrap();
-        let sentinel = fixture.slot.join("configuration/later-instance-sentinel");
-        fs::write(&sentinel, b"later files stay outside the terminal task").unwrap();
-        let loaded = NodeDeletionJournal::load(&fixture.root, journal.task_id()).unwrap();
-        assert_eq!(loaded.phase(), terminal);
-        assert!(loaded.is_terminal());
-        assert_eq!(
-            fs::read(sentinel).unwrap(),
-            b"later files stay outside the terminal task"
-        );
-        fixture.assert_preserved();
     }
+}
+
+#[test]
+fn exact_owned_material_in_a_previous_workspace_is_deleted_while_other_sources_remain() {
+    let fixture = Fixture::new();
+    let previous = fixture
+        .outside
+        .with_file_name("disposable-prior-workspace")
+        .join("project-sources/disposable-migrated-project");
+    fs::create_dir_all(previous.join(".git")).unwrap();
+    fs::write(previous.join(".git/HEAD"), b"disposable pre-migration copy").unwrap();
+    let mut metadata = fixture.metadata();
+    metadata["ownedPaths"] = json!([fixture.slot, fixture.source, previous]);
+    metadata["externalOwnedPaths"] = json!([previous]);
+    fixture.finish(NodeDeletionJournal::create(&fixture.data, metadata).unwrap());
+    assert!(!previous.exists());
+    fixture.assert_outside();
+}
+
+#[test]
+fn only_task_created_empty_staging_containers_are_removed_and_cleanup_is_idempotent() {
+    for preexisting in [false, true] {
+        let fixture = Fixture::new();
+        let container = fixture.source.parent().unwrap().join(STAGING_NAME);
+        if preexisting {
+            private_directory(&container, true).unwrap();
+            fs::write(container.join("foreign-content"), b"preexisting owner").unwrap();
+        }
+        let mut journal = fixture.journal();
+        journal.stage_all().unwrap();
+        journal.remove_staged_all().unwrap();
+        journal.mark_completed().unwrap();
+        journal.cleanup_staging().unwrap();
+        journal.remove_terminal().unwrap();
+        journal.remove_terminal().unwrap();
+        if preexisting {
+            assert_eq!(
+                fs::read(container.join("foreign-content")).unwrap(),
+                b"preexisting owner"
+            );
+        } else {
+            assert!(!container.exists());
+        }
+        fixture.assert_outside();
+    }
+}
+
+#[test]
+fn task_created_staging_container_replacement_is_not_removed() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.stage_all().unwrap();
+    journal.remove_staged_all().unwrap();
+    let container = fixture.source.parent().unwrap().join(STAGING_NAME);
+    fs::rename(&container, container.with_extension("retained-original")).unwrap();
+    private_directory(&container, true).unwrap();
+    assert!(journal.mark_completed().is_err());
+    assert!(container.exists());
+    fixture.assert_outside();
+}
+
+#[test]
+fn uninstall_scope_tracks_current_identity_bound_payload_after_owner_namespace_moves() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    let record = journal.directory.join(RECORD_NAME);
+    let bytes = fs::read(&record).unwrap();
+    let before = local_cleanup_owned_paths(&fixture.data).unwrap();
+    assert!(before.contains(&fixture.slot));
+    assert!(before.contains(&fixture.source));
+    assert!(before.contains(&record));
+    assert_eq!(fs::read(&record).unwrap(), bytes);
+    journal.stage_all().unwrap();
+    let staged: Vec<_> = journal
+        .record
+        .targets
+        .iter()
+        .map(|target| target.staged.clone())
+        .collect();
+    let scopes = local_cleanup_owned_paths(&fixture.data).unwrap();
+    assert!(!scopes.contains(&fixture.slot));
+    for path in &staged {
+        assert!(scopes.contains(path));
+        assert!(path.exists());
+    }
+    assert!(scopes.contains(&journal.directory));
+    fixture.finish(journal);
+}
+
+#[test]
+fn uninstall_scope_rejects_replaced_payload_and_does_not_claim_foreign_staging_content() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.journal();
+    journal.stage_all().unwrap();
+    let parent = journal.record.targets[1]
+        .staging_directory
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    fs::write(parent.join("foreign-sentinel"), b"keep unrelated content").unwrap();
+    let paths = local_cleanup_owned_paths(&fixture.data).unwrap();
+    assert!(!paths.contains(&parent));
+    let payload = journal.record.targets[1].staged.clone();
+    fs::rename(&payload, payload.with_extension("retained-original")).unwrap();
+    fs::create_dir(&payload).unwrap();
+    assert!(local_cleanup_owned_paths(&fixture.data).is_err());
+    assert_eq!(
+        fs::read(parent.join("foreign-sentinel")).unwrap(),
+        b"keep unrelated content"
+    );
+    fixture.assert_outside();
 }

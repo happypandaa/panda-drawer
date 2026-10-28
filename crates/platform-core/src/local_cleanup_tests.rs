@@ -157,6 +157,99 @@ async fn cleanup_requires_actual_runtime_shutdown_and_matching_service() {
 }
 
 #[tokio::test]
+async fn cleanup_removes_owned_generated_roots_and_external_restore_material_but_keeps_author_git()
+{
+    use crate::node_project_ownership::NodeProjectOwnership;
+    let (temporary, paths, service) = fixture().await;
+    let ownership =
+        NodeProjectOwnership::new(paths.data_root().into(), paths.workspace_root().into());
+    let generated = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-generated-outside-workspace");
+    fs::create_dir(&generated).unwrap();
+    let registration = external_registration(&paths, &generated);
+    let generated_id = registration
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    ownership.initialize(generated_id).unwrap();
+    ownership
+        .record_generated_source(generated_id, &generated)
+        .unwrap();
+    fs::create_dir(generated.join(".git")).unwrap();
+    fs::write(generated.join(".git/HEAD"), "generated Git is deleted").unwrap();
+    fs::write(generated.join("uncommitted.js"), "AI changes are deleted").unwrap();
+    let author = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-original-outside-workspace");
+    fs::create_dir_all(author.join(".git")).unwrap();
+    fs::write(author.join(".git/HEAD"), "ordinary author Git remains").unwrap();
+    fs::write(author.join("source.js"), "original source remains").unwrap();
+    let registration = external_registration(&paths, &author);
+    let id = registration
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    ownership.initialize(id).unwrap();
+    crate::node_apps::development::claim_source_after_verified_migration(
+        paths.data_root(),
+        paths.workspace_root(),
+        id,
+        &author,
+    )
+    .unwrap();
+    ownership.record_source_restore(id, &author).unwrap();
+    for name in [
+        "local-projects-node-restores",
+        "local-projects-node-restore-preparing",
+    ] {
+        let path = author.join(".git").join(name);
+        fs::create_dir(&path).unwrap();
+        ownership
+            .capture_source_restore_directory(
+                id,
+                &author,
+                name,
+                &PersistedIdentity::capture(&path).unwrap(),
+            )
+            .unwrap();
+        fs::write(path.join("payload"), "platform recovery material").unwrap();
+    }
+    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    assert_eq!(plan.preview()["preservedPaths"], json!([author]));
+    assert!(plan.targets.iter().any(|target| target.path == generated));
+    assert!(plan
+        .targets
+        .iter()
+        .any(|target| target.path == author.join(".git/local-projects-node-restores")));
+    assert!(service.quiesce().await.is_complete());
+    plan.execute_after_shutdown(&service).unwrap();
+    assert!(!generated.exists());
+    assert!(!author.join(".git/local-projects-node-restores").exists());
+    assert!(!author
+        .join(".git/local-projects-node-restore-preparing")
+        .exists());
+    assert_eq!(
+        fs::read_to_string(author.join(".git/HEAD")).unwrap(),
+        "ordinary author Git remains"
+    );
+    assert_eq!(
+        fs::read_to_string(author.join("source.js")).unwrap(),
+        "original source remains"
+    );
+}
+
+#[tokio::test]
 async fn expired_preview_does_not_remove_data_or_create_cleanup_records() {
     let (_temporary, paths, service) = fixture().await;
     let mut plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();

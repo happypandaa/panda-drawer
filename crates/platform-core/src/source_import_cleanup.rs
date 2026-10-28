@@ -9,6 +9,7 @@ struct ImportTarget {
 }
 
 struct ImportPlan {
+    owner_app_id: String,
     source_task_id: String,
     source_id: String,
     source_retained: bool,
@@ -38,7 +39,15 @@ impl CleanupManager {
         if !valid_id(source_task_id) || !source_task_id.starts_with("task_") {
             return Err(blocked("导入任务编号无效。"));
         }
-        let task = self.tasks.task(source_task_id)?;
+        let task = match self.tasks.task(source_task_id) {
+            Ok(task) => task,
+            Err(error) if error.code == "TASK_NOT_FOUND" => {
+                return Ok(
+                    json!({"completed":true,"alreadyAbsent":true,"sourceId":null,"sourceRetained":false,"removedPaths":[],"failures":[]}),
+                )
+            }
+            Err(error) => return Err(error),
+        };
         if !matches!(task.task_type.as_str(), "sourceAcquire" | "sourceCapture")
             || !task.status.is_final()
             || task
@@ -58,25 +67,22 @@ impl CleanupManager {
         }
         let installer = self.installer()?;
         let _commit = installer.commit_lock()?;
-        if let Some(source_id) = task
+        let result = task
             .result
             .as_ref()
-            .and_then(|result| result["sourceId"].as_str())
+            .ok_or_else(|| blocked("来源任务缺少受理归属。"))?;
+        let source_id = result["sourceId"]
+            .as_str()
             .filter(|id| id.starts_with("src_") && valid_id(id))
-        {
-            let source = self.sources_root().join(source_id);
-            check_no_symlinks(&source, true)?;
-            let states = installer.installation_states()?;
-            if !source.try_exists()?
-                && !states.iter().any(|state| {
-                    state.source_id.as_deref() == Some(source_id)
-                        || (!state.is_terminal() && state.source_id.is_none())
-                })
-            {
-                return Ok(
-                    json!({"completed":true,"sourceId":source_id,"sourceRetained":false,"removedPaths":[],"failures":[]}),
-                );
-            }
+            .ok_or_else(|| blocked("来源任务缺少源码归属。"))?;
+        let owner = result["ownerAppId"]
+            .as_str()
+            .filter(|id| Uuid::parse_str(id).is_ok())
+            .ok_or_else(|| blocked("来源任务缺少项目归属。"))?;
+        let registration = self.node_root().join(owner).join("registration.json");
+        check_no_symlinks(&registration, true)?;
+        if !registration.exists() {
+            return self.remove_unregistered_import(owner, source_id);
         }
         let mut plan = self.import_plan(source_task_id)?;
         let source = self.sources_root().join(&plan.source_id);
@@ -139,28 +145,72 @@ impl CleanupManager {
         Ok(import_result(&plan, failures))
     }
 
+    fn remove_unregistered_import(&self, owner: &str, source: &str) -> Result<Value, ApiError> {
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        let tasks = ownership.task_ids(owner)?;
+        for id in &tasks {
+            if self.tasks.task(id).is_ok_and(|task| {
+                !task.status.is_final()
+                    || task
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| process_unconfirmed(&error.details))
+            }) {
+                return Err(blocked("项目任务尚未结束，未清理材料。"));
+            }
+        }
+        let paths = ownership.owned_paths(owner)?;
+        let mut targets = vec![];
+        add_target(&mut targets, self.node_root().join(owner))?;
+        for path in &paths {
+            add_target(&mut targets, path.clone())?;
+        }
+        // Capture and then recheck the same persisted index before mutation.
+        if ownership.owned_paths(owner)? != paths {
+            return Err(blocked("项目材料归属已变化，请重试。"));
+        }
+        let owner_directory = ownership.directory(owner)?;
+        let mut removed = vec![];
+        for target in targets
+            .iter()
+            .filter(|target| target.path != owner_directory)
+        {
+            remove_owned_directory(&target.path, &target.identity)?;
+            removed.push(target.path.clone());
+        }
+        self.tasks.forget_owned_tasks(&tasks)?;
+        if let Some(target) = targets.iter().find(|target| target.path == owner_directory) {
+            remove_owned_directory(&target.path, &target.identity)?;
+            removed.push(target.path.clone());
+        }
+        Ok(
+            json!({"completed":true,"sourceId":source,"sourceRetained":false,"removedPaths":removed,"failures":[]}),
+        )
+    }
+
     fn import_plan(&self, task: &str) -> Result<ImportPlan, ApiError> {
-        let root = self.sources_root();
-        check_no_symlinks(&root, false)?;
-        let mut matched = vec![];
-        for entry in fs::read_dir(&root)? {
-            let entry = entry?;
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if !id.starts_with("src_") || !valid_id(&id) || !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let Ok(value) = read_json(&entry.path().join("source.json")) else {
-                continue;
-            };
-            if value["taskId"] == task {
-                matched.push((id, entry.path(), value));
-            }
-        }
-        if matched.len() != 1 {
-            return Err(blocked("未找到唯一对应的导入源码记录。"));
-        }
-        let (source_id, source, record) = matched.pop().unwrap();
+        let task_record = self.tasks.task(task)?;
+        let result = task_record
+            .result
+            .as_ref()
+            .ok_or_else(|| blocked("来源任务缺少受理归属。"))?;
+        let source_id = result["sourceId"]
+            .as_str()
+            .filter(|id| id.starts_with("src_") && valid_id(id))
+            .ok_or_else(|| blocked("来源任务缺少源码归属。"))?
+            .to_owned();
+        let source = self.sources_root().join(&source_id);
+        let record = read_json(&source.join("source.json"))?;
+        let owner_app_id = result["ownerAppId"]
+            .as_str()
+            .ok_or_else(|| blocked("来源任务缺少项目归属。"))?
+            .to_owned();
         if record["sourceId"] != source_id
+            || record["ownerAppId"] != owner_app_id
+            || record["taskId"] != task
             || record["schemaVersion"] != 1
             || !matches!(
                 record["status"].as_str(),
@@ -201,7 +251,7 @@ impl CleanupManager {
                 )?;
             }
         }
-        let states = self.installer()?.installation_states()?;
+        let states = self.owned_import_installations(&owner_app_id)?;
         for state in states {
             if state.source_id.as_deref() != Some(source_id.as_str()) {
                 continue;
@@ -221,6 +271,7 @@ impl CleanupManager {
             },
         )?;
         Ok(ImportPlan {
+            owner_app_id,
             source_task_id: task.into(),
             source_id,
             source_retained: retained,
@@ -233,29 +284,26 @@ impl CleanupManager {
         })
     }
 
-    fn import_source_referenced(&self, id: &str, slot: &Path) -> Result<bool, ApiError> {
-        let root = self.node_root();
-        check_no_symlinks(&root, true)?;
-        if !root.try_exists()? {
-            return Ok(false);
-        }
-        for entry in fs::read_dir(&root)? {
-            let entry = entry?;
-            if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_err() {
-                continue;
-            }
-            check_no_symlinks(&entry.path(), false)?;
-            for name in ["registration.json", "development-source.json"] {
-                let path = entry.path().join(name);
-                check_no_symlinks(&path, true)?;
-                if path.try_exists()? && references_source(&read_json(&path)?, id, slot) {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
+    fn owned_import_installations(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<crate::node_app_install::InstallationState>, ApiError> {
+        self.installer()?.owned_installation_states(owner)
     }
 
+    fn import_source_referenced(&self, id: &str, slot: &Path) -> Result<bool, ApiError> {
+        let source = read_json(&slot.join("source.json"))?;
+        if source["sourceId"] != id {
+            return Err(blocked("源码项目归属无效。"));
+        }
+        let owner = source["ownerAppId"]
+            .as_str()
+            .filter(|id| Uuid::parse_str(id).is_ok())
+            .ok_or_else(|| blocked("源码缺少项目归属。"))?;
+        let registration = self.node_root().join(owner).join("registration.json");
+        check_no_symlinks(&registration, true)?;
+        Ok(registration.is_file())
+    }
     fn import_task_stopped(&self, id: &str, expected: &str) -> Result<(), ApiError> {
         let task = self.tasks.task(id)?;
         if task.task_type != expected
@@ -319,7 +367,7 @@ impl CleanupManager {
     }
 
     fn validate_import_installations(&self, plan: &ImportPlan) -> Result<(), ApiError> {
-        for state in self.installer()?.installation_states()? {
+        for state in self.owned_import_installations(&plan.owner_app_id)? {
             if state.source_id.as_deref() == Some(plan.source_id.as_str()) {
                 if !plan.targets.iter().any(|target| target.path == state.path) {
                     return Err(blocked(

@@ -80,10 +80,11 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
     if (!isCurrent(origin, generation)) return;
     if (!validNodeDeletionTask(value, origin.appId)) throw new Error('删除结果尚不能确认。请保留当前记录并重新核对，不要重复提交。');
     const previous = taskRef.current;
-    if (previous && (value.taskId !== previous.taskId || value.targetRevision !== previous.targetRevision || value.ownership !== previous.ownership)) throw new Error('删除任务身份已变化，请重新读取原任务。');
-    if (previous && value.journalRevision < previous.journalRevision) return;
-    if (previous && (previous.renamedAny && !value.renamedAny || value.journalRevision === previous.journalRevision && value.phase !== previous.phase)) throw new Error('删除任务状态无法核实，请刷新原任务。');
-    if (!previous && approval.current && (value.targetRevision !== approval.current.revision || value.ownership !== preview?.ownership)) throw new Error('删除任务与已确认范围不符，请查看原任务。');
+    const absent = value.phase === 'deleted' && value.result?.alreadyAbsent === true && value.ownership === 'absent';
+    if (!absent && previous && (value.taskId !== previous.taskId || value.targetRevision !== previous.targetRevision || value.ownership !== previous.ownership)) throw new Error('删除任务身份已变化，请重新读取原任务。');
+    if (!absent && previous && value.journalRevision < previous.journalRevision) return;
+    if (!absent && previous && (previous.renamedAny && !value.renamedAny || value.journalRevision === previous.journalRevision && value.phase !== previous.phase)) throw new Error('删除任务状态无法核实，请刷新原任务。');
+    if (!absent && !previous && approval.current && (value.targetRevision !== approval.current.revision || value.ownership !== preview?.ownership)) throw new Error('删除任务与已确认范围不符，请查看原任务。');
     if (!previous || value.journalRevision > previous.journalRevision) setError('');
     taskRef.current = value; setTask(value); setVerified(false); setAcknowledged(false); setObservationError('');
     callbacks.current.onTaskChanged?.(value);
@@ -184,14 +185,14 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
         <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
         <p>会关闭应用窗口，未保存的内容将丢失。</p>
         {preview && <>
-          <p>{preview.ownership === 'managed' ? '这是平台安装副本：将永久删除本实例的程序、业务数据、应用配置与密钥。原始来源副本和安装证据继续保留。' : '这是外部目录应用：只删除平台为本实例保存的数据、配置与密钥，并取消登记。原始应用目录及其中的全部文件保持原样。'}</p>
+          <p>{preview.ownership === 'managed' ? '将永久删除本项目的全部平台管理内容：可编辑源码（包括 Git 和未提交修改）、程序、业务数据、配置与密钥，以及下载、安装、构建和任务材料。' : '这是外部目录应用：将删除本实例的平台目录、数据、配置与密钥，以及关联的下载、安装、构建和任务材料。原始应用目录中的源码、Git 版本及用户文件保持原样；平台写入其中的恢复材料会一并删除。'}</p>
           <div className="node-delete-scope">
             <p className="node-delete-base">平台目录 <code title={base}>{base === '/' ? '/' : `${base}/`}</code></p>
             <section className="node-delete-removed"><div className="node-delete-scope-heading"><h4>将删除</h4>{verified && recheck}</div><PathGroups paths={preview.deletePaths} base={base} /></section>
             <section className="node-delete-kept"><div className="node-delete-scope-heading"><h4>继续保留</h4></div>
-              {source && <p className="node-delete-source"><span>{preview.ownership === 'managed' ? '来源副本' : '原始应用目录'}</span><code data-path={source} title={source}>{source}</code></p>}
+              {source && <p className="node-delete-source"><span>原始应用目录</span><code data-path={source} title={source}>{source}</code></p>}
               {otherPreserved.length > 0 && <PathGroups paths={otherPreserved} base={base} />}
-              <p className="node-delete-footnote">历史备份、旧版保留项目、迁移旧目录及操作与恢复证据也不会自动清理。</p>
+              <p className="node-delete-footnote">平台自带运行时、工具链和平台全局状态不随项目删除。</p>
             </section>
           </div><p className="node-delete-id">项目 ID：<code>{preview.appId}</code></p>
         </>}

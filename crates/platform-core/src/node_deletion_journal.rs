@@ -59,7 +59,10 @@ mod macos {
         staging_directory: PathBuf,
         staged: PathBuf,
         identity: Option<PersistedIdentity>,
+        parent_identity: Option<PersistedIdentity>,
         staging_identity: Option<PersistedIdentity>,
+        staging_parent_identity: Option<PersistedIdentity>,
+        staging_parent_created: bool,
         state: TargetState,
     }
 
@@ -70,7 +73,6 @@ mod macos {
         task_id: String,
         metadata: Value,
         data_root_identity: PersistedIdentity,
-        instance_identity: PersistedIdentity,
         journal_directory_identity: PersistedIdentity,
         phase: String,
         journal_revision: u64,
@@ -111,51 +113,53 @@ mod macos {
         ) -> Result<Self> {
             validate_metadata(&metadata)?;
             ordinary(data_root, true)?;
-            let app_id = metadata["appId"].as_str().unwrap();
-            let instance = data_root.join("node-apps").join(app_id);
-            ordinary(&instance, true)?;
             let task_id = Uuid::new_v4().to_string();
             let root = data_root.join("node-deletion-tasks");
             let directory = root.join(&task_id);
             let creating = root.join(format!(".creating-{task_id}"));
-            let staging = instance.join(STAGING_NAME).join(&task_id);
-            let mut names = vec!["configuration", "data", "cache", "logs"];
-            if metadata["ownership"] == "managed" {
-                names.push("generations");
-            }
+            let paths = metadata["ownedPaths"].as_array().unwrap();
             let mut targets = Vec::new();
-            for name in names {
-                let original = instance.join(name);
+            for (index, path) in paths.iter().enumerate() {
+                let original = PathBuf::from(path.as_str().unwrap());
+                validate_target(data_root, &metadata, &original)?;
                 let identity = optional_identity(&original)?;
+                let parent_identity = optional_identity(original.parent().unwrap())?;
+                let name = format!("target-{index}");
+                let staging = original.parent().unwrap().join(STAGING_NAME).join(&task_id);
+                let staging_parent_identity = optional_identity(staging.parent().unwrap())?;
                 let state = if identity.is_some() {
                     TargetState::Planned
                 } else {
                     TargetState::Missing
                 };
                 targets.push(DirectoryTarget {
-                    name: name.into(),
+                    name: name.clone(),
                     original,
                     staging_directory: staging.clone(),
                     staged: staging.join(name),
                     identity,
+                    parent_identity,
                     staging_identity: None,
+                    staging_parent_identity,
+                    staging_parent_created: false,
                     state,
                 });
             }
-            // Validate the complete plan before publishing a task directory.
-            // An invalid source must not leave an empty apparent pending task.
             let data_root_identity = PersistedIdentity::capture(data_root).map_err(fs_error)?;
-            let instance_identity = PersistedIdentity::capture(&instance).map_err(fs_error)?;
-            check_targets(&instance_identity, &targets)?;
+            check_targets(&data_root_identity, &targets)?;
             private_directory(&root, false)?;
             private_directory(&creating, true)?;
+            let mut unpublished = UnpublishedTask {
+                directory: creating.clone(),
+                identity: PersistedIdentity::capture(&creating).map_err(fs_error)?,
+                published: false,
+            };
             observe(JournalPoint::TaskDirectoryCreated)?;
             let record = Record {
-                version: 2,
+                version: 3,
                 task_id,
                 metadata,
                 data_root_identity,
-                instance_identity,
                 journal_directory_identity: PersistedIdentity::capture(&creating)
                     .map_err(fs_error)?,
                 phase: "waiting".into(),
@@ -173,6 +177,7 @@ mod macos {
             let from = c_name(&creating)?;
             let to = c_name(&directory)?;
             rename_at(&anchor, &from, &anchor, &to, RenameMode::Exclusive)?;
+            unpublished.published = true;
             let task_id = record.task_id.clone();
             let app_id = record.metadata["appId"].as_str().unwrap().to_owned();
             let publication = (|| {
@@ -226,7 +231,7 @@ mod macos {
                     .map_err(|_| error("删除任务目录名无效。"))?;
                 if let Some(task_id) = name.strip_prefix(".creating-") {
                     canonical_uuid(task_id)?;
-                    validate_unpublished(&entry.path())?;
+                    remove_unpublished(&entry.path(), None)?;
                     continue;
                 }
                 canonical_uuid(&name)?;
@@ -245,6 +250,133 @@ mod macos {
         pub(crate) fn metadata(&self) -> &Value {
             &self.record.metadata
         }
+        /// Admission binds the ledger directory before writer teardown. Only
+        /// that same ledger may complete its list once every writer is joined.
+        pub(crate) fn refresh_owned_paths(
+            &mut self,
+            paths: Vec<PathBuf>,
+            task_ids: Vec<String>,
+            generated_source: Option<PathBuf>,
+            external_paths: Vec<PathBuf>,
+        ) -> Result<()> {
+            if self.record.renamed_any
+                || self.record.targets.iter().any(|target| {
+                    !matches!(target.state, TargetState::Planned | TargetState::Missing)
+                })
+            {
+                return Ok(());
+            }
+            self.validate()?;
+            let ledger = self
+                .data_root
+                .join("node-project-ownership")
+                .join(self.app_id());
+            let accepted = self
+                .record
+                .targets
+                .iter()
+                .find(|target| target.original == ledger)
+                .and_then(|target| target.identity.as_ref())
+                .ok_or_else(|| error("受理时未绑定项目归属索引。"))?;
+            if !accepted.matches_path(&ledger).map_err(fs_error)? {
+                return Err(error("项目归属索引身份已变化，未扩大删除范围。"));
+            }
+            let mut paths = paths;
+            // A writer may retire an entry; retain every already accepted path.
+            for target in &self.record.targets {
+                if !paths.contains(&target.original) {
+                    paths.push(target.original.clone());
+                }
+            }
+            paths.retain(|path| *path != ledger);
+            paths.push(ledger);
+            let mut metadata = self.record.metadata.clone();
+            metadata["ownedPaths"] = serde_json::to_value(&paths)?;
+            metadata["generatedSource"] = serde_json::to_value(generated_source)?;
+            let mut external: std::collections::BTreeSet<PathBuf> =
+                serde_json::from_value(self.metadata()["externalOwnedPaths"].clone())?;
+            external.extend(external_paths);
+            metadata["externalOwnedPaths"] = serde_json::to_value(external)?;
+            let mut ids: std::collections::BTreeSet<String> =
+                serde_json::from_value(self.metadata()["ownedTaskIds"].clone())?;
+            ids.extend(task_ids);
+            metadata["ownedTaskIds"] = serde_json::to_value(ids)?;
+            validate_metadata(&metadata)?;
+            let mut targets = Vec::new();
+            for (index, original) in paths.into_iter().enumerate() {
+                validate_target(&self.data_root, &metadata, &original)?;
+                let identity = optional_identity(&original)?;
+                if let Some(previous) = self
+                    .record
+                    .targets
+                    .iter()
+                    .find(|target| target.original == original)
+                    .and_then(|target| target.identity.as_ref())
+                {
+                    if identity
+                        .as_ref()
+                        .is_some_and(|current| !previous.matches_captured(current))
+                    {
+                        return Err(error("已受理删除目录被替换，未使用新的目录身份。"));
+                    }
+                }
+                let parent_identity = optional_identity(original.parent().unwrap())?;
+                if let Some(previous) = self
+                    .record
+                    .targets
+                    .iter()
+                    .find(|target| target.original == original)
+                    .and_then(|target| target.parent_identity.as_ref())
+                {
+                    if parent_identity
+                        .as_ref()
+                        .is_some_and(|current| !previous.matches_captured(current))
+                    {
+                        return Err(error("已受理删除目标的父目录身份变化。"));
+                    }
+                }
+                let name = format!("target-{index}");
+                let staging = original
+                    .parent()
+                    .unwrap()
+                    .join(STAGING_NAME)
+                    .join(self.task_id());
+                let previous_staging = self
+                    .record
+                    .targets
+                    .iter()
+                    .find(|target| target.staging_directory == staging);
+                let staging_identity =
+                    previous_staging.and_then(|target| target.staging_identity.clone());
+                let staging_parent_identity = match previous_staging {
+                    Some(target) => target.staging_parent_identity.clone(),
+                    None => optional_identity(staging.parent().unwrap())?,
+                };
+                let staging_parent_created =
+                    previous_staging.is_some_and(|target| target.staging_parent_created);
+                let state = if identity.is_some() {
+                    TargetState::Planned
+                } else {
+                    TargetState::Missing
+                };
+                targets.push(DirectoryTarget {
+                    name: name.clone(),
+                    original,
+                    staging_directory: staging.clone(),
+                    staged: staging.join(name),
+                    identity,
+                    parent_identity,
+                    staging_identity,
+                    staging_parent_identity,
+                    staging_parent_created,
+                    state,
+                });
+            }
+            preflight_targets(&self.record.data_root_identity, &targets, known_mount_point)?;
+            self.record.metadata = metadata;
+            self.record.targets = targets;
+            self.persist()
+        }
         pub(crate) fn phase(&self) -> &str {
             &self.record.phase
         }
@@ -254,17 +386,6 @@ mod macos {
         pub(crate) fn abandon_requested(&self) -> bool {
             self.record.abandon_requested
         }
-        /// The manager defines and verifies this fixed-path capture binding.
-        /// Restore bookkeeping must remain writable after abandonment has been
-        /// requested, until the original registration is safely accounted for.
-        pub(crate) fn bind_registration_removal(&mut self, binding: Value) -> Result<()> {
-            if self.is_terminal() || !binding.is_object() {
-                return Err(error("已结束任务或无效的登记收尾绑定不能写入。"));
-            }
-            self.record.metadata["registrationRemoval"] = binding;
-            self.persist()
-        }
-
         pub(crate) fn set_phase(&mut self, phase: &str) -> Result<()> {
             if self.is_terminal()
                 || !matches!(
@@ -292,7 +413,6 @@ mod macos {
         /// answering whether no target has moved. An unknown interval stays gated.
         pub(crate) fn reconcile(&mut self) -> Result<()> {
             self.validate()?;
-            self.check_instance()?;
             let mut changed = false;
             for index in 0..self.record.targets.len() {
                 let target = &self.record.targets[index];
@@ -364,10 +484,7 @@ mod macos {
         }
 
         pub(crate) fn can_abandon(&mut self) -> Result<bool> {
-            if self.is_terminal()
-                || self.record.renamed_any
-                || self.record.metadata["legacyIrreversible"] == true
-            {
+            if self.is_terminal() || self.record.renamed_any {
                 return Ok(false);
             }
             self.validate()?;
@@ -449,7 +566,6 @@ mod macos {
             self.persist()?;
             observe(JournalPoint::RenameIntent)?;
             let target = &self.record.targets[index];
-            self.check_instance()?;
             self.verify_staging_parent(index)?;
             let expected = target.identity.as_ref().unwrap();
             if !expected.matches_path(&target.original).map_err(fs_error)? {
@@ -461,7 +577,10 @@ mod macos {
                 &target.original,
                 &target.staged,
                 expected,
-                &self.record.instance_identity,
+                target
+                    .parent_identity
+                    .as_ref()
+                    .ok_or_else(|| error("删除父目录身份缺失。"))?,
                 target.staging_identity.as_ref().unwrap(),
             )?;
             self.record.renamed_any = true;
@@ -543,6 +662,24 @@ mod macos {
             Ok(())
         }
 
+        pub(crate) fn remove_terminal(&self) -> Result<()> {
+            if !self.is_terminal() {
+                return Err(error("删除尚未结束，不能移除恢复任务。"));
+            }
+            if absent(&self.directory)? {
+                directory_file(&self.data_root.join("node-deletion-tasks"))?.sync_all()?;
+                return Ok(());
+            }
+            self.confirm_durable()?;
+            self.cleanup_staging()?;
+            crate::history_cleanup::remove_owned_directory(
+                &self.directory,
+                &self.record.journal_directory_identity,
+            )?;
+            directory_file(&self.data_root.join("node-deletion-tasks"))?.sync_all()?;
+            Ok(())
+        }
+
         pub(crate) fn snapshot(&self) -> Value {
             let pending_intent = self
                 .record
@@ -552,7 +689,7 @@ mod macos {
             json!({
                 "taskId":self.task_id(), "appId":self.app_id(), "name":self.record.metadata["name"],
                 "phase":self.phase(), "renamedAny":self.record.renamed_any,
-                "canAbandon":!self.is_terminal() && !self.record.renamed_any && self.record.metadata["legacyIrreversible"] != true && !pending_intent && !self.record.abandon_requested,
+                "canAbandon":!self.is_terminal() && !self.record.renamed_any && !pending_intent && !self.record.abandon_requested,
                 "canRetry":self.phase() == "failed" && !self.record.abandon_requested,
                 "abandonRequested":self.record.abandon_requested,
                 "journalRevision":self.record.journal_revision, "error":self.record.error,
@@ -603,24 +740,16 @@ mod macos {
             directory_file(&self.data_root)?.sync_all()?;
             Ok(())
         }
-        fn check_instance(&self) -> Result<()> {
-            if !self
-                .record
-                .instance_identity
-                .matches_path(&self.instance())
-                .map_err(fs_error)?
-            {
-                return Err(error("项目实例目录身份已变化，未继续删除。"));
-            }
-            Ok(())
-        }
-        fn instance(&self) -> PathBuf {
-            self.data_root.join("node-apps").join(self.app_id())
-        }
-
         fn verify_staging_parent(&self, index: usize) -> Result<()> {
-            self.check_instance()?;
             let target = &self.record.targets[index];
+            let parent = target.staging_directory.parent().unwrap();
+            let parent_identity = target
+                .staging_parent_identity
+                .as_ref()
+                .ok_or_else(|| error("待清理容器身份尚未落盘。"))?;
+            if !parent_identity.matches_path(parent).map_err(fs_error)? {
+                return Err(error("待清理容器身份已变化。"));
+            }
             let expected = target
                 .staging_identity
                 .as_ref()
@@ -634,12 +763,49 @@ mod macos {
             Ok(())
         }
         fn prepare_staging(&mut self, index: usize) -> Result<()> {
-            self.check_instance()?;
             if self.record.targets[index].staging_identity.is_some() {
                 return self.verify_staging_parent(index);
             }
-            let parent = self.instance().join(STAGING_NAME);
-            private_directory(&parent, false)?;
+            let original_parent = self.record.targets[index]
+                .original
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let expected_parent = self.record.targets[index]
+                .parent_identity
+                .as_ref()
+                .ok_or_else(|| error("删除目标父目录身份缺失。"))?;
+            if !expected_parent
+                .matches_path(&original_parent)
+                .map_err(fs_error)?
+            {
+                return Err(error("删除目标父目录身份已变化。"));
+            }
+            let parent = original_parent.join(STAGING_NAME);
+            let (parent_identity, parent_created) =
+                match self.record.targets[index].staging_parent_identity.clone() {
+                    Some(identity) if !absent(&parent)? => {
+                        if !identity.matches_path(&parent).map_err(fs_error)? {
+                            return Err(error("受理的待清理容器身份已变化。"));
+                        }
+                        check_private_directory(&parent)?;
+                        (identity, self.record.targets[index].staging_parent_created)
+                    }
+                    _ => {
+                        // Exclusive creation never adopts a container that appeared
+                        // after the accepted scope was captured.
+                        private_directory(&parent, true)?;
+                        (PersistedIdentity::capture(&parent).map_err(fs_error)?, true)
+                    }
+                };
+            for target in &mut self.record.targets {
+                if target.staging_directory.parent() == Some(parent.as_path()) {
+                    target.staging_parent_identity = Some(parent_identity.clone());
+                    target.staging_parent_created = parent_created;
+                }
+            }
+            File::open(&original_parent)?.sync_all()?;
+            self.persist()?;
             let directory = self.record.targets[index].staging_directory.clone();
             if absent(&directory)? {
                 private_directory(&directory, true)?;
@@ -656,7 +822,7 @@ mod macos {
                 }
             }
             File::open(&parent)?.sync_all()?;
-            File::open(self.instance())?.sync_all()?;
+            File::open(original_parent)?.sync_all()?;
             self.persist()
         }
 
@@ -701,16 +867,51 @@ mod macos {
                 }
                 parent.sync_all()?;
             }
+            let mut parents = std::collections::BTreeSet::new();
+            for target in &self.record.targets {
+                if !target.staging_parent_created {
+                    continue;
+                }
+                let path = target.staging_directory.parent().unwrap();
+                if !parents.insert(path.to_path_buf()) || absent(path)? {
+                    continue;
+                }
+                let expected = target
+                    .staging_parent_identity
+                    .as_ref()
+                    .ok_or_else(|| error("待清理容器归属缺失。"))?;
+                if !expected.matches_path(path).map_err(fs_error)? {
+                    return Err(error("待清理容器被替换，未删除其他目录。"));
+                }
+                let directory = directory_file(path)?;
+                if !expected
+                    .matches_captured(&PersistedIdentity::from_file(&directory).map_err(fs_error)?)
+                {
+                    return Err(error("待清理容器在收尾时被替换。"));
+                }
+                // Another accepted task or a third party may have added its
+                // own material. Never remove that content or its container.
+                if fs::read_dir(path)?.next().is_some() {
+                    continue;
+                }
+                let parent = directory_file(path.parent().unwrap())?;
+                let name = c_name(path)?;
+                if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) }
+                    != 0
+                {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                parent.sync_all()?;
+            }
             Ok(())
         }
 
         fn validate(&self) -> Result<()> {
             validate_metadata(&self.record.metadata)?;
             validate_identity(&self.record.data_root_identity)?;
-            validate_identity(&self.record.instance_identity)?;
             validate_identity(&self.record.journal_directory_identity)?;
             canonical_uuid(self.task_id())?;
-            if !matches!(self.record.version, 1 | 2)
+            if self.record.version != 3
                 || self.record.journal_revision == 0
                 || !matches!(
                     self.phase(),
@@ -746,17 +947,8 @@ mod macos {
             {
                 return Err(error("删除任务目录或数据卷身份已变化。"));
             }
-            // Version 1 tasks predate application runtime logs. Keep their exact
-            // reviewed targets so an upgrade can resume an existing deletion
-            // without silently widening its destructive scope.
-            let mut names = vec!["configuration", "data", "cache"];
-            if self.record.version >= 2 {
-                names.push("logs");
-            }
-            if self.record.metadata["ownership"] == "managed" {
-                names.push("generations");
-            }
-            if self.record.targets.len() != names.len() {
+            let paths = self.record.metadata["ownedPaths"].as_array().unwrap();
+            if self.record.targets.len() != paths.len() {
                 return Err(error("删除目标数量无效。"));
             }
             if self.phase() == "deleted"
@@ -768,25 +960,45 @@ mod macos {
             }
             if self.phase() == "abandoned"
                 && (self.record.renamed_any
-                    || self.record.metadata["legacyIrreversible"] == true
                     || self.record.targets.iter().any(|target| {
                         !matches!(target.state, TargetState::Missing | TargetState::Planned)
                     }))
             {
-                return Err(error("删除任务的放弃状态与不可逆移动或旧删除现场不一致。"));
+                return Err(error("删除任务的放弃状态与不可逆移动现场不一致。"));
             }
-            let staging = self.instance().join(STAGING_NAME).join(self.task_id());
-            for (target, name) in self.record.targets.iter().zip(names) {
+            for (index, (target, path)) in self.record.targets.iter().zip(paths).enumerate() {
+                let original = PathBuf::from(path.as_str().unwrap());
+                validate_target(&self.data_root, &self.record.metadata, &original)?;
+                let staging = original
+                    .parent()
+                    .unwrap()
+                    .join(STAGING_NAME)
+                    .join(self.task_id());
+                let name = format!("target-{index}");
                 if let Some(identity) = &target.identity {
                     validate_identity(identity)?;
+                }
+                if let Some(identity) = &target.parent_identity {
+                    validate_identity(identity)?;
+                }
+                if target.identity.is_some() && target.parent_identity.is_none() {
+                    return Err(error("删除父目录身份缺失。"));
                 }
                 if let Some(identity) = &target.staging_identity {
                     validate_identity(identity)?;
                 }
+                if let Some(identity) = &target.staging_parent_identity {
+                    validate_identity(identity)?;
+                }
+                if (target.staging_identity.is_some() || target.staging_parent_created)
+                    && target.staging_parent_identity.is_none()
+                {
+                    return Err(error("待清理容器归属不完整。"));
+                }
                 if target.name != name
-                    || target.original != self.instance().join(name)
+                    || target.original != original
                     || target.staging_directory != staging
-                    || target.staged != staging.join(name)
+                    || target.staged != staging.join(&name)
                 {
                     return Err(error("删除任务包含范围外目录。"));
                 }
@@ -815,6 +1027,103 @@ mod macos {
         }
     }
 
+    /// Read current ownership for the explicitly confirmed uninstall plan.
+    /// This never reconciles, removes, or adopts an unpublished task.
+    pub(crate) fn local_cleanup_owned_paths(data_root: &Path) -> Result<Vec<PathBuf>> {
+        let root = data_root.join("node-deletion-tasks");
+        if absent(&root)? {
+            return Ok(Vec::new());
+        }
+        ordinary(&root, true)?;
+        let mut paths = std::collections::BTreeSet::new();
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| error("删除任务目录名无效。"))?;
+            if let Some(id) = name.strip_prefix(".creating-") {
+                canonical_uuid(id)?;
+                validate_unpublished(&entry.path())?;
+                paths.insert(entry.path());
+                continue;
+            }
+            let journal = NodeDeletionJournal::load(data_root, &name)?;
+            paths.insert(journal.directory.clone());
+            paths.insert(journal.directory.join(RECORD_NAME));
+            let mut parents = std::collections::BTreeSet::new();
+            for target in &journal.record.targets {
+                for path in [&target.original, &target.staged] {
+                    if absent(path)? {
+                        continue;
+                    }
+                    let expected = target
+                        .identity
+                        .as_ref()
+                        .ok_or_else(|| error("删除任务中原本缺失的目标已出现，未扩大卸载范围。"))?;
+                    if !expected.matches_path(path).map_err(fs_error)? {
+                        return Err(error("删除任务目标身份变化，未纳入卸载范围。"));
+                    }
+                    paths.insert(path.clone());
+                }
+                if let Some(expected) = &target.staging_identity {
+                    if !absent(&target.staging_directory)? {
+                        if !expected
+                            .matches_path(&target.staging_directory)
+                            .map_err(fs_error)?
+                        {
+                            return Err(error("删除任务暂存目录身份变化。"));
+                        }
+                        for entry in fs::read_dir(&target.staging_directory)? {
+                            let entry = entry?;
+                            if !journal.record.targets.iter().any(|known| {
+                                known.staged == entry.path()
+                                    && known.identity.as_ref().is_some_and(|id| {
+                                        id.matches_path(&entry.path()).unwrap_or(false)
+                                    })
+                            }) {
+                                return Err(error("删除任务暂存目录含未受理材料。"));
+                            }
+                        }
+                        paths.insert(target.staging_directory.clone());
+                    }
+                }
+                if !target.staging_parent_created {
+                    continue;
+                }
+                let parent = target.staging_directory.parent().unwrap();
+                if !parents.insert(parent.to_path_buf()) || absent(parent)? {
+                    continue;
+                }
+                let expected = target
+                    .staging_parent_identity
+                    .as_ref()
+                    .ok_or_else(|| error("删除任务暂存容器归属缺失。"))?;
+                if !expected.matches_path(parent).map_err(fs_error)? {
+                    return Err(error("删除任务暂存容器身份变化。"));
+                }
+                let mut only_current_task = true;
+                for entry in fs::read_dir(parent)? {
+                    let entry = entry?;
+                    if !journal.record.targets.iter().any(|known| {
+                        known.staging_directory == entry.path()
+                            && known
+                                .staging_identity
+                                .as_ref()
+                                .is_some_and(|id| id.matches_path(&entry.path()).unwrap_or(false))
+                    }) {
+                        only_current_task = false;
+                        break;
+                    }
+                }
+                if only_current_task {
+                    paths.insert(parent.to_path_buf());
+                }
+            }
+        }
+        Ok(paths.into_iter().collect())
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum JournalPoint {
         TaskDirectoryCreated,
@@ -839,6 +1148,33 @@ mod macos {
             serde_json::to_value(cause).unwrap_or(Value::Null),
         )
     }
+    struct UnpublishedTask {
+        directory: PathBuf,
+        identity: PersistedIdentity,
+        published: bool,
+    }
+    impl Drop for UnpublishedTask {
+        fn drop(&mut self) {
+            if !self.published {
+                let _ = remove_unpublished(&self.directory, Some(&self.identity));
+            }
+        }
+    }
+    fn remove_unpublished(directory: &Path, expected: Option<&PersistedIdentity>) -> Result<()> {
+        validate_unpublished(directory)?;
+        let identity = PersistedIdentity::capture(directory).map_err(fs_error)?;
+        if expected.is_some_and(|expected| !expected.matches_captured(&identity)) {
+            return Err(error("未发布任务身份变化，未删除替换目录。"));
+        }
+        crate::history_cleanup::remove_owned_directory(directory, &identity)?;
+        directory_file(
+            directory
+                .parent()
+                .ok_or_else(|| error("删除任务父目录缺失。"))?,
+        )?
+        .sync_all()?;
+        Ok(())
+    }
     fn validate_unpublished(directory: &Path) -> Result<()> {
         check_private_directory(directory)?;
         let mut count = 0usize;
@@ -858,8 +1194,8 @@ mod macos {
                     .ok_or_else(|| error("未发布删除任务包含未知材料。"))?;
                 canonical_uuid(id)?;
             }
-            // Partial bounded temporary bytes are evidence, never an accepted
-            // deletion authorization. Keep them without parsing or executing.
+            // This private, unpublished scaffold cannot authorize project
+            // deletion. Only its bounded protocol files may be discarded.
             read_record(&entry.path())?;
         }
         Ok(())
@@ -869,22 +1205,18 @@ mod macos {
         let object = value
             .as_object()
             .ok_or_else(|| error("删除任务元数据无效。"))?;
-        if object
-            .get("legacyIrreversible")
-            .is_some_and(|value| !value.is_boolean())
-        {
-            return Err(error("旧删除现场的不可逆状态无效。"));
-        }
         canonical_uuid(
             object
                 .get("appId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| error("删除实例标识缺失。"))?,
         )?;
-        if !matches!(value["ownership"].as_str(), Some("external" | "managed"))
-            || value["name"]
-                .as_str()
-                .is_none_or(|name| name.trim().is_empty() || name.len() > 1024)
+        if !matches!(
+            value["ownership"].as_str(),
+            Some("external" | "managed" | "absent")
+        ) || value["name"]
+            .as_str()
+            .is_none_or(|name| name.trim().is_empty() || name.len() > 1024)
         {
             return Err(error("删除任务的名称或归属无效。"));
         }
@@ -899,6 +1231,44 @@ mod macos {
                 .as_str()
                 .ok_or_else(|| error("原源码位置缺失。"))?,
         ))?;
+        normalized(Path::new(
+            value["workspaceRoot"]
+                .as_str()
+                .ok_or_else(|| error("工作区归属缺失。"))?,
+        ))?;
+        let paths = value["ownedPaths"]
+            .as_array()
+            .ok_or_else(|| error("项目完整删除范围缺失。"))?;
+        if paths.is_empty() || paths.len() > 4096 {
+            return Err(error("项目删除范围数量无效。"));
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for path in paths {
+            let path = Path::new(path.as_str().ok_or_else(|| error("删除路径无效。"))?);
+            normalized(path)?;
+            if !unique.insert(path.to_path_buf()) {
+                return Err(error("删除范围含重复路径。"));
+            }
+        }
+        for a in &unique {
+            for b in &unique {
+                if a != b && a.starts_with(b) {
+                    return Err(error("删除范围不能嵌套。"));
+                }
+            }
+        }
+        let external = value["externalOwnedPaths"]
+            .as_array()
+            .ok_or_else(|| error("精确外部归属范围缺失。"))?;
+        if external.len() > 4096 {
+            return Err(error("精确外部归属范围过大。"));
+        }
+        for path in external {
+            normalized(Path::new(
+                path.as_str()
+                    .ok_or_else(|| error("精确外部归属路径无效。"))?,
+            ))?;
+        }
         let preserved = value["preservedPaths"]
             .as_array()
             .ok_or_else(|| error("保留范围缺失。"))?;
@@ -908,6 +1278,55 @@ mod macos {
             ))?;
         }
         Ok(())
+    }
+    fn validate_target(data: &Path, metadata: &Value, path: &Path) -> Result<()> {
+        normalized(path)?;
+        let id = metadata["appId"].as_str().unwrap();
+        let workspace = Path::new(metadata["workspaceRoot"].as_str().unwrap());
+        if path == data.join("node-apps").join(id)
+            || path == data.join("node-project-ownership").join(id)
+            || path == workspace.join(".platform/source-publications").join(id)
+            || metadata["externalOwnedPaths"]
+                .as_array()
+                .is_some_and(|paths| {
+                    paths.iter().any(|source| {
+                        source
+                            .as_str()
+                            .is_some_and(|source| path == Path::new(source))
+                    })
+                })
+        {
+            return Ok(());
+        }
+        let parent = path.parent().unwrap();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| error("删除目录名无效。"))?;
+        let identifier = |prefix: &str| {
+            name.strip_prefix(prefix).is_some_and(|s| {
+                s.len() == 32
+                    && s.bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            })
+        };
+        if (parent == data.join("node-apps/.installations") && identifier("install_"))
+            || (parent == data.join("node-development-builds") && identifier("task_"))
+            || (parent == data.join("onboarding/imports") && identifier("task_"))
+            || (parent == workspace.join(".platform/tasks") && identifier("task_"))
+            || (parent == workspace.join(".platform/sources") && identifier("src_"))
+            || (parent == data.join("node-source-owners")
+                && name.len() == 64
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+            || (parent == workspace.join("project-sources")
+                && !name.starts_with('.')
+                && !name.is_empty())
+        {
+            return Ok(());
+        }
+        Err(error("项目删除包含固定管理范围之外的路径。"))
     }
     fn canonical_uuid(value: &str) -> Result<()> {
         if Uuid::parse_str(value)
@@ -1030,10 +1449,10 @@ mod macos {
         CString::new(name.as_bytes()).map_err(|_| error("删除路径名称无效。"))
     }
 
-    /// This version supports only the fixed private children of one instance.
-    /// Independent managed author trees are outside this module's target set.
+    /// Every project target stages beside its own parent, including sources on
+    /// another workspace volume. The target itself cannot be a mount point.
     fn preflight_targets(
-        parent: &PersistedIdentity,
+        _parent: &PersistedIdentity,
         targets: &[DirectoryTarget],
         mut mounted: impl FnMut(&Path) -> Result<bool>,
     ) -> Result<()> {
@@ -1041,6 +1460,10 @@ mod macos {
             let Some(identity) = &target.identity else {
                 continue;
             };
+            let parent = target
+                .parent_identity
+                .as_ref()
+                .ok_or_else(|| error("删除父目录身份缺失。"))?;
             if identity.device != parent.device
                 || identity.volume_uuid != parent.volume_uuid
                 || mounted(&target.original)?
@@ -1247,7 +1670,7 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::NodeDeletionJournal;
+pub(crate) use macos::{local_cleanup_owned_paths, NodeDeletionJournal};
 
 #[cfg(not(target_os = "macos"))]
 mod unsupported {
@@ -1283,6 +1706,15 @@ mod unsupported {
         pub(crate) fn metadata(&self) -> &Value {
             unreachable!("Unsupported journal cannot be constructed")
         }
+        pub(crate) fn refresh_owned_paths(
+            &mut self,
+            _paths: Vec<std::path::PathBuf>,
+            _task_ids: Vec<String>,
+            _generated_source: Option<std::path::PathBuf>,
+            _external_paths: Vec<std::path::PathBuf>,
+        ) -> Result<()> {
+            Err(unsupported())
+        }
         pub(crate) fn phase(&self) -> &str {
             "failed"
         }
@@ -1291,9 +1723,6 @@ mod unsupported {
         }
         pub(crate) fn abandon_requested(&self) -> bool {
             false
-        }
-        pub(crate) fn bind_registration_removal(&mut self, _binding: Value) -> Result<()> {
-            Err(unsupported())
         }
         pub(crate) fn set_phase(&mut self, _phase: &str) -> Result<()> {
             Err(unsupported())
@@ -1329,6 +1758,9 @@ mod unsupported {
         pub(crate) fn mark_completed(&mut self) -> Result<()> {
             Err(unsupported())
         }
+        pub(crate) fn remove_terminal(&self) -> Result<()> {
+            Err(unsupported())
+        }
         pub(crate) fn snapshot(&self) -> Value {
             json!({"phase":"failed","error":unsupported(),"canAbandon":false,"canRetry":false})
         }
@@ -1336,3 +1768,13 @@ mod unsupported {
 }
 #[cfg(not(target_os = "macos"))]
 pub(crate) use unsupported::NodeDeletionJournal;
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn local_cleanup_owned_paths(
+    _data_root: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, crate::ApiError> {
+    Err(crate::ApiError::new(
+        "UNSUPPORTED_PLATFORM",
+        "Node 删除归属仅支持当前平台。",
+    ))
+}

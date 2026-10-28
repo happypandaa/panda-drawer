@@ -5,6 +5,7 @@ struct Fixture {
     _temporary: tempfile::TempDir,
     root: PathBuf,
     manager: NodeGit,
+    apps: crate::node_apps::NodeApps,
     scope: NodeRestoreScope,
     target: String,
     original: BTreeMap<String, Vec<u8>>,
@@ -17,11 +18,13 @@ impl Fixture {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir(root.join("data")).unwrap();
         fs::create_dir(root.join("configuration")).unwrap();
-        fs::write(
-            root.join("local-app.json"),
-            b"{\"id\":\"disposable.node.restore\"}\n",
-        )
-        .unwrap();
+        atomic_json(&root.join("local-app.json"), &json!({
+            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
+            "app":{"id":"disposable.node.restore","name":"Disposable Node restore","version":"1.0.0"},
+            "dataContract":{"id":"disposable.node.restore.data","version":1},
+            "web":{"root":"src","entry":"a.mjs","routing":"files"},
+            "backend":{"root":"src","entry":"a.mjs","nodeMajor":24,"protocolVersion":1}
+        })).unwrap();
         fs::write(
             root.join("package.json"),
             b"{\"name\":\"disposable-node-restore\",\"version\":\"1.0.0\"}\n",
@@ -44,7 +47,19 @@ impl Fixture {
             .canonicalize()
             .unwrap();
         let environment = GitEnvironmentManager::new(base.join("tool-settings"), Some(resources));
-        let manager = NodeGit::new(environment);
+        let data_root = base.join("disposable-platform-data");
+        fs::create_dir(&data_root).unwrap();
+        let apps =
+            crate::node_apps::NodeApps::new(data_root.clone(), base.join("nonexistent-node"))
+                .unwrap();
+        let registered = apps.register(root.clone()).await.unwrap();
+        let app_id = registered["id"].as_str().unwrap().to_owned();
+        let manager = NodeGit::new(environment).with_source_restore_ownership(
+            crate::node_project_ownership::NodeProjectOwnership::new(
+                data_root.clone(),
+                data_root.join("workspace"),
+            ),
+        );
         let status = manager.status(&root).await.unwrap();
         assert!(!status.can_initialize, "{status:?}");
         manager
@@ -74,17 +89,19 @@ impl Fixture {
         .into_iter()
         .map(|path| (path.into(), fs::read(root.join(path)).unwrap()))
         .collect();
-        let control = base.join("node-control/11111111-1111-4111-8111-111111111111");
-        fs::create_dir_all(&control).unwrap();
+        let control = data_root.join("node-apps").join(&app_id);
         let scope = NodeRestoreScope {
-            app_id: "11111111-1111-4111-8111-111111111111".into(),
-            registration_digest: "a".repeat(64),
+            app_id,
+            registration_digest: crate::node_app_install::registration_digest(&control)
+                .unwrap()
+                .unwrap(),
             control_path: control.join("source-restore.json"),
         };
         Self {
             _temporary: temporary,
             root,
             manager,
+            apps,
             scope,
             target,
             original,
@@ -675,7 +692,8 @@ async fn real_git_recovery_itself_can_be_interrupted_and_explicitly_reopened() {
         .await
         .unwrap_err();
     fixture.unchanged();
-    let reopened = NodeGit::new(fixture.manager.environment.clone());
+    let reopened = NodeGit::new(fixture.manager.environment.clone())
+        .with_source_restore_ownership(fixture.manager.restore_ownership.clone().unwrap());
     let recovery = fixture.recovery(RestoreAction::Continue);
     reopened
         .restore_recover(&fixture.root, &fixture.scope, recovery)
@@ -684,4 +702,102 @@ async fn real_git_recovery_itself_can_be_interrupted_and_explicitly_reopened() {
     fixture.old();
     require_clear(&fixture.root).unwrap();
     require_control_clear(&fixture.scope.control_path).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "explicit private Git, disposable external source and permanent deletion"]
+async fn deleting_external_project_removes_completed_and_pending_platform_restore_materials_only() {
+    for interrupted in [false, true] {
+        let fixture = Fixture::new().await;
+        let input = fixture.input().await;
+        let result = fixture
+            .manager
+            .restore_apply_with(&fixture.root, &fixture.scope, input, |step, after| {
+                if interrupted && step == 0 && after {
+                    Err(issue(
+                        "DISPOSABLE_RESTORE_INTERRUPT",
+                        "drained restore caller with retained recovery evidence",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+        if interrupted {
+            assert_eq!(result.unwrap_err().code, "DISPOSABLE_RESTORE_INTERRUPT");
+        } else {
+            assert_eq!(result.unwrap()["state"], "completed");
+        }
+        let data_root = fixture.scope.control_path.ancestors().nth(3).unwrap();
+        let migration_check =
+            crate::node_apps::development::require_source_restores_clear_for_migration(
+                data_root,
+                &data_root.join("workspace"),
+            );
+        if interrupted {
+            assert_eq!(
+                migration_check.unwrap_err().code,
+                "NODE_SOURCE_RESTORE_PENDING"
+            );
+        } else {
+            migration_check.unwrap();
+        }
+        let directories = [
+            operations(&fixture.root),
+            fixture
+                .root
+                .join(".git/local-projects-node-restore-preparing"),
+        ];
+        assert!(directories.iter().all(|path| path.is_dir()));
+        let preview = fixture
+            .apps
+            .delete_preview(&fixture.scope.app_id)
+            .await
+            .unwrap();
+        fixture
+            .apps
+            .delete(
+                &fixture.scope.app_id,
+                crate::node_apps::DeleteNodeAppInput {
+                    expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(fixture.root.is_dir());
+        assert!(fixture.root.join(".git").is_dir());
+        fixture.unchanged();
+        assert!(directories.iter().all(|path| !path.exists()));
+        assert!(!fixture.scope.control_path.parent().unwrap().exists());
+        crate::node_apps::development::require_source_restores_clear_for_migration(
+            data_root,
+            &data_root.join("workspace"),
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit private Git, missing current owner fail-closed regression"]
+async fn restore_material_creation_refuses_an_unowned_or_deleted_project() {
+    let fixture = Fixture::new().await;
+    let input = fixture.input().await;
+    let ownership = fixture.manager.restore_ownership.as_ref().unwrap();
+    fs::remove_dir_all(ownership.directory(&fixture.scope.app_id).unwrap()).unwrap();
+    let error = fixture
+        .manager
+        .restore_apply(&fixture.root, &fixture.scope, input)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.code.as_str(),
+        "FILESYSTEM_ERROR" | "NODE_PROJECT_OWNERSHIP_INVALID"
+    ));
+    assert!(!operations(&fixture.root).exists());
+    assert!(!fixture
+        .root
+        .join(".git/local-projects-node-restore-preparing")
+        .exists());
+    assert!(!ownership.directory(&fixture.scope.app_id).unwrap().exists());
+    fixture.current();
 }

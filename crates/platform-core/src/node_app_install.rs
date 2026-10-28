@@ -332,13 +332,25 @@ impl InstallationState {
 #[derive(Clone)]
 pub(crate) struct NodeAppInstaller {
     root: PathBuf,
+    ownership: crate::node_project_ownership::NodeProjectOwnership,
 }
 impl NodeAppInstaller {
     pub(crate) fn new(data_root: PathBuf) -> Result<Self> {
         ordinary_directory(&data_root)?;
         Ok(Self {
+            ownership: crate::node_project_ownership::NodeProjectOwnership::new(
+                data_root.clone(),
+                data_root.join("workspace"),
+            ),
             root: data_root.join("node-apps"),
         })
+    }
+    pub(crate) fn with_workspace(mut self, workspace: PathBuf) -> Self {
+        self.ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.root.parent().unwrap().to_path_buf(),
+            workspace,
+        );
+        self
     }
     fn operations(&self) -> PathBuf {
         self.root.join(".installations")
@@ -386,6 +398,41 @@ impl NodeAppInstaller {
             });
         }
         states.sort_by(|a, b| a.candidate_id.cmp(&b.candidate_id));
+        Ok(states)
+    }
+    pub(crate) fn owned_installation_states(&self, owner: &str) -> Result<Vec<InstallationState>> {
+        let mut states = vec![];
+        for path in self.ownership.owned_paths(owner)? {
+            if path.parent() != Some(self.operations().as_path()) || !path.exists() {
+                continue;
+            }
+            let id = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| invalid("安装候选名称无效。"))?;
+            let journal = self.journal(id).ok();
+            if journal
+                .as_ref()
+                .is_some_and(|journal| journal.target.app_id != owner)
+            {
+                return Err(invalid("安装候选项目归属不符。"));
+            }
+            states.push(InstallationState {
+                path: path.clone(),
+                candidate_id: id.into(),
+                state: journal.as_ref().map(|value| value.state.clone()),
+                app_id: journal.as_ref().map(|value| value.target.app_id.clone()),
+                app_name: None,
+                source_id: journal.as_ref().and_then(|value| {
+                    value.source_id.clone().or_else(|| {
+                        value
+                            .prepared
+                            .as_ref()
+                            .map(|prepared| prepared.provenance.source_id.clone())
+                    })
+                }),
+            });
+        }
         Ok(states)
     }
     /// The same exclusive lock a commit holds; history cleanup takes it while
@@ -533,6 +580,7 @@ impl NodeAppInstaller {
         processes: NodeProcessScope,
     ) -> Result<PreparedNodeInstall> {
         require_task(tasks, task_id, "nodeInstallPrepare")?;
+        let _writer_owner = processes.owner.clone();
         let result = self
             .prepare_task(task_id, source, target, tools, control, tasks, processes)
             .await;
@@ -568,7 +616,12 @@ impl NodeAppInstaller {
         private_dir(&self.operations())?;
         let candidate_id = format!("install_{}", Uuid::new_v4().simple());
         let operation = self.operations().join(&candidate_id);
+        self.ownership.record_task(&target.app_id, task_id)?;
+        self.ownership
+            .record_installation(&target.app_id, &candidate_id)?;
         fs::create_dir(&operation)?;
+        self.ownership
+            .record_installation(&target.app_id, &candidate_id)?;
         fs::set_permissions(&operation, fs::Permissions::from_mode(0o700))?;
         let processes = processes.with_operation(&operation)?;
         let mut journal = Journal {
@@ -584,6 +637,9 @@ impl NodeAppInstaller {
             error: None,
         };
         self.save(&journal)?;
+        let _writer_owner = processes.owner.clone();
+        #[cfg(test)]
+        let finalization = processes.clone();
         let result = self
             .prepare_inner(&journal, &source, &tools, &control, tasks, processes)
             .await
@@ -591,6 +647,10 @@ impl NodeAppInstaller {
                 control.check()?;
                 Ok(prepared)
             });
+        #[cfg(test)]
+        finalization
+            .finish_reader("node-install/finalize", "journal", async { Ok(()) })
+            .await?;
         match result {
             Ok(prepared) => {
                 journal.prepared = Some(prepared.clone());

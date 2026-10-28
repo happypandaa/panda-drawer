@@ -1390,7 +1390,7 @@ async fn source_acquire(
                 if let Some(task) = value["taskId"].as_str() {
                     state
                         .handle
-                        .remember_source_import(task, &url)
+                        .remember_source_import(state.node_apps.clone(), task, &url)
                         .map_err(|error| error.detail("taskId", serde_json::json!(task)))?;
                 }
             }

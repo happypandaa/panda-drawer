@@ -176,7 +176,7 @@ async fn index_change_is_detected_and_shutdown_reaps_stuck_git_process() {
     let environment = synthetic(
         &paths,
         &format!(
-            "echo $$ > '{}'; sleep 60 & wait; exit 0",
+            "echo $$ > '{0}.preparing'; /bin/mv '{0}.preparing' '{0}'; sleep 60 & wait; exit 0",
             pid_path.display()
         ),
     );
@@ -184,7 +184,7 @@ async fn index_change_is_detected_and_shutdown_reaps_stuck_git_process() {
     tokio::pin!(future);
     tokio::select! {
         result = &mut future => panic!("unexpected completion: {:?}", result.err()),
-        _ = tokio::time::timeout(Duration::from_secs(5), async { while !pid_path.exists() { tokio::time::sleep(Duration::from_millis(10)).await; } }) => {}
+        ready = tokio::time::timeout(Duration::from_secs(5), async { while !pid_path.exists() { tokio::time::sleep(Duration::from_millis(10)).await; } }) => { ready.unwrap(); }
     }
     let pid: i32 = fs::read_to_string(pid_path)
         .unwrap()

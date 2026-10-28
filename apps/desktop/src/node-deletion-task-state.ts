@@ -13,7 +13,7 @@ export function nodeDeletionLabel(task: NodeDeletionTaskSnapshot): string {
 }
 
 export function validNodeDeleteResult(value: NodeAppDeleteResult | null, task: Pick<NodeDeletionTaskSnapshot, 'appId' | 'ownership'>): boolean {
-  return Boolean(value && value.appId === task.appId && value.operationOutcome === 'deleted' && value.ownership === task.ownership && value.sourcePreserved === true && value.evidenceRetained === true);
+  return Boolean(value && value.appId === task.appId && value.operationOutcome === 'deleted' && (value.ownership === task.ownership || value.ownership === 'absent' && value.alreadyAbsent === true) && value.sourcePreserved === (value.ownership === 'external') && value.evidenceRetained === false);
 }
 
 export function validNodeDeletionTask(value: NodeDeletionTaskSnapshot, appId?: string): boolean {
@@ -25,7 +25,8 @@ export function validNodeDeletionTask(value: NodeDeletionTaskSnapshot, appId?: s
     && Number.isSafeInteger(value.journalRevision) && value.journalRevision >= 1
     && typeof value.active === 'boolean'
     && ['waiting', 'stopping', 'staging', 'removing', 'failed', 'deleted', 'abandoned'].includes(value.phase)
-    && ['managed', 'external'].includes(value.ownership) && typeof value.sourcePath === 'string' && value.sourcePath.startsWith('/')
+    && ['managed', 'external', 'absent'].includes(value.ownership) && typeof value.sourcePath === 'string' && (value.sourcePath.startsWith('/') || value.ownership === 'absent' && value.sourcePath === '' && value.result?.alreadyAbsent === true)
+    && (value.ownership !== 'absent' || value.phase === 'deleted' && value.result?.alreadyAbsent === true)
     && typeof value.renamedAny === 'boolean' && typeof value.canAbandon === 'boolean' && typeof value.canRetry === 'boolean'
     && (!value.renamedAny || !value.canAbandon) && (!['deleted', 'abandoned'].includes(value.phase) || !value.canAbandon && !value.canRetry)
     && (value.abandonRequested == null || typeof value.abandonRequested === 'boolean')

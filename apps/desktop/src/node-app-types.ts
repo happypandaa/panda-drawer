@@ -22,9 +22,10 @@ export interface NodeAppDeletePreview {
 export interface NodeAppDeleteResult {
   appId: string;
   operationOutcome: 'deleted';
-  ownership: 'managed' | 'external';
-  sourcePreserved: true;
-  evidenceRetained: true;
+  ownership: 'managed' | 'external' | 'absent';
+  sourcePreserved: boolean;
+  evidenceRetained: false;
+  alreadyAbsent?: boolean;
   metadataCleanupPending?: boolean;
   durabilityConfirmed?: boolean;
   warning?: string | null;
@@ -40,7 +41,7 @@ export interface NodeDeletionTaskSnapshot {
   journalRevision: number;
   phase: NodeDeletionPhase;
   active: boolean;
-  ownership: 'managed' | 'external';
+  ownership: 'managed' | 'external' | 'absent';
   sourcePath: string;
   waitingFor: string[];
   renamedAny: boolean;

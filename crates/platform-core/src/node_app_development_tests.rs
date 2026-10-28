@@ -429,15 +429,15 @@ async fn build_source_lease_checks_stopped_state_atomically_and_releases_on_drop
 }
 
 #[tokio::test]
-async fn ordinary_detail_and_configuration_reads_never_create_a_development_binding() {
+async fn registration_establishes_exclusive_binding_before_ordinary_reads() {
     let fixture = Fixture::new();
     let registered = fixture.apps.register(fixture.source.clone()).await.unwrap();
     let id = registered["id"].as_str().unwrap();
     let path = fixture.apps.root.join(id).join("development-source.json");
-    assert!(!path.exists());
+    let before = fs::read(&path).unwrap();
     fixture.apps.list().await.unwrap();
     fixture.apps.configuration(id).await.unwrap();
-    assert!(!path.exists());
+    assert_eq!(fs::read(&path).unwrap(), before);
     drop(fixture.apps.development_source_lease(id).await.unwrap());
     assert!(path.is_file());
 }
@@ -508,6 +508,11 @@ impl MigratedAuthorFixture {
         copy_artificial_migration_tree(&fixture.source, &old_source);
         copy_artificial_migration_tree(&old_source, &new_source);
         let id = Uuid::new_v4().to_string();
+        fixture.apps.project_ownership().initialize(&id).unwrap();
+        fixture
+            .apps
+            .claim_source_directory(&id, &old_source)
+            .unwrap();
         let binding = fixture.apps.root.join(&id).join("development-source.json");
         fs::create_dir_all(binding.parent().unwrap()).unwrap();
         let text = fs::read_to_string(old_source.join("local-app.json")).unwrap();
@@ -601,6 +606,70 @@ async fn public_migration_rebinds_only_published_author_sources_and_retry_is_ide
         fs::read(fixture.old_source.join("local-app.json")).unwrap(),
         old_manifest
     );
+
+    let id = fixture
+        .binding
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(
+        fixture
+            .fixture
+            .apps
+            .source_owner(&fixture.old_source)
+            .unwrap()
+            .unwrap()
+            .app_id,
+        id
+    );
+    assert_eq!(
+        fixture
+            .fixture
+            .apps
+            .source_owner(&fixture.new_source)
+            .unwrap()
+            .unwrap()
+            .app_id,
+        id
+    );
+    let owned = fixture
+        .fixture
+        .apps
+        .project_ownership()
+        .owned_paths(id)
+        .unwrap();
+    let old_claim = fixture
+        .fixture
+        .apps
+        .source_claim_key(&fixture.old_source)
+        .unwrap()
+        .0;
+    let new_claim = fixture
+        .fixture
+        .apps
+        .source_claim_key(&fixture.new_source)
+        .unwrap()
+        .0;
+    assert_ne!(old_claim, new_claim);
+    assert!(owned.contains(
+        &fixture
+            .fixture
+            .apps
+            .data_root
+            .join("node-source-owners")
+            .join(old_claim)
+    ));
+    assert!(owned.contains(
+        &fixture
+            .fixture
+            .apps
+            .data_root
+            .join("node-source-owners")
+            .join(new_claim)
+    ));
 
     let binding = fs::read(&fixture.binding).unwrap();
     let receipt = fs::read(&fixture.receipt).unwrap();
@@ -696,4 +765,201 @@ async fn migration_rebind_retry_finishes_an_old_receipt_but_rejects_an_unrelated
     );
     assert_eq!(fs::read(&fixture.binding).unwrap(), rebound_bytes);
     assert_eq!(fs::read(&fixture.receipt).unwrap(), receipt);
+}
+
+#[tokio::test]
+async fn author_directory_claim_is_idempotent_and_rejects_a_second_project_without_modifying_source(
+) {
+    let fixture = Fixture::new();
+    let first = fixture.register().await;
+    let before = fs::read(fixture.source.join("server/main.mjs")).unwrap();
+    fixture
+        .apps
+        .claim_source_directory(&first, &fixture.source)
+        .unwrap();
+    fixture
+        .apps
+        .claim_source_directory(&first, &fixture.source)
+        .unwrap();
+    let other = Uuid::new_v4().to_string();
+    assert_eq!(
+        fixture
+            .apps
+            .claim_source_directory(&other, &fixture.source)
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_ALREADY_OWNED"
+    );
+    assert!(!fixture
+        .apps
+        .data_root
+        .join("node-project-ownership")
+        .join(&other)
+        .exists());
+    assert_eq!(
+        fs::read(fixture.source.join("server/main.mjs")).unwrap(),
+        before
+    );
+    assert!(!fixture.source.join("owner.json").exists());
+    assert_eq!(
+        fs::read_dir(fixture.apps.data_root.join("node-source-owners"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn author_directory_claim_does_not_depend_on_mutable_git_contents() {
+    let fixture = Fixture::new();
+    let id = fixture.register().await;
+    fs::create_dir(fixture.source.join(".git")).unwrap();
+    fs::write(
+        fixture.source.join(".git/uncommitted-sentinel"),
+        b"AI changes are part of this project",
+    )
+    .unwrap();
+    fs::write(
+        fixture.source.join("server/main.mjs"),
+        b"// changed after registration",
+    )
+    .unwrap();
+    fixture
+        .apps
+        .claim_source_directory(&id, &fixture.source)
+        .unwrap();
+    let workspace = fixture.apps.data_root.join("workspace");
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        fixture.apps.data_root.clone(),
+        workspace,
+    );
+    assert!(ownership
+        .owned_paths(&id)
+        .unwrap()
+        .iter()
+        .any(|path| path.parent()
+            == Some(fixture.apps.data_root.join("node-source-owners").as_path())));
+}
+
+#[tokio::test]
+async fn published_source_cannot_be_adopted_by_a_new_local_registration_before_its_claim_is_written(
+) {
+    let fixture = Fixture::new();
+    let workspace = fixture.apps.data_root.join("workspace");
+    let source = workspace.join("project-sources/disposable-published-author");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    copy_artificial_migration_tree(&fixture.source, &source);
+    fixture.apps.set_source_workspace(workspace).unwrap();
+    assert_eq!(
+        fixture
+            .apps
+            .require_unclaimed_source(&source)
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_ALREADY_OWNED"
+    );
+    assert!(!fixture.apps.data_root.join("node-source-owners").exists());
+}
+
+#[tokio::test]
+async fn exclusive_source_admission_rejects_nested_projects_in_both_directions() {
+    let fixture = Fixture::new();
+    fixture.register().await;
+    let child = fixture.source.join("disposable-child-project");
+    fs::create_dir(&child).unwrap();
+    assert_eq!(
+        fixture
+            .apps
+            .require_unclaimed_source(&child)
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_ALREADY_OWNED"
+    );
+    let other = Uuid::new_v4().to_string();
+    assert_eq!(
+        fixture
+            .apps
+            .claim_source_directory(&other, &child)
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_ALREADY_OWNED"
+    );
+    assert!(!fixture
+        .apps
+        .project_ownership()
+        .directory(&other)
+        .unwrap()
+        .exists());
+
+    let reverse = Fixture::new();
+    let child = reverse.source.join("disposable-child-project");
+    fs::create_dir(&child).unwrap();
+    let first = Uuid::new_v4().to_string();
+    reverse.apps.project_ownership().initialize(&first).unwrap();
+    reverse.apps.claim_source_directory(&first, &child).unwrap();
+    assert_eq!(
+        reverse
+            .apps
+            .require_unclaimed_source(&reverse.source)
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_ALREADY_OWNED"
+    );
+    let parent_project = Uuid::new_v4().to_string();
+    assert_eq!(
+        reverse
+            .apps
+            .claim_source_directory(&parent_project, &reverse.source)
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_ALREADY_OWNED"
+    );
+    assert!(!reverse
+        .apps
+        .project_ownership()
+        .directory(&parent_project)
+        .unwrap()
+        .exists());
+}
+
+#[tokio::test]
+async fn prepublication_registration_failure_removes_only_new_private_material_and_can_retry() {
+    for failure in ["changed-manifest", "last-check"] {
+        let fixture = Fixture::new();
+        let digest = digest_manifest(&fixture.source).unwrap();
+        let inner = fixture.apps.inner.lock().await;
+        let mut checks = 0;
+        let error = fixture
+            .apps
+            .register_with_check(fixture.source.clone(), &inner, Some(&digest), || {
+                checks += 1;
+                if failure == "changed-manifest" && checks == 2 {
+                    let path = fixture.source.join("local-app.json");
+                    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                    manifest["app"]["name"] = json!("changed during preview confirmation");
+                    crate::builds::atomic_json(&path, &manifest)?;
+                }
+                if failure == "last-check" && checks == 3 {
+                    return Err(ApiError::new(
+                        "DISPOSABLE_PREPUBLICATION_FAILURE",
+                        "injected final admission failure",
+                    ));
+                }
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error.details["operationOutcome"], "not_started");
+        assert!(error.details["cleanupError"].is_null());
+        drop(inner);
+        assert!(fixture.source.join("server/main.mjs").is_file());
+        assert!(fs::read_dir(&fixture.apps.root).unwrap().next().is_none());
+        for container in ["node-project-ownership", "node-source-owners"] {
+            let path = fixture.apps.data_root.join(container);
+            if path.exists() {
+                assert!(fs::read_dir(path).unwrap().next().is_none());
+            }
+        }
+        fixture.register().await;
+        assert_eq!(fixture.apps.registrations().unwrap().len(), 1);
+    }
 }
