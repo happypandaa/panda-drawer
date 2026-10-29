@@ -1314,10 +1314,11 @@ async function openDetails(name) {
 }
 
 test('Project details offer one native window action and send only the desktop open target', async () => {
-  await setup(); const opened = deferred(); const calls = [];
+  await setup(); const opened = deferred(); const calls = []; const folders = [];
   const projectRoot = '/disposable/workspace/projects/ke-du-xiang-mu-a7c92e10';
   const state = { projects: [{ ...appProject('prj_native_window', 'Native window fixture'), projectRoot }] };
   mockApp(state, async (command, args) => {
+    if (command === 'open_project_folder') { folders.push(args); return; }
     assert.equal(command, 'project_open'); calls.push(args); return opened.promise;
   });
   await render(h(App)); await openDetails('Native window fixture');
@@ -1326,6 +1327,8 @@ test('Project details offer one native window action and send only the desktop o
   assert.ok(actions);
   assert.equal([...actions.querySelectorAll('button')].filter((button) => button.textContent === '进入应用').length, 1);
   assert.equal([...actions.querySelectorAll('button')].some((button) => /浏览器/.test(button.textContent)), false);
+  await click(buttonNamed('打开文件夹'));
+  assert.deepEqual(folders, [{ path: projectRoot }]);
   const enter = buttonNamed('进入应用');
   await click(enter); await click(enter);
   assert.deepEqual(calls, [{ projectId: 'prj_native_window', target: 'desktop', reload: false }]);
@@ -1336,7 +1339,10 @@ test('Project details offer one native window action and send only the desktop o
 test('App keeps the selected project and its draft after an external list removal, while disabling mutations', async () => {
   await setup();
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
-  mockApp(state);
+  const projectRoot = state.projects[0].projectRoot; const folders = [];
+  mockApp(state, async (command, args) => {
+    assert.equal(command, 'open_project_folder'); folders.push(args);
+  });
   await render(h(App)); await openDetails('Fixture A');
   await click(buttonNamed('编辑信息'));
   await inputValue(document.querySelector('.detail-metadata-form input'), 'Retain this edited display name');
@@ -1345,7 +1351,10 @@ test('App keeps the selected project and its draft after an external list remova
   await click(buttonNamed('重新扫描'));
   assert.ok(dialog(), 'An external disappearance must not discard the detail editor');
   assert.match(dialog().textContent, /项目已不在当前工作区列表中/);
-  assert.ok([...document.querySelectorAll('.detail-action-row button')].every((button) => button.disabled));
+  assert.ok([...document.querySelectorAll('.detail-action-row button')].filter(button => button.textContent !== '打开文件夹').every(button => button.disabled));
+  assert.equal(buttonNamed('打开文件夹').disabled, false);
+  await click(buttonNamed('打开文件夹'));
+  assert.deepEqual(folders, [{ path: projectRoot }]);
   await click(hubTab('概览'));
   assert.equal(document.querySelector('.detail-metadata-form input').value, 'Retain this edited display name');
   assert.equal(buttonNamed('保存基本信息').disabled, true);

@@ -153,7 +153,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   function reveal() {
     if (!sourcePath) return;
     void run('reveal', async current => {
-      await invoke('source_review_reveal', { sourcePath });
+      await invoke('open_project_folder', { path: sourcePath });
       if (current()) setNotice('已请求在 Finder 中显示项目文件夹。');
     });
   }
@@ -184,7 +184,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
         {error && <p className="task-error" role="alert">{error}</p>}
         {preview && <div className="project-ai-preview"><label htmlFor={`${id}-prompt`}>给 AI 的完整说明</label><textarea ref={promptField} id={`${id}-prompt`} readOnly rows={12} value={text} onFocus={event => event.currentTarget.select()} /><button type="button" className="text-button" onClick={() => { promptField.current?.focus(); promptField.current?.select(); }}>选择完整说明</button></div>}
         <button type="button" className="text-button project-ai-file-help" aria-expanded={fileHelp} onClick={() => setFileHelp(value => !value)}>AI 说读不到文件夹？</button>
-        {fileHelp && <section className="project-ai-file-help-content"><p>最方便的方式是换一个能读取这个文件夹的 AI，再粘贴同一份说明。复制本机路径不会让网页 AI 自动获得文件访问能力。</p>{sourcePath && <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={locked} onClick={reveal}><FolderOpen size={15} />在 Finder 中显示文件夹</button><button type="button" className="refresh-button" disabled={locked} onClick={copyPath}><Copy size={15} />复制文件夹路径</button></div>}<button type="button" className="text-button" disabled={locked} onClick={() => { setAiKind('web'); setPreview(true); }}>继续用网页 AI，选择附带材料</button></section>}
+        {fileHelp && <section className="project-ai-file-help-content"><p>最方便的方式是换一个能读取这个文件夹的 AI，再粘贴同一份说明。复制本机路径不会让网页 AI 自动获得文件访问能力。</p>{sourcePath && <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={locked} onClick={reveal}><FolderOpen size={15} />打开文件夹</button><button type="button" className="refresh-button" disabled={locked} onClick={copyPath}><Copy size={15} />复制文件夹路径</button></div>}<button type="button" className="text-button" disabled={locked} onClick={() => { setAiKind('web'); setPreview(true); }}>继续用网页 AI，选择附带材料</button></section>}
       </div>
     </Modal>}
   </>;
