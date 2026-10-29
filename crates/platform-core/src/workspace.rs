@@ -128,7 +128,7 @@ pub(crate) fn validate_selection(data: &Path, root: &Path, migration: Option<&st
             bail!("Committed workspace identity cannot be verified at {}; existing data is unchanged. If this followed a reboot, inspect the offline workspace identity repair preview",root.display())
         }
     } else {
-        if root != data.join("workspace") {
+        if root != data.join("workspace") && !crate::paths::is_home_workspace(data, root) {
             bail!("Workspace redirect has no committed migration journal")
         }
         check_no_symlinks(root, true)?;
