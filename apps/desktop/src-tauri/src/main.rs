@@ -747,7 +747,7 @@ async fn project_open(
                 }
             }
 
-            let launch = state.handle.launch(&project_id).await?;
+            let (launch, artifact_lease) = state.handle.launch_window(&project_id).await?;
             let base = Url::parse(&state.handle.info().base_url)
                 .map_err(|_| ApiError::new("INVALID_RUNTIME_URL", "本地服务地址无效"))?;
             let launch_url = Url::parse(&launch.launch_url)
@@ -808,6 +808,7 @@ async fn project_open(
                                 window_config,
                                 document_epoch: epoch,
                                 native_admission,
+                                artifact_lease,
                             },
                         )
                     })
@@ -901,6 +902,7 @@ struct ProjectWindowInput {
     window_config: platform_core::app_windows::AppWindowConfig,
     document_epoch: String,
     native_admission: business_window_lifetime::ProjectAdmission,
+    artifact_lease: Option<platform_core::build_artifacts::ArtifactLease>,
 }
 fn build_project_window(
     app: &tauri::AppHandle,
@@ -914,6 +916,7 @@ fn build_project_window(
         window_config,
         document_epoch,
         native_admission,
+        artifact_lease,
     } = input;
     let allowed_id = project_id.clone();
     let runtime_handle = state.handle.clone();
@@ -936,6 +939,11 @@ fn build_project_window(
         .window_lifetimes
         .reserve_project(&project_label(&project_id), &native_admission)
         .map_err(|_| ApiError::new("WINDOW_GENERATION_STILL_OWNED", "上次项目窗口尚未确认关闭"))?;
+    if let Some(artifact_lease) = artifact_lease {
+        receipt
+            .hold_resource(artifact_lease)
+            .map_err(|issue| ApiError::new(issue.code, "项目窗口已关闭，未创建新窗口"))?;
+    }
     let project_window = tauri::WebviewWindowBuilder::new(
         app,
         project_label(&project_id),

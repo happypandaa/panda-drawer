@@ -118,6 +118,8 @@ struct Binding {
     root_generation: String,
     mapping: Option<Mapping>,
     invalidation: Value,
+    #[serde(default)]
+    window_views_signature: Option<String>,
 }
 #[derive(Default, Clone)]
 struct Counter {
@@ -433,6 +435,217 @@ fn scope_scan(
     json!({"scope":scope,"root":root,"scanId":Uuid::new_v4().to_string(),"startedAt":started,"completedAt":now(),"complete":first.issues.is_empty(),"stale":false,"totalBytes":if identity.is_some(){int(total.bytes)}else{Value::Null},"fileCount":if identity.is_some(){int(total.files)}else{Value::Null},"categories":counts.into_iter().map(|(k,v)|(k,v.value())).collect::<BTreeMap<_,_>>(),"issues":first.issues,"excludedRoots":excluded,"measurement":"logicalFileBytes","nonAtomic":true})
 }
 
+fn window_views_root(paths: &RuntimePaths, id: &str) -> PathBuf {
+    paths
+        .data_root()
+        .join("web-project-ownership")
+        .join(id)
+        .join("artifact-views")
+}
+fn optional_child_dir(parent: &File, name: &[u8]) -> Result<Option<File>, ApiError> {
+    let name = name_c(name)?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(error.into())
+        }
+    } else {
+        Ok(Some(unsafe { File::from_raw_fd(fd) }))
+    }
+}
+fn window_views_directory(paths: &RuntimePaths, id: &str) -> Result<Option<File>, ApiError> {
+    let mut directory = files::root(paths.data_root())?;
+    for name in [
+        b"web-project-ownership".as_slice(),
+        id.as_bytes(),
+        b"artifact-views",
+    ] {
+        let Some(child) = optional_child_dir(&directory, name)? else {
+            return Ok(None);
+        };
+        directory = child;
+    }
+    Ok(Some(directory))
+}
+fn optional_stat_at(parent: &File, name: &[u8]) -> Result<Option<libc::stat>, ApiError> {
+    let name = name_c(name)?;
+    let mut stat = std::mem::MaybeUninit::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        Ok(Some(unsafe { stat.assume_init() }))
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(error.into())
+        }
+    }
+}
+fn window_metadata(metadata: &fs::Metadata) -> (u64, u64, u32, u64, i64, i64) {
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.mode(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+    )
+}
+/// Control views are immutable after publication. Only the root, view container
+/// and receipt metadata are needed to invalidate a cached payload measurement.
+fn window_views_signature(paths: &RuntimePaths, id: &str) -> Result<String, ApiError> {
+    let Some(directory) = window_views_directory(paths, id)? else {
+        return Ok("absent".into());
+    };
+    let before = window_metadata(&directory.metadata()?);
+    let mut digest = Sha256::new();
+    digest.update(format!("{before:?}"));
+    let mut names = vec![];
+    directory_names(&directory, |name| names.push(name.to_vec()))?;
+    names.sort();
+    for name in names {
+        let stat = stat_at(&directory, &name)?;
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(&name);
+        digest.update(format!(
+            "{:?}",
+            (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_mode,
+                stat.st_size,
+                stat.st_mtime,
+                stat.st_mtime_nsec
+            )
+        ));
+        if stat.st_mode as u32 & libc::S_IFMT as u32 == libc::S_IFDIR as u32 {
+            let container = child_dir(&directory, &name)?;
+            let metadata = window_metadata(&container.metadata()?);
+            if metadata.0 != stat.st_dev as u64 || metadata.1 != stat.st_ino {
+                return Err(ApiError::new(
+                    "STORAGE_SCAN_INVALIDATED",
+                    "Window artifact container identity changed",
+                ));
+            }
+            if let Some(receipt) = optional_stat_at(&container, b"view.json")? {
+                if receipt.st_mode as u32 & libc::S_IFMT as u32 != libc::S_IFREG as u32 {
+                    return Err(ApiError::new(
+                        "UNSAFE_PATH",
+                        "Window artifact receipt is not an ordinary file",
+                    ));
+                }
+                digest.update(format!(
+                    "{:?}",
+                    (
+                        receipt.st_dev,
+                        receipt.st_ino,
+                        receipt.st_mode,
+                        receipt.st_size,
+                        receipt.st_mtime,
+                        receipt.st_mtime_nsec
+                    )
+                ));
+            } else {
+                digest.update(b"receipt-missing");
+            }
+            if window_metadata(&container.metadata()?) != metadata {
+                return Err(ApiError::new(
+                    "STORAGE_SCAN_INVALIDATED",
+                    "Window artifact container changed while inspecting its receipt",
+                ));
+            }
+        }
+    }
+    if window_metadata(&directory.metadata()?) != before {
+        return Err(ApiError::new(
+            "STORAGE_SCAN_INVALIDATED",
+            "Window artifact root changed while inspecting containers",
+        ));
+    }
+    Ok(URL_SAFE_NO_PAD.encode(digest.finalize()))
+}
+fn window_views_scan(
+    paths: &RuntimePaths,
+    id: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> (PathBuf, Counter, Vec<Value>) {
+    let root = window_views_root(paths, id);
+    let mut count = Counter::default();
+    let mut issues = vec![];
+    let directory = match window_views_directory(paths, id) {
+        Ok(Some(directory)) => directory,
+        Ok(None) => {
+            if !matches!(window_views_directory(paths, id), Ok(None)) {
+                issues.push(problem(
+                    &root,
+                    "changed_during_scan",
+                    "Window artifact directory appeared while scanning",
+                ));
+            }
+            return (root, count, issues);
+        }
+        Err(error) => {
+            issues.push(problem(&root, "window_views_unavailable", error));
+            return (root, count, issues);
+        }
+    };
+    let identity = match directory.metadata() {
+        Ok(metadata) => (metadata.dev(), metadata.ino()),
+        Err(error) => {
+            issues.push(problem(&root, "window_views_unavailable", error));
+            return (root, count, issues);
+        }
+    };
+    let mut first = walk_cancellable(&root, &[], cancelled, |entry| count.add(entry.bytes));
+    let second = walk_cancellable(&root, &[], cancelled, |_| {});
+    if first.signature() != second.signature() {
+        issues.push(problem(
+            &root,
+            "changed_during_scan",
+            "Window artifact metadata changed between passes",
+        ));
+    }
+    let final_identity = window_views_directory(paths, id)
+        .ok()
+        .flatten()
+        .and_then(|directory| directory.metadata().ok())
+        .map(|metadata| (metadata.dev(), metadata.ino()));
+    if final_identity != Some(identity) {
+        issues.push(problem(
+            &root,
+            "root_changed",
+            "Window artifact directory identity changed while scanning",
+        ));
+    }
+    issues.append(&mut first.issues);
+    issues.extend(second.issues);
+    for issue in &mut issues {
+        if let Some(path) = issue["path"].as_str() {
+            if !Path::new(path).is_absolute() {
+                issue["path"] = json!(root.join(path));
+            }
+        }
+    }
+    (root, count, issues)
+}
+
 type RootGenerations = HashMap<String, (RootIdentity, Option<String>, String)>;
 struct StorageRunner {
     project_id: String,
@@ -572,6 +785,17 @@ impl StorageManager {
             );
         }
         let root_generation = generation.2.clone();
+        let window_views_signature = match window_views_signature(&self.paths, id) {
+            Ok(signature) => Some(signature),
+            Err(error) => {
+                issues.push(problem(
+                    window_views_root(&self.paths, id),
+                    "window_views_unavailable",
+                    error,
+                ));
+                None
+            }
+        };
         Ok((
             Binding {
                 workspace_root_identity: root_identity(self.paths.workspace_root())?,
@@ -579,6 +803,7 @@ impl StorageManager {
                 root_generation,
                 mapping,
                 invalidation,
+                window_views_signature,
             },
             issues,
         ))
@@ -720,16 +945,25 @@ impl StorageManager {
         }
         issues.append(&mut first.issues);
         issues.extend(second.issues);
+        let (window_views_root, window_views, window_view_issues) =
+            window_views_scan(&self.paths, id, &cancelled);
+        let window_views_complete = window_view_issues.is_empty();
+        issues.extend(window_view_issues);
+        let output = counts.get_mut("output").unwrap();
+        output.bytes = output.bytes.saturating_add(window_views.bytes);
+        output.files = output.files.saturating_add(window_views.files);
         let mut categories = counts
             .iter()
             .map(|(k, c)| (k.to_string(), c.value()))
             .collect::<serde_json::Map<_, _>>();
         categories.get_mut("source").unwrap()["fixedAssets"] = assets.value();
+        categories.get_mut("output").unwrap()["windowViews"] = json!({"root":window_views_root,"bytes":int(window_views.bytes),"fileCount":int(window_views.files),"complete":window_views_complete});
         categories.get_mut("database").unwrap()["main"] = main.value();
         categories.get_mut("database").unwrap()["companions"] = companions.value();
         categories.get_mut("cache").unwrap()["uploadStaging"] = json!({"bytes":int(uploads.bytes),"fileCount":int(uploads.files),"protected":true,"reason":"Upload staging is not a cleanup category; active or unclassified residues remain protected"});
         let total = counts.values().fold(0u64, |a, c| a.saturating_add(c.bytes));
-        let current = json!({"scope":{"kind":"project","projectId":id},"root":root,"scanId":Uuid::new_v4().to_string(),"startedAt":started,"completedAt":now(),"complete":issues.is_empty(),"stale":false,"totalBytes":int(total),"categories":categories,"issues":issues,"nonAtomic":true,"measurement":"logicalFileBytes"});
+        let file_count = counts.values().fold(0u64, |a, c| a.saturating_add(c.files));
+        let current = json!({"scope":{"kind":"project","projectId":id},"root":root,"scanId":Uuid::new_v4().to_string(),"startedAt":started,"completedAt":now(),"complete":issues.is_empty(),"stale":false,"totalBytes":int(total),"fileCount":int(file_count),"categories":categories,"issues":issues,"nonAtomic":true,"measurement":"logicalFileBytes"});
         let result = json!({"currentProject":current,"relatedHistory":self.history(id)});
         #[cfg(test)]
         if let Some(pause) = self.scan_pause.lock().unwrap().clone() {
@@ -1859,8 +2093,9 @@ fn workspace_scan(
             other.push(value);
         }
     }
-    // These project rows are references into the workspace scope, never added
-    // again to its total or to knownLocalTotal.
+    // Project rows reference content already measured in the workspace and
+    // application-data scopes. Their window-view totals are not added again to
+    // either disjoint root total or to knownLocalTotal.
     let mut project_rows = vec![];
     {
         for (id, path) in crate::projects::enumerate_project_roots(paths.workspace_root())? {
@@ -1870,6 +2105,22 @@ fn workspace_scan(
             let mut row = scope_scan(&path, json!({"kind":"project","projectId":id}), &[], |_| {
                 "project".into()
             });
+            let (views_root, views, view_issues) = window_views_scan(paths, &id, &|| false);
+            row["totalBytes"] = numeric(&row["totalBytes"])
+                .map(|bytes| int(bytes.saturating_add(views.bytes)))
+                .unwrap_or(Value::Null);
+            row["fileCount"] = numeric(&row["fileCount"])
+                .map(|files| int(files.saturating_add(views.files)))
+                .unwrap_or(Value::Null);
+            row["windowViews"] = json!({"root":views_root,"bytes":int(views.bytes),"fileCount":int(views.files),"complete":view_issues.is_empty(),"referenceOnly":true});
+            row["categories"]["windowViews"] = views.value();
+            if !view_issues.is_empty() {
+                row["complete"] = false.into();
+                row["issues"]
+                    .as_array_mut()
+                    .expect("scope scan issues are an array")
+                    .extend(view_issues);
+            }
             row["name"] = read_json::<Value>(&path.join("project.json"))
                 .ok()
                 .and_then(|v| v.get("name").cloned())

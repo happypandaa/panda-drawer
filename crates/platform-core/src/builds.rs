@@ -127,6 +127,7 @@ struct BuildReaderFixture {
 pub struct BuildManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
+    artifacts: crate::build_artifacts::ArtifactAccess,
     base_url: String,
     environment: EnvironmentManager,
     git_environment: GitEnvironmentManager,
@@ -208,6 +209,7 @@ impl BuildManager {
         }
         recover_publications(&paths, &store)?;
         reconcile_recovered_tasks(&paths, &store, &base_url, &mut records)?;
+        let artifacts = crate::build_artifacts::ArtifactAccess::new(paths.clone(), store.clone());
         let (sender, mut receiver) = mpsc::channel::<String>(BUILD_QUEUE);
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
@@ -226,6 +228,7 @@ impl BuildManager {
             git_stop: watch::channel(false).0,
             paths,
             store,
+            artifacts,
             base_url,
             registry: Mutex::new(Registry {
                 records,
@@ -240,6 +243,7 @@ impl BuildManager {
             #[cfg(test)]
             reader_fixture: Mutex::new(None),
         });
+        manager.cleanup_startup_artifacts();
         let weak = Arc::downgrade(&manager);
         let handle = tokio::spawn(async move {
             loop {
@@ -258,6 +262,53 @@ impl BuildManager {
     }
     pub fn environment(&self) -> &EnvironmentManager {
         &self.environment
+    }
+    pub fn artifact_access(&self) -> crate::build_artifacts::ArtifactAccess {
+        self.artifacts.clone()
+    }
+    fn cleanup_startup_artifacts(&self) {
+        let mut projects = std::collections::BTreeMap::<String, Vec<String>>::new();
+        if let Ok(entries) =
+            fs::read_dir(self.paths.workspace_root().join(".platform/project-state"))
+        {
+            for entry in entries.flatten() {
+                if let Some(id) = entry.path().file_stem().and_then(|name| name.to_str()) {
+                    if crate::projects::valid_id(id) && id.starts_with("prj_") {
+                        projects.entry(id.into()).or_default();
+                    }
+                }
+            }
+        }
+        for task in self.registry.lock().unwrap().records.values() {
+            let Some(id) = task.project_id.as_ref() else {
+                continue;
+            };
+            if task.task_type == "build"
+                && task.status.is_final()
+                && (task.status == TaskStatus::Succeeded
+                    || task
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| result["operationOutcome"] == "committed")
+                    || task
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.details["operationOutcome"] == "committed"))
+            {
+                projects
+                    .entry(id.clone())
+                    .or_default()
+                    .push(task.task_id.clone());
+            }
+        }
+        for (id, tasks) in projects {
+            if let Ok(project) = self.store.project(&id) {
+                let report = self.artifacts.cleanup(&project, &tasks);
+                for issue in report.issues {
+                    eprintln!("Build startup cleanup pending for {id}: {}", issue.code);
+                }
+            }
+        }
     }
     pub fn subscribe(&self) -> broadcast::Receiver<BuildEvent> {
         self.events.subscribe()
@@ -921,6 +972,7 @@ impl BuildManager {
                 ));
             }
         }
+        issues.extend(self.artifacts.shutdown().await);
         issues
     }
 
@@ -990,7 +1042,24 @@ impl BuildManager {
     }
     async fn run(&self, id: &str) {
         let project_id = self.task(id).unwrap().project_id.unwrap();
-        let result = self.pipeline(id, &project_id).await;
+        let mut result = self.pipeline(id, &project_id).await;
+        let committed = result.is_ok()
+            || result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.details["operationOutcome"] == "committed");
+        if committed {
+            if let Ok(project) = self.store.project(&project_id) {
+                let report = self.artifacts.cleanup(&project, &[id.into()]);
+                if let Ok(value) = &mut result {
+                    value["artifactCleanup"] = json!(report);
+                } else if report.cleanup_pending {
+                    if let Err(error) = &mut result {
+                        error.details["artifactCleanup"] = json!(report);
+                    }
+                }
+            }
+        }
         if result.is_ok() {
             if let Ok(control) = self.store.control(&project_id) {
                 let mut state = control.get();
@@ -1260,6 +1329,7 @@ impl BuildManager {
         self.checkpoint(start)?;
         self.phase(id, "publish")?;
         // From the journal onward the filesystem transaction must reach a recoverable outcome.
+        let _publication = self.artifacts.publication()?;
         publish(&self.paths, project, &staging, &provenance, old_digest)?;
 
         Ok(
@@ -1432,7 +1502,7 @@ pub(crate) fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Ap
     }
     result
 }
-fn ensure_dir(path: &Path) -> Result<(), ApiError> {
+pub(crate) fn ensure_dir(path: &Path) -> Result<(), ApiError> {
     check_no_symlinks(path, true)?;
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -1453,7 +1523,7 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-fn valid_task_id(id: &str) -> bool {
+pub(crate) fn valid_task_id(id: &str) -> bool {
     id.len() == 37
         && id.starts_with("task_")
         && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1650,7 +1720,7 @@ fn sdk_version(source: &Path) -> Result<Option<String>, ApiError> {
     }
     Ok(None)
 }
-fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
+pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
     let mut files = vec![];
     collect_files(source, Path::new(""), false, &mut files)?;
     ensure_dir(target)?;
@@ -1952,12 +2022,7 @@ pub fn artifact_generation(
     }))
 }
 pub fn version_root(project: &ProjectHandle, build_id: &str) -> Result<PathBuf, ApiError> {
-    if !valid_task_id(build_id)
-        && !valid_starter_id(build_id)
-        && !(build_id.len() == 41
-            && build_id.starts_with("restored_")
-            && build_id[9..].bytes().all(|b| b.is_ascii_hexdigit()))
-    {
+    if !valid_generation_id(build_id) {
         return Err(ApiError::new(
             "INVALID_BUILD_ID",
             "Invalid artifact generation",
@@ -1967,6 +2032,13 @@ pub fn version_root(project: &ProjectHandle, build_id: &str) -> Result<PathBuf, 
         &project.root,
         &format!(".platform/artifacts/{build_id}/dist"),
     )
+}
+pub(crate) fn valid_generation_id(build_id: &str) -> bool {
+    valid_task_id(build_id)
+        || valid_starter_id(build_id)
+        || (build_id.len() == 41
+            && build_id.starts_with("restored_")
+            && build_id[9..].bytes().all(|b| b.is_ascii_hexdigit()))
 }
 fn artifact_directory(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
     // Preserve path/symlink rejection while distinguishing a missing registered
@@ -2077,7 +2149,7 @@ pub fn build_info(paths: &RuntimePaths, project: &ProjectHandle) -> Result<Value
         ),
     }
 }
-fn publish(
+pub(crate) fn publish(
     paths: &RuntimePaths,
     project: &ProjectHandle,
     staging: &Path,
@@ -2430,7 +2502,8 @@ mod tests {
         manager.shutdown().await;
     }
     #[tokio::test]
-    async fn first_build_failure_preserves_starter_and_success_retains_its_generation() {
+    async fn first_build_failure_preserves_starter_and_a_window_pin_retains_its_generation_until_close(
+    ) {
         let (_temp, paths) = RuntimePaths::for_test();
         let store = Arc::new(ProjectStore::new(paths.workspace_root().to_path_buf()).unwrap());
         let project = project(&store, "Starter lifecycle").await;
@@ -2450,6 +2523,7 @@ mod tests {
         let manager =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into())
                 .unwrap();
+        let (_, old_window) = manager.artifacts.current(&project, false).unwrap();
         assert_eq!(
             manager.info(&project.manifest.id).await.unwrap()["sourceState"],
             "matched"
@@ -2496,6 +2570,14 @@ mod tests {
                 .unwrap(),
             "keep me"
         );
+        drop(old_window);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while old_root.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
         manager.shutdown().await;
         store.shutdown().await;
     }

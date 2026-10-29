@@ -112,6 +112,7 @@ pub(crate) struct ProjectCleanupCoordinator {
     windows: Arc<WindowSizeStore>,
     storage: Mutex<Vec<Weak<crate::storage::StorageManager>>>,
     history: Mutex<Vec<Weak<crate::history_cleanup::CleanupManager>>>,
+    artifacts: Mutex<Vec<crate::build_artifacts::WeakArtifactAccess>>,
     native: RwLock<Option<NativeProjectCleanup>>,
 }
 impl ProjectCleanupCoordinator {
@@ -121,6 +122,7 @@ impl ProjectCleanupCoordinator {
             windows: Arc::new(WindowSizeStore::new(data)),
             storage: Mutex::new(vec![]),
             history: Mutex::new(vec![]),
+            artifacts: Mutex::new(vec![]),
             native: RwLock::new(None),
         })
     }
@@ -144,6 +146,23 @@ impl ProjectCleanupCoordinator {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(Arc::downgrade(history));
+    }
+    pub(crate) fn register_artifacts(&self, access: &crate::build_artifacts::ArtifactAccess) {
+        access.coordinated();
+        self.artifacts.lock().unwrap().push(access.downgrade());
+    }
+    fn artifacts(&self) -> Vec<crate::build_artifacts::ArtifactAccess> {
+        let mut entries = self.artifacts.lock().unwrap();
+        let live = entries.iter().filter_map(|entry| entry.upgrade()).collect();
+        entries.retain(|entry| entry.upgrade().is_some());
+        live
+    }
+    pub(crate) async fn shutdown_artifacts(&self) -> Vec<crate::shutdown::ShutdownIssue> {
+        let mut issues = vec![];
+        for access in self.artifacts() {
+            issues.extend(access.shutdown_all().await);
+        }
+        issues
     }
     fn storages(&self) -> Vec<Arc<crate::storage::StorageManager>> {
         let mut list = self.storage.lock().unwrap_or_else(|p| p.into_inner());
@@ -184,6 +203,11 @@ impl ProjectCleanupCoordinator {
         self.windows
             .forget_project(notice.kind.as_str(), &notice.id)?;
         self.native(NativeCleanupStage::Prepare, &notice).await?;
+        if notice.kind == ProjectKind::Web {
+            for access in self.artifacts() {
+                access.prepare_project_deletion(&notice.id).await?;
+            }
+        }
         for storage in self.storages() {
             notice
                 .task_ids

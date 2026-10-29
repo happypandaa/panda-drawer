@@ -1664,7 +1664,20 @@ pub(crate) fn remove_owned_directory(
     path: &Path,
     expected: &PersistedIdentity,
 ) -> Result<Value, ApiError> {
-    if !expected.matches_path(path).map_err(error)? {
+    remove_owned_directory_bound(path, expected, || Ok(()))
+}
+fn remove_owned_directory_bound(
+    path: &Path,
+    expected: &PersistedIdentity,
+    after_bind: impl FnOnce() -> Result<(), ApiError>,
+) -> Result<Value, ApiError> {
+    check_no_symlinks(path, false)?;
+    let root = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let observed = PersistedIdentity::from_file(&root).map_err(error)?;
+    if !expected.matches_captured(&observed) {
         return Err(error("Permanent deletion target identity changed"));
     }
     let mut item = Candidate::new(
@@ -1673,12 +1686,14 @@ pub(crate) fn remove_owned_directory(
         "平台项目目录",
         path.into(),
     );
-    item.root_identity = Some(directory_identity(path)?);
-
+    item.root_identity = Some(Identity::of(&root.metadata()?));
+    after_bind()?;
     item.parents = parent_identities(path)?;
     item.entries = scan_with_content(path, false)?;
     item.can_clean = true;
-    remove_tree_with_hook(&item, |_, _| Ok(()))
+    let result = remove_tree_with_hook(&item, |_, _| Ok(()));
+    drop(root);
+    result
 }
 fn remove_tree_with_hook(
     item: &Candidate,

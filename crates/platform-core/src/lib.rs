@@ -5,6 +5,7 @@
 pub mod ai_prompt_rules;
 pub mod app_windows;
 pub mod backups;
+pub mod build_artifacts;
 pub mod build_profile;
 pub mod builds;
 mod control;

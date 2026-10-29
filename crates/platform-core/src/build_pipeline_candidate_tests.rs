@@ -2,6 +2,10 @@ use super::*;
 
 fn assert_candidate_removed(project: &ProjectHandle, task_id: &str) {
     let task_root = project.root.join(".platform/builds").join(task_id);
+    // Successful publication now removes its entire owned temporary root.
+    if !task_root.exists() {
+        return;
+    }
     let record: Value =
         serde_json::from_slice(&fs::read(task_root.join("candidate-v1.json")).unwrap()).unwrap();
     assert_eq!(record["state"], "removed");

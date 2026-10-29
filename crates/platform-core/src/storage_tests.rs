@@ -326,6 +326,229 @@ async fn logical_categories_are_disjoint_include_hidden_metadata_and_never_open_
     );
     f.stop().await;
 }
+
+#[tokio::test]
+async fn window_artifact_views_are_project_output_and_included_in_project_totals() {
+    let f = Fixture::new().await;
+    let before = f.scan().await;
+    let views = f
+        .paths
+        .data_root()
+        .join("web-project-ownership")
+        .join(&f.id)
+        .join("artifact-views/view_disposable");
+    fs::create_dir_all(views.join("dist")).unwrap();
+    let page = b"disposable immutable window page";
+    let receipt = b"{\"buildId\":\"view_disposable\"}";
+    fs::write(views.join("dist/index.html"), page).unwrap();
+    fs::write(views.join("view.json"), receipt).unwrap();
+    let added = (page.len() + receipt.len()) as u64;
+
+    let result = f.scan().await;
+    let current = &result["currentProject"];
+    assert_eq!(current["complete"], true, "{result}");
+    assert_eq!(
+        current["categories"]["output"]["windowViews"]["bytes"],
+        added
+    );
+    assert_eq!(
+        current["categories"]["output"]["windowViews"]["fileCount"],
+        2
+    );
+    assert_eq!(
+        numeric(&current["categories"]["output"]["bytes"]),
+        Some(numeric(&before["currentProject"]["categories"]["output"]["bytes"]).unwrap() + added)
+    );
+    assert_eq!(
+        numeric(&current["categories"]["output"]["fileCount"]),
+        Some(numeric(&before["currentProject"]["categories"]["output"]["fileCount"]).unwrap() + 2)
+    );
+    assert_eq!(
+        numeric(&current["totalBytes"]),
+        Some(numeric(&before["currentProject"]["totalBytes"]).unwrap() + added)
+    );
+    assert_eq!(
+        numeric(&current["fileCount"]),
+        Some(numeric(&before["currentProject"]["fileCount"]).unwrap() + 2)
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn window_artifact_reference_rows_do_not_double_count_disjoint_workspace_totals() {
+    let f = Fixture::new().await;
+    let views = f
+        .paths
+        .data_root()
+        .join("web-project-ownership")
+        .join(&f.id)
+        .join("artifact-views/view_disposable");
+    fs::create_dir_all(views.join("dist")).unwrap();
+    let page = b"disposable window view";
+    let receipt = b"disposable view receipt";
+    fs::write(views.join("dist/index.html"), page).unwrap();
+    fs::write(views.join("view.json"), receipt).unwrap();
+    let added = (page.len() + receipt.len()) as u64;
+    let project = scope_scan(&f.root, json!({"kind":"expectedProject"}), &[], |_| {
+        "project".into()
+    });
+    let workspace = scope_scan(
+        f.paths.workspace_root(),
+        json!({"kind":"expectedWorkspace"}),
+        &[],
+        |_| "workspace".into(),
+    );
+    let data = scope_scan(
+        f.paths.data_root(),
+        json!({"kind":"expectedApplicationData"}),
+        &[f.paths
+            .workspace_root()
+            .strip_prefix(f.paths.data_root())
+            .unwrap()
+            .into()],
+        |_| "applicationData".into(),
+    );
+    let expected =
+        numeric(&workspace["totalBytes"]).unwrap() + numeric(&data["totalBytes"]).unwrap();
+    let result = workspace_scan(&f.paths, None, "disposable-window-views").unwrap();
+    let row = result["workspace"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["scope"]["projectId"] == f.id)
+        .unwrap();
+    assert_eq!(row["referenceOnly"], true);
+    assert_eq!(row["windowViews"]["bytes"], added);
+    assert_eq!(row["windowViews"]["fileCount"], 2);
+    assert_eq!(row["windowViews"]["complete"], true);
+    assert_eq!(
+        numeric(&row["totalBytes"]),
+        Some(numeric(&project["totalBytes"]).unwrap() + added)
+    );
+    assert_eq!(
+        numeric(&row["fileCount"]),
+        Some(numeric(&project["fileCount"]).unwrap() + 2)
+    );
+    assert_eq!(
+        numeric(&result["knownLocalTotal"]["totalBytes"]),
+        Some(expected)
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn window_artifact_control_links_are_not_followed_or_reported_complete() {
+    let f = Fixture::new().await;
+    let external = f.paths.data_root().join("disposable-external-view");
+    fs::create_dir(&external).unwrap();
+    fs::write(external.join("must-not-count"), vec![0; 100_000]).unwrap();
+    let views = f
+        .paths
+        .data_root()
+        .join("web-project-ownership")
+        .join(&f.id)
+        .join("artifact-views");
+    fs::create_dir_all(views.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&external, &views).unwrap();
+    let result = f.scan().await;
+    let current = &result["currentProject"];
+    assert_eq!(current["complete"], false);
+    assert_eq!(current["categories"]["output"]["windowViews"]["bytes"], 0);
+    assert_eq!(
+        current["categories"]["output"]["windowViews"]["complete"],
+        false
+    );
+    assert!(current["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| issue["reason"] == "window_views_unavailable"));
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn window_view_metadata_changes_invalidate_cached_counts_without_workspace_markers() {
+    let f = Fixture::new().await;
+    let marker = f
+        .paths
+        .workspace_root()
+        .join(".platform/cache/storage/invalidations/projects")
+        .join(format!("{}.json", f.id));
+    let original_marker = fs::read(&marker).ok();
+    f.scan().await;
+    assert_eq!(
+        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
+        false
+    );
+
+    // Old cached bindings have no control-view signature, even if no view was
+    // present at the time. They must be measured again after the upgrade.
+    let cache = f.storage.cache(&f.id);
+    let mut old: Value = read_json(&cache).unwrap();
+    assert!(old["binding"]
+        .as_object_mut()
+        .unwrap()
+        .remove("windowViewsSignature")
+        .is_some());
+    builds::atomic_json(&cache, &old).unwrap();
+    assert_eq!(
+        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
+        true
+    );
+    f.scan().await;
+
+    let views = window_views_root(&f.paths, &f.id).join("view_disposable");
+    fs::create_dir_all(views.join("dist")).unwrap();
+    fs::write(views.join("dist/index.html"), b"disposable window artifact").unwrap();
+    fs::write(views.join("view.json"), b"prepared view receipt").unwrap();
+    assert_eq!(
+        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
+        true
+    );
+    f.scan().await;
+    assert_eq!(
+        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
+        false
+    );
+
+    // Keep the container's directory mtime unchanged: replacing the receipt
+    // still invalidates the binding because the receipt inode is included.
+    let modified = fs::metadata(&views).unwrap().modified().unwrap();
+    let previous_inode = fs::metadata(views.join("view.json")).unwrap().ino();
+    fs::write(views.join("next-view.json"), b"ready view receipt").unwrap();
+    fs::rename(views.join("next-view.json"), views.join("view.json")).unwrap();
+    assert_ne!(
+        fs::metadata(views.join("view.json")).unwrap().ino(),
+        previous_inode
+    );
+    File::open(&views)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(
+        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
+        true
+    );
+    f.scan().await;
+
+    fs::rename(
+        &views,
+        f.paths.data_root().join("disposable-moved-window-view"),
+    )
+    .unwrap();
+    assert_eq!(
+        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
+        true
+    );
+    let result = f.scan().await;
+    assert_eq!(
+        result["currentProject"]["categories"]["output"]["windowViews"]["bytes"],
+        0
+    );
+    assert_eq!(fs::read(&marker).ok(), original_marker);
+    f.stop().await;
+}
+
 #[tokio::test]
 async fn symlinks_and_invalid_manifest_report_partial_values_without_counting_external_data() {
     let f = Fixture::new().await;
