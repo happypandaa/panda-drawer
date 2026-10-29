@@ -1381,6 +1381,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .launcher-state.is-attention .launcher-state-dot { background: #d6a23a; }
 .launcher-state.is-error { color: var(--radio-danger); }
 .launcher-state.is-error .launcher-state-dot { background: var(--radio-danger); }
+.launcher-retired-note { max-width: 170px; margin: 6px auto 0; color: var(--radio-danger); font-size: 11px; line-height: 16px; text-align: center; }
 @keyframes launcher-pulse { 50% { opacity: .35; } }
 
 .radio-footer { min-height: 30px; padding: 6px 32px; background-image: none; font-family: inherit; font-size: 11px; line-height: 1.6; letter-spacing: 0; }

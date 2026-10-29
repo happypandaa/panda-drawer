@@ -1,9 +1,14 @@
-//! Actual source-process and file-writer ownership. The candidate is evidence,
-//! never a temporary directory whose Drop may delete an unfinished operation.
+//! Actual source-process and file-writer ownership. Import material is disposable
+//! only after its writer closes; dropping a waiter never authorizes deletion.
 use super::*;
 use crate::{
     owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessRun},
     projects::ProjectTaskLease,
+};
+#[cfg(test)]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
 };
 
 #[cfg(test)]
@@ -20,7 +25,6 @@ pub(super) struct SourceHooks {
 
 pub(super) struct SourceScope {
     _lease: ProjectTaskLease,
-    active: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     tasks: Arc<BuildManager>,
     task: String,
     slot: PathBuf,
@@ -29,7 +33,6 @@ pub(super) struct SourceScope {
 impl SourceScope {
     pub fn new(
         lease: ProjectTaskLease,
-        active: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
         tasks: Arc<BuildManager>,
         task: String,
         slot: PathBuf,
@@ -37,7 +40,6 @@ impl SourceScope {
     ) -> Self {
         Self {
             _lease: lease,
-            active,
             tasks,
             task,
             slot,
@@ -79,17 +81,6 @@ impl SourceScope {
         })();
     }
 }
-impl Drop for SourceScope {
-    fn drop(&mut self) {
-        // An unconfirmed registry record retains its own Arc, so neither this
-        // busy gate nor ProjectTaskLease can disappear with a failed waiter.
-        self.active
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.task);
-    }
-}
-
 pub(super) async fn resolve_source_git(
     environment: &GitEnvironmentManager,
     control: &RunControl,

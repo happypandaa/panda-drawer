@@ -32,318 +32,41 @@ const { SourceImportSession, SourceImportError } = await import(pathToFileURL(aw
 const { acceptProjectDeletion, checkedProjectDeletion, deletedSourceMatches, observeDeletionRuntime, projectWasDeleted, taskWasDeleted, resetProjectDeletionsForTests } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-deletion.ts'))).href);
 afterEach(resetProjectDeletionsForTests);
 
-const sourceId = `src_${'1'.repeat(32)}`;
-const otherSourceId = `src_${'2'.repeat(32)}`;
-const candidateId = `install_${'3'.repeat(32)}`;
 const appId = '11111111-1111-4111-8111-111111111111';
-const digest = 'a'.repeat(64);
-const generation = `gen_${'4'.repeat(32)}`;
-const source = { sourceId, taskId: 'task_source', name: 'Disposable source', status: 'ready', phase: 'completed', url: 'https://github.com/disposable/source.git', evidencePath: '/disposable/source', contentDigest: digest, commit: 'c'.repeat(40), inspection: { kind: 'node-service-source', name: 'Disposable app', requiresBuild: false, issues: [], executionState: 'not-executed' } };
-const prepared = { candidateId, appId, generation, manifest: { runtime: 'node-service', app: { id: 'org.example.disposable', name: 'Disposable app', version: '1.0.0' } }, programDigest: 'b'.repeat(64), provenance: { sourceId, sourceDigest: digest, sourceCommit: 'c'.repeat(40), node: { path: '/disposable/node', version: '24.22.0' }, npm: { path: '/disposable/npm', version: '11.19.1' }, preparedAt: 1 } };
-const installed = { candidateId, appId, generation, operationOutcome: 'committed' };
-const task = (type, overrides = {}) => ({ taskId: type === 'sourceAcquire' ? 'task_source' : type === 'nodeInstallPrepare' ? 'task_prepare' : 'task_apply', projectId: null, type, status: 'succeeded', final: true, phase: 'completed', result: type === 'sourceAcquire' ? source : type === 'nodeInstallPrepare' ? { state: 'prepared', candidate: prepared, installed: false } : installed, error: null, ...overrides });
-const input = { url: source.url, branch: null };
-function fixture(overrides = {}, options = {}) {
-  const calls = []; const tasks = [];
-  const defaults = {
-    source_acquire: () => task('sourceAcquire'),
-    node_install_prepare: () => task('nodeInstallPrepare'),
-    node_install_candidate: () => ({ state: 'prepared', candidate: prepared }),
-    node_install_apply: () => task('nodeInstallApply'),
-    source_import_cleanup: () => ({ completed: true, sourceId, sourceRetained: false, removedPaths: ['/disposable/source'], failures: [] }),
-  };
-  const invoke = async (command, args) => {
-    calls.push([command, args]);
-    const run = overrides[command] ?? defaults[command];
-    assert.ok(run, `Unexpected command ${command}`);
-    return run(args);
-  };
-  const session = new SourceImportSession(invoke, { onTask: value => tasks.push(value), onChange() {}, isCurrent: () => true, pause: async () => {}, ...options });
-  return { session, calls, tasks };
+const task = (changes={}) => ({taskId:'task_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null,...changes});
+const snapshot = (changes={}) => ({task:task(),appId,sourcePath:'/disposable/project-sources/one',commitState:'committed',cleanupPending:false,remainingPaths:[],app:null,...changes});
+const input={url:'https://github.com/disposable/one.git',branch:null};
+function fixture(overrides={}) {
+ const calls=[]; const defaults={node_git_import_start:()=>task(),node_git_import_status:()=>snapshot(),node_git_import_retry_cleanup:()=>snapshot(),node_git_import_cancel:()=>task()};
+ const session=new SourceImportSession(async(command,args)=>{calls.push([command,args]);return (overrides[command]??defaults[command])(args);},{isCurrent:()=>true,onTask(){},onChange(){},pause:async()=>{}});return {session,calls};
 }
-const commands = calls => calls.map(([name]) => name);
-
-test('One import binds the acquired source, verifies the prepared candidate, and commits once', async () => {
-  const { session, calls } = fixture();
-  assert.deepEqual(await session.acquire(input), source);
-  assert.deepEqual(await session.install(false), installed);
-  assert.equal(session.phase, 'cleanup');
-  assert.equal(session.sourceTaskId, 'task_source');
-  assert.deepEqual(commands(calls), ['source_acquire', 'node_install_prepare', 'node_install_candidate', 'node_install_apply']);
-  assert.deepEqual(calls[1][1], { input: { sourceId, expectedSourceDigest: digest, targetAppId: null } });
-  assert.deepEqual(calls[3][1], { candidateId });
+test('One backend transaction receives one stable request and replaces prepare/apply/publish orchestration',async()=>{
+ const {session,calls}=fixture(); assert.equal((await session.run(input)).commitState,'committed');
+ assert.deepEqual(calls.map(([command])=>command),['node_git_import_start','node_git_import_status']);
+ assert.equal(calls[0][1].input.importId,session.importId);
+ await assert.rejects(session.run(input),/已经受理/);assert.equal(calls.length,2);
+});
+test('A lost submission reply reconciles the original importId without resubmitting',async()=>{
+ const {session,calls}=fixture({node_git_import_start:()=>{throw Error('lost reply');}});await session.run(input);
+ assert.equal(calls.filter(([command])=>command==='node_git_import_start').length,1);
+ for(const [command,args]of calls)if(command==='node_git_import_status')assert.equal(args.importId,session.importId);
+});
+test('Unknown registration is retained for reconciliation and never reported as added',async()=>{
+ let confirmed=false;const {session,calls}=fixture({node_git_import_status:()=>snapshot({commitState:confirmed?'committed':'unknown',cleanupPending:!confirmed})});
+ await assert.rejects(session.run(input),error=>error instanceof SourceImportError&&error.recovery);assert.equal(session.snapshot.commitState,'unknown');
+ confirmed=true;assert.equal((await session.reconcile()).commitState,'committed');assert.equal(calls.filter(([command])=>command==='node_git_import_start').length,1);
+});
+test('Cleanup retry preserves the original failure and uses only its task',async()=>{
+ const failed=snapshot({commitState:'not_committed',cleanupPending:true,remainingPaths:['/disposable/partial'],task:task({status:'failed',error:{code:'NEEDS_MODIFICATION',message:'需要修改'}})});
+ const {session,calls}=fixture({node_git_import_status:()=>failed,node_git_import_retry_cleanup:()=>({...failed,cleanupPending:false,remainingPaths:[]})});
+ await assert.rejects(session.run(input),/需要修改/);const value=await session.retryCleanup();assert.equal(value.commitState,'not_committed');assert.equal(value.task.error.message,'需要修改');
+ assert.deepEqual(calls.at(-1),['node_git_import_retry_cleanup',{taskId:'task_import'}]);
+});
+test('Mismatched task or instance cannot drive subsequent mutations',async()=>{
+ const {session}=fixture({node_git_import_status:()=>snapshot({task:task({type:'nodeInstallApply'})})});await assert.rejects(session.run(input),/身份/);
 });
 
-test('Download and preparation polling use only the accepted task identities', async () => {
-  const reads = [];
-  const { session, tasks } = fixture({
-    source_acquire: () => task('sourceAcquire', { status: 'running', final: false, phase: 'downloading', result: null }),
-    node_install_prepare: () => task('nodeInstallPrepare', { status: 'running', final: false, phase: 'dependencies', result: null }),
-    task_get: ({ taskId }) => { reads.push(taskId); return task(taskId === 'task_source' ? 'sourceAcquire' : 'nodeInstallPrepare'); },
-  });
-  await session.acquire(input); await session.install(false);
-  assert.deepEqual(reads, ['task_source', 'task_prepare']);
-  assert.ok(tasks.some(value => value.phase === 'downloading' && !value.final));
-  assert.ok(tasks.some(value => value.phase === 'dependencies' && !value.final));
-});
-
-test('A source requiring a build cannot prepare until the user approves that build', async () => {
-  const buildSource = { ...source, inspection: { ...source.inspection, requiresBuild: true } };
-  const { session, calls } = fixture({ source_acquire: () => task('sourceAcquire', { result: buildSource }) });
-  await session.acquire(input);
-  await assert.rejects(session.install(false), SourceImportError);
-  assert.deepEqual(commands(calls), ['source_acquire']);
-  await session.install(true);
-  assert.deepEqual(calls.find(([name]) => name === 'node_install_prepare')[1], { input: { sourceId, expectedSourceDigest: digest, targetAppId: null, buildSource: true } });
-});
-
-test('Downloaded unsupported source is not silently prepared or installed', async () => {
-  const unsupported = { ...source, inspection: { ...source.inspection, kind: 'needs-adaptation', issues: [{ message: 'Missing local-app.json' }] } };
-  const { session, calls } = fixture({ source_acquire: () => task('sourceAcquire', { result: unsupported }) });
-  await assert.rejects(session.acquire(input), SourceImportError);
-  assert.equal(session.source, unsupported);
-  await assert.rejects(session.install(false), SourceImportError);
-  assert.deepEqual(commands(calls), ['source_acquire']);
-});
-
-test('A terminal download failure retains its exact task for scoped cleanup', async () => {
-  const { session, calls } = fixture({ source_acquire: () => task('sourceAcquire', { status: 'failed', result: null, error: { code: 'SOURCE_GIT_FAILED', message: 'Disposable download failed', details: { sourceId } } }) });
-  await assert.rejects(session.acquire(input), /Disposable download failed/);
-  assert.equal(session.sourceTaskId, 'task_source');
-  await session.cleanup();
-  assert.deepEqual(calls.at(-1), ['source_import_cleanup', { sourceTaskId: 'task_source' }]);
-  assert.ok(!commands(calls).includes('node_install_prepare'));
-});
-
-for (const change of [
-  { appId: '22222222-2222-4222-8222-222222222222' },
-  { programDigest: 'd'.repeat(64) },
-  { generation: `gen_${'5'.repeat(32)}` },
-  { provenance: { ...prepared.provenance, sourceId: otherSourceId } },
-]) test(`Changed preparation identity prevents installation (${Object.keys(change)[0]})`, async () => {
-  const { session, calls } = fixture({ node_install_candidate: () => ({ state: 'prepared', candidate: { ...prepared, ...change } }) });
-  await session.acquire(input);
-  await assert.rejects(session.install(false), SourceImportError);
-  assert.ok(!commands(calls).includes('node_install_apply'));
-});
-
-test('A prepare result belonging to another source is never applied', async () => {
-  const altered = { ...prepared, provenance: { ...prepared.provenance, sourceId: otherSourceId } };
-  const { session, calls } = fixture({ node_install_prepare: () => task('nodeInstallPrepare', { result: { state: 'prepared', candidate: altered, installed: false } }) });
-  await session.acquire(input);
-  await assert.rejects(session.install(false), SourceImportError);
-  assert.ok(!commands(calls).includes('node_install_apply'));
-});
-
-test('A committed apply with a failed finishing step remains installed and warns', async () => {
-  const { session, calls } = fixture({ node_install_apply: () => task('nodeInstallApply', { status: 'failed', error: { code: 'NODE_INSTALL_RECOVERY_REQUIRED', message: 'Disposable finishing warning', details: { operationOutcome: 'committed' } } }) });
-  await session.acquire(input);
-  assert.deepEqual(await session.install(false), installed);
-  assert.deepEqual(session.installed, installed);
-  assert.ok(session.warning);
-  assert.equal(commands(calls).filter(name => name === 'node_install_apply').length, 1);
-});
-
-test('An uncertain apply can reconcile a committed result without applying it again', async () => {
-  let queried = 0;
-  const { session, calls } = fixture({
-    node_install_candidate: () => ++queried === 1 ? { state: 'prepared', candidate: prepared } : { state: 'committed', result: installed },
-    node_install_apply: () => task('nodeInstallApply', { status: 'failed', result: { candidateId, operationOutcome: 'unknown' }, error: { code: 'NODE_INSTALL_RECOVERY_REQUIRED', message: 'Disposable uncertain install', details: { operationOutcome: 'unknown' } } }),
-  });
-  await session.acquire(input);
-  await assert.rejects(session.install(false), error => error instanceof SourceImportError && error.recovery);
-  assert.equal(session.installed, null);
-  assert.deepEqual(await session.reconcile(), installed);
-  assert.equal(commands(calls).filter(name => name === 'node_install_apply').length, 1);
-});
-
-test('Changing instance after acquisition prevents the next mutating command', async () => {
-  let current = true;
-  const { session, calls } = fixture({}, { isCurrent: () => current });
-  await session.acquire(input);
-  current = false;
-  await assert.rejects(session.install(false));
-  assert.deepEqual(commands(calls), ['source_acquire']);
-});
-
-test('A temporary polling failure keeps the existing task and continues to its final result', async () => {
-  let reads = 0; const warnings = []; let session;
-  ({ session } = fixture({
-    source_acquire: () => task('sourceAcquire', { status: 'running', final: false, phase: 'downloading', result: null }),
-    task_get: () => { if (++reads === 1) throw new Error('Disposable progress unavailable'); return task('sourceAcquire'); },
-  }, { onChange: () => { if (session?.warning) warnings.push(session.warning); } }));
-  await session.acquire(input);
-  assert.equal(reads, 2);
-  assert.ok(warnings.some(value => value.includes('Disposable progress unavailable')));
-  assert.equal(session.warning, '');
-});
-
-test('Cancellation waits for the exact task terminal state and never starts preparation', async () => {
-  let session;
-  const created = fixture({
-    source_acquire: () => task('sourceAcquire', { status: 'running', final: false, phase: 'downloading', result: null }),
-    source_cancel: ({ taskId }) => {
-      assert.equal(taskId, 'task_source');
-      return task('sourceAcquire', { status: 'failed', result: null, error: { code: 'SOURCE_ACQUISITION_CANCELLED', message: 'Cancelled', details: { sourceId } } });
-    },
-  }, { pause: async () => { await session.cancel(); } });
-  session = created.session;
-  await assert.rejects(session.acquire(input), SourceImportError);
-  assert.equal(session.cancelled, true);
-  await session.cleanup();
-  assert.deepEqual(commands(created.calls), ['source_acquire', 'source_cancel', 'source_import_cleanup']);
-});
-
-test('A late acquisition response honors a cancellation already requested by the user', async () => {
-  let release;
-  const accepted = new Promise(resolve => { release = resolve; });
-  const { session, calls } = fixture({
-    source_acquire: () => accepted,
-    source_cancel: () => task('sourceAcquire', { status: 'failed', result: null, error: { code: 'SOURCE_ACQUISITION_CANCELLED', message: 'Cancelled', details: { sourceId } } }),
-  });
-  const acquisition = session.acquire(input);
-  await session.cancel();
-  release(task('sourceAcquire', { status: 'running', final: false, result: null }));
-  await assert.rejects(acquisition, SourceImportError);
-  assert.equal(session.cancelled, true);
-  assert.deepEqual(commands(calls), ['source_acquire', 'source_cancel']);
-});
-
-test('An IPC failure during apply blocks cleanup and requires result reconciliation', async () => {
-  const { session, calls } = fixture({ node_install_apply: () => { throw new Error('Disposable lost apply response'); } });
-  await session.acquire(input);
-  await assert.rejects(session.install(false), error => error instanceof SourceImportError && error.recovery);
-  await assert.rejects(session.cleanup(), error => error instanceof SourceImportError && error.recovery);
-  assert.ok(!commands(calls).includes('source_import_cleanup'));
-  assert.equal(commands(calls).filter(name => name === 'node_install_apply').length, 1);
-});
-
-test('A cleanup failure remains actionable and a second cleanup uses the same task', async () => {
-  let cleanups = 0;
-  const { session, calls } = fixture({ source_import_cleanup: () => ({ completed: ++cleanups > 1, sourceId, sourceRetained: true, removedPaths: [], failures: cleanups === 1 ? [{ path: '/disposable/temp', error: { message: 'Disposable removal denied' } }] : [] }) });
-  await session.acquire(input); await session.install(false);
-  await assert.rejects(session.cleanup(), /Disposable removal denied/);
-  assert.equal((await session.cleanup()).completed, true);
-  assert.deepEqual(calls.filter(([name]) => name === 'source_import_cleanup').map(([, args]) => args), [{ sourceTaskId: 'task_source' }, { sourceTaskId: 'task_source' }]);
-});
-
-test('Successful cleanup finishes an installed import without a persistent receipt', async () => {
-  const { session, calls } = fixture();
-  await session.acquire(input); await session.install(false);
-  const result = await session.cleanup();
-  assert.equal(result.completed, true);
-  assert.equal(Object.hasOwn(result, 'receiptPath'), false);
-  assert.equal(session.phase, 'done');
-  assert.equal(commands(calls).filter(name => name === 'node_install_apply').length, 1);
-});
-
-test('Cleanup accepts an absent response after its successful task and materials were removed', async () => {
-  const { session } = fixture({ source_import_cleanup: () => ({ completed: true, alreadyAbsent: true, sourceId: null, sourceRetained: false, removedPaths: [], failures: [] }) });
-  await session.acquire(input); await session.install(false);
-  assert.equal((await session.cleanup()).alreadyAbsent, true);
-  assert.equal(session.phase, 'done');
-});
-
-test('Cleanup still rejects incomplete responses and a different source identity', async () => {
-  const valid = { completed: true, sourceId, sourceRetained: false, removedPaths: [], failures: [] };
-  const invalid = Object.keys(valid).map(key => Object.fromEntries(Object.entries(valid).filter(([name]) => name !== key)));
-  invalid.push({ ...valid, sourceId: otherSourceId });
-  for (const result of invalid) {
-    const { session } = fixture({ source_import_cleanup: () => result });
-    await session.acquire(input); await session.install(false);
-    await assert.rejects(session.cleanup(), /清理结果/);
-    assert.equal(session.phase, 'cleanup');
-  }
-});
-
-test('A mismatched task returned by polling cannot trigger installation', async () => {
-  const { session, calls } = fixture({
-    source_acquire: () => task('sourceAcquire', { status: 'running', final: false, result: null }),
-    task_get: () => task('sourceAcquire', { taskId: 'task_other' }),
-  });
-  await assert.rejects(session.acquire(input), error => error instanceof SourceImportError && error.recovery);
-  assert.ok(!commands(calls).includes('node_install_prepare'));
-  await assert.rejects(session.cleanup());
-});
-
-test('An acquisition already cancelled by the backend is identified as cancellation', async () => {
-  const { session } = fixture({ source_acquire: () => task('sourceAcquire', { status: 'failed', result: null, error: { code: 'SOURCE_ACQUISITION_CANCELLED', message: 'Cancelled', details: { sourceId } } }) });
-  await assert.rejects(session.acquire(input), SourceImportError);
-  assert.equal(session.cancelled, true);
-});
-
-for (const detail of ['processResourceClosed', 'candidateOwnershipConfirmed']) test(`Unconfirmed acquisition ${detail} requires recovery`, async () => {
-  const { session, calls } = fixture({ source_acquire: () => task('sourceAcquire', { status: 'failed', result: null, error: { code: 'SOURCE_GIT_FAILED', message: 'Unknown acquisition outcome', details: { sourceId, [detail]: false } } }) });
-  await assert.rejects(session.acquire(input), error => error instanceof SourceImportError && error.recovery);
-  assert.ok(!commands(calls).includes('node_install_prepare'));
-});
-
-test('Editable source publication is bound to the installed application and reused on cleanup retries', async () => {
-  const published = { published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' };
-  const { session, calls } = fixture({ source_import_publish: () => published });
-  await assert.rejects(session.publishSource(), error => error instanceof SourceImportError && error.recovery);
-  assert.deepEqual(calls, []);
-  await session.acquire(input); await session.install(false);
-  assert.deepEqual(await session.publishSource(), published);
-  assert.deepEqual(await session.publishSource(), published);
-  assert.deepEqual(calls.filter(([command]) => command === 'source_import_publish'), [['source_import_publish', { sourceTaskId: 'task_source', appId }]]);
-});
-
-test('An unconfirmed publication keeps the installed result and is retried without another apply', async () => {
-  let publications = 0;
-  const { session, calls } = fixture({ source_import_publish: () => ++publications === 1 ? { published: false, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' } : { published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' } });
-  await session.acquire(input); await session.install(false);
-  await assert.rejects(session.publishSource(), error => error instanceof SourceImportError && error.recovery);
-  assert.deepEqual(session.installed, installed);
-  assert.equal(session.published, null);
-  await session.publishSource();
-  assert.equal(publications, 2);
-  assert.equal(commands(calls).filter(command => command === 'node_install_apply').length, 1);
-});
-
-
-const deletionNotice = (extra = {}) => ({ version: 1, kind: 'node', id: appId, instanceId: 'disposable-import-instance', taskIds: ['task_source', 'task_prepare', 'task_apply'], sourceIds: [sourceId], sourceRoots: ['/disposable/projects/source'], ...extra });
-test('Deletion revokes only its own source session and clears every owned cached object', async () => {
-  const { session } = fixture(); await session.acquire(input); await session.install(false);
-  assert.equal(session.revoke(deletionNotice({ id: 'other-app', taskIds: [], sourceIds: [], sourceRoots: [] })), false);
-  assert.deepEqual(session.installed, installed);
-  assert.equal(session.revoke(deletionNotice()), true);
-  for (const key of ['sourceTaskId', 'source', 'candidate', 'installed', 'published', 'task']) assert.equal(session[key], null);
-  await assert.rejects(session.publishSource(), SourceImportError);
-});
-test('A publication reply received after deletion cannot restore paths or issue later commands', async () => {
-  let resolve; const reply = new Promise(yes => { resolve = yes; });
-  const { session, calls } = fixture({ source_import_publish: () => reply });
-  await session.acquire(input); await session.install(false);
-  const publication = session.publishSource();
-  session.revoke(deletionNotice());
-  resolve({ published: true, sourcePath: '/disposable/projects/source', projectDirectory: '/disposable/projects' });
-  await assert.rejects(publication, SourceImportError); assert.equal(session.published, null);
-  assert.equal(commands(calls).at(-1), 'source_import_publish');
-});
-test('A null-projectId acquisition accepted after its deletion notice is never forwarded or cached', async () => {
-  let resolve; const reply = new Promise(yes => { resolve = yes; }); let revoked = 0;
-  const { session, tasks } = fixture({ source_acquire: () => reply }, { onRevoked: () => revoked++ });
-  observeDeletionRuntime('disposable-import-instance');
-  const acquisition = session.acquire(input);
-  acceptProjectDeletion(deletionNotice());
-  resolve(task('sourceAcquire'));
-  await assert.rejects(acquisition, SourceImportError);
-  assert.equal(revoked, 1); assert.deepEqual(tasks, []); assert.equal(session.source, null); assert.equal(session.task, null);
-});
-
-test('Deletion notices validate their version and wait for an authoritative runtime before invalidating tasks', () => {
-  observeDeletionRuntime('older-runtime');
-  assert.equal(checkedProjectDeletion({ ...deletionNotice(), version: 2 }), null);
-  assert.equal(checkedProjectDeletion({ ...deletionNotice(), taskIds: [3] }), null);
-  assert.equal(acceptProjectDeletion(deletionNotice()), false);
-  assert.equal(projectWasDeleted(appId), false);
-  observeDeletionRuntime('disposable-import-instance');
-  assert.equal(projectWasDeleted(appId), true);
-  assert.equal(taskWasDeleted(task('sourceAcquire')), true);
-  assert.equal(taskWasDeleted({ ...task('sourceAcquire'), taskId: 'task_other', result: { ownerAppId: 'other-app', sourceId: otherSourceId } }), false);
-});
-test('A new source owner at the same path is not revoked by a duplicate old deletion', () => {
-  assert.equal(deletedSourceMatches(deletionNotice(), { appId: 'new-app', sourceRoots: ['/disposable/projects/source'] }), false);
-  assert.equal(deletedSourceMatches(deletionNotice(), { sourceIds: [otherSourceId], sourceRoots: ['/disposable/projects/source'] }), false);
+test('A definite pre-admission rejection does not become an unknown accepted import',async()=>{
+ const {session,calls}=fixture({node_git_import_start:()=>{throw {code:'NODE_GIT_IMPORT_BUSY',message:'另一个添加任务未结束',details:{operationOutcome:'not_started'}};}});
+ await assert.rejects(session.run(input),error=>error instanceof SourceImportError&&!error.recovery);assert.deepEqual(calls.map(([command])=>command),['node_git_import_start']);
 });

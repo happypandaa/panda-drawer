@@ -1173,22 +1173,6 @@ async fn workspace_migrate(
 }
 
 #[tauri::command]
-async fn source_list(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.source_list().await
-        })
-        .await?
-}
-
-#[tauri::command]
 async fn project_git_status(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1426,224 +1410,6 @@ async fn project_git_cancel(
         })
         .await?
 }
-#[tauri::command]
-async fn source_info(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.source_info(&source_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn source_inspect(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .source_inspect(PathBuf::from(source_path))
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn source_acquire(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    input: platform_core::source_acquisition::AcquireSourceInput,
-    onboarding: Option<bool>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let url = input.url.clone();
-            let value = state.handle.source_acquire(input).await?;
-            if onboarding == Some(true) {
-                if let Some(task) = value["taskId"].as_str() {
-                    state
-                        .handle
-                        .remember_source_import(state.node_apps.clone(), task, &url)
-                        .map_err(|error| error.detail("taskId", serde_json::json!(task)))?;
-                }
-            }
-            Ok(value)
-        })
-        .await?
-}
-#[tauri::command]
-async fn source_cancel(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    task_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.source_cancel(&task_id).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn source_import_cleanup(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_task_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let value = state
-                .handle
-                .source_import_cleanup(source_task_id.clone())
-                .await?;
-            if value["completed"] == true {
-                state.handle.complete_source_import(&source_task_id)?;
-            }
-            Ok(value)
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn source_capture(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    input: platform_core::source_acquisition::CaptureLocalSourceInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.source_capture(input).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_install_prepare(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    input: platform_core::node_install_tasks::PrepareNodeInstallInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .node_install_prepare(state.node_apps.clone(), input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_install_candidate(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    candidate_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.node_install_candidate(&candidate_id)
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_install_issues(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            Ok(state.handle.node_install_issues())
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_install_list(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.node_install_list()
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_install_cancel(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    task_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.node_install_cancel(&task_id)
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_install_apply(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    candidate_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            node_windows::apply_install(&app, &state, &candidate_id).await
-        })
-        .await?
-}
-
 // These commands deliberately belong only to the native manager. Node pages
 // receive neither this command surface nor the private backend credentials.
 #[tauri::command]
@@ -2440,6 +2206,9 @@ fn install_project_cleanup_hook(app: &tauri::AppHandle) {
                         Ok(())
                     }
                     platform_core::project_cleanup::NativeCleanupStage::Committed => {
+                        if notice.kind == platform_core::project_cleanup::ProjectKind::Node {
+                            state.handle.forget_deleted_node_import(&notice.id);
+                        }
                         project_window_cleanup::committed(&app, &notice).await?;
                         let mut payload = serde_json::to_value(notice).map_err(|error| {
                             ApiError::new("PROJECT_CLEANUP_NOTIFICATION_FAILED", error.to_string())
@@ -2527,9 +2296,8 @@ fn main() {
             bootstrap_info,
 
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
-            source_import::source_import_location,source_import::source_import_publish,source_import::source_import_build_info,source_import::source_import_recover,
-            source_list,source_info,source_inspect,source_acquire,source_cancel,source_import_cleanup,
-            source_capture,node_install_prepare,node_install_candidate,node_install_issues,node_install_list,node_install_cancel,node_install_apply,
+            source_import::source_import_location,source_import::source_import_recover,
+            source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
             project_git_status,project_git_versions,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete_tasks,node_app_delete_submit,node_app_delete_retry,node_app_delete_abandon,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
@@ -2557,13 +2325,7 @@ fn main() {
             environment_git_remote_check,
             project_handoff,
             project_open_codex,
-            node_development::node_development_info,
-            node_development::node_development_bind,
-            node_development::node_development_git,
-            node_development::node_development_handoff,
-            node_development::node_development_open_codex,
-            node_development::node_development_build,
-            node_development::node_development_cancel
+            node_development::node_app_handoff
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),

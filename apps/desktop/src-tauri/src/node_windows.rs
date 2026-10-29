@@ -214,35 +214,6 @@ fn focus(window: &tauri::WebviewWindow) -> Result<(), ApiError> {
         .map_err(|_| error("无法显示应用窗口，请关闭后重新打开。"))
 }
 
-pub(super) async fn apply_install(
-    app: &tauri::AppHandle,
-    state: &AppState,
-    candidate_id: &str,
-) -> Result<Value, ApiError> {
-    alive(state)?;
-    let id = state.handle.node_install_target(candidate_id)?;
-    let _admission = state.node_apps.admit_operation(&id, "应用更新")?;
-    let native = state
-        .window_lifetimes
-        .admit_project("node", &id)
-        .map_err(|_| error("应用正在删除，暂不能应用修改。"))?;
-    let _operation = state.node_windows.instance_operation(&id).await;
-    native
-        .check()
-        .map_err(|_| error("应用正在删除，暂不能应用修改。"))?;
-    alive(state)?;
-    if session(state, &id).is_some() || app.get_webview_window(&label(&id)?).is_some() {
-        return Err(ApiError::new(
-            "NODE_INSTALL_WINDOW_OPEN",
-            "请先处理草稿并关闭此应用窗口，等待服务停止后再应用更新。",
-        ));
-    }
-    state
-        .handle
-        .node_install_apply(state.node_apps.clone(), candidate_id)
-        .await
-}
-
 pub(super) async fn delete(
     app: &tauri::AppHandle,
     state: &AppState,

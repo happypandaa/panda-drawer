@@ -18,27 +18,21 @@ async fn history_cleanup_http_requires_admin_confirmation_and_preserves_other_pr
     let keep = tests::create(&service, "Keep current project").await;
     let marker = keep.project_root.join("README.md");
     let before = std::fs::read(&marker).unwrap();
-    // An unused, finished source copy is the disposable cleanup target.
-    let source = format!("src_{}", uuid::Uuid::new_v4().simple());
-    let owner = uuid::Uuid::new_v4().to_string();
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    ownership.initialize(&owner).unwrap();
-    ownership.record_source(&owner, &source).unwrap();
+    // A completed web source restore remains a supported history target.
+    let restore_task = format!("task_{}", uuid::Uuid::new_v4().simple());
+    let source = format!("sourcerestore_{restore_task}");
     let slot = paths
         .workspace_root()
-        .join(".platform/sources")
-        .join(&source);
-    std::fs::create_dir_all(slot.join("repository")).unwrap();
-    std::fs::write(slot.join("repository/app.js"), "disposable source copy").unwrap();
-    ownership.record_source(&owner, &source).unwrap();
-    crate::builds::atomic_json(
-        &slot.join("source.json"),
-        &json!({"schemaVersion":1,"sourceId":source,"ownerAppId":owner,"name":"Disposable source","status":"ready"}),
+        .join(".platform/project-state/source-restore")
+        .join(&keep.id)
+        .join(&restore_task);
+    std::fs::create_dir_all(slot.join("original")).unwrap();
+    std::fs::write(
+        slot.join("original/App.tsx"),
+        "disposable source before restore",
     )
     .unwrap();
+    crate::builds::atomic_json(&slot.join("journal.json"), &json!({"schemaVersion":1,"operation":"sourceRestore","projectId":keep.id,"taskId":restore_task,"phase":"completed","planDigest":"a".repeat(64)})).unwrap();
     let base = service.info().base_url;
     let token = service.shared.snapshot().token.clone();
     let endpoint = format!("{base}/api/v1/workspace/cleanup-plans");

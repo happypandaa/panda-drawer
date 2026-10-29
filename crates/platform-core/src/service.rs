@@ -112,10 +112,7 @@ struct HttpState {
     git_environment: crate::git_environment::GitEnvironmentManager,
     git_remote: crate::git_remote::GitRemoteChecker,
     project_git: std::result::Result<Arc<crate::project_git::ProjectGitManager>, ApiError>,
-    node_install: Arc<crate::node_install_tasks::NodeInstallTasks>,
-    node_development: Arc<crate::node_development_tasks::NodeDevelopmentTasks>,
-    source_acquisition:
-        std::result::Result<Arc<crate::source_acquisition::SourceAcquisitionManager>, ApiError>,
+    node_git_import: Arc<crate::node_git_import::NodeGitImportManager>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
     resources: Option<Arc<ProjectResources>>,
     tickets: Mutex<HashMap<String, Ticket>>,
@@ -970,172 +967,66 @@ impl RuntimeHandle {
             .map_err(Clone::clone)?
             .cancel(task_id)?))
     }
-    pub async fn source_list(&self) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.store.check_workspace_available()?;
-        Ok(json!(state
-            .source_acquisition
-            .as_ref()
-            .map_err(Clone::clone)?
-            .list()?))
-    }
-    pub async fn source_capture(
+    pub async fn node_git_import_start(
         &self,
-        input: crate::source_acquisition::CaptureLocalSourceInput,
+        apps: Arc<crate::node_apps::NodeApps>,
+        input: crate::node_git_import::StartNodeGitImportInput,
     ) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .source_acquisition
-                .as_ref()
-                .map_err(Clone::clone)?
-                .capture(input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    // Installation is native-manager-only: the native window owner must retain
-    // its operation lock around apply and check that the target has no window.
-    pub fn node_install_target(&self, candidate_id: &str) -> std::result::Result<String, ApiError> {
-        self.current().node_install.target_app_id(candidate_id)
-    }
-    pub fn node_install_candidate(
-        &self,
-        candidate_id: &str,
-    ) -> std::result::Result<Value, ApiError> {
-        self.current().node_install.candidate(candidate_id)
-    }
-    pub fn node_install_issues(&self) -> Value {
-        json!(self.current().node_install.issues())
-    }
-    pub fn node_install_list(&self) -> std::result::Result<Value, ApiError> {
-        self.current().node_install.list()
-    }
-    pub fn node_install_require_idle(&self) -> std::result::Result<(), ApiError> {
-        let state = self.current();
         if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::Acquire) {
-            return Err(ApiError::new("SERVICE_STOPPING", "平台正在退出。"));
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "Platform is shutting down",
+            ));
         }
-        state.node_development.require_idle()?;
-        state.node_install.require_idle()
+        Ok(json!(
+            state
+                .node_git_import
+                .start(apps, input, state.stop.subscribe())
+                .await?
+        ))
     }
-    pub async fn node_install_prepare(
+    pub fn node_git_import_status(&self, import_id: &str) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().node_git_import.status(import_id)?))
+    }
+    pub fn node_git_import_cancel(&self, task_id: &str) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().node_git_import.cancel(task_id)?))
+    }
+    pub async fn node_git_import_retry_cleanup(
         &self,
         apps: Arc<crate::node_apps::NodeApps>,
-        input: crate::node_install_tasks::PrepareNodeInstallInput,
+        task_id: &str,
     ) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
         Ok(json!(
-            state
-                .node_install
-                .prepare(apps, input, state.stop.subscribe())
-                .await?
+            state.node_git_import.retry_cleanup(apps, task_id).await?
         ))
     }
-    pub async fn node_install_apply(
+    pub async fn recover_source_imports(
         &self,
         apps: Arc<crate::node_apps::NodeApps>,
-        candidate_id: &str,
     ) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .node_install
-                .apply(apps, candidate_id, state.stop.subscribe())
-                .await?
-        ))
+        let attempts = state.node_git_import.recover(apps).await?;
+        Ok(json!(attempts.into_iter().map(|attempt| {
+            let committed = attempt.commit_state == crate::node_git_import::CommitState::Committed;
+            let blocked = attempt.cleanup_pending || attempt.commit_state == crate::node_git_import::CommitState::Unknown;
+            json!({"taskId":attempt.task.task_id,"appId":attempt.app_id,
+                "status":if blocked {"blocked"} else if committed {"installed"} else {"cleaned"},
+                "message":attempt.task.error.map(|error|error.message).unwrap_or_else(||if committed {"应用已添加，临时文件已清理。".into()} else {"本次添加已中断，临时材料已清理。".into()}),
+                "cleanupPending":attempt.cleanup_pending,"remainingPaths":attempt.remaining_paths})
+        }).collect::<Vec<_>>()))
     }
-    pub fn node_install_cancel(&self, task_id: &str) -> std::result::Result<Value, ApiError> {
-        Ok(json!(self.current().node_install.cancel(task_id)?))
-    }
-    pub async fn source_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.store.check_workspace_available()?;
-        Ok(json!(state
-            .source_acquisition
-            .as_ref()
-            .map_err(Clone::clone)?
-            .info(id)?))
-    }
-    pub async fn source_inspect(&self, path: PathBuf) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        Ok(json!(state
-            .source_acquisition
-            .as_ref()
-            .map_err(Clone::clone)?
-            .inspect_local(path)?))
-    }
-    pub async fn source_acquire(
-        &self,
-        input: crate::source_acquisition::AcquireSourceInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .source_acquisition
-                .as_ref()
-                .map_err(Clone::clone)?
-                .submit(input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn source_cancel(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        Ok(json!(state
-            .source_acquisition
-            .as_ref()
-            .map_err(Clone::clone)?
-            .cancel(id)?))
-    }
-    /// Explicit cleanup of one import. Native-only like installation; no
-    /// arbitrary path or HTTP cleanup endpoint is exposed.
-    pub async fn source_import_cleanup(
-        &self,
-        source_task_id: String,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.node_install.require_idle()?;
-        state.node_development.require_idle()?;
-        let cleanup = state.history_cleanup.clone();
-        tokio::task::spawn_blocking(move || cleanup.source_import_cleanup(&source_task_id))
-            .await
-            .map_err(|_| {
-                ApiError::new(
-                    "SOURCE_IMPORT_CLEANUP_INTERRUPTED",
-                    "导入清理未完成，请重试清理。",
-                )
-            })?
+    pub fn forget_deleted_node_import(&self, app_id: &str) {
+        self.current()
+            .node_git_import
+            .forget_deleted_project(app_id);
     }
     pub async fn handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
@@ -1529,19 +1420,12 @@ fn make_state(
         builds.clone(),
         git_environment.clone(),
     );
-    let node_install = crate::node_install_tasks::NodeInstallTasks::new(
+    let node_git_import = crate::node_git_import::NodeGitImportManager::new(
         paths.clone(),
         store.clone(),
         builds.clone(),
         source_acquisition.clone(),
-    );
-    let node_development = crate::node_development_tasks::NodeDevelopmentTasks::new(
-        paths.clone(),
-        store.clone(),
-        builds.clone(),
-        git_environment.clone(),
-        source_acquisition.clone(),
-    );
+    )?;
     let state = Arc::new(HttpState {
         io_lifetime: shared
             .upgrade()
@@ -1561,9 +1445,7 @@ fn make_state(
         git_environment,
         git_remote: crate::git_remote::GitRemoteChecker::with_processes(processes),
         project_git,
-        node_install,
-        node_development,
-        source_acquisition,
+        node_git_import,
         maintenance,
         lifecycle,
         metadata,
@@ -1649,6 +1531,7 @@ async fn submit_migration(
     if shared.closing.load(Ordering::Acquire) {
         return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
     }
+    state.node_git_import.require_migration_clear()?;
     crate::node_apps::development::require_source_restores_clear_for_migration(
         state.paths.data_root(),
         state.paths.workspace_root(),
@@ -1689,6 +1572,7 @@ async fn submit_migration(
             while state.store.has_active_tasks() {
                 tokio::time::sleep(Duration::from_millis(40)).await;
             }
+            state.node_git_import.require_migration_clear()?;
             crate::projects::check_pending_deletions(state.paths.workspace_root())?;
             // Reject unresolved recovery before any filesystem copying.
             for project in state.store.list().await? {
@@ -2325,8 +2209,6 @@ async fn management(
                 | ["projects", "imports"]
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
-                | ["sources", "acquisitions"]
-                | ["sources", "captures"]
                 | [
                     "projects",
                     _,
@@ -2466,25 +2348,6 @@ async fn management(
             (Method::POST, ["projects", id, "git", "tasks", task_id, "cancel"]) => {
                 handle.project_git_cancel(id, task_id).await
             }
-            (Method::GET, ["sources"]) => handle.source_list().await,
-            (Method::GET, ["sources", id]) => handle.source_info(id).await,
-            (Method::POST, ["sources", "acquisitions"]) => {
-                handle.source_acquire(input(request).await?).await
-            }
-            (Method::POST, ["sources", "captures"]) => {
-                handle.source_capture(input(request).await?).await
-            }
-            (Method::POST, ["sources", "inspect"]) => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase", deny_unknown_fields)]
-                struct InspectSource {
-                    source_path: PathBuf,
-                }
-                handle
-                    .source_inspect(input::<InspectSource>(request).await?.source_path)
-                    .await
-            }
-            (Method::POST, ["sources", "tasks", id, "cancel"]) => handle.source_cancel(id).await,
             (Method::GET, ["environment"]) => handle.environment().await,
             (Method::GET, ["environment", "git"]) => handle.git_environment().await,
             (Method::POST, ["environment", "git", "remote-check"]) => {
@@ -4647,21 +4510,8 @@ mod source_tests;
 #[path = "service_project_git_tests.rs"]
 mod project_git_tests;
 
-#[cfg(test)]
-#[path = "service_node_install_tests.rs"]
-mod node_install_tests;
-
 #[path = "service_node_development.rs"]
 mod node_development;
-#[path = "service_source_publication.rs"]
-mod source_publication;
-#[path = "service_source_recovery.rs"]
-mod source_recovery;
-pub use node_development::{NodeDevelopmentLease, NodeGitAction};
-
-#[cfg(test)]
-#[path = "service_node_development_tests.rs"]
-mod node_development_tests;
 
 #[cfg(test)]
 #[path = "service_io_lifetime_tests.rs"]

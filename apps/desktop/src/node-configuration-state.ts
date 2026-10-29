@@ -17,7 +17,7 @@ export function nodeConfigurationState(app: NodeAppDetail) {
   const kind = configuration.unavailable ? 'unavailable'
     : endpointChanged ? 'secret-target'
     : configuration.missingRequired.length ? 'required'
-    : Object.keys(fieldIssues).length ? 'invalid'
+    : configuration.invalidFields?.length || Object.keys(fieldIssues).length ? 'invalid'
     : uncertainSecret ? 'uncertain-secret' : 'complete';
   const needsAttention = ['required', 'invalid', 'secret-target', 'uncertain-secret'].includes(kind);
   const attentionLabel = kind === 'unavailable' ? '配置暂不可用' : kind === 'uncertain-secret' ? '配置待核对' : needsAttention ? '需要配置' : null;

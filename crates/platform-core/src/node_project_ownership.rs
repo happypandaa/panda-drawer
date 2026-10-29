@@ -193,8 +193,13 @@ impl NodeProjectOwnership {
     pub(crate) fn generated_source(&self, id: &str) -> Result<Option<PathBuf>> {
         Ok(self.read(id)?.generated_source.map(|source| source.path))
     }
+
+    pub(crate) fn owns_source_directory(&self, id: &str, source: &Path) -> Result<bool> {
+        Ok(self.owned_paths(id)?.iter().any(|path| path == source))
+    }
     /// Only platform restoration payloads below an already claimed source root
     /// enter this scope. The author repository and its ordinary Git history do not.
+    #[cfg(test)]
     pub(crate) fn record_source_restore(&self, id: &str, source_root: &Path) -> Result<()> {
         validate_generated_path(source_root)?;
         let source_identity = crate::node_apps::development::require_claimed_source_owner(
@@ -247,6 +252,7 @@ impl NodeProjectOwnership {
             Ok(())
         })
     }
+    #[cfg(test)]
     pub(crate) fn capture_source_restore_directory(
         &self,
         id: &str,
@@ -493,9 +499,11 @@ impl NodeProjectOwnership {
     pub(crate) fn record_source(&self, id: &str, source: &str) -> Result<()> {
         self.record(id, format!("source:{source}"))
     }
+    #[cfg(test)]
     pub(crate) fn record_installation(&self, id: &str, candidate: &str) -> Result<()> {
         self.record(id, format!("installation:{candidate}"))
     }
+    #[cfg(test)]
     pub(crate) fn record_build(&self, id: &str, task: &str) -> Result<()> {
         self.record(id, format!("build:{task}"))
     }
@@ -509,19 +517,6 @@ impl NodeProjectOwnership {
             record.artifacts.remove(&key);
             Ok(())
         })
-    }
-    pub(crate) fn record_material_operation(&self, id: &str, path: &Path) -> Result<()> {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid("材料目录名称无效。"))?;
-        if path.parent() == Some(self.data.join("node-development-builds").as_path()) {
-            self.record_build(id, name)
-        } else if path.parent() == Some(self.data.join("node-apps/.installations").as_path()) {
-            self.record_installation(id, name)
-        } else {
-            Err(invalid("材料目录不属于本项目固定管理位置。"))
-        }
     }
     pub(crate) fn record_source_claim(&self, id: &str, hash: &str) -> Result<()> {
         self.record(id, format!("claim:{hash}"))
@@ -878,6 +873,7 @@ fn rebind_material(
     *identity = Some(observed);
     Ok(())
 }
+#[cfg(test)]
 fn directory_identity_or_absent(path: &Path) -> Result<Option<PersistedIdentity>> {
     check_no_symlinks(path, true)?;
     match fs::symlink_metadata(path) {

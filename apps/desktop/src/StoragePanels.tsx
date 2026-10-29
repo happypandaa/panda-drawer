@@ -210,12 +210,12 @@ function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }
     try { if (value != null && (typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64)) === 0n && parent.complete && !parent.stale) return; } catch { /* Keep an unknown size visible. */ }
     rows.push({ key, label, part, parent, explanation });
   };
-  add('operations', '操作记录 · 当前工作区', categories?.operations, data?.workspace, '任务与恢复记录，不随删除项目清空。');
+  add('operations', '操作记录 · 当前工作区', categories?.operations, data?.workspace, '其他项目与平台全局的任务和恢复记录；本项目归属记录随项目删除。');
   add('sharedCache', '共享缓存 · 当前工作区', categories?.sharedCache, data?.workspace, '构建工具等共享的缓存，独立于单个项目保存。');
   const retained = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'retainedWorkspace') ?? [];
   if (retained.length) {
     const part = combinedLocations(retained);
-    add('retained', '迁移前的旧工作区 · 其他已知位置', part, part, '迁移前的原目录已停用；删除项目不会清除这份完整副本。可在“历史资料”扫描并确认符合条件的目录。');
+    add('retained', '迁移前的旧工作区 · 其他已知位置', part, part, '迁移前的原目录已停用；本项目归属材料随项目删除，旧工作区本身可在“历史资料”核对并处理。');
   }
   add('program', '平台程序', data?.platformProgram, data?.platformProgram, '软件自身的文件，不随项目数量变化。');
   const applicationData = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'applicationData') ?? [];
@@ -225,7 +225,7 @@ function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }
   }
   return <section className="overview-section workspace-retention-explanation" aria-labelledby="workspace-retention-title">
     <h3 id="workspace-retention-title">为什么删除项目后仍有占用</h3>
-    <p>删除项目会永久清除本项目目录。操作记录、迁移前的旧工作区和程序文件仍可能占用空间，不会随删除项目自动清理。</p>
+    <p>删除项目会清除平台管理的源码、数据、配置、日志和相关任务，用户自己的原始文件夹保留。其他项目、平台全局记录、迁移旧目录和程序文件仍可能占用空间。</p>
     {rows.length > 0 && <><p>以下为上方范围中仍有占用或大小未知的项目，不再与上方数字相加：</p><dl className="workspace-retention-list">{rows.map(({ key, label, part, parent, explanation }) => <div key={key}><dt>{label}</dt><dd><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong>{Boolean(!parent.complete || parent.stale) && <small>{parent.stale ? ' · 已过期' : ' · 部分统计 / 未知'}</small>}<p>{explanation}</p></dd></div>)}</dl></>}
     <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。迁移前的旧工作区可在“历史资料”核对范围后显式处理；未解决的恢复现场仍保留，不会自动删除。</p>
   </section>;
@@ -238,7 +238,7 @@ export function combinedLocations(parts: StoragePart[]): StoragePart {
 function scopeStatus(part?: StoragePart) { return part ? `${part.complete ? '统计完整' : '部分统计 / 未知'}${part.stale ? ' · 已过期' : ''}` : '尚未统计'; }
 function scopeName(name: string) { return ({ applicationData: '应用设置与运行记录', retainedWorkspace: '迁移前的旧工作区', platformProgram: '平台程序', workspace: '当前工作区' } as Record<string, string>)[name] ?? '已知本地位置'; }
 function ScopeDetails({ part }: { part?: StoragePart }) {
-  return <><code className="workspace-scope-path">{String(part?.root ?? part?.path ?? '')}</code>{Boolean(part?.completedAt) && <small className="storage-timestamp">扫描时间：{timeText(part!.completedAt as string | number)}</small>}<Issues items={part?.issues} />{Boolean(part?.categories) && <dl className="workspace-storage-breakdown">{Object.entries(part!.categories as Record<string, StoragePart>).map(([name, item]) => <div key={name}><dt>{({ projects: '当前项目', nodeApps: 'Node 应用', operations: '操作记录', sharedCache: '共享缓存', control: '平台控制记录', metadata: '平台元数据', logs: '日志', other: '其他', applicationData: '应用数据', platformProgram: '程序文件', retainedWorkspace: '保留文件' } as Record<string, string>)[name] ?? name}</dt><dd title={exactBytes(partBytes(item))}>{bytesText(partBytes(item))}</dd></div>)}</dl>}</>;
+  return <><code className="workspace-scope-path">{String(part?.root ?? part?.path ?? '')}</code>{Boolean(part?.completedAt) && <small className="storage-timestamp">扫描时间：{timeText(part!.completedAt as string | number)}</small>}<Issues items={part?.issues} />{Boolean(part?.categories) && <dl className="workspace-storage-breakdown">{Object.entries(part!.categories as Record<string, StoragePart>).map(([name, item]) => <div key={name}><dt>{({ projects: '当前项目', nodeApps: 'Node 应用', operations: '操作记录', sharedCache: '共享缓存', control: '平台控制记录', metadata: '平台元数据', logs: '日志', other: '其他', applicationData: '应用数据', platformProgram: '程序文件', retainedWorkspace: '保留文件', projectFolder: '项目文件夹（含依赖）', data: '数据', configuration: '配置', cache: '缓存', program: '旧程序代次' } as Record<string, string>)[name] ?? name}</dt><dd title={exactBytes(partBytes(item))}>{bytesText(partBytes(item))}</dd></div>)}</dl>}</>;
 }
 function ScopeCard({ label, part }: { label: string; part?: StoragePart }) {
   return <div className="storage-category workspace-scope-card"><span>{label}</span><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong><small>{scopeStatus(part)}</small>{Boolean(part?.completedAt) && <small className="storage-timestamp">{timeText(part!.completedAt as string | number)}</small>}<details className="workspace-disclosure"><summary>查看位置与分类</summary><div className="workspace-disclosure-body"><ScopeDetails part={part} /></div></details></div>;

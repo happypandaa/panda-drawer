@@ -237,44 +237,13 @@ for (const [label, title] of [['新建项目', '新建项目'], ['添加本地�
 }
 
 async function completedGitImport() {
-  const sourceId = `src_${'1'.repeat(32)}`;
-  const candidateId = `install_${'2'.repeat(32)}`;
-  const appId = '11111111-1111-4111-8111-111111111111';
-  const generation = `gen_${'3'.repeat(32)}`;
-  const digest = 'a'.repeat(64);
-  const source = { sourceId, taskId: 'task_shell_source', name: 'Disposable Git source', status: 'ready', phase: 'completed', url: 'https://github.com/disposable/shell-reopen.git', contentDigest: digest, commit: 'c'.repeat(40), inspection: { kind: 'node-service-source', name: 'Disposable Git app', requiresBuild: false, issues: [] } };
-  const prepared = { candidateId, appId, generation, manifest: { runtime: 'node-service', app: { id: 'org.example.shell-reopen', name: 'Disposable Git app', version: '1.0.0' } }, programDigest: 'b'.repeat(64), provenance: { sourceId, sourceDigest: digest, sourceCommit: source.commit, node: environment.node, npm: environment.npm, preparedAt: 1 } };
-  const installed = { candidateId, appId, generation, operationOutcome: 'committed' };
-  const app = { ...nodeFixture, id: appId, name: 'Disposable Git app', installation: { kind: 'managed', sourceId, generation } };
-  const task = (type, result) => ({ taskId: type === 'sourceAcquire' ? source.taskId : type === 'nodeInstallPrepare' ? 'task_shell_prepare' : 'task_shell_apply', projectId: null, type, status: 'succeeded', final: true, phase: 'completed', result, error: null });
-  let nodes = [];
-  let sourceRead = null;
-  let acquisitions = 0;
-  const calls = await setup({ overrides: {
-    node_app_list: () => nodes,
-    source_list: () => sourceRead ? sourceRead.promise : [{ sourceId, url: source.url }],
-    source_acquire: () => {
-      if (++acquisitions > 1) throw { code: 'SOURCE_URL_INVALID', message: 'Disposable second add reached acquisition' };
-      return task('sourceAcquire', source);
-    },
-    node_install_prepare: () => task('nodeInstallPrepare', { state: 'prepared', installed: false, candidate: prepared }),
-    node_install_candidate: () => ({ state: 'prepared', candidate: prepared }),
-    node_install_apply: () => { nodes = [app]; return task('nodeInstallApply', installed); },
-    source_import_publish: () => ({ published: true, sourcePath: `${bootstrap.workspaceRoot}/project-sources/shell-reopen`, projectDirectory: `${bootstrap.workspaceRoot}/project-sources` }),
-    source_import_cleanup: () => ({ completed: true, sourceId, sourceRetained: true, removedPaths: [], failures: [] }),
-    node_app_configuration: () => app,
-    node_app_status: () => app,
-  } });
-  await click(byText('从 Git 添加', addGroup()));
-  await change(document.getElementById('git-import-url'), source.url);
-  await click(byText('开始添加', dialog()));
-  assert.match(dialog().textContent, /已添加「Disposable Git app」/);
-  assert.equal(calls.filter(([command]) => command === 'source_acquire').length, 1);
-  return {
-    calls, source, app,
-    removeFromList: () => { nodes = []; },
-    deferSourceReads: () => { sourceRead = deferred(); return sourceRead; },
-  };
+ const source={url:'https://github.com/disposable/shell-reopen.git'};
+ const app={...nodeFixture,id:'11111111-1111-4111-8111-111111111111',name:'Disposable Git app',gitSource:{url:source.url,branch:null}};
+ const task={taskId:'task_shell_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null};
+ let nodes=[];let acquisitions=0;
+ const calls=await setup({overrides:{node_app_list:()=>nodes,node_git_import_start:()=>{acquisitions++;nodes=[app];return task;},node_git_import_status:()=>({task,appId:app.id,sourcePath:bootstrap.workspaceRoot+'/project-sources/shell-reopen',commitState:'committed',cleanupPending:false,remainingPaths:[],app}),node_app_configuration:()=>app,node_app_status:()=>app}});
+ await click(byText('从 Git 添加',addGroup()));await change(document.getElementById('git-import-url'),source.url);await click(byText('开始添加',dialog()));assert.match(dialog().textContent,/已添加「Disposable Git app」/);
+ assert.equal(acquisitions,1);return {calls,source,app,removeFromList:()=>{nodes=[];}};
 }
 
 test('A completed Git addition closes its session and reopens a fresh form after the installed app is removed', async () => {
@@ -289,18 +258,16 @@ test('A completed Git addition closes its session and reopens a fresh form after
   assert.ok(tasks);
   assert.equal(byText('查看添加流程', tasks), undefined, 'Closed sessions must not leave an obsolete flow link in task history');
   await key(document.querySelector('.radio-task-button'), 'Escape');
-  const sourceRead = fixture.deferSourceReads();
   await click(byText('从 Git 添加', addGroup()));
   assert.equal(dialog().querySelector('h2').textContent, '从 Git 添加项目');
   assert.equal(document.getElementById('git-import-url')?.value, '');
   assert.ok(byText('开始添加', dialog()));
   assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
-  assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1, 'Reopening is not a new submission');
+  assert.equal(fixture.calls.filter(([command]) => command === 'node_git_import_start').length, 1, 'Reopening is not a new submission');
   await change(document.getElementById('git-import-url'), fixture.source.url);
   await click(byText('开始添加', dialog()));
-  assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 2, 'A removed app must not survive in the cached duplicate-repository check');
+  assert.equal(fixture.calls.filter(([command]) => command === 'node_git_import_start').length, 2, 'A removed app must not survive in the cached duplicate-repository check');
   assert.doesNotMatch(dialog().textContent, /这个仓库已经添加过/);
-  await act(async () => sourceRead.resolve([{ sourceId: fixture.source.sourceId, url: fixture.source.url }]));
 });
 
 test('Entering configuration from a completed Git addition also retires that session before opening a new form', async () => {
@@ -314,7 +281,7 @@ test('Entering configuration from a completed Git addition also retires that ses
   assert.equal(document.getElementById('git-import-url')?.value, '');
   assert.ok(byText('开始添加', dialog()));
   assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
-  assert.equal(fixture.calls.filter(([command]) => command === 'source_acquire').length, 1);
+  assert.equal(fixture.calls.filter(([command]) => command === 'node_git_import_start').length, 1);
   assert.equal(fixture.calls.filter(([command]) => command === 'node_app_start').length, 0);
 });
 

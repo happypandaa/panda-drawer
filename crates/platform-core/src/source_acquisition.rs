@@ -1,36 +1,30 @@
-//! Explicit, non-executing source acquisition. A source slot is not a project or
-//! an installed application. Candidate paths are relative to its workspace; the
-//! optional local origin is provenance only and is never followed on recovery.
+//! Internal, non-executing Git acquisition for the owned direct-run import task.
+//! The enclosing import controls publication, registration and cleanup; there
+//! is no independently retained source library or source task API.
 use crate::{
     builds::{atomic_json, BuildManager},
     environment::ExecutableInfo,
-    file_identity::PersistedIdentity,
     git_environment::{GitEnvironmentManager, GitToolchain},
     node_app_manifest::{TrialManifest, TrialRuntime},
-    node_development_build::NodeDevelopmentBuildOutput,
     projects::{check_no_symlinks, checked_relative, valid_id, validate_manifest},
-    ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord,
+    ApiError, ProjectManifest, ProjectStore, RuntimePaths,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     sync::watch,
-    task::JoinHandle,
     time::Instant,
 };
 use unicode_normalization::UnicodeNormalization;
@@ -54,32 +48,12 @@ const MAX_METADATA: u64 = 256 * 1024;
 const MAX_TREE_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT: usize = 64 * 1024;
 
-enum CaptureInput {
-    External(PathBuf),
-    Built(NodeDevelopmentBuildOutput, Option<String>),
-}
-impl CaptureInput {
-    fn path(&self) -> &Path {
-        match self {
-            Self::External(path) => path,
-            Self::Built(output, _) => &output.program_root,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcquireSourceInput {
     pub url: String,
     #[serde(default)]
     pub branch: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-}
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CaptureLocalSourceInput {
-    pub source_path: PathBuf,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -93,12 +67,6 @@ pub struct SourceInspection {
     #[serde(default)]
     pub requires_build: bool,
     pub issues: Vec<ApiError>,
-}
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalSourceInspection {
-    pub source_path: PathBuf,
-    pub inspection: SourceInspection,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -114,14 +82,6 @@ struct SourceRecord {
     #[serde(default)]
     branch: Option<String>,
     provider: String,
-    #[serde(default)]
-    local_source_path: Option<PathBuf>,
-    #[serde(default)]
-    capture_policy: Option<String>,
-    #[serde(default)]
-    build_source_digest: Option<String>,
-    #[serde(default)]
-    excluded_paths: Vec<String>,
     created_at: u64,
     completed_at: Option<u64>,
     repository: String,
@@ -133,8 +93,6 @@ struct SourceRecord {
     content_digest: Option<String>,
     inspection: Option<SourceInspection>,
     error: Option<ApiError>,
-    #[serde(skip)]
-    legacy_build_inspection: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,11 +105,6 @@ pub struct SourceCandidate {
     pub url: String,
     pub branch: Option<String>,
     pub provider: String,
-    pub local_source_path: Option<PathBuf>,
-    pub capture_policy: Option<String>,
-    pub build_source_digest: Option<String>,
-    pub capture_notice: Option<String>,
-    pub excluded_paths: Vec<String>,
     pub created_at: u64,
     pub completed_at: Option<u64>,
     pub source_path: Option<PathBuf>,
@@ -164,8 +117,6 @@ pub struct SourceCandidate {
     pub content_digest: Option<String>,
     pub inspection: Option<SourceInspection>,
     pub error: Option<ApiError>,
-    pub execution_state: String,
-    pub registration_available: bool,
 }
 
 pub struct SourceAcquisitionManager {
@@ -173,36 +124,32 @@ pub struct SourceAcquisitionManager {
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
     git: GitEnvironmentManager,
-    active: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     #[cfg(test)]
     hooks: Arc<SourceHooks>,
-    runners: Mutex<Vec<JoinHandle<()>>>,
-    submission: Mutex<()>,
-    stopping: AtomicBool,
 }
 impl SourceAcquisitionManager {
+    #[cfg(test)]
+    pub(crate) fn pause_import_writer(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self.hooks.writer.lock().unwrap() = Some((entered, release));
+    }
     pub fn new(
         paths: RuntimePaths,
         store: Arc<ProjectStore>,
         tasks: Arc<BuildManager>,
         git: GitEnvironmentManager,
     ) -> Result<Arc<Self>, ApiError> {
-        let manager = Arc::new(Self {
+        Ok(Arc::new(Self {
             paths,
             store,
             tasks,
             git,
-            active: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             hooks: Arc::new(SourceHooks::default()),
-            runners: Mutex::new(Vec::new()),
-            submission: Mutex::new(()),
-            stopping: AtomicBool::new(false),
-        });
-        // This area is intentionally not a cache. workspace::exclusions does not
-        // exclude it, so public workspace migration copies records and payloads.
-        manager.recover()?;
-        Ok(manager)
+        }))
     }
     fn root(&self) -> PathBuf {
         self.paths.workspace_root().join(".platform/sources")
@@ -222,10 +169,8 @@ impl SourceAcquisitionManager {
         let value: serde_json::Value =
             serde_json::from_slice(&read_small(&self.slot(id)?.join("source.json"))?)
                 .map_err(|_| invalid("源码候选记录无效，请保留现场。"))?;
-        let legacy_build_inspection = value["inspection"].get("requiresBuild").is_none();
-        let mut record: SourceRecord =
+        let record: SourceRecord =
             serde_json::from_value(value).map_err(|_| invalid("源码候选记录无效，请保留现场。"))?;
-        record.legacy_build_inspection = legacy_build_inspection;
         if record.schema_version != 1
             || record.source_id != id
             || !valid_id(&record.task_id)
@@ -234,7 +179,6 @@ impl SourceAcquisitionManager {
                 .branch
                 .as_deref()
                 .is_some_and(|branch| validate_branch(branch).is_err())
-            || (record.provider == "local" && record.branch.is_some())
             || !matches!(
                 record.status.as_str(),
                 "acquiring" | "ready" | "failed" | "cancelled" | "interrupted"
@@ -253,7 +197,6 @@ impl SourceAcquisitionManager {
     }
     fn view(&self, record: SourceRecord) -> Result<SourceCandidate, ApiError> {
         let slot = self.slot(&record.source_id)?;
-        let built = record.capture_policy.as_deref() == Some("node-development-build-v1");
         let source_path = if record.status == "ready" {
             let payload = slot.join("repository");
             check_no_symlinks(&payload, false)?;
@@ -264,39 +207,6 @@ impl SourceAcquisitionManager {
         } else {
             None
         };
-        let mut inspection = record.inspection;
-        if record.build_source_digest.is_some() {
-            if let Some(inspection) = &mut inspection {
-                inspection.requires_build = false;
-            }
-        } else if record.legacy_build_inspection {
-            if let (Some(inspection), Some(root)) = (&mut inspection, &source_path) {
-                if inspection.kind == "node-service-source" {
-                    // Old metadata did not describe build authorization. Derive
-                    // it from a verified immutable public manifest, read-only.
-                    // New records avoid this additional full tree verification.
-                    let path = root.join("local-app.json");
-                    let bytes = read_small(&path)?;
-                    if record.content_digest.as_deref() != Some(directory_digest(root)?.as_str())
-                        || read_small(&path)? != bytes
-                    {
-                        return Err(error(
-                            "SOURCE_CHANGED",
-                            "候选源码已经改变，请重新获取后核对构建方式。",
-                        ));
-                    }
-                    let manifest = TrialManifest::parse(&bytes)
-                        .map_err(|_| invalid("应用声明无效，无法核对旧来源的构建方式。"))?;
-                    inspection.requires_build =
-                        manifest.development.as_ref().is_some_and(|declaration| {
-                            matches!(
-                                declaration.build,
-                                crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
-                            )
-                        });
-                }
-            }
-        }
         Ok(SourceCandidate {
             source_id: record.source_id,
             task_id: record.task_id,
@@ -304,17 +214,8 @@ impl SourceAcquisitionManager {
             status: record.status,
             phase: record.phase,
             url: record.url,
-            capture_notice: (record.provider == "local").then(|| if built {
-                "开发材料已在独立目录准备，未启动应用。已排除 Git、依赖及已知数据和凭据目录，不保证识别源码中的秘密。".into()
-            } else {
-                "按已知路径排除了本机数据、依赖、凭据和临时文件；未知文件中的秘密无法通用识别，不能视为已脱敏。".into()
-            }),
             provider: record.provider,
             branch: record.branch,
-            local_source_path: record.local_source_path,
-            capture_policy: record.capture_policy,
-            build_source_digest: record.build_source_digest,
-            excluded_paths: record.excluded_paths,
             created_at: record.created_at,
             completed_at: record.completed_at,
             source_path,
@@ -325,30 +226,9 @@ impl SourceAcquisitionManager {
             file_count: record.file_count,
             total_bytes: record.total_bytes,
             content_digest: record.content_digest,
-            inspection,
+            inspection: record.inspection,
             error: record.error,
-            execution_state: if built { "build-prepared-program-not-started" } else { "not-executed" }.into(),
-            registration_available: false,
         })
-    }
-    pub fn info(&self, id: &str) -> Result<SourceCandidate, ApiError> {
-        self.view(self.read_record(id)?)
-    }
-    pub(crate) fn git_environment(&self) -> GitEnvironmentManager {
-        self.git.clone()
-    }
-    /// Recheck downloaded bytes before any later operation. Inspection alone is
-    /// deliberately not an authorization to execute a mutable source directory.
-    pub fn verify_ready(
-        &self,
-        id: &str,
-        expected_digest: &str,
-    ) -> Result<SourceCandidate, ApiError> {
-        self.store.check_workspace_available()?;
-        let _lease = self
-            .store
-            .reserve_transient_operation(&format!("source:{id}"), "source-verify")?;
-        self.verify_ready_contents(id, expected_digest)
     }
     /// The caller owns the exact source task lease for the entire use/copy of
     /// this verified candidate. Do not attempt a second transient reservation.
@@ -398,47 +278,58 @@ impl SourceAcquisitionManager {
         }
         Ok(record.owner_app_id)
     }
-    pub fn list(&self) -> Result<Vec<SourceCandidate>, ApiError> {
-        let root = self.root();
-        check_no_symlinks(&root, true)?;
-        if !root.try_exists()? {
-            return Ok(Vec::new());
+    /// The direct-run importer owns the task and instance before downloading.
+    /// This entry never creates another task, registration, or instance ID.
+    pub(crate) async fn acquire_for_import(
+        &self,
+        input: AcquireSourceInput,
+        owner: &str,
+        task_id: &str,
+        source_id: &str,
+        stop: watch::Receiver<bool>,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<SourceCandidate, ApiError> {
+        let (url, provider, repository_name) = validate_url(&input.url)?;
+        if let Some(branch) = &input.branch {
+            validate_branch(branch)?;
         }
-        check_no_symlinks(&root, false)?;
-        let mut records = Vec::new();
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if source_id(&id) {
-                records.push(self.info(&id).unwrap_or_else(|_| self.unavailable(&id)));
-            }
+        if !self::source_id(source_id) || Uuid::parse_str(owner).is_err() {
+            return Err(invalid("导入来源身份无效。"));
         }
-        records.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then(a.source_id.cmp(&b.source_id))
-        });
-        Ok(records)
-    }
-    fn unavailable(&self, id: &str) -> SourceCandidate {
-        SourceCandidate {
-            source_id: id.into(),
-            task_id: String::new(),
-            name: id.into(),
-            status: "unavailable".into(),
-            phase: "record-unavailable".into(),
-            url: String::new(),
-            branch: None,
-            provider: String::new(),
-            local_source_path: None,
-            capture_policy: None,
-            build_source_digest: None,
-            capture_notice: None,
-            excluded_paths: Vec::new(),
-            created_at: 0,
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            self.paths.data_root().into(),
+            self.paths.workspace_root().into(),
+        );
+        ownership.record_source(owner, source_id)?;
+        self.tasks.record_node_source(task_id, owner, source_id)?;
+        let lease = self
+            .store
+            .reserve_task(&format!("source:{source_id}"), task_id)?;
+        private_dir(&self.root())?;
+        new_dir(&self.root().join(source_id))?;
+        ownership.record_source(owner, source_id)?;
+        let anchor = fs::File::open(self.root().join(source_id))?;
+        let scope = Arc::new(SourceScope::new(
+            lease,
+            self.tasks.clone(),
+            task_id.into(),
+            self.root().join(source_id),
+            anchor,
+        ));
+        let mut record = SourceRecord {
+            schema_version: 1,
+            source_id: source_id.into(),
+            owner_app_id: owner.into(),
+            task_id: task_id.into(),
+            name: input.name.unwrap_or(repository_name),
+            status: "acquiring".into(),
+            phase: "downloading".into(),
+            url,
+            branch: input.branch,
+            provider,
+            created_at: now(),
             completed_at: None,
-            source_path: None,
-            evidence_path: self.root().join(id),
+            repository: "repository".into(),
             shallow: true,
             git: None,
             commit: None,
@@ -446,519 +337,43 @@ impl SourceAcquisitionManager {
             total_bytes: None,
             content_digest: None,
             inspection: None,
-            error: Some(invalid(
-                "源码候选记录或路径不可用，已保留现场；其他候选仍可查看。",
-            )),
-            execution_state: "not-executed".into(),
-            registration_available: false,
-        }
-    }
-    pub fn inspect_local(&self, path: PathBuf) -> Result<LocalSourceInspection, ApiError> {
-        self.store.check_workspace_available()?;
-        if self.stopping.load(Ordering::Acquire) {
-            return Err(interrupted());
-        }
-        Ok(LocalSourceInspection {
-            inspection: inspect_directory(&path)?,
-            source_path: path,
-        })
-    }
-    pub async fn submit(
-        self: &Arc<Self>,
-        input: AcquireSourceInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        let (url, provider, repository_name) = validate_url(&input.url)?;
-        if let Some(branch) = &input.branch {
-            validate_branch(branch)?;
-        }
-        let name = input.name.unwrap_or(repository_name);
-        self.start_source(name, url, input.branch, provider, None, None, stop)
-    }
-    pub async fn capture(
-        self: &Arc<Self>,
-        input: CaptureLocalSourceInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        let source = validate_local_root(&input.source_path, &self.paths)?;
-        let name = input.name.unwrap_or_else(|| {
-            source
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        });
-        self.start_source(
-            name,
-            String::new(),
-            None,
-            "local".into(),
-            Some(CaptureInput::External(source)),
-            None,
-            stop,
-        )
-    }
-    /// This internal entry accepts only a token produced by the isolated Node
-    /// builder. It never relaxes public local-directory capture restrictions.
-    pub(crate) async fn capture_built_output(
-        self: &Arc<Self>,
-        output: NodeDevelopmentBuildOutput,
-        owner_app_id: String,
-        name: Option<String>,
-        commit: Option<String>,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        output.verify()?;
-        if commit.as_deref().is_some_and(|value| {
-            ![40, 64].contains(&value.len()) || !value.bytes().all(|b| b.is_ascii_hexdigit())
-        }) {
-            return Err(invalid("构建来源提交号无效。"));
-        }
-        let name = name.unwrap_or_else(|| "Node 开发构建".into());
-        self.start_source(
-            name,
-            String::new(),
-            None,
-            "local".into(),
-            Some(CaptureInput::Built(output, commit)),
-            Some(owner_app_id),
-            stop,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn start_source(
-        self: &Arc<Self>,
-        name: String,
-        url: String,
-        branch: Option<String>,
-        provider: String,
-        local_input: Option<CaptureInput>,
-        owner_app_id: Option<String>,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        if name.trim().is_empty()
-            || name.chars().count() > 200
-            || name.chars().any(char::is_control)
-        {
-            return Err(invalid("源码名称须为 1 到 200 个有效字符。"));
-        }
-        let _submission = self.submission.lock().unwrap();
-        self.store.check_workspace_available()?;
-        if self.stopping.load(Ordering::Acquire) || *stop.borrow() || stop.has_changed().is_err() {
-            return Err(interrupted());
-        }
-        if !self.active.lock().unwrap().is_empty() {
-            return Err(error(
-                "SOURCE_ACQUISITION_BUSY",
-                "已有源码正在获取，请等待完成或取消。",
-            ));
-        }
-        let local = local_input.is_some();
-        let built = matches!(local_input, Some(CaptureInput::Built(_, _)));
-        let commit = match &local_input {
-            Some(CaptureInput::Built(_, commit)) => commit.clone(),
-            _ => None,
-        };
-        let build_source_digest = match &local_input {
-            Some(CaptureInput::Built(output, _)) => Some(output.source_digest.clone()),
-            _ => None,
-        };
-        let fresh_owner = owner_app_id.is_none();
-        let owner_app_id = owner_app_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-            self.paths.data_root().into(),
-            self.paths.workspace_root().into(),
-        );
-        if fresh_owner {
-            ownership.initialize(&owner_app_id)?;
-        } else {
-            ownership.task_ids(&owner_app_id)?;
-        }
-        let task = match self.tasks.create_node_operation(
-            &owner_app_id,
-            if local {
-                "sourceCapture"
-            } else {
-                "sourceAcquire"
-            },
-        ) {
-            Ok(task) => task,
-            Err(error) => {
-                return Err(self.acceptance_error(&ownership, &owner_app_id, fresh_owner, error))
-            }
-        };
-        let id = format!("src_{}", Uuid::new_v4().simple());
-        if let Err(error) = ownership.record_source(&owner_app_id, &id).and_then(|()| {
-            self.tasks
-                .record_node_source(&task.task_id, &owner_app_id, &id)
-        }) {
-            let _ = self.tasks.finish(&task.task_id, Err(error.clone()));
-            return Err(self.acceptance_error(
-                &ownership,
-                &owner_app_id,
-                fresh_owner,
-                error.detail("taskId", task.task_id),
-            ));
-        }
-        // This lease is deliberately not a project registration/reservation. The
-        // migration gate waits for it through has_active_tasks().
-        let lease = match self
-            .store
-            .reserve_task(&format!("source:{id}"), &task.task_id)
-        {
-            Ok(lease) => lease,
-            Err(error) => {
-                self.tasks.finish(&task.task_id, Err(error.clone()))?;
-                return Err(self.acceptance_error(&ownership, &owner_app_id, fresh_owner, error));
-            }
-        };
-        let record = SourceRecord {
-            legacy_build_inspection: false,
-            schema_version: 1,
-            source_id: id.clone(),
-            owner_app_id: owner_app_id.clone(),
-            task_id: task.task_id.clone(),
-            name: name.trim().into(),
-            status: "acquiring".into(),
-            phase: "queued".into(),
-            url,
-            branch,
-            provider,
-            local_source_path: local_input.as_ref().map(|input| input.path().to_path_buf()),
-            capture_policy: local.then(|| {
-                if built {
-                    "node-development-build-v1".into()
-                } else {
-                    CAPTURE_POLICY.into()
-                }
-            }),
-            build_source_digest,
-            excluded_paths: Vec::new(),
-            created_at: now(),
-            completed_at: None,
-            repository: "repository".into(),
-            shallow: !local,
-            git: None,
-            commit,
-            file_count: None,
-            total_bytes: None,
-            content_digest: None,
-            inspection: None,
             error: None,
         };
-        let prepared = (|| {
-            private_dir(&self.root())?;
-            ownership.record_source(&owner_app_id, &id)?;
-            new_dir(&self.root().join(&id))?;
-            ownership.record_source(&owner_app_id, &id)?;
-            self.save_record(&record)?;
-            fs::File::open(self.root().join(&id)).map_err(ApiError::from)
-        })();
-        let anchor = match prepared {
-            Ok(anchor) => anchor,
-            Err(error) => {
-                self.tasks.finish(&task.task_id, Err(error.clone()))?;
-                return Err(self.acceptance_error(&ownership, &owner_app_id, fresh_owner, error));
-            }
-        };
-        let scope = Arc::new(SourceScope::new(
-            lease,
-            self.active.clone(),
-            self.tasks.clone(),
-            task.task_id.clone(),
-            self.root().join(&id),
-            anchor,
-        ));
-        let (sender, cancel) = watch::channel(false);
-        self.active
-            .lock()
-            .unwrap()
-            .insert(task.task_id.clone(), sender);
-        let manager = self.clone();
-        let runner = tokio::spawn(async move {
-            manager.run(record, stop, cancel, local_input, scope).await;
-        });
-        let mut runners = self.runners.lock().unwrap();
-        // Preserve completed outcomes for the shutdown join; panic is not success.
-        runners.push(runner);
-        Ok(task)
-    }
-    /// No source worker exists until start_source returns its accepted task.
-    /// A failed acceptance therefore has no writer and can roll back its fresh
-    /// project's exact ledger without leaving an invisible empty project.
-    fn acceptance_error(
-        &self,
-        ownership: &crate::node_project_ownership::NodeProjectOwnership,
-        owner: &str,
-        fresh: bool,
-        error: ApiError,
-    ) -> ApiError {
-        if !fresh {
-            return error;
-        }
-        let cleanup = (|| {
-            let tasks = ownership.task_ids(owner)?;
-            for task in &tasks {
-                if self
-                    .tasks
-                    .task(task)
-                    .is_ok_and(|task| !task.status.is_final())
-                {
-                    let _ = self.tasks.finish(task, Err(error.clone()));
-                }
-            }
-            let paths = ownership.owned_paths(owner)?;
-            let mut targets = vec![];
-            for path in &paths {
-                if path.exists() {
-                    targets.push((
-                        path.clone(),
-                        PersistedIdentity::capture(path)
-                            .map_err(|problem| invalid(&problem.to_string()))?,
-                    ));
-                }
-            }
-            ownership.owned_paths(owner)?;
-            let owner_directory = ownership.directory(owner)?;
-            for (path, identity) in targets.iter().filter(|(path, _)| path != &owner_directory) {
-                crate::history_cleanup::remove_owned_directory(path, identity)?;
-            }
-            self.tasks.forget_owned_tasks(&tasks)?;
-            if let Some((path, identity)) =
-                targets.iter().find(|(path, _)| path == &owner_directory)
-            {
-                crate::history_cleanup::remove_owned_directory(path, identity)?;
-            }
-            Ok::<_, ApiError>(())
-        })();
-        match cleanup {
-            Ok(()) => error,
-            Err(cleanup) => error
-                .detail("ownerAppId", owner)
-                .detail("acceptanceCleanupError", serde_json::json!(cleanup)),
-        }
-    }
-    pub fn cancel(&self, task_id: &str) -> Result<TaskRecord, ApiError> {
-        let task = self.tasks.task(task_id)?;
-        if !matches!(task.task_type.as_str(), "sourceAcquire" | "sourceCapture") {
-            return Err(error("SOURCE_TASK_INVALID", "该任务不是源码获取任务。"));
-        }
-        if let Some(cancel) = self.active.lock().unwrap().get(task_id) {
-            let _ = cancel.send(true);
-        }
-        Ok(task)
-    }
-    pub(crate) fn request_stop(&self) {
-        {
-            let _submission = self.submission.lock().unwrap();
-            self.stopping.store(true, Ordering::Release);
-            for cancel in self.active.lock().unwrap().values() {
-                let _ = cancel.send(true);
-            }
-        }
-    }
-    pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
-        self.request_stop();
-        let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        let issues = crate::shutdown::join_all("sourceAcquisition", runners).await;
-        issues
-    }
-    fn recover(&self) -> Result<(), ApiError> {
-        let root = self.root();
-        check_no_symlinks(&root, true)?;
-        if !root.try_exists()? {
-            return Ok(());
-        }
-        check_no_symlinks(&root, false)?;
-        for entry in fs::read_dir(root)? {
-            let id = entry?.file_name().to_string_lossy().into_owned();
-            if !source_id(&id) {
-                continue;
-            }
-            let Ok(mut record) = self.read_record(&id) else {
-                continue;
-            };
-            if record.status == "acquiring" {
-                record.status = "interrupted".into();
-                record.error = Some(interrupted());
-                record.completed_at = Some(now());
-                self.save_record(&record)?;
-                if self.tasks.task(&record.task_id).is_ok() {
-                    self.tasks.reconcile_operation_result(&record.task_id, serde_json::json!({"sourceId":id,"ownerAppId":record.owner_app_id,"operationOutcome":"interrupted","partialFilesRetained":true,"recovered":true}))?;
-                }
-            } else if record.status == "ready" && self.tasks.task(&record.task_id).is_ok() {
-                self.tasks.reconcile_operation_result(&record.task_id, serde_json::json!({"sourceId":id,"ownerAppId":record.owner_app_id,"operationOutcome":"committed","recovered":true}))?;
-            }
-        }
-        Ok(())
-    }
-    fn phase(&self, record: &mut SourceRecord, phase: &str) -> Result<(), ApiError> {
-        record.phase = phase.into();
-        self.save_record(record)?;
-        self.tasks.phase(&record.task_id, phase)
-    }
-    async fn run(
-        &self,
-        mut record: SourceRecord,
-        stop: watch::Receiver<bool>,
-        cancel: watch::Receiver<bool>,
-        local_input: Option<CaptureInput>,
-        scope: Arc<SourceScope>,
-    ) {
+        self.save_record(&record)?;
         let mut control = RunControl {
             stop,
             cancel,
             deadline: Instant::now() + TIMEOUT,
-            monitor: self.root().join(&record.source_id),
+            monitor: self.root().join(source_id),
             processes: self.store.processes().with_writer_owner(
-                crate::durable_writer::WriterOwner::node(
-                    self.paths.data_root(),
-                    &record.owner_app_id,
-                )
-                .expect("source admission verified its Node owner"),
+                crate::durable_writer::WriterOwner::node(self.paths.data_root(), owner)?,
             ),
             scope: Some(scope.clone()),
             #[cfg(test)]
             hooks: self.hooks.clone(),
         };
-        let result = if record.provider == "local" {
-            self.capture_local(&mut record, &mut control, local_input.as_ref())
-                .await
-        } else {
-            self.acquire(&mut record, &mut control).await
-        }
-        .map_err(|problem| {
-            if self.stopping.load(Ordering::Acquire)
-                && problem.code == "SOURCE_ACQUISITION_CANCELLED"
-            {
-                interrupted()
-            } else {
-                problem
-            }
-        });
-        let result = match result {
+        let acquired = self.acquire(&mut record, &mut control).await;
+        scope.check_identity()?;
+        record.completed_at = Some(now());
+        match acquired {
             Ok(()) => {
                 record.status = "ready".into();
-                record.phase = "completed".into();
-                record.completed_at = Some(now());
-                scope
-                    .check_identity()
-                    .and_then(|()| self.save_record(&record))
-                    .and_then(|()| self.view(record.clone()))
-                    .and_then(|candidate| serde_json::to_value(candidate).map_err(ApiError::from))
-                    .map(|mut value| {
-                        value["ownerAppId"] = serde_json::json!(record.owner_app_id);
-                        value
-                    })
+                record.phase = "downloaded".into();
+                self.save_record(&record)?;
+                self.view(record)
             }
-            Err(error) => {
-                record.status = match error.code.as_str() {
-                    "SOURCE_ACQUISITION_CANCELLED" => "cancelled",
-                    "SOURCE_ACQUISITION_INTERRUPTED" => "interrupted",
-                    _ => "failed",
-                }
-                .into();
-                record.completed_at = Some(now());
-                if error.details["processResourceClosed"] == false {
-                    record.phase = "process-unconfirmed".into();
-                }
-                record.error = Some(error.clone());
-                let persistence = scope
-                    .check_identity()
-                    .and_then(|()| self.save_record(&record));
-                // Partial payloads are retained as operation evidence. A retry is
-                // a new slot; no previous or unknown directory is deleted.
-                let unknown = error.details["processResourceClosed"] == false
-                    || error.details["candidateOwnershipConfirmed"] == false;
-                let mut issue = error.detail("sourceId", record.source_id.clone());
-                if let Err(persist) = persistence {
-                    issue = issue.detail("sourceRecordError", persist.code);
-                }
-                Err(if unknown {
-                    issue.outcome("unknown")
-                } else {
-                    issue.outcome("not_registered")
-                })
+            Err(issue) => {
+                record.status = "failed".into();
+                record.error = Some(issue.clone());
+                let _ = self.save_record(&record);
+                Err(issue)
             }
-        };
-        let _ = self.tasks.finish(&record.task_id, result);
-        drop(control);
-        drop(scope);
+        }
     }
-    async fn capture_local(
-        &self,
-        record: &mut SourceRecord,
-        control: &mut RunControl,
-        input: Option<&CaptureInput>,
-    ) -> Result<(), ApiError> {
-        control.check()?;
-        self.phase(record, "inspecting-local-scope")?;
-        let original = record
-            .local_source_path
-            .clone()
-            .ok_or_else(|| invalid("缺少本机来源路径。"))?;
-        let trusted = match input {
-            Some(CaptureInput::Built(output, _)) => {
-                if output.program_root != original {
-                    return Err(invalid("构建产物位置已变化。"));
-                }
-                output.verify()?;
-                Some(output)
-            }
-            _ => None,
-        };
-        let source = if trusted.is_some() {
-            original
-        } else {
-            validate_local_root(&original, &self.paths)?
-        };
-        let slot = self.slot(&record.source_id)?;
-        let stage = slot.join(".acquiring");
-        new_dir(&stage)?;
-        let candidate = stage.join("repository");
-        new_dir(&candidate)?;
-        let scan_control = control.clone();
-        let scan_source = source.clone();
-        let plan = tokio::task::spawn_blocking(move || local_plan(&scan_source, &scan_control))
-            .await
-            .map_err(|_| invalid("本机源码检查未完成；现场保留。"))??;
-        record.excluded_paths = plan.excluded.clone();
-        control.check()?;
-        self.phase(record, "capturing-local")?;
-        let copy_control = control.clone();
-        let copy_candidate = candidate.clone();
-        let copied = tokio::task::spawn_blocking(move || {
-            capture_plan(&source, &copy_candidate, plan, &copy_control)
-        })
-        .await
-        .map_err(|_| invalid("本机源码复制未完成；现场保留。"))??;
-        record.file_count = Some(copied.file_count);
-        record.total_bytes = Some(copied.total_bytes);
-        record.content_digest = Some(copied.digest);
-        if let Some(output) = trusted {
-            output.verify()?;
-        }
-        control.check()?;
-        self.phase(record, "inspecting")?;
-        let mut inspection = inspect_directory(&candidate)?;
-        if trusted.is_some() {
-            inspection.execution_state = "build-prepared-program-not-started".into();
-        }
-        if !copied.issues.is_empty() {
-            inspection.kind = "needs-adaptation".into();
-            inspection.next_step = "review-and-adapt-source".into();
-            inspection.issues.extend(copied.issues);
-        }
-        record.inspection = Some(inspection);
-        control.check()?;
-        check_disk(&slot)?;
-        let published = slot.join("repository");
-        if published.try_exists()? {
-            return Err(invalid("候选目录已经存在，未覆盖。"));
-        }
-        fs::rename(candidate, published)?;
-        fs::File::open(slot)?.sync_all()?;
-        Ok(())
+    fn phase(&self, record: &mut SourceRecord, phase: &str) -> Result<(), ApiError> {
+        record.phase = phase.into();
+        self.save_record(record)?;
+        self.tasks.phase(&record.task_id, phase)
     }
     async fn acquire(
         &self,
@@ -1065,517 +480,6 @@ impl SourceAcquisitionManager {
         fs::File::open(&slot)?.sync_all()?;
         Ok(())
     }
-}
-
-const CAPTURE_POLICY: &str = "local-source-v1";
-fn validate_local_root(path: &Path, paths: &RuntimePaths) -> Result<PathBuf, ApiError> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-    {
-        return Err(invalid("请选择具体源码文件夹的绝对路径。"));
-    }
-    check_no_symlinks(path, false)?;
-    if !fs::symlink_metadata(path)?.is_dir() {
-        return Err(invalid("请选择普通源码目录。"));
-    }
-    let root = path.canonicalize()?;
-    let data = paths.data_root().canonicalize()?;
-    let control = paths.workspace_root().join(".platform");
-    if root.starts_with(&data)
-        || data.starts_with(&root)
-        || root.starts_with(&control)
-        || control.starts_with(&root)
-        || std::env::var_os("HOME")
-            .and_then(|home| PathBuf::from(home).canonicalize().ok())
-            .is_some_and(|home| home.starts_with(&root))
-    {
-        return Err(invalid(
-            "不能接入平台数据/控制目录、其父级或整个用户目录；请选择独立的具体源码文件夹。",
-        ));
-    }
-    Ok(root)
-}
-fn local_excluded(path: &str, output: Option<&str>) -> bool {
-    let folded = path.to_ascii_lowercase();
-    if output.is_some_and(|output| {
-        let output = output.to_ascii_lowercase();
-        folded == output || folded.starts_with(&format!("{output}/"))
-    }) {
-        return true;
-    }
-    if ["user", "work"]
-        .iter()
-        .any(|name| folded == *name || folded.starts_with(&format!("{name}/")))
-    {
-        return true;
-    }
-    folded.split('/').any(|name| {
-        matches!(
-            name,
-            ".git"
-                | ".hg"
-                | ".svn"
-                | ".platform"
-                | "node_modules"
-                | "data"
-                | ".data"
-                | "attachments"
-                | "config"
-                | "configuration"
-                | "credentials"
-                | "secrets"
-                | "tokens"
-                | ".ssh"
-                | ".aws"
-                | ".azure"
-                | ".npmrc"
-                | ".netrc"
-                | ".git-credentials"
-                | ".pypirc"
-                | "id_rsa"
-                | "id_ed25519"
-                | "id_ecdsa"
-                | "id_dsa"
-                | "cache"
-                | ".cache"
-                | ".vite"
-                | ".next"
-                | ".nuxt"
-                | "coverage"
-                | "tmp"
-                | ".tmp"
-                | "temp"
-                | "runs"
-                | "backups"
-                | "trash"
-                | ".ds_store"
-        ) || (name.starts_with(".env") && name != ".env.example")
-            || [
-                ".pem",
-                ".key",
-                ".p12",
-                ".pfx",
-                ".sqlite",
-                ".sqlite3",
-                ".db",
-                ".sqlite-wal",
-                ".sqlite-shm",
-                ".sqlite3-wal",
-                ".sqlite3-shm",
-                ".db-wal",
-                ".db-shm",
-                "-wal",
-                "-shm",
-                "-journal",
-            ]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-    })
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct LocalFile {
-    size: u64,
-    executable: bool,
-    digest: [u8; 32],
-}
-#[derive(Debug, PartialEq, Eq)]
-struct LocalPlan {
-    identity: (u64, u64),
-    files: BTreeMap<String, LocalFile>,
-    excluded: Vec<String>,
-}
-impl LocalPlan {
-    fn digest(&self) -> String {
-        let mut tree = Sha256::new();
-        for (path, file) in &self.files {
-            tree.update(path.as_bytes());
-            tree.update([0]);
-            tree.update(file.size.to_le_bytes());
-            tree.update([u8::from(file.executable)]);
-            tree.update(file.digest);
-        }
-        format!("{:x}", tree.finalize())
-    }
-}
-fn capture_read(path: &Path, control: &RunControl) -> Result<(Vec<u8>, bool), ApiError> {
-    control.check()?;
-    ordinary_file(path)?;
-    let before = fs::symlink_metadata(path)?;
-    if before.len() > MAX_BLOB {
-        return Err(limit());
-    }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    let same = |metadata: &fs::Metadata| {
-        metadata.is_file()
-            && metadata.nlink() == 1
-            && metadata.dev() == before.dev()
-            && metadata.ino() == before.ino()
-            && metadata.len() == before.len()
-            && metadata.mode() == before.mode()
-            && metadata.mtime() == before.mtime()
-            && metadata.mtime_nsec() == before.mtime_nsec()
-            && metadata.ctime() == before.ctime()
-            && metadata.ctime_nsec() == before.ctime_nsec()
-    };
-    if !same(&file.metadata()?) {
-        return Err(local_changed());
-    }
-    let mut bytes = Vec::new();
-    let mut buffer = vec![0u8; 65536];
-    loop {
-        control.check()?;
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        if bytes.len() as u64 + count as u64 > MAX_BLOB {
-            return Err(limit());
-        }
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-    if bytes.len() as u64 != before.len()
-        || !same(&file.metadata()?)
-        || !same(&fs::symlink_metadata(path)?)
-    {
-        return Err(local_changed());
-    }
-    Ok((bytes, before.mode() & 0o111 != 0))
-}
-fn local_changed() -> ApiError {
-    error(
-        "SOURCE_CHANGED",
-        "本机源码在复制时发生变化；未发布候选，请停止编辑后重新接入。",
-    )
-}
-fn local_plan(root: &Path, control: &RunControl) -> Result<LocalPlan, ApiError> {
-    check_no_symlinks(root, false)?;
-    let identity = fs::symlink_metadata(root)?;
-    let output = if root.join("project.json").try_exists()? {
-        let bytes = read_small(&root.join("project.json"))?;
-        serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|manifest| manifest["outputDir"].as_str().map(str::to_owned))
-            .filter(|path| validate_tree_path(path).is_ok())
-    } else {
-        None
-    };
-    let mut plan = LocalPlan {
-        identity: (identity.dev(), identity.ino()),
-        files: BTreeMap::new(),
-        excluded: Vec::new(),
-    };
-    fn visit(
-        root: &Path,
-        relative: &Path,
-        output: Option<&str>,
-        plan: &mut LocalPlan,
-        control: &RunControl,
-        count: &mut usize,
-        total: &mut u64,
-    ) -> Result<(), ApiError> {
-        control.check()?;
-        let directory = root.join(relative);
-        check_no_symlinks(&directory, false)?;
-        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            control.check()?;
-            *count += 1;
-            if *count > MAX_FILES * 4 {
-                return Err(limit());
-            }
-            let path = relative.join(entry.file_name());
-            let label = path
-                .to_str()
-                .ok_or_else(|| invalid("本机源码路径不是UTF-8。"))?
-                .to_owned();
-            // Do not stat, recurse into or open an excluded entry, including an
-            // excluded symlink. Only its name is part of the visible scope report.
-            if local_excluded(&label, output) {
-                if label.len() > 1024
-                    || plan.excluded.len() >= 1000
-                    || plan.excluded.iter().map(String::len).sum::<usize>() + label.len()
-                        > 64 * 1024
-                {
-                    return Err(limit());
-                }
-                plan.excluded.push(label);
-                continue;
-            }
-            validate_tree_path(&label)?;
-            let metadata = fs::symlink_metadata(entry.path())?;
-            if metadata.is_dir() {
-                visit(root, &path, output, plan, control, count, total)?;
-            } else if metadata.is_file() && metadata.nlink() == 1 {
-                if plan.files.len() >= MAX_FILES || metadata.len() > MAX_BLOB {
-                    return Err(limit());
-                }
-                *total = total.checked_add(metadata.len()).ok_or_else(limit)?;
-                if *total > MAX_TREE {
-                    return Err(limit());
-                }
-                let (bytes, executable) = capture_read(&entry.path(), control)?;
-                plan.files.insert(
-                    label,
-                    LocalFile {
-                        size: bytes.len() as u64,
-                        executable,
-                        digest: Sha256::digest(&bytes).into(),
-                    },
-                );
-            } else {
-                return Err(invalid(
-                    "本机源码包含未排除的链接、硬链接或特殊文件；未复制。",
-                ));
-            }
-        }
-        Ok(())
-    }
-    visit(
-        root,
-        Path::new(""),
-        output.as_deref(),
-        &mut plan,
-        control,
-        &mut 0,
-        &mut 0,
-    )?;
-    // Reuse the acquisition path collision policy, without executing Git.
-    let rows: Vec<u8> = plan
-        .files
-        .iter()
-        .flat_map(|(path, file)| {
-            format!(
-                "{} blob {} {}\t{}\0",
-                if file.executable { "100755" } else { "100644" },
-                "1".repeat(40),
-                file.size,
-                path
-            )
-            .into_bytes()
-        })
-        .collect();
-    parse_tree(&rows)?;
-    Ok(plan)
-}
-struct CapturedLocal {
-    digest: String,
-    file_count: usize,
-    total_bytes: u64,
-    issues: Vec<ApiError>,
-}
-fn capture_plan(
-    source: &Path,
-    candidate: &Path,
-    plan: LocalPlan,
-    control: &RunControl,
-) -> Result<CapturedLocal, ApiError> {
-    let digest = plan.digest();
-    for (index, (relative, expected)) in plan.files.iter().enumerate() {
-        control.check()?;
-        let (bytes, executable) = capture_read(&source.join(relative), control)?;
-        if bytes.len() as u64 != expected.size
-            || executable != expected.executable
-            || <[u8; 32]>::from(Sha256::digest(&bytes)) != expected.digest
-        {
-            return Err(local_changed());
-        }
-        let destination = candidate.join(relative);
-        private_dir(
-            destination
-                .parent()
-                .ok_or_else(|| invalid("候选路径无父目录。"))?,
-        )?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(if executable { 0o700 } else { 0o600 })
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(destination)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        // A full evidence-tree scan per file would make a 10,000-file capture
-        // quadratic. Space is still checked while copying and before publish.
-        if index % 64 == 0 {
-            check_disk(&control.monitor)?;
-        }
-    }
-    if local_plan(source, control)? != plan || directory_digest(candidate)? != digest {
-        return Err(local_changed());
-    }
-    let mut issues = validate_local_dependencies(candidate, &plan, control)?;
-    if plan.excluded.iter().any(|path| {
-        path.split('/')
-            .any(|name| name.eq_ignore_ascii_case("config"))
-    }) {
-        issues.push(invalid(
-            "config 目录按本机配置保护规则排除；若其中是运行代码，请调整源码布局后重新接入。",
-        ));
-    }
-    control.check()?;
-    fs::File::open(candidate)?.sync_all()?;
-    Ok(CapturedLocal {
-        digest,
-        file_count: plan.files.len(),
-        total_bytes: plan.files.values().map(|file| file.size).sum(),
-        issues,
-    })
-}
-fn validate_local_dependencies(
-    root: &Path,
-    plan: &LocalPlan,
-    control: &RunControl,
-) -> Result<Vec<ApiError>, ApiError> {
-    fn target(base: &Path, spec: &str, plan: &LocalPlan, pattern: bool) -> Result<(), ApiError> {
-        if spec.is_empty()
-            || spec.starts_with(['/', '~'])
-            || spec.contains(['\\', '%', ':'])
-            || spec.chars().any(char::is_control)
-        {
-            return Err(invalid(
-                "本机依赖路径不受支持或越界；请将依赖材料放进所选源码目录。",
-            ));
-        }
-        let mut path = base.to_path_buf();
-        let mut wildcard = false;
-        for part in spec.split('/') {
-            match part {
-                "" | "." => (),
-                ".." => {
-                    if wildcard || !path.pop() {
-                        return Err(invalid("本机依赖指向所选源码以外；未接入。"));
-                    }
-                }
-                part => {
-                    if pattern && part.contains(['*', '?', '[', '{']) {
-                        wildcard = true;
-                    } else if !wildcard {
-                        path.push(part);
-                    }
-                }
-            }
-        }
-        let label = path.to_str().ok_or_else(|| invalid("依赖路径无效。"))?;
-        if !label.is_empty()
-            && !plan
-                .files
-                .keys()
-                .any(|file| file == label || file.starts_with(&format!("{label}/")))
-        {
-            return Err(invalid("本机依赖材料不存在或已被保护规则排除；未接入。"));
-        }
-        Ok(())
-    }
-    fn spec(base: &Path, value: &str, plan: &LocalPlan, force: bool) -> Result<(), ApiError> {
-        let lower = value.to_ascii_lowercase();
-        if lower.starts_with("file:") || lower.starts_with("link:") {
-            target(base, &value[5..], plan, false)
-        } else if force
-            || value.starts_with(['.', '/'])
-            || value == "~"
-            || value.starts_with("~/")
-            || value.contains('\\')
-            || (value.len() > 1 && value.as_bytes()[1] == b':')
-        {
-            target(base, value, plan, false)
-        } else {
-            Ok(())
-        }
-    }
-    fn dependency_values(
-        value: &serde_json::Value,
-        base: &Path,
-        plan: &LocalPlan,
-    ) -> Result<(), ApiError> {
-        if let Some(value) = value.as_str() {
-            spec(base, value, plan, false)?;
-        } else if let Some(values) = value.as_object() {
-            for value in values.values() {
-                dependency_values(value, base, plan)?;
-            }
-        }
-        Ok(())
-    }
-    fn walk(value: &serde_json::Value, base: &Path, plan: &LocalPlan) -> Result<(), ApiError> {
-        if let Some(object) = value.as_object() {
-            for (key, value) in object {
-                if matches!(
-                    key.as_str(),
-                    "dependencies"
-                        | "devDependencies"
-                        | "optionalDependencies"
-                        | "peerDependencies"
-                        | "overrides"
-                ) {
-                    dependency_values(value, base, plan)?;
-                }
-                if matches!(key.as_str(), "resolved" | "version") {
-                    if let Some(value) = value.as_str() {
-                        spec(
-                            base,
-                            value,
-                            plan,
-                            key == "resolved"
-                                && object.get("link").and_then(serde_json::Value::as_bool)
-                                    == Some(true),
-                        )?;
-                    }
-                }
-                if key == "workspaces" {
-                    let entries = value
-                        .as_array()
-                        .or_else(|| value.get("packages").and_then(serde_json::Value::as_array));
-                    if let Some(entries) = entries {
-                        for value in entries.iter().filter_map(serde_json::Value::as_str) {
-                            target(base, value, plan, true)?;
-                        }
-                    }
-                }
-                walk(value, base, plan)?;
-            }
-        } else if let Some(array) = value.as_array() {
-            for value in array {
-                walk(value, base, plan)?;
-            }
-        }
-        Ok(())
-    }
-    let mut uninspectable = false;
-    for relative in plan.files.keys() {
-        if !matches!(
-            Path::new(relative)
-                .file_name()
-                .and_then(|name| name.to_str()),
-            Some("package.json" | "package-lock.json" | "npm-shrinkwrap.json")
-        ) {
-            continue;
-        }
-        control.check()?;
-        match read_small(&root.join(relative)).and_then(|bytes| {
-            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(ApiError::from)
-        }) {
-            Ok(value) => walk(
-                &value,
-                Path::new(relative).parent().unwrap_or(Path::new("")),
-                plan,
-            )?,
-            Err(_) => uninspectable = true,
-        }
-    }
-    // Keep persisted metadata bounded even when many nested declarations have
-    // the same problem. The original files remain in the candidate for review.
-    Ok(if uninspectable {
-        vec![invalid(
-            "存在无法检查的 npm 声明文件；源码已保留，但需要适配后才能安装。",
-        )]
-    } else {
-        Vec::new()
-    })
 }
 
 fn error(code: &str, message: &str) -> ApiError {
@@ -1765,7 +669,7 @@ fn directory_digest(root: &Path) -> Result<String, ApiError> {
     }
     Ok(format!("{:x}", tree.finalize()))
 }
-fn validate_url(value: &str) -> Result<(String, String, String), ApiError> {
+pub(crate) fn validate_url(value: &str) -> Result<(String, String, String), ApiError> {
     let bad = || {
         error(
             "SOURCE_URL_INVALID",
@@ -1804,7 +708,7 @@ fn validate_url(value: &str) -> Result<(String, String, String), ApiError> {
         repo.into(),
     ))
 }
-fn validate_branch(value: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_branch(value: &str) -> Result<(), ApiError> {
     if value.is_empty()
         || value.len() > 128
         || value == "HEAD"
@@ -1888,21 +792,24 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         }
     } else if app.try_exists()? {
         let parsed = read_small(&app).and_then(|bytes| {
-            let manifest = TrialManifest::parse(&bytes)
+            // Retired data-contract/build-output declarations never gate the
+            // one-directory runtime. Only the import's build kind is read.
+            let declaration: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let requires_build = match declaration["development"]["build"]["kind"].as_str() {
+                None | Some("none") => false,
+                Some("npm") => true,
+                Some(_) => return Err(invalid("构建方式无法识别，请让 AI 修改后重新添加。")),
+            };
+            let manifest = TrialManifest::parse_runtime(&bytes)
                 .map_err(|_| invalid("应用声明不是有效的受支持格式。"))?;
             manifest
                 .inspect(path)
                 .map_err(|_| invalid("应用声明所需文件不完整。"))?;
-            Ok(manifest)
+            Ok((manifest, requires_build))
         });
         match parsed {
-            Ok(manifest) if manifest.runtime == TrialRuntime::NodeService => {
-                result.requires_build = manifest.development.as_ref().is_some_and(|declaration| {
-                    matches!(
-                        declaration.build,
-                        crate::node_app_manifest::NodeDevelopmentBuild::Npm { .. }
-                    )
-                });
+            Ok((manifest, requires_build)) if manifest.runtime == TrialRuntime::NodeService => {
+                result.requires_build = requires_build;
                 result.kind = "node-service-source".into();
                 result.name = Some(manifest.app.name);
                 result.next_step = "prepare-node-runtime-before-registration".into();
@@ -2256,7 +1163,3 @@ fn validate_tree_path(path: &str) -> Result<(), ApiError> {
 #[cfg(test)]
 #[path = "source_acquisition_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "source_acquisition_owned_process_tests.rs"]
-mod owned_process_tests;

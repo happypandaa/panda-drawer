@@ -28,8 +28,6 @@ struct Publication {
     phase: String,
     payload: String,
     payload_identity: PersistedIdentity,
-    #[serde(default)]
-    retained_payloads: Vec<String>,
 }
 
 struct Anchor {
@@ -483,8 +481,7 @@ impl SourceAcquisitionManager {
             return Err(invalid("源码任务身份已变化，未发布。"));
         }
         let (url, provider, repository) = validate_url(&source.url)?;
-        if source.provider != provider || source.url != url || source.build_source_digest.is_some()
-        {
+        if source.provider != provider || source.url != url {
             return Err(invalid("只有本次 Git 添加成功的原始源码可以发布。"));
         }
         let original = Anchor::open(
@@ -523,7 +520,6 @@ impl SourceAcquisitionManager {
                 || files::parts(&publication.directory).map_or(true, |parts| parts.len() != 1)
                 || !publication.payload.starts_with("payload_")
                 || files::parts(&publication.payload).map_or(true, |parts| parts.len() != 1)
-                || publication.retained_payloads.len() > 32
                 || publication.author_digest.len() != 64
             {
                 return Err(invalid("源码发布记录与本次应用不一致，请保留现场。"));
@@ -543,7 +539,6 @@ impl SourceAcquisitionManager {
                 payload,
                 payload_identity: PersistedIdentity::from_file(&stage.file)
                     .map_err(|_| invalid("无法核对复制目录身份。"))?,
-                retained_payloads: Vec::new(),
             };
             save_publication(&receipt, &mut bytes, &publication)?;
             publication
@@ -580,24 +575,13 @@ impl SourceAcquisitionManager {
         if publication.author_digest != full_digest {
             return Err(invalid("源码或 Git 元信息已变化，未继续发布。"));
         }
-        let mut stage = receipt.child(&publication.payload, false)?;
+        let stage = receipt.child(&publication.payload, false)?;
         publication_identity(&publication, &stage.file)?;
         if publication.phase == "copying" {
             if author_digest(&stage.file, None)? != publication.author_digest
                 && !names(&stage.file)?.is_empty()
             {
-                if publication.retained_payloads.len() >= 32 {
-                    return Err(invalid("未完成复制现场过多，请先核对。"));
-                }
-                let (payload, new_stage) = fresh_payload(&receipt)?;
-                publication
-                    .retained_payloads
-                    .push(publication.payload.clone());
-                publication.payload = payload;
-                publication.payload_identity = PersistedIdentity::from_file(&new_stage.file)
-                    .map_err(|_| invalid("无法核对复制目录身份。"))?;
-                stage = new_stage;
-                save_publication(&receipt, &mut bytes, &publication)?;
+                return Err(invalid("源码复制尚未完成，请清理本次临时材料后重新添加。"));
             }
             if names(&stage.file)?.is_empty() {
                 require_copy_space(&stage.file, copy_bytes)?;
@@ -692,7 +676,6 @@ mod tests {
                     &receipt_path.join("payload_disposable"),
                 )
                 .unwrap(),
-                retained_payloads: vec![],
             };
             if mode == 2 {
                 ownership
@@ -763,10 +746,6 @@ mod tests {
             url: "https://github.com/example/disposable-repo.git".into(),
             branch: None,
             provider: "github".into(),
-            local_source_path: None,
-            capture_policy: None,
-            build_source_digest: None,
-            excluded_paths: vec![],
             created_at: 1,
             completed_at: Some(2),
             repository: "repository".into(),
@@ -778,7 +757,6 @@ mod tests {
             content_digest: Some(directory_digest(&slot.join("repository")).unwrap()),
             inspection: None,
             error: None,
-            legacy_build_inspection: false,
         };
         let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
             manager.paths.data_root().into(),
@@ -792,7 +770,7 @@ mod tests {
             .record_source(&record.owner_app_id, &record.source_id)
             .unwrap();
         manager.save_record(&record).unwrap();
-        let candidate = manager.info(&id).unwrap();
+        let candidate = manager.view(manager.read_record(&id).unwrap()).unwrap();
         tasks
             .finish(&task.task_id, Ok(serde_json::json!(candidate)))
             .unwrap();
@@ -843,8 +821,6 @@ mod tests {
             b"disposable author source"
         );
         drop(lease);
-        restarted.shutdown().await;
-        manager.shutdown().await;
         tasks.shutdown().await;
         store.shutdown().await;
     }
@@ -872,13 +848,12 @@ mod tests {
             b"unrelated user's file"
         );
         drop(lease);
-        manager.shutdown().await;
         tasks.shutdown().await;
         store.shutdown().await;
     }
 
     #[tokio::test]
-    async fn unfinished_copy_is_retained_privately_and_retry_publishes_one_complete_repository() {
+    async fn partial_publication_requires_cleanup_without_creating_another_payload() {
         let (_temp, paths, store, tasks, manager) = super::super::tests::fixture();
         let source = ready_source(&manager, &tasks);
         let app = manager.owner_app_id(&source.source_id).unwrap();
@@ -913,27 +888,30 @@ mod tests {
         fs::remove_file(partial.join("app.js")).unwrap();
         publication.phase = "copying".into();
         atomic_json(&receipt_path.join("publication.json"), &publication).unwrap();
-        let retry = manager
+        assert!(manager
             .publish_author_source(&source, &app, "publication-test")
-            .unwrap();
-        assert_eq!(retry, destination);
-        assert_eq!(
-            fs::read(retry.join("app.js")).unwrap(),
-            b"disposable author source"
-        );
+            .is_err());
+        assert!(!destination.exists());
         assert!(partial.join(".git/HEAD").is_file());
         let updated: Publication =
             serde_json::from_slice(&fs::read(receipt_path.join("publication.json")).unwrap())
                 .unwrap();
-        assert_eq!(updated.retained_payloads, vec![publication.payload]);
+        assert_eq!(updated.payload, publication.payload);
+        assert_eq!(
+            fs::read_dir(&receipt_path)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("payload_"))
+                .count(),
+            1
+        );
         assert_eq!(
             fs::read_dir(paths.workspace_root().join("project-sources"))
                 .unwrap()
                 .count(),
-            1
+            0
         );
         drop(lease);
-        manager.shutdown().await;
         tasks.shutdown().await;
         store.shutdown().await;
     }
@@ -990,7 +968,6 @@ mod tests {
         assert!(!paths.workspace_root().join("project-sources").exists());
         assert!(original.join("app.js").is_file());
         drop(lease);
-        manager.shutdown().await;
         tasks.shutdown().await;
         store.shutdown().await;
     }

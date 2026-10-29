@@ -94,8 +94,8 @@ fn id(value: &Value) -> &str {
     value["id"].as_str().unwrap()
 }
 
-fn save(revision: u64, values: Value) -> SaveConfigurationRequest {
-    serde_json::from_value(json!({"revision":revision,"values":values,"secrets":{}})).unwrap()
+fn save(revision: u64, values: Value, detail: &Value) -> SaveConfigurationRequest {
+    serde_json::from_value(json!({"revision":revision,"manifestDigest":detail["manifestDigest"],"values":values,"secrets":{}})).unwrap()
 }
 
 #[tokio::test]
@@ -120,9 +120,9 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
     assert_eq!(layout["kind"], "local-node-source");
     assert_eq!(layout["source"]["state"], "available");
     assert_eq!(layout["source"]["path"], json!(fixture.source));
-    assert_eq!(layout["versioning"]["state"], "source-git");
-    assert_eq!(detail["development"]["sourcePath"], json!(fixture.source));
-    assert_eq!(detail["development"]["runtimeIsSource"], true);
+    assert_eq!(layout["versioning"]["state"], "not-integrated");
+    assert!(detail["development"].is_null());
+    assert_eq!(detail["ownership"], "external");
     assert!(fixture
         .data
         .join("node-apps")
@@ -187,7 +187,7 @@ async fn duplicate_registration_keeps_the_original_id_and_saved_configuration() 
     let configured = manager
         .save(
             original_id,
-            save(0, json!({"MODEL":"artificial-user-choice"})),
+            save(0, json!({"MODEL":"artificial-user-choice"}), &original),
         )
         .await
         .unwrap();
@@ -213,7 +213,11 @@ async fn recreating_the_manager_preserves_the_slot_and_saved_ordinary_values() {
         manager
             .save(
                 &original_id,
-                save(0, json!({"MODEL":"persisted-artificial-model"})),
+                save(
+                    0,
+                    json!({"MODEL":"persisted-artificial-model"}),
+                    &registered,
+                ),
             )
             .await
             .unwrap();
@@ -278,7 +282,7 @@ async fn a_missing_private_node_does_not_leave_a_false_active_process_marker() {
 }
 
 #[tokio::test]
-async fn failed_or_changed_source_registration_preserves_the_existing_record() {
+async fn changed_source_metadata_is_readable_and_preserves_saved_configuration() {
     let fixture = Fixture::new("protected-registration-node-fixture");
     let manager = fixture.manager();
     let registered = manager.register(fixture.source.clone()).await.unwrap();
@@ -286,7 +290,7 @@ async fn failed_or_changed_source_registration_preserves_the_existing_record() {
     manager
         .save(
             original_id,
-            save(0, json!({"MODEL":"keep-this-user-value"})),
+            save(0, json!({"MODEL":"keep-this-user-value"}), &registered),
         )
         .await
         .unwrap();
@@ -295,16 +299,23 @@ async fn failed_or_changed_source_registration_preserves_the_existing_record() {
     let configuration_before = fs::read(slot.join("configuration/configuration.json")).unwrap();
     let manifest_before = fs::read(fixture.source.join("local-app.json")).unwrap();
     let mut changed: Value = serde_json::from_slice(&manifest_before).unwrap();
-    changed["app"]["name"] = json!("Changed declaration requires review");
+    changed["app"]["name"] = json!("Changed declaration accepted on restart");
+    changed["app"]["id"] = json!("dev.disposable.changed-author-id");
     fs::write(
         fixture.source.join("local-app.json"),
         serde_json::to_vec_pretty(&changed).unwrap(),
     )
     .unwrap();
-    assert!(manager.register(fixture.source.clone()).await.is_err());
+    let reread = manager.register(fixture.source.clone()).await.unwrap();
+    assert_eq!(id(&reread), original_id);
+    assert_eq!(reread["name"], "Changed declaration accepted on restart");
+    assert_eq!(
+        reread["configuration"]["values"]["MODEL"],
+        "keep-this-user-value"
+    );
     assert!(manager.start(original_id).await.is_err());
     assert!(!slot.join("active.json").exists());
-    assert_eq!(
+    assert_ne!(
         fs::read(slot.join("registration.json")).unwrap(),
         registration_before
     );

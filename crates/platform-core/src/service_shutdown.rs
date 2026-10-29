@@ -515,11 +515,7 @@ pub(super) fn signal_state(state: &Arc<HttpState>) {
     signal("storage", &|| state.storage.request_stop());
     signal("historyCleanup", &|| state.history_cleanup.request_stop());
     signal("lifecycle", &|| state.lifecycle.request_stop());
-    signal("nodeDevelopment", &|| state.node_development.request_stop());
-    signal("nodeInstall", &|| state.node_install.request_stop());
-    if let Ok(manager) = &state.source_acquisition {
-        signal("sourceAcquisition", &|| manager.request_stop());
-    }
+    signal("nodeGitImport", &|| state.node_git_import.request_stop());
     if let Ok(manager) = &state.project_git {
         signal("projectGit", &|| manager.request_stop());
     }
@@ -549,11 +545,7 @@ pub(super) async fn drain_managers(state: &Arc<HttpState>) -> Vec<ShutdownIssue>
     drain!("storage", state.storage);
     drain!("historyCleanup", state.history_cleanup);
     drain!("lifecycle", state.lifecycle);
-    drain!("nodeDevelopment", state.node_development);
-    drain!("nodeInstall", state.node_install);
-    if let Ok(manager) = &state.source_acquisition {
-        drain!("sourceAcquisition", manager);
-    }
+    drain!("nodeGitImport", state.node_git_import);
     if let Ok(manager) = &state.project_git {
         drain!("projectGit", manager);
     }

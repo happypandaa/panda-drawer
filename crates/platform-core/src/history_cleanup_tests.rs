@@ -419,116 +419,26 @@ fn blocked_text(plan: &Value, id: &str) -> String {
     plan_item(plan, id)["blockedReasons"].to_string()
 }
 impl Fixture {
-    fn source(&self, status: &str) -> (String, PathBuf) {
-        let id = format!("src_{}", hex32());
-        let owner = Uuid::new_v4().to_string();
-        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-            self.paths.data_root().into(),
-            self.paths.workspace_root().into(),
-        );
-        ownership.initialize(&owner).unwrap();
-        ownership.record_source(&owner, &id).unwrap();
-        let slot = self
-            .paths
-            .workspace_root()
-            .join(".platform/sources")
-            .join(&id);
-        fs::create_dir_all(slot.join("repository/src")).unwrap();
-        fs::write(slot.join("repository/src/app.js"), "disposable source copy").unwrap();
-        ownership.record_source(&owner, &id).unwrap();
-        builds::atomic_json(
-            &slot.join("source.json"),
-            &json!({"schemaVersion":1,"sourceId":id,"ownerAppId":owner,"name":"Disposable source","status":status}),
-        )
-        .unwrap();
-        (id, slot)
-    }
-    fn node_root(&self) -> PathBuf {
-        self.paths.data_root().join("node-apps")
-    }
-    fn installation(&self, state: &str, app: &str) -> (String, PathBuf) {
-        let id = format!("install_{}", hex32());
-        let root = self.node_root().join(".installations").join(&id);
-        fs::create_dir_all(root.join("npm-cache")).unwrap();
-        fs::write(root.join("npm-cache/package.tgz"), "disposable cache").unwrap();
-        let generation = format!("gen_{}", hex32());
-        let provenance = json!({"sourceId":format!("src_{}", hex32()),"sourceDigest":"c".repeat(64),
-            "sourceCommit":null,"node":{"path":"/disposable/node","version":"v24.0.0"},
-            "npm":{"path":"/disposable/npm","version":"10.0.0"},"preparedAt":1});
-        let prepared = matches!(state, "prepared" | "committing" | "committed").then(|| {
-            json!({"candidateId":id,"appId":app,"generation":generation,
-                "manifest":{"name":"Disposable Node app"},"programDigest":"b".repeat(64),
-                "provenance":provenance})
-        });
-        let registration = matches!(state, "committing" | "committed").then(|| {
-            json!({"version":2,"id":app,"kind":"managed","generation":generation,
-                "manifestDigest":"a".repeat(64),"programDigest":"b".repeat(64),"provenance":provenance})
-        });
-        builds::atomic_json(
-            &root.join("install.json"),
-            &json!({"version":1,"candidateId":id,"prepareTaskId":format!("task_{}", hex32()),
-                "applyTaskId":null,"state":state,
-                "target":{"appId":app,"registrationDigest":null,"generation":null,"manifest":null,"configurationRevision":0},
-                "prepared":prepared,"registration":registration,"error":null}),
-        )
-        .unwrap();
-        (id, root)
-    }
-    /// A managed v2 app with its current generation and one replaced generation.
-    fn managed_app(&self, source: &str) -> (String, PathBuf, String, PathBuf) {
-        let app = read_json(
-            &self
-                .paths
-                .workspace_root()
-                .join(".platform/sources")
-                .join(source)
-                .join("source.json"),
-        )
-        .unwrap()["ownerAppId"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let slot = self.node_root().join(&app);
-        let current = format!("gen_{}", hex32());
-        let old = format!("gen_{}", hex32());
-        for generation in [&current, &old] {
-            let program = slot.join("generations").join(generation);
-            fs::create_dir_all(program.join("server")).unwrap();
-            fs::write(program.join("server/main.mjs"), "disposable program").unwrap();
-            builds::atomic_json(
-                &program.join("local-app.json"),
-                &json!({"name":"Disposable Node app"}),
-            )
-            .unwrap();
-        }
-        builds::atomic_json(
-            &slot.join("registration.json"),
-            &json!({"version":2,"id":app,"kind":"managed","generation":current,
-                "manifestDigest":"a".repeat(64),"programDigest":"b".repeat(64),
-                "provenance":{"sourceId":source,"sourceDigest":"c".repeat(64),"sourceCommit":null,
-                    "node":{"path":"/disposable/node","version":"v24.0.0"},
-                    "npm":{"path":"/disposable/npm","version":"10.0.0"},"preparedAt":1}}),
-        )
-        .unwrap();
-        (
-            app.clone(),
-            slot.join("generations").join(&current),
-            old.clone(),
-            slot.join("generations").join(&old),
-        )
-    }
     fn source_restore(&self, task: &str, phase: &str) -> PathBuf {
+        self.source_restore_for(&self.project, task, phase)
+    }
+    fn cleanable_restore(&self, project: &str) -> (String, PathBuf) {
+        let task = format!("task_{}", hex32());
+        let path = self.source_restore_for(project, &task, "completed");
+        (format!("sourcerestore_{task}"), path)
+    }
+    fn source_restore_for(&self, project: &str, task: &str, phase: &str) -> PathBuf {
         let root = self
             .paths
             .workspace_root()
             .join(".platform/project-state/source-restore")
-            .join(&self.project)
+            .join(project)
             .join(task);
         fs::create_dir_all(root.join("original")).unwrap();
         fs::write(root.join("original/App.tsx"), "source before restore").unwrap();
         builds::atomic_json(
             &root.join("journal.json"),
-            &json!({"schemaVersion":1,"operation":"sourceRestore","projectId":self.project,
+            &json!({"schemaVersion":1,"operation":"sourceRestore","projectId":project,
                 "taskId":task,"phase":phase,"planDigest":"a".repeat(64)}),
         )
         .unwrap();
@@ -541,67 +451,19 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn source_copies_are_cleanable_only_when_finished_and_unused() {
-    let fixture = Fixture::new().await;
-    let (unused, unused_slot) = fixture.source("ready");
-    let (acquiring, acquiring_slot) = fixture.source("acquiring");
-    let (installed, installed_slot) = fixture.source("ready");
-    let (_app, current, _, _) = fixture.managed_app(&installed);
-    let plan = fixture.preview().await;
-    assert_eq!(plan_item(&plan, &unused)["canClean"], true, "{plan}");
-    assert_eq!(plan_item(&plan, &unused)["kind"], "sourceCopy");
-    assert_eq!(plan_item(&plan, &unused)["name"], "Disposable source");
-    assert_eq!(plan_item(&plan, &acquiring)["canClean"], false);
-    assert!(blocked_text(&plan, &acquiring).contains("仍在获取中"));
-    assert_eq!(plan_item(&plan, &installed)["canClean"], false);
-    assert!(blocked_text(&plan, &installed).contains("已安装的应用仍在使用"));
-
-    // Another project's installation cannot claim or protect this owner's copy.
-    let (_, preparing) = fixture.installation("preparing", &Uuid::new_v4().to_string());
-    let guarded = fixture.preview().await;
-    assert_eq!(plan_item(&guarded, &unused)["canClean"], true);
-    fs::remove_dir_all(&preparing).unwrap();
-
-    let plan = fixture.preview().await;
-    let task = fixture.clean(&plan, vec![unused.clone()]).await;
-    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
-    assert!(!unused_slot.exists());
-    assert!(acquiring_slot.join("repository/src/app.js").is_file());
-    assert!(installed_slot.join("repository/src/app.js").is_file());
-    assert!(current.join("server/main.mjs").is_file());
-    fixture.stop().await;
-}
-#[tokio::test]
-async fn source_cleanup_uses_only_its_admitted_owner_and_never_deep_json_references() {
-    let fixture = Fixture::new().await;
-    let (source, slot) = fixture.source("ready");
-    let foreign = fixture.node_root().join(Uuid::new_v4().to_string());
-    fs::create_dir_all(&foreign).unwrap();
-    builds::atomic_json(
-        &foreign.join("registration.json"),
-        &json!({"notes":{"nested":[source,slot]}}),
-    )
-    .unwrap();
-    let preview = fixture.preview().await;
-    assert_eq!(plan_item(&preview, &source)["canClean"], true);
-    let record = slot.join("source.json");
-    let mut changed = read_json(&record).unwrap();
-    changed["ownerAppId"] = json!(Uuid::new_v4().to_string());
-    builds::atomic_json(&record, &changed).unwrap();
-    let unknown = fixture.preview().await;
-    assert_eq!(plan_item(&unknown, &source)["canClean"], false);
-    assert!(slot.exists());
-    fixture.stop().await;
-}
-#[tokio::test]
 async fn deleting_one_owner_invalidates_its_history_plans_and_latest_but_keeps_other_drafts() {
     let fixture = Fixture::new().await;
-    let (source, slot) = fixture.source("ready");
-    let (other, other_slot) = fixture.source("ready");
-    let owner = read_json(&slot.join("source.json")).unwrap()["ownerAppId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let (source, slot) = fixture.cleanable_restore(&fixture.project);
+    let other_project = fixture
+        .store
+        .create(CreateProjectInput {
+            name: "Disposable other cleanup owner".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let (other, other_slot) = fixture.cleanable_restore(&other_project.id);
+    let owner = fixture.project.clone();
     let preview = fixture.preview().await;
     let original_id = preview["planId"].as_str().unwrap().to_owned();
     let mut unrelated = fixture.cleanup.plans.lock().unwrap()[&original_id].clone();
@@ -627,11 +489,7 @@ async fn deleting_one_owner_invalidates_its_history_plans_and_latest_but_keeps_o
     assert_eq!(cleaned.status, TaskStatus::Succeeded);
     let forgotten = fixture
         .cleanup
-        .forget_deleted_project(
-            &owner,
-            std::slice::from_ref(&source),
-            std::slice::from_ref(&slot),
-        )
+        .forget_deleted_project(&owner, &[], std::slice::from_ref(&slot))
         .await
         .unwrap();
     assert!(forgotten.contains(&cleaned.task_id));
@@ -734,11 +592,8 @@ async fn abandoned_diagnostic_database_is_project_owned_and_full_delete_keeps_ot
 #[tokio::test]
 async fn restarted_history_clears_only_typed_matching_tasks_and_owner_identity_wins_over_paths() {
     let fixture = Fixture::new().await;
-    let (source, slot) = fixture.source("ready");
-    let owner = read_json(&slot.join("source.json")).unwrap()["ownerAppId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let (source, slot) = fixture.cleanable_restore(&fixture.project);
+    let owner = fixture.project.clone();
     let preview = fixture.preview().await;
     let a_task = fixture.cleanup.plans.lock().unwrap()[preview["planId"].as_str().unwrap()]
         .preview_task_id
@@ -772,11 +627,7 @@ async fn restarted_history_clears_only_typed_matching_tasks_and_owner_identity_w
     .unwrap();
     assert!(restarted.plans.lock().unwrap().is_empty());
     let forgotten = restarted
-        .forget_deleted_project(
-            &owner,
-            std::slice::from_ref(&source),
-            std::slice::from_ref(&slot),
-        )
+        .forget_deleted_project(&owner, &[], std::slice::from_ref(&slot))
         .await
         .unwrap();
     assert!(forgotten.contains(&a_task));
@@ -791,47 +642,6 @@ async fn restarted_history_clears_only_typed_matching_tasks_and_owner_identity_w
         .exists());
     restarted.shutdown().await;
     tasks.shutdown().await;
-    fixture.stop().await;
-}
-
-#[tokio::test]
-async fn node_installations_and_replaced_generations_follow_install_state() {
-    let fixture = Fixture::new().await;
-    let (source, _) = fixture.source("ready");
-    let (app, current, old, old_path) = fixture.managed_app(&source);
-    let (failed, failed_path) = fixture.installation("failed", &app);
-    let (prepared, prepared_path) = fixture.installation("prepared", &app);
-    let plan = fixture.preview().await;
-    assert_eq!(plan_item(&plan, &failed)["canClean"], true, "{plan}");
-    assert_eq!(plan_item(&plan, &failed)["kind"], "nodeInstallation");
-    assert_eq!(plan_item(&plan, &prepared)["canClean"], false);
-    assert!(blocked_text(&plan, &prepared).contains("还可以继续安装"));
-    assert_eq!(plan_item(&plan, &old)["canClean"], true);
-    assert_eq!(plan_item(&plan, &old)["name"], "Disposable Node app");
-    let current_name = current.file_name().unwrap().to_str().unwrap();
-    assert!(!plan["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item["id"] == current_name));
-
-    // An unfinished commit for the same app protects every program version.
-    let (committing, committing_path) = fixture.installation("committing", &app);
-    let busy = fixture.preview().await;
-    assert_eq!(plan_item(&busy, &old)["canClean"], false);
-    assert!(blocked_text(&busy, &old).contains("正在进行或需要处理的安装"));
-    assert_eq!(plan_item(&busy, &committing)["canClean"], false);
-    fs::remove_dir_all(&committing_path).unwrap();
-
-    let plan = fixture.preview().await;
-    let task = fixture
-        .clean(&plan, vec![failed.clone(), old.clone()])
-        .await;
-    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
-    assert!(!failed_path.exists());
-    assert!(!old_path.exists());
-    assert!(current.join("server/main.mjs").is_file());
-    assert!(prepared_path.join("install.json").is_file());
     fixture.stop().await;
 }
 
@@ -878,7 +688,7 @@ async fn finished_source_restore_original_is_cleanable_until_a_pending_one_appea
 #[tokio::test]
 async fn plan_expiry_runtime_change_invalid_selection_and_active_operations_do_not_delete() {
     let fixture = Fixture::new().await;
-    let (source, slot) = fixture.source("ready");
+    let (source, slot) = fixture.cleanable_restore(&fixture.project);
     let plan = fixture.preview().await;
     let request = input(&plan, vec![source.clone()]);
     let key = plan["planId"].as_str().unwrap().to_owned();
@@ -921,21 +731,21 @@ async fn plan_expiry_runtime_change_invalid_selection_and_active_operations_do_n
     let mut missing_confirm = request;
     missing_confirm["confirmation"] = json!("yes");
     assert!(fixture.cleanup.submit(missing_confirm).is_err());
-    assert!(slot.join("repository/src/app.js").is_file());
+    assert!(slot.join("original/App.tsx").is_file());
     fixture.stop().await;
 }
 
 #[tokio::test]
 async fn changed_preview_and_new_protection_block_deletion() {
     let fixture = Fixture::new().await;
-    let (source, slot) = fixture.source("ready");
+    let (source, slot) = fixture.cleanable_restore(&fixture.project);
     let plan = fixture.preview().await;
-    fs::write(slot.join("repository/new-user-file"), "draft").unwrap();
+    fs::write(slot.join("original/new-user-file"), "draft").unwrap();
     let task = fixture.clean(&plan, vec![source.clone()]).await;
     assert_eq!(task.status, TaskStatus::Failed);
     assert_eq!(task.error.unwrap().code, "CLEANUP_PLAN_CHANGED");
-    assert!(slot.join("repository/new-user-file").is_file());
-    let (_app, _, _, _) = fixture.managed_app(&source);
+    assert!(slot.join("original/new-user-file").is_file());
+    fixture.source_restore(&format!("task_{}", hex32()), "applying");
     let plan = fixture.preview().await;
     assert_eq!(plan_item(&plan, &source)["canClean"], false);
     fixture.stop().await;

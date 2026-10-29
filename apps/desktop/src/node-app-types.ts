@@ -72,6 +72,10 @@ export interface NodeConfigurationField {
 
 export interface NodeAppDetail {
   version?: string;
+  manifestDigest?: string;
+  gitSource?: { url: string; branch: string | null } | null;
+  ownership?: 'managed' | 'external';
+  unavailableReason?: string | null;
   development?: { sourcePath: string; runtimeIsSource: boolean; manifestId: string } | null;
   id: string;
   name: string;
@@ -92,6 +96,7 @@ export interface NodeAppDetail {
     values: Record<string, NodeConfigurationValue>;
     secretStatus: Record<string, 'set' | 'missing' | 'endpoint-changed'>;
     missingRequired: string[];
+    invalidFields?: string[];
     canStart: boolean;
   };
   fields: NodeConfigurationField[];
@@ -122,6 +127,7 @@ export type NodeSecretChange = { action: 'keep' | 'unbind' | 'rebind' } | { acti
 
 export interface NodeConfigurationInput {
   revision: number;
+  manifestDigest?: string;
   values: Record<string, NodeConfigurationValue>;
   secrets: Record<string, NodeSecretChange>;
 }

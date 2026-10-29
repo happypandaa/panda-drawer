@@ -859,7 +859,7 @@ async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_e
                 json!({"version":1,"id":slot.file_name().unwrap().to_str().unwrap(),"manifestDigest":"a".repeat(64)})
             }
             2 => {
-                json!({"version":2,"kind":"managed","id":slot.file_name().unwrap().to_str().unwrap()})
+                json!({"version":2,"kind":"managed","id":Uuid::new_v4().to_string()})
             }
             5 => json!({"schemaVersion":1,"sourceId":source_id,"provider":"local"}),
             _ => json!({}),
@@ -874,6 +874,111 @@ async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_e
         assert!(!paths.data_root().join(CONTROL).exists());
         assert!(service.quiesce().await.is_complete());
     }
+}
+
+#[tokio::test]
+async fn live_owner_index_preserves_external_original_when_retired_registration_lost_its_binding() {
+    for overlaps in [false, true] {
+        let (temporary, paths, service) = fixture().await;
+        let selected = if overlaps {
+            let destination = temporary
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("disposable-migrated-owner-workspace");
+            migrate(&paths, &service, &destination).await
+        } else {
+            paths.clone()
+        };
+        let source = if overlaps {
+            selected
+                .workspace_root()
+                .join("custom/disposable-author-original")
+        } else {
+            temporary
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("disposable-author-original")
+        };
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("original-code"), b"preserve author source").unwrap();
+        let id = Uuid::new_v4().to_string();
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            selected.data_root().into(),
+            selected.workspace_root().into(),
+        );
+        ownership.initialize(&id).unwrap();
+        crate::node_apps::development::claim_source_after_verified_migration(
+            selected.data_root(),
+            selected.workspace_root(),
+            &id,
+            &source,
+        )
+        .unwrap();
+        let slot = selected.data_root().join("node-apps").join(&id);
+        fs::create_dir_all(&slot).unwrap();
+        // The old optional bindings and display metadata are unavailable, while
+        // the stable ownership index still identifies the selected original.
+        fs::write(
+            slot.join("registration.json"),
+            serde_json::to_vec(&json!({"version":2,"id":id})).unwrap(),
+        )
+        .unwrap();
+        let plan = LocalCleanupPlan::prepare(&selected, &service);
+        assert!(service.quiesce().await.is_complete());
+        if overlaps {
+            assert!(plan.is_err());
+        } else {
+            let plan = plan.unwrap();
+            assert_eq!(plan.preview()["preservedPaths"], json!([source]));
+            plan.execute_after_shutdown(&service).unwrap();
+            assert!(!slot.exists());
+        }
+        assert_eq!(
+            fs::read(source.join("original-code")).unwrap(),
+            b"preserve author source"
+        );
+    }
+}
+
+#[tokio::test]
+async fn owner_index_cannot_treat_a_replaced_author_directory_as_the_recorded_original() {
+    let (temporary, paths, service) = fixture().await;
+    let source = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-claimed-original");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("original-code"), b"preserve original").unwrap();
+    let id = Uuid::new_v4().to_string();
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    ownership.initialize(&id).unwrap();
+    crate::node_apps::development::claim_source_after_verified_migration(
+        paths.data_root(),
+        paths.workspace_root(),
+        &id,
+        &source,
+    )
+    .unwrap();
+    let moved = source.with_file_name("disposable-moved-original");
+    fs::rename(&source, &moved).unwrap();
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("foreign-file"), b"preserve replacement").unwrap();
+    assert!(LocalCleanupPlan::prepare(&paths, &service).is_err());
+    assert!(service.quiesce().await.is_complete());
+    assert_eq!(
+        fs::read(moved.join("original-code")).unwrap(),
+        b"preserve original"
+    );
+    assert_eq!(
+        fs::read(source.join("foreign-file")).unwrap(),
+        b"preserve replacement"
+    );
 }
 
 #[tokio::test]

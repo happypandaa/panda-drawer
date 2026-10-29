@@ -264,7 +264,7 @@ impl NodeApps {
         };
         if let Some(bytes) = &manifest {
             digest.update(bytes);
-            let inspected = match TrialManifest::parse(bytes) {
+            let inspected = match TrialManifest::parse_runtime(bytes) {
                 Ok(parsed) => check_declared_paths(&source, &parsed).and_then(|()| {
                     if parsed.runtime != TrialRuntime::NodeService {
                         Err(fail(
@@ -478,7 +478,7 @@ impl NodeApps {
             .replace('\'', "&#39;");
         let html = INDEX.replace("__LOCAL_APP_NAME__", &html_name);
         let readme = format!("# {name}\n\n这是一个本地起始应用。在平台选择“生成并添加项目”会创建源码并完成添加；成功后可从项目列表进入。若目录已有这些文件但未出现在列表，重新选择目录并确认添加即可，无需再次生成。生成和添加均不会安装依赖或启动应用。\n\n网页包含连接检查按钮。使用平台提供的独立数据目录保存持久数据；不要把用户数据或密钥写进源码、Git或分享包。配置、打开与关闭均由平台管理。\n");
-        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。dataContract 声明兼容性；更改数据格式前明确迁移策略。初始应用不创建业务数据。\n\n这个项目直接运行所选文件夹的代码。修改前先关闭应用，可把同一源码仓库交给 AI 原地修改，完成后明确重新打开。修改前先用 Git 保存当前版本；用户要求回退时，用 Git 恢复到之前的版本。若应用运行独立安装副本，改完后提醒用户在详情中点“应用修改”。排查问题先读交接说明中的实际 logs/current.log 与 previous.log 路径。已登记 local-app.json 的应用身份、配置和数据契约受平台校验，不要直接改变这些声明。应用标识、配置和数据契约不兼容时必须停止，不要绕过暂停提示。\n";
+        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。修改数据格式前明确迁移与回退方法，删除或清空数据前须取得用户明确同意。dataContract 如有声明，仅作为项目自有元数据，平台不据此判断数据兼容。初始应用不创建业务数据。\n\n这个项目直接运行所选文件夹的代码。修改前先关闭应用，可把同一源码仓库交给 AI 原地修改，完成后重新进入项目即可生效。修改前先用 Git 保存当前版本；用户要求回退时，用 Git 恢复到之前的版本。可以修改 local-app.json（包括 app.id、版本号、名称、网页和后端入口、配置项），重启后生效；修改后请确认清单有效、入口文件存在。新增必填配置由用户在平台配置页填写后再打开应用。平台的实例 ID、私有配置和密钥通过平台管理。排查问题先读交接说明中的实际 logs/current.log 与 previous.log 路径；不修改平台控制记录绕过目录或运行检查。\n";
         let package_name = format!("local-starter-{}", Uuid::new_v4().simple());
         let package = serde_json::to_vec_pretty(
             &json!({"name":package_name,"version":"0.1.0","private":true,"type":"module"}),

@@ -11,7 +11,6 @@ use std::{
 pub(crate) struct NodeProcessScope {
     pub processes: OwnedProcessRegistry,
     pub owner: Arc<dyn Send + Sync>,
-    material: Option<(crate::node_project_ownership::NodeProjectOwnership, String)>,
     #[cfg(test)]
     fault: Arc<std::sync::Mutex<Option<NodeReaderFault>>>,
 }
@@ -34,27 +33,11 @@ impl NodeProcessScope {
         Self {
             processes,
             owner,
-            material: None,
             #[cfg(test)]
             fault: Arc::new(std::sync::Mutex::new(None)),
         }
     }
-    pub(crate) fn with_project_ownership(
-        mut self,
-        ownership: crate::node_project_ownership::NodeProjectOwnership,
-        app_id: String,
-    ) -> Result<Self, ApiError> {
-        let directory = ownership.directory(&app_id)?;
-        let data = directory
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| ApiError::new("PROJECT_WRITER_UNCONFIRMED", "项目写入者归属无效。"))?;
-        self.processes = self
-            .processes
-            .with_writer_owner(crate::durable_writer::WriterOwner::node(data, &app_id)?);
-        self.material = Some((ownership, app_id));
-        Ok(self)
-    }
+    #[cfg(test)]
     pub fn standalone() -> Self {
         Self::new(OwnedProcessRegistry::default(), Arc::new(()))
     }
@@ -87,9 +70,6 @@ impl NodeProcessScope {
                 "NODE_PROCESS_OPERATION_CHANGED",
                 "候选操作目录身份已变化，现场保留。",
             ));
-        }
-        if let Some((ownership, app_id)) = &self.material {
-            ownership.record_material_operation(app_id, path)?;
         }
         let mut child = self.clone();
         child.owner = Arc::new(OperationOwner {

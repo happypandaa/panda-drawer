@@ -866,3 +866,154 @@ fn zero_and_large_integer_counters_remain_exact() {
     assert!(missing["totalBytes"].is_null());
     assert_eq!(missing["complete"], false);
 }
+
+fn add_disposable_direct_node_storage(
+    paths: &RuntimePaths,
+    source: &Path,
+    platform_owned: bool,
+) -> (String, PathBuf) {
+    fs::create_dir_all(source.join("node_modules/tiny")).unwrap();
+    fs::create_dir_all(source.join(".git")).unwrap();
+    fs::write(source.join("code.js"), b"abc").unwrap();
+    fs::write(source.join("node_modules/tiny/index.js"), b"12345").unwrap();
+    fs::write(source.join(".git/HEAD"), b"ref: main\n").unwrap();
+    let id = Uuid::new_v4().to_string();
+    let slot = paths.data_root().join("node-apps").join(&id);
+    for name in ["data", "configuration", "logs", "cache"] {
+        fs::create_dir_all(slot.join(name)).unwrap();
+    }
+    fs::write(slot.join("data/business.db"), b"data").unwrap();
+    fs::write(slot.join("configuration/settings.json"), b"config").unwrap();
+    fs::write(slot.join("logs/current.log"), b"log").unwrap();
+    fs::write(slot.join("cache/payload"), b"cache").unwrap();
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    ownership.initialize(&id).unwrap();
+    if platform_owned {
+        ownership.record_generated_source(&id, source).unwrap();
+    }
+    crate::node_apps::development::claim_source_after_verified_migration(
+        paths.data_root(),
+        paths.workspace_root(),
+        &id,
+        source,
+    )
+    .unwrap();
+    let manifest = json!({"app":{"id":"editable-author-id"},"runtime":"node-service"}).to_string();
+    let digest = format!("{:x}", Sha256::digest(manifest.as_bytes()));
+    builds::atomic_json(
+        &slot.join("registration.json"),
+        &json!({"version":1,"id":id,"sourcePath":source,"manifestDigest":digest}),
+    )
+    .unwrap();
+    builds::atomic_json(&slot.join("development-source.json"),&json!({"sourceRoot":source,"rootIdentity":PersistedIdentity::capture(source).unwrap(),"manifestId":"editable-author-id","registeredManifestText":manifest,"registeredManifestDigest":digest})).unwrap();
+    (id, slot)
+}
+
+#[tokio::test]
+async fn direct_node_storage_includes_dependencies_and_marks_source_ownership_without_double_counting(
+) {
+    let f = Fixture::new().await;
+    let managed = f
+        .paths
+        .workspace_root()
+        .join("project-sources/disposable-managed-node");
+    let external = f
+        ._temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-external-node");
+    let (managed_id, _) = add_disposable_direct_node_storage(&f.paths, &managed, true);
+    let (external_id, _) = add_disposable_direct_node_storage(&f.paths, &external, false);
+    let result = workspace_scan(&f.paths, None, "node-sources").unwrap();
+    for (id, owned) in [(&managed_id, true), (&external_id, false)] {
+        let row = result["nodeApps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["scope"]["appId"] == *id)
+            .unwrap();
+        assert_eq!(row["projectFolder"]["totalBytes"], 18);
+        assert_eq!(
+            row["projectFolder"]["categories"]["dependencies"]["bytes"],
+            5
+        );
+        assert_eq!(row["projectFolder"]["categories"]["git"]["bytes"], 10);
+        assert_eq!(row["projectFolder"]["categories"]["source"]["bytes"], 3);
+        assert_eq!(
+            row["sourceOwnership"],
+            if owned { "platform" } else { "external" }
+        );
+        assert_eq!(row["sourcePreservedOnDelete"], !owned);
+        assert_eq!(row["instance"]["categories"]["data"]["bytes"], 4);
+        assert_eq!(row["instance"]["categories"]["configuration"]["bytes"], 6);
+        assert_eq!(row["instance"]["categories"]["logs"]["bytes"], 3);
+        assert_eq!(row["instance"]["categories"]["cache"]["bytes"], 5);
+        assert_eq!(
+            numeric(&row["totalBytes"]),
+            Some(18 + numeric(&row["instance"]["totalBytes"]).unwrap())
+        );
+        assert_eq!(row["referenceOnly"], true);
+        assert_eq!(row["projectFolder"]["referenceOnly"], true);
+    }
+    let other = result["otherLocalLocations"].as_array().unwrap();
+    assert!(other
+        .iter()
+        .any(|scope| scope["scope"]["kind"] == "nodeSource"
+            && scope["root"] == json!(external)
+            && scope["totalBytes"] == 18));
+    assert!(!other.iter().any(|scope| scope["root"] == json!(managed)));
+    let sum = numeric(&result["workspace"]["totalBytes"]).unwrap()
+        + other
+            .iter()
+            .filter_map(|scope| numeric(&scope["totalBytes"]))
+            .sum::<u64>();
+    assert_eq!(numeric(&result["knownLocalTotal"]["totalBytes"]), Some(sum));
+    assert!(external.join("node_modules/tiny/index.js").is_file());
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn missing_or_replaced_node_source_is_not_measured_as_the_original_project() {
+    for replaced in [false, true] {
+        let f = Fixture::new().await;
+        let source = f
+            ._temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("disposable-replaceable-node");
+        let (id, _) = add_disposable_direct_node_storage(&f.paths, &source, false);
+        fs::rename(&source, source.with_file_name("disposable-original-node")).unwrap();
+        if replaced {
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("unrelated-user-file"), [0u8; 512]).unwrap();
+        }
+        let result = workspace_scan(&f.paths, None, "missing-node-source").unwrap();
+        let row = result["nodeApps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["scope"]["appId"] == id)
+            .unwrap();
+        assert!(row["projectFolder"]["totalBytes"].is_null());
+        assert!(row["totalBytes"].is_null());
+        assert_eq!(row["complete"], false);
+        assert!(row["instance"]["totalBytes"].as_u64().unwrap() > 0);
+        assert!(source
+            .with_file_name("disposable-original-node/code.js")
+            .exists());
+        if replaced {
+            assert_eq!(
+                fs::metadata(source.join("unrelated-user-file"))
+                    .unwrap()
+                    .len(),
+                512
+            );
+        }
+        f.stop().await;
+    }
+}
