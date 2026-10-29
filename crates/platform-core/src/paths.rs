@@ -11,6 +11,9 @@ use uuid::Uuid;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
 const MARKER: &str = ".environment.json";
+/// Written into a new installation's visible home workspace. It ties that
+/// folder to this data directory so another folder is never adopted silently.
+const HOME_WORKSPACE_MARKER: &str = ".platform/workspace-default.json";
 
 #[derive(Clone, Debug)]
 pub struct RuntimePaths {
@@ -43,6 +46,15 @@ struct Settings {
     last_port: Option<u16>,
     #[serde(default)]
     migration_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HomeWorkspaceMarker {
+    schema_version: u32,
+    identifier: String,
+    environment: String,
+    data_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -179,12 +191,27 @@ impl RuntimePaths {
                 bail!("Workspace selection settings are missing; retained migration evidence prevents initializing an old or empty workspace");
             }
             // Only a brand-new installation initializes the default workspace.
+            // New installations use a visible folder in the user's home so
+            // people and external AI tools can find their projects.
+            paths.workspace_root = new_workspace_root(paths.data_root())?;
+            let home_workspace = paths.workspace_root != paths.data_root.join("workspace");
             for dir in [
                 paths.workspace_root.clone(),
                 paths.workspace_root.join("projects"),
                 paths.workspace_root.join(".platform"),
             ] {
                 ensure_directory_tree(&dir)?;
+            }
+            if home_workspace {
+                atomic_private_json(
+                    &paths.workspace_root.join(HOME_WORKSPACE_MARKER),
+                    &HomeWorkspaceMarker {
+                        schema_version: 1,
+                        identifier: APP_IDENTIFIER.to_owned(),
+                        environment: ENVIRONMENT.to_owned(),
+                        data_root: paths.data_root.clone(),
+                    },
+                )?;
             }
             create_private_json(
                 &settings_path,
@@ -519,6 +546,74 @@ mod production_profile_tests {
     }
 }
 
+/// Workspace for a brand-new installation. Tests keep the private default so
+/// they never touch the real home folder.
+fn new_workspace_root(data_root: &Path) -> Result<PathBuf> {
+    #[cfg(test)]
+    {
+        Ok(data_root.join("workspace"))
+    }
+    #[cfg(not(test))]
+    {
+        let base = if ENVIRONMENT == "production" {
+            "PandaDrawer"
+        } else {
+            "PandaDrawer-Dev"
+        };
+        match dirs::home_dir() {
+            Some(home) if reject_symlink_components(&home).is_ok() => {
+                home_workspace_candidate(&home, base, data_root)
+            }
+            _ => Ok(data_root.join("workspace")),
+        }
+    }
+}
+
+/// `~/PandaDrawer`, or `~/PandaDrawer-2`… when an earlier name is taken by a
+/// file or a nonempty folder. Existing content is never adopted, except a
+/// folder this same data directory created before an interrupted first start.
+fn home_workspace_candidate(home: &Path, base: &str, data_root: &Path) -> Result<PathBuf> {
+    for index in 1..=99u32 {
+        let candidate = if index == 1 {
+            home.join(base)
+        } else {
+            home.join(format!("{base}-{index}"))
+        };
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(meta)
+                if meta.is_dir()
+                    && !meta.file_type().is_symlink()
+                    && fs::read_dir(&candidate)?.next().is_none() =>
+            {
+                return Ok(candidate)
+            }
+            Ok(meta) if meta.is_dir() && is_home_workspace(data_root, &candidate) => {
+                return Ok(candidate)
+            }
+            Ok(_) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!("No free project folder name under {}", home.display())
+}
+
+/// A workspace outside the data directory without a migration is accepted only
+/// when it is the visible home workspace this installation created.
+pub(crate) fn is_home_workspace(data_root: &Path, workspace_root: &Path) -> bool {
+    if workspace_root.starts_with(data_root) {
+        return false;
+    }
+    read_private_json::<HomeWorkspaceMarker>(&workspace_root.join(HOME_WORKSPACE_MARKER)).is_ok_and(
+        |marker| {
+            marker.schema_version == 1
+                && marker.identifier == APP_IDENTIFIER
+                && marker.environment == ENVIRONMENT
+                && marker.data_root == data_root
+        },
+    )
+}
+
 fn require_absolute_clean_path(path: &Path) -> Result<()> {
     if !path.is_absolute()
         || path
@@ -799,5 +894,67 @@ mod tests {
             discovery.base_url = url.into();
             assert!(discovery.port().is_err(), "{url}");
         }
+    }
+
+    #[test]
+    fn new_installations_pick_a_free_visible_home_folder_without_adopting_content() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().canonicalize().unwrap();
+        let data = home.join("Library/Application Support/disposable.identifier");
+        assert_eq!(
+            home_workspace_candidate(&home, "PandaDrawer", &data).unwrap(),
+            home.join("PandaDrawer")
+        );
+        fs::create_dir(home.join("PandaDrawer")).unwrap();
+        assert_eq!(
+            home_workspace_candidate(&home, "PandaDrawer", &data).unwrap(),
+            home.join("PandaDrawer"),
+            "an empty folder is reused"
+        );
+        fs::write(home.join("PandaDrawer/notes.txt"), "user content").unwrap();
+        fs::write(home.join("PandaDrawer-2"), "a file, not a folder").unwrap();
+        assert_eq!(
+            home_workspace_candidate(&home, "PandaDrawer", &data).unwrap(),
+            home.join("PandaDrawer-3")
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("PandaDrawer/notes.txt")).unwrap(),
+            "user content"
+        );
+    }
+
+    #[test]
+    fn a_home_workspace_is_accepted_only_with_this_installation_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().canonicalize().unwrap();
+        let data = home.join("data");
+        let workspace = home.join("PandaDrawer");
+        ensure_directory_tree(&workspace.join(".platform")).unwrap();
+        assert!(!is_home_workspace(&data, &workspace));
+        assert!(crate::workspace::validate_selection(&data, &workspace, None).is_err());
+        let marker = |data_root: &Path| HomeWorkspaceMarker {
+            schema_version: 1,
+            identifier: APP_IDENTIFIER.to_owned(),
+            environment: ENVIRONMENT.to_owned(),
+            data_root: data_root.to_path_buf(),
+        };
+        atomic_private_json(
+            &workspace.join(HOME_WORKSPACE_MARKER),
+            &marker(&home.join("other")),
+        )
+        .unwrap();
+        assert!(
+            !is_home_workspace(&data, &workspace),
+            "another installation's folder"
+        );
+        atomic_private_json(&workspace.join(HOME_WORKSPACE_MARKER), &marker(&data)).unwrap();
+        assert!(is_home_workspace(&data, &workspace));
+        crate::workspace::validate_selection(&data, &workspace, None).unwrap();
+        assert_eq!(
+            home_workspace_candidate(&home, "PandaDrawer", &data).unwrap(),
+            workspace,
+            "an interrupted first start resumes its own folder"
+        );
+        assert!(!is_home_workspace(&data, &data.join("workspace")));
     }
 }
