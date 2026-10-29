@@ -16,7 +16,7 @@
 
 | 对象 | 本次删除范围 | 明确保留 |
 | --- | --- | --- |
-| 平台新建、完整 ZIP 导入或复制的网页项目 | 整个项目目录、目录外登记／构建／维护／备份／恢复／任务及迁移副本，新导出的外部 ZIP | 其他项目、外部原始输入、平台全局部分 |
+| 平台新建、完整 ZIP 导入或复制的网页项目 | 整个项目目录、目录外登记／构建／维护／备份／恢复／任务、迁移副本及平台导出临时材料 | 其他项目、外部原始输入、用户文件夹中的最终 ZIP／网页下载／附件副本、平台全局部分 |
 | 从 Git 或本机源码副本安装的 Node 应用 | 整个实例槽、平台下载或创建的源码（含 Git 和 AI 改动）、来源／安装／构建／任务／恢复材料及迁移副本 | 外部原始输入、其他项目、平台全局部分 |
 | 通过外部原目录登记的 Node 应用 | 整个实例槽、平台私有材料、登记和占有记录，外部 Git 中平台创建的恢复材料 | 外部原目录中的源码、普通 Git 历史和用户文件 |
 
@@ -40,7 +40,7 @@
 
 网页只读范围入口为 `GET /api/v1/projects/{id}/deletion-preview`（原生 `project_delete_preview`）；提交仍为 `POST /api/v1/projects/{id}/deletions`。普通删除绑定预览中的 `expectedDocumentEpoch`，维护中另带 `maintenanceId`；身份已注销的受管材料收尾和完全缺失的幂等核对允许空 epoch。CLI 未显式提供 epoch 时先读取同一预览；坏业务数据库不影响私有登记身份核对。读取失败不提交，不在写入失败后重新绑定。`task get/wait` 可携带项目与任务类型：成功任务已清除时，只有该项目全部受管范围均缺失才返回最小 `alreadyAbsent` 结果。
 
-成功返回 `operationOutcome: "deleted"`、`restoreAvailable: false`；部分删除报告实际残留与失败原因，不保存成功任务。新导出的 ZIP 归原项目独占，删除预览显示外部实际路径；原始导入 ZIP 保留。
+成功返回 `operationOutcome: "deleted"`、`restoreAvailable: false`；部分删除报告实际残留与失败原因，不保存成功任务。用户选定外部文件夹中的最终 ZIP、网页下载和附件副本保留；项目内原件、平台快照／归档及已登记的临时文件随项目删除，预览只列受管材料。原始导入 ZIP 保留。
 
 Node 仅通过原生管理命令删除：`node_app_delete_preview({appId})` 返回名称、实例 ID、`ownership`（`managed`／`external`／`absent`）、实际删除／保留路径、`expectedRevision` 和可空的 `blocker`；确认后以 `node_app_delete_submit` 受理持久任务，`status/retry/abandon` 绑定同一任务和修订。提交重新核对预览，不接受客户端传入任意目录。关闭窗口、核实并停止受管运行后执行 v3 整目录事务；成功报告 `operationOutcome: "deleted"`、实际外部源码保留与否和 `evidenceRetained: false`，随后不留成功任务。`node_app_delete` 仍可等待最终结果，未新增 Node HTTP／CLI 删除入口。
 

@@ -80,7 +80,7 @@ async fn browser_sql(base: &str, id: &str, cookie: &str, epoch: &str, sql: &str)
         .unwrap()
 }
 #[tokio::test]
-async fn permanent_delete_requires_bound_route_and_removes_owned_exported_archives() {
+async fn permanent_delete_requires_bound_route_and_preserves_delivered_archives() {
     let (_temp, paths, service, id) = fixture().await;
     let handle = service.handle();
     let archive = paths
@@ -98,6 +98,7 @@ async fn permanent_delete_requires_bound_route_and_removes_owned_exported_archiv
     .await;
     assert_eq!(exported["status"], "succeeded");
     assert!(archive.is_file());
+    let archive_bytes = std::fs::read(&archive).unwrap();
     let root = service.store().project(&id).unwrap().root;
     let expected_epoch = service.store().registered_epoch(&id).unwrap().unwrap();
     let client = reqwest::Client::new();
@@ -167,7 +168,7 @@ async fn permanent_delete_requires_bound_route_and_removes_owned_exported_archiv
     assert_eq!(deleted["result"]["restoreAvailable"], false);
     assert!(!root.exists());
     assert!(!paths.workspace_root().join(".platform/trash").exists());
-    assert!(!archive.exists());
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
     service.shutdown().await.unwrap();
 }
 #[tokio::test]

@@ -40,20 +40,6 @@ struct Ownership {
     export_stages: BTreeMap<String, ExportStage>,
     file_deletions: BTreeMap<PathBuf, crate::web_file_deletion::FileDeletionPlan>,
     removed_materials: BTreeMap<PathBuf, PersistedIdentity>,
-    exports: BTreeMap<String, ExportTarget>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExportTarget {
-    path: PathBuf,
-    task_id: String,
-    parent_identity: PersistedIdentity,
-    claim_identity: Option<PersistedIdentity>,
-    identity: Option<PersistedIdentity>,
-    stage_path: Option<PathBuf>,
-    published: bool,
-    removed: bool,
-    release_intent: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,6 +48,8 @@ struct ExportStage {
     parent_identity: PersistedIdentity,
     ancestor_identities: Vec<PersistedIdentity>,
     identity: Option<PersistedIdentity>,
+    overwrite_identity: Option<PersistedIdentity>,
+    overwrite_verified: bool,
 }
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new("WEB_PROJECT_OWNERSHIP_INVALID", message)
@@ -165,27 +153,18 @@ impl WebProjectOwnership {
         }
         for (task, stage) in &record.export_stages {
             validate_export_stage(task, &stage.path)?;
+            if stage.overwrite_identity.is_some() && stage.identity.is_none() {
+                return Err(invalid("覆盖临时文件缺少原始复制身份。"));
+            }
+            if stage.overwrite_verified && stage.overwrite_identity.is_none() {
+                return Err(invalid("覆盖临时文件缺少已核验的旧目标身份。"));
+            }
             if !stage
                 .ancestor_identities
                 .first()
                 .is_some_and(|identity| identity.matches_captured(&stage.parent_identity))
             {
                 return Err(invalid("临时文件的父目录归属链不完整。"));
-            }
-        }
-        for (key, export) in &record.exports {
-            absolute(&export.path)?;
-            task_id(&export.task_id)?;
-            if crate::web_export_claims::key_from(
-                &export.parent_identity,
-                export
-                    .path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| invalid("导出文件名无效。"))?,
-            )? != *key
-            {
-                return Err(invalid("导出目标归属键不符。"));
             }
         }
         for (path, plan) in &record.file_deletions {
@@ -223,7 +202,6 @@ impl WebProjectOwnership {
                     export_stages: BTreeMap::new(),
                     file_deletions: BTreeMap::new(),
                     removed_materials: BTreeMap::new(),
-                    exports: BTreeMap::new(),
                 }
             }
             Err(error) => return Err(error),
@@ -414,6 +392,8 @@ impl WebProjectOwnership {
                     parent_identity,
                     ancestor_identities,
                     identity: None,
+                    overwrite_identity: None,
+                    overwrite_verified: false,
                 },
             );
             Ok(())
@@ -458,13 +438,99 @@ impl WebProjectOwnership {
             Ok(())
         })
     }
+    pub(crate) fn prepare_export_stage_overwrite(
+        &self,
+        id: &str,
+        task: &str,
+        path: &Path,
+        payload: &PersistedIdentity,
+        destination: &Path,
+        selected: &PersistedIdentity,
+    ) -> Result<()> {
+        validate_export_stage(task, path)?;
+        check_no_symlinks(destination, false)?;
+        if path.parent() != destination.parent()
+            || !fs::symlink_metadata(destination)?.is_file()
+            || !payload.matches_path(path).unwrap_or(false)
+            || !selected.matches_path(destination).unwrap_or(false)
+        {
+            return Err(invalid("复制临时文件或用户选择的覆盖目标已变化。"));
+        }
+        self.update(id, false, |record| {
+            let stage = record
+                .export_stages
+                .get_mut(task)
+                .filter(|stage| stage.path == path)
+                .ok_or_else(|| invalid("临时复制尚未登记。"))?;
+            if !stage
+                .identity
+                .as_ref()
+                .is_some_and(|identity| identity.matches_captured(payload))
+                || !stage
+                    .parent_identity
+                    .matches_path(path.parent().unwrap())
+                    .unwrap_or(false)
+                || stage
+                    .overwrite_identity
+                    .as_ref()
+                    .is_some_and(|identity| !identity.matches_captured(selected))
+            {
+                return Err(invalid("复制覆盖授权身份已变化。"));
+            }
+            stage.overwrite_identity = Some(selected.clone());
+            stage.overwrite_verified = false;
+            Ok(())
+        })
+    }
+    pub(crate) fn verify_export_stage_overwrite(
+        &self,
+        id: &str,
+        task: &str,
+        path: &Path,
+        payload: &PersistedIdentity,
+        destination: &Path,
+        selected: &PersistedIdentity,
+    ) -> Result<()> {
+        validate_export_stage(task, path)?;
+        check_no_symlinks(path, false)?;
+        check_no_symlinks(destination, false)?;
+        if path.parent() != destination.parent()
+            || !payload.matches_path(destination).unwrap_or(false)
+            || !selected.matches_path(path).unwrap_or(false)
+        {
+            return Err(invalid("覆盖发布结果未确认，原目标仍受保护。"));
+        }
+        self.update(id, false, |record| {
+            let stage = record
+                .export_stages
+                .get_mut(task)
+                .filter(|stage| stage.path == path)
+                .ok_or_else(|| invalid("覆盖临时材料未登记。"))?;
+            if !stage
+                .identity
+                .as_ref()
+                .is_some_and(|identity| identity.matches_captured(payload))
+                || !stage
+                    .overwrite_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.matches_captured(selected))
+                || !stage
+                    .parent_identity
+                    .matches_path(path.parent().unwrap())
+                    .unwrap_or(false)
+            {
+                return Err(invalid("覆盖发布授权或父目录身份变化。"));
+            }
+            stage.overwrite_verified = true;
+            Ok(())
+        })
+    }
     /// Native copies reserve an ownership key without creating a BuildManager
     /// task directory. Only this empty reservation may disappear on delivery.
     pub(crate) fn forget_native_copy_task(&self, id: &str, task: &str) -> Result<()> {
         task_id(task)?;
         self.update(id, false, |record| {
             if record.export_stages.contains_key(task)
-                || record.exports.values().any(|export| export.task_id == task)
                 || record.tasks.get(task).is_some_and(Option::is_some)
             {
                 return Err(invalid("本次原生复制仍有未清理的任务材料。"));
@@ -542,8 +608,14 @@ impl WebProjectOwnership {
                     .unwrap_or(false)
                     || !stage
                         .identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.matches_path(&stage.path).unwrap_or(false))
+                        .iter()
+                        .chain(
+                            stage
+                                .overwrite_identity
+                                .iter()
+                                .filter(|_| stage.overwrite_verified),
+                        )
+                        .any(|identity| identity.matches_path(&stage.path).unwrap_or(false))
                 {
                     return Err(invalid("导出临时文件归属未核实。"));
                 }
@@ -556,38 +628,6 @@ impl WebProjectOwnership {
                     .map_err(|error| invalid(error.to_string()))?;
             }
             paths.push(stage.path.clone());
-        }
-        for target in record.exports.values() {
-            if target.removed || record.removed_materials.contains_key(&target.path) {
-                continue;
-            }
-            if record.file_deletions.contains_key(&target.path) {
-                paths.push(target.path.clone());
-                continue;
-            }
-            if let Some(identity) = &target.identity {
-                check_no_symlinks(&target.path, true)?;
-                if target.path.exists() && !identity.matches_path(&target.path).unwrap_or(false) {
-                    if !target.published
-                        && target
-                            .stage_path
-                            .as_ref()
-                            .is_some_and(|stage| identity.matches_path(stage).unwrap_or(false))
-                    {
-                        continue;
-                    }
-                    return Err(invalid(format!(
-                        "导出文件已被替换，未删除：{}",
-                        target.path.display()
-                    )));
-                }
-                if !target.path.exists() {
-                    identity
-                        .absent_on_expected_volume(&target.path)
-                        .map_err(|error| invalid(error.to_string()))?;
-                }
-                paths.push(target.path.clone());
-            }
         }
         paths.retain(|path| !record.removed_materials.contains_key(path));
         deduplicate(&mut paths);
@@ -623,14 +663,22 @@ impl WebProjectOwnership {
             .values()
             .find(|stage| stage.path == path)
         {
+            if stage.path.try_exists()? {
+                return stage
+                    .identity
+                    .iter()
+                    .chain(
+                        stage
+                            .overwrite_identity
+                            .iter()
+                            .filter(|_| stage.overwrite_verified),
+                    )
+                    .find(|identity| identity.matches_path(&stage.path).unwrap_or(false))
+                    .cloned()
+                    .map(Some)
+                    .ok_or_else(|| invalid("临时文件已被替换或覆盖结果未确认，未接管其新身份。"));
+            }
             return Ok(stage.identity.clone());
-        }
-        if let Some(export) = record
-            .exports
-            .values()
-            .find(|export| export.path == path && !export.removed)
-        {
-            return Ok(export.identity.clone());
         }
         let fixed = fixed_paths(&self.workspace, id)
             .iter()
@@ -656,24 +704,6 @@ impl WebProjectOwnership {
             let mut paths = self.material_paths(&id)?;
             for plan in self.file_deletion_plans(&id)? {
                 paths.extend(crate::web_file_deletion::owned_scopes(&plan)?);
-            }
-            for (key, target) in self.read(&id)?.exports {
-                let claim = crate::web_export_claims::directory(&self.data, &key)?;
-                if let Some(identity) = target.claim_identity {
-                    if claim.exists() {
-                        if identity.matches_path(&claim).unwrap_or(false) {
-                            paths.push(claim);
-                        } else if !(target.removed && target.release_intent) {
-                            return Err(invalid("导出占有记录身份变化。"));
-                        }
-                    } else {
-                        identity
-                            .absent_on_expected_volume(&claim)
-                            .map_err(|error| invalid(error.to_string()))?;
-                    }
-                } else if claim.exists() {
-                    return Err(invalid("导出占有目录尚未确认归属。"));
-                }
             }
             if let Some(root) = self.read(&id)?.project_root {
                 root.verify()?;
@@ -725,20 +755,11 @@ impl WebProjectOwnership {
                 candidate == stage.path
                     || stage
                         .identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.matches_path(candidate).unwrap_or(false))
+                        .iter()
+                        .chain(stage.overwrite_identity.iter())
+                        .any(|identity| identity.matches_path(candidate).unwrap_or(false))
             });
-            let export = record
-                .exports
-                .values()
-                .filter(|export| !export.removed)
-                .any(|export| {
-                    candidate == export.path
-                        || export.identity.as_ref().is_some_and(|identity| {
-                            identity.matches_path(candidate).unwrap_or(false)
-                        })
-                });
-            if bound || fixed || stage || export {
+            if bound || fixed || stage {
                 return Err(crate::project_tool_boundary::project_owned());
             }
         }
@@ -838,22 +859,6 @@ impl WebProjectOwnership {
                     }
                 }
             }
-            for export in record.exports.values().filter(|export| !export.removed) {
-                if let Ok(relative) = export.path.strip_prefix(old) {
-                    let target = new.join(relative);
-                    if let Some(bound) = capture(&target)? {
-                        if bound.directory {
-                            return Err(invalid("迁移的导出副本不是文件。"));
-                        }
-                        old_owner.reserve_export_destination_inner(
-                            &id,
-                            &export.task_id,
-                            &target,
-                            Some(&bound.identity),
-                        )?;
-                    }
-                }
-            }
             old_owner.update(&id, false, |record| {
                 for retained in retained {
                     if !record
@@ -900,261 +905,6 @@ impl WebProjectOwnership {
     ) -> Result<Vec<crate::web_file_deletion::FileDeletionPlan>> {
         Ok(self.read(id)?.file_deletions.into_values().collect())
     }
-    pub(crate) fn reserve_export_destination(
-        &self,
-        id: &str,
-        task: &str,
-        path: &Path,
-    ) -> Result<()> {
-        self.reserve_export_destination_inner(id, task, path, None)
-    }
-    fn reserve_export_destination_inner(
-        &self,
-        id: &str,
-        task: &str,
-        path: &Path,
-        verified_copy: Option<&PersistedIdentity>,
-    ) -> Result<()> {
-        use std::{
-            io::Write,
-            os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-        };
-        absolute(path)?;
-        task_id(task)?;
-        crate::node_apps::development::with_source_ownership_admission(|| {
-            check_no_symlinks(path, true)?;
-            if path.exists()
-                && !verified_copy
-                    .is_some_and(|identity| identity.matches_path(path).unwrap_or(false))
-            {
-                return Err(ApiError::new(
-                    "EXPORT_DESTINATION_EXISTS",
-                    "请选择尚不存在的新导出文件名。",
-                ));
-            }
-            let (key, parent_identity, ancestors) = crate::web_export_claims::key(path)?;
-            if let Some(expected) = verified_copy {
-                if let Some(previous) = self.read(id)?.exports.get(&key) {
-                    if previous.path != path
-                        || !previous
-                            .identity
-                            .as_ref()
-                            .is_some_and(|identity| identity.matches_captured(expected))
-                    {
-                        return Err(invalid("迁移后的导出副本身份变化。"));
-                    }
-                    let claim = crate::web_export_claims::directory(&self.data, &key)?;
-                    if previous
-                        .claim_identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.matches_path(&claim).unwrap_or(false))
-                    {
-                        return Ok(());
-                    }
-                }
-            }
-            if verified_copy.is_none() {
-                for protected in [
-                    self.data.clone(),
-                    self.workspace.join("projects"),
-                    self.workspace.join("backups"),
-                    self.workspace.join(".platform"),
-                    self.workspace.join("project-sources"),
-                ] {
-                    if let Some(bound) = capture(&protected)? {
-                        if ancestors
-                            .iter()
-                            .any(|ancestor| ancestor.matches_captured(&bound.identity))
-                        {
-                            return Err(invalid("导出目标不能位于平台受管目录。"));
-                        }
-                    }
-                }
-            }
-            crate::node_apps::development::require_export_location_unclaimed(
-                &self.data,
-                path.parent().unwrap(),
-            )?;
-            for entry in fs::read_dir(self.root())? {
-                let other = entry?.file_name().to_string_lossy().into_owned();
-                if other == id {
-                    continue;
-                }
-                let record = self.read(&other)?;
-                if record
-                    .project_root
-                    .iter()
-                    .chain(record.retained.iter())
-                    .any(|bound| {
-                        bound.directory
-                            && ancestors
-                                .iter()
-                                .any(|ancestor| ancestor.matches_captured(&bound.identity))
-                    })
-                {
-                    return Err(invalid("导出目标位于另一个项目独占的目录。"));
-                }
-            }
-            let claim_path = crate::web_export_claims::directory(&self.data, &key)?;
-            check_no_symlinks(&claim_path, true)?;
-            if claim_path.exists() {
-                return Err(ApiError::new(
-                    "EXPORT_PATH_OWNED",
-                    "此导出位置已被项目占有，请选择新文件名。",
-                ));
-            }
-            self.update(id, false, |record| {
-                if !record.tasks.contains_key(task) {
-                    return Err(invalid("导出任务尚未登记。"));
-                }
-                record.exports.insert(
-                    key.clone(),
-                    ExportTarget {
-                        path: path.into(),
-                        task_id: task.into(),
-                        parent_identity: parent_identity.clone(),
-                        claim_identity: None,
-                        identity: verified_copy.cloned(),
-                        stage_path: None,
-                        published: verified_copy.is_some(),
-                        removed: false,
-                        release_intent: false,
-                    },
-                );
-                Ok(())
-            })?;
-            let root = claim_path.parent().unwrap();
-            check_no_symlinks(root, true)?;
-            if !root.exists() {
-                fs::DirBuilder::new().mode(0o700).create(root)?;
-            }
-            if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&claim_path) {
-                self.update(id, false, |record| {
-                    record.exports.remove(&key);
-                    Ok(())
-                })?;
-                return Err(error.into());
-            }
-            let identity = PersistedIdentity::capture(&claim_path)
-                .map_err(|error| invalid(error.to_string()))?;
-            self.update(id, false, |record| {
-                record
-                    .exports
-                    .get_mut(&key)
-                    .ok_or_else(|| invalid("导出归属丢失。"))?
-                    .claim_identity = Some(identity);
-                Ok(())
-            })?;
-            let claim = crate::web_export_claims::ExportClaim {
-                version: 1,
-                project_id: id.into(),
-                task_id: task.into(),
-                path: path.into(),
-                parent_identity,
-                ancestors,
-            };
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(claim_path.join("owner.json"))?;
-            file.write_all(&serde_json::to_vec(&claim)?)?;
-            file.sync_all()?;
-            fs::File::open(&claim_path)?.sync_all()?;
-            fs::File::open(root)?.sync_all()?;
-            Ok(())
-        })
-    }
-    pub(crate) fn bind_export_destination(
-        &self,
-        id: &str,
-        task: &str,
-        path: &Path,
-        stage: &Path,
-    ) -> Result<()> {
-        let identity =
-            PersistedIdentity::capture(stage).map_err(|error| invalid(error.to_string()))?;
-        self.update(id, false, |record| {
-            let source = record
-                .export_stages
-                .get(task)
-                .filter(|source| {
-                    source.path == stage
-                        && source
-                            .identity
-                            .as_ref()
-                            .is_some_and(|expected| expected.matches_captured(&identity))
-                })
-                .ok_or_else(|| invalid("导出临时文件归属不符。"))?;
-            let target = record
-                .exports
-                .values_mut()
-                .find(|target| target.task_id == task && target.path == path)
-                .ok_or_else(|| invalid("导出最终目标未预先独占登记。"))?;
-            if !target
-                .parent_identity
-                .matches_captured(&source.parent_identity)
-                || path.exists()
-            {
-                return Err(invalid("导出目标已被其他文件占用。"));
-            }
-            target.identity = Some(identity);
-            target.stage_path = Some(stage.into());
-            Ok(())
-        })
-    }
-    pub(crate) fn commit_export_destination(&self, id: &str, task: &str) -> Result<()> {
-        self.update(id, false, |record| {
-            let target = record
-                .exports
-                .values_mut()
-                .find(|target| target.task_id == task)
-                .ok_or_else(|| invalid("导出目标归属缺失。"))?;
-            if !target
-                .identity
-                .as_ref()
-                .is_some_and(|identity| identity.matches_path(&target.path).unwrap_or(false))
-            {
-                return Err(invalid("已发布导出文件身份变化。"));
-            }
-            target.published = true;
-            Ok(())
-        })
-    }
-    pub(crate) fn cancel_unpublished_export(&self, id: &str, task: &str) -> Result<()> {
-        let record = self.read(id)?;
-        let Some((key, target)) = record
-            .exports
-            .iter()
-            .find(|(_, target)| target.task_id == task)
-        else {
-            return Ok(());
-        };
-        if target.published {
-            return Ok(());
-        }
-        if let Some(identity) = &target.identity {
-            if identity.matches_path(&target.path).unwrap_or(false) {
-                return Ok(());
-            }
-            if !target
-                .stage_path
-                .as_ref()
-                .is_some_and(|stage| identity.matches_path(stage).unwrap_or(false))
-            {
-                return Err(invalid("无法确认导出未发布，保留当前归属。"));
-            }
-        }
-        self.update(id, false, |record| {
-            record
-                .exports
-                .get_mut(key)
-                .ok_or_else(|| invalid("导出占有记录缺失。"))?
-                .removed = true;
-            Ok(())
-        })
-    }
     fn authorizes_file(
         &self,
         record: &Ownership,
@@ -1171,15 +921,14 @@ impl WebProjectOwnership {
                 stage.path == path
                     && stage
                         .identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.matches_captured(expected))
-            })
-            || record.exports.values().any(|export| {
-                export.path == path
-                    && export
-                        .identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.matches_captured(expected))
+                        .iter()
+                        .chain(
+                            stage
+                                .overwrite_identity
+                                .iter()
+                                .filter(|_| stage.overwrite_verified),
+                        )
+                        .any(|identity| identity.matches_captured(expected))
             })
             || record
                 .removed_materials
@@ -1251,13 +1000,6 @@ impl WebProjectOwnership {
             record
                 .removed_materials
                 .insert(path.into(), expected.clone());
-            for export in record
-                .exports
-                .values_mut()
-                .filter(|export| export.path == path)
-            {
-                export.removed = true;
-            }
             Ok(())
         })
     }
@@ -1271,39 +1013,9 @@ impl WebProjectOwnership {
             if !record.file_deletions.is_empty() {
                 return Err(invalid("仍有未完成的文件删除计划。"));
             }
-            for target in record.exports.values().filter(|target| !target.removed) {
-                if let Some(identity) = &target.identity {
-                    if !identity
-                        .absent_on_expected_volume(&target.path)
-                        .map_err(|error| invalid(error.to_string()))?
-                    {
-                        return Err(invalid("仍有未清理的项目导出文件。"));
-                    }
-                }
-            }
-            self.update(id, false, |record| {
-                for target in record.exports.values_mut() {
-                    target.removed = true;
-                    target.release_intent = true;
-                }
-                Ok(())
-            })?;
-            for (key, target) in self.read(id)?.exports {
-                let claim = crate::web_export_claims::directory(&self.data, &key)?;
-                if let Some(identity) = target.claim_identity {
-                    if claim.exists() {
-                        if identity.matches_path(&claim).unwrap_or(false) {
-                            crate::history_cleanup::remove_owned_directory(&claim, &identity)?;
-                        }
-                    } else {
-                        identity
-                            .absent_on_expected_volume(&claim)
-                            .map_err(|error| invalid(error.to_string()))?;
-                    }
-                } else if claim.exists() {
-                    return Err(invalid("未确认身份的导出占有目录仍存在。"));
-                }
-            }
+            // All remaining entries are platform material. Final deliveries
+            // have never entered this ledger.
+            self.material_paths(id)?;
         }
         let identity =
             PersistedIdentity::capture(&directory).map_err(|error| invalid(error.to_string()))?;
@@ -1495,146 +1207,80 @@ mod tests {
             .is_err());
         assert!(!owner.directory(&id).unwrap().exists());
     }
-    fn publish_export(
+    fn publish_delivery(
         owner: &WebProjectOwnership,
         id: &str,
         parent: &Path,
         name: &str,
-        commit: bool,
-    ) -> (String, PathBuf, PersistedIdentity) {
+        forget: bool,
+    ) -> (String, PathBuf, PathBuf) {
         fs::create_dir_all(parent).unwrap();
         let task = format!("task_{}", uuid::Uuid::new_v4().simple());
         owner.record_task(id, &task).unwrap();
         let path = parent.join(name);
-        owner.reserve_export_destination(id, &task, &path).unwrap();
         let stage = parent.join(format!(".export-{task}.partial"));
         owner.reserve_export_stage(id, &task, &stage).unwrap();
         fs::write(&stage, []).unwrap();
-        let identity = PersistedIdentity::capture(&stage).unwrap();
         owner
-            .capture_export_stage(id, &task, &stage, &identity)
+            .capture_export_stage(
+                id,
+                &task,
+                &stage,
+                &PersistedIdentity::capture(&stage).unwrap(),
+            )
             .unwrap();
-        fs::write(&stage, b"disposable ZIP content").unwrap();
-        owner
-            .bind_export_destination(id, &task, &path, &stage)
-            .unwrap();
+        fs::write(&stage, b"disposable user ZIP").unwrap();
         fs::rename(&stage, &path).unwrap();
-        if commit {
-            owner.commit_export_destination(id, &task).unwrap();
+        if forget {
+            owner.forget_export_stage(id, &task).unwrap();
         }
-        owner.forget_export_stage(id, &task).unwrap();
-        (task, path, identity)
-    }
-    fn clear_export(
-        owner: &WebProjectOwnership,
-        id: &str,
-        path: &Path,
-        expected: &PersistedIdentity,
-    ) {
-        crate::web_file_deletion::remove_owned_file(owner, id, path, expected).unwrap();
-        owner.mark_material_removed(id, path, expected).unwrap();
+        (task, path, stage)
     }
     #[test]
-    fn final_export_is_owned_before_rename_receipt_and_removed_with_claim() {
+    fn delivered_zip_never_enters_deletion_or_uninstall_scope_even_if_replaced() {
         let (temporary, owner, id) = fixture();
         let parent = temporary
             .path()
             .canonicalize()
             .unwrap()
-            .join("disposable-exports");
-        let (_, path, expected) = publish_export(&owner, &id, &parent, "snapshot.zip", false);
-        assert!(owner.material_paths(&id).unwrap().contains(&path));
-        clear_export(&owner, &id, &path, &expected);
+            .join("user-deliveries");
+        let (_, path, _) = publish_delivery(&owner, &id, &parent, "snapshot.zip", true);
+        assert!(!owner.material_paths(&id).unwrap().contains(&path));
+        assert!(!owner
+            .all_owned_scopes()
+            .unwrap()
+            .iter()
+            .any(|(_, paths)| paths.contains(&path)));
+        fs::write(&path, b"user replaced delivered ZIP").unwrap();
         owner.finalize(&id).unwrap();
-        assert!(!path.exists());
-        assert!(!owner.directory(&id).unwrap().exists());
-        assert!(fs::read_dir(owner.data.join("web-export-owners"))
-            .unwrap()
-            .next()
-            .is_none());
+        assert_eq!(fs::read(&path).unwrap(), b"user replaced delivered ZIP");
+        assert!(!owner.data.join("web-export-owners").exists());
     }
     #[test]
-    fn replaced_final_export_is_never_adopted_or_deleted() {
+    fn crash_after_delivery_before_forgetting_partial_never_adopts_the_final_zip() {
         let (temporary, owner, id) = fixture();
         let parent = temporary
             .path()
             .canonicalize()
             .unwrap()
-            .join("disposable-exports");
-        let (_, path, _) = publish_export(&owner, &id, &parent, "snapshot.zip", true);
-        fs::rename(&path, parent.join("kept-original.zip")).unwrap();
-        fs::write(&path, b"foreign replacement").unwrap();
-        assert!(owner.material_paths(&id).is_err());
-        assert!(owner.finalize(&id).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"foreign replacement");
+            .join("user-deliveries");
+        let (_, path, stage) = publish_delivery(&owner, &id, &parent, "snapshot.zip", false);
+        let reopened = WebProjectOwnership::new(owner.data.clone(), owner.workspace.clone());
+        let paths = reopened.material_paths(&id).unwrap();
+        assert!(paths.contains(&stage));
+        assert!(!paths.contains(&path));
+        reopened.finalize(&id).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"disposable user ZIP");
     }
     #[test]
-    fn export_claim_survives_missing_file_and_rejects_case_and_unicode_aliases() {
+    fn a_delivered_user_zip_does_not_permanently_reserve_a_source_directory() {
         let (temporary, owner, id) = fixture();
         let parent = temporary
             .path()
             .canonicalize()
             .unwrap()
-            .join("disposable-exports");
-        let (_, path, expected) = publish_export(&owner, &id, &parent, "Caf\u{e9}.zip", true);
-        fs::remove_file(&path).unwrap();
-        let other = format!("prj_{}", uuid::Uuid::new_v4().simple());
-        owner.initialize(&other).unwrap();
-        let task = format!("task_{}", uuid::Uuid::new_v4().simple());
-        owner.record_task(&other, &task).unwrap();
-        let alias = parent.join("CAFE\u{301}.ZIP");
-        assert_eq!(
-            owner
-                .reserve_export_destination(&other, &task, &alias)
-                .unwrap_err()
-                .code,
-            "EXPORT_PATH_OWNED"
-        );
-        owner.mark_material_removed(&id, &path, &expected).unwrap();
-        owner.finalize(&id).unwrap();
-        owner
-            .reserve_export_destination(&other, &task, &alias)
-            .unwrap();
-    }
-    #[test]
-    fn removed_progress_allows_a_retry_without_touching_a_new_owners_same_path() {
-        let (temporary, owner, id) = fixture();
-        let parent = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("disposable-exports");
-        let (_, path, expected) = publish_export(&owner, &id, &parent, "snapshot.zip", true);
-        clear_export(&owner, &id, &path, &expected);
-        owner
-            .update(&id, false, |record| {
-                for target in record.exports.values_mut() {
-                    target.release_intent = true;
-                }
-                Ok(())
-            })
-            .unwrap();
-        let (key, _, _) = crate::web_export_claims::key(&path).unwrap();
-        let claim = crate::web_export_claims::directory(&owner.data, &key).unwrap();
-        let claim_identity = PersistedIdentity::capture(&claim).unwrap();
-        crate::history_cleanup::remove_owned_directory(&claim, &claim_identity).unwrap();
-        let other = format!("prj_{}", uuid::Uuid::new_v4().simple());
-        owner.initialize(&other).unwrap();
-        let (_, new_path, _) = publish_export(&owner, &other, &parent, "snapshot.zip", true);
-        assert!(!owner.material_paths(&id).unwrap().contains(&new_path));
-        owner.finalize(&id).unwrap();
-        assert_eq!(fs::read(&new_path).unwrap(), b"disposable ZIP content");
-        assert!(owner.material_paths(&other).unwrap().contains(&new_path));
-    }
-    #[test]
-    fn export_and_node_source_admissions_are_exclusive_in_both_directions() {
-        let (temporary, owner, id) = fixture();
-        let parent = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("disposable-exports");
-        let (_, _, _) = publish_export(&owner, &id, &parent, "snapshot.zip", true);
+            .join("user-deliveries");
+        let (_, path, _) = publish_delivery(&owner, &id, &parent, "snapshot.zip", true);
         let node = uuid::Uuid::new_v4().to_string();
         crate::node_project_ownership::NodeProjectOwnership::new(
             owner.data.clone(),
@@ -1642,54 +1288,28 @@ mod tests {
         )
         .initialize(&node)
         .unwrap();
-        assert!(
-            crate::node_apps::development::claim_source_after_verified_migration(
-                &owner.data,
-                &owner.workspace,
-                &node,
-                &parent
-            )
-            .is_err()
-        );
-        let source = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("disposable-node-source");
-        fs::create_dir(&source).unwrap();
         crate::node_apps::development::claim_source_after_verified_migration(
             &owner.data,
             &owner.workspace,
             &node,
-            &source,
+            &parent,
         )
         .unwrap();
-        let task = format!("task_{}", uuid::Uuid::new_v4().simple());
-        owner.record_task(&id, &task).unwrap();
-        assert!(owner
-            .reserve_export_destination(&id, &task, &source.join("forbidden.zip"))
-            .is_err());
-        assert!(crate::web_export_claims::require_source_unoccupied(
-            &owner.data,
-            &owner.workspace.join("projects/future-uncreated-root")
-        )
-        .is_ok());
+        assert_eq!(fs::read(path).unwrap(), b"disposable user ZIP");
     }
     #[test]
-    fn missing_final_export_on_an_unavailable_expected_volume_blocks_scope_cleanup() {
+    fn missing_partial_on_an_unavailable_expected_volume_stays_protected() {
         let (temporary, owner, id) = fixture();
         let parent = temporary
             .path()
             .canonicalize()
             .unwrap()
-            .join("disposable-exports");
-        let (_, path, _) = publish_export(&owner, &id, &parent, "snapshot.zip", true);
-        fs::remove_file(&path).unwrap();
-        owner.material_paths(&id).unwrap();
+            .join("user-deliveries");
+        let (_, path, stage) = publish_delivery(&owner, &id, &parent, "snapshot.zip", false);
         owner
             .update(&id, false, |record| {
                 let identity = record
-                    .exports
+                    .export_stages
                     .values_mut()
                     .next()
                     .unwrap()
@@ -1706,26 +1326,30 @@ mod tests {
             .unwrap();
         assert!(owner.material_paths(&id).is_err());
         assert!(owner.finalize(&id).is_err());
+        assert!(!stage.exists());
+        assert!(path.exists());
     }
     #[test]
-    fn migration_keeps_export_original_and_copied_file_exclusively_owned() {
+    fn public_migration_does_not_register_user_deliveries_as_project_material() {
         let (_temporary, owner, id) = fixture();
-        let parent = owner.workspace.join("custom-exports");
-        let (_, old_path, _) = publish_export(&owner, &id, &parent, "snapshot.zip", true);
+        let (_, old, _) = publish_delivery(
+            &owner,
+            &id,
+            &owner.workspace.join("custom-deliveries"),
+            "snapshot.zip",
+            true,
+        );
         let next = owner.workspace.with_extension("new");
-        fs::create_dir_all(next.join("custom-exports")).unwrap();
-        let new_path = next.join("custom-exports/snapshot.zip");
-        fs::copy(&old_path, &new_path).unwrap();
-        WebProjectOwnership::rebind_after_migration(&owner.data, &owner.workspace, &next).unwrap();
+        fs::create_dir_all(next.join("custom-deliveries")).unwrap();
+        let new = next.join("custom-deliveries/snapshot.zip");
+        fs::copy(&old, &new).unwrap();
         WebProjectOwnership::rebind_after_migration(&owner.data, &owner.workspace, &next).unwrap();
         let migrated = WebProjectOwnership::new(owner.data.clone(), next);
         let paths = migrated.material_paths(&id).unwrap();
-        assert!(paths.contains(&old_path));
-        assert!(paths.contains(&new_path));
-        for path in [old_path, new_path] {
-            let expected = migrated.material_identity(&id, &path).unwrap().unwrap();
-            clear_export(&migrated, &id, &path, &expected);
-        }
+        assert!(!paths.contains(&old));
+        assert!(!paths.contains(&new));
         migrated.finalize(&id).unwrap();
+        assert_eq!(fs::read(old).unwrap(), b"disposable user ZIP");
+        assert_eq!(fs::read(new).unwrap(), b"disposable user ZIP");
     }
 }

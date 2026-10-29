@@ -77,12 +77,12 @@ export function ProjectExportDialog({ project, status, disabled, onTask, onClose
       <ul><li><Check size={20} aria-hidden="true" />源码与项目资料</li><li><Check size={20} aria-hidden="true" />当前应用文件</li><li><Check size={20} aria-hidden="true" />数据库和用户文件</li></ul>
     </section>
     <p className="project-export-excludes">不包含 Git 历史、开发依赖、缓存和平台历史备份。</p>
-    <p className="project-help">导出的 ZIP 属于本项目，删除项目时会一并删除。</p>
+    <p className="project-help">导出的 ZIP 保存在你选择的位置，删除项目时会保留。</p>
     <p className="project-export-warning"><Info size={20} aria-hidden="true" /><span>归档包含当前业务数据，分享前请核对其中的个人内容。</span></p>
     {existingPath && <section className="project-export-collision" aria-label="导出位置已占用">
       <strong>此位置已有文件，请选择新的文件名。</strong>
       <code>{existingPath}</code>
-      <p>每个导出文件归原项目独占，不覆盖已有文件。</p>
+      <p>不会覆盖已有文件，请另选文件名或位置。</p>
     </section>}
     {error && <p className="task-error" role="alert">{error}</p>}
     <div className="project-export-actions">
