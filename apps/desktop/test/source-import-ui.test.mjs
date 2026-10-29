@@ -104,13 +104,15 @@ test('The Git form explains all three file locations and validates supported rep
 });
 
 test('A completed add publishes editable source before cleanup and offers explicit configuration navigation', async () => {
-  const fixture = await setup(); await begin();
+  const fixture = await setup({ open_project_folder: () => undefined }); await begin();
   assert.ok(document.body.textContent.includes('已添加「Disposable app」'));
   assert.equal(fixture.registered, 1);
   assert.equal(fixture.entered.length, 0);
   assert.equal(fixture.closed, 0);
   assert.deepEqual(commands(fixture), ['source_acquire', 'node_install_prepare', 'node_install_candidate', 'node_install_apply', 'source_import_publish', 'source_import_cleanup', 'node_app_configuration']);
   assert.ok(document.body.textContent.includes('/disposable/projects/source'));
+  await click(byText('打开文件夹'));
+  assert.deepEqual(fixture.calls.at(-1), ['open_project_folder', { path: '/disposable/projects/source' }]);
   await click(byText('去设置'));
   assert.deepEqual(fixture.entered, [app]);
   assert.equal(fixture.closed, 1);

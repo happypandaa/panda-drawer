@@ -1,5 +1,5 @@
-//! Manager-only, read-only AI context and explicit editor/Finder dispatch.
-use super::{codex_handoff, local_directory, require_manager, ApiError, AppState};
+//! Manager-only, read-only AI context and explicit editor dispatch.
+use super::{codex_handoff, require_manager, ApiError, AppState};
 use platform_core::{BootstrapInfo, RuntimeHandle};
 use serde_json::{json, Value};
 use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
@@ -166,27 +166,6 @@ pub(super) async fn source_review_open_codex(
             validate_runtime(&state.handle, &runtime)?;
             root.validate(&runtime)?;
             Ok(json!({"sourcePath":root.root,"requested":true}))
-        })
-        .await?
-}
-
-#[tauri::command]
-pub(super) async fn source_review_reveal(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-) -> Result<(), ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let handle = state.handle.clone();
-    io_lease
-        .run(async move {
-            let (root, runtime) = checked_root(&handle, source_path).await?;
-            validate_runtime(&handle, &runtime)?;
-            root.validate(&runtime)?;
-            local_directory::open(&root.root, false).await?;
-            validate_runtime(&handle, &runtime)?;
-            root.validate(&runtime)
         })
         .await?
 }

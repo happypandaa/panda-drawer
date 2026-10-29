@@ -1,7 +1,40 @@
-//! Dispatch validated local locations to Finder without a shell or URL input.
+//! Open local locations in Finder without a shell or development operations.
+use super::{require_manager, AppState};
 use platform_core::ApiError;
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::process::Command;
+
+#[tauri::command]
+pub(super) async fn open_project_folder(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    io_lease
+        .run(async move {
+            let location = Path::new(&path);
+            if !location.is_absolute() {
+                return Err(ApiError::new("REVEAL_FAILED", "本地目录位置无效"));
+            }
+            let metadata = tokio::fs::metadata(location).await.map_err(|error| {
+                ApiError::new(
+                    "REVEAL_FAILED",
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        "项目文件夹不存在，请核对显示的路径"
+                    } else {
+                        "无法访问项目文件夹，请检查目录权限"
+                    },
+                )
+            })?;
+            if !metadata.is_dir() {
+                return Err(ApiError::new("REVEAL_FAILED", "项目位置不是文件夹"));
+            }
+            open(location, false).await
+        })
+        .await?
+}
 
 fn finder_command(location: &Path, select_file: bool) -> Result<Command, ApiError> {
     if !location.is_absolute() {

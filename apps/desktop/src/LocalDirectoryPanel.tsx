@@ -225,6 +225,12 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       (details ? callbacks.current.onViewDetails ?? callbacks.current.onEnter : callbacks.current.onEnter)?.(detail);
     });
   }
+  async function revealCompleted() {
+    if (!enabled || !completed?.sourcePath) return;
+    const appId = completed.id;
+    try { await invoke('open_project_folder', { path: completed.sourcePath }); }
+    catch (cause) { if (alive.current && context.current.completed?.id === appId) setError(messageFrom(cause)); }
+  }
 
   const inspection = review?.state === 'ready' ? review.inspection : null;
   const category = review?.state === 'needs-review' ? localReviewCategory(review) : null;
@@ -242,7 +248,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       <p role="status">应用现在使用新建的数据位置。{completed.configuration.canStart ? '可以打开应用。' : '完成必要设置后就可以使用。'}</p>
       <div className="local-directory-location"><strong>文件在哪里</strong><p>源码：<code>{completed.sourcePath}</code>（{generatedHere ? '原位置，已生成起始项目' : '原位置，未改动'}）</p><p>应用数据另外保存在熊猫小抽屉里，原项目里的数据不会自动带过来。</p></div>
       <p className="project-help">没有临时下载文件需要清理。以后删除应用时，你的文件夹仍会保留。</p>
-      <div className="confirmation-actions">{onEnter && <button type="button" className="primary-button" disabled={blocked} onClick={() => callbacks.current.onEnter?.(completed)}>{completed.configuration.canStart ? '打开应用' : '去设置'}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>完成</button>}</div>
+      <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={!enabled || !completed.sourcePath} onClick={() => void revealCompleted()}><FolderOpen size={14} />打开文件夹</button>{onEnter && <button type="button" className="primary-button" disabled={blocked} onClick={() => callbacks.current.onEnter?.(completed)}>{completed.configuration.canStart ? '打开应用' : '去设置'}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>完成</button>}</div>
     </section> : <>
       {recentList}
       <div ref={dropzone} className={`local-directory-dropzone${sourcePath ? ' has-selection' : recentList ? ' is-compact' : ''}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = blocked ? 'none' : 'copy'; }} onDrop={event => {

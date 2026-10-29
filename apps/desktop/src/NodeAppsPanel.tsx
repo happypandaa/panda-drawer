@@ -77,6 +77,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   const [configurationRead, setConfigurationRead] = useState(0);
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  const [openingFolder, setOpeningFolder] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [launchError, setLaunchError] = useState('');
   const [statusError, setStatusError] = useState('');
@@ -338,12 +339,13 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     finally { operation.current = false; if (alive.current) setPending(null); }
   }
   async function revealSource() {
-    if (blocked || loading || !detail || operation.current) return;
-    operation.current = true; setPending('reveal-source'); setError('');
+    if (!enabled || !detail || !projectPath || openingFolder === projectPath) return;
+    const path = projectPath;
+    setOpeningFolder(path); setError('');
     const appId = detail.id; const selection = sequence.current;
-    try { await invoke('node_development_reveal', { appId }); }
+    try { await invoke('open_project_folder', { path }); }
     catch (cause) { if (alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId) setError(messageFrom(cause)); }
-    finally { operation.current = false; if (alive.current) setPending(null); }
+    finally { if (alive.current) setOpeningFolder(current => current === path ? null : current); }
   }
   async function refreshInstalled(appId: string) {
     const selection = sequence.current; const revision = ++statusRead.current;
@@ -391,7 +393,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
         <div className="detail-overview-body node-overview-body" role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}>
           <dl className="detail-summary-facts"><div><dt>运行状态</dt><dd className={detail.state === 'running' ? 'detail-ready-text' : detail.state === 'failed' ? 'detail-error-text' : ''}>{runtimeStateLabel(detail)}{detail.restartRequired ? ' · 待重启' : ''}</dd></div><div><dt>应用配置</dt><dd className={configurationState?.kind === 'complete' ? '' : 'detail-warning-text'}>{configurationState?.overviewText}</dd></div></dl>
           <section className="detail-location-section"><h3>项目文件夹</h3>
-            <div className="detail-location-row"><FolderOpen size={22} /><span><code>{projectPath ?? '源码目录暂不可用，请核对项目来源。'}</code></span><button className="icon-button" aria-label="复制项目文件夹" disabled={!projectPath} onClick={() => { if (projectPath) void navigator.clipboard?.writeText(projectPath).then(() => setNotice('路径已复制。'), () => setNotice('请选中完整路径后复制。')); }}><Copy size={20} /></button><button className="refresh-button" disabled={blocked || loading} onClick={() => void revealSource()}>打开文件夹</button></div>
+            <div className="detail-location-row"><FolderOpen size={22} /><span><code>{projectPath ?? '源码目录暂不可用，请核对项目来源。'}</code></span><button className="icon-button" aria-label="复制项目文件夹" disabled={!projectPath} onClick={() => { if (projectPath) void navigator.clipboard?.writeText(projectPath).then(() => setNotice('路径已复制。'), () => setNotice('请选中完整路径后复制。')); }}><Copy size={20} /></button><button className="refresh-button" disabled={!enabled || !projectPath || openingFolder === projectPath} onClick={() => void revealSource()}>打开文件夹</button></div>
             <p className="detail-section-note">AI 在这里改代码。数据、配置和密钥单独保存在本机，改代码不会动到它们。</p>
             {detail.installation?.kind === 'managed' && <NodeApplyChangesPanel key={`${detail.id}:${instanceId}`} appId={detail.id} instanceId={instanceId} sourcePath={projectPath} appName={detail.name} appVersion={detail.version} platformVersion={platformVersion} runtimeLogPaths={runtimeLogPaths} disabled={!enabled || Boolean(pending) || loading || dirty || deletionPending} running={['running', 'starting', 'stopping'].includes(detail.state) || Boolean(detail.runRecovery)} onPendingChange={setApplyPending} onTask={onTask} onInstalled={() => void refreshInstalled(detail.id)} />}
           </section>

@@ -1,5 +1,5 @@
 //! Only the native manager can edit developer sources or dispatch an editor.
-use super::{codex_handoff, local_directory, require_manager, ApiError, AppState};
+use super::{codex_handoff, require_manager, ApiError, AppState};
 use platform_core::NodeGitAction;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -46,29 +46,6 @@ pub(super) async fn node_development_bind(
                 .node_apps
                 .bind_development_source(&app_id, PathBuf::from(source_path))
                 .await
-        })
-        .await?
-}
-#[tauri::command]
-pub(super) async fn node_development_reveal(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<(), ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let _admission = state.node_apps.admit_operation(&app_id, "显示源码目录")?;
-            let _operation = state.node_windows.instance_operation(&app_id).await;
-            let lease = state
-                .handle
-                .node_development_lease(&state.node_apps, &app_id, false)
-                .await?;
-            lease.validate()?;
-            local_directory::open(&lease.source.source_root, false).await
         })
         .await?
 }

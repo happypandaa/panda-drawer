@@ -779,13 +779,16 @@ test('Standalone Node deletion never publishes incomplete or mismatched success 
 test('Managed overview shows the editable source and mounts only its explicit apply workflow', async () => {
   const calls = [];
   const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: 'gen_' + 'a'.repeat(32) }, development: { sourcePath: '/disposable/author-source', runtimeIsSource: false }, objectLayout: { controlPath: '/disposable/control', data: { root: '/disposable/data', database: '/disposable/data/main.sqlite' }, configurationPath: '/disposable/configuration.json' } });
-  await setup(baseMock(value, async command => { calls.push(command); if (command === 'node_development_build') return { taskId: 'build-one', type: 'nodeDevelopmentBuild', projectId: null, final: true, status: 'succeeded', result: { appId: value.id, source: { sourceId: 'src_'+'a'.repeat(32), contentDigest: 'b'.repeat(64), name: '人工源码', status: 'ready', inspection: { kind: 'node-service-source' } } } }; throw Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+  await setup(baseMock(value, async (command, args) => { calls.push(command); if (command === 'open_project_folder') { assert.deepEqual(args, { path: '/disposable/author-source' }); return; } if (command === 'node_development_build') return { taskId: 'build-one', type: 'nodeDevelopmentBuild', projectId: null, final: true, status: 'succeeded', result: { appId: value.id, source: { sourceId: 'src_'+'a'.repeat(32), contentDigest: 'b'.repeat(64), name: '人工源码', status: 'ready', inspection: { kind: 'node-service-source' } } } }; throw Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
   await click(byText('概览'));
   const overview = document.querySelector('.node-overview-body');
   assert.match(overview.textContent, /项目文件夹.*author-source/s);
   assert.doesNotMatch(overview.textContent, /程序来源|配置与数据|开发与更新|应用更新|源码版本|文件与版本范围|详细运行信息/);
   assert.equal(document.querySelector('.node-install-panel'), null);
   assert.deepEqual(calls, []);
+  await click(byText('打开文件夹'));
+  assert.deepEqual(calls, ['open_project_folder']);
+  calls.length = 0;
   await click(byText('应用修改'));
   assert.deepEqual(calls, ['node_development_build']);
   assert.match(document.querySelector('.node-install-panel').textContent, /确认应用修改/);
@@ -799,7 +802,7 @@ test('Managed overview shows the editable source and mounts only its explicit ap
 
 test('Local overview has no update, Git, restore or Codex entrances and shows flat technical paths', async () => {
   const calls = [];
-  await setup(baseMock(app(), async command => { calls.push(command); throw Error(command); }));
+  await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); if (command === 'open_project_folder') return; throw Error(command); }));
   await click(byText('概览'));
   assert.equal(byText('应用修改'), undefined);
   assert.equal(document.querySelector('.node-overview-body details'), null);
@@ -808,7 +811,7 @@ test('Local overview has no update, Git, restore or Codex entrances and shows fl
   assert.match(document.querySelector('.detail-action-hint').textContent, /想改功能？复制提示词发给 AI，改完后关闭窗口再进入即可生效。/);
   assert.doesNotMatch(document.querySelector('.node-overview-body').textContent, /构建并更新|源码版本|Codex|安装副本说明|文件与版本范围/);
   await click(byText('打开文件夹'));
-  assert.deepEqual(calls, ['node_development_reveal']);
+  assert.deepEqual(calls, [['open_project_folder', { path: '/not-a-real-source' }]]);
 });
 
 test('Empty fields hide configuration navigation including keyboard and configure requests', async () => {
@@ -1351,6 +1354,7 @@ test('Adding a ready local folder previews first and binds registration to the r
     if (command === 'choose_path') return '/artificial/node-source';
     if (command === 'node_app_directory_inspect') return directoryReview();
     if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
+    if (command === 'open_project_folder') return;
     throw new Error(command);
   }, { request: null, addRequest: 1 });
   await click(byText('选择文件夹…'));
@@ -1371,6 +1375,8 @@ test('Adding a ready local folder previews first and binds registration to the r
   assert.ok(document.querySelector('.local-directory-panel'), 'Adding keeps the result in the original progress dialog');
   assert.equal(document.querySelector('[role=tab]'), null);
   assert.equal(calls.some(([command]) => command === 'node_app_start' || command === 'node_app_configuration'), false, 'Adding does not silently navigate to configuration or open the app');
+  await click(byText('打开文件夹'));
+  assert.deepEqual(calls.at(-1), ['open_project_folder', { path: '/artificial/node-source' }]);
 });
 
 test('Local folder progress follows actual read and add operations, then waits for explicit configuration navigation', async () => {
@@ -1460,6 +1466,7 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
     if (command === 'choose_path') return '/artificial/node-source';
     if (command === 'node_app_directory_inspect') return directoryReview('empty');
     if (command === 'node_app_directory_initialize_and_register') return app({ sourcePath: '/artificial/node-source' });
+    if (command === 'open_project_folder') return;
     throw new Error(command);
   }, { onAdded: value => added.push(value) });
   await click(byText('选择文件夹…'));
@@ -1474,6 +1481,8 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
   await click(byText('生成并添加项目'));
   assert.deepEqual(calls[2], ['node_app_directory_initialize_and_register', { sourcePath: '/artificial/node-source', input: { expectedRevision: 'directory-revision-1', name: 'My local project' } }]);
   assert.equal(added.length, 1); assert.equal(calls.length, 3);
+  await click(byText('打开文件夹'));
+  assert.deepEqual(calls.at(-1), ['open_project_folder', { path: '/artificial/node-source' }]);
   assert.equal(byText('添加'), undefined, 'Successful generation and adding must not request a second add confirmation');
   assert.equal(calls.some(([command]) => ['node_app_directory_initialize', 'node_app_directory_register', 'node_app_start'].includes(command)), false);
 });
