@@ -1,5 +1,7 @@
 # 熊猫小抽屉
 
+2026-10-29 [外部交付边界更正](docs/project-complete-deletion.md)：用户文件夹中的最终 ZIP、网页下载和附件副本保留；项目内原件、平台副本及所有临时材料随项目删除。此前“最终导出 ZIP 归项目、随删”的规则已撤回。
+
 2026-10-27 最新确认：[操作记录精简与外部 AI 分工](docs/operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
 
 2026-10-27 已接入[添加项目第2版](docs/add-project-flow.md)：并列添加入口、可编辑Git源码、本地四类检查结果、共享AI评估／修复说明及后台进度；开发包、实际检查和边界见[实施记录](docs/add-project-v2-verification.md)。
@@ -148,7 +150,7 @@ npm run cli -- project delete --project prj_实际项目ID --json
 npm run cli -- workspace info --json
 ```
 
-`export.json` 使用 `destinationPath`，目标必须是新文件名，不覆盖或复用已登记路径；新导出的 ZIP 归原项目所有，随项目删除。`import.json` 使用 `archivePath`，省略 `mode` 或使用 `"copy"` 均生成新实例 ID；`"original"` 已移除，不复用归档身份。原始导入 ZIP 保留。`copy.json` 可指定 `name`；维护中的项目操作携带本轮 `maintenanceId`。`project delete` 直接永久删除选中项目，调用前须核对目标和范围。归档路径使用绝对路径。迁移请求详见[开发说明](docs/development.md)。写入超时或服务切换后查询原任务，不自动重发。
+`export.json` 使用 `destinationPath`，目标必须是新文件名，不覆盖已有文件；已导出到用户文件夹的最终 ZIP 保留，平台快照、归档及发布临时文件随项目删除。`import.json` 使用 `archivePath`，省略 `mode` 或使用 `"copy"` 均生成新实例 ID；`"original"` 已移除，不复用归档身份。原始导入 ZIP 保留。`copy.json` 可指定 `name`；维护中的项目操作携带本轮 `maintenanceId`。`project delete` 直接永久删除选中项目，调用前须核对目标和范围。归档路径使用绝对路径。迁移请求详见[开发说明](docs/development.md)。写入超时或服务切换后查询原任务，不自动重发。
 
 运行 `npm run prepare:desktop` 并启动开发应用后，`npm run test:m1:live` 会明确新建两个可丢弃验证项目、安装 `examples/m1-runtime` 受控产物并检查接口。随后完整退出并重启，再运行 `npm run test:m1:restart` 验证数据保留和旧会话失效。测试不会清空已有工作区，也不把受控产物称为 AI 构建。
 

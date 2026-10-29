@@ -197,6 +197,8 @@ async fn every_bound_copy_checkpoint_reopens_and_deletes_only_its_stage_without_
         Point::Bound,
         Point::Copied,
         Point::BeforePublish,
+        Point::BeforeRename,
+        Point::Renamed,
         Point::Published,
     ] {
         let fixture = Fixture::new().await;
@@ -223,7 +225,7 @@ async fn every_bound_copy_checkpoint_reopens_and_deletes_only_its_stage_without_
             .material_paths(&fixture.project.manifest.id)
             .unwrap()
             .contains(&fixture.destination));
-        if !matches!(at, Point::Published) {
+        if !matches!(at, Point::Renamed | Point::Published) {
             assert!(stage.exists());
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
@@ -233,9 +235,267 @@ async fn every_bound_copy_checkpoint_reopens_and_deletes_only_its_stage_without_
         }
         fixture.delete().await;
         assert!(!stage.exists());
-        assert_eq!(fixture.destination.exists(), matches!(at, Point::Published));
+        assert_eq!(
+            fixture.destination.exists(),
+            matches!(at, Point::Renamed | Point::Published)
+        );
         fixture.stop().await;
     }
+}
+#[tokio::test]
+async fn overwrite_exchange_checkpoints_require_verified_delivery_before_cleaning_the_old_inode() {
+    for at in [Point::BeforeRename, Point::Renamed, Point::Published] {
+        let fixture = Fixture::new().await;
+        fs::write(&fixture.destination, b"user approved old delivery").unwrap();
+        let mut captured = None;
+        assert!(fixture
+            .copy(|point, stage| {
+                if std::mem::discriminant(&point) == std::mem::discriminant(&at) {
+                    captured = Some(stage.to_path_buf());
+                    return Err(invalid("disposable interrupted exchange"));
+                }
+                Ok(())
+            })
+            .is_err());
+        let stage = captured.unwrap();
+        let exchanged = !matches!(at, Point::BeforeRename);
+        assert_eq!(
+            fs::read(&stage).unwrap(),
+            if exchanged {
+                b"user approved old delivery".as_slice()
+            } else {
+                b"disposable download bytes".as_slice()
+            }
+        );
+        let reopened = WebProjectOwnership::new(
+            fixture.paths.data_root().into(),
+            fixture.paths.workspace_root().into(),
+        );
+        if matches!(at, Point::Renamed) {
+            // The exchange exists, but no durable two-ended verification has
+            // been recorded. Project cleanup cannot discard the old original.
+            assert!(reopened
+                .material_paths(&fixture.project.manifest.id)
+                .is_err());
+            let parent = crate::files::root(stage.parent().unwrap()).unwrap();
+            publish_at(&parent, &stage, &fixture.destination, Rename::Swap).unwrap();
+        } else {
+            let paths = reopened
+                .material_paths(&fixture.project.manifest.id)
+                .unwrap();
+            assert!(paths.contains(&stage));
+            assert!(!paths.contains(&fixture.destination));
+        }
+        fixture.delete().await;
+        assert!(!stage.exists());
+        assert_eq!(
+            fs::read(&fixture.destination).unwrap(),
+            if matches!(at, Point::Published) {
+                b"disposable download bytes".as_slice()
+            } else {
+                b"user approved old delivery".as_slice()
+            }
+        );
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn an_unconfirmed_exchange_never_authorizes_deleting_the_user_selected_old_file() {
+    let fixture = Fixture::new().await;
+    fs::write(
+        &fixture.destination,
+        b"user original must survive unknown delivery",
+    )
+    .unwrap();
+    let moved_payload = fixture
+        .destination
+        .with_extension("externally-moved-new-delivery");
+    let mut stage = None;
+    let error = fixture
+        .copy(|point, path| {
+            if matches!(point, Point::Renamed) {
+                stage = Some(path.to_path_buf());
+                fs::rename(&fixture.destination, &moved_payload).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    let stage = stage.unwrap();
+    assert_eq!(error.details["restorationConfirmed"], false);
+    assert_eq!(
+        fs::read(&stage).unwrap(),
+        b"user original must survive unknown delivery"
+    );
+    assert!(fixture
+        .ownership()
+        .material_paths(&fixture.project.manifest.id)
+        .is_err());
+    assert!(fixture
+        .ownership()
+        .material_identity(&fixture.project.manifest.id, &stage)
+        .is_err());
+    assert!(crate::web_file_deletion::remove_owned_file(
+        &fixture.ownership(),
+        &fixture.project.manifest.id,
+        &stage,
+        &PersistedIdentity::capture(&stage).unwrap(),
+    )
+    .is_err());
+    assert_eq!(
+        fs::read(&stage).unwrap(),
+        b"user original must survive unknown delivery"
+    );
+    // Explicit rechecking restores the original public file and registered
+    // payload. No final-path ownership or automatic adoption is introduced.
+    fs::rename(&stage, &fixture.destination).unwrap();
+    fs::rename(&moved_payload, &stage).unwrap();
+    fixture.delete().await;
+    assert_eq!(
+        fs::read(&fixture.destination).unwrap(),
+        b"user original must survive unknown delivery"
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn replacing_the_selected_target_in_the_final_rename_gap_restores_the_foreign_file() {
+    let fixture = Fixture::new().await;
+    fs::write(&fixture.destination, b"user approved original").unwrap();
+    let original = fixture
+        .destination
+        .with_extension("selected-original-preserved");
+    let error = fixture
+        .copy(|point, _| {
+            if matches!(point, Point::BeforeRename) {
+                fs::rename(&fixture.destination, &original).unwrap();
+                fs::write(&fixture.destination, b"foreign final-gap replacement").unwrap();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.details["restorationConfirmed"], true);
+    assert_eq!(
+        fs::read(&fixture.destination).unwrap(),
+        b"foreign final-gap replacement"
+    );
+    assert_eq!(fs::read(&original).unwrap(), b"user approved original");
+    let stages = fixture.stages();
+    assert_eq!(stages.len(), 1);
+    assert_eq!(fs::read(&stages[0]).unwrap(), b"disposable download bytes");
+    fixture.delete().await;
+    assert_eq!(
+        fs::read(&fixture.destination).unwrap(),
+        b"foreign final-gap replacement"
+    );
+    assert_eq!(fs::read(&original).unwrap(), b"user approved original");
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn replacing_the_payload_in_the_final_rename_gap_never_delivers_or_deletes_the_foreign_file()
+{
+    for overwrite in [false, true] {
+        let fixture = Fixture::new().await;
+        if overwrite {
+            fs::write(&fixture.destination, b"user approved original").unwrap();
+        }
+        let payload = fixture
+            .destination
+            .with_extension("owned-payload-preserved");
+        let mut stage = None;
+        let error = fixture
+            .copy(|point, path| {
+                if matches!(point, Point::BeforeRename) {
+                    stage = Some(path.to_path_buf());
+                    fs::rename(path, &payload).unwrap();
+                    fs::write(path, b"foreign stage final-gap replacement").unwrap();
+                }
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error.details["restorationConfirmed"], true);
+        let stage = stage.unwrap();
+        assert_eq!(
+            fs::read(&stage).unwrap(),
+            b"foreign stage final-gap replacement"
+        );
+        assert_eq!(fixture.destination.exists(), overwrite);
+        if overwrite {
+            assert_eq!(
+                fs::read(&fixture.destination).unwrap(),
+                b"user approved original"
+            );
+        }
+        assert!(fixture
+            .ownership()
+            .material_paths(&fixture.project.manifest.id)
+            .is_err());
+        // Simulate explicit external rechecking: restore the registered stage
+        // and keep the foreign file outside the project cleanup scope.
+        let foreign = fixture
+            .destination
+            .with_extension("foreign-stage-preserved");
+        fs::rename(&stage, &foreign).unwrap();
+        fs::rename(&payload, &stage).unwrap();
+        fixture.delete().await;
+        assert_eq!(
+            fs::read(&foreign).unwrap(),
+            b"foreign stage final-gap replacement"
+        );
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn an_occupied_restore_name_keeps_both_foreign_objects_and_blocks_project_cleanup() {
+    let fixture = Fixture::new().await;
+    let payload = fixture
+        .destination
+        .with_extension("owned-payload-preserved");
+    let mut stage = None;
+    let error = fixture
+        .copy(|point, path| {
+            if matches!(point, Point::BeforeRename) {
+                stage = Some(path.to_path_buf());
+                fs::rename(path, &payload).unwrap();
+                fs::write(path, b"foreign published object").unwrap();
+            } else if matches!(point, Point::Renamed) {
+                fs::write(path, b"foreign occupied restore name").unwrap();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.details["restorationConfirmed"], false);
+    let stage = stage.unwrap();
+    assert_eq!(
+        fs::read(&fixture.destination).unwrap(),
+        b"foreign published object"
+    );
+    assert_eq!(fs::read(&stage).unwrap(), b"foreign occupied restore name");
+    assert!(fixture
+        .ownership()
+        .material_paths(&fixture.project.manifest.id)
+        .is_err());
+    let foreign_final = fixture
+        .destination
+        .with_extension("foreign-final-preserved");
+    let foreign_stage = fixture
+        .destination
+        .with_extension("foreign-stage-preserved");
+    fs::rename(&fixture.destination, &foreign_final).unwrap();
+    fs::rename(&stage, &foreign_stage).unwrap();
+    fs::rename(&payload, &stage).unwrap();
+    fixture.delete().await;
+    assert_eq!(
+        fs::read(&foreign_final).unwrap(),
+        b"foreign published object"
+    );
+    assert_eq!(
+        fs::read(&foreign_stage).unwrap(),
+        b"foreign occupied restore name"
+    );
+    fixture.stop().await;
 }
 #[tokio::test]
 async fn a_panicked_copy_keeps_its_registered_inode_for_later_project_deletion() {

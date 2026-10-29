@@ -2,7 +2,45 @@
 use super::*;
 
 #[tokio::test]
-async fn permanent_delete_removes_owned_exports_and_records_but_preserves_external_originals() {
+async fn moving_a_completed_user_export_folder_never_blocks_or_expands_project_deletion() {
+    let fixture = Fixture::new().await;
+    let folder = fixture
+        .paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-user-exports");
+    fs::create_dir(&folder).unwrap();
+    let archive = folder.join("user-archive.zip");
+    good(
+        &fixture
+            .project("export", json!({"destinationPath":archive}))
+            .await,
+    );
+    let owner = crate::web_project_ownership::WebProjectOwnership::new(
+        fixture.paths.data_root().into(),
+        fixture.paths.workspace_root().into(),
+    );
+    let owner_json = fs::read_to_string(owner.path(&fixture.id).unwrap()).unwrap();
+    assert!(!owner_json.contains(archive.to_str().unwrap()));
+    let preview_paths =
+        crate::web_project_cleanup::project_material_paths(&fixture.paths, &fixture.id).unwrap();
+    assert!(!preview_paths.contains(&archive));
+    assert!(!preview_paths.iter().any(|path| path.starts_with(&folder)));
+    let moved = folder.with_file_name("disposable-user-renamed-exports");
+    fs::rename(&folder, &moved).unwrap();
+    let delivered = moved.join("user-archive.zip");
+    let bytes = fs::read(&delivered).unwrap();
+    assert!(!archive.exists());
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert_eq!(fs::read(&delivered).unwrap(), bytes);
+    assert!(!owner.directory(&fixture.id).unwrap().exists());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn permanent_delete_removes_records_but_preserves_user_exports_and_external_originals() {
     let fixture = Fixture::new().await;
     let original = fixture.store.project(&fixture.id).unwrap();
     let archive = fixture.export_path("disposable-before-delete.zip");
@@ -11,6 +49,7 @@ async fn permanent_delete_removes_owned_exports_and_records_but_preserves_extern
         .await;
     good(&exported);
     assert!(archive.is_file());
+    let archive_bytes = fs::read(&archive).unwrap();
     let history = fixture
         .paths
         .workspace_root()
@@ -26,7 +65,7 @@ async fn permanent_delete_removes_owned_exports_and_records_but_preserves_extern
     let external = fixture.paths.data_root().join("external-source/keep.txt");
     for path in [&history, &recovery, &external] {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, b"preserve independently owned evidence").unwrap();
+        fs::write(path, b"disposable fixture material").unwrap();
     }
     let deleted = fixture.project("delete", json!({})).await;
     assert_eq!(good(&deleted)["operationOutcome"], "deleted");
@@ -46,7 +85,7 @@ async fn permanent_delete_removes_owned_exports_and_records_but_preserves_extern
         .pending_deletion(&fixture.id)
         .unwrap()
         .is_none());
-    assert!(!archive.exists());
+    assert_eq!(fs::read(&archive).unwrap(), archive_bytes);
     assert!(!fixture
         .paths
         .workspace_root()
@@ -55,10 +94,7 @@ async fn permanent_delete_removes_owned_exports_and_records_but_preserves_extern
     for path in [&history, &recovery] {
         assert!(!path.exists());
     }
-    assert_eq!(
-        fs::read(&external).unwrap(),
-        b"preserve independently owned evidence"
-    );
+    assert_eq!(fs::read(&external).unwrap(), b"disposable fixture material");
     assert!(fixture
         .store
         .deleted_project_identity_absent(&fixture.id)
@@ -148,10 +184,6 @@ async fn permanent_delete_requires_confirmation_and_reimport_uses_an_independent
             .project("export", json!({"destinationPath":archive}))
             .await,
     );
-    // A user-created independent copy is an import original, not a second
-    // platform-owned export of the removed project.
-    let import_original = fixture.export_path("disposable-user-import-original.zip");
-    fs::copy(&archive, &import_original).unwrap();
     good(
         &fixture
             .project(
@@ -160,9 +192,10 @@ async fn permanent_delete_requires_confirmation_and_reimport_uses_an_independent
             )
             .await,
     );
+    assert!(archive.is_file());
     let imported = fixture
         .lifecycle
-        .submit_import(json!({"archivePath":import_original}))
+        .submit_import(json!({"archivePath":archive}))
         .await
         .unwrap();
     let imported = fixture.wait(&imported).await;
@@ -308,8 +341,6 @@ async fn removed_payload_requires_explicit_finalization_before_a_later_import() 
             .project("export", json!({"destinationPath":archive}))
             .await,
     );
-    let import_original = fixture.export_path("disposable-user-copy-after-finalization.zip");
-    fs::copy(&archive, &import_original).unwrap();
     let (root, expected) = fixture.store.deletion_root(&fixture.id).unwrap();
     let (task, lease) = fixture.tasks.create_delete_operation(&fixture.id).unwrap();
     let mut journal = LifecycleManager::operation_state(&task, "delete", &fixture.id);
@@ -338,9 +369,10 @@ async fn removed_payload_requires_explicit_finalization_before_a_later_import() 
         good(&fixture.project("delete", json!({})).await)["operationOutcome"],
         "deleted"
     );
+    assert!(archive.is_file());
     let imported = fixture
         .lifecycle
-        .submit_import(json!({"archivePath":import_original}))
+        .submit_import(json!({"archivePath":archive}))
         .await
         .unwrap();
     let imported = fixture.wait(&imported).await;

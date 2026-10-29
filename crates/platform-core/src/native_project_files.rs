@@ -26,6 +26,8 @@ enum Point {
     Bound,
     Copied,
     BeforePublish,
+    BeforeRename,
+    Renamed,
     Published,
 }
 pub(crate) fn publish_file(
@@ -141,9 +143,79 @@ fn publish(
             "Save destination or temporary file changed while copying; choose it again",
         ));
     }
-    publish_at(&parent, &stage, destination, expected.is_some())?;
+    if let Some(selected) = &expected {
+        // Only the old object explicitly selected for replacement may become
+        // our stage after an atomic exchange. Never adopt a post-swap object.
+        ownership.prepare_export_stage_overwrite(
+            &project.manifest.id,
+            &task,
+            &stage,
+            &stage_identity,
+            destination,
+            selected,
+        )?;
+    }
+    checkpoint(Point::BeforeRename, &stage)?;
+    publish_at(
+        &parent,
+        &stage,
+        destination,
+        if expected.is_some() {
+            Rename::Swap
+        } else {
+            Rename::Exclusive
+        },
+    )?;
     parent.sync_all()?;
+    checkpoint(Point::Renamed, &stage)?;
+    let postcheck = (|| {
+        if !parent_identity.matches_path(parent_path).map_err(invalid)?
+            || !identity_at(&parent, destination)?
+                .is_some_and(|observed| observed.matches(&stage_identity))
+            || match &expected {
+                Some(selected) => !identity_at(&parent, &stage)?
+                    .is_some_and(|observed| observed.matches(selected)),
+                None => identity_at(&parent, &stage)?.is_some(),
+            }
+        {
+            return Err(invalid("Save publication identity changed during rename"));
+        }
+        Ok(())
+    })();
+    if let Err(error) = postcheck {
+        // Exchange preserves both objects, including a foreign replacement in
+        // the last check/rename gap. Restoration also uses only non-destructive
+        // renames; a second race keeps both names for explicit rechecking.
+        let restored = restore_publication(&parent, &stage, destination, expected.is_some());
+        return Err(error
+            .detail("stagePath", stage.to_string_lossy().into_owned())
+            .detail(
+                "destinationPath",
+                destination.to_string_lossy().into_owned(),
+            )
+            .detail("restorationConfirmed", restored.is_ok()));
+    }
+    if let Some(selected) = &expected {
+        ownership.verify_export_stage_overwrite(
+            &project.manifest.id,
+            &task,
+            &stage,
+            &stage_identity,
+            destination,
+            selected,
+        )?;
+    }
     checkpoint(Point::Published, &stage)?;
+    if let Some(selected) = &expected {
+        // After a verified exchange the private stage contains only the old
+        // user-approved object. Reuse the crash-safe, identity-bound remover.
+        crate::web_file_deletion::remove_owned_file(
+            &ownership,
+            &project.manifest.id,
+            &stage,
+            selected,
+        )?;
+    }
     ownership.forget_export_stage(&project.manifest.id, &task)?;
     ownership.forget_native_copy_task(&project.manifest.id, &task)
 }
@@ -175,19 +247,88 @@ fn c_name(path: &Path) -> Result<CString> {
     )
     .map_err(invalid)
 }
-fn publish_at(parent: &File, stage: &Path, destination: &Path, replace: bool) -> Result<()> {
+#[derive(Clone, Copy)]
+enum Rename {
+    Swap,
+    Exclusive,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct EntryIdentity {
+    device: u64,
+    inode: u64,
+    kind: libc::mode_t,
+}
+impl EntryIdentity {
+    fn matches(self, expected: &PersistedIdentity) -> bool {
+        self.kind == libc::S_IFREG && expected.legacy_pair() == (self.device, self.inode)
+    }
+}
+fn identity_at(parent: &File, path: &Path) -> Result<Option<EntryIdentity>> {
+    let name = c_name(path)?;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(error.into())
+        };
+    }
+    let metadata = unsafe { metadata.assume_init() };
+    Ok(Some(EntryIdentity {
+        device: metadata.st_dev as u64,
+        inode: metadata.st_ino,
+        kind: metadata.st_mode & libc::S_IFMT,
+    }))
+}
+fn restore_publication(
+    parent: &File,
+    stage: &Path,
+    destination: &Path,
+    swapped: bool,
+) -> Result<()> {
+    let final_before = identity_at(parent, destination)?.ok_or_else(|| {
+        invalid("Published name disappeared; retained copy stage needs rechecking")
+    })?;
+    let stage_before = identity_at(parent, stage)?;
+    if swapped {
+        if stage_before.is_none() {
+            return Err(invalid(
+                "Exchanged stage disappeared; retained names need rechecking",
+            ));
+        }
+        publish_at(parent, stage, destination, Rename::Swap)?;
+    } else {
+        if stage_before.is_some() {
+            return Err(invalid(
+                "Stage name is occupied; foreign files were preserved",
+            ));
+        }
+        publish_at(parent, destination, stage, Rename::Exclusive)?;
+    }
+    parent.sync_all()?;
+    if identity_at(parent, stage)? != Some(final_before)
+        || identity_at(parent, destination)? != stage_before
+    {
+        return Err(invalid(
+            "Publication restoration changed; both names were preserved",
+        ));
+    }
+    Ok(())
+}
+fn publish_at(parent: &File, stage: &Path, destination: &Path, rename: Rename) -> Result<()> {
     let from = c_name(stage)?;
     let to = c_name(destination)?;
-    let result = if replace {
-        unsafe {
-            libc::renameat(
-                parent.as_raw_fd(),
-                from.as_ptr(),
-                parent.as_raw_fd(),
-                to.as_ptr(),
-            )
-        }
-    } else {
+    let result = {
         #[cfg(target_os = "macos")]
         {
             unsafe {
@@ -196,7 +337,10 @@ fn publish_at(parent: &File, stage: &Path, destination: &Path, replace: bool) ->
                     from.as_ptr(),
                     parent.as_raw_fd(),
                     to.as_ptr(),
-                    libc::RENAME_EXCL,
+                    match rename {
+                        Rename::Swap => libc::RENAME_SWAP,
+                        Rename::Exclusive => libc::RENAME_EXCL,
+                    },
                 )
             }
         }
@@ -208,7 +352,10 @@ fn publish_at(parent: &File, stage: &Path, destination: &Path, replace: bool) ->
                     from.as_ptr(),
                     parent.as_raw_fd(),
                     to.as_ptr(),
-                    libc::RENAME_NOREPLACE,
+                    match rename {
+                        Rename::Swap => libc::RENAME_EXCHANGE,
+                        Rename::Exclusive => libc::RENAME_NOREPLACE,
+                    },
                 )
             }
         }

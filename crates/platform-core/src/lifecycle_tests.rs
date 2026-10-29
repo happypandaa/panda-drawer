@@ -413,6 +413,73 @@ async fn export_collision_and_project_destination_leave_original_files_unchanged
 }
 
 #[tokio::test]
+async fn export_stage_rechecks_selected_parent_after_capture_before_its_first_payload_byte() {
+    use std::cell::Cell;
+    let fixture = Fixture::new().await;
+    let folder = fixture
+        .paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-selected-export-parent");
+    fs::create_dir(&folder).unwrap();
+    let original_parent = persistent_identity(&folder).unwrap();
+    let moved = folder.with_extension("user-renamed");
+    let archive = fixture.export_path("disposable-private-snapshot-bytes.zip");
+    fs::write(
+        &archive,
+        b"private project payload must not reach the replacement folder",
+    )
+    .unwrap();
+    let task = fixture
+        .tasks
+        .create_readonly_operation(&fixture.id, "export")
+        .unwrap();
+    let owner = crate::web_project_ownership::WebProjectOwnership::new(
+        fixture.paths.data_root().into(),
+        fixture.paths.workspace_root().into(),
+    );
+    let stage = folder.join(format!(".export-{}.partial", task.task_id));
+    let calls = Cell::new(0);
+    let error =
+        write_owned_export_stage(&owner, &fixture.id, &task.task_id, &archive, &stage, || {
+            if !original_parent.matches_path(&folder).unwrap_or(false) {
+                return Err(ApiError::new(
+                    "EXPORT_DESTINATION_CHANGED",
+                    "disposable selected parent was replaced",
+                ));
+            }
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                fs::rename(&folder, &moved).unwrap();
+                fs::create_dir(&folder).unwrap();
+                fs::write(
+                    folder.join("independent-B.txt"),
+                    b"foreign B folder stays unchanged",
+                )
+                .unwrap();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "EXPORT_DESTINATION_CHANGED");
+    assert_eq!(fs::metadata(&stage).unwrap().len(), 0);
+    assert_eq!(
+        fs::read(folder.join("independent-B.txt")).unwrap(),
+        b"foreign B folder stays unchanged"
+    );
+    fixture.tasks.finish(&task.task_id, Err(error)).unwrap();
+    let deleted = fixture.project("delete", json!({})).await;
+    assert_eq!(good(&deleted)["operationOutcome"], "deleted");
+    assert!(!stage.exists());
+    assert_eq!(
+        fs::read(folder.join("independent-B.txt")).unwrap(),
+        b"foreign B folder stays unchanged"
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn copied_bundled_artifact_keeps_portable_provenance_and_matching_inputs() {
     let fixture = Fixture::new().await;
     let source = fixture.store.project(&fixture.id).unwrap();

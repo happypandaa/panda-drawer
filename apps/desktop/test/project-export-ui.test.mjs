@@ -91,7 +91,8 @@ test('More actions contains two concise rows and only explains export after open
   assert.match(exportDialog().textContent, /源码与项目资料.*当前应用文件.*数据库和用户文件/);
   assert.match(exportDialog().textContent, /不包含 Git 历史、开发依赖、缓存和平台历史备份/);
   assert.match(exportDialog().textContent, /包含当前业务数据/);
-  assert.match(exportDialog().textContent, /导出的 ZIP 属于本项目，删除项目时会一并删除/);
+  assert.match(exportDialog().textContent, /导出的 ZIP 保存在你选择的位置，删除项目时会保留/);
+  assert.doesNotMatch(exportDialog().textContent, /属于本项目|归原项目独占|一并删除/);
   assert.equal(exportDialog().getAttribute('aria-modal'), 'true');
   assert.equal(document.activeElement.tagName, 'H2');
   assert.equal(drafts.at(-1).pending, true);
@@ -137,6 +138,8 @@ test('A destination collision requires a new filename and never offers overwrite
   assert.equal(tasks.length, 0); assert.equal(exports, 1);
   const confirmation = document.querySelector('[aria-label="导出位置已占用"]');
   assert.match(confirmation.textContent, /\/disposable\/already-exists.zip/);
+  assert.match(confirmation.textContent, /不会覆盖已有文件，请另选文件名或位置/);
+  assert.doesNotMatch(confirmation.textContent, /归原项目独占|随.*删除/);
   assert.equal(button('确认替换并导出'), undefined);
   await click(button('选择其他位置'));
   assert.equal(exports, 2); assert.equal(exportDialog(), null);

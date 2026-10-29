@@ -64,7 +64,6 @@ pub mod source_acquisition;
 pub mod source_restore_guard;
 mod storage;
 pub mod tasks;
-mod web_export_claims;
 mod web_file_deletion;
 mod web_project_cleanup;
 mod web_project_ownership;

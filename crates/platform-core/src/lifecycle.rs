@@ -59,6 +59,7 @@ struct Operation {
     import_temporary_identity: Option<PersistedIdentity>,
     control: Option<ControlState>,
     destination: Option<PathBuf>,
+    delivery_parent_identity: Option<PersistedIdentity>,
     published_sha256: Option<String>,
     committed: bool,
     resolved: bool,
@@ -504,6 +505,7 @@ impl LifecycleManager {
             import_temporary_identity: None,
             control: None,
             destination: None,
+            delivery_parent_identity: None,
             published_sha256: None,
             committed: false,
             resolved: false,
@@ -667,11 +669,8 @@ impl LifecycleManager {
                     &root,
                     false,
                 )?;
-                crate::web_project_ownership::WebProjectOwnership::new(
-                    self.paths.data_root().into(),
-                    self.paths.workspace_root().into(),
-                )
-                .reserve_export_destination(id, &record.task_id, &destination)?;
+                operation.delivery_parent_identity =
+                    Some(persistent_identity(destination.parent().unwrap())?);
                 operation.destination = Some(destination);
             }
             self.remember(&operation)?;
@@ -683,13 +682,6 @@ impl LifecycleManager {
             Ok::<(), ApiError>(())
         })();
         if let Err(error) = prepare {
-            if kind == "export" {
-                let _ = crate::web_project_ownership::WebProjectOwnership::new(
-                    self.paths.data_root().into(),
-                    self.paths.workspace_root().into(),
-                )
-                .cancel_unpublished_export(id, &record.task_id);
-            }
             self.tasks.finish(&record.task_id, Err(error.clone()))?;
             return Err(error);
         }
@@ -961,40 +953,7 @@ impl LifecycleManager {
         source: &Path,
         _overwrite: bool,
     ) -> Result<PathBuf, ApiError> {
-        if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
-            return Err(ApiError::new(
-                "INVALID_EXPORT_PATH",
-                "Export destination must be an absolute file path without parent traversal",
-            ));
-        }
-        let parent = path
-            .parent()
-            .ok_or_else(|| {
-                ApiError::new("INVALID_EXPORT_PATH", "Export destination has no parent")
-            })?
-            .canonicalize()?;
-        let target = parent.join(path.file_name().ok_or_else(|| {
-            ApiError::new("INVALID_EXPORT_PATH", "Export destination needs a filename")
-        })?);
-        check_no_symlinks(&target, true)?;
-        if target.starts_with(source)
-            || ["projects", "backups", ".platform"]
-                .iter()
-                .any(|p| target.starts_with(self.paths.workspace_root().join(p)))
-        {
-            return Err(ApiError::new(
-                "INVALID_EXPORT_PATH",
-                "Export destination cannot be inside a project or platform-managed data",
-            ));
-        }
-        if target.exists() {
-            return Err(ApiError::new(
-                "EXPORT_DESTINATION_EXISTS",
-                "请选择新的导出文件名，现有或已登记的目标不能覆盖。",
-            )
-            .detail("path", json!(target)));
-        }
-        Ok(target)
+        validated_export_destination(&self.paths, &self.store, path, source)
     }
     async fn snapshot(
         &self,
@@ -1046,26 +1005,6 @@ impl LifecycleManager {
         Ok(prepared)
     }
     async fn export(&self, operation: &mut Operation, input: Input) -> Result<Value, ApiError> {
-        let result = self.export_inner(operation, input).await;
-        if result.is_err() {
-            let cleanup = crate::web_project_ownership::WebProjectOwnership::new(
-                self.paths.data_root().into(),
-                self.paths.workspace_root().into(),
-            )
-            .cancel_unpublished_export(&operation.project_id, &operation.task_id);
-            if let (Err(error), Err(cleanup)) = (&result, cleanup) {
-                return Err(error
-                    .clone()
-                    .detail("exportOwnershipCleanupError", json!(cleanup)));
-            }
-        }
-        result
-    }
-    async fn export_inner(
-        &self,
-        operation: &mut Operation,
-        input: Input,
-    ) -> Result<Value, ApiError> {
         let source = operation.project_id.clone();
         let root = self.store.metadata_root(&source)?.0;
         let destination = self.export_destination(
@@ -1074,6 +1013,19 @@ impl LifecycleManager {
             input.overwrite,
         )?;
         operation.destination = Some(destination.clone());
+        let delivery_parent = operation
+            .delivery_parent_identity
+            .clone()
+            .ok_or_else(|| ApiError::new("EXPORT_FAILED", "导出缺少本次选择的父目录身份。"))?;
+        if !delivery_parent
+            .matches_path(destination.parent().unwrap())
+            .unwrap_or(false)
+        {
+            return Err(ApiError::new(
+                "EXPORT_DESTINATION_CHANGED",
+                "导出文件夹已变化，请重新选择。",
+            ));
+        }
         let snapshot = self.snapshot(operation, &source).await?;
         let stage = destination
             .parent()
@@ -1097,6 +1049,11 @@ impl LifecycleManager {
         let copy_task = operation.task_id.clone();
         let copy_archive = archive.clone();
         let copy_stage = stage.clone();
+        let copy_paths = self.paths.clone();
+        let copy_store = self.store.clone();
+        let copy_destination = destination.clone();
+        let copy_root = root.clone();
+        let copy_parent = delivery_parent.clone();
         tokio::task::spawn_blocking(move || {
             write_owned_export_stage(
                 &copy_owner,
@@ -1104,6 +1061,24 @@ impl LifecycleManager {
                 &copy_task,
                 &copy_archive,
                 &copy_stage,
+                || {
+                    if !copy_parent
+                        .matches_path(copy_destination.parent().unwrap())
+                        .unwrap_or(false)
+                    {
+                        return Err(ApiError::new(
+                            "EXPORT_DESTINATION_CHANGED",
+                            "导出文件夹已变化，请重新选择。",
+                        ));
+                    }
+                    validated_export_destination(
+                        &copy_paths,
+                        &copy_store,
+                        &copy_destination,
+                        &copy_root,
+                    )
+                    .map(|_| ())
+                },
             )
         })
         .await
@@ -1112,10 +1087,21 @@ impl LifecycleManager {
         operation.result = json!({"projectId":source,"path":destination,"backupId":info.manifest.backup_id,"createdAt":info.manifest.created_at,"snapshotState":info.manifest.snapshot_state,"pendingBuild":info.manifest.pending_build,"verified":true,"diagnostics":info.database,"operationOutcome":"exported"});
         self.phase(operation, "export-publish")?;
         self.export_destination(&destination, &root, input.overwrite)?;
-        ownership.bind_export_destination(&source, &operation.task_id, &destination, &stage)?;
-        publish_export_file(&stage, &destination)?;
+        if !delivery_parent
+            .matches_path(destination.parent().unwrap())
+            .unwrap_or(false)
+        {
+            return Err(ApiError::new(
+                "EXPORT_DESTINATION_CHANGED",
+                "导出文件夹已变化，已保留临时文件。",
+            ));
+        }
+        let stage_identity = ownership
+            .material_identity(&source, &stage)?
+            .ok_or_else(|| ApiError::new("EXPORT_FAILED", "导出临时文件缺少已登记身份。"))?;
+        ownership.capture_export_stage(&source, &operation.task_id, &stage, &stage_identity)?;
+        publish_export_file(&stage, &destination, &stage_identity)?;
         sync_parent(&destination)?;
-        ownership.commit_export_destination(&source, &operation.task_id)?;
         operation.committed = true;
         operation.resolved = true;
         self.remember(operation)?;
@@ -1752,48 +1738,252 @@ impl LifecycleManager {
     }
 }
 
+fn validated_export_destination(
+    paths: &RuntimePaths,
+    store: &ProjectStore,
+    path: &Path,
+    source: &Path,
+) -> Result<PathBuf, ApiError> {
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(ApiError::new(
+            "INVALID_EXPORT_PATH",
+            "Export destination must be an absolute file path without parent traversal",
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::new("INVALID_EXPORT_PATH", "Export destination has no parent"))?
+        .canonicalize()?;
+    let target = parent.join(path.file_name().ok_or_else(|| {
+        ApiError::new("INVALID_EXPORT_PATH", "Export destination needs a filename")
+    })?);
+    check_no_symlinks(&target, true)?;
+    if target.starts_with(source)
+        || target.starts_with(paths.data_root())
+        || target.starts_with(paths.workspace_root())
+    {
+        return Err(ApiError::new(
+            "INVALID_EXPORT_PATH",
+            "Export destination cannot be inside a project or platform-managed data",
+        ));
+    }
+    for protected in [
+        paths.data_root().to_path_buf(),
+        paths.workspace_root().to_path_buf(),
+    ] {
+        if protected.try_exists()? {
+            let identity = persistent_identity(&protected)?;
+            if parent
+                .ancestors()
+                .any(|ancestor| identity.matches_path(ancestor).unwrap_or(false))
+            {
+                return Err(ApiError::new(
+                    "INVALID_EXPORT_PATH",
+                    "Export destination cannot be inside platform-managed data",
+                ));
+            }
+        }
+    }
+    let workspace = crate::workspace::info(paths, store)?;
+    for root in workspace["retainedRoots"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["path"].as_str())
+        .map(Path::new)
+    {
+        if target.starts_with(root)
+            || (root.try_exists()?
+                && parent.ancestors().any(|ancestor| {
+                    persistent_identity(root)
+                        .is_ok_and(|identity| identity.matches_path(ancestor).unwrap_or(false))
+                }))
+        {
+            return Err(ApiError::new(
+                "INVALID_EXPORT_PATH",
+                "Export destination cannot be inside retained platform workspaces",
+            ));
+        }
+    }
+    crate::node_apps::development::require_export_location_unclaimed(paths.data_root(), &parent)?;
+    crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    )
+    .require_global_tool_unowned(&target)?;
+    if target.exists() {
+        return Err(ApiError::new(
+            "EXPORT_DESTINATION_EXISTS",
+            "请选择新的导出文件名，现有文件不能覆盖。",
+        )
+        .detail("path", json!(target)));
+    }
+    Ok(target)
+}
 fn write_owned_export_stage(
     ownership: &crate::web_project_ownership::WebProjectOwnership,
     project: &str,
     task: &str,
     archive: &Path,
     stage: &Path,
+    validate: impl Fn() -> Result<(), ApiError>,
 ) -> Result<(), ApiError> {
-    ownership.reserve_export_stage(project, task, stage)?;
-    let mut output = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(stage)
-    {
-        Ok(file) => file,
-        Err(error) => {
-            ownership.forget_export_stage(project, task)?;
-            return Err(error.into());
-        }
-    };
-    let identity = PersistedIdentity::from_file(&output)
-        .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))?;
-    ownership.capture_export_stage(project, task, stage, &identity)?;
+    let mut output = crate::node_apps::development::with_source_ownership_admission(|| {
+        validate()?;
+        ownership.reserve_export_stage(project, task, stage)?;
+        let output = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(stage)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                ownership.forget_export_stage(project, task)?;
+                return Err(error.into());
+            }
+        };
+        let identity = PersistedIdentity::from_file(&output)
+            .map_err(|error| ApiError::new("FILESYSTEM_ERROR", error.to_string()))?;
+        ownership.capture_export_stage(project, task, stage, &identity)?;
+        // The consent was captured before snapshot preparation. A replacement
+        // parent must be rejected again before the first project payload byte.
+        validate()?;
+        Ok(output)
+    })?;
     let mut input = File::open(archive)?;
     std::io::copy(&mut input, &mut output)?;
     output.sync_all()?;
     sync_parent(stage)
 }
-fn publish_export_file(stage: &Path, destination: &Path) -> Result<(), ApiError> {
-    use std::{ffi::CString, os::fd::AsRawFd};
-    if stage.parent() != destination.parent() {
+fn publish_export_file(
+    stage: &Path,
+    destination: &Path,
+    expected: &PersistedIdentity,
+) -> Result<(), ApiError> {
+    publish_export_file_with(stage, destination, expected, |_| Ok(()))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportPublicationPoint {
+    BeforeRename,
+    Renamed,
+}
+
+fn publish_export_file_with(
+    stage: &Path,
+    destination: &Path,
+    expected: &PersistedIdentity,
+    mut checkpoint: impl FnMut(ExportPublicationPoint) -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    use std::{
+        ffi::CString,
+        os::fd::{AsRawFd, FromRawFd},
+    };
+    if !stage.is_absolute()
+        || !destination.is_absolute()
+        || stage == destination
+        || stage.parent().is_none()
+        || stage.parent() != destination.parent()
+    {
         return Err(ApiError::new(
             "EXPORT_FAILED",
             "导出发布必须在同一目录原子完成。",
         ));
     }
-    let parent = crate::files::root(stage.parent().unwrap())?;
-    let from = CString::new(stage.file_name().unwrap().as_encoded_bytes())
-        .map_err(|_| ApiError::new("INVALID_EXPORT_PATH", "导出文件名无效。"))?;
-    let to = CString::new(destination.file_name().unwrap().as_encoded_bytes())
-        .map_err(|_| ApiError::new("INVALID_EXPORT_PATH", "导出文件名无效。"))?;
+    let parent_path = stage.parent().unwrap();
+    let parent = crate::files::root(parent_path)?;
+    let parent_identity = PersistedIdentity::from_file(&parent)
+        .map_err(|error| ApiError::new("EXPORT_FAILED", error.to_string()))?;
+    let from = CString::new(
+        stage
+            .file_name()
+            .ok_or_else(|| ApiError::new("INVALID_EXPORT_PATH", "导出临时文件名缺失。"))?
+            .as_encoded_bytes(),
+    )
+    .map_err(|_| ApiError::new("INVALID_EXPORT_PATH", "导出文件名无效。"))?;
+    let to = CString::new(
+        destination
+            .file_name()
+            .ok_or_else(|| ApiError::new("INVALID_EXPORT_PATH", "导出目标文件名缺失。"))?
+            .as_encoded_bytes(),
+    )
+    .map_err(|_| ApiError::new("INVALID_EXPORT_PATH", "导出文件名无效。"))?;
+
+    let file_at = |name: &CString| -> Result<File, ApiError> {
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(ApiError::new(
+                "EXPORT_STAGE_CHANGED",
+                std::io::Error::last_os_error().to_string(),
+            ));
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        if !file.metadata()?.is_file() {
+            return Err(ApiError::new(
+                "EXPORT_STAGE_CHANGED",
+                "导出临时材料不是普通文件，已保留。",
+            ));
+        }
+        Ok(file)
+    };
+    // Holding the source descriptor also prevents its inode from being reused
+    // while a public temporary name is exchanged by another process.
+    let source = file_at(&from)?;
+    if !expected.matches_captured(
+        &PersistedIdentity::from_file(&source)
+            .map_err(|error| ApiError::new("EXPORT_STAGE_CHANGED", error.to_string()))?,
+    ) {
+        return Err(ApiError::new(
+            "EXPORT_STAGE_CHANGED",
+            "导出临时文件身份已变化，未交付。",
+        ));
+    }
+    checkpoint(ExportPublicationPoint::BeforeRename)?;
+    if !parent_identity.matches_path(parent_path).unwrap_or(false) {
+        return Err(ApiError::new(
+            "EXPORT_STAGE_CHANGED",
+            "导出目录身份已变化，未交付。",
+        ));
+    }
+    export_rename_exclusive(&parent, &from, &to)?;
+    parent.sync_all()?;
+    checkpoint(ExportPublicationPoint::Renamed)?;
+    let matched = file_at(&to)
+        .and_then(|file| {
+            PersistedIdentity::from_file(&file)
+                .map_err(|error| ApiError::new("EXPORT_STAGE_CHANGED", error.to_string()))
+        })
+        .is_ok_and(|identity| expected.matches_captured(&identity));
+    if !matched || !parent_identity.matches_path(parent_path).unwrap_or(false) {
+        // A substituted temporary object can be captured by the exclusive
+        // rename. Return it only if its old name is still free; never replace a
+        // newly created stage, or enroll the final user file in our ownership.
+        let _ = export_rename_exclusive(&parent, &to, &from);
+        parent.sync_all()?;
+        return Err(ApiError::new(
+            "EXPORT_STAGE_CHANGED",
+            "导出发布时文件或目录被替换，现有文件已保留或归还，未确认交付。",
+        )
+        .detail("stagePath", json!(stage))
+        .detail("destinationPath", json!(destination)));
+    }
+    Ok(())
+}
+
+fn export_rename_exclusive(
+    parent: &File,
+    from: &std::ffi::CString,
+    to: &std::ffi::CString,
+) -> Result<(), ApiError> {
+    use std::os::fd::AsRawFd;
     #[cfg(target_os = "macos")]
     let result = unsafe {
         libc::renameatx_np(
@@ -1822,9 +2012,12 @@ fn publish_export_file(stage: &Path, destination: &Path) -> Result<(), ApiError>
             "导出目标已存在或无法独占发布，未覆盖。",
         ));
     }
-    parent.sync_all()?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "lifecycle_export_publication_tests.rs"]
+mod export_publication_tests;
 
 fn clear_project_provenance(workspace: &Path, id: &str) -> Result<(), ApiError> {
     let path = workspace
