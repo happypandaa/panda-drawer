@@ -1,4 +1,8 @@
 .git-import-modal, .project-ai-help-modal { width: min(720px, calc(100vw - 48px)); }
+.git-import-source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 16px 0; }
+.git-import-source > p { min-width: 0; margin: 0; }
+.source-recovered-attempt { margin-bottom: 24px; }
+.source-recovered-attempt > code { overflow-wrap: anywhere; }
 .add-project-location, .local-directory-location, .project-ai-target-summary, .settings-project-directory {
   padding: 15px 17px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-subtle); margin: 15px 0;
 }
