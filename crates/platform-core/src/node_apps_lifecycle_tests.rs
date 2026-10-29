@@ -1531,12 +1531,13 @@ async fn deletion_after_public_workspace_migration_uses_current_task_registry_an
         .await
         .unwrap();
     let handle = service.handle();
-    let apps = NodeApps::with_runtime(
+    let mut apps = NodeApps::with_runtime(
         paths.data_root().into(),
         source_fixture.manager.node_path.clone(),
         &handle,
     )
     .unwrap();
+    apps.digest = source_fixture.manager.digest.clone();
     let registered = apps.register(source_fixture.source.clone()).await.unwrap();
     let id = registered["id"].as_str().unwrap();
     let previous = apps.current_node_task_manager().unwrap().unwrap();
@@ -1546,6 +1547,7 @@ async fn deletion_after_public_workspace_migration_uses_current_task_registry_an
         .unwrap()
         .join("disposable-current-node-registry-workspace");
     fs::create_dir(&destination).unwrap();
+    let node_pause = apps.begin_workspace_migration().await.unwrap();
     let migration = handle
         .workspace_migrate(json!({"destinationPath":destination}))
         .await
@@ -1563,7 +1565,17 @@ async fn deletion_after_public_workspace_migration_uses_current_task_registry_an
     .await
     .unwrap();
     assert_eq!(final_task["status"], "succeeded", "{final_task}");
+    assert!(
+        !paths.workspace_root().exists(),
+        "successful reopen must remove the old workspace"
+    );
+    node_pause.validate_reopened(&destination).unwrap();
+    drop(node_pause);
     assert_eq!(apps.deletion_workspace(), destination);
+    apps.start(id).await.unwrap();
+    apps.stop_runtime(id).await.unwrap();
+    apps.start(id).await.unwrap();
+    apps.stop_runtime(id).await.unwrap();
     let current = apps.current_node_task_manager().unwrap().unwrap();
     assert!(!Arc::ptr_eq(&previous, &current));
     let task = current
@@ -1584,5 +1596,648 @@ async fn deletion_after_public_workspace_migration_uses_current_task_registry_an
         "the current registry must forget the deleted project task"
     );
     assert!(source_fixture.source.is_dir(), "external original remains");
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn migration_pause_stops_owned_runtime_and_allows_the_same_manager_to_restart() {
+    let fixture = Fixture::new("normal");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    let pause = fixture.manager.begin_workspace_migration().await.unwrap();
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(!fixture.slot(id).join("active.json").exists());
+    assert_eq!(
+        fixture.manager.start(id).await.unwrap_err().code,
+        "NODE_WORKSPACE_MIGRATING"
+    );
+    assert_eq!(
+        fixture
+            .manager
+            .register(fixture.source.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_WORKSPACE_MIGRATING"
+    );
+    let input = DirectoryInitializeInput {
+        expected_revision: "unused-while-paused".into(),
+        name: "Disposable migration pause".into(),
+    };
+    assert_eq!(
+        fixture
+            .manager
+            .initialize_directory(&fixture.source, input)
+            .unwrap_err()
+            .code,
+        "NODE_WORKSPACE_MIGRATING"
+    );
+    assert!(!fixture.manager.inner.lock().await.shutting_down);
+    assert!(!fixture.manager.directory_stopping.load(Ordering::Acquire));
+    drop(pause);
+    fixture.manager.start(id).await.unwrap();
+    fixture.manager.stop_runtime(id).await.unwrap();
+    assert!(fixture.source.is_dir());
+}
+
+#[tokio::test]
+async fn losing_a_migration_pause_waiter_keeps_admission_until_the_real_start_owner_finishes() {
+    let fixture = Fixture::new("normal");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap().to_owned();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, blocked) = tokio::sync::oneshot::channel();
+    *fixture.manager.start_intent_pause.lock().unwrap() = Some((entered, blocked));
+    let apps = fixture.manager.clone();
+    let starting_id = id.clone();
+    let start = tokio::spawn(async move { apps.start(&starting_id).await });
+    ready.await.unwrap();
+    let apps = fixture.manager.clone();
+    let pause = tokio::spawn(async move { apps.begin_workspace_migration().await });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !fixture.manager.operations.workspace_paused() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!pause.is_finished());
+    pause.abort();
+    assert!(matches!(pause.await, Err(error) if error.is_cancelled()));
+    assert!(fixture.manager.operations.workspace_paused());
+    release.send(()).unwrap();
+    let _ = start.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while fixture.manager.operations.workspace_paused() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+    assert!(!fixture.slot(&id).join("active.json").exists());
+    fixture.manager.start(&id).await.unwrap();
+    fixture.manager.stop_runtime(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn migration_pause_checks_durable_run_markers_even_without_a_running_map_entry() {
+    let fixture = Fixture::new("normal");
+    let other = Fixture::new("normal");
+    let registration = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let independent = fixture
+        .manager
+        .register(other.source.clone())
+        .await
+        .unwrap();
+    let id = registration["id"].as_str().unwrap();
+    let marker = fixture.slot(id).join("active.json");
+    crate::builds::atomic_json(
+        &marker,
+        &run_marker::RunMarker::launching(
+            id,
+            fixture.slot(id).join("runs/disposable-interrupted-run"),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture
+            .manager
+            .verify_workspace_migration_runs_clear()
+            .unwrap_err()
+            .code,
+        "NODE_MIGRATION_RUN_RECOVERY_REQUIRED"
+    );
+    let error = fixture
+        .manager
+        .begin_workspace_migration()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "NODE_MIGRATION_RUN_RECOVERY_REQUIRED");
+    assert!(marker.exists());
+    assert!(!fixture.manager.operations.workspace_paused());
+    let independent_id = independent["id"].as_str().unwrap();
+    fixture.manager.start(independent_id).await.unwrap();
+    fixture.manager.stop_runtime(independent_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn deferred_old_workspace_proof_preserves_current_runs_and_rejects_unknown_owners() {
+    let fixture = Fixture::new("normal");
+    let unknown = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let service = crate::RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    let mut apps = NodeApps::with_runtime(
+        paths.data_root().into(),
+        fixture.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    apps.digest = fixture.manager.digest.clone();
+    let added = apps.register(fixture.source.clone()).await.unwrap();
+    let id = added["id"].as_str().unwrap();
+    apps.start(id).await.unwrap();
+    let slot = paths.data_root().join("node-apps").join(id);
+    let pid: i32 = fs::read_to_string(slot.join("data/artificial-pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let active = slot.join("active.json");
+    let contents = fs::read(&active).unwrap();
+    let old_source = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-previous-workspace");
+    fs::create_dir(&old_source).unwrap();
+    apps.verify_previous_workspace_drained(&old_source)
+        .await
+        .unwrap();
+    assert!(process_is_live(pid));
+    assert_eq!(fs::read(&active).unwrap(), contents);
+    assert!(!apps.operations.workspace_paused());
+
+    // A current runtime does not authorize unknown run evidence for another
+    // registration, and neither success nor failure stops that current runtime.
+    let registered = apps.register(unknown.source.clone()).await.unwrap();
+    let unknown_id = registered["id"].as_str().unwrap();
+    let unknown_slot = paths.data_root().join("node-apps").join(unknown_id);
+    let unknown_marker = unknown_slot.join("active.json");
+    crate::builds::atomic_json(
+        &unknown_marker,
+        &run_marker::RunMarker::launching(unknown_id, unknown_slot.join("runs/disposable-unknown")),
+    )
+    .unwrap();
+    assert_eq!(
+        apps.verify_previous_workspace_drained(&old_source)
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_MIGRATION_RUN_RECOVERY_REQUIRED"
+    );
+    assert!(unknown_marker.exists());
+    assert!(process_is_live(pid));
+    fs::remove_file(&unknown_marker).unwrap();
+
+    // The retained run owns only its active marker. A separate writer for the
+    // same app must still block cleanup rather than inherit that exemption.
+    let writer = crate::durable_writer::WriterOwner::node(paths.data_root(), id)
+        .unwrap()
+        .fixture_mark_unconfirmed()
+        .unwrap();
+    assert_eq!(
+        apps.verify_previous_workspace_drained(&old_source)
+            .await
+            .unwrap_err()
+            .code,
+        "PROJECT_WRITER_UNCONFIRMED"
+    );
+    assert!(writer.exists());
+    assert!(process_is_live(pid));
+    fs::remove_file(writer).unwrap();
+
+    // Identical bytes at a replacement inode are not the retained run receipt.
+    let original = slot.join("disposable-retained-original-marker");
+    fs::rename(&active, &original).unwrap();
+    fs::write(&active, &contents).unwrap();
+    assert_eq!(
+        apps.verify_previous_workspace_drained(&old_source)
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_MIGRATION_RUN_RECOVERY_REQUIRED"
+    );
+    assert!(process_is_live(pid));
+    fs::remove_file(&active).unwrap();
+    fs::rename(original, &active).unwrap();
+    apps.verify_previous_workspace_drained(&old_source)
+        .await
+        .unwrap();
+    assert!(process_is_live(pid));
+    apps.stop_runtime(id).await.unwrap();
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pending_old_workspace_sources_cannot_gain_new_node_ownership() {
+    let fixture = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let service = crate::RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    let old_workspace = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-pending-node-old");
+    fs::create_dir(&old_workspace).unwrap();
+    let initial = handle
+        .workspace_migrate(json!({"destinationPath":old_workspace}))
+        .await
+        .unwrap();
+    let initial_id = initial["taskId"].as_str().unwrap();
+    let initial_task = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let task = handle.task(initial_id).await.unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(initial_task["status"], "succeeded", "{initial_task}");
+    let apps = NodeApps::with_runtime(
+        paths.data_root().into(),
+        fixture.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    let old_source = old_workspace.join("custom/disposable-unregistered-node");
+    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+        let target = old_source.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, fs::read(fixture.source.join(relative)).unwrap()).unwrap();
+    }
+    let old_empty = old_workspace.join("custom/disposable-unregistered-empty");
+    fs::create_dir(&old_empty).unwrap();
+    let source_preview = apps.inspect_directory(&old_source).unwrap();
+    let empty_preview = apps.inspect_directory(&old_empty).unwrap();
+    handle.set_workspace_migration_hook(Arc::new(|notice| {
+        Box::pin(async move {
+            if notice.stage == crate::WorkspaceMigrationStage::Reopened {
+                fs::write(
+                    notice
+                        .source_path
+                        .join("disposable-pending-source-retention"),
+                    b"keep source for rejection checks",
+                )
+                .unwrap();
+            }
+            Ok(())
+        })
+    }));
+    let current = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-pending-node-current");
+    fs::create_dir(&current).unwrap();
+    let submitted = handle
+        .workspace_migrate(json!({"destinationPath":current}))
+        .await
+        .unwrap();
+    let migration_id = submitted["taskId"].as_str().unwrap();
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let task = handle.task(migration_id).await.unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(completed["status"], "succeeded", "{completed}");
+    assert_eq!(completed["result"]["cleanupPending"], true, "{completed}");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while handle.source_registration_scope().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let error = apps.register(old_source.clone()).await.unwrap_err();
+    assert_eq!(error.code, "NODE_SOURCE_MIGRATION_PENDING");
+    assert_eq!(error.details["sourcePath"], json!(old_source));
+    assert_eq!(error.details["migrationId"], migration_id);
+    assert_eq!(
+        apps.register_directory(
+            old_source.clone(),
+            source_preview["expectedRevision"].as_str().unwrap().into()
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "NODE_SOURCE_MIGRATION_PENDING"
+    );
+    let input = DirectoryInitializeInput {
+        expected_revision: empty_preview["expectedRevision"].as_str().unwrap().into(),
+        name: "Disposable blocked old source".into(),
+    };
+    assert_eq!(
+        apps.initialize_directory(&old_empty, input.clone())
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_MIGRATION_PENDING"
+    );
+    assert_eq!(
+        apps.initialize_and_register_directory(old_empty.clone(), input)
+            .await
+            .unwrap_err()
+            .code,
+        "NODE_SOURCE_MIGRATION_PENDING"
+    );
+    assert!(fs::read_dir(&old_empty).unwrap().next().is_none());
+    assert_eq!(
+        fs::read(old_source.join("local-app.json")).unwrap(),
+        fs::read(fixture.source.join("local-app.json")).unwrap()
+    );
+    let plain = NodeApps::new(paths.data_root().into(), fixture.manager.node_path.clone()).unwrap();
+    assert_eq!(
+        plain.register(old_source.clone()).await.unwrap_err().code,
+        "NODE_SOURCE_MIGRATION_PENDING"
+    );
+
+    let copied_source = current.join("custom/disposable-unregistered-node");
+    let added = apps.register(copied_source.clone()).await.unwrap();
+    assert_eq!(added["sourcePath"], json!(copied_source));
+    fs::remove_file(old_workspace.join("disposable-pending-source-retention")).unwrap();
+    let retry = handle
+        .workspace_migration_cleanup(migration_id.into())
+        .await
+        .unwrap();
+    let retry_id = retry["taskId"].as_str().unwrap();
+    let retry_task = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let task = handle.task(retry_id).await.unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(retry_task["status"], "succeeded", "{retry_task}");
+    assert!(!old_workspace.exists());
+    // A terminal receipt no longer claims the old pathname. A later ordinary
+    // user-selected replacement is independent and can be registered normally.
+    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+        let target = old_source.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, fs::read(fixture.source.join(relative)).unwrap()).unwrap();
+    }
+    let replacement = apps.register(old_source.clone()).await.unwrap();
+    assert_eq!(replacement["sourcePath"], json!(old_source));
+    assert_ne!(replacement["id"], added["id"]);
+    assert!(old_source.join("local-app.json").is_file());
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn public_workspace_migration_preserves_external_original_inside_the_source_root() {
+    let fixture = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let service = crate::RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    // The test-only initial workspace lives inside data_root. Use the public
+    // workflow to select the ordinary external location used by real installs
+    // before registering a user-selected original beneath that workspace.
+    let workspace = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-external-workspace");
+    fs::create_dir(&workspace).unwrap();
+    let migration = handle
+        .workspace_migrate(json!({"destinationPath":workspace}))
+        .await
+        .unwrap();
+    let task_id = migration["taskId"].as_str().unwrap();
+    let final_task = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let task = handle.task(task_id).await.unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(final_task["status"], "succeeded", "{final_task}");
+    let apps = NodeApps::with_runtime(
+        paths.data_root().into(),
+        fixture.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    let source = workspace.join("custom/disposable-external-original");
+    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+        let target = source.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, fs::read(fixture.source.join(relative)).unwrap()).unwrap();
+    }
+    let registered = apps.register(source.clone()).await.unwrap();
+    let id = registered["id"].as_str().unwrap();
+    assert!(!apps
+        .project_ownership()
+        .owns_source_directory(id, &source)
+        .unwrap());
+    let destination = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-rejected-workspace");
+    fs::create_dir(&destination).unwrap();
+    let error = handle
+        .workspace_migrate(json!({"destinationPath":destination}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE");
+    assert_eq!(error.details["sourcePath"], json!(source));
+    assert!(fs::read_dir(&destination).unwrap().next().is_none());
+    assert_eq!(handle.info().workspace_root, workspace);
+    assert!(source.join("local-app.json").is_file());
+    assert!(workspace.is_dir());
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn launch_uses_current_runtime_registry_after_the_constructor_registry_is_sealed() {
+    let fixture = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let service = crate::RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    let mut apps = NodeApps::with_runtime(
+        paths.data_root().into(),
+        fixture.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    apps.digest = fixture.manager.digest.clone();
+    let stale = crate::owned_process::OwnedProcessRegistry::default();
+    stale.seal();
+    apps.processes = stale.clone();
+    let registration = apps.register(fixture.source.clone()).await.unwrap();
+    let id = registration["id"].as_str().unwrap();
+    apps.start(id).await.unwrap();
+    let live = handle.store().processes();
+    assert_eq!(
+        live.snapshot()
+            .iter()
+            .filter(|record| record.component == "node-runtime/version-probe")
+            .count(),
+        2
+    );
+    assert!(stale.snapshot().is_empty());
+    apps.stop_runtime(id).await.unwrap();
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn migrated_owned_node_reopens_after_old_root_cleanup_and_deletes_every_source_claim() {
+    let interpreter = Fixture::new("normal");
+    let (_temporary, paths) = crate::RuntimePaths::for_test();
+    let service = crate::RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    let old_workspace = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-owned-node-original-workspace");
+    fs::create_dir(&old_workspace).unwrap();
+    let initial = handle
+        .workspace_migrate(json!({"destinationPath":old_workspace}))
+        .await
+        .unwrap();
+    let initial_id = initial["taskId"].as_str().unwrap();
+    let initial_task = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let task = handle.task(initial_id).await.unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(initial_task["status"], "succeeded", "{initial_task}");
+    let mut apps = NodeApps::with_runtime(
+        paths.data_root().into(),
+        interpreter.manager.node_path.clone(),
+        &handle,
+    )
+    .unwrap();
+    apps.digest = interpreter.manager.digest.clone();
+    let source = old_workspace.join("custom/disposable-owned-node");
+    fs::create_dir_all(&source).unwrap();
+    let preview = apps.inspect_directory(&source).unwrap();
+    let added = apps
+        .initialize_and_register_directory(
+            source.clone(),
+            DirectoryInitializeInput {
+                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                name: "Disposable owned migration runtime".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let id = added["id"].as_str().unwrap();
+    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+        let target = source.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            &target,
+            fs::read(interpreter.source.join(relative)).unwrap(),
+        )
+        .unwrap();
+    }
+    assert!(apps
+        .project_ownership()
+        .owns_source_directory(id, &source)
+        .unwrap());
+    apps.start(id).await.unwrap();
+    let pause = apps.begin_workspace_migration().await.unwrap();
+    let destination = paths
+        .data_root()
+        .parent()
+        .unwrap()
+        .join("disposable-owned-node-new-workspace");
+    fs::create_dir(&destination).unwrap();
+    let submitted = handle
+        .workspace_migrate(json!({"destinationPath":destination}))
+        .await
+        .unwrap();
+    let task_id = submitted["taskId"].as_str().unwrap();
+    let task = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let task = handle.task(task_id).await.unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(task["status"], "succeeded", "{task}");
+    assert!(
+        !old_workspace.exists(),
+        "old source root must be cleaned after reopen"
+    );
+    pause.validate_reopened(&destination).unwrap();
+    drop(pause);
+    let moved = destination.join("custom/disposable-owned-node");
+    assert_eq!(apps.status(id).await.unwrap()["sourcePath"], json!(moved));
+    apps.start(id).await.unwrap();
+    apps.stop_runtime(id).await.unwrap();
+    apps.start(id).await.unwrap();
+    apps.stop_runtime(id).await.unwrap();
+    let preview = apps.delete_preview(id).await.unwrap();
+    assert!(preview["preservedPaths"].as_array().unwrap().is_empty());
+    apps.delete(
+        id,
+        DeleteNodeAppInput {
+            expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!moved.exists());
+    assert!(!paths.data_root().join("node-apps").join(id).exists());
+    assert!(!paths
+        .data_root()
+        .join("node-project-ownership")
+        .join(id)
+        .exists());
+    for entry in fs::read_dir(paths.data_root().join("node-source-owners")).unwrap() {
+        let entry = entry.unwrap();
+        assert_eq!(entry.file_name(), ".pending-deletions");
+        assert!(fs::read_dir(entry.path()).unwrap().next().is_none());
+    }
+    assert!(
+        interpreter.source.is_dir(),
+        "the unrelated interpreter source remains"
+    );
     service.shutdown().await.unwrap();
 }

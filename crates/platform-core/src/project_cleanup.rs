@@ -35,6 +35,13 @@ pub struct DeletedProjectNotice {
     pub task_ids: Vec<String>,
     pub source_ids: Vec<String>,
     pub source_roots: Vec<PathBuf>,
+    #[serde(skip)]
+    source_scope: Option<Arc<DeletionSourceScope>>,
+}
+#[derive(Debug)]
+struct DeletionSourceScope {
+    gate: Arc<tokio::sync::RwLock<()>>,
+    _lease: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 impl DeletedProjectNotice {
     pub(crate) fn new(
@@ -51,6 +58,7 @@ impl DeletedProjectNotice {
             task_ids,
             source_ids,
             source_roots,
+            source_scope: None,
         }
     }
     pub(crate) fn normalize(&mut self) -> Result<()> {
@@ -114,6 +122,7 @@ pub(crate) struct ProjectCleanupCoordinator {
     history: Mutex<Vec<Weak<crate::history_cleanup::CleanupManager>>>,
     artifacts: Mutex<Vec<crate::build_artifacts::WeakArtifactAccess>>,
     native: RwLock<Option<NativeProjectCleanup>>,
+    migration_sources: Arc<tokio::sync::RwLock<()>>,
 }
 impl ProjectCleanupCoordinator {
     pub(crate) fn new(data: &std::path::Path) -> Arc<Self> {
@@ -124,6 +133,7 @@ impl ProjectCleanupCoordinator {
             history: Mutex::new(vec![]),
             artifacts: Mutex::new(vec![]),
             native: RwLock::new(None),
+            migration_sources: Arc::new(tokio::sync::RwLock::new(())),
         })
     }
     pub(crate) fn windows(&self) -> Arc<WindowSizeStore> {
@@ -195,11 +205,42 @@ impl ProjectCleanupCoordinator {
         }
         Ok(())
     }
+    pub(crate) fn source_registration_scope(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>> {
+        self.migration_sources
+            .clone()
+            .try_read_owned()
+            .map_err(|_| {
+                ApiError::new(
+                    "WORKSPACE_SOURCE_CLEANUP_RUNNING",
+                    "迁移原目录正在收尾，请结束后重试这次文件夹操作。",
+                )
+            })
+    }
     pub(crate) async fn prepare(
         &self,
         mut notice: DeletedProjectNotice,
     ) -> Result<DeletedProjectNotice> {
         notice.normalize()?;
+        if notice
+            .source_scope
+            .as_ref()
+            .is_some_and(|scope| !Arc::ptr_eq(&scope.gate, &self.migration_sources))
+        {
+            return Err(ApiError::new(
+                "PROJECT_CLEANUP_SCOPE_CHANGED",
+                "项目材料清理的工作区归属已变化。",
+            ));
+        }
+        if notice.source_scope.is_none() {
+            let gate = self.migration_sources.clone();
+            let lease = gate.clone().read_owned().await;
+            notice.source_scope = Some(Arc::new(DeletionSourceScope {
+                gate,
+                _lease: lease,
+            }));
+        }
         self.windows
             .forget_project(notice.kind.as_str(), &notice.id)?;
         self.native(NativeCleanupStage::Prepare, &notice).await?;
@@ -222,6 +263,22 @@ impl ProjectCleanupCoordinator {
         }
         notice.normalize()?;
         Ok(notice)
+    }
+    /// Source cleanup and explicit project deletion can both remove retained
+    /// migration materials. Serialize those mutations without pausing normal
+    /// business reads/writes in the new workspace.
+    pub(crate) fn try_migration_source_cleanup(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        self.migration_sources
+            .clone()
+            .try_write_owned()
+            .map_err(|_| {
+                ApiError::new(
+                    "WORKSPACE_SOURCE_CLEANUP_BUSY",
+                    "项目删除仍在处理迁移材料，请在它结束后重试原目录收尾。",
+                )
+            })
     }
     pub(crate) async fn purge(&self, notice: &DeletedProjectNotice) -> Result<()> {
         self.native(NativeCleanupStage::Purge, notice).await?;

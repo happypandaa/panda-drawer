@@ -72,11 +72,15 @@ mod web_project_cleanup;
 mod web_project_ownership;
 pub mod webview_storage;
 mod workspace;
+mod workspace_migration_cleanup;
 pub use tasks::{TaskRecord, TaskStatus};
 
 pub use paths::{Discovery, InstanceLock, RuntimePaths};
 pub use platform_preflight as startup_preflight;
-pub use service::{BootstrapInfo, HealthInfo, LaunchInfo, RuntimeHandle, RuntimeService};
+pub use service::{
+    BootstrapInfo, HealthInfo, LaunchInfo, NativeWorkspaceMigration, RuntimeHandle, RuntimeService,
+    WorkspaceMigrationNotice, WorkspaceMigrationStage,
+};
 
 pub use build_profile::{APP_IDENTIFIER, APP_VERSION, DISPLAY_NAME, ENVIRONMENT};
 pub const API_VERSION: u32 = 1;

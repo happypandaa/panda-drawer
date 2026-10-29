@@ -271,7 +271,13 @@ enum WorkspaceCommand {
     CleanupPlan(OutputOptions),
     /// Permanently clean explicitly selected IDs from an unexpired preview plan.
     Cleanup(InputOptions),
-    /// Migrate to destinationPath in JSON. Old root is retained; never resubmit on a timeout.
+    /// Retry automatic old-root cleanup for one registered migration.
+    CleanupRetry {
+        migration_id: String,
+        #[command(flatten)]
+        output: OutputOptions,
+    },
+    /// Migrate to destinationPath in JSON. Old root is removed after reopening; never resubmit on a timeout.
     Migrate(InputOptions),
 }
 
@@ -631,6 +637,14 @@ fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
                 business_request("POST", "/api/v1/workspace/cleanups", None, Some(input))
             }),
         ),
+        WorkspaceCommand::CleanupRetry {
+            migration_id,
+            output,
+        } => (
+            output.json,
+            migration_cleanup_path(&migration_id)
+                .and_then(|path| business_request("POST", &path, None, Some(json!({})))),
+        ),
         WorkspaceCommand::Storage(options) => (
             options.json,
             business_request("GET", "/api/v1/workspace/storage", None, None),
@@ -647,6 +661,13 @@ fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
             }),
         ),
     }
+}
+
+fn migration_cleanup_path(migration_id: &str) -> Result<String> {
+    validate_reference_id(migration_id, "migration-id")?;
+    Ok(format!(
+        "/api/v1/workspace/migrations/{migration_id}/cleanup"
+    ))
 }
 
 fn storage_command(command: StorageCommand) -> (bool, Result<Value>) {
@@ -2085,6 +2106,7 @@ mod tests {
                 "--json",
             ],
             vec!["cli", "workspace", "migrate", "--input", "-"],
+            vec!["cli", "workspace", "cleanup-retry", "migration_a", "--json"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
@@ -2093,6 +2115,7 @@ mod tests {
             vec!["cli", "project", "import"],
             vec!["cli", "workspace", "migrate"],
             vec!["cli", "workspace", "identity-repair"],
+            vec!["cli", "workspace", "cleanup-retry"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
@@ -2113,6 +2136,33 @@ mod tests {
             "archivePath"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn migration_cleanup_retry_accepts_only_one_registered_id() {
+        assert_eq!(
+            migration_cleanup_path("migration_a-1").unwrap(),
+            "/api/v1/workspace/migrations/migration_a-1/cleanup"
+        );
+        for id in [
+            "",
+            "../source",
+            "migration_a/cleanup",
+            "migration_a?path=/tmp",
+        ] {
+            assert_eq!(
+                migration_cleanup_path(id).unwrap_err().code,
+                "INPUT_INVALID"
+            );
+        }
+        assert!(Cli::try_parse_from([
+            "cli",
+            "workspace",
+            "cleanup-retry",
+            "migration_a",
+            "/tmp/arbitrary"
+        ])
+        .is_err());
     }
 
     #[test]

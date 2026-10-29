@@ -124,6 +124,13 @@ export interface RetainedWorkspaceRoot {
     completed?: boolean;
     status?: string;
   } | null;
+  sourceCleanup?: {
+    phase: 'awaitingReopen' | 'pending' | 'removed' | 'absent';
+    cleanupPending: boolean;
+    completed: boolean;
+    sourcePath: string;
+    error?: TaskRecord['error'];
+  } | null;
 }
 export interface WorkspaceInfo {
   workspaceRoot: string;
@@ -135,6 +142,7 @@ export interface WorkspaceInfo {
   activeTask: string | { taskId: string } | null;
   lastTaskId?: string | null;
   cleanupTask?: TaskRecord | null;
+  migrationCleanupTask?: TaskRecord | null;
   retainedRoots: (string | RetainedWorkspaceRoot)[];
 }
 

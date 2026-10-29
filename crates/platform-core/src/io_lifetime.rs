@@ -29,6 +29,7 @@ struct State {
     active: usize,
     panicked: bool,
     deferred: Vec<Weak<dyn Revoke>>,
+    migration_paused: bool,
 }
 trait Revoke: Send + Sync {
     fn revoke(&self);
@@ -36,6 +37,17 @@ trait Revoke: Send + Sync {
 
 pub struct IoLease {
     inner: Arc<Inner>,
+}
+
+/// A temporary admission fence owned by the migration runner. It never seals
+/// the application lifetime; dropping it restores admission unless a real
+/// shutdown independently closed or sealed the registry.
+pub struct MigrationIoPause(Arc<Inner>);
+impl Drop for MigrationIoPause {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().migration_paused = false;
+        self.0.drained.notify_waiters();
+    }
 }
 /// Resource drops before the lease, including unwinding and future cancellation.
 pub struct TrackedIo<T> {
@@ -94,10 +106,19 @@ impl Drop for IoLease {
 fn stopping() -> ApiError {
     ApiError::new("SERVICE_STOPPING", "平台正在停止，无法开始新的操作")
 }
+fn migrating() -> ApiError {
+    ApiError::new(
+        "WORKSPACE_MIGRATING",
+        "工作区正在切换，操作将在迁移完成后恢复。",
+    )
+}
 impl IoLifetime {
     pub fn check_open(&self) -> Result<(), ApiError> {
-        if self.0.state.lock().unwrap().closing {
+        let state = self.0.state.lock().unwrap();
+        if state.closing {
             Err(stopping())
+        } else if state.migration_paused {
+            Err(migrating())
         } else {
             Ok(())
         }
@@ -112,6 +133,9 @@ impl IoLifetime {
     }
     fn admit_inner(&self, cleanup: bool) -> Result<IoLease, ApiError> {
         let mut state = self.0.state.lock().unwrap();
+        if state.migration_paused {
+            return Err(migrating());
+        }
         if state.sealed || (state.closing && !cleanup) {
             return Err(stopping());
         }
@@ -122,6 +146,25 @@ impl IoLifetime {
     }
     pub fn close(&self) {
         self.close_inner(false);
+    }
+    pub fn pause_for_migration(&self) -> Result<MigrationIoPause, ApiError> {
+        let deferred = {
+            let mut state = self.0.state.lock().unwrap();
+            if state.closing || state.sealed {
+                return Err(stopping());
+            }
+            if state.migration_paused {
+                return Err(migrating());
+            }
+            state.migration_paused = true;
+            std::mem::take(&mut state.deferred)
+        };
+        // Unselected save resources belong to the old scope and cannot be
+        // claimed after this switch. Their actual destructors return leases.
+        for resource in deferred.into_iter().filter_map(|value| value.upgrade()) {
+            resource.revoke();
+        }
+        Ok(MigrationIoPause(self.0.clone()))
     }
     pub fn seal(&self) {
         self.close_inner(true);
@@ -167,7 +210,7 @@ impl IoLifetime {
     ) -> Result<DeferredIo<T>, ApiError> {
         let slot = Arc::new(DeferredSlot(Mutex::new(Some(resource))));
         let mut state = self.0.state.lock().unwrap();
-        if state.closing {
+        if state.closing || state.migration_paused {
             drop(state);
             drop(slot);
             return Err(stopping());
@@ -195,7 +238,7 @@ pub struct DeferredIo<T> {
 impl<T> DeferredIo<T> {
     pub fn claim(self) -> Result<TrackedIo<T>, ApiError> {
         let state = self.lifetime.0.state.lock().unwrap();
-        if state.closing {
+        if state.closing || state.migration_paused {
             return Err(stopping());
         }
         self.slot.0.lock().unwrap().take().ok_or_else(stopping)
@@ -372,5 +415,37 @@ mod tests {
             registry.drain().await;
             assert!(dropped.load(Ordering::SeqCst));
         }
+    }
+    #[tokio::test]
+    async fn migration_pause_revokes_deferred_resources_and_restores_only_temporary_admission() {
+        let registry = IoLifetime::default();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let deferred = registry
+            .defer(
+                registry
+                    .admit()
+                    .unwrap()
+                    .hold(DropEvidence(dropped.clone())),
+            )
+            .unwrap();
+        let pause = registry.pause_for_migration().unwrap();
+        assert_eq!(registry.admit().err().unwrap().code, "WORKSPACE_MIGRATING");
+        assert_eq!(
+            registry.admit_cleanup().err().unwrap().code,
+            "WORKSPACE_MIGRATING"
+        );
+        assert!(registry.pause_for_migration().is_err());
+        assert!(deferred.claim().is_err());
+        registry.drain().await;
+        assert!(dropped.load(Ordering::SeqCst));
+        drop(pause);
+        assert!(registry.admit().is_ok());
+        let pause = registry.pause_for_migration().unwrap();
+        registry.seal();
+        drop(pause);
+        assert_eq!(
+            registry.admit_cleanup().err().unwrap().code,
+            "SERVICE_STOPPING"
+        );
     }
 }

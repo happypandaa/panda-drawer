@@ -614,7 +614,7 @@ async fn migrate(
 }
 
 #[tokio::test]
-async fn cleanup_includes_current_and_retained_completed_migration_roots() {
+async fn cleanup_includes_only_current_after_automatic_migration_source_finalization() {
     let (temporary, paths, service) = fixture().await;
     fs::write(
         paths.workspace_root().join("original-project-code"),
@@ -634,7 +634,8 @@ async fn cleanup_includes_current_and_retained_completed_migration_roots() {
         .join("second-migrated-workspace");
     let selected = migrate(&selected, &service, &second).await;
     let plan = LocalCleanupPlan::prepare(&selected, &service).unwrap();
-    assert!(plan.targets.iter().any(|target| target.path == destination));
+    assert!(!plan.targets.iter().any(|target| target.path == destination));
+    assert!(!destination.exists());
     assert!(plan.targets.iter().any(|target| target.path == second));
     assert!(service.quiesce().await.is_complete());
     plan.execute_after_shutdown(&service).unwrap();
@@ -652,6 +653,22 @@ async fn absent_same_volume_root_is_rescanned_but_replaced_or_offline_root_block
         .canonicalize()
         .unwrap()
         .join("migrated-workspace");
+    // Keep this particular source pending to exercise whole-installation
+    // accounting before its registered automatic cleanup has completed.
+    service
+        .handle()
+        .set_workspace_migration_hook(std::sync::Arc::new(|notice| {
+            Box::pin(async move {
+                if notice.stage == crate::WorkspaceMigrationStage::Reopened {
+                    fs::write(
+                        notice.source_path.join("disposable-unknown-new-file"),
+                        b"keep pending source",
+                    )
+                    .unwrap();
+                }
+                Ok(())
+            })
+        }));
     let selected = migrate(&paths, &service, &destination).await;
     let saved = temporary.path().join("saved-retained-source");
     fs::rename(paths.workspace_root(), &saved).unwrap();

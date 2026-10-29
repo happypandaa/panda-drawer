@@ -215,7 +215,7 @@ function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }
   const retained = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'retainedWorkspace') ?? [];
   if (retained.length) {
     const part = combinedLocations(retained);
-    add('retained', '迁移前的旧工作区 · 其他已知位置', part, part, '迁移前的原目录已停用；本项目归属材料随项目删除，旧工作区本身可在“历史资料”核对并处理。');
+    add('retained', '迁移前的旧工作区 · 其他已知位置', part, part, '迁移原目录已停用；新位置成功重开后自动收尾。残留可在“设置 › 存储位置”按迁移记录重试。');
   }
   add('program', '平台程序', data?.platformProgram, data?.platformProgram, '软件自身的文件，不随项目数量变化。');
   const applicationData = data?.otherLocalLocations.filter((part) => (part.scope as Record<string, unknown> | undefined)?.kind === 'applicationData') ?? [];
@@ -227,7 +227,7 @@ function StorageRetentionExplanation({ data }: { data: WorkspaceStorage | null }
     <h3 id="workspace-retention-title">为什么删除项目后仍有占用</h3>
     <p>删除项目会清除平台管理的源码、数据、配置、日志和相关任务，用户自己的原始文件夹保留。其他项目、平台全局记录、迁移旧目录和程序文件仍可能占用空间。</p>
     {rows.length > 0 && <><p>以下为上方范围中仍有占用或大小未知的项目，不再与上方数字相加：</p><dl className="workspace-retention-list">{rows.map(({ key, label, part, parent, explanation }) => <div key={key}><dt>{label}</dt><dd><strong title={exactBytes(partBytes(part))}>{bytesText(partBytes(part))}</strong>{Boolean(!parent.complete || parent.stale) && <small>{parent.stale ? ' · 已过期' : ' · 部分统计 / 未知'}</small>}<p>{explanation}</p></dd></div>)}</dl></>}
-    <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。迁移前的旧工作区可在“历史资料”核对范围后显式处理；未解决的恢复现场仍保留，不会自动删除。</p>
+    <p>空间大小按文件逻辑字节统计，不等于可以释放的物理磁盘空间。迁移原目录在新位置成功重开后自动收尾；失败可到“设置 › 存储位置”按迁移记录重试。未解决的恢复现场仍保留，不会自动删除。</p>
   </section>;
 }
 export function combinedLocations(parts: StoragePart[]): StoragePart {

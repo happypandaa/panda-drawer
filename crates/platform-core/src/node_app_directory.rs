@@ -392,6 +392,12 @@ impl NodeApps {
         input: DirectoryInitializeInput,
         before_create: impl FnMut(&Path) -> Result<()>,
     ) -> Result<Value> {
+        let _source_scope = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.source_registration_scope())
+            .transpose()?;
+        let _migration = self.operations.admit_global("生成项目目录")?;
         let _guard = self
             .directory_changes
             .lock()
@@ -671,6 +677,12 @@ impl NodeApps {
         before_create: impl FnMut(&Path) -> Result<()>,
         mut before_register: impl FnMut(&Path) -> Result<()>,
     ) -> Result<Value> {
+        let _source_scope = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.source_registration_scope())
+            .transpose()?;
+        let _migration = self.operations.admit_global("生成并登记项目目录")?;
         // Keep the same lock order as explicit registration. Once admitted,
         // shutdown waits for both generation and durable registration.
         let inner = self.inner.lock().await;
@@ -737,6 +749,12 @@ impl NodeApps {
         source: PathBuf,
         expected_revision: String,
     ) -> Result<Value> {
+        let _source_scope = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.source_registration_scope())
+            .transpose()?;
+        let _migration = self.operations.admit_global("登记项目目录")?;
         let inner = self.inner.lock().await;
         if inner.shutting_down {
             return Err(fail("平台正在关闭，不能登记应用。"));

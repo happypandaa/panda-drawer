@@ -103,3 +103,15 @@ test('unrelated completed management work creates no workspace busy notice', () 
   assert.equal(state.cleanupBusy, false);
   assert.equal(state.paused, false);
 });
+
+test('migration source cleanup has an independent task and does not pause new business', () => {
+  const cleanup = task('migration_source_cleanup', 'workspaceMigrationCleanup');
+  const state = derive(workspace({
+    migrationCleanupTask: cleanup,
+    retainedRoots: [{ taskId: 'migration', sourceCleanup: { phase: 'pending', cleanupPending: true, completed: false, sourcePath: '/disposable/old-workspace' } }],
+  }), map(cleanup, completed('migration')));
+  assert.equal(state.migrating, false);
+  assert.equal(state.paused, false);
+  assert.equal(state.cleanupBusy, false);
+  assert.equal(state.cleanupTask, null);
+});

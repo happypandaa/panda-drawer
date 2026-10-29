@@ -18,6 +18,7 @@ mod project_onboarding;
 mod project_window_cleanup;
 mod source_import;
 mod window_sizes;
+mod workspace_migration_native;
 
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
@@ -720,6 +721,16 @@ async fn project_open(
             window_creation_allowed(&state)?;
             if matches!(target, OpenTarget::Desktop) && !reload.unwrap_or(false) {
                 if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
+                    if state
+                        .window_lifetimes
+                        .receipt(existing.label())
+                        .is_some_and(|receipt| receipt.obsolete())
+                    {
+                        return Err(ApiError::new(
+                            "PROJECT_RELOAD_REQUIRED",
+                            "工作区已切换，请先保存窗口中的草稿，再明确重新打开项目。",
+                        ));
+                    }
                     let label = existing.label().to_owned();
                     let title = project_title(&project.name);
                     let registration = state.project_windows.clone().lock_owned().await;
@@ -1176,6 +1187,26 @@ async fn workspace_migrate(
         .run(async move {
             let state = io_app.state::<AppState>();
             state.handle.workspace_migrate(input).await
+        })
+        .await?
+}
+
+#[tauri::command]
+async fn workspace_migration_cleanup(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    migration_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let io_lease = state.handle.io_lifetime().admit()?;
+    let io_app = window.app_handle().clone();
+    io_lease
+        .run(async move {
+            io_app
+                .state::<AppState>()
+                .handle
+                .workspace_migration_cleanup(migration_id)
+                .await
         })
         .await?
 }
@@ -2318,6 +2349,7 @@ fn main() {
             project_delete_preview,
             workspace_info,
             workspace_migrate,
+            workspace_migration_cleanup,
             project_list,
             project_create,
             project_metadata,project_metadata_set,project_icon_import,project_reveal,
@@ -2419,6 +2451,7 @@ fn main() {
                 Ok(state) => {
                     app.manage(state);
                     install_project_cleanup_hook(app.handle());
+                    workspace_migration_native::install(app.handle());
                     tauri::async_runtime::spawn(initialize_native_storage(app.handle().clone()));
                 }
                 Err(error) => {

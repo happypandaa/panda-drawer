@@ -10,7 +10,7 @@ import { useHistoryScan } from './history-scan-store';
 import type { HistoryScanSummary } from './history-scan-store';
 import type { NodeAppDetail } from './node-app-types';
 import { bigBytes, bigText, partBytes, percentOf, timeText } from './storage-utils';
-import type { ProjectInfo, RetainedWorkspaceRoot, TaskRecord, WorkspaceInfo } from './types';
+import type { ProjectInfo, TaskRecord, WorkspaceInfo } from './types';
 import { messageFrom } from './ui-utils';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 
@@ -99,7 +99,6 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
     event.preventDefault();
     activateTab(hubTabs[next].id);
   }
-  const retained = (props.workspace?.retainedRoots ?? []).map((value): RetainedWorkspaceRoot => typeof value === 'string' ? { path: value } : value);
   const historyBadge = history && history.itemCount > 0 && !history.stale ? `${history.totalComplete ? '' : '至少 '}${bigText(history.totalBytes)}` : null;
   return <div className="workspace-hub">
     <div className="workspace-hub-tabs" role="tablist" aria-label="空间">
@@ -115,7 +114,7 @@ export function WorkspaceHub(props: WorkspaceHubProps) {
       <SpaceProjects projects={props.projects} nodeApps={props.nodeApps ?? []} nodeRows={storage?.nodeApps} enabled={props.enabled && !workspaceBlocked && !cleanupBusy} isProjectBusy={props.isProjectBusy} bulkRequest={bulkRequest} onProjectTask={props.onProjectTask ?? ignore} onProjectDetails={props.onProjectDetails ?? ignore} onProjectDelete={props.onProjectDelete ?? ignore} onNodeDetails={props.onNodeDetails ?? ignore} onNodeDelete={props.onNodeDelete ?? ignore} />
     </div>
     <div className="workspace-hub-panel" id={`${id}-history-panel`} role="tabpanel" aria-labelledby={`${id}-history-tab`} hidden={tab !== 'history'}>
-      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'history'} autoScan migrating={workspaceBlocked} absentRecords={retained} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
+      <WorkspaceCleanupPanel key={root} workspaceRoot={props.workspace?.workspaceRoot ?? null} revision={props.revision} enabled={props.enabled} active={tab === 'history'} autoScan migrating={workspaceBlocked} cleanupTask={taskState.cleanupTask} onTask={trackCleanupTask} onRefresh={props.onRefresh} onPendingChange={setCleanupPending} />
     </div>
   </div>;
 }
@@ -143,7 +142,7 @@ function SpaceOverview({ storage, busy, error, enabled, history, projects, nodeA
   const groups: Group[] = [
     { key: 'projects', label: '我的项目', badge: '正在使用', description: `${projects.length} 个网页项目和 ${nodeApps.length} 个 Node 应用的当前内容`, bytes: projectBytes, color: 'mine' },
     { key: 'regenerable', label: '可重新生成', badge: '可直接释放', description: `开发依赖、构建缓存和日志，下次构建会自动重新生成。${unscanned ? `另有 ${unscanned} 个项目尚未统计。` : ''}`, bytes: regenerable, color: 'regenerable' },
-    { key: 'history', label: '历史资料', badge: '确认后可释放', description: usableHistory ? '迁移前的旧工作区，以及网页项目取回前保留的原件。' : history?.stale ? '清理后数字已变化，请在“历史资料”重新扫描。' : '尚未扫描。打开“历史资料”会自动扫描，扫描不会删除文件。', bytes: historyBytes, color: 'history' },
+    { key: 'history', label: '历史资料', badge: '确认后可释放', description: usableHistory ? '网页项目取回数据或源码前保留的原件。' : history?.stale ? '清理后数字已变化，请在“历史资料”重新扫描。' : '尚未扫描。打开“历史资料”会自动扫描，扫描不会删除文件。', bytes: historyBytes, color: 'history' },
     { key: 'software', label: '软件本身与记录', badge: '不在这里处理', description: `程序文件、软件设置、运行记录与共享缓存${usableHistory ? '' : '（含尚未扫描的历史资料）'}。`, bytes: software, color: 'software' },
   ];
   // Unscanned history stays inside the software remainder, so the bar is still whole.

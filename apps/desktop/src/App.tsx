@@ -303,6 +303,7 @@ function App() {
       setBuilding(values => values.filter(id => scopes[id] === previousScopes[id] && !recoveryGates[id]));
       setWorkspace(currentWorkspace);
       if (currentWorkspace.cleanupTask) acceptLifecycleTask(currentWorkspace.cleanupTask);
+      if (currentWorkspace.migrationCleanupTask) acceptLifecycleTask(currentWorkspace.migrationCleanupTask);
       const workspaceTaskId = (typeof currentWorkspace.activeTask === 'string' ? currentWorkspace.activeTask : currentWorkspace.activeTask?.taskId) ?? currentWorkspace.lastTaskId;
       if (workspaceTaskId) { const task = await invoke<TaskRecord>('task_get', { taskId: workspaceTaskId }); if (current === requestId.current) acceptLifecycleTask(task); }
       if (current !== requestId.current) return;

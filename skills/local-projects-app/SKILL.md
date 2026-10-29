@@ -21,7 +21,7 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 平台入口统一为“我的项目”，网页／Node 用类型图标区分，详情与配置收在页面内带 tabs 的弹窗；缺必填时点击进入先开配置 tab，保存不自动启动。macOS 管理窗口 X 只隐藏并保留 Dock、已开的业务窗口和受管服务，Dock／Reopen／重复启动恢复同一个管理窗口及页面状态；菜单退出／Cmd+Q 才安全收尾全部，非 macOS 管理窗口 X 维持正常退出。业务窗口 X 只收尾本应用受管 Node 及普通子进程，不杀用户独立 Node。隐藏管理窗口不等于服务已停止；不能因窗口消失或主进程退出就假报清理成功，硬崩溃／脱组后代按真实能力记录限制。以上覆盖旧“管理窗口 X 退出”要求，旧项目随附说明不自动改写。
 
-本技能下文的 SQLite、构建、维护和迁移命令针对已有 `project.json`、经当前 CLI 确认的 **project-v1 业务项目**。只有 `local-app.json`、在“我的项目”以 Node 类型展示的本机源码槽属于另一条内部接入路径：先读其 `documentation.readme`、`documentation.development` 和声明中的配置；列表统一不合并存储身份，不要伪造 project ID、补写数据库、调用未开放的 Node CLI，或套用 project-v1 的备份／导出／迁移能力。作者修改前保全已有源码和真实数据，不从原 `.env` 或其他应用借 Key。
+本技能下文的 SQLite、构建和维护命令针对已有 `project.json`、经当前 CLI 确认的 **project-v1 业务项目**。只有 `local-app.json`、在“我的项目”以 Node 类型展示的本机源码槽属于另一条内部接入路径：先读其 `documentation.readme`、`documentation.development` 和声明中的配置；列表统一不合并存储身份，不要伪造 project ID、补写数据库、调用未开放的 Node CLI，或套用 project-v1 的备份／导出能力。工作区迁移是整个平台操作，包含工作区内平台管理的 Node 源码，不是单个 Node 项目的迁移命令。作者修改前保全已有源码和真实数据，不从原 `.env` 或其他应用借 Key。
 
 ## 接手项目
 
@@ -110,9 +110,11 @@ Node 实例在原生管理窗口预览并确认删除，没有 Node CLI 删除�
 
 工作区迁移影响全部项目，仅用于用户要求移动工作区的任务。使用 `workspace info --json` 查实际位置；迁移请求为 `workspace migrate --input migration.json --json`，文件内容为 `{"destinationPath":"/绝对路径/新的空工作区"}`。目标必须是独立、空、可写的本机 APFS 目录，不能是源的父子目录、同步盘、应用包或固定控制目录。不要直接改 settings、移动项目注册树或建立兼容链接绕过协议。
 
-迁移前停止外部编辑器、AI 和 SQLite 工具的写入，并处理未解决的 `recoveryRequired`；平台会等待自身任务，保留维护与全部历史现场后复制校验。只查询同一迁移任务，不因连接切换自动再次提交。提交新位置后即使目标暂不可用，也不自动回退到旧副本；旧根是保留现场，不继续编辑或手工清理。
+迁移前停止外部编辑器、AI 和 SQLite 工具的写入，并处理未解决的 `recoveryRequired`；平台会暂停新工作、等待自身真实 I/O 与任务完成，再复制并校验项目、受管 Node 源码与持久现场。已登记的外部原始源码若在旧根内，平台会在复制前拒绝并返回路径；保留原件，不移动、复制或建立兼容链接绕过检查。只查询同一迁移任务，不因连接切换自动再次提交。
 
-迁移完成后重新获取服务状态与 `project handoff`，改到返回的新项目绝对路径工作。旧编辑器工作目录不会自动跟随；旧管理凭据和网页会话失效，旧文档需要用户明确重开。固定开发身份不随工作区换位置。需要清理迁移原目录时，使用当前 `workspace cleanup-plan` 查看服务生成的范围，再按预览和明确选择调用 `workspace cleanup`；不手工递归删除旧根，也不把历史管理讨论稿中的其他接口当作已实现。
+提交新位置后，平台确认新运行服务与原生管理器成功重新打开、旧 HTTP／附件及其他文件访问、受管 Node 后端与代理实际结束，才自动删除迁移原目录；同卷也不靠重命名替代复制核验。此前中断保留原根，提交后不自动回源。清理失败时新位置继续可用，`workspace info --json` 的迁移记录通过 `sourceCleanup` 显示残留路径和错误，独立 `migrationCleanupTask` 跟踪类型为 `workspaceMigrationCleanup` 的任务。仅对 `cleanupPending: true` 的本次授权记录使用 `workspace cleanup-retry MIGRATION_ID --json`；返回任务仍用 `task get/wait` 查询。响应未知先核对任务，不自动重发，不提交删除路径或手工递归删除。
+
+迁移完成后重新获取服务状态与 `project handoff`，改到返回的新项目绝对路径工作。旧编辑器工作目录不会自动跟随；旧管理凭据和网页会话失效，旧文档需要用户明确重开，平台不会为迁移自动销毁或刷新业务草稿。固定开发身份不随工作区换位置。旧迁移 journal 没有新清理授权时仅供核对；不从旧记录或路径推导删除权限。“空间 → 历史资料”与 `workspace cleanup-plan`／`workspace cleanup` 只处理网页源码／数据取回原件，不能用来清理迁移旧根；历史管理讨论稿不作为当前接口依据。
 
 ## 修改、构建与验证
 
@@ -143,7 +145,7 @@ Node 实例在原生管理窗口预览并确认删除，没有 Node CLI 删除�
 
 ## 当前能力与交接
 
-当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait`、`maintenance status`、`storage info/scan/files/cleanup` 和 `workspace info/storage/migrate/cleanup-plan/cleanup`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。空间与历史清理只使用当前 CLI 提供的预览及明确选择流程，不调用已退役的备份、回收站或独立源码命令。
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait`、`maintenance status`、`storage info/scan/files/cleanup` 和 `workspace info/storage/migrate/cleanup-retry/cleanup-plan/cleanup`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。网页取回原件按当前 CLI 的预览及明确选择流程清理；迁移残留仅按迁移 ID 重试已授权收尾，不调用已退役的备份、回收站或独立源码命令。
 
 `env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机历史列表和源码取回有独立命令；源码初始化、保存与新建分支由外部 AI 使用作者仓库的标准 Git 负责，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
 

@@ -419,6 +419,40 @@ impl RuntimePaths {
         Ok(token)
     }
 
+    /// Called only after runtime shutdown has closed its resources. Settings
+    /// may have committed before the replacement HttpState could be installed.
+    /// An exact migration-source receipt then permits removing this instance's
+    /// fixed discovery, without restoring the old workspace selection.
+    pub(crate) fn remove_stopped_runtime_if_owned(
+        &self,
+        instance_id: &str,
+        expected_token: &str,
+    ) -> Result<bool> {
+        let selected = self.selected_for_cleanup()?;
+        if selected.workspace_root != self.workspace_root {
+            crate::workspace::validate_stopped_runtime_source(self, &selected)?;
+        }
+        let discovery: Discovery = read_private_json(&self.connection_path())?;
+        if discovery.api_version != API_VERSION
+            || discovery.identifier != APP_IDENTIFIER
+            || discovery.environment != ENVIRONMENT
+            || discovery.workspace_root != self.workspace_root
+            || discovery.instance_id != instance_id
+            || Uuid::parse_str(&discovery.instance_id).is_err()
+        {
+            return Ok(false);
+        }
+        discovery.port()?;
+        let token = read_private_string(&self.token_path())?;
+        if token != expected_token {
+            return Ok(false);
+        }
+        fs::remove_file(self.connection_path())?;
+        fs::remove_file(self.token_path())?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
     pub(crate) fn remove_runtime_if_owned(
         &self,
         instance_id: &str,
@@ -866,6 +900,14 @@ mod tests {
         paths
             .remove_runtime_if_owned(&instance_id, &"b".repeat(64))
             .unwrap();
+        assert!(paths.token_path().exists());
+        assert!(!paths
+            .remove_stopped_runtime_if_owned(&Uuid::new_v4().to_string(), &token)
+            .unwrap());
+        assert!(!paths
+            .remove_stopped_runtime_if_owned(&instance_id, &"b".repeat(64))
+            .unwrap());
+        assert!(paths.connection_path().exists());
         assert!(paths.token_path().exists());
         paths.remove_runtime_if_owned(&instance_id, &token).unwrap();
         assert!(!paths.connection_path().exists());

@@ -306,3 +306,88 @@ fn destroyed_releases_resources_after_unlocking_the_registry_and_rejects_late_at
         .is_err());
     assert_eq!(rejected.load(Ordering::Acquire), 1);
 }
+
+#[tokio::test]
+async fn workspace_pause_rejects_queued_creation_but_keeps_old_documents_closable() {
+    let windows = WindowLifetimes::default();
+    let old = windows
+        .admit_project("web", "prj_disposable_pause")
+        .unwrap();
+    let receipt = windows.reserve_project("project-pause", &old).unwrap();
+    let pause = windows.pause_workspace().unwrap();
+    assert!(windows.workspace_paused());
+    assert!(old.check().is_err());
+    assert!(windows
+        .admit_project("web", "prj_disposable_other")
+        .is_err());
+    assert!(windows.reserve_project("project-queued", &old).is_err());
+    assert!(old.closing_operation().await.is_ok());
+    assert!(!receipt.destroyed());
+    drop(pause);
+    assert!(!windows.workspace_paused());
+    assert!(
+        old.check().is_err(),
+        "old queue cannot revive after an abort"
+    );
+    assert!(old.closing_operation().await.is_ok());
+    let fresh = windows
+        .admit_project("web", "prj_disposable_other")
+        .unwrap();
+    assert!(windows.reserve_project("project-fresh", &fresh).is_ok());
+    windows.seal_project("web", "prj_disposable_pause").unwrap();
+    assert!(old.closing_operation().await.is_err());
+}
+
+#[test]
+fn workspace_pause_drop_never_reopens_shutdown_or_project_seals() {
+    let windows = WindowLifetimes::default();
+    let pause = windows.pause_workspace().unwrap();
+    assert!(windows.pause_workspace().is_err());
+    assert!(windows.workspace_paused());
+    windows.seal_project("node", "disposable_sealed").unwrap();
+    drop(pause);
+    assert!(windows.admit_project("node", "disposable_sealed").is_err());
+    let pause = windows.pause_workspace().unwrap();
+    windows.seal();
+    drop(pause);
+    assert!(!windows.workspace_paused());
+    assert!(windows
+        .admit_project("web", "disposable_after_shutdown")
+        .is_err());
+    assert!(windows.pause_workspace().is_err());
+}
+
+#[test]
+fn obsolete_marking_keeps_resources_and_only_a_current_node_restart_can_clear_it() {
+    let windows = WindowLifetimes::default();
+    let web = windows.admit_project("web", "disposable_web").unwrap();
+    let node = windows.admit_project("node", "disposable_node").unwrap();
+    let web = windows.reserve_project("project-obsolete", &web).unwrap();
+    let node = windows.reserve_project("node-app-obsolete", &node).unwrap();
+    let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    node.hold_resource(ResourceDrop(released.clone())).unwrap();
+    windows.obsolete_workspace(Some("node"));
+    assert!(node.obsolete());
+    assert!(!web.obsolete());
+    assert!(!node.destroyed());
+    assert_eq!(released.load(Ordering::Acquire), 0);
+    let pause = windows.pause_workspace().unwrap();
+    assert!(windows.acknowledge_restart(&node).is_err());
+    drop(pause);
+    windows.acknowledge_restart(&node).unwrap();
+    assert!(!node.obsolete());
+    windows.obsolete_workspace(None);
+    assert!(web.obsolete());
+    assert!(node.obsolete());
+    assert!(windows.acknowledge_restart(&web).is_err());
+    assert_eq!(released.load(Ordering::Acquire), 0);
+    windows.destroyed(&node, || {});
+    let admission = windows.admit_project("node", "disposable_node").unwrap();
+    let fresh = windows
+        .reserve_project("node-app-obsolete", &admission)
+        .unwrap();
+    windows.obsolete_workspace(Some("node"));
+    assert!(windows.acknowledge_restart(&node).is_err());
+    assert!(fresh.obsolete());
+    assert_eq!(released.load(Ordering::Acquire), 1);
+}

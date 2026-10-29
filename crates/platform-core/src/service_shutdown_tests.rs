@@ -528,14 +528,26 @@ async fn migration_registration_and_shutdown_share_the_same_submission_lock() {
     );
     assert!(paths.acquire_lock().is_err());
     release.send(()).unwrap();
-    submit.await.unwrap().unwrap();
+    let task = submit.await.unwrap().unwrap();
     let report = tokio::time::timeout(Duration::from_secs(8), closing)
         .await
         .unwrap()
         .unwrap();
     assert!(report.is_complete(), "{report:?}");
     let current = service.shared.snapshot();
-    assert_ne!(current.info.instance_id, old_instance);
+    // Shutdown may seal I/O before the admitted runner reaches its temporary
+    // fence. Either a finished switch or a safe precommit abort must be joined;
+    // registration cannot disappear between the submission and shutdown locks.
+    let finished = crate::workspace::task(&paths, &task.task_id)
+        .unwrap()
+        .unwrap();
+    assert!(finished.status.is_final());
+    if current.info.instance_id == old_instance {
+        assert_eq!(finished.status, TaskStatus::Failed);
+        assert!(paths.workspace_root().exists());
+    } else {
+        assert_eq!(finished.status, TaskStatus::Succeeded);
+    }
     assert!(current.stopping.load(Ordering::SeqCst));
     assert!(!current.paths.connection_path().exists());
 }

@@ -560,6 +560,25 @@ for (const type of ['workspaceMigration', 'workspaceCleanup']) {
   });
 }
 
+test('An automatic migration-source cleanup is tracked before settings opens while projects remain usable', async () => {
+  let finished = false;
+  const running = task({ type: 'workspaceMigrationCleanup', phase: 'cleaning-old-workspace' });
+  const workspace = { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [], migrationCleanupTask: running };
+  const calls = await setup({ workspace, overrides: { task_get: args => {
+    assert.equal(args.taskId, running.taskId);
+    return finished ? { ...running, status: 'succeeded', final: true, phase: 'completed', result: { completed: true, cleanupPending: false } } : running;
+  } } });
+  assert.doesNotMatch(document.querySelector('.radio-notices').textContent, /工作区正在迁移|历史清理正在进行|工作区已暂停/);
+  await advance(1000);
+  assert.equal(calls.filter(([command]) => command === 'task_get').length, 1);
+  await enter();
+  assert.equal(calls.filter(([command]) => command === 'project_open').length, 1);
+  finished = true; await advance(1000);
+  const reads = calls.filter(([command]) => command === 'task_get').length;
+  await advance(2000);
+  assert.equal(calls.filter(([command]) => command === 'task_get').length, reads, 'A stale workspace snapshot must not revive the completed cleanup');
+});
+
 const dataRecoveryProject = (state = 'pending') => ({ ...web(), state: 'error', issues: ['Artificial data recovery pending'],
   buildInfo: { sourceState: 'unknown', stale: true, dataRecoveryRequired: true, dataRecoveryState: state } });
 const dataRecoveryMaintenance = () => ({ mode: 'ready', recoveryRequired: false, documentEpoch: null, activeTask: buildTask().taskId,

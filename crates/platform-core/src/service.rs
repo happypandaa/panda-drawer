@@ -137,6 +137,10 @@ struct RuntimeSwitch {
     migration_runner: Mutex<Option<JoinHandle<()>>>,
     migration_previous: Mutex<Vec<JoinHandle<()>>>,
     migration_submission: Mutex<()>,
+    native_migration: StdRwLock<Option<NativeWorkspaceMigration>>,
+    migration_retained_state: Mutex<Option<Arc<HttpState>>>,
+    #[cfg(test)]
+    migration_reopen_failure: Mutex<Option<ApiError>>,
     #[cfg(test)]
     migration_registration_pause:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -206,12 +210,16 @@ impl RuntimeHandle {
             .clone()
             .map_or(Ok(()), Err)
     }
+    pub fn set_workspace_migration_hook(&self, hook: NativeWorkspaceMigration) {
+        *self.shared.native_migration.write().unwrap() = Some(hook);
+    }
     pub fn complete_native_startup(&self) {
         *self
             .shared
             .native_startup
             .write()
             .unwrap_or_else(|p| p.into_inner()) = None;
+        let _ = workspace_migration::submit_selected_cleanup(self.shared.clone());
     }
     pub fn fail_native_startup(&self, error: ApiError) {
         *self
@@ -219,6 +227,11 @@ impl RuntimeHandle {
             .native_startup
             .write()
             .unwrap_or_else(|p| p.into_inner()) = Some(error);
+    }
+    pub(crate) fn source_registration_scope(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, ApiError> {
+        self.shared.project_cleanup.source_registration_scope()
     }
     pub fn webview_stores(&self) -> crate::webview_storage::StoreLedger {
         self.shared.project_cleanup.stores()
@@ -1139,9 +1152,20 @@ impl RuntimeHandle {
         let state = self.current();
         let mut value = crate::workspace::info(&state.paths, &state.store)?;
         value["cleanupTask"] = json!(state.history_cleanup.latest_task()?);
+        value["migrationCleanupTask"] = json!(crate::workspace::cleanup_task_id(&state.paths)?
+            .and_then(|id| state.builds.task(&id).ok()));
         Ok(value)
     }
+    pub async fn workspace_migration_cleanup(
+        &self,
+        migration_id: String,
+    ) -> std::result::Result<Value, ApiError> {
+        self.check_native_ready()?;
+        workspace_migration::submit_cleanup(self.shared.clone(), self.current(), &migration_id)
+            .map(|task| json!(task))
+    }
     pub async fn workspace_migrate(&self, input: Value) -> std::result::Result<Value, ApiError> {
+        self.check_native_ready()?;
         let state = self.current();
         if !Arc::ptr_eq(&state, &self.shared.snapshot()) {
             return Err(ApiError::new(
@@ -1154,6 +1178,12 @@ impl RuntimeHandle {
             .map(|task| json!(task))
     }
 }
+#[path = "service_workspace_migration.rs"]
+mod workspace_migration;
+use workspace_migration::submit_migration;
+pub use workspace_migration::{
+    NativeWorkspaceMigration, WorkspaceMigrationNotice, WorkspaceMigrationStage,
+};
 #[path = "service_shutdown.rs"]
 mod shutdown_coordinator;
 pub struct RuntimeService {
@@ -1216,6 +1246,10 @@ impl RuntimeService {
             migration_runner: Mutex::new(None),
             migration_previous: Mutex::new(Vec::new()),
             migration_submission: Mutex::new(()),
+            native_migration: StdRwLock::new(None),
+            migration_retained_state: Mutex::new(None),
+            #[cfg(test)]
+            migration_reopen_failure: Mutex::new(None),
             #[cfg(test)]
             migration_registration_pause: Mutex::new(None),
             closing: AtomicBool::new(false),
@@ -1255,6 +1289,9 @@ impl RuntimeService {
         });
         let shutdown =
             shutdown_coordinator::RuntimeShutdown::new(shared.clone(), shutdown, task, lock);
+        if !desktop_pending {
+            let _ = workspace_migration::submit_selected_cleanup(shared.clone());
+        }
         Ok(Self { shared, shutdown })
     }
     pub fn info(&self) -> BootstrapInfo {
@@ -1532,256 +1569,6 @@ fn make_state(
     });
     Ok(state)
 }
-async fn submit_migration(
-    shared: Arc<RuntimeSwitch>,
-    state: Arc<HttpState>,
-    input: crate::workspace::MigrationInput,
-) -> std::result::Result<TaskRecord, ApiError> {
-    // Stop/seal and full admission-to-registration share one critical section.
-    // The outer submit has no await while this guard is held.
-    let _submission = shared.migration_submission.lock().unwrap();
-    if shared.closing.load(Ordering::Acquire) {
-        return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
-    }
-    state.node_git_import.require_migration_clear()?;
-    crate::node_apps::development::require_source_restores_clear_for_migration(
-        state.paths.data_root(),
-        state.paths.workspace_root(),
-    )?;
-    if shared.migration_active.swap(true, Ordering::AcqRel) {
-        return Err(ApiError::new(
-            "WORKSPACE_MIGRATING",
-            "A migration is already finishing or running",
-        ));
-    }
-    if let Err(error) = state.store.begin_workspace_migration() {
-        shared.migration_active.store(false, Ordering::Release);
-        return Err(error);
-    }
-    let submitted = match crate::workspace::create(&state.paths, &input.destination_path) {
-        Ok(task) => task,
-        Err(error) => {
-            state.store.resume_workspace();
-            state.storage.resume();
-            shared.migration_active.store(false, Ordering::Release);
-            return Err(error);
-        }
-    };
-    let id = submitted.task_id.clone();
-    let weak = Arc::downgrade(&shared);
-    let migration_shared = shared.clone();
-    let runner = tokio::spawn(async move {
-        struct Lease(Arc<RuntimeSwitch>);
-        impl Drop for Lease {
-            fn drop(&mut self) {
-                self.0.migration_active.store(false, Ordering::Release);
-            }
-        }
-        let _lease = Lease(migration_shared);
-        let mut committed = false;
-        let outcome: std::result::Result<Value, ApiError> = async {
-            crate::workspace::phase(&state.paths, &id, "waiting-for-project-tasks")?;
-            while state.store.has_active_tasks() {
-                tokio::time::sleep(Duration::from_millis(40)).await;
-            }
-            state.node_git_import.require_migration_clear()?;
-            crate::projects::check_pending_deletions(state.paths.workspace_root())?;
-            // Reject unresolved recovery before any filesystem copying.
-            for project in state.store.list().await? {
-                if crate::projects::valid_id(&project.id)
-                    && state.store.control(&project.id)?.get().recovery_required
-                {
-                    return Err(ApiError::new(
-                        "RECOVERY_REQUIRED",
-                        "Resolve pending project recovery before moving the workspace",
-                    )
-                    .detail("projectId", project.id));
-                }
-            }
-            // Source-only recovery does not stop runtime use. Reject a retained
-            // operation before migration would pause that still-usable runtime.
-            crate::source_restore_guard::check_workspace_available(state.paths.workspace_root())?;
-            crate::data_restore_guard::check_workspace_available(state.paths.workspace_root())?;
-            crate::project_git::check_data_workspace_available(state.paths.workspace_root())?;
-            let issues = state.storage.quiesce().await;
-            if !issues.is_empty() {
-                if let Some(shared) = state.shared.upgrade() { shared.shutdown_issues.lock().unwrap().extend(issues); }
-                return Err(ApiError::new("WORKSPACE_DRAIN_FAILED", "Storage did not close cleanly; migration is stopped"));
-            }
-            state.store.pause_workspace().await?;
-            let mut guards = vec![];
-            for project in state.store.list().await? {
-                if crate::projects::valid_id(&project.id) {
-                    let _ = state.events.send(Change {
-                        project_id: project.id.clone(),
-                        request_id: id.clone(),
-                        source: "migration".into(),
-                        event: "project.state.changed".into(),
-                    });
-                    guards.push(state.store.gate(&project.id).write_owned().await);
-                }
-            }
-            let paths = state.paths.clone();
-            let store = state.store.clone();
-            let task_id = id.clone();
-            let (selected, mut journal) = tokio::task::spawn_blocking(move || {
-                crate::workspace::copy_and_commit(&paths, &store, &task_id)
-            })
-            .await
-            .map_err(|e| ApiError::new("WORKSPACE_MIGRATION_FAILED", e.to_string()))??;
-            committed = true;
-            let store = Arc::new(ProjectStore::with_resources_and_processes(
-                selected.workspace_root().into(),
-                state.resources.clone(),
-                state.store.processes(),
-            )?);
-            crate::workspace::initialize_selected(&selected, &store, &mut journal)?;
-            let Some(shared) = weak.upgrade() else {
-                return Err(ApiError::new(
-                    "SERVICE_STOPPING",
-                    "Runtime closed after committing the new workspace",
-                ));
-            };
-            let new = make_state(
-                selected.clone(),
-                state.info.base_url.clone(),
-                state.resources.clone(),
-                Arc::downgrade(&shared),
-                Some(store),
-            )
-            .map_err(|e| ApiError::new("WORKSPACE_REOPEN_FAILED", e.to_string()))?;
-            let port = url::Url::parse(&new.info.base_url)
-                .map_err(|e| ApiError::new("WORKSPACE_REOPEN_FAILED", e.to_string()))?
-                .port()
-                .unwrap();
-            selected
-                .publish_runtime(
-                    &Discovery {
-                        api_version: API_VERSION,
-                        instance_id: new.info.instance_id.clone(),
-                        pid: std::process::id(),
-                        base_url: new.info.base_url.clone(),
-                        workspace_root: new.info.workspace_root.clone(),
-                        environment: ENVIRONMENT.into(),
-                        identifier: APP_IDENTIFIER.into(),
-                    },
-                    &new.token,
-                )
-                .map_err(|e| ApiError::new("WORKSPACE_REOPEN_FAILED", e.to_string()))?;
-            selected
-                .save_port(port)
-                .map_err(|e| ApiError::new("WORKSPACE_REOPEN_FAILED", e.to_string()))?;
-            shared.install(new.clone());
-            let _ = state.stop.send(true);
-            let issues = shutdown_coordinator::drain_managers(&state).await;
-            if !issues.is_empty() {
-                shared.shutdown_issues.lock().unwrap().extend(issues);
-                return Err(ApiError::new("WORKSPACE_DRAIN_FAILED", "Old workspace managers did not close cleanly; retained evidence requires attention"));
-            }
-            crate::workspace::mark_old_retired(&selected, &journal)?;
-            for project in new.store.list().await? {
-                if let Some(resources) = &new.resources {
-                    if let Ok(project) = new.store.project(&project.id) {
-                        let handoff_path = project.root.join(".platform/handoff.md");
-                        crate::projects::check_no_symlinks(&handoff_path, true)?;
-                        if let Ok(text) = std::fs::read_to_string(&handoff_path) {
-                            if text.starts_with("# Platform-managed project handoff\n") {
-                                let updated = text
-                                    .lines()
-                                    .map(|line| {
-                                        if line.starts_with("Project root: ") {
-                                            format!("Project root: `{}`", project.root.display())
-                                        } else {
-                                            line.to_owned()
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                                    + "\n";
-                                let temp = handoff_path.with_file_name(format!(
-                                    ".handoff-{}",
-                                    Uuid::new_v4().simple()
-                                ));
-                                let mut file = std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create_new(true)
-                                    .mode(0o600)
-                                    .open(&temp)?;
-                                std::io::Write::write_all(&mut file, updated.as_bytes())?;
-                                file.sync_all()?;
-                                std::fs::rename(&temp, &handoff_path)?;
-                            }
-                        }
-                        builds::atomic_json(
-                            &project.root.join(".platform/current-handoff.json"),
-                            &resources.handoff(&project.root, &project.manifest.id),
-                        )?;
-                    }
-                }
-            }
-            drop(guards);
-            Ok(crate::workspace::completed_result(&journal))
-        }
-        .await;
-        if let Err(error) = &outcome {
-            // If settings committed but a final journal write failed, selection
-            // remains authoritative. Never reopen or write into the source.
-            committed =
-                committed || crate::workspace::is_committed(&state.paths, &id).unwrap_or(true);
-            if !committed {
-                state.store.resume_workspace();
-                state.storage.resume();
-                if let Ok(projects) = state.store.list().await {
-                    for project in projects {
-                        let _ = state.events.send(Change {
-                            project_id: project.id,
-                            request_id: id.clone(),
-                            source: "migration".into(),
-                            event: "project.state.changed".into(),
-                        });
-                    }
-                }
-            } else {
-                if let Err(close_error) = state.store.pause_workspace().await {
-                    if let Some(shared) = state.shared.upgrade() {
-                        shared.shutdown_issues.lock().unwrap().push(
-                            crate::shutdown::ShutdownIssue::new(
-                                "migrationDatabase",
-                                "DATABASE_CLOSE_FAILED",
-                                close_error.to_string(),
-                                false,
-                                false,
-                            ),
-                        );
-                    }
-                }
-            }
-            let error = error
-                .clone()
-                .outcome(if committed {
-                    "committed_needs_attention"
-                } else {
-                    "not_committed"
-                })
-                .detail("sourceRetained", true)
-                .detail("sourcePath", json!(state.paths.workspace_root()))
-                .detail("destinationPath", json!(input.destination_path));
-            let _ = crate::workspace::finish(&state.paths, &id, Err(error));
-        } else {
-            let _ = crate::workspace::finish(&state.paths, &id, outcome);
-        }
-    });
-    #[cfg(test)]
-    if let Some((entered, release)) = shared.migration_registration_pause.lock().unwrap().take() {
-        let _ = entered.send(());
-        let _ = release.recv();
-    }
-    if let Some(previous) = shared.migration_runner.lock().unwrap().replace(runner) {
-        // Completion is not success proof. Keep every earlier outcome joinable.
-        shared.migration_previous.lock().unwrap().push(previous);
-    }
-    Ok(submitted)
-}
 
 fn secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
@@ -1951,6 +1738,12 @@ async fn validate_host(
     let mut response = match io_lease
         .run(async move {
             let _active = active;
+            if _active.0.stopping.load(Ordering::SeqCst) {
+                return failure(
+                    ApiError::new("SERVICE_STOPPING", "The previous workspace has stopped"),
+                    None,
+                );
+            }
             next.run(request).await
         })
         .await
@@ -2238,6 +2031,7 @@ async fn management(
             ["projects", _, "builds" | "exports" | "copies" | "deletions"]
                 | ["projects", "imports"]
                 | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
+                | ["workspace", "migrations", _, "cleanup"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
                 | [
                     "projects",
@@ -2457,6 +2251,15 @@ async fn management(
                     }
                 }
                 handle.storage_files(id, Value::Object(body)).await
+            }
+            (Method::POST, ["workspace", "migrations", id, "cleanup"]) => {
+                if optional_json(request).await? != json!({}) {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "Migration cleanup accepts only its registered migration ID",
+                    ));
+                }
+                handle.workspace_migration_cleanup((*id).to_owned()).await
             }
             (Method::POST, ["workspace", "migrations"]) => {
                 handle
@@ -4546,3 +4349,7 @@ mod node_development;
 #[cfg(test)]
 #[path = "service_io_lifetime_tests.rs"]
 mod io_lifetime_tests;
+
+#[cfg(test)]
+#[path = "service_workspace_migration_tests.rs"]
+mod workspace_migration_tests;

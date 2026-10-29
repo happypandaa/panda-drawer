@@ -17,6 +17,7 @@ pub(super) struct Receipt {
     destroyed: AtomicBool,
     creation_failed: AtomicBool,
     close_requested: AtomicBool,
+    obsolete: AtomicBool,
     resources: Mutex<Vec<Box<dyn Send + Sync>>>,
     changed: Notify,
 }
@@ -49,6 +50,9 @@ impl Receipt {
     }
     pub fn destroyed(&self) -> bool {
         self.destroyed.load(Ordering::Acquire)
+    }
+    pub fn obsolete(&self) -> bool {
+        self.obsolete.load(Ordering::Acquire)
     }
     pub async fn wait(&self) {
         loop {
@@ -94,6 +98,9 @@ pub(super) struct ProjectAdmission {
     revoked: Arc<AtomicBool>,
     operation: Arc<tokio::sync::Mutex<()>>,
     closing: Arc<AtomicBool>,
+    workspace_paused: Arc<AtomicBool>,
+    workspace_generation: Arc<AtomicU64>,
+    admitted_workspace_generation: u64,
 }
 impl ProjectAdmission {
     pub async fn operation(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, Issue> {
@@ -103,6 +110,24 @@ impl ProjectAdmission {
         Ok(operation)
     }
     pub fn check(&self) -> Result<(), Issue> {
+        self.check_closing()?;
+        if self.workspace_paused.load(Ordering::Acquire)
+            || self.workspace_generation.load(Ordering::Acquire)
+                != self.admitted_workspace_generation
+        {
+            return Err(Issue::new("WORKSPACE_MIGRATING", false, true));
+        }
+        Ok(())
+    }
+    /// A retained document must still be closable after its workspace changed.
+    /// This grants no creation/reload permission and keeps permanent seals.
+    pub async fn closing_operation(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, Issue> {
+        self.check_closing()?;
+        let operation = self.operation.clone().lock_owned().await;
+        self.check_closing()?;
+        Ok(operation)
+    }
+    pub fn check_closing(&self) -> Result<(), Issue> {
         if self.closing.load(Ordering::Acquire) {
             return Err(Issue::new("DESKTOP_STOPPING", false, false));
         }
@@ -117,18 +142,78 @@ pub(super) struct WindowLifetimes {
     entries: Mutex<BTreeMap<String, Arc<Receipt>>>,
     next: AtomicU64,
     closing: Arc<AtomicBool>,
+    workspace_paused: Arc<AtomicBool>,
+    workspace_generation: Arc<AtomicU64>,
     projects: Mutex<BTreeMap<ProjectKey, ProjectState>>,
+}
+pub(super) struct WorkspaceWindowPause(Arc<AtomicBool>);
+impl Drop for WorkspaceWindowPause {
+    fn drop(&mut self) {
+        // The independent shutdown/project seals are never reset here.
+        self.0.store(false, Ordering::Release);
+    }
 }
 impl WindowLifetimes {
     pub fn seal(&self) {
         let _entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         self.closing.store(true, Ordering::Release);
     }
+    pub fn pause_workspace(&self) -> Result<WorkspaceWindowPause, Issue> {
+        let _entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        if self.closing.load(Ordering::Acquire) {
+            return Err(Issue::new("DESKTOP_STOPPING", false, false));
+        }
+        if self.workspace_paused.swap(true, Ordering::AcqRel) {
+            return Err(Issue::new("WORKSPACE_MIGRATING", false, true));
+        }
+        // Old queued native closures never regain creation permission even if
+        // migration aborts and the temporary pause has already been released.
+        self.workspace_generation.fetch_add(1, Ordering::AcqRel);
+        Ok(WorkspaceWindowPause(self.workspace_paused.clone()))
+    }
+    pub fn workspace_paused(&self) -> bool {
+        self.workspace_paused.load(Ordering::Acquire)
+    }
+    pub fn obsolete_workspace(&self, kind: Option<&str>) {
+        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        for receipt in entries.values().filter(|receipt| {
+            !receipt.destroyed()
+                && kind
+                    .is_none_or(|kind| receipt.project.as_ref().is_some_and(|key| key.kind == kind))
+        }) {
+            // Keep the document and all build/download resources until actual
+            // Destroyed. This marker only prevents silent reuse/reconciliation.
+            receipt.obsolete.store(true, Ordering::Release);
+        }
+    }
+    pub fn acknowledge_restart(&self, receipt: &Arc<Receipt>) -> Result<(), Issue> {
+        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        if self.closing.load(Ordering::Acquire) || self.workspace_paused() {
+            return Err(Issue::new("WORKSPACE_MIGRATING", false, true));
+        }
+        if receipt.destroyed()
+            || !entries
+                .get(&receipt.label)
+                .is_some_and(|current| Arc::ptr_eq(current, receipt))
+            || !receipt
+                .project
+                .as_ref()
+                .is_some_and(|key| key.kind == "node")
+        {
+            return Err(Issue::new("PROJECT_WINDOW_GENERATION_CHANGED", false, true));
+        }
+        receipt.obsolete.store(false, Ordering::Release);
+        Ok(())
+    }
     pub fn admit_project(&self, kind: &str, id: &str) -> Result<ProjectAdmission, Issue> {
         let key = ProjectKey::new(kind, id)?;
         let mut projects = self.projects.lock().unwrap_or_else(|p| p.into_inner());
+        let _entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         if self.closing.load(Ordering::Acquire) {
             return Err(Issue::new("DESKTOP_STOPPING", false, false));
+        }
+        if self.workspace_paused() {
+            return Err(Issue::new("WORKSPACE_MIGRATING", false, true));
         }
         let project = projects.entry(key.clone()).or_insert_with(|| ProjectState {
             revoked: Arc::new(AtomicBool::new(false)),
@@ -143,6 +228,9 @@ impl WindowLifetimes {
             revoked: project.revoked.clone(),
             operation: project.operation.clone(),
             closing: self.closing.clone(),
+            workspace_paused: self.workspace_paused.clone(),
+            workspace_generation: self.workspace_generation.clone(),
+            admitted_workspace_generation: self.workspace_generation.load(Ordering::Acquire),
         })
     }
     pub fn seal_project(&self, kind: &str, id: &str) -> Result<Arc<tokio::sync::Mutex<()>>, Issue> {
@@ -170,7 +258,7 @@ impl WindowLifetimes {
         {
             return Err(Issue::new("PROJECT_WINDOW_GENERATION_CHANGED", false, true));
         }
-        self.reserve_inner(label, Some(admission.key.clone()))
+        self.reserve_inner(label, Some(admission.key.clone()), Some(admission))
     }
     pub fn project_receipt(&self, kind: &str, id: &str) -> Result<Option<Arc<Receipt>>, Issue> {
         let key = ProjectKey::new(kind, id)?;
@@ -219,16 +307,23 @@ impl WindowLifetimes {
     }
     #[cfg(test)]
     pub fn reserve(&self, label: &str) -> Result<Arc<Receipt>, Issue> {
-        self.reserve_inner(label, None)
+        self.reserve_inner(label, None, None)
     }
     fn reserve_inner(
         &self,
         label: &str,
         project: Option<ProjectKey>,
+        admission: Option<&ProjectAdmission>,
     ) -> Result<Arc<Receipt>, Issue> {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         if self.closing.load(Ordering::Acquire) {
             return Err(Issue::new("DESKTOP_STOPPING", false, false));
+        }
+        if self.workspace_paused() {
+            return Err(Issue::new("WORKSPACE_MIGRATING", false, true));
+        }
+        if let Some(admission) = admission {
+            admission.check()?;
         }
         if entries.get(label).is_some_and(|r| !r.destroyed())
             || project.as_ref().is_some_and(|key| {
@@ -246,6 +341,7 @@ impl WindowLifetimes {
             destroyed: AtomicBool::new(false),
             creation_failed: AtomicBool::new(false),
             close_requested: AtomicBool::new(false),
+            obsolete: AtomicBool::new(false),
             resources: Mutex::new(Vec::new()),
             changed: Notify::new(),
         });

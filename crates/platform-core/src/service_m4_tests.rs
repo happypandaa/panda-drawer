@@ -194,7 +194,10 @@ async fn migration_rotates_runtime_credentials_preserves_data_and_rejects_old_co
     assert_ne!(after.instance_id, before.instance_id);
     assert_eq!(after.base_url, before.base_url);
     assert_eq!(after.workspace_root, destination);
-    assert!(original_project_root.exists());
+    assert!(!original_project_root.exists());
+    assert!(!paths.workspace_root().exists());
+    assert_eq!(task["result"]["sourceRetained"], false);
+    assert_eq!(task["result"]["sourceCleanup"]["phase"], "removed");
     assert!(destination
         .join("projects")
         .join(original_project_root.file_name().unwrap())

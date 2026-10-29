@@ -196,3 +196,46 @@
 - `crates/platform-core/src/source_acquisition_owned_process_tests.rs`
 - `crates/platform-core/src/source_import_cleanup.rs`
 - `crates/platform-core/src/source_import_cleanup_tests.rs`
+
+
+## 第三批：工作区自动收尾（2026-10-29 追加）
+
+以下记录第三批本轮实际检查，不改写上方第一批当时的验收边界。没有在真实开发工作区执行迁移或清理。用户要求的真实临时公开仓库端到端安排在三批独立提交之后，结果在最终交付消息中另行记录。
+
+实现使用新 journal 显式授权原目录自动收尾。元数据恢复不能作重开回执；新 HttpState 安装、旧管理器和实际文件 I/O 排空、原生窗口／下载／Node 可恢复暂停和新位置绑定核对后，才将状态从 awaitingReopen 改为 pending 并删除旧根。静态 HTTP 读者与非产物附件读者分别核对；丢失调用等待者不会释放实际文件生产者。原生草稿保留，旧窗口明确重开才采用新资源。
+
+清理持久 intent 先于 unlink；同一根 FD 身份、哈希快照核对及已有 descriptor-relative 删除引擎贯穿实际删除。提交时源／目标清单作为复制收据，新位置后续正常写入不参与比较；部分失败只删除尚匹配的剩余材料，不认领新文件或同路径替代目录。新工作区在收尾期间可用，失败任务独立显示，并仅按固定 migrationId 重试。启动提交任务自身失败也记入待重试状态。提交后安装前失败保留原生暂停与旧访问封口，安全关闭只按本实例凭据和已提交迁移证明处理固定 discovery，不回源运行。
+
+Node 重开使用动态当前 registry，迁移暂停不使用永久 shutdown 标志。unknown／orphan run markers 和未确认写入者不能当作已停止；延后重开证明保留当前新根真实运行的应用。登记外部原件位于旧根时迁移前拒绝；pending 旧根内新登记／初始化与自动收尾通过同一源目录协调门隔离，防止新外部原件被收尾。原根已清除后，受管 Node 仍可启动、重开和完整删除；用户选外部原始目录继续保留。
+
+已执行的定向结果：
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo test -p platform-core migration` | 52/52 通过；迁移状态机、运行时凭据、重开、异常、启动门禁及删除归属 |
+| `cargo test -p platform-core service::workspace_migration_tests` | 9/9 通过；实际附件读者与丢失等待者、清理失败新业务可用、按 ID 重试、NativeReady、历史无授权、同步提交失败、安装前失败及源协调门 |
+| `cargo test -p platform-core node_apps::lifecycle_tests` | 33/33 通过；含当前新根运行不停止、unknown marker／writer、pending 原件准入、受管／外部 Node 迁移后启动与完整删除 |
+| `cargo test -p platform-core local_cleanup::tests` | 26/26 通过；自动完成后的源范围结束、pending 源缺失／替代／离线卷与外部原件保护 |
+| `cargo test -p platform-core history_cleanup` | 15/15 通过；手动迁移旧根候选退役，网页取回原件和安全删除引擎保留 |
+| `cargo test -p platform-desktop --bin local-projects-desktop-dev` | 89/89 通过；原生窗口与下载收据、可恢复暂停、旧页面保留与真实 I/O |
+| `cargo test -p platform-cli` | 26/26 通过；含 migration ID 参数与路径拒绝、离线 build info |
+| `cargo clippy --locked -p platform-core -p platform-cli -p platform-desktop --all-targets -- -D warnings` | 通过 |
+| `cargo check -p platform-core`、`cargo check -p platform-desktop` | 通过 |
+
+以上均通过仓库 `node scripts/rust.mjs` 使用固定工具链；测试只操作 TempDir 与明确命名的可丢弃源码和人工子进程。受控 Python 解释器不证明 Node 兼容性，真实公开 Node 仓库验收由最后端到端另行记录。已知偶发进程期限问题按用户要求未扩展处理，本轮定向组未遇到超时失败。文档和 UI 已同步自动收尾、按迁移 ID 重试与原件保护；不提供任意路径删除或旧 journal 收养。
+
+父任务对最终源码的检查：
+
+| 检查 | 结果 |
+| --- | --- |
+| `caffeinate -i -s npm test -- -- --test-threads=1` | core 925 通过、2 失败、39 条件忽略；此前 CLI 26 通过。失败为两个既有 Node 生命周期用例，见下文，未将该整套记作通过 |
+| 被整套失败阻断的其余工作区 crate | 另行执行 `cargo test --workspace --exclude platform-core`，162 通过、0 失败 |
+| `node_apps_registration` 集成 | 10/10 通过 |
+| 两个失败 Node 用例短复跑 | 2/2 通过；不据此声称根因已修复 |
+| 最后两个 checkpoint／重开回归 | 2/2 通过；含 settings 已提交但 journal 标记写丢的安全退出与元数据恢复不能授权旧根删除 |
+| `clippy --locked --workspace --all-targets -- -D warnings` | 最终源码通过 |
+| `npm run test:ui` | 463/463 通过 |
+| TypeScript／Vite 构建 | 通过；仅既有大于 500 kB 的 chunk 提示 |
+| `npm run test:ai-prompts` | 通过 |
+
+最终整套的 `blocked_instance_stop_keeps_status_and_another_instance_available_after_waiter_loss` 在首次启动处报告 `PROCESS_WORK_TIMEOUT`；`failed_ready_with_verified_normal_stop_clears_only_this_launch_intent` 的启动就绪断言收到空 `launchCauseCode`，第二项的具体原因未确认。二者随后同一编译工作区短复跑均通过，按用户要求未继续调查或改变期限、生产进程逻辑及原断言。首轮整套还发现一个旧测试仍把元数据恢复当作真实重开；已更新为必须等待重开回执，并保留丢失设置时不能回源的检查。没有把这些分次运行合写成一次无失败整套。

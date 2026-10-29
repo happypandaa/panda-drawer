@@ -1973,6 +1973,11 @@ fn workspace_scan(
             }
             match read_json::<Value>(&file) {
                 Ok(journal) if journal["committed"] == true => {
+                    if matches!(journal["sourceCleanup"]["phase"].as_str(), Some("removed" | "absent")) {
+                        // That original scope ended. A later same-path folder
+                        // is not owned or counted as a retained workspace.
+                        continue;
+                    }
                     if let Some(source) = journal["sourcePath"].as_str() {
                         let path = PathBuf::from(source);
                         if path != workspace.path && !roots.iter().any(|(_, old)| old == &path) {
