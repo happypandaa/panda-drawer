@@ -5,10 +5,10 @@ import { Modal } from './Modal';
 import { ProjectTask } from './ProjectTask';
 import { markHistoryScanStale, publishHistoryScan } from './history-scan-store';
 import { bytesText, exactBytes, timeText } from './storage-utils';
-import type { ByteCount, RetainedWorkspaceRoot, TaskRecord } from './types';
+import type { ByteCount, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
-type CleanupKind = 'retainedWorkspace' | 'restoreOriginal';
+type CleanupKind = 'restoreOriginal';
 interface CleanupItem {
   id: string;
   kind: CleanupKind;
@@ -37,15 +37,13 @@ interface CleanupPanelProps {
   migrating: boolean;
   // Scan once when the panel first becomes active without a usable result.
   autoScan?: boolean;
-  absentRecords?: RetainedWorkspaceRoot[];
   cleanupTask?: TaskRecord | null;
   onTask: (task: TaskRecord) => void;
   onRefresh: () => Promise<void>;
   onPendingChange?: (pending: boolean) => void;
 }
-const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移前的旧工作区', restoreOriginal: '取回前的原件' };
+const kinds: Record<CleanupKind, string> = { restoreOriginal: '取回前的原件' };
 const groups: { kind: CleanupKind; description: string }[] = [
-  { kind: 'retainedWorkspace', description: '迁移工作区时保留的原目录，软件已不再使用。清理会删除该目录中的全部文件，当前工作区不受影响。' },
   { kind: 'restoreOriginal', description: '从版本记录取回数据或源码时，为防万一保留的原文件。取回仍未完成时会保留。' },
 ];
 // Protected items carry a user-facing reason after a stable code prefix.
@@ -211,11 +209,10 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
     clearConfirmation();
   }
   async function copyPath(value: string) { try { await navigator.clipboard.writeText(value); if (alive.current) setNotice('目录路径已复制。'); } catch { if (alive.current) setNotice('无法自动复制，请选中显示的完整目录路径手动复制。'); } }
-  const absentRecords = (props.absentRecords ?? []).filter((record) => record.absent === true);
   const scanning = pending === 'preview' || previewRunning;
   return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-title`}>
     <div className="history-heading">
-      <div><h2 id={`${id}-title`}>历史资料</h2><p>这些资料不会随删除项目自动清理。勾选不再需要的内容，确认后永久删除。当前项目和未完成的恢复不在这里，不会被删除。</p></div>
+      <div><h2 id={`${id}-title`}>历史资料</h2><p>这里列出网页项目取回数据或源码前保留的原件。勾选不再需要的内容，确认后永久删除。当前项目和未完成的恢复不在此删除范围。</p></div>
       <div className="history-scan-status">{scanning ? <span role="status">正在扫描…</span> : scannedAt ? <span>{props.autoScan ? '已自动扫描' : '已扫描'} · {timeText(scannedAt)}</span> : null}<button className="refresh-button" disabled={blocked} onClick={() => void preview()}><RefreshCw size={14} />{scanning ? '正在扫描…' : plan ? '重新扫描' : '扫描可清理范围'}</button></div>
     </div>
     {previewTask && (!previewTask.final || previewTask.status !== 'succeeded') && <ProjectTask task={previewTask} />}
@@ -223,10 +220,9 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
     {plan && <>
       <div className="workspace-cleanup-plan"><p>以下大小为普通文件的逻辑字节，不等于实际可释放的物理磁盘空间。范围在 {timeText(plan.expiresAt)} 前有效，过期后需重新扫描。</p></div>
       {(expired || wrongWorkspace || consumed) && <p className="workspace-operation-status" role="status">{wrongWorkspace ? '工作区已改变，请重新扫描。' : consumed ? '本次范围已经提交过，请等待最终结果后重新扫描核对，不能直接重复提交。' : '本次范围已过期，请重新扫描后再选择和确认。'}</p>}
-      {plan.items.length || absentRecords.length ? <div className="workspace-cleanup-items" aria-label="历史清理候选范围">{groups.map(({ kind, description }) => {
+      {plan.items.length ? <div className="workspace-cleanup-items" aria-label="历史清理候选范围">{groups.map(({ kind, description }) => {
         const items = plan.items.filter((item) => item.kind === kind);
-        const records = kind === 'retainedWorkspace' ? absentRecords : [];
-        if (!items.length && !records.length) return null;
+        if (!items.length) return null;
         const open = items.filter(cleanable);
         const allSelected = open.length > 0 && open.every((item) => selected.includes(item.id));
         return <section className="history-group" key={kind} aria-labelledby={`${id}-${kind}`}>
@@ -241,7 +237,6 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
             <strong className="workspace-cleanup-size" title={exactBytes(item.totalBytes)}>{bytesText(item.totalBytes)}</strong>
             <button className="text-button" aria-label={`复制${itemDescription(item)}的目录`} onClick={() => void copyPath(item.path)}><Copy size={13} />复制路径</button>
           </article>)}
-          {records.map((record, index) => <article className="workspace-cleanup-item is-absent" key={record.taskId ?? `absent-${index}`}><span aria-hidden="true">—</span><div className="workspace-cleanup-item-main"><strong>{record.path ?? record.sourcePath ?? '原目录路径未记录'}</strong><div className="workspace-cleanup-item-meta"><span>目录当前不存在</span></div></div><span className="workspace-cleanup-size">—</span></article>)}
         </section>;
       })}</div> : <div className="workspace-empty-state"><Trash2 size={26} /><p>没有发现历史资料</p><span>无需为了让空间数字归零而删除平台程序或当前项目。</span></div>}
       <details className="workspace-disclosure workspace-cleanup-preserved"><summary>始终保留的内容</summary><div className="workspace-disclosure-body">{plan.preserved.length ? <ul>{plan.preserved.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>范围之外的文件保持原样。</p>}</div></details>

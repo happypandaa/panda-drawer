@@ -58,7 +58,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 “空间”使用“概览 / 按项目 / 历史资料”页签；工作区位置与迁移移至“设置 › 存储位置”，迁移需先展开表单并明确确认。所有维护、删除、恢复及迁移继续使用已有原生任务与门禁。
 
-概览的“统计说明与各位置明细”中保留“为什么删除项目后仍有占用”，解释旧回收项、历史备份、恢复操作现场、共享缓存、迁移保留目录和软件文件；这些数字属于上方范围，不另行重复相加。项目列表清空不等于抹除这些资料；永久删除回收项仍保留历史备份。历史备份仍不提供手动删除入口；迁移旧目录、已完成恢复的原现场和回收项可在“清理历史”中扫描范围、显式选择并确认后处理，未解决现场继续保护。统计是文件逻辑大小，不能直接视为可回收磁盘空间。
+概览的“统计说明与各位置明细”解释恢复现场、共享缓存、迁移残留及软件文件；这些数字属于上方范围，不另行重复相加。项目列表清空不等于这些资料全部消失。“历史资料”仅扫描网页源码／数据取回所保留的原件，显式选择并确认后处理，未解决现场继续保护。2026-10-29 起，迁移原目录在新位置成功重新打开后自动删除；残留路径与按迁移 ID 重试入口位于“设置 › 存储位置”，不再放入历史清理候选。统计是文件逻辑大小，不能直接视为可回收磁盘空间。较早的回收站、备份与旧根手动清理验收保留原时点含义。
 
 ## 1 开发身份
 
@@ -77,7 +77,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 产品名称已经确认；上述应用标识、CLI 与数据根属于隔离的开发身份，不据此建立正式生产实例，也不提供根目录环境变量覆盖。2026-10-25 用户最终明确授权删除旧 `dev.localprojects.platform.m0` 平台管理的现有项目、业务数据、旧备份／回收／维护／恢复资料及三处旧系统状态，以新身份重新开始；不保留旧副本、校验清单或临时迁移证据，外部原作者源码和平台工程保留。范围与实际结果见[开发环境重置](development-identity-reset.md)，不交付身份迁移命令或旧路径兼容映射。该授权仅适用于本次重置，后续普通工作区位置变化仍使用公开迁移，普通升级不据此清空资料。CLI 编译时绑定相同身份，只查本开发环境，不回退连接其他平台实例；固定数据根、设置、凭据、发现文件及锁成套隔离。
 
-初始化验证开发环境标记和所选工作区；主目录下的默认工作区须有本安装写入的 `.platform/workspace-default.json`（记录应用标识、环境与数据根），其他非默认位置必须有固定迁移日志、已发布的目标标记及匹配的目录身份。拒绝不明的已有非空目录、错误身份、符号链接和无依据的设置重定向；已提交目标缺失时拒绝启动业务，不重建为空目录或自动打开旧副本。回收站的显式永久清除只删除选中项目副本；没有通用清除全部数据的命令。旧迁移根的清理只接受已登记、可核对并明确确认的计划，见[历史清理补充](history-cleanup.md)。自动测试使用临时目录，真实实例脚本只修改明确新建的可丢弃项目。
+初始化验证开发环境标记和所选工作区；主目录下的默认工作区须有本安装写入的 `.platform/workspace-default.json`（记录应用标识、环境与数据根），其他非默认位置必须有固定迁移日志、已发布的目标标记及匹配的目录身份。拒绝不明的已有非空目录、错误身份、符号链接和无依据的设置重定向；已提交目标缺失时拒绝启动业务，不重建为空目录或自动打开旧副本。新迁移仅在成功重新打开与旧访问结束后自动清理原根，失败按迁移 ID 重试；旧迁移 journal 不据此取得新的删除权限，见[迁移收尾与历史清理](history-cleanup.md)。自动测试使用临时目录，真实实例脚本只修改明确新建的可丢弃项目。
 
 2026-10-19 修复跨重启设备号变化误判：macOS 新持久身份使用卷 UUID 与 inode，运行期 fd/设备号/父链检查继续保留。旧版已完成迁移目标可通过离线 `workspace identity-repair-plan --json` 预检，再以精确计划、工作区、卷 UUID 及显式确认调用 `workspace identity-repair --input ... --json`；原件保留，范围及不支持的情况见[身份兼容规则](workspace-identity.md)。该入口不启动服务、不改变工作区位置，不替代公开迁移。
 
@@ -157,9 +157,10 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 | `storage scan --project ID` | 提交只读空间扫描任务 |
 | `storage files --project ID --input filters.json` | 附件筛选及游标分页 |
 | `storage cleanup --project ID --input cleanup.json` | 显式白名单清理任务；维护时携带 `--maintenance ID` |
-| `workspace storage` | 工作区与关联历史、保留旧根、平台程序空间信息 |
-| `workspace cleanup-plan` | 检查已登记历史范围并返回异步预检任务，不删除文件 |
-| `workspace cleanup --input cleanup.json` | 以计划 ID、已选择对象 ID 和明确确认词提交历史清理任务 |
+| `workspace storage` | 工作区、关联恢复现场、迁移残留与平台程序空间信息 |
+| `workspace cleanup-plan` | 仅检查网页源码／数据取回原件，返回异步预检任务，不删除文件 |
+| `workspace cleanup --input cleanup.json` | 以计划 ID、已选择的取回原件 ID 和明确确认词提交历史清理任务 |
+| `workspace cleanup-retry MIGRATION_ID` | 仅重试该迁移记录授权的原目录收尾，返回独立任务，不接受任意路径 |
 | `workspace identity-repair-plan` | 服务离线时只读预检旧版已完成迁移目标的身份兼容范围，不初始化环境 |
 | `workspace identity-repair --input repair.json` | 服务离线时以精确计划、工作区、卷 UUID 和 `confirm: true` 绑定已核对旧记录，保留原件 |
 | `project url --project ID` | 60 秒单次使用的浏览器入口 |
@@ -305,12 +306,16 @@ Git 选择独立保存在固定开发数据根的 `git-toolchain.json`，不改�
 | `project copy --project ID --input copy.json` | 可选 `name`、`maintenanceId`；独立新 UUID，保留业务主键；任务材料只归新实例 |
 | `project delete --project ID` | 整项目及平台独占材料永久删除；维护中携带当前 `maintenanceId`；绑定当前 `expectedDocumentEpoch`，不自动改绑或重发 |
 | `task get/wait --task ID` | 普通任务按 ID 查询；删除查询另绑定项目 ID 与任务类型，删除成功不保留持久任务，目标全缺时幂等确认成功 |
-| `workspace info` | 当前根、文件系统、迁移任务和旧根 |
+| `workspace info` | 当前根、文件系统、迁移任务、原根 `sourceCleanup` 与独立 `migrationCleanupTask` |
 | `workspace migrate --input migration.json` | `destinationPath` 是已存在、空、可写且独立的本机 APFS 目录；固定开发身份与数据根不变 |
 
 删除先结束真实写入者，完成文件、登记和内存清理后才报告成功；静态待恢复记录随项目清除。失败保留当期可重试范围。删除成功无任务日志或 retired 墓碑；复制／重新导入生成新 UUID，旧会话和票据撤销，不能借旧身份访问新实例。不支持旧删除记录、旧回收站或旧项目迁移兼容。
 
-公开工作区迁移继续等待任务、关闭数据库、复制核验并原子提交 settings；提交前失败继续使用源，提交后不自动回源。新机制记录同一项目新旧副本的独占归属，项目删除时两份都清；迁移全局状态保留。旧工作区中外部作者原目录仍保留，平台复制出的新副本归原实例所有。未完成的源码／数据恢复先完成、撤回或删除，再迁移，不为旧恢复 journal 改写路径。
+公开工作区迁移先暂停新工作、等待已接受的真实 I/O 与任务结束、关闭数据库，再复制、核验并原子提交 settings；同卷也不直接重命名旧根。工作区内的网页项目与平台管理的 Node 源码一起迁移，固定 Node 配置／数据位置不随工作区移动。已登记的外部原始源码若在旧根内，迁移在复制前拒绝并展示路径，不移动或复制原件，也不建立兼容链接。未完成的源码／数据恢复先完成、撤回或删除，再迁移，不为旧恢复 journal 改写路径。
+
+提交后先在新位置重建运行服务与原生管理器，确认旧 HTTP、附件及其他文件 I/O、受管 Node 后端和代理实际结束，才自动删除原目录。新位置正常业务写入不参与旧目录复制清单的重新比对。此前中断保留原根；提交后不自动回源。旧业务窗口保留草稿与资源，标记需要重开，不以自动销毁或刷新窗口换取清理成功。
+
+`workspace info` 的迁移记录返回 `sourceCleanup`（`phase`、`cleanupPending`、`completed`、`sourcePath` 与可选 `error`）；自动或手动收尾任务另通过 `migrationCleanupTask` 返回，类型为 `workspaceMigrationCleanup`，沿用 `task get/wait`。删除失败显示残留路径，新工作区继续可用；使用 `workspace cleanup-retry MIGRATION_ID`、管理 HTTP `POST /api/v1/workspace/migrations/{migrationId}/cleanup` 或原生命令 `workspace_migration_cleanup({migrationId})` 重试同一登记范围。旧 journal 没有本轮清理授权时仅供核对，不出现在历史勾选清理范围，也不接受新收尾重试。
 
 早期 M4 的旧软删除、回收站和同 ID 导入结果只见[历史验收记录](m4-verification.md)，不能作为当前规则的验收。所有本次删除回归仅使用临时项目；现有开发残留由用户自行重置，不新增旧残留清理入口。
 
@@ -328,7 +333,7 @@ M5 管理界面提供项目概览、基本信息与 PNG 图标、运行需求、
 
 空间扫描按逻辑文件字节分类，附扫描时间、完整性、`stale` 和问题列表；扫描不是文件系统原子快照。`storage info` 可返回尚未扫描或过期摘要并安排重新扫描，不能把未知容量显示为零。`storage scan` 返回任务，使用原任务 ID 等待完成。附件查询例子为 `{"type":"image","limit":50}`；支持 `type`、`prefix`、`query`、`sort`、`order`、`limit`、`cursor`，下一页使用返回的 `nextCursor` 并保持筛选条件不变。文件变化导致 `STORAGE_CURSOR_INVALID` 时从第一页重新读取，不能假定旧游标仍指向同一组文件。
 
-清理输入只接受明确分类，例如 `{"categories":["dependencies","buildCache","logs"]}`。`dependencies` 是可重建依赖，`buildCache` 只处理已识别且无保护引用的构建缓存，`logs` 只处理可清理的已结束任务日志；数据库、附件、备份、当前产物、未知目录和未解决现场不归入缓存。清理返回持久任务，结果中的跳过项与部分失败须保留，不把任务结束等同于全部删除。没有任意路径或历史备份删除命令。旧迁移根及已完成恢复原现场使用独立的[显式历史清理计划](history-cleanup.md)，不混入项目缓存类别。
+清理输入只接受明确分类，例如 `{"categories":["dependencies","buildCache","logs"]}`。`dependencies` 是可重建依赖，`buildCache` 只处理已识别且无保护引用的构建缓存，`logs` 只处理可清理的已结束任务日志；数据库、附件、备份、当前产物、未知目录和未解决现场不归入缓存。清理返回持久任务，结果中的跳过项与部分失败须保留，不把任务结束等同于全部删除。没有任意路径或历史备份删除命令。网页源码／数据取回原件使用独立的[显式历史清理计划](history-cleanup.md)，迁移原根使用自动收尾与按迁移 ID 重试，不混入项目缓存类别。
 
 `runtimeRequirements` 是 `project.json` 中独立的可选运行需求，不改变固定 SDK 的 `capabilities`。公开联网需求分别放在 `network.connect`、`network.images`、`network.media`，每项包含精确 HTTPS `origin`、`purpose` 与 `dataSent`；不接受路径、凭据、通配符、IP 或本地名称。CSP 只放行对应资源类型，公开服务器仍须允许浏览器 CORS。摄像头与麦克风分别通过 `devices.camera`、`devices.microphone` 的 `purpose` 声明；默认新项目不声明设备。更改需求后已有页面提示明确重载，不自动重载，也不声称瞬间撤销已有系统权限。现有静态 v1 不提供保密密钥代理；新增 Node 配置另按前述规范设计。
 

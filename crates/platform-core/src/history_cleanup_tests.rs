@@ -138,26 +138,6 @@ fn input(plan: &Value, ids: Vec<String>) -> Value {
 }
 
 #[test]
-fn persisted_chain_comparison_never_equates_unverified_mixed_or_distinct_legacy_records() {
-    let missing = Path::new("/unavailable-identity-chain-fixture");
-    let first: PersistedIdentity = serde_json::from_value(json!([7, 42])).unwrap();
-    let same: PersistedIdentity = serde_json::from_value(json!({"device":7,"inode":42})).unwrap();
-    let other_device: PersistedIdentity = serde_json::from_value(json!([8, 42])).unwrap();
-    let stable: PersistedIdentity = serde_json::from_value(
-        json!({"device":7,"inode":42,"volumeUuid":Uuid::new_v4().to_string()}),
-    )
-    .unwrap();
-    assert!(same_persisted_record(&first, &same, missing));
-    assert!(!same_persisted_record(&first, &other_device, missing));
-    assert!(!same_persisted_record(&first, &stable, missing));
-    let mut renumbered = stable.clone();
-    renumbered.device = 8;
-    assert!(same_persisted_record(&stable, &renumbered, missing));
-    renumbered.inode = 43;
-    assert!(!same_persisted_record(&stable, &renumbered, missing));
-}
-
-#[test]
 fn safe_unlink_never_follows_symlinks_and_reports_actual_bytes() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("owned");
@@ -229,179 +209,30 @@ fn special_files_and_root_symlinks_are_never_cleanup_candidates() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn migrated_workspace_cleanup_survives_restart_without_phantom_storage() {
+async fn migration_sources_are_never_manual_history_cleanup_candidates() {
     let fixture = Fixture::new().await;
     let (fixture, source, migration) = fixture.migrate().await;
-    let current = fixture.store.project(&fixture.project).unwrap().root;
-    let database = hash_file(&current.join("data/main.sqlite")).unwrap();
     let plan = fixture.preview().await;
-    let id = format!("retained_{migration}");
-    let item = plan["items"]
+    assert!(plan["items"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|item| item["id"] == id)
-        .unwrap();
-    assert_eq!(item["canClean"], true, "{item}");
-    let task = fixture
-        .wait(fixture.cleanup.submit(input(&plan, vec![id])).unwrap())
-        .await;
-    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
-    assert!(!source.exists());
-    assert_eq!(
-        hash_file(&current.join("data/main.sqlite")).unwrap(),
-        database
-    );
-    assert!(retired_cleanup_status(&fixture.paths, &migration)
-        .unwrap()
-        .is_some());
-    fixture.cleanup.shutdown().await;
-    let restarted = CleanupManager::new(
-        fixture.paths.clone(),
-        fixture.store.clone(),
-        fixture.tasks.clone(),
-        "instance-restarted".into(),
-    )
-    .unwrap();
-    assert!(restarted.latest_task().unwrap().is_none());
-    assert!(!fixture.paths.data_root().join("cleanup/plans").exists());
-    assert!(!fixture.paths.data_root().join("cleanup/receipts").exists());
-    let info = crate::workspace::info(&fixture.paths, &fixture.store).unwrap();
-    assert_eq!(info["retainedRoots"][0]["absent"], true);
-    let storage = crate::storage::StorageManager::new(
-        fixture.paths.clone(),
-        fixture.store.clone(),
-        fixture.tasks.clone(),
-        fixture.maintenance.clone(),
-    )
-    .unwrap();
-    let space = storage.workspace_info().await.unwrap();
-    assert!(!space["otherLocalLocations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|scope| scope["scope"]["kind"] == "retainedWorkspace"));
-    storage.quiesce().await;
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("new-user-file"), "replacement").unwrap();
-    assert!(retired_cleanup_status(&fixture.paths, &migration)
-        .unwrap()
-        .is_none());
-    restarted.shutdown().await;
-    fixture.stop().await;
-}
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn modified_old_source_and_wrong_selection_marker_block_cleanup() {
-    let fixture = Fixture::new().await;
-    let (fixture, source, migration) = fixture.migrate().await;
-    let id = format!("retained_{migration}");
-    let eligible = fixture.preview().await;
-    assert_eq!(
-        eligible["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["canClean"],
-        true
-    );
-    let new = source.join("new-user-file");
-    fs::write(&new, "preserve draft").unwrap();
-    let changed = fixture.preview().await;
-    assert_eq!(
-        changed["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["canClean"],
-        false
-    );
-    fs::remove_file(new).unwrap();
-    let marker = fixture.paths.workspace_root().join(SELECTION);
-    let original = fs::read(&marker).unwrap();
-    let mut value: Value = serde_json::from_slice(&original).unwrap();
-    value["taskId"] = json!("task_wrong");
-    builds::atomic_json(&marker, &value).unwrap();
-    let wrong = fixture.preview().await;
-    assert_eq!(
-        wrong["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["canClean"],
-        false
-    );
-    fs::write(marker, original).unwrap();
-    assert!(source.exists());
-    fixture.stop().await;
-}
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn explicit_repreview_after_partial_marker_removal_uses_fresh_owned_inventory() {
-    let fixture = Fixture::new().await;
-    let (fixture, source, migration) = fixture.migrate().await;
-    let preview = fixture.preview().await;
-    let id = format!("retained_{migration}");
-    let plan = fixture.cleanup.plans.lock().unwrap()[preview["planId"].as_str().unwrap()].clone();
-    let item = plan.items.iter().find(|item| item.id == id).unwrap();
-    assert!(item.can_clean);
-    fixture.store.begin_workspace_cleanup().unwrap();
-    let failure = remove_tree_with_hook(item, |progress, _| {
-        if progress
-            .removed_paths
-            .iter()
-            .any(|path| path == Path::new(RETIRED))
-        {
-            return Err(ApiError::new(
-                "TEST_AFTER_MARKER",
-                "Disposable failure after marker unlink",
-            ));
-        }
-        Ok(())
-    })
-    .unwrap_err();
-    fixture.store.resume_workspace();
-    assert_eq!(failure.code, "TEST_AFTER_MARKER");
-    assert!(!source.join(RETIRED).exists());
-    assert!(!fixture.paths.data_root().join("cleanup/receipts").exists());
-    let fresh = fixture.preview().await;
-    assert_eq!(
-        plan_item(&fresh, &id)["canClean"],
-        true,
-        "{}",
-        plan_item(&fresh, &id)
-    );
-    let task = fixture
-        .wait(fixture.cleanup.submit(input(&fresh, vec![id])).unwrap())
-        .await;
-    assert_eq!(task.status, TaskStatus::Succeeded, "{:?}", task.error);
-    assert!(!source.exists());
+        .all(|item| item["kind"] != "retainedWorkspace"));
+    assert!(fixture
+        .cleanup
+        .submit(input(&plan, vec![format!("retained_{migration}")]))
+        .is_err());
+    assert!(source.is_dir());
     fixture.stop().await;
 }
 
 #[test]
-fn malformed_manifests_and_large_byte_counts_are_never_silently_coerced() {
+fn large_byte_counts_are_never_silently_coerced() {
     assert_eq!(
         wire_u64(Some(9_007_199_254_740_992)),
         json!({"$int64":"9007199254740992"})
     );
     assert_eq!(wire_u64(None), Value::Null);
-    assert!(content_matches(
-        &[],
-        &[json!({"kind":"directory","bytes":0,"mode":448})],
-        None
-    )
-    .is_err());
-    let entry =
-        json!({"path":"owned","kind":"directory","bytes":0,"mode":448,"digest":null,"target":null});
-    assert!(content_matches(&[], &[entry.clone(), entry], None).is_err());
-    assert!(validated_control(
-        json!({"mode":"ready","recoveryRequired":false,"protectedBackupIds":"unknown"})
-    )
-    .is_err());
 }
 
 fn hex32() -> String {

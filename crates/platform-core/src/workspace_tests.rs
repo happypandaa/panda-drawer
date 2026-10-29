@@ -491,8 +491,9 @@ async fn settings_commit_before_journal_checkpoint_recovers_and_retains_evidence
     fs::rename(paths.workspace_root(), &offline).unwrap();
     recover_startup(&selected).unwrap();
     let saved = read_journal(&selected, &j.task_id).unwrap();
-    assert!(saved.committed && saved.epochs_applied && saved.resolved);
-    assert!(saved.retained_source_warning.is_some());
+    assert!(saved.committed && saved.epochs_applied && !saved.resolved);
+    assert!(saved.source_cleanup.as_ref().unwrap().needs_reopen());
+    assert!(saved.retained_source_warning.is_none());
     let new = ProjectStore::new(dest).unwrap();
     assert_eq!(
         info(&selected, &new).unwrap()["retainedRoots"]

@@ -1,7 +1,7 @@
 //! A narrow engine-write barrier. Only Finished (including failure/cancellation)
 //! releases an accepted writer; callback destruction is unknown, never success.
 use platform_core::{
-    io_lifetime::{DeferredIo, IoLease, IoLifetime, TrackedIo},
+    io_lifetime::{DeferredIo, IoLease, IoLifetime, MigrationIoPause, TrackedIo},
     ApiError,
 };
 use std::{
@@ -15,6 +15,7 @@ use tokio::sync::Notify;
 #[derive(Default)]
 struct State {
     closed: bool,
+    migration_paused: bool,
     next: u64,
     active: BTreeMap<u64, Option<String>>,
     projects: BTreeMap<String, ProjectIo>,
@@ -38,6 +39,34 @@ pub(super) struct EngineTicket {
     released: bool,
 }
 pub(super) struct HandlerPermit(Arc<AtomicBool>);
+/// Reversible workspace barrier. Existing native documents stay alive, while
+/// their old download handlers lose permission only after a committed switch.
+pub(super) struct EngineMigrationPause {
+    owner: Arc<EngineDownloads>,
+    pauses: Vec<MigrationIoPause>,
+    handlers: Vec<Weak<AtomicBool>>,
+}
+impl EngineMigrationPause {
+    pub fn commit(&self) {
+        for handler in self.handlers.iter().filter_map(Weak::upgrade) {
+            handler.store(false, Ordering::Release);
+        }
+    }
+}
+impl Drop for EngineMigrationPause {
+    fn drop(&mut self) {
+        // Resource/lease destructors can reenter the engine owner. Release the
+        // private fences before locking it, then expose ordinary admission.
+        drop(std::mem::take(&mut self.pauses));
+        self.owner
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .migration_paused = false;
+        // closed and project.sealed remain permanent independent fences.
+        self.owner.changed.notify_waiters();
+    }
+}
 impl HandlerPermit {
     pub fn check(&self) -> Result<(), ApiError> {
         if self.0.load(Ordering::Acquire) {
@@ -54,7 +83,9 @@ impl EngineDownloads {
     pub fn bind_handler(&self, id: &str) -> HandlerPermit {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let live = Arc::new(AtomicBool::new(
-            !state.closed && !state.projects.get(id).is_some_and(|project| project.sealed),
+            !state.closed
+                && !state.migration_paused
+                && !state.projects.get(id).is_some_and(|project| project.sealed),
         ));
         if live.load(Ordering::Acquire) {
             let handlers = state.handlers.entry(id.into()).or_default();
@@ -66,6 +97,7 @@ impl EngineDownloads {
     pub fn project_open(&self, id: &str) -> bool {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         !state.closed
+            && !state.migration_paused
             && state
                 .projects
                 .get(id)
@@ -92,13 +124,105 @@ impl EngineDownloads {
         }
         self.changed.notify_waiters();
     }
+    pub async fn pause_workspace(self: &Arc<Self>) -> Result<EngineMigrationPause, ApiError> {
+        self.pause_workspace_with_timeout(std::time::Duration::from_secs(30))
+            .await
+    }
+    async fn pause_workspace_with_timeout(
+        self: &Arc<Self>,
+        timeout: std::time::Duration,
+    ) -> Result<EngineMigrationPause, ApiError> {
+        let (lifetimes, handlers) = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if state.closed {
+                return Err(ApiError::new(
+                    "DESKTOP_DOWNLOADS_STOPPING",
+                    "平台正在退出，不能切换下载工作区。",
+                ));
+            }
+            if state.migration_paused {
+                return Err(ApiError::new("WORKSPACE_MIGRATING", "下载工作区正在切换。"));
+            }
+            state.migration_paused = true;
+            (
+                state
+                    .projects
+                    .iter()
+                    .map(|(id, project)| (id.clone(), project.lifetime.clone(), project.sealed))
+                    .collect::<Vec<_>>(),
+                state
+                    .handlers
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        // Construct the rollback owner before any fallible private pause.
+        let mut pause = EngineMigrationPause {
+            owner: self.clone(),
+            pauses: Vec::new(),
+            handlers,
+        };
+        for (id, lifetime, sealed) in &lifetimes {
+            if *sealed {
+                continue;
+            }
+            match lifetime.pause_for_migration() {
+                Ok(private) => pause.pauses.push(private),
+                Err(issue) => {
+                    // An independent close may have permanently fenced this
+                    // scope after the snapshot. It still participates in drain.
+                    let permanently_fenced = {
+                        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                        state.closed || state.projects.get(id).is_none_or(|project| project.sealed)
+                    };
+                    if !permanently_fenced {
+                        return Err(issue);
+                    }
+                }
+            }
+        }
+        tokio::time::timeout(timeout, async {
+            loop {
+                let changed = self.changed.notified();
+                if self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .active
+                    .is_empty()
+                {
+                    break;
+                }
+                changed.await;
+            }
+            for (_, lifetime, _) in &lifetimes {
+                lifetime.drain().await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "WORKSPACE_DOWNLOAD_FINISH_UNCONFIRMED",
+                "尚不能确认下载或文件保存已经结束，已停止工作区迁移；当前工作区可继续使用。",
+            )
+        })?;
+        if self.state.lock().unwrap_or_else(|p| p.into_inner()).closed {
+            return Err(ApiError::new(
+                "DESKTOP_DOWNLOADS_STOPPING",
+                "平台正在退出，不能切换下载工作区。",
+            ));
+        }
+        Ok(pause)
+    }
     #[cfg(test)]
     pub fn admit<T>(
         self: &Arc<Self>,
         admit: impl FnOnce() -> Result<T, ApiError>,
     ) -> Result<(T, EngineTicket), ApiError> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.closed {
+        if state.closed || state.migration_paused {
             return Err(ApiError::new(
                 "DESKTOP_DOWNLOADS_STOPPING",
                 "平台正在退出，暂不开始新的下载",
@@ -146,6 +270,7 @@ impl EngineDownloads {
     ) -> Result<(T, IoLease, Option<EngineTicket>), ApiError> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.closed
+            || state.migration_paused
             || state
                 .projects
                 .get(project_id)
@@ -158,7 +283,14 @@ impl EngineDownloads {
         }
         let resource = admit()?;
         let project = state.projects.entry(project_id.into()).or_default();
-        let lease = project.lifetime.admit()?;
+        let lease = match project.lifetime.admit() {
+            Ok(lease) => lease,
+            Err(issue) => {
+                drop(state);
+                drop(resource);
+                return Err(issue);
+            }
+        };
         let ticket = if engine {
             state.next += 1;
             let id = state.next;
@@ -179,14 +311,26 @@ impl EngineDownloads {
         id: &str,
         resource: TrackedIo<T>,
     ) -> Result<DeferredIo<T>, ApiError> {
-        let lifetime = self
-            .state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .projects
-            .get(id)
-            .map(|project| project.lifetime.clone())
-            .ok_or_else(|| ApiError::new("PROJECT_DOWNLOADS_STOPPING", "项目文件保存已失效。"))?;
+        let lifetime = {
+            let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if state.closed
+                || state.migration_paused
+                || state.projects.get(id).is_none_or(|project| project.sealed)
+            {
+                drop(state);
+                drop(resource);
+                return Err(ApiError::new(
+                    "PROJECT_DOWNLOADS_STOPPING",
+                    "项目文件保存已失效。",
+                ));
+            }
+            state
+                .projects
+                .get(id)
+                .expect("validated project")
+                .lifetime
+                .clone()
+        };
         lifetime.defer(resource)
     }
     pub async fn seal_project_and_drain(&self, id: &str) -> Result<(), ApiError> {
@@ -569,5 +713,184 @@ mod tests {
         drop(lease);
         engines.seal_project_and_drain("prj_A").await.unwrap();
         engines.forget_project("prj_A").unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_revokes_unclaimed_saves_outside_the_engine_lock_and_abort_restores_admission(
+    ) {
+        struct Stage {
+            owner: Weak<EngineDownloads>,
+            released_unlocked: Arc<AtomicBool>,
+        }
+        impl Drop for Stage {
+            fn drop(&mut self) {
+                self.released_unlocked.store(
+                    self.owner
+                        .upgrade()
+                        .is_some_and(|owner| owner.state.try_lock().is_ok()),
+                    Ordering::Release,
+                );
+            }
+        }
+        let engines = Arc::new(EngineDownloads::default());
+        let handler = engines.bind_handler("prj_migration");
+        let (_, lease) = engines
+            .admit_project_io("prj_migration", || handler.check())
+            .unwrap();
+        let released_unlocked = Arc::new(AtomicBool::new(false));
+        let deferred = engines
+            .defer_project(
+                "prj_migration",
+                lease.hold(Stage {
+                    owner: Arc::downgrade(&engines),
+                    released_unlocked: released_unlocked.clone(),
+                }),
+            )
+            .unwrap();
+        let pause = engines.pause_workspace().await.unwrap();
+        assert!(released_unlocked.load(Ordering::Acquire));
+        assert!(!engines.project_open("prj_migration"));
+        assert!(engines
+            .admit_project_io("prj_migration", || -> Result<(), ApiError> {
+                panic!("migration pause must reject before executing resource admission")
+            })
+            .is_err());
+        let paused_handler = engines.bind_handler("prj_migration");
+        assert!(paused_handler.check().is_err());
+        assert!(
+            handler.check().is_ok(),
+            "abort must retain the original handler"
+        );
+        drop(pause);
+        assert!(engines.project_open("prj_migration"));
+        assert!(
+            deferred.claim().is_err(),
+            "revoked dialog can never reacquire old material"
+        );
+        assert!(handler.check().is_ok());
+        assert!(paused_handler.check().is_err());
+        let (_, fresh_io) = engines
+            .admit_project_io("prj_migration", || handler.check())
+            .unwrap();
+        drop(fresh_io);
+    }
+
+    #[tokio::test]
+    async fn migration_waits_for_real_engine_finished_and_a_copy_after_its_waiter_is_lost() {
+        let engines = Arc::new(EngineDownloads::default());
+        let (_, lease, mut ticket) = engines.admit_project("prj_migration", || Ok(())).unwrap();
+        ticket.started();
+        let copy = engines
+            .defer_project("prj_migration", lease.hold(()))
+            .unwrap()
+            .claim()
+            .unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _copy = copy;
+            let _ = entered.send(());
+            wait.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        });
+        ready.await.unwrap();
+        drop(worker);
+        let owner = engines.clone();
+        let mut paused = tokio::spawn(async move { owner.pause_workspace().await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut paused)
+                .await
+                .is_err()
+        );
+        ticket.finished();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut paused)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        let pause = paused.await.unwrap().unwrap();
+        assert!(engines.state.lock().unwrap().active.is_empty());
+        assert!(engines.state.lock().unwrap().migration_paused);
+        drop(pause);
+        assert!(engines.admit_project_io("prj_migration", || Ok(())).is_ok());
+    }
+
+    #[tokio::test]
+    async fn migration_timeout_keeps_unconfirmed_writers_and_restores_the_current_workspace() {
+        let engines = Arc::new(EngineDownloads::default());
+        let handler = engines.bind_handler("prj_migration");
+        let (_, lease, mut ticket) = engines
+            .admit_project("prj_migration", || handler.check())
+            .unwrap();
+        ticket.started();
+        drop(lease);
+        let error = engines
+            .pause_workspace_with_timeout(std::time::Duration::from_millis(20))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "WORKSPACE_DOWNLOAD_FINISH_UNCONFIRMED");
+        assert_eq!(engines.state.lock().unwrap().active.len(), 1);
+        assert!(!engines.state.lock().unwrap().migration_paused);
+        assert!(handler.check().is_ok());
+        assert!(engines.admit_project_io("prj_other", || Ok(())).is_ok());
+        ticket.finished();
+        let pause = engines.pause_workspace().await.unwrap();
+        drop(pause);
+
+        let (_, lease, mut missing) = engines.admit_project("prj_missing", || Ok(())).unwrap();
+        missing.started();
+        drop(missing);
+        drop(lease);
+        assert!(engines
+            .pause_workspace_with_timeout(std::time::Duration::from_millis(20))
+            .await
+            .is_err());
+        assert_eq!(
+            engines.state.lock().unwrap().active.len(),
+            1,
+            "missing callback is not Finished"
+        );
+        assert!(!engines.state.lock().unwrap().migration_paused);
+    }
+
+    #[tokio::test]
+    async fn migration_commit_retires_only_captured_handlers_and_never_reopens_permanent_fences() {
+        let engines = Arc::new(EngineDownloads::default());
+        let old = engines.bind_handler("prj_migration");
+        let (_, lease) = engines
+            .admit_project_io("prj_migration", || old.check())
+            .unwrap();
+        drop(lease);
+        let pause = engines.pause_workspace().await.unwrap();
+        assert!(engines.pause_workspace().await.is_err());
+        assert!(engines.state.lock().unwrap().migration_paused);
+        let rejected = engines.bind_handler("prj_migration");
+        pause.commit();
+        assert!(old.check().is_err());
+        drop(pause);
+        assert!(rejected.check().is_err());
+        let fresh = engines.bind_handler("prj_migration");
+        let (_, lease) = engines
+            .admit_project_io("prj_migration", || fresh.check())
+            .unwrap();
+        drop(lease);
+        let pause = engines.pause_workspace().await.unwrap();
+        engines
+            .seal_project_and_drain("prj_migration")
+            .await
+            .unwrap();
+        drop(pause);
+        assert!(!engines.project_open("prj_migration"));
+        assert!(engines.bind_handler("prj_migration").check().is_err());
+        assert!(engines.bind_handler("prj_other").check().is_ok());
+        let pause = engines.pause_workspace().await.unwrap();
+        engines.close();
+        drop(pause);
+        assert!(engines.bind_handler("prj_after_shutdown").check().is_err());
+        assert!(engines
+            .admit_project_io("prj_after_shutdown", || Ok(()))
+            .is_err());
     }
 }

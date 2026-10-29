@@ -12,6 +12,9 @@ use tokio::sync::Notify;
 pub(super) struct NodeOperationCoordinator {
     instances: SyncMutex<BTreeMap<String, Arc<InstanceAdmission>>>,
     next: AtomicU64,
+    migration: AtomicU64,
+    global_operations: SyncMutex<BTreeMap<u64, String>>,
+    changed: Notify,
 }
 #[derive(Default)]
 struct InstanceAdmission {
@@ -29,6 +32,7 @@ struct Admission {
 #[derive(Clone)]
 pub struct NodeOperationPermit(Arc<OperationOwner>);
 struct OperationOwner {
+    coordinator: std::sync::Weak<NodeOperationCoordinator>,
     instance: Arc<InstanceAdmission>,
     token: u64,
 }
@@ -43,7 +47,86 @@ impl Drop for OperationOwner {
         state.window_operations.remove(&self.token);
         drop(state);
         self.instance.changed.notify_waiters();
+        if let Some(coordinator) = self.coordinator.upgrade() {
+            coordinator.changed.notify_waiters();
+        }
     }
+}
+
+pub(super) struct GlobalOperationPermit {
+    coordinator: Arc<NodeOperationCoordinator>,
+    token: u64,
+}
+impl Drop for GlobalOperationPermit {
+    fn drop(&mut self) {
+        self.coordinator
+            .global_operations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.token);
+        self.coordinator.changed.notify_waiters();
+    }
+}
+
+pub(super) struct MigrationGate {
+    coordinator: Arc<NodeOperationCoordinator>,
+    token: u64,
+}
+impl MigrationGate {
+    pub(super) async fn wait_drained(&self) {
+        loop {
+            let changed = self.coordinator.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let drained = {
+                let instances = self
+                    .coordinator
+                    .instances
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                self.coordinator
+                    .global_operations
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty()
+                    && instances.values().all(|instance| {
+                        instance
+                            .state
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .operations
+                            .is_empty()
+                    })
+            };
+            if drained {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+impl Drop for MigrationGate {
+    fn drop(&mut self) {
+        let _instances = self
+            .coordinator
+            .instances
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _ = self.coordinator.migration.compare_exchange(
+            self.token,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.coordinator.changed.notify_waiters();
+    }
+}
+
+pub(super) fn migrating() -> ApiError {
+    ApiError::new(
+        "NODE_WORKSPACE_MIGRATING",
+        "工作区正在切换，应用操作暂时停用。请等待迁移完成。",
+    )
 }
 impl NodeOperationPermit {
     pub fn keep_alive(&self) -> Arc<dyn Send + Sync> {
@@ -76,6 +159,7 @@ impl Drop for DeletionOwner {
         }
         drop(state);
         self.instance.changed.notify_waiters();
+        self.coordinator.changed.notify_waiters();
     }
 }
 impl NodeDeletionPermit {
@@ -132,6 +216,7 @@ impl NodeDeletionPermit {
         }
         drop(state);
         self.0.instance.changed.notify_waiters();
+        self.0.coordinator.changed.notify_waiters();
     }
     pub async fn wait_ready(&self) {
         loop {
@@ -194,6 +279,67 @@ fn deleting() -> ApiError {
     )
 }
 impl NodeOperationCoordinator {
+    pub(super) fn workspace_paused(&self) -> bool {
+        self.migration.load(Ordering::Acquire) != 0
+    }
+    pub(super) fn has_pending_deletion(&self) -> bool {
+        self.instances
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .any(|instance| {
+                instance
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .deletion
+                    .is_some()
+            })
+    }
+    pub(super) fn admit_global(self: &Arc<Self>, label: &str) -> Result<GlobalOperationPermit> {
+        let _instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        if self.workspace_paused() {
+            return Err(migrating());
+        }
+        let token = self.next.fetch_add(1, Ordering::Relaxed);
+        self.global_operations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(token, label.into());
+        Ok(GlobalOperationPermit {
+            coordinator: self.clone(),
+            token,
+        })
+    }
+    pub(super) fn pause_for_migration(self: &Arc<Self>) -> Result<MigrationGate> {
+        let instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        if self.workspace_paused() {
+            return Err(migrating());
+        }
+        if instances.values().any(|instance| {
+            instance
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .deletion
+                .is_some()
+        }) {
+            return Err(ApiError::new(
+                "NODE_DELETION_PENDING",
+                "仍有应用删除或收尾待处理，暂不能迁移工作区。",
+            ));
+        }
+        let token = self
+            .next
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .max(1);
+        self.migration.store(token, Ordering::Release);
+        Ok(MigrationGate {
+            coordinator: self.clone(),
+            token,
+        })
+    }
     fn with_checked<T>(
         &self,
         id: &str,
@@ -204,6 +350,9 @@ impl NodeOperationCoordinator {
             return Err(fail("应用标识无效。"));
         }
         let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        if self.workspace_paused() {
+            return Err(migrating());
+        }
         let created = !instances.contains_key(id);
         let instance = instances.entry(id.into()).or_default().clone();
         let mut state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -248,18 +397,6 @@ impl NodeOperationCoordinator {
         instances.remove(id);
         Ok(())
     }
-    fn instance(&self, id: &str) -> Result<Arc<InstanceAdmission>> {
-        if Uuid::parse_str(id).is_err() {
-            return Err(fail("应用标识无效。"));
-        }
-        Ok(self
-            .instances
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(id.into())
-            .or_default()
-            .clone())
-    }
     #[cfg(test)]
     fn admit(self: &Arc<Self>, id: &str, label: &str) -> Result<NodeOperationPermit> {
         self.admit_kind(id, label, false)
@@ -290,27 +427,31 @@ impl NodeOperationCoordinator {
                 state.window_operations.insert(token);
             }
             Ok(NodeOperationPermit(Arc::new(OperationOwner {
+                coordinator: Arc::downgrade(self),
                 instance: instance.clone(),
                 token,
             })))
         })
     }
     fn deletion(self: &Arc<Self>, id: &str) -> Result<NodeDeletionPermit> {
-        let instance = self.instance(id)?;
-        let mut state = instance.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.closed || state.deletion.is_some() {
-            return Err(deleting());
-        }
-        let token = self.next.fetch_add(1, Ordering::Relaxed);
-        state.deletion = Some((token, "waiting".into()));
-        drop(state);
-        Ok(NodeDeletionPermit(Arc::new(DeletionOwner {
-            coordinator: self.clone(),
-            instance,
-            app_id: id.into(),
-            token,
-            abandon_requested: AtomicBool::new(false),
-        })))
+        self.with_checked(
+            id,
+            || Ok(()),
+            |instance, state| {
+                if state.deletion.is_some() {
+                    return Err(deleting());
+                }
+                let token = self.next.fetch_add(1, Ordering::Relaxed);
+                state.deletion = Some((token, "waiting".into()));
+                Ok(NodeDeletionPermit(Arc::new(DeletionOwner {
+                    coordinator: self.clone(),
+                    instance: instance.clone(),
+                    app_id: id.into(),
+                    token,
+                    abandon_requested: AtomicBool::new(false),
+                })))
+            },
+        )
     }
     fn snapshot(&self, id: &str) -> Result<Value> {
         if Uuid::parse_str(id).is_err() {
@@ -389,6 +530,46 @@ impl NodeApps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn workspace_pause_waits_for_shared_instance_and_unregistered_directory_owners() {
+        let ops = Arc::new(NodeOperationCoordinator::default());
+        let id = Uuid::new_v4().to_string();
+        let operation = ops.admit(&id, "启动应用").unwrap();
+        let actual_owner = operation.keep_alive();
+        let directory = ops.admit_global("生成尚未登记的项目").unwrap();
+        let pause = ops.pause_for_migration().unwrap();
+        assert!(ops.admit(&id, "后来启动").is_err());
+        assert!(ops.admit_global("后来生成").is_err());
+        assert!(ops.deletion(&id).is_err());
+        drop(operation);
+        drop(directory);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), pause.wait_drained())
+                .await
+                .is_err()
+        );
+        drop(actual_owner);
+        tokio::time::timeout(std::time::Duration::from_secs(1), pause.wait_drained())
+            .await
+            .unwrap();
+        drop(pause);
+        assert!(ops.admit(&id, "迁移后启动").is_ok());
+        assert!(ops.admit_global("迁移后生成").is_ok());
+    }
+
+    #[tokio::test]
+    async fn workspace_pause_rejects_a_pending_deletion_and_is_reversible() {
+        let ops = Arc::new(NodeOperationCoordinator::default());
+        let id = Uuid::new_v4().to_string();
+        let deletion = ops.deletion(&id).unwrap();
+        assert!(ops.pause_for_migration().is_err());
+        assert!(!ops.workspace_paused());
+        drop(deletion);
+        let pause = ops.pause_for_migration().unwrap();
+        assert!(ops.pause_for_migration().is_err());
+        drop(pause);
+        assert!(ops.deletion(&id).is_ok());
+    }
     #[tokio::test]
     async fn completed_deletion_forgets_admission_before_release_and_late_requests_leave_no_cache()
     {

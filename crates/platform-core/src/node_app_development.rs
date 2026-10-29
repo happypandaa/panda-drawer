@@ -325,6 +325,7 @@ impl NodeApps {
     }
 
     pub(super) fn require_external_source_boundary(&self, source: &Path) -> Result<()> {
+        crate::workspace::require_source_outside_pending_migrations(&self.data_root, source)?;
         let workspace = self.deletion_workspace();
         for name in ["projects", ".platform", "project-sources", "backups"] {
             let managed = workspace.join(name);

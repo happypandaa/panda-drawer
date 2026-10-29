@@ -127,7 +127,7 @@ pub(super) fn request_web_close(
 ) {
     let state = app.state::<AppState>();
     if state.shutting_down.load(Ordering::Acquire)
-        || admission.check().is_err()
+        || admission.check_closing().is_err()
         || !state.window_lifetimes.is_current(&receipt)
         || !receipt.begin_close()
     {
@@ -137,7 +137,7 @@ pub(super) fn request_web_close(
         Ok(lease) => lease,
         Err(issue) => {
             receipt.reset_close();
-            if !state.shutting_down.load(Ordering::Acquire) && admission.check().is_ok() {
+            if !state.shutting_down.load(Ordering::Acquire) && admission.check_closing().is_ok() {
                 report_web_close_failure(app, &issue);
             }
             return;
@@ -148,7 +148,10 @@ pub(super) fn request_web_close(
     tauri::async_runtime::spawn(lease.hold(Box::pin(async move {
         let state = app.state::<AppState>();
         let result = async {
-            let _operation = admission.operation().await.map_err(lifetime_error)?;
+            let _operation = admission
+                .closing_operation()
+                .await
+                .map_err(lifetime_error)?;
             if !state.window_lifetimes.is_current(&receipt) || receipt.destroyed() {
                 return Ok(());
             }
@@ -157,7 +160,7 @@ pub(super) fn request_web_close(
             // real Finished and any already-claimed copy has completed.
             state.engine_downloads.seal_project_and_drain(&id).await?;
             destroy_and_wait(&app, receipt.label.clone(), Some(receipt.clone())).await?;
-            if admission.check().is_ok() {
+            if admission.check_closing().is_ok() {
                 state.engine_downloads.forget_project(&id)?;
             }
             Ok::<(), ApiError>(())
@@ -167,7 +170,7 @@ pub(super) fn request_web_close(
             receipt.reset_close();
             // Deletion or global shutdown may have taken ownership while we
             // waited. Its cleanup reports the result; stale callbacks stay quiet.
-            if admission.check().is_ok()
+            if admission.check_closing().is_ok()
                 && state.window_lifetimes.is_current(&receipt)
                 && !state.shutting_down.load(Ordering::Acquire)
             {

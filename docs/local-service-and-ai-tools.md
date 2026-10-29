@@ -2,6 +2,8 @@
 
 2026-10-27 最新确认：[操作记录精简与外部 AI 分工](operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
 
+2026-10-29 工作区迁移更新：复制、校验并提交新位置后，须确认新运行服务与原生管理器重新打开成功、旧 I/O 与受管 Node 实际结束，才自动删除迁移原目录。失败保留残留路径，新工作区继续可用，按迁移 ID 重试；旧 journal 不自动获得删除权限。手动历史清理只处理网页源码／数据取回原件，不再接受迁移旧根。接口与状态见下文“迁移原目录收尾”。
+
 2026-10-23 当前删除按[直接删除契约](application-deletion.md)：`project delete` 使用 `POST /api/v1/projects/{id}/deletions`，直接永久删除所选项目，不进入平台或系统回收站。旧 `POST .../{id}/trash` 已退役并拒绝新请求，不能把旧客户端的可恢复删除静默升级为永久删除。`/api/v1/trash` 与 `trash` CLI 仅兼容旧回收项，旧备份和恢复证据继续保留。Node 独立槽的预览／删除仅开放给原生管理窗口，无新增 HTTP 或 CLI 删除入口。
 
 2026-10-20 最新用户选择：本轮 Node 应用秘密不用 macOS Keychain，放在各自本机受管槽 `configuration/credentials/`，目录 `0700`、文件 `0600`，以当前用户文件权限保护明文，不能称为系统加密库；不读删旧 Keychain、不写作者源码／分享包／Git。当前范围见[本机配置与运行](node-native-configuration.md)，仍不包含完整 project-v1 Node 生命周期。本文较早的 OS 凭据库建议保留为历史或其他未来能力讨论，不作为本轮 Node 槽的执行要求。
@@ -238,6 +240,9 @@ CLI 使用平台固定应用标识解析该位置，读取后检查地址确实�
 | `POST /api/v1/trash/{id}/purge` | 历史兼容：永久清除指定旧回收项，不连带删除备份 | 管理凭据 |
 | `GET /api/v1/workspace` | 查看当前工作区和迁移状态 | 管理凭据 |
 | `POST /api/v1/workspace/migrations` | 提交工作区迁移 | 管理凭据 |
+| `POST /api/v1/workspace/migrations/{migrationId}/cleanup` | 仅按该迁移已授权范围重试原目录收尾，返回独立任务 | 管理凭据 |
+| `POST /api/v1/workspace/cleanup-plans` | 预览网页源码／数据取回原件的显式清理范围 | 管理凭据 |
+| `POST /api/v1/workspace/cleanups` | 按计划与明确选择清理取回原件，不接受迁移旧根候选 | 管理凭据 |
 | `GET /api/v1/projects/{id}/storage` | 当前空间分类、统计时效与关联历史 | 管理凭据 |
 | `POST /api/v1/projects/{id}/storage/scans` | 提交后台重新统计任务 | 管理凭据 |
 | `GET /api/v1/projects/{id}/storage/files` | 分页附件列表及筛选排序 | 管理凭据 |
@@ -279,6 +284,16 @@ stdout 与 stderr 分别限制为 64 KiB；stderr 只计量，不保存或返回
 `handoff` 结果为 `projectId`、`readmePath`、`cliPath` 和 `text`；交接不嵌入令牌、Cookie 或短期 ticket。AI 编辑完成并等待构建成功后，再取得新的浏览器入口。环境与任务日志属于管理接口，带浏览器 Origin 的请求即使持有管理 token 也拒绝；项目会话不能调用。
 
 生命周期接口的登记、冲突、维护和失败处理按[已确认契约](project-lifecycle-and-workspace.md)执行。直接删除以当前项目 ID 定位，HTTP JSON 必须包含当前 `expectedDocumentEpoch`，维护中另带 `maintenanceId`；不接受任意删除路径。CLI 未显式提供 `expectedDocumentEpoch` 时先读取 `project info` 中的 `documentEpoch` 再绑定提交；显式值原样保留供服务拒绝过期身份。读取失败或身份缺失／类型错误时不提交删除，写入失败后不重新读取身份并重试。成功结果为 `operationOutcome: "deleted"`、`restoreAvailable: false`、`historicalBackupsRetained: true`；部分删除报告 `delete_incomplete` 与 `remainingPath`，保留任务和现场，不保证能恢复已删除文件。旧回收站路由中的 `id` 是 `trashId`，不能混用项目 ID。迁移刷新实例与凭据后，CLI 重新发现服务并查询原任务；不自动重发变更操作。迁移自身的任务与日志位于固定 `appLocalDataDir/migrations/<taskId>/`，统一任务查询处理该位置差异。
+
+### 迁移原目录收尾
+
+工作区迁移按复制、核验、提交顺序处理，同卷也不直接重命名。提交前暂停新工作、排空真实任务与文件 I/O，并关闭旧数据库；提交后在新根重建运行服务与原生管理器。旧 HTTP、附件读取、下载与文件保存、受管 Node 后端及代理均须取得真实结束收据，不能把发现文件已更新、调用等待者消失、停止请求返回或超时当作释放证明。只有完成重新打开后，才根据本次迁移明确登记的原根身份与文件清单自动删除原目录。
+
+工作区中的平台管理 Node 源码一起迁移，固定本机配置／数据位置不变。若已登记的外部原始源码位于旧根内，复制前拒绝并返回具体路径，保留原件，不移动、复制或建立兼容链接。重新打开成功前中断保留原目录；提交后不自动回源。已有业务窗口保留文档草稿及资源并提示明确重开，不能为迁移自动销毁或刷新。
+
+`GET /api/v1/workspace` 在各迁移记录上提供 `sourceCleanup`，字段为 `phase`（`awaitingReopen`／`pending`／`removed`／`absent`）、`cleanupPending`、`completed`、`sourcePath` 与可选 `error`。自动收尾或按 ID 重试的任务通过独立 `migrationCleanupTask` 返回，类型为 `workspaceMigrationCleanup`；它不占用迁移的 `activeTask` 或手动历史清理的 `cleanupTask`。清理失败后新位置业务继续可用，残留路径与错误保持可见。
+
+管理 HTTP `POST /api/v1/workspace/migrations/{migrationId}/cleanup` 无需删除路径，返回 HTTP 202 与任务；原生命令为 `workspace_migration_cleanup({migrationId})`，CLI 为 `workspace cleanup-retry MIGRATION_ID --json`。使用返回的任务 ID 通过现有 `task get/wait` 查询，响应未知先核对任务，不自动重发。重试核对已提交的复制／校验收据、当前目标选择与身份，以及原根身份和剩余清单；新位置正常业务写入不参与旧清单逐字比对。旧 journal 没有本轮清理授权时拒绝重试，原路径新增／修改或身份变化时保留残留，不提供任意路径或通用递归删除。手动恢复原件的预览、选择与确认规则另见[历史资料清理](history-cleanup.md)。
 
 空间接口按[已确认空间契约](project-storage-and-assets.md)执行。扫描非原子、只读且不冻结业务，重复扫描复用未完成任务；清理与同项目变更任务互斥，并按维护 ID、基线准备及恢复状态检查。`categories` 仅接受非空的 `dependencies`、`buildCache`、`logs` 列表，类别内部仍逐项核对保护条件。查询显示首次未统计、过期或不完整状态，不以零替代未知；分页字段和结果定义见空间契约。
 
@@ -397,13 +412,16 @@ CLI 的普通操作只连接现有服务，不自行打开数据库或启动另�
 | `platform trash purge --trash ID --json` | 历史兼容：永久清除指定旧回收项 |
 | `platform workspace info --json` | 查看当前工作区 |
 | `platform workspace migrate --input request.json --json` | 指定目标目录并提交迁移任务 |
+| `platform workspace cleanup-retry MIGRATION_ID --json` | 按已授权迁移 ID 重试原目录收尾，新位置继续可用 |
+| `platform workspace cleanup-plan --json` | 仅预览网页源码／数据取回原件的清理范围 |
+| `platform workspace cleanup --input request.json --json` | 按预览、选择和确认清理取回原件 |
 | `platform storage info --project ID --json` | 查看空间分类与统计时效 |
 | `platform storage scan --project ID --json` | 提交或复用后台统计任务 |
 | `platform storage files --project ID --input request.json --json` | 分页、筛选和排序附件列表 |
 | `platform storage cleanup --project ID --input request.json --json` | 清理明确类别，保护素材及恢复现场 |
 | `platform workspace storage --json` | 查看平台程序、工作区与已知其他本机占用 |
 
-当前可调用命令包括 `service status`、`env doctor`、`env node set/clear`、`project list/create/info/url/refresh/build/handoff`、`db schema/execute/transaction`、`task get/wait`；M3 的 `backup create/list/info/restore`、`maintenance status/begin/end`；M4 的 `project export/import/copy/delete`、`trash list/info/restore/purge`、`workspace info/migrate`；M5 的 `project metadata get/set`、`storage info/scan/files/cleanup` 和 `workspace storage`。`service start`、历史备份另存/删除及旧根清理没有因此加入。
+实际可调用命令以安装包 CLI 帮助和[开发说明](development.md)为准；表中较早 M3 备份／维护及回收站项保留旧阶段定义，不构成兼容入口。当前工作区命令为 `workspace info/storage/migrate/cleanup-retry/cleanup-plan/cleanup`；原目录收尾仅按迁移 ID 重试，手动计划只处理网页取回原件。没有任意路径清理或 `service start` 命令。
 
 对既有项目的操作显式指定项目 ID，不依赖当前目录猜测目标。创建项目请求至少包含 `name`，可包含 `description`；平台生成稳定 ID 和标准目录。恢复请求必须包含明确的 `backupId`，不能默认恢复某个未知备份。
 

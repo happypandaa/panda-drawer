@@ -196,6 +196,24 @@ fn alive(state: &AppState) -> Result<(), ApiError> {
         Ok(())
     }
 }
+fn require_reusable_document(
+    receipt: &super::business_window_lifetime::Receipt,
+) -> Result<(), ApiError> {
+    if receipt.obsolete() {
+        Err(ApiError::new(
+            "PROJECT_RELOAD_REQUIRED",
+            "工作区已切换，请保存草稿并关闭此窗口后重新打开",
+        ))
+    } else {
+        Ok(())
+    }
+}
+fn obsolete_document(state: &AppState, id: &str) -> bool {
+    label(id)
+        .ok()
+        .and_then(|label| state.window_lifetimes.receipt(&label))
+        .is_some_and(|receipt| receipt.obsolete())
+}
 fn navigation_allowed(url: &Url, origin: Option<&Url>, allow_blank: bool) -> bool {
     if allow_blank && url.as_str() == "about:blank" {
         return true;
@@ -329,6 +347,11 @@ pub(super) async fn open(
         return Err(error("应用正在关闭，请稍候再打开。"));
     }
     if let Some(window) = app.get_webview_window(&window_label) {
+        let receipt = state
+            .window_lifetimes
+            .receipt(&window_label)
+            .ok_or_else(|| error("应用窗口身份待核对，请先关闭窗口。"))?;
+        require_reusable_document(&receipt)?;
         let current =
             session(state, id).ok_or_else(|| error("应用窗口身份待核对，请先关闭窗口。"))?;
         if matches!(
@@ -675,6 +698,10 @@ pub(super) async fn restart(
     let window = app
         .get_webview_window(&label(id)?)
         .ok_or_else(|| error("请先打开应用，再应用新配置。"))?;
+    let receipt = state
+        .window_lifetimes
+        .receipt(&label(id)?)
+        .ok_or_else(|| error("应用窗口身份待核对，请先关闭窗口。"))?;
     let current = session(state, id).ok_or_else(|| error("应用窗口身份待核对，请先关闭窗口。"))?;
     if current.lock().unwrap_or_else(|p| p.into_inner()).phase == Phase::Closing {
         return Err(error("应用正在关闭，请稍候。"));
@@ -714,6 +741,9 @@ pub(super) async fn restart(
             .node_apps
             .with_operation_admission(id, "重启应用窗口", || {
                 alive(state)?;
+                native
+                    .check()
+                    .map_err(|_| error("工作区正在切换，已取消排队的重启操作。"))?;
                 {
                     let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
                     if current.phase == Phase::Closing {
@@ -725,6 +755,12 @@ pub(super) async fn restart(
                 window
                     .navigate(launch)
                     .map_err(|_| error("无法重新加载应用窗口。"))?;
+                // Explicit restart intentionally replaced the document. A
+                // simple open/focus is never allowed to clear this marker.
+                state
+                    .window_lifetimes
+                    .acknowledge_restart(&receipt)
+                    .map_err(|_| error("应用窗口已更换，请关闭后重新打开。"))?;
                 let _ = window.set_title(&super::project_title(
                     detail["name"].as_str().unwrap_or("应用"),
                 ));
@@ -843,10 +879,13 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    if alive(&state).is_err() {
+    if alive(&state).is_err() || state.window_lifetimes.workspace_paused() {
         return;
     }
     let active = state.node_apps.running_ids().await;
+    if state.window_lifetimes.workspace_paused() {
+        return;
+    }
     let stale: Vec<_> = state
         .node_windows
         .sessions
@@ -855,20 +894,34 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
         .iter()
         .filter(|(id, current)| {
             !active.contains(id)
+                && !obsolete_document(&state, id)
                 && current.lock().unwrap_or_else(|p| p.into_inner()).phase == Phase::Running
         })
         .map(|(id, current)| (id.clone(), current.clone()))
         .collect();
     for (id, current) in stale {
+        // Migration pauses native admission before stopping backends, then
+        // waits these real operations. Its stop cannot trigger draft disposal.
+        let Ok(_admission) = state.node_apps.admit_window_operation(&id, "核对应用窗口")
+        else {
+            continue;
+        };
         // Reconcile runs on the same monitor loop as health checks. A busy
         // instance must not delay the next pass for every other application.
         let Some(_operation) = state.node_windows.try_instance_operation(&id) else {
             continue;
         };
-        if alive(&state).is_err() || !owned(&state, &id, &current) {
+        if alive(&state).is_err()
+            || state.window_lifetimes.workspace_paused()
+            || obsolete_document(&state, &id)
+            || !owned(&state, &id, &current)
+        {
             continue;
         }
         if state.node_apps.running_ids().await.contains(&id) {
+            continue;
+        }
+        if state.window_lifetimes.workspace_paused() || obsolete_document(&state, &id) {
             continue;
         }
         phase(&current, Phase::Closing, None);
@@ -890,6 +943,25 @@ mod lifecycle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migrated_document_requires_explicit_reopen_and_keeps_its_native_receipt() {
+        let windows = super::super::business_window_lifetime::WindowLifetimes::default();
+        let admission = windows.admit_project("node", "disposable_node").unwrap();
+        let receipt = windows
+            .reserve_project("node-app-disposable", &admission)
+            .unwrap();
+        assert!(require_reusable_document(&receipt).is_ok());
+        windows.obsolete_workspace(Some("node"));
+        let issue = require_reusable_document(&receipt).unwrap_err();
+        assert_eq!(issue.code, "PROJECT_RELOAD_REQUIRED");
+        assert_eq!(
+            issue.message,
+            "工作区已切换，请保存草稿并关闭此窗口后重新打开"
+        );
+        assert!(!receipt.destroyed());
+        windows.acknowledge_restart(&receipt).unwrap();
+        assert!(require_reusable_document(&receipt).is_ok());
+    }
     #[test]
     fn navigation_tracks_only_the_owned_origin_and_controlled_blank() {
         let origin =

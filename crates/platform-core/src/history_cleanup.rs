@@ -4,11 +4,13 @@ use crate::{
     builds::BuildManager,
     file_identity::PersistedIdentity,
     projects::{check_no_symlinks, valid_id},
-    ApiError, ProjectManifest, ProjectStore, RuntimePaths, TaskRecord, APP_IDENTIFIER, ENVIRONMENT,
+    ApiError, ProjectStore, RuntimePaths, TaskRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::CString,
@@ -18,7 +20,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::{MetadataExt, OpenOptionsExt},
         },
     },
     path::{Component, Path, PathBuf},
@@ -33,8 +35,6 @@ use uuid::Uuid;
 
 const CONFIRMATION: &str = "永久清理所选内容";
 const PLAN_TTL: u64 = 10 * 60 * 1000;
-const RETIRED: &str = ".platform/workspace-retired.json";
-const SELECTION: &str = ".platform/workspace-selection.json";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -154,7 +154,7 @@ impl Plan {
         json!({"planId":self.plan_id,"expiresAt":self.expires_at,"workspaceRoot":self.workspace_root,
             "confirmationText":CONFIRMATION,"items":self.items.iter().map(Candidate::public).collect::<Vec<_>>(),
             "preserved":["当前项目及其源码、数据库、附件和发布版本","Node 项目的项目文件夹、数据和配置","未完成的网页项目取回和恢复资料以及操作日志","固定应用身份、设置、运行记录及迁移记录"],
-            "warning":"永久清理不能撤销。旧工作区是迁移时点的完整副本，可能包含后来已删除的项目；取回前的原件清理后无法再找回那次取回之前的数据。请先停止外部 AI、编辑器或数据库工具对所选目录的访问。"})
+            "warning":"永久清理不能撤销。取回前的原件清理后无法再找回那次取回之前的数据。请先停止外部 AI、编辑器或数据库工具对所选目录的访问。"})
     }
 }
 #[derive(Deserialize)]
@@ -210,37 +210,6 @@ fn wire_u64(value: Option<u64>) -> Value {
         Some(value) => json!({"$int64":value.to_string()}),
     }
 }
-fn validated_control(value: Value) -> Result<crate::control::ControlState, ApiError> {
-    let fields = [
-        "mode",
-        "maintenanceId",
-        "reason",
-        "startedAt",
-        "baselineBackupId",
-        "protectedBackupIds",
-        "readyForChanges",
-        "recoveryRequired",
-        "baselineInputDigest",
-        "pendingBuild",
-        "pendingBuildReason",
-        "hadArtifact",
-        "lastError",
-        "lastTaskId",
-    ];
-    let object = value
-        .as_object()
-        .ok_or_else(|| error("Unknown maintenance control structure"))?;
-    if object.keys().any(|key| !fields.contains(&key.as_str()))
-        || !value["protectedBackupIds"].is_array()
-        || !value["recoveryRequired"].is_boolean()
-        || !matches!(value["mode"].as_str(), Some("ready" | "maintenance"))
-    {
-        return Err(error(
-            "Unknown or incomplete maintenance protection structure",
-        ));
-    }
-    Ok(serde_json::from_value(value)?)
-}
 fn read_json(path: &Path) -> Result<Value, ApiError> {
     check_no_symlinks(path, false)?;
     let file = OpenOptions::new()
@@ -252,16 +221,6 @@ fn read_json(path: &Path) -> Result<Value, ApiError> {
         return Err(error("Invalid cleanup metadata"));
     }
     Ok(serde_json::from_reader(file)?)
-}
-fn hash_file(path: &Path) -> Result<String, ApiError> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(error("Expected ordinary file"));
-    }
-    hash_reader(&mut file)
 }
 fn hash_reader(file: &mut File) -> Result<String, ApiError> {
     let mut hash = Sha256::new();
@@ -282,30 +241,6 @@ fn directory_identity(path: &Path) -> Result<Identity, ApiError> {
         return Err(error("Expected an ordinary directory"));
     }
     Ok(Identity::of(&meta))
-}
-fn matches_persisted_root(
-    expected: &PersistedIdentity,
-    item: &Candidate,
-) -> Result<bool, ApiError> {
-    if item.root_identity.as_ref() != Some(&directory_identity(&item.path)?) {
-        return Ok(false);
-    }
-    expected.matches_path(&item.path).map_err(error)
-}
-fn same_persisted_record(
-    first: &PersistedIdentity,
-    second: &PersistedIdentity,
-    path: &Path,
-) -> bool {
-    match (first.is_legacy(), second.is_legacy()) {
-        (true, true) => first.legacy_pair() == second.legacy_pair(),
-        (false, false) => first.matches_captured(second),
-        // A mixed historical chain has no safe equivalence without a current
-        // path independently verified by both records and the explicit binding.
-        _ => {
-            first.matches_path(path).unwrap_or(false) && second.matches_path(path).unwrap_or(false)
-        }
-    }
 }
 fn normalized(path: &Path) -> bool {
     path.is_absolute()
@@ -537,9 +472,6 @@ impl CleanupManager {
             latest: Mutex::new(None),
             deleting: Mutex::new(BTreeSet::new()),
         }))
-    }
-    fn root(&self) -> PathBuf {
-        self.paths.data_root().join("cleanup")
     }
     fn ensure_running(&self) -> Result<(), ApiError> {
         if self.stopping.load(Ordering::Acquire) {
@@ -805,34 +737,9 @@ impl CleanupManager {
     }
     fn candidates(&self) -> Result<Vec<Candidate>, ApiError> {
         let mut items = vec![];
-        for directory in fs::read_dir(self.paths.migrations_dir())? {
-            let directory = directory?;
-            let id = directory.file_name().to_string_lossy().into_owned();
-            if !valid_id(&id) {
-                continue;
-            }
-            let journal_path = directory.path().join("journal.json");
-            if !journal_path.exists() {
-                continue;
-            }
-            let journal = read_json(&journal_path)?;
-            let Some(source) = journal["sourcePath"].as_str().map(PathBuf::from) else {
-                continue;
-            };
-            if !source.exists() && retired_cleanup_status(&self.paths, &id)?.is_some() {
-                continue;
-            }
-            let mut item = Candidate::new(
-                format!("retained_{id}"),
-                "retainedWorkspace",
-                "迁移保留的旧工作区（完整历史副本）",
-                source,
-            );
-            self.inspect(&mut item, |item| {
-                self.validate_retained(item, &id, &journal_path, &journal)
-            });
-            items.push(item);
-        }
+        // Migration sources are finalized automatically after a verified
+        // reopen, with retries bound to their migration ID. History owns only
+        // completed source/data restore originals.
         self.restore_candidates(&mut items)?;
         items.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
         Ok(items)
@@ -949,45 +856,21 @@ impl CleanupManager {
         {
             return Err(error("Unsafe cleanup location"));
         }
-        if item.kind == "retainedWorkspace" {
-            let current = self.paths.workspace_root();
-            if path.starts_with(current) || current.starts_with(path) {
-                return Err(error("Retained root overlaps the current workspace"));
-            }
-            for protected in [
-                self.paths.runtime_dir(),
-                self.paths.migrations_dir(),
-                self.root(),
-                self.paths.data_root().join("settings.json"),
-            ] {
-                if path.starts_with(&protected) || protected.starts_with(path) {
-                    return Err(error(
-                        "Retained root overlaps fixed application control data",
-                    ));
-                }
-            }
-        } else {
-            let workspace = self.paths.workspace_root();
-            let allowed: Vec<PathBuf> = match item.kind.as_str() {
-                "restoreOriginal" => vec![
-                    workspace.join(".platform/project-state/data-restore"),
-                    workspace.join(".platform/project-state/source-restore"),
-                ],
-                _ => return Err(error("Unknown historical cleanup category")),
-            };
-            if !allowed
-                .iter()
-                .any(|root| path.starts_with(root) && path != root)
-            {
-                return Err(error("Payload is outside its recorded owner directory"));
-            }
+        let workspace = self.paths.workspace_root();
+        let allowed = match item.kind.as_str() {
+            "restoreOriginal" => [
+                workspace.join(".platform/project-state/data-restore"),
+                workspace.join(".platform/project-state/source-restore"),
+            ],
+            _ => return Err(error("Unknown historical cleanup category")),
+        };
+        if !allowed
+            .iter()
+            .any(|root| path.starts_with(root) && path != root)
+        {
+            return Err(error("Payload is outside its recorded owner directory"));
         }
         check_no_symlinks(path, false)
-    }
-    fn guard_file(item: &mut Candidate, path: &Path) -> Result<Value, ApiError> {
-        let value = read_json(path)?;
-        item.guards.insert(path.into(), hash_file(path)?);
-        Ok(value)
     }
     fn check_references(
         &self,
@@ -1051,322 +934,6 @@ impl CleanupManager {
         }
         Ok(())
     }
-    fn validate_retained(
-        &self,
-        item: &mut Candidate,
-        migration_id: &str,
-        path: &Path,
-        journal: &Value,
-    ) -> Result<(), ApiError> {
-        Self::guard_file(item, path)?;
-        self.validate_migration_chain(migration_id, journal)?;
-        let expected: PersistedIdentity =
-            serde_json::from_value(journal["sourceIdentity"].clone())?;
-        if !matches_persisted_root(&expected, item)? {
-            return Err(error("Retained workspace identity changed"));
-        }
-        let marker_path = item.path.join(RETIRED);
-        if marker_path.try_exists()? {
-            let marker = Self::guard_file(item, &marker_path)?;
-            if marker["taskId"] != migration_id
-                || marker["retired"] != true
-                || marker["destinationPath"] != journal["destinationPath"]
-            {
-                return Err(error("Retained workspace retirement marker is invalid"));
-            }
-        }
-
-        self.check_references(None, None)?;
-        crate::source_restore_guard::check_workspace_available(&item.path)?;
-        crate::data_restore_guard::check_workspace_available(&item.path)?;
-        crate::project_git::check_data_workspace_available(&item.path)?;
-        let manifest_path = path.parent().unwrap().join("manifest.json");
-        let target_manifest_path = path.parent().unwrap().join("target-manifest.json");
-        let manifest = Self::guard_file(item, &manifest_path)?;
-        let target = Self::guard_file(item, &target_manifest_path)?;
-        let entries = manifest
-            .as_array()
-            .ok_or_else(|| error("Migration source inventory is missing"))?;
-        let copied = target
-            .as_array()
-            .ok_or_else(|| error("Migration target inventory is missing"))?;
-        validate_copy_evidence(entries, copied)?;
-        let excluded = migration_exclusions(&item.path)?;
-        let persistent = item
-            .entries
-            .iter()
-            .filter(|entry| {
-                !excluded
-                    .iter()
-                    .any(|path| entry.path == *path || entry.path.starts_with(path))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let current_paths = persistent
-            .iter()
-            .map(|entry| entry.path.clone())
-            .collect::<BTreeSet<_>>();
-        let remaining = entries
-            .iter()
-            .filter(|entry| {
-                entry["path"]
-                    .as_str()
-                    .is_some_and(|path| current_paths.contains(Path::new(path)))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !content_matches(&persistent, &remaining, None)? {
-            return Err(ApiError::new(
-                "OLD_WORKSPACE_MODIFIED",
-                "Retained persistent files differ from the migration inventory; preserve and inspect changes",
-            ));
-        }
-        // Retired backup archives and recycle-bin entries are not interpreted
-        // here. Their presence keeps the whole old workspace for manual review.
-        if persistent.iter().any(|entry| {
-            entry.kind == "file"
-                && (entry.path.starts_with("backups") || entry.path.starts_with(".platform/trash"))
-        }) {
-            return Err(error(
-                "The old workspace contains content from a retired backup or recycle-bin version",
-            ));
-        }
-        self.check_current_protection()?;
-        self.check_retained_owners(item, entries)?;
-        Ok(())
-    }
-    fn check_retained_owners(&self, item: &Candidate, manifest: &[Value]) -> Result<(), ApiError> {
-        let mut directory_owners = BTreeMap::<String, String>::new();
-        // Resolve ownership from platform registrations, never from the slug or
-        // a manifest found in an unregistered folder. Current bindings remain
-        // available after an accepted partial cleanup removes old registrations.
-        for workspace in [self.paths.workspace_root(), item.path.as_path()] {
-            if !workspace.join("projects").is_dir()
-                || !workspace.join(".platform/project-state").is_dir()
-            {
-                continue;
-            }
-            for (id, path) in crate::projects::enumerate_project_roots(workspace)? {
-                let name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| error("Unknown historical project directory binding"))?;
-                if directory_owners.get(name).is_some_and(|owner| owner != &id) {
-                    return Err(error(
-                        "Historical and current project directory ownership disagree",
-                    ));
-                }
-                directory_owners.insert(name.into(), id);
-            }
-        }
-        let mut projects = BTreeSet::new();
-        for entry in manifest {
-            let path = Path::new(
-                entry["path"]
-                    .as_str()
-                    .ok_or_else(|| error("Unknown migration inventory path"))?,
-            );
-            let components = path
-                .components()
-                .map(|part| part.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-            if components.first().is_some_and(|part| part == "projects") && components.len() > 1 {
-                let id = directory_owners
-                    .get(&components[1])
-                    .ok_or_else(|| error("Unknown historical project directory owner"))?;
-                projects.insert(id.clone());
-            }
-        }
-        for id in projects {
-            let project = self.store.project(&id)?;
-            self.check_database_copy(&id, &project.root.join(&project.manifest.database))?;
-            directory_identity(&project.root.join(&project.manifest.attachments_dir))?;
-        }
-        Ok(())
-    }
-    fn check_database_copy(&self, id: &str, original: &Path) -> Result<(), ApiError> {
-        if !id.starts_with("prj_") || !valid_id(id) {
-            return Err(error("Invalid diagnostic project owner"));
-        }
-        let diagnostics = self
-            .paths
-            .workspace_root()
-            .join(".platform/project-state/diagnostics")
-            .join(id);
-        check_no_symlinks(&diagnostics, true)?;
-        fs::create_dir_all(&diagnostics)?;
-        let directory = diagnostics.join(Uuid::new_v4().simple().to_string());
-        fs::create_dir(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let owned = directory_identity(&directory)?;
-        let suffixes = ["", "-wal", "-shm", "-journal"];
-        let snapshot = || -> Result<BTreeMap<String, (Identity, u64, String)>, ApiError> {
-            let mut files = BTreeMap::new();
-            for suffix in suffixes {
-                let path = PathBuf::from(format!("{}{suffix}", original.display()));
-                if !path.try_exists()? {
-                    if suffix.is_empty() {
-                        return Err(error("Current protected database is missing"));
-                    }
-                    continue;
-                }
-                check_no_symlinks(&path, false)?;
-                let meta = fs::symlink_metadata(&path)?;
-                if !meta.is_file() || meta.nlink() != 1 {
-                    return Err(error("Unsafe current protected database file"));
-                }
-                files.insert(
-                    suffix.into(),
-                    (Identity::of(&meta), meta.len(), hash_file(&path)?),
-                );
-            }
-            Ok(files)
-        };
-        let result = (|| {
-            let before = snapshot()?;
-            for (suffix, (_, _, digest)) in &before {
-                let source = PathBuf::from(format!("{}{suffix}", original.display()));
-                let target = directory.join(format!("database.sqlite{suffix}"));
-                let mut input = OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(source)?;
-                let mut output = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&target)?;
-                std::io::copy(&mut input, &mut output)?;
-                if hash_file(&target)? != *digest {
-                    return Err(error(
-                        "Protected database changed while copying diagnostics",
-                    ));
-                }
-            }
-            if snapshot()? != before {
-                return Err(error(
-                    "Protected database changed during diagnostics; preview again when idle",
-                ));
-            }
-            crate::backups::check_database(&directory.join("database.sqlite"))?;
-            Ok(())
-        })();
-        // Only explicitly named scratch files from this unique owned diagnostic
-        // directory are removed. The original database is never opened by SQLite.
-        if directory_identity(&directory).ok() == Some(owned) {
-            for suffix in suffixes {
-                let _ = fs::remove_file(directory.join(format!("database.sqlite{suffix}")));
-            }
-            let _ = fs::remove_dir(directory);
-        }
-        result
-    }
-    fn validate_migration_chain(
-        &self,
-        migration_id: &str,
-        journal: &Value,
-    ) -> Result<(), ApiError> {
-        let mut id = migration_id.to_owned();
-        let mut current = journal.clone();
-        let mut seen = BTreeSet::new();
-        loop {
-            if !seen.insert(id.clone())
-                || current["schemaVersion"] != 1
-                || current["identifier"] != APP_IDENTIFIER
-                || current["environment"] != ENVIRONMENT
-                || current["taskId"] != id
-                || current["committed"] != true
-                || current["resolved"] != true
-                || current["published"] != true
-            {
-                return Err(error("Migration is not safely committed/resolved"));
-            }
-            let destination = current["destinationPath"]
-                .as_str()
-                .map(PathBuf::from)
-                .ok_or_else(|| error("Migration target is missing"))?;
-            if destination == self.paths.workspace_root() {
-                let expected: PersistedIdentity =
-                    serde_json::from_value(current["destinationIdentity"].clone())?;
-                directory_identity(&destination)?;
-                if !expected.matches_path(&destination).map_err(error)? {
-                    return Err(error("Committed workspace identity changed"));
-                }
-                let marker = read_json(&destination.join(SELECTION))?;
-                if marker["taskId"] != id
-                    || marker["identifier"] != APP_IDENTIFIER
-                    || marker["environment"] != ENVIRONMENT
-                {
-                    return Err(error("Selected workspace marker is invalid"));
-                }
-                return Ok(());
-            }
-            let mut next = None;
-            for directory in fs::read_dir(self.paths.migrations_dir())? {
-                let directory = directory?;
-                let path = directory.path().join("journal.json");
-                if !path.is_file() {
-                    continue;
-                }
-                let value = read_json(&path)?;
-                if value["sourcePath"].as_str().map(Path::new) == Some(destination.as_path())
-                    && value["committed"] == true
-                    && value["resolved"] == true
-                {
-                    let source: PersistedIdentity =
-                        serde_json::from_value(value["sourceIdentity"].clone())?;
-                    let target: PersistedIdentity =
-                        serde_json::from_value(current["destinationIdentity"].clone())?;
-                    if !same_persisted_record(&source, &target, &destination) || next.is_some() {
-                        return Err(error("Migration chain identity is ambiguous"));
-                    }
-                    next = Some((directory.file_name().to_string_lossy().into_owned(), value));
-                }
-            }
-            let Some((next_id, next_journal)) = next else {
-                return Err(error(
-                    "No verified migration chain reaches the current workspace",
-                ));
-            };
-            id = next_id;
-            current = next_journal;
-        }
-    }
-    fn check_current_protection(&self) -> Result<(), ApiError> {
-        crate::source_restore_guard::check_workspace_available(self.paths.workspace_root())?;
-        crate::data_restore_guard::check_workspace_available(self.paths.workspace_root())?;
-        crate::project_git::check_data_workspace_available(self.paths.workspace_root())?;
-        let directory = self
-            .paths
-            .workspace_root()
-            .join(".platform/project-state/maintenance");
-        if !directory.exists() {
-            return Ok(());
-        }
-        for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-            path.file_stem()
-                .and_then(|name| name.to_str())
-                .filter(|id| valid_id(id))
-                .ok_or_else(|| error("Invalid maintenance owner"))?;
-            let control = validated_control(read_json(&path)?)?;
-            if !matches!(control.mode.as_str(), "ready" | "maintenance") {
-                return Err(error(
-                    "Unknown maintenance mode protects historical evidence",
-                ));
-            }
-            if control.recovery_required {
-                return Err(error(
-                    "Unresolved current recovery protects historical workspace evidence",
-                ));
-            }
-        }
-        Ok(())
-    }
     fn execute(&self, task: &str, plan: &Plan) -> Result<Value, ApiError> {
         self.tasks.phase(task, "revalidating")?;
         let fresh = self.candidates()?;
@@ -1403,7 +970,7 @@ impl CleanupManager {
             let operation = remove_tree(item);
             let result = match operation {
                 Ok(removed) => {
-                    json!({"id":item.id,"projectId":item.project_id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms(),"migrationId":item.id.strip_prefix("retained_")})
+                    json!({"id":item.id,"projectId":item.project_id,"kind":item.kind,"path":item.path,"status":"removed","completed":true,"removed":removed,"completedAt":now_ms()})
                 }
                 Err(failure) => {
                     stopped = true;
@@ -1417,158 +984,6 @@ impl CleanupManager {
     }
 }
 
-fn migration_exclusions(root: &Path) -> Result<BTreeSet<PathBuf>, ApiError> {
-    let mut excluded = BTreeSet::from([
-        PathBuf::from(".platform/cache/storage"),
-        PathBuf::from(SELECTION),
-        PathBuf::from(RETIRED),
-    ]);
-    if !root.join("projects").try_exists()? {
-        return Ok(excluded);
-    }
-    for (id, path) in crate::projects::enumerate_project_roots(root)? {
-        if !path.is_dir() {
-            continue;
-        }
-        let manifest_path = path.join("project.json");
-        if let Ok(manifest) = read_json(&manifest_path)
-            .and_then(|value| serde_json::from_value::<ProjectManifest>(value).map_err(Into::into))
-        {
-            if crate::projects::validate_manifest(&manifest, &id, &path).is_ok() {
-                excluded.insert(
-                    path.strip_prefix(root)
-                        .map_err(|_| error("Project directory is outside the workspace"))?
-                        .to_path_buf()
-                        .join(manifest.source_dir)
-                        .join("node_modules"),
-                );
-            }
-        }
-    }
-    Ok(excluded)
-}
-fn content_matches(
-    actual: &[Entry],
-    expected: &[Value],
-    prefix: Option<&Path>,
-) -> Result<bool, ApiError> {
-    validate_manifest_entries(expected)?;
-    let mut expected = expected
-        .iter()
-        .filter_map(|entry| {
-            let path = PathBuf::from(entry["path"].as_str()?);
-            let path = if let Some(prefix) = prefix {
-                let relative = path.strip_prefix(prefix).ok()?;
-                if relative.as_os_str().is_empty() {
-                    return None;
-                }
-                relative.to_owned()
-            } else {
-                path
-            };
-            Some((path, entry))
-        })
-        .collect::<BTreeMap<_, _>>();
-    if actual.len() != expected.len() {
-        return Ok(false);
-    }
-    for entry in actual {
-        let Some(value) = expected.remove(&entry.path) else {
-            return Ok(false);
-        };
-        if value["kind"] != entry.kind
-            || value["bytes"].as_u64() != Some(entry.bytes)
-            || value["digest"].as_str() != entry.digest.as_deref()
-            || value["target"].as_str().map(Path::new) != entry.target.as_deref()
-            || value["mode"].as_u64() != Some(entry.mode as u64)
-        {
-            return Ok(false);
-        }
-    }
-    Ok(expected.is_empty())
-}
-fn validate_copy_evidence(source: &[Value], target: &[Value]) -> Result<(), ApiError> {
-    validate_manifest_entries(source)?;
-    validate_manifest_entries(target)?;
-    let index = |entries: &[Value]| -> Result<BTreeMap<String, Value>, ApiError> {
-        let mut result = BTreeMap::new();
-        for entry in entries {
-            let path = entry["path"]
-                .as_str()
-                .ok_or_else(|| error("Invalid migration inventory path"))?;
-            if Path::new(path).is_absolute()
-                || Path::new(path)
-                    .components()
-                    .any(|part| !matches!(part, Component::Normal(_)))
-                || result.insert(path.into(), entry.clone()).is_some()
-            {
-                return Err(error("Duplicate or unsafe migration inventory path"));
-            }
-        }
-        Ok(result)
-    };
-    let source = index(source)?;
-    let target = index(target)?;
-    if source.len() != target.len() {
-        return Err(error("Migration copy evidence is incomplete"));
-    }
-    for (path, from) in source {
-        let to = target
-            .get(&path)
-            .ok_or_else(|| error("Migration copy path is missing"))?;
-        if &from != to {
-            return Err(error(
-                "Migration target differs from its verified source copy",
-            ));
-        }
-    }
-    Ok(())
-}
-fn validate_manifest_entries(entries: &[Value]) -> Result<(), ApiError> {
-    let mut seen = BTreeSet::new();
-    for entry in entries {
-        let path = entry["path"]
-            .as_str()
-            .ok_or_else(|| error("Migration inventory has no path"))?;
-        if path.is_empty()
-            || Path::new(path).is_absolute()
-            || Path::new(path)
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_)))
-            || !seen.insert(path)
-        {
-            return Err(error("Duplicate or unsafe migration inventory path"));
-        }
-        let bytes = entry["bytes"]
-            .as_u64()
-            .ok_or_else(|| error("Migration inventory byte count is invalid"))?;
-        let mode = entry["mode"]
-            .as_u64()
-            .ok_or_else(|| error("Migration inventory mode is invalid"))?;
-        if mode > 0o777 {
-            return Err(error("Unknown migration entry mode"));
-        }
-        let valid = match entry["kind"].as_str() {
-            Some("file") => {
-                entry["target"].is_null()
-                    && entry["digest"].as_str().is_some_and(|digest| {
-                        digest.len() == 64 && digest.bytes().all(|c| c.is_ascii_hexdigit())
-                    })
-            }
-            Some("directory") => {
-                bytes == 0 && entry["target"].is_null() && entry["digest"].is_null()
-            }
-            Some("symlink") => {
-                bytes == 0 && entry["target"].is_string() && entry["digest"].is_null()
-            }
-            _ => false,
-        };
-        if !valid {
-            return Err(error("Unknown or malformed migration inventory entry"));
-        }
-    }
-    Ok(())
-}
 fn verify_parents(item: &Candidate) -> Result<(), ApiError> {
     for (path, expected) in &item.parents {
         if directory_identity(path)? != *expected {
@@ -1671,6 +1086,26 @@ fn remove_owned_directory_bound(
     expected: &PersistedIdentity,
     after_bind: impl FnOnce() -> Result<(), ApiError>,
 ) -> Result<Value, ApiError> {
+    remove_owned_directory_snapshot(path, expected, false, after_bind, |_| Ok(()))
+}
+
+/// A migration validates the content-hashed snapshot that will be removed,
+/// while permanent project deletion needs only its already accepted ownership.
+pub(crate) fn remove_owned_directory_checked(
+    path: &Path,
+    expected: &PersistedIdentity,
+    verify: impl FnOnce(&Value) -> Result<(), ApiError>,
+) -> Result<Value, ApiError> {
+    remove_owned_directory_snapshot(path, expected, true, || Ok(()), verify)
+}
+
+fn remove_owned_directory_snapshot(
+    path: &Path,
+    expected: &PersistedIdentity,
+    content: bool,
+    after_bind: impl FnOnce() -> Result<(), ApiError>,
+    verify: impl FnOnce(&Value) -> Result<(), ApiError>,
+) -> Result<Value, ApiError> {
     check_no_symlinks(path, false)?;
     let root = OpenOptions::new()
         .read(true)
@@ -1689,7 +1124,10 @@ fn remove_owned_directory_bound(
     item.root_identity = Some(Identity::of(&root.metadata()?));
     after_bind()?;
     item.parents = parent_identities(path)?;
-    item.entries = scan_with_content(path, false)?;
+    verify_parents(&item)?;
+    item.entries = scan_with_content(path, content)?;
+    verify_parents(&item)?;
+    verify(&serde_json::to_value(&item.entries)?)?;
     item.can_clean = true;
     let result = remove_tree_with_hook(&item, |_, _| Ok(()));
     drop(root);
@@ -1822,19 +1260,10 @@ pub(crate) fn retired_cleanup_status(
         return Ok(None);
     }
     let expected: PersistedIdentity = serde_json::from_value(journal["sourceIdentity"].clone())?;
-    let Some(parent) = source.parent() else {
-        return Ok(None);
-    };
-    check_no_symlinks(parent, true)?;
-    let Ok(parent_identity) = PersistedIdentity::capture(parent) else {
-        return Ok(None);
-    };
-    let same_volume = match (&expected.volume_uuid, &parent_identity.volume_uuid) {
-        (Some(expected), Some(actual)) => expected == actual,
-        (None, None) => expected.device == parent_identity.device,
-        _ => false,
-    };
-    if !same_volume {
+    if !expected
+        .absent_on_expected_volume(&source)
+        .map_err(|failure| error(failure.to_string()))?
+    {
         return Ok(None);
     }
     Ok(Some(

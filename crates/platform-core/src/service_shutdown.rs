@@ -296,6 +296,16 @@ impl RuntimeShutdown {
             {
                 resources.states.push(current);
             }
+            if let Some(retained) = self.shared.migration_retained_state.lock().unwrap().clone() {
+                signal_state(&retained);
+                if !resources
+                    .states
+                    .iter()
+                    .any(|state| Arc::ptr_eq(state, &retained))
+                {
+                    resources.states.push(retained);
+                }
+            }
             resources.issues.extend(std::mem::take(
                 &mut *self.shared.shutdown_issues.lock().unwrap(),
             ));
@@ -442,16 +452,7 @@ fn cleanup_discovery(state: &HttpState) -> Option<ShutdownIssue> {
         }
         Err(error) => Err(anyhow::anyhow!("Cannot inspect discovery: {error}")),
         Ok(_) => {
-            let owned = (|| -> anyhow::Result<bool> {
-                if state.paths.read_discovery()?.instance_id != state.info.instance_id {
-                    return Ok(false);
-                }
-                if state.paths.read_control_token()? != state.token {
-                    return Ok(false);
-                }
-                state.paths.remove_runtime_if_owned(&state.info.instance_id, &state.token)?;
-                Ok(true)
-            })();
+            let owned = state.paths.remove_stopped_runtime_if_owned(&state.info.instance_id, &state.token);
             match owned {
                 Ok(false) => return Some(changed_discovery()),
                 Ok(true) => Ok(()),

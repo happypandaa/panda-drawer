@@ -42,9 +42,12 @@ mod delete_tasks;
 pub use delete_tasks::NodeDeletionBeforeStop;
 #[path = "node_app_directory.rs"]
 mod directory;
+#[path = "node_app_migration.rs"]
+mod migration;
 #[path = "node_run_marker.rs"]
 mod run_marker;
 pub use directory::DirectoryInitializeInput;
+pub use migration::NodeWorkspacePause;
 #[path = "node_app_development.rs"]
 pub(crate) mod development;
 const START_INTENT_CLEANUP_PREFIX: &str = ".start-intent-cleanup-";
@@ -103,6 +106,8 @@ struct RuntimeEntry {
     revision: u64,
     registration_digest: String,
     manifest: Arc<TrialManifest>,
+    workspace_root: Option<PathBuf>,
+    source_root: Option<PathBuf>,
     phase: AtomicU8,
 }
 impl RuntimeEntry {
@@ -112,6 +117,8 @@ impl RuntimeEntry {
             revision,
             registration_digest,
             manifest,
+            workspace_root: None,
+            source_root: None,
             phase: AtomicU8::new(RUNTIME_STARTING),
         }
     }
@@ -518,6 +525,12 @@ impl NodeApps {
     }
 
     pub async fn register(&self, source: PathBuf) -> Result<Value> {
+        let _source_scope = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.source_registration_scope())
+            .transpose()?;
+        let _migration = self.operations.admit_global("登记本地项目")?;
         let inner = self.inner.lock().await;
         self.register_locked(source, &inner)
     }
@@ -1113,12 +1126,15 @@ impl NodeApps {
                 control_directory: slot.clone(),
                 redaction_values: snapshot.redaction_values,
             };
-            let entry = Arc::new(RuntimeEntry::new(
+            let mut entry = RuntimeEntry::new(
                 snapshot.revision,
                 node_registration::registration_digest(&slot)?
                     .ok_or_else(|| fail("应用登记已失联。"))?,
                 manifest.clone(),
-            ));
+            );
+            entry.workspace_root = Some(self.deletion_workspace());
+            entry.source_root = Some(record.source_path.clone());
+            let entry = Arc::new(entry);
             inner.running.insert(id.into(), entry.clone());
             (entry, record, manifest, slot, config)
         };
@@ -1193,11 +1209,14 @@ impl NodeApps {
             slot,
             config,
         } = plan;
+        // The native manager outlives a public workspace switch. Probe owners
+        // must belong to the currently installed runtime, not its constructor.
+        let processes = self.current_processes();
         NodeRuntimeTrial::preflight_with_processes(
             &config,
             &slot.join("data"),
             &slot.join("cache"),
-            &self.processes,
+            &processes,
         )
         .await?;
         let marker = slot.join("active.json");
@@ -1231,7 +1250,7 @@ impl NodeApps {
             config,
             slot.join("data"),
             slot.join("cache"),
-            &self.processes,
+            &processes,
         )
         .await;
         let runtime = match launched {
@@ -1783,6 +1802,36 @@ struct StartIntentOwnership {
 }
 
 impl StartIntentOwnership {
+    /// Validate the original open marker without replacing, retiring or
+    /// adopting it. Migration may exempt a live new-workspace run only while
+    /// its retained owner still names this exact file and exact contents.
+    fn require_current(&self, path: &Path) -> Result<()> {
+        ordinary_path(path, false)?;
+        let owned = self.file.metadata()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let matches = |current: &fs::Metadata| {
+                owned.is_file()
+                    && current.is_file()
+                    && !current.file_type().is_symlink()
+                    && owned.dev() == current.dev()
+                    && owned.ino() == current.ino()
+                    && owned.nlink() == 1
+                    && current.nlink() == 1
+            };
+            if !matches(&fs::symlink_metadata(path)?)
+                || read_small(path)? != self.contents
+                || !matches(&fs::symlink_metadata(path)?)
+            {
+                return Err(run_marker::unknown());
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        Err(run_marker::unknown())
+    }
+
     #[cfg(unix)]
     fn open_existing(path: &Path) -> Result<Self> {
         ordinary_path(path, false)?;

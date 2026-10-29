@@ -52,6 +52,12 @@ pub(crate) struct MigrationJournal {
     started_at: u64,
     #[serde(default)]
     retained_source_warning: Option<String>,
+    /// Only migrations accepted under the automatic-finalization contract opt
+    /// in. Existing historical journals never gain new deletion authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_cleanup: Option<crate::workspace_migration_cleanup::SourceCleanup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_task_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -249,6 +255,7 @@ pub(crate) fn filesystem(path: &Path) -> Result<Value> {
     Ok(json!({"type":name,"local":local,"availableBytes":available}))
 }
 pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Value, ApiError> {
+    require_external_originals_outside_source(paths)?;
     let check = || -> Result<Value> {
         clean_absolute(destination)?;
         check_no_symlinks(destination, false)?;
@@ -312,6 +319,111 @@ pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Valu
     check().map_err(|e| {
         ApiError::new("INVALID_MIGRATION_TARGET", e.to_string()).outcome("not_started")
     })
+}
+/// New source claims must not turn a still-authorized migration source into an
+/// external original while cleanup is pending. Actual publication holds the
+/// coordinator's source read gate, shared with the checked unlink operation.
+pub(crate) fn require_source_outside_pending_migrations(
+    data_root: &Path,
+    source: &Path,
+) -> Result<(), ApiError> {
+    let root = data_root.join("migrations");
+    check_no_symlinks(&root, true)?;
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !valid_id(&id) {
+            continue;
+        }
+        let path = entry.path().join("journal.json");
+        check_no_symlinks(&path, true)?;
+        let journal: MigrationJournal = read_json(&path).map_err(ioerr)?;
+        validate_journal(&journal, &id).map_err(ioerr)?;
+        // Settings are the commit point even if saving the journal's final
+        // committed flag failed. Conversely, an aborted precommit record must
+        // never reserve the still-current root forever.
+        let committed = if journal.committed {
+            true
+        } else {
+            let selected: Value = read_json(&data_root.join("settings.json")).map_err(ioerr)?;
+            selected["migrationId"].as_str() == Some(id.as_str())
+                && selected["workspaceRoot"].as_str().map(Path::new)
+                    == Some(journal.destination_path.as_path())
+        };
+        if committed
+            && journal.published
+            && journal
+                .source_cleanup
+                .as_ref()
+                .is_some_and(|cleanup| !cleanup.completed())
+            && (source.starts_with(&journal.source_path) || journal.source_path.starts_with(source))
+        {
+            return Err(ApiError::new(
+                "NODE_SOURCE_MIGRATION_PENDING",
+                "这个文件夹仍属于迁移原目录。请先完成该迁移的收尾，再在这里选择新的源码目录。",
+            )
+            .detail("sourcePath", json!(source))
+            .detail("migrationId", json!(id))
+            .detail("migrationSource", json!(journal.source_path)));
+        }
+    }
+    Ok(())
+}
+
+fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(), ApiError> {
+    let root = paths.data_root().join("node-apps");
+    check_no_symlinks(&root, true)?;
+    let slots = match fs::read_dir(&root) {
+        Ok(slots) => slots,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    for slot in slots {
+        let slot = slot?;
+        let id = slot.file_name().to_string_lossy().into_owned();
+        if !Uuid::parse_str(&id).is_ok_and(|uuid| uuid.to_string() == id) {
+            continue;
+        }
+        let registration = slot.path().join("registration.json");
+        check_no_symlinks(&registration, true)?;
+        if !registration.try_exists()? {
+            continue;
+        }
+        let stored = crate::node_registration::decode_registration(
+            read_json(&registration).map_err(ioerr)?,
+            &id,
+            &root,
+        )?;
+        let source = match stored {
+            crate::node_registration::StoredNodeRegistration::Direct(direct) => {
+                Some(direct.source_path)
+            }
+            crate::node_registration::StoredNodeRegistration::Retired(retired) => retired
+                .development_source
+                .as_ref()
+                .map(crate::node_registration::source_binding_path)
+                .transpose()?,
+        };
+        if let Some(source) = source {
+            if source.starts_with(paths.workspace_root())
+                && !ownership.owns_source_directory(&id, &source)?
+            {
+                return Err(ApiError::new("WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE",
+                    format!("用户选择的外部原始目录位于当前工作区内，不能随整根迁移删除：{}。请先处理这个项目的位置。", source.display()))
+                    .detail("appId", json!(id)).detail("sourcePath", json!(source)).outcome("not_started"));
+            }
+        }
+    }
+    Ok(())
 }
 fn exclusions(root: &Path) -> Result<BTreeSet<PathBuf>> {
     let mut excluded = BTreeSet::from([
@@ -494,6 +606,8 @@ pub(crate) fn create(paths: &RuntimePaths, destination: &Path) -> Result<TaskRec
             .unwrap_or_default()
             .as_millis() as u64,
         retained_source_warning: None,
+        source_cleanup: Some(crate::workspace_migration_cleanup::SourceCleanup::awaiting_reopen()),
+        cleanup_task_id: None,
     };
     builds::atomic_json(&journal_path(paths.data_root(), &id), &j)?;
     builds::atomic_json(&task_dir(paths.data_root(), &id).join("task.json"), &task)?;
@@ -576,6 +690,9 @@ pub(crate) fn copy_and_commit(
             bail!("Source or empty target directory identity changed")
         }
         let excluded = exclusions(&j.source_path)?;
+        if let Some(cleanup) = &mut j.source_cleanup {
+            cleanup.record_copy_exclusions(excluded.clone())?;
+        }
         phase(paths, id, "inventory")?;
         let entries = collect(&j.source_path, &excluded)?;
         j.file_count = entries.iter().filter(|e| e.kind == "file").count() as u64;
@@ -744,7 +861,162 @@ pub(crate) fn task(paths: &RuntimePaths, id: &str) -> Result<Option<TaskRecord>,
 }
 
 pub(crate) fn completed_result(j: &MigrationJournal) -> Value {
-    json!({"sourcePath":j.source_path,"destinationPath":j.destination_path,"workspaceRoot":j.destination_path,"sourceRetained":true,"operationOutcome":"committed","fileCount":j.file_count,"totalBytes":j.total_bytes,"requiresReconnect":true,"blockedProjects":j.blocked_projects})
+    json!({"sourcePath":j.source_path,"destinationPath":j.destination_path,"workspaceRoot":j.destination_path,"sourceRetained":!j.source_cleanup.as_ref().is_some_and(|cleanup| cleanup.completed()),"sourceCleanup":j.source_cleanup.as_ref().map(|cleanup|cleanup.status(&j.source_path)),"cleanupPending":j.source_cleanup.as_ref().is_some_and(|cleanup|cleanup.needs_attention()),"operationOutcome":"committed","fileCount":j.file_count,"totalBytes":j.total_bytes,"requiresReconnect":true,"blockedProjects":j.blocked_projects})
+}
+
+/// Metadata recovery may establish which copy committed, but only an actual
+/// runtime/native reopen and old-reader drain may call this acknowledgement.
+pub(crate) fn acknowledge_reopened(paths: &RuntimePaths, id: &str) -> Result<(), ApiError> {
+    let j = read_journal(paths, id)?;
+    if j.destination_path != paths.workspace_root()
+        || !is_committed(paths, id)?
+        || !j.published
+        || !j.committed
+        || !j.epochs_applied
+    {
+        return Err(ioerr(
+            "Cannot acknowledge an uncommitted or unreopened workspace",
+        ));
+    }
+    if !j
+        .source_cleanup
+        .as_ref()
+        .is_some_and(|cleanup| cleanup.needs_reopen())
+    {
+        return Ok(());
+    }
+    mark_old_retired(paths, &j)?;
+    let mut j = read_journal(paths, id)?;
+    if let Some(cleanup) = &mut j.source_cleanup {
+        cleanup.acknowledge_reopened();
+        save_journal(paths, &j)?;
+    }
+    Ok(())
+}
+
+/// An already stopped runtime may still own its fixed discovery after settings
+/// committed but before install. This proves only that exact former source;
+/// it never grants permission to reopen it or to unlink project files.
+pub(crate) fn validate_stopped_runtime_source(
+    paths: &RuntimePaths,
+    selected: &RuntimePaths,
+) -> Result<(), ApiError> {
+    let settings: Value = read_json(&paths.data_root().join("settings.json")).map_err(ioerr)?;
+    let id = settings["migrationId"]
+        .as_str()
+        .ok_or_else(|| ioerr("Stopped runtime has no committed migration selection"))?;
+    let journal = read_journal(paths, id)?;
+    validate_journal(&journal, id).map_err(ioerr)?;
+    // Settings are the commit point. Saving the journal's committed bit may
+    // have failed immediately afterward; it cannot veto shutdown of this exact
+    // stopped instance. Recheck the selected target marker and identity, without
+    // granting a reopen acknowledgement or permission to remove source files.
+    validate_selection(paths.data_root(), selected.workspace_root(), Some(id)).map_err(ioerr)?;
+    if paths.data_root() != selected.data_root()
+        || settings["workspaceRoot"].as_str().map(Path::new) != Some(selected.workspace_root())
+        || !journal.published
+        || journal.source_path != paths.workspace_root()
+        || journal.destination_path != selected.workspace_root()
+        || !journal
+            .source_identity
+            .matches_path(paths.workspace_root())
+            .map_err(ioerr)?
+    {
+        return Err(ioerr(
+            "Stopped runtime does not own the selected migration source",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn selected_cleanup(paths: &RuntimePaths) -> Result<Option<MigrationJournal>, ApiError> {
+    let settings: Value = read_json(&paths.data_root().join("settings.json")).map_err(ioerr)?;
+    let Some(id) = settings["migrationId"].as_str() else {
+        return Ok(None);
+    };
+    let j = read_journal(paths, id)?;
+    validate_journal(&j, id).map_err(ioerr)?;
+    if j.destination_path != paths.workspace_root()
+        || j.source_cleanup
+            .as_ref()
+            .is_none_or(|cleanup| cleanup.completed())
+    {
+        return Ok(None);
+    }
+    Ok(Some(j))
+}
+
+pub(crate) fn require_cleanup_before_migration(paths: &RuntimePaths) -> Result<(), ApiError> {
+    if let Some(j) = selected_cleanup(paths)? {
+        return Err(ApiError::new(
+            "WORKSPACE_SOURCE_CLEANUP_PENDING",
+            "请先完成这次迁移原目录的收尾，再迁移工作区。",
+        )
+        .detail("migrationId", json!(j.task_id))
+        .detail("sourcePath", json!(j.source_path)));
+    }
+    Ok(())
+}
+
+pub(crate) fn cleanup_source(paths: &RuntimePaths, id: &str) -> Result<Value, ApiError> {
+    let j = read_journal(paths, id)?;
+    validate_journal(&j, id).map_err(ioerr)?;
+    let mut cleanup = j.source_cleanup.clone().ok_or_else(|| {
+        ApiError::new(
+            "MIGRATION_CLEANUP_NOT_AUTHORIZED",
+            "这条历史迁移记录不属于自动收尾范围。",
+        )
+    })?;
+    let destination_identity = j
+        .destination_identity
+        .as_ref()
+        .ok_or_else(|| ioerr("Migration destination identity missing"))?;
+    let request = crate::workspace_migration_cleanup::CleanupRequest {
+        data_root: paths.data_root(),
+        migration_id: id,
+        source: &j.source_path,
+        source_identity: &j.source_identity,
+        destination: &j.destination_path,
+        destination_identity,
+        published: j.published,
+        committed: j.committed,
+        epochs_applied: j.epochs_applied,
+    };
+    crate::workspace_migration_cleanup::cleanup_source(
+        &request,
+        &mut cleanup,
+        |cleanup| {
+            let mut saved = j.clone();
+            saved.source_cleanup = Some(cleanup.clone());
+            save_journal(paths, &saved)
+        },
+        |verified| {
+            crate::history_cleanup::remove_owned_directory_checked(
+                &j.source_path,
+                &j.source_identity,
+                |snapshot| verified.verify_snapshot(snapshot),
+            )
+        },
+    )
+}
+pub(crate) fn retain_cleanup_reopen_failure(
+    paths: &RuntimePaths,
+    id: &str,
+    error: &ApiError,
+) -> Result<(), ApiError> {
+    let mut j = read_journal(paths, id)?;
+    if let Some(cleanup) = &mut j.source_cleanup {
+        cleanup.retain_reopen_failure(&j.source_path, error);
+        save_journal(paths, &j)?;
+    }
+    Ok(())
+}
+pub(crate) fn cleanup_task_id(paths: &RuntimePaths) -> Result<Option<String>, ApiError> {
+    let settings: Value = read_json(&paths.data_root().join("settings.json")).map_err(ioerr)?;
+    let Some(id) = settings["migrationId"].as_str() else {
+        return Ok(None);
+    };
+    Ok(read_journal(paths, id)?.cleanup_task_id)
 }
 pub(crate) fn mark_old_retired(paths: &RuntimePaths, j: &MigrationJournal) -> Result<(), ApiError> {
     let mut done = j.clone();
@@ -813,7 +1085,7 @@ pub(crate) fn recover_startup(paths: &RuntimePaths) -> Result<(), ApiError> {
             t.error=Some(ApiError::new("TASK_INTERRUPTED","Platform stopped before the migration task returned; no operation was automatically repeated").outcome(outcome));
             builds::atomic_json(&task_dir(paths.data_root(), &id).join("task.json"), &t)?;
         }
-        if chosen && !j.resolved {
+        if chosen && !j.resolved && j.source_cleanup.is_none() {
             mark_old_retired(paths, &j)?;
         }
     }
@@ -845,7 +1117,7 @@ pub(crate) fn info(paths: &RuntimePaths, store: &ProjectStore) -> Result<Value, 
             let cleanup = crate::history_cleanup::retired_cleanup_status(paths, &id)?;
             let absent = cleanup.is_some()
                 && matches!(fs::symlink_metadata(&j.source_path), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
-            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":j.source_identity.matches_path(&j.source_path).unwrap_or(false),"canDelete":false,"absent":absent,"cleanup":cleanup,"reason":if absent {"Retained snapshot is currently absent on its original volume; no deletion history is retained"}else{"Inspect this registered snapshot in the history cleanup preview"}}));
+            retained.push(json!({"path":j.source_path,"taskId":id,"available":actual.is_some(),"identityMatches":j.source_identity.matches_path(&j.source_path).unwrap_or(false),"canDelete":false,"absent":absent,"cleanup":cleanup,"sourceCleanup":j.source_cleanup.as_ref().map(|cleanup|cleanup.status(&j.source_path)),"reason":if absent {"原目录在原磁盘上当前不存在。"}else if j.source_cleanup.is_some(){"新工作区已提交；原目录按迁移任务自动收尾，失败可重试。"}else{"历史迁移记录只供核对；不自动取得新的删除权限。"}}));
         }
     }
     Ok(
@@ -891,6 +1163,15 @@ pub(crate) fn local_cleanup_roots(paths: &RuntimePaths) -> Result<Vec<PathBuf>, 
         }
         journals.push(j);
     }
+    let ended = journals
+        .iter()
+        .filter(|j| {
+            j.source_cleanup
+                .as_ref()
+                .is_some_and(|cleanup| cleanup.completed())
+        })
+        .map(|j| (j.source_path.clone(), j.source_identity.clone()))
+        .collect::<Vec<_>>();
     let mut roots = BTreeSet::from([paths.workspace_root().to_path_buf()]);
     for journal in journals {
         let destination = journal
@@ -901,6 +1182,11 @@ pub(crate) fn local_cleanup_roots(paths: &RuntimePaths) -> Result<Vec<PathBuf>, 
             (&journal.source_path, &journal.source_identity),
             (&journal.destination_path, destination),
         ] {
+            if ended.iter().any(|(ended_path, identity)| {
+                ended_path == path && identity.matches_captured(expected)
+            }) {
+                continue;
+            }
             clean_absolute(path).map_err(ioerr)?;
             check_no_symlinks(path, true)?;
             match fs::symlink_metadata(path) {
