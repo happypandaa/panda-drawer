@@ -223,17 +223,18 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 | 位置 | 用途 |
 | --- | --- |
-| 项目 `.platform/builds/{taskId}/` | 暂存输出、发布现场及恢复所需材料 |
-| 项目 `.platform/artifacts/{buildId}/dist/` | 不可变的各代网页资源 |
+| 项目 `.platform/builds/{taskId}/` | 构建临时材料；成功提交并确认写入结束后清除，未确认恢复材料受保护 |
+| 项目 `.platform/artifacts/{buildId}/dist/` | 当前及真实窗口／读者仍占用的不可变网页代，其余自动清除 |
+| 固定数据根 `web-project-ownership/{projectId}/artifact-views/` | 无来源网页的短期窗口入口快照；按真实窗口／读者生命周期释放，计入项目占用 |
 | 项目 `.platform/starter.json` | 初始应用来源和本项目输入基线；初始代 ID 为 `starter_…` |
 | 项目 `dist/` | 当前发布产物的完整副本 |
 | 工作区 `.platform/project-state/builds/{projectId}.json` | 当前成功构建来源；作为发布提交点 |
 | 工作区 `.platform/project-state/builds/{projectId}.publication.json` | 中断发布核对日志 |
 | 工作区 `.platform/tasks/{taskId}/` | 持久任务记录和分段构建日志 |
 
-入口注入对应构建代的资源基址 `/p/{id}/_builds/{buildId}/`；旧页面继续引用同一代资源，新页面读取当前代。正常打开复用原桌面窗口；用户选择“重新加载项目”才替换页面。构建成功发送 `project.updated`，不自动丢弃表单。当前暂存和已发布旧代资源没有自动删除策略；正式保留期限及空间清理规则仍待确定，不把这些资源视为用户可选择的版本历史。
+入口注入对应构建代的资源基址 `/p/{id}/_builds/{buildId}/`；原生启动 ticket 与窗口占用固定这次入口，旧页面继续引用同一代资源。正常打开复用原桌面窗口；用户选择“重新加载项目”才替换页面。构建成功发送 `project.updated`，不自动丢弃表单。2026-10-29 第二批按[网页构建代次契约](web-build-generation-retention.md)在发布恢复之后清除无占用旧代与成功暂存，不把它们作为用户版本历史。
 
-`project info` 和管理窗口显示 `buildInfo.sourceState`、`checkedAt`、`stale`、`reason`。初始应用附 `origin: bundledTemplate`、`templateVersion` 和 `starter`，用户成功构建后使用 `origin: projectBuild` 和 `provenance`。状态为 `unbuilt`、`matched`、`modified`、`unknown`；新项目正常为 `matched`，不是 `unbuilt`，也没有伪造的成功任务。`matched` 只表示最近扫描匹配。首次用户构建失败仍保留初始应用，成功发布后旧初始页继续使用原 `starter_…` 代资源。产物不符合已登记摘要时报告异常。重启按发布日志和来源核对实际提交结果；无法确认时报告恢复错误，不凭脚本退出码推断成功。
+`project info` 和管理窗口显示 `buildInfo.sourceState`、`checkedAt`、`stale`、`reason`。初始应用附 `origin: bundledTemplate`、`templateVersion` 和 `starter`，用户成功构建后使用 `origin: projectBuild` 和 `provenance`。状态为 `unbuilt`、`matched`、`modified`、`unknown`；新项目正常为 `matched`，不是 `unbuilt`，也没有伪造的成功任务。`matched` 只表示最近扫描匹配。首次用户构建失败仍保留初始应用；成功发布后仍开的旧初始窗口继续使用 `starter_…` 代，真实关闭且文件读者结束后删除。产物不符合已登记摘要时报告异常。重启按发布日志和来源核对实际提交结果；无法确认时报告恢复错误，不凭脚本退出码推断成功。
 
 当前构建并发、队列、超时和日志预算都是**内部测试参数**：全局一个执行、等待队列 8、构建总预算 600 秒；单任务日志保留开头 2 MB 与末尾 8 MB，分页最多 64 KB，遗漏范围通过 `gaps`／`truncated` 明示。任务和旧代资源暂不按天数或数量自动删除。这些数值未冻结为正式产品默认值。
 

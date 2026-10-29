@@ -488,15 +488,15 @@ queued → running → succeeded
 
 任务记录包含 `taskId`、`projectId`、`type`、`status`、`final`、`phase`、`result`、`error`。当前 `type` 为 `build`，`final` 从终态派生；`phase` 依次可为 `queued`、`environment`、`input-digest`、`dependencies`、`build`、`artifact-validation`、`publish`、`completed`。失败保留发生时的阶段，查询失败任务仍是一次成功的管理读取，调用方必须检查 `status` 与 `final`。
 
-成功结果包含 `buildId`、`logPath`、干净 `url`、实际 `node`／`npm` 路径和版本、`digestRuleVersion`、`inputDigest`、`artifactDigest`、可选 `sdkVersion`、`completedAt`（Unix 毫秒）。启动时若发现产物已经提交但任务还未落终态，任务记为 `interrupted`，以 `result.recovered: true`、`operationOutcome: committed` 和错误详情说明已核实的提交；不自动重跑，不把异常退出伪装成完整验证成功。
+成功结果包含 `buildId`、干净 `url`、实际 `node`／`npm` 路径和版本、`digestRuleVersion`、`inputDigest`、`artifactDigest`、可选 `sdkVersion`、`completedAt`（Unix 毫秒）与 `artifactCleanup`。后者包含旧代收尾的 `cleanupPending`、`remainingPaths`、`issues`、`removedPaths`；清理失败时保留发布成功并显示残留位置。启动时若发现产物已经提交但任务还未落终态，任务记为 `interrupted`，以 `result.recovered: true`、`operationOutcome: committed` 和错误详情说明已核实的提交；不自动重跑，不把异常退出伪装成完整验证成功。
 
-日志结果为 `{ taskId, cursor, nextCursor, text, truncated, gaps, eof }`；游标是字节位置，`gaps` 的每项含 `from`、`to`。CLI 的 `--cursor` 对应 HTTP 的 `offset` 参数。缺省从 0 读取，继续使用 `nextCursor`；`eof` 只在任务结束且已读到保存日志尾部时为真。日志使用有标记的首尾保留，不能把中间被省略当作完整日志。
+独立构建／npm 日志读取已退役；失败读取同一任务 `error.details.processDiagnostics` 的有界诊断，不猜测旧任务不存在的原输出，也不另建长期日志历史。
 
 `buildInfo` 为 `{ sourceState, checkedAt, stale, reason, provenance? }`；`checkedAt` 为 Unix 毫秒。来源 `provenance` 包含 `schemaVersion: 1`、`buildId`、`taskId`、`completedAt`、`digestRuleVersion`、`inputDigest`、`artifactDigest`、`node`、`npm`、可选 `sdkVersion` 和 `entryRelative`。它保存在工作区 `.platform/project-state/builds/{projectId}.json`，发布日志负责异常切换核对；不依赖任务日志长期保留。
 
-网页从项目 `.platform/artifacts/{buildId}/dist/` 读取不可变代资源，当前 `dist/` 保留完整产物副本。入口注入对应代资源基址；构建成功发送 `project.updated`，用户明确重载后使用新入口。M1 旧项目不自动补写模板、SDK 或 README；旧产物缺少来源标为 `unknown`，并不因此禁止打开。
+网页从项目 `.platform/artifacts/{buildId}/dist/` 读取当前或仍占用的不可变代，当前 `dist/` 保留发布输出。原生 ticket、窗口和实际文件生产者持有各自占用，入口注入对应代资源基址；构建成功发送 `project.updated`，用户明确重载后使用新入口。缺少来源但可读的现役输出在原生打开时取得有生命周期的 `view_…` 快照，不补写作者模板、SDK 或 README，不建立用户版本历史。
 
-构建是具有本机用户权限的普通代码执行，不能作为不可信脚本沙盒。项目必须遵守临时输出契约，禁止修改业务数据和启动后台或脱离进程组的子进程；平台结束普通构建进程组。当前全局并发、等待队列、超时和日志预算是内部测试参数，见[开发说明](development.md)。各代产物、任务及发布现场暂不按期限自动删除；正式保留规则仍待确认。
+构建是具有本机用户权限的普通代码执行，不能作为不可信脚本沙盒。项目必须遵守临时输出契约，禁止修改业务数据和启动后台或脱离进程组的子进程；平台结束普通构建进程组。当前全局并发、等待队列、超时和诊断预算是内部测试参数，见[开发说明](development.md)。2026-10-29 起按[网页代次契约](web-build-generation-retention.md)在恢复之后清理旧代和成功暂存；未确认写入和恢复资料仍受保护。
 
 ### 9.2 备份与维护任务（M3 已实现）
 

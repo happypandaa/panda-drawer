@@ -355,6 +355,9 @@ impl RuntimeShutdown {
             for state in resources.states.clone() {
                 resources.issues.extend(drain_managers(&state).await);
             }
+            resources
+                .issues
+                .extend(self.shared.project_cleanup.shutdown_artifacts().await);
             resources.stage = 3;
         }
         if resources.stage == 3 {

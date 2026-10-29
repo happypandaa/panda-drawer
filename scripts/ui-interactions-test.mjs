@@ -1397,6 +1397,38 @@ test('Automatic storage scans do not hide a failed build or replace the result o
   assert.match(dialog().querySelector('.project-last-task').textContent, /新网页已发布/);
 });
 
+test('A published build distinguishes pending artifact cleanup from publication failure', async () => {
+  await setup();
+  const artifactCleanup = { cleanupPending: true, remainingPaths: ['/disposable/project/.platform/artifacts/task_old'], issues: [{ code: 'CLEANUP_PENDING', message: 'Disposable old generation could not be removed' }] };
+  const base = { taskId: 'task_build_cleanup', type: 'build', projectId: 'prj_fixture', final: true, phase: 'completed' };
+  for (const task of [
+    { ...base, status: 'succeeded', error: null, result: { artifactCleanup } },
+    { ...base, status: 'failed', result: null, error: { code: 'COMMITTED_WRITE_UNCONFIRMED', message: 'Disposable publication acknowledgement failed', details: { operationOutcome: 'committed', artifactCleanup } } },
+  ]) {
+    await render(h(ProjectTask, { task }));
+    const note = document.querySelector('.artifact-cleanup-pending');
+    assert.ok(note); assert.equal(note.getAttribute('role'), 'status');
+    assert.match(note.textContent, /网页发布已提交.*旧构建收尾尚未完成/);
+    assert.match(note.textContent, /\/disposable\/project\/\.platform\/artifacts\/task_old/);
+    assert.match(note.textContent, /Disposable old generation could not be removed/);
+    if (task.status === 'succeeded') assert.match(document.querySelector('.build-task-heading').textContent, /构建 · 已完成/);
+    else assert.match(document.querySelector('.build-task').textContent, /Disposable publication acknowledgement failed/);
+  }
+});
+
+test('Completed artifact cleanup and precommit errors do not advertise pending published artifacts', async () => {
+  await setup();
+  const base = { taskId: 'task_build_clean', type: 'build', projectId: 'prj_fixture', final: true, phase: 'completed' };
+  for (const task of [
+    { ...base, status: 'succeeded', error: null, result: { artifactCleanup: { cleanupPending: false, removedPaths: ['/disposable/removed'] } } },
+    { ...base, status: 'failed', result: null, error: { code: 'BUILD_FAILED', message: 'Disposable precommit failure', details: { operationOutcome: 'not_committed', artifactCleanup: { cleanupPending: true, remainingPaths: ['/disposable/uncommitted'] } } } },
+  ]) {
+    await render(h(ProjectTask, { task }));
+    assert.equal(document.querySelector('.artifact-cleanup-pending'), null);
+    assert.doesNotMatch(document.querySelector('.build-task').textContent, /网页发布已提交|\/disposable\/removed|\/disposable\/uncommitted/);
+  }
+});
+
 test('Delete task results distinguish permanent deletion, partial deletion and no deletion', async () => {
   await setup();
   for (const [operationOutcome, expected, rejected] of [

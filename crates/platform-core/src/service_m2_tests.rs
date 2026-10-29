@@ -128,7 +128,7 @@ async fn generation_urls_pin_old_assets_and_nested_html_uses_its_own_directory()
     let project = super::tests::create(&service, "versioned page").await;
     let first = "task_11111111111111111111111111111111";
     let second = "task_22222222222222222222222222222222";
-    for (id, text) in [(first, "old"), (second, "new")] {
+    let prepare = |id: &str, text: &str| {
         let root = project
             .project_root
             .join(format!(".platform/artifacts/{id}/dist/pages"));
@@ -139,7 +139,7 @@ async fn generation_urls_pin_old_assets_and_nested_html_uses_its_own_directory()
         )
         .unwrap();
         std::fs::write(root.join("main.js"), text).unwrap();
-    }
+    };
     let publish = |build_id: &str| {
         let executable = ExecutableInfo {
             path: PathBuf::from("/test/node"),
@@ -167,7 +167,9 @@ async fn generation_urls_pin_old_assets_and_nested_html_uses_its_own_directory()
         )
         .unwrap();
     };
+    prepare(first, "old");
     publish(first);
+    let (native_launch, window_pin) = service.handle().launch_window(&project.id).await.unwrap();
     let cookie = super::tests::connect(&service, &client, &project.id).await;
     let base = format!("{}/p/{}/", service.info().base_url, project.id);
     let html = client
@@ -187,7 +189,28 @@ async fn generation_urls_pin_old_assets_and_nested_html_uses_its_own_directory()
         "{html}"
     );
     assert!(html.contains("platform-document-epoch"));
-    publish(second);
+    {
+        let access = service.handle().artifact_access();
+        let _publication = access.publication().unwrap();
+        prepare(second, "new");
+        publish(second);
+    }
+    // A native ticket must keep the exact generation selected before the new
+    // build, rather than silently opening the newer initial document.
+    let ticket = native_launch.launch_url.split("#ticket=").nth(1).unwrap();
+    let exchange = client
+        .post(format!("{}/_platform/session", service.info().base_url))
+        .header("origin", &service.info().base_url)
+        .json(&json!({"ticket":ticket}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(exchange.status(), StatusCode::OK);
+    let envelope: Value = exchange.json().await.unwrap();
+    assert_eq!(
+        envelope["data"]["url"],
+        format!("/p/{}/_builds/{first}/pages/index.HTML", project.id)
+    );
     let html = client
         .get(&base)
         .header("cookie", &cookie)
@@ -208,5 +231,90 @@ async fn generation_urls_pin_old_assets_and_nested_html_uses_its_own_directory()
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), text);
     }
+    drop(window_pin);
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_native_window_without_provenance_uses_its_owned_snapshot_and_diagnostic_tickets_stay_dynamic(
+) {
+    let (_temp, _paths, service, client) = super::tests::start().await;
+    let project = super::tests::create(&service, "Disposable unversioned native page").await;
+    let (launch, window) = service.handle().launch_window(&project.id).await.unwrap();
+    let view = window.as_ref().unwrap().build_id().to_owned();
+    let view_root = window
+        .as_ref()
+        .unwrap()
+        .root()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(view.starts_with("view_"));
+    std::fs::write(
+        project.project_root.join("dist/index.html"),
+        "<html><head></head><body>new live page</body></html>",
+    )
+    .unwrap();
+    std::fs::write(project.project_root.join("dist/app.js"), "new live script").unwrap();
+    let exchange = client
+        .post(format!("{}/_platform/session", service.info().base_url))
+        .header("origin", &service.info().base_url)
+        .json(&json!({"ticket":launch.launch_url.split("#ticket=").nth(1).unwrap()}))
+        .send()
+        .await
+        .unwrap();
+    let cookie = exchange.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let envelope: Value = exchange.json().await.unwrap();
+    let path = envelope["data"]["url"].as_str().unwrap();
+    assert_eq!(path, format!("/p/{}/_builds/{view}/index.html", project.id));
+    let html = client
+        .get(format!("{}{path}", service.info().base_url))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.contains(&format!("/_builds/{view}/")));
+    assert!(!html.contains("new live page"));
+    let script = client
+        .get(format!(
+            "{}/p/{}/_builds/{view}/app.js",
+            service.info().base_url,
+            project.id
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(script, "document.body.dataset.ready='true';");
+    let diagnostic = service.launch(&project.id).await.unwrap();
+    let exchange = client
+        .post(format!("{}/_platform/session", service.info().base_url))
+        .header("origin", &service.info().base_url)
+        .json(&json!({"ticket":diagnostic.launch_url.split("#ticket=").nth(1).unwrap()}))
+        .send()
+        .await
+        .unwrap();
+    let envelope: Value = exchange.json().await.unwrap();
+    assert_eq!(envelope["data"]["url"], format!("/p/{}/", project.id));
+    drop(window);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while view_root.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
     service.shutdown().await.unwrap();
 }

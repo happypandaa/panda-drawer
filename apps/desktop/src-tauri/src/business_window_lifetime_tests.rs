@@ -203,3 +203,106 @@ fn normal_close_latch_retries_failure_and_does_not_follow_a_replacement_window()
     );
     assert!(!replacement.destroyed());
 }
+
+struct ResourceDrop(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for ResourceDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[tokio::test]
+async fn window_resource_survives_close_unknown_creation_and_lost_waiter_until_destroyed() {
+    let windows = Arc::new(WindowLifetimes::default());
+    let admission = windows
+        .admit_project("web", "prj_disposable_build_pin")
+        .unwrap();
+    let receipt = windows
+        .reserve_project("project-build-pin", &admission)
+        .unwrap();
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    receipt
+        .hold_resource(ResourceDrop(dropped.clone()))
+        .unwrap();
+    assert!(receipt.begin_close());
+    receipt.failed();
+    let waiting = receipt.clone();
+    let waiter = tokio::spawn(async move { waiting.wait().await });
+    tokio::task::yield_now().await;
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    windows
+        .seal_project("web", "prj_disposable_build_pin")
+        .unwrap();
+    assert!(windows
+        .forget_project("web", "prj_disposable_build_pin")
+        .is_err());
+    assert_eq!(dropped.load(Ordering::Acquire), 0);
+    assert!(!receipt.destroyed());
+
+    windows.destroyed(&receipt, || {});
+    receipt.wait().await;
+    assert_eq!(dropped.load(Ordering::Acquire), 1);
+    windows.destroyed(&receipt, || {});
+    assert_eq!(dropped.load(Ordering::Acquire), 1);
+    windows
+        .forget_project("web", "prj_disposable_build_pin")
+        .unwrap();
+}
+
+#[test]
+fn an_old_destroyed_callback_releases_only_its_own_resource() {
+    let windows = WindowLifetimes::default();
+    let old = windows.reserve("project-build-pin").unwrap();
+    let old_dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    old.hold_resource(ResourceDrop(old_dropped.clone()))
+        .unwrap();
+    windows.destroyed(&old, || {});
+    assert_eq!(old_dropped.load(Ordering::Acquire), 1);
+    let fresh = windows.reserve("project-build-pin").unwrap();
+    let fresh_dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    fresh
+        .hold_resource(ResourceDrop(fresh_dropped.clone()))
+        .unwrap();
+
+    windows.destroyed(&old, || panic!("old callback mutated the replacement"));
+    assert_eq!(old_dropped.load(Ordering::Acquire), 1);
+    assert_eq!(fresh_dropped.load(Ordering::Acquire), 0);
+    assert!(!fresh.destroyed());
+    windows.destroyed(&fresh, || {});
+    assert_eq!(fresh_dropped.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn destroyed_releases_resources_after_unlocking_the_registry_and_rejects_late_attachment() {
+    struct RegistryDrop {
+        windows: std::sync::Weak<WindowLifetimes>,
+        unlocked: Arc<AtomicBool>,
+    }
+    impl Drop for RegistryDrop {
+        fn drop(&mut self) {
+            self.unlocked.store(
+                self.windows
+                    .upgrade()
+                    .is_some_and(|windows| windows.entries.try_lock().is_ok()),
+                Ordering::Release,
+            );
+        }
+    }
+    let windows = Arc::new(WindowLifetimes::default());
+    let receipt = windows.reserve("project-build-pin").unwrap();
+    let unlocked = Arc::new(AtomicBool::new(false));
+    receipt
+        .hold_resource(RegistryDrop {
+            windows: Arc::downgrade(&windows),
+            unlocked: unlocked.clone(),
+        })
+        .unwrap();
+    windows.destroyed(&receipt, || {});
+    assert!(unlocked.load(Ordering::Acquire));
+    let rejected = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    assert!(receipt
+        .hold_resource(ResourceDrop(rejected.clone()))
+        .is_err());
+    assert_eq!(rejected.load(Ordering::Acquire), 1);
+}

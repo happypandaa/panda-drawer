@@ -217,7 +217,7 @@ M0 已落实 `dev.localprojects.platform.m0` 开发身份，其设置、工作�
 
 管理界面已接入构建、阶段/日志、源码匹配状态、复制给 AI、明确重载与 Node 设置。SDK 提供 SQL/事务/schema、附件与通知，固定文档代次，不自动重试写入或刷新未保存表单。CLI 接入 `project build/handoff`、`task get/wait`、`env doctor` 及 `env node set/clear`；完整字段和当前可调用列表见[服务接口](local-service-and-ai-tools.md)。
 
-每代网页资源保存在项目 `.platform/artifacts/{buildId}/dist/`，当前 `dist/` 与工作区构建来源协调提交，入口按不可变代寻址。这是运行时资源保留，不是用户可选择的版本管理、Git 或备份。现阶段暂不自动删除旧代、任务及发布现场；正式保留期、配额、空间扫描和清理仍待后续落实。
+2026-10-29 的[网页构建代次契约](web-build-generation-retention.md)已落实本项：当前 `dist/` 与工作区来源协调提交，版本 URL 使用当前和真实窗口／文件读者仍占用的不可变代；成功收尾和启动发布恢复之后删除其余旧代与成功暂存。占用结束后自动清理，不作为用户可选择的 Git、备份或版本历史。未确认写入和恢复资料继续受保护；未新增任意路径清理能力。
 
 开发标识 `dev.localprojects.platform.m0`、固定工作区和管理身份不变；没有引入正式品牌或生产目录。M1 已有项目不会自动补写新模板、SDK、依赖锁或 README；无来源记录的完整旧网页显示 `unknown`，仍可使用。项目明确升级时再由 AI 修改并验证。
 

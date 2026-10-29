@@ -70,6 +70,8 @@ Node 后端使用 `APP_PORT=0`，本机代理也绑定动态端口。Cookie 不�
 
 ## 应用窗口尺寸
 
+2026-10-29 网页构建占用按[网页代次契约](web-build-generation-retention.md)执行：新建／重载窗口固定本次入口代，复用窗口不刷新草稿，只有真实 `Destroyed` 释放窗口占用；实际文件生产者另持短占用到读取结束。无来源现役网页使用固定控制根内有收据的短期 `view_…` 入口快照。迁移可撤销旧访问并排空读者，不能靠刷新或销毁草稿来冒充占用释放。
+
 作者可为业务应用声明初始窗口内容区的逻辑宽高。它适用于 project-v1 根部 `project.json` 的可选顶层 `window`，以及当前内部 Node 源码槽 `local-app.json` 的同名顶层字段；Rust 对 project-v1 的透传字段存放在 `manifest.extra.window`，清单 JSON 不另嵌套一个 `extra`。该配置不改变平台管理窗口自己的默认或最小尺寸，也不开放网页原生窗口权限；有效 Node 清单的变更按[单目录运行规则](node-single-directory.md)在下次真正启动时接受。
 
 清单中的可选片段如下，不是完整项目或应用清单：

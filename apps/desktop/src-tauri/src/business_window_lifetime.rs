@@ -17,9 +17,20 @@ pub(super) struct Receipt {
     destroyed: AtomicBool,
     creation_failed: AtomicBool,
     close_requested: AtomicBool,
+    resources: Mutex<Vec<Box<dyn Send + Sync>>>,
     changed: Notify,
 }
 impl Receipt {
+    /// Native creation transfers runtime resources here before asking the OS to
+    /// build a window. Unknown creation outcomes retain them with this receipt.
+    pub fn hold_resource(&self, resource: impl Send + Sync + 'static) -> Result<(), Issue> {
+        let mut resources = self.resources.lock().unwrap_or_else(|p| p.into_inner());
+        if self.destroyed() {
+            return Err(Issue::new("WINDOW_ALREADY_DESTROYED", false, false));
+        }
+        resources.push(Box::new(resource));
+        Ok(())
+    }
     pub fn begin_close(&self) -> bool {
         !self.destroyed()
             && self
@@ -235,6 +246,7 @@ impl WindowLifetimes {
             destroyed: AtomicBool::new(false),
             creation_failed: AtomicBool::new(false),
             close_requested: AtomicBool::new(false),
+            resources: Mutex::new(Vec::new()),
             changed: Notify::new(),
         });
         entries.insert(label.into(), receipt.clone());
@@ -264,14 +276,21 @@ impl WindowLifetimes {
             .is_some_and(|current| Arc::ptr_eq(current, receipt))
     }
     pub fn destroyed(&self, receipt: &Arc<Receipt>, on_current: impl FnOnce()) {
-        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-        if entries
-            .get(&receipt.label)
-            .is_some_and(|r| Arc::ptr_eq(r, receipt))
-        {
-            on_current();
-        }
-        receipt.destroyed.store(true, Ordering::Release);
+        let resources = {
+            let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+            if entries
+                .get(&receipt.label)
+                .is_some_and(|r| Arc::ptr_eq(r, receipt))
+            {
+                on_current();
+            }
+            let mut resources = receipt.resources.lock().unwrap_or_else(|p| p.into_inner());
+            receipt.destroyed.store(true, Ordering::Release);
+            std::mem::take(&mut *resources)
+        };
+        // Releasing a build pin can queue core cleanup. It must never run while
+        // the native receipt registry is locked or touch a replacement receipt.
+        drop(resources);
         receipt.changed.notify_waiters();
     }
 }

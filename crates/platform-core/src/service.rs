@@ -84,6 +84,7 @@ struct Ticket {
     project_id: String,
     epoch: String,
     expires: Instant,
+    artifact_url: Option<String>,
 }
 struct Session {
     project_id: String,
@@ -284,6 +285,16 @@ impl RuntimeHandle {
     }
     pub async fn launch(&self, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
         launch(&self.current(), id)
+    }
+    pub async fn launch_window(
+        &self,
+        id: &str,
+    ) -> std::result::Result<(LaunchInfo, Option<crate::build_artifacts::ArtifactLease>), ApiError>
+    {
+        launch_inner(&self.current(), id, true)
+    }
+    pub fn artifact_access(&self) -> crate::build_artifacts::ArtifactAccess {
+        self.current().builds.artifact_access()
     }
     pub fn info(&self) -> BootstrapInfo {
         self.current().info.clone()
@@ -1396,6 +1407,7 @@ fn make_state(
         .clone();
     cleanup.register_storage(&storage);
     cleanup.register_history(&history_cleanup);
+    cleanup.register_artifacts(&builds.artifact_access());
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
     let git_environment = crate::git_environment::GitEnvironmentManager::with_processes(
@@ -1794,6 +1806,13 @@ fn validate_entry_format(path: &str) -> std::result::Result<(), ApiError> {
     }
 }
 fn launch(state: &HttpState, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
+    launch_inner(state, id, false).map(|(info, _)| info)
+}
+fn launch_inner(
+    state: &HttpState,
+    id: &str,
+    window: bool,
+) -> std::result::Result<(LaunchInfo, Option<crate::build_artifacts::ArtifactLease>), ApiError> {
     if state.stopping.load(Ordering::SeqCst) {
         return Err(ApiError::new(
             "SERVICE_STOPPING",
@@ -1803,7 +1822,14 @@ fn launch(state: &HttpState, id: &str) -> std::result::Result<LaunchInfo, ApiErr
     let project = state.store.project(id)?;
     project.validate_epoch(Some(&project.document_epoch))?;
     validate_entry_format(&project.manifest.entry)?;
-    let (output_path, entry) = match builds::artifact_generation(&project)? {
+    let (generation, artifact_lease) = state.builds.artifact_access().current(&project, !window)?;
+    let artifact_url = generation.as_ref().filter(|_| window).map(|generation| {
+        format!(
+            "/p/{id}/_builds/{}/{}",
+            generation.build_id, generation.entry_relative
+        )
+    });
+    let (output_path, entry) = match generation {
         Some(generation) => (generation.root, generation.entry_relative),
         None => {
             let entry = project
@@ -1850,6 +1876,7 @@ fn launch(state: &HttpState, id: &str) -> std::result::Result<LaunchInfo, ApiErr
                     project_id: id.into(),
                     epoch: project.document_epoch.clone(),
                     expires: Instant::now() + Duration::from_secs(60),
+                    artifact_url,
                 },
             );
             Ok(())
@@ -1857,14 +1884,17 @@ fn launch(state: &HttpState, id: &str) -> std::result::Result<LaunchInfo, ApiErr
         .ok_or_else(|| {
             ApiError::new("PROJECT_REMOVED", "The launch project is no longer active")
         })?;
-    Ok(LaunchInfo {
-        project_id: id.into(),
-        url: format!("{}/p/{id}/", state.info.base_url),
-        launch_url: format!("{}/_platform/connect#ticket={ticket}", state.info.base_url),
-        expires_at: millis() + 60000,
-        instance_id: state.info.instance_id.clone(),
-        document_epoch: project.document_epoch,
-    })
+    Ok((
+        LaunchInfo {
+            project_id: id.into(),
+            url: format!("{}/p/{id}/", state.info.base_url),
+            launch_url: format!("{}/_platform/connect#ticket={ticket}", state.info.base_url),
+            expires_at: millis() + 60000,
+            instance_id: state.info.instance_id.clone(),
+            document_epoch: project.document_epoch,
+        },
+        if window { artifact_lease } else { None },
+    ))
 }
 async fn bind_loopback(preferred: Option<u16>) -> Result<TcpListener> {
     if let Some(port) = preferred {
@@ -2788,17 +2818,14 @@ async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Resp
                     "The launch project identity is no longer active",
                 )
             })?;
-        Ok((ticket.project_id, token))
+        Ok((ticket.project_id, token, ticket.artifact_url))
     }
     .await;
     match outcome {
         Err(error) => result::<Value>(Err(error), None, &rid),
-        Ok((id, token)) => {
-            let mut response = result(
-                Ok(json!({"projectId":id,"url":format!("/p/{id}/")})),
-                Some(&id),
-                &rid,
-            );
+        Ok((id, token, artifact_url)) => {
+            let path = artifact_url.unwrap_or_else(|| format!("/p/{id}/"));
+            let mut response = result(Ok(json!({"projectId":id,"url":path})), Some(&id), &rid);
             response.headers_mut().insert(
                 header::SET_COOKIE,
                 format!(
@@ -2924,29 +2951,28 @@ async fn serve_project(
             .strip_prefix(&format!("{}/", project.manifest.output_dir))
             .ok_or_else(|| ApiError::new("INVALID_PROJECT", "Entry is outside output directory"))?;
         validate_entry_format(entry)?;
-        let generation = builds::artifact_generation(&project)?;
-        let (root_path, relative, base) =
+        let artifacts = state.builds.artifact_access();
+        let (root_path, relative, base, artifact_lease) =
             if let Some(versioned) = path.as_deref().and_then(|p| p.strip_prefix("_builds/")) {
                 let (build_id, relative) = versioned
                     .split_once('/')
                     .ok_or_else(|| ApiError::new("INVALID_BUILD_ID", "Missing artifact path"))?;
+                let pin = artifacts.reader(&project, build_id)?;
                 (
-                    builds::version_root(&project, build_id)?,
+                    pin.root().to_path_buf(),
                     relative.to_owned(),
                     Some(format!("/p/{id}/_builds/{build_id}/")),
-                )
-            } else if let Some(generation) = generation {
-                (
-                    generation.root,
-                    path.unwrap_or(generation.entry_relative),
-                    Some(format!("/p/{id}/_builds/{}/", generation.build_id)),
+                    Some(pin),
                 )
             } else {
-                (
-                    project.root.join(&project.manifest.output_dir),
-                    path.unwrap_or_else(|| entry.to_owned()),
-                    None,
-                )
+                let (generation, pin) = artifacts.current(&project, true)?;
+                if let Some(generation) = generation {
+                    (generation.root, path.unwrap_or(generation.entry_relative),
+                        Some(format!("/p/{id}/_builds/{}/", generation.build_id)), pin)
+                } else {
+                    (project.root.join(&project.manifest.output_dir),
+                        path.unwrap_or_else(|| entry.to_owned()), None, pin)
+                }
             };
         let path = relative.as_str();
         let root = files::root(&root_path)?;
@@ -3010,7 +3036,7 @@ async fn serve_project(
             html.insert_str(position, &meta);
             ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
         } else {
-            stream_file(file, path, &headers, false, lease, &state.io_lifetime).await?
+            stream_file(file, path, &headers, false, lease, artifact_lease, &state.io_lifetime).await?
         };
         // Apply the same restrictions to every resource, including SVG/XHTML
         // opened as a top-level document. MIME, not extension spelling, decides
@@ -3034,6 +3060,7 @@ async fn stream_file(
     headers: &HeaderMap,
     attachment: bool,
     lease: tokio::sync::OwnedRwLockReadGuard<()>,
+    artifact_lease: Option<crate::build_artifacts::ArtifactLease>,
     lifetime: &crate::io_lifetime::IoLifetime,
 ) -> std::result::Result<Response, ApiError> {
     let size = file.metadata().map_err(files::error)?.len();
@@ -3090,6 +3117,7 @@ async fn stream_file(
     let work = io_lease.hold(move || {
         use std::io::{Read, Seek};
         let _project_lease = lease;
+        let _artifact_lease = artifact_lease;
         let mut file = file;
         let result = (|| -> std::io::Result<()> {
             file.seek(std::io::SeekFrom::Start(start))?;
@@ -3185,6 +3213,7 @@ async fn read_attachment(
         headers,
         true,
         lease,
+        None,
         &state.io_lifetime,
     )
     .await
@@ -3772,6 +3801,7 @@ mod tests {
                             project_id: admitted_id.clone(),
                             epoch: admitted_epoch.clone(),
                             expires: Instant::now() + Duration::from_secs(60),
+                            artifact_url: None,
                         },
                     );
                     admitted.sessions.lock().unwrap().insert(

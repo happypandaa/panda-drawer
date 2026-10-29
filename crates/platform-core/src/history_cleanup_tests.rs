@@ -786,3 +786,32 @@ fn owned_dependency_removal_is_log_free_and_does_not_read_payload_contents() {
     assert!(!root.exists());
     assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn permanent_removal_never_adopts_a_replacement_after_binding_the_original_descriptor() {
+    let temporary = tempfile::Builder::new()
+        .prefix("disposable-bound-delete-")
+        .tempdir()
+        .unwrap();
+    let base = temporary.path().canonicalize().unwrap();
+    let root = base.join("owned");
+    let moved = base.join("preserved-original");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("original.txt"), "original project material").unwrap();
+    let expected = PersistedIdentity::capture(&root).unwrap();
+    let result = remove_owned_directory_bound(&root, &expected, || {
+        fs::rename(&root, &moved)?;
+        fs::create_dir(&root)?;
+        fs::write(root.join("replacement.txt"), "must survive")?;
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read_to_string(root.join("replacement.txt")).unwrap(),
+        "must survive"
+    );
+    assert_eq!(
+        fs::read_to_string(moved.join("original.txt")).unwrap(),
+        "original project material"
+    );
+}
