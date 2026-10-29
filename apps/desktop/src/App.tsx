@@ -28,6 +28,7 @@ import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
 import { ImportPanel } from './ArchiveImportPanel';
 import { SourceRecoveryNotice } from './SourceRecoveryNotice';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
+import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 import { matchingProjectTask, recoverBuildResult } from './build-result-state';
@@ -735,6 +736,7 @@ function App() {
         <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
         <div className="radio-toolbar-spacer" />
         <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'rotating' : undefined} /></button>
+        <PlatformAiIntroButton platformVersion={info?.version} className="text-button platform-ai-intro-button" label="平台说明给 AI" />
         {addActions('radio-add-actions')}
       </div>}
       <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
@@ -761,7 +763,7 @@ function App() {
               {disposableCount > 0 && showDisposable && <>{disposableProjects.map(renderProjectCard)}{disposableNodeApps.map(renderNodeCard)}</>}
             </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
-              <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && addActions('empty-add-actions')}</div>
+              <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && addActions('empty-add-actions')}{info && <p className="platform-ai-intro-hint">准备自己做一个新项目，或想先问问能不能接入？<PlatformAiIntroButton platformVersion={info.version} /></p>}</div>
             </section>}
           </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={availableNodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
       </main>

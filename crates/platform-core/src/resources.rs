@@ -205,16 +205,16 @@ Resource limits exposed by this development runtime are internal test parameters
         } else {
             None
         };
-        let constraints_note = constraints
+        let constraints_line = constraints
             .as_ref()
             .map(|path| {
                 format!(
-                    "还必须阅读当前安装随附的最新应用窗口约束（项目自带 skill 保持原样）：{}\n若旧 skill 仍推荐默认另开浏览器，按这份当前平台约束补充执行；不要覆盖旧项目 skill、SDK 或文档。",
+                    "应用窗口约束（当前安装随附，项目自带 skill 与它不一致时以它为准）：{}",
                     path.display()
                 )
             })
             .unwrap_or_else(|| {
-                "当前安装缺少可核对的应用窗口约束资源；请修复平台安装资源，不要引用不存在的路径或改写旧项目文件。下述窗口约束仍须遵守。".into()
+                "当前安装缺少可核对的应用窗口约束资源；请按下面“遵守窗口约束”一条执行，不要引用不存在的路径或改写旧项目文件。".into()
             });
         let generated = root.join(".platform/handoff.md");
         let generated = if check_no_symlinks(&generated, false).is_ok() && generated.is_file() {
@@ -222,73 +222,58 @@ Resource limits exposed by this development runtime are internal test parameters
         } else {
             None
         };
-        let generated_note = generated
+        let generated_line = generated
             .as_ref()
             .map(|path| {
                 format!(
-                    "\n此项目还有平台管理的接管记录，请先阅读其当前路径：{}\n其中可能记录复制、导入或迁移后的项目身份；不要继续编辑保留的旧目录。\n",
+                    "   此项目还有平台管理的接管记录，也请阅读：{}。其中可能记录复制、导入或迁移后的项目身份；不要继续编辑保留的旧目录。\n",
                     path.display()
                 )
             })
             .unwrap_or_default();
+        let installation_skill = self.root.join("skills/local-projects-app/SKILL.md");
         let cli = shell_quote(&self.cli_path.to_string_lossy());
         let project_id = shell_quote(id);
+        use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS};
         let text = format!(
-            r#"请接手以下业务应用，并根据我接下来提供的需求继续开发。
+            r#"请先阅读并理解这个网页应用，暂时不要修改任何文件。
 
-熊猫小抽屉（开发版）是 macOS 上的本地业务应用平台。它管理各个项目的源码、独立 SQLite 数据库、附件、运行入口、构建发布和 Git 版本；旧备份与维护仅保留兼容处理。你要开发的是下面的业务项目；平台会把发布后的网页显示在唯一原生应用窗口中，用户应当能在 AI 离线时继续使用。
+项目 ID：{id}
+项目文件夹：{project_root}
+平台 CLI：{cli_path}
 
-业务项目 ID：{id}
-业务项目根目录：{project_root}
-当前平台 CLI：{cli_path}
+请按顺序阅读：
+1. 接管 skill（{skill_source}）：{skill_path}
+2. {constraints_line}
+{generated_line}3. 项目清单：{manifest_path}，以及其中 docs 声明的 README、数据库说明和平台集成说明。默认位置是 {readme_path}、{database_docs}、{platform_docs}；若清单声明不同，请读取实际声明的文件。
+skill 和文档里如果出现旧路径或已退役的入口，以这里的实际路径和当前 CLI 帮助为准；不要改写旧项目自带的 skill、SDK 和文档。
 
-先读取当前接管 skill（{skill_source}）：{skill_path}
-{constraints_note}
-{generated_note}
-然后读取项目清单：{manifest_path}
-根据清单中的 docs 声明完整阅读 README、数据库和平台集成说明，了解业务目的、现有功能、数据结构和平台约束。以下是默认模板的文档路径；若清单声明不同，请读取实际声明的文件：
-- 默认 README：{readme_path}
-- 默认数据库说明：{database_docs}
-- 默认平台集成说明：{platform_docs}
-业务文档和 skill 的 PROJECT_ROOT 指上述业务项目根目录；skill 的 references/ 等资源链接相对该 skill 所在目录解析。当前目录、安装约束和 CLI 以上述实际路径为准；不要沿用旧 README 中已经失效的安装或迁移前路径。
+读完后用通俗易懂的中文告诉我：
+1. 这个应用是做什么的，主要有哪些功能
+2. 代码和数据大致怎么组织：源码、发布目录、数据库主要表、附件
+3. 你注意到的问题或风险
+然后等我提出具体需求，再开始修改。
 
-AI 接手时，请确认当前工作目录正是上述业务项目根目录。复制交接说明后，由用户补充需求并自行发送。若 CLI 报本机连接受限或服务不可达，先核对平台是否运行及本会话对本机服务的访问权限；不要据此删除连接记录、重建项目、直接打开 SQLite 或绕过工具权限。不能访问时保留已完成的源码修改，给出待执行的公开 CLI 请求与未验事项，由用户在允许访问的平台会话中继续。
+—— 之后修改时请遵守 ——
+- 确认当前工作目录就是上面的项目文件夹。
+- 只修改业务源码和项目文档；不修改平台源码、平台管理的 .platform/ 和 SDK（@local-projects/sdk 0.1.0），不手工覆盖发布目录，不另起后端或 Vite 开发服务。{SECRETS}
+- 数据库只通过平台 CLI 的 db 命令和事务修改，不直接写入或替换 SQLite 文件。
+- {GIT_SAVE}
+- {DATA_CONSENT}不要为了修复构建或刷新页面而清空数据、附件或未保存草稿。
+- 遵守窗口约束：每个应用只有一个窗口，重复打开只聚焦已有窗口；不弹新窗口，不用 window.open、target=_blank 或外部浏览器，不用 alert、confirm、prompt。
+- 只有我明确要求取回数据库或附件的旧版本时，才按平台随附 skill（{installation_skill}）中“数据库与附件的 Git 取回”一节操作。
+- 改完后用平台构建，检查任务的最终结果，并在应用窗口里验证。CLI 连不上时，保留已改的代码，告诉我还差哪一步，不要绕过权限或直接改数据库文件。
+- 完成后告诉我改了什么、数据库是否有变化、构建结果、实际验证了什么，并同步更新项目说明。
 
-平台应用窗口约束：每个应用实例最多一个原生窗口，重复打开只聚焦已有窗口，不重载或丢弃草稿；不得弹出新窗口、调用 window.open/target=_blank、另建 WebView 或转外部浏览器作为运行方式。业务确认与表单留在当前窗口内，不用脚本 alert/confirm/prompt。网页类型不启动自己的 Node；Node 类型由平台在打开应用时后台启动唯一后端，关闭应用窗口就停止，启动中的重复打开复用同一次任务。保存配置不启动或重启，明确重启或关窗后再打开才使用新配置。此交接仍针对已有 project-v1，不把独立 Node 源码槽的能力套入其安装、数据或迁移生命周期。
-
-当前 Node 秘密保存按用户最新选择：每个应用自己的本机受管槽 configuration/credentials/ 私有文件，目录0700、文件0600，是当前用户文件权限保护的明文，不是 macOS Keychain 或系统加密库。该槽与作者源码、分享包和 Git 分开；AI 不读取或复制秘密文件，不读删旧 Keychain 条目，不把秘密写进交接、日志或源码。配置入口负责保存并仅向目标 Node 创建环境注入；本条不为当前静态 project-v1 增加秘密接口。
-
-Git 工具可通过当前 CLI 的 env git doctor --json 诊断，Mac 内部包默认配套私有 Git；已有显式选择优先，失效不偷偷换来源。env git set --path /绝对路径/git 与 env git clear 仅修改本平台选择，后者明确恢复默认。系统 SSH 只检查工具版本，认证仍未验证；源码保存、分支和取回能力以当前 CLI 帮助及 project git status 为准；明确核对是否包含数据，不能把仅源码提交当数据版本。应用日常运行不依赖 Git／SSH。不要为工具诊断读取私钥、修改全局 Git 或初始化项目仓库。
-
-需要检查指定公开仓库时，明确使用 env git check --url https://github.com/owner/repository.git --json，也支持标准 Gitee HTTPS 仓库地址。它在20秒执行预算内匿名读取远端HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果只适用于该地址和本次检查时间；未返回HEAD不表示空仓库，也不改变doctor的认证未验证状态。不要把该检查加入普通离线工具诊断，不把它当作SSH／私有仓库认证或完整获取流程。
-
-实际获取公开源码须明确使用 source acquire --url 标准HTTPS仓库地址 --json，再用 task wait 核对最终任务，source list/get 查看来源版本和保留目录。source inspect --path /绝对路径 --json 只检查本机声明；source cancel --task TASK_ID --json 请求取消后仍须等待最终状态。获取不会安装或执行代码，失败/中断现场保留、重试另建目录；不要将源码候选当已登记应用或用其来源ID调用项目数据库。当前完整安装和私有仓库认证尚未开放。
-
-源码、发布产物、数据库、附件和文档的位置分别以 project.json 中的 sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准；app/、dist/、data/main.sqlite 和 data/attachments/ 仅为默认模板示例。修改前先用 Git 保存当前版本，保留已有未提交改动；用户要求回退时，用 Git 恢复到之前的版本。先理解现有实现，再按我的需求修改业务源码，并同步项目说明和清单声明的数据库文档。使用项目固定的 @local-projects/sdk 0.1.0；不要改写或替换 SDK，不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录，也不要另起后端或 Vite 开发服务。
-
-使用当前平台 CLI 检查环境、项目和数据库，再通过平台管理的 SQL/事务与构建流程完成修改，例如：
-
+常用命令：
 ```sh
-{cli} service status --json
 {cli} project info --project {project_id} --json
 {cli} db schema --project {project_id} --json
 {cli} db execute --project {project_id} --input request.json --json
-{cli} db transaction --project {project_id} --input transaction.json --json
 {cli} project build --project {project_id} --json
 # 使用返回的 taskId；若 waitTimedOut 为 true，继续等待，不代表失败或取消。
 {cli} task wait --task TASK_ID --json
-{cli} project url --project {project_id} --json
 ```
-
-平台已移除任务日志查询、Git 初始化／保存源码或数据版本／创建分支写入口和程序退回按钮。源码版本由外部 AI 使用作者仓库的标准 Git 管理；平台构建、发布、安装和明确更新继续提供。旧项目自带说明若推荐这些已退役入口，以本次安装版交接说明和 CLI 帮助为准，不覆盖作者文档。
-
-SQL 输入格式以当前 CLI 帮助为准；不要直接写入或替换运行中的 SQLite 文件或 WAL/SHM。修改前由外部 AI 使用作者仓库的标准 Git 核对改动并保存源码版本，确认保存范围是否包括数据；Git 不可用时如实说明，不生成替代 ZIP。普通源码、SQL 和候选构建不要求新维护基线；优先采用兼容的数据事务，由平台的具体操作负责必要停写与失败保留。新的 backup create 和 maintenance begin 已退役，会返回 BACKUP_WORKFLOW_RETIRED；旧项目自带 skill 若仍要求创建 ZIP 或进入新维护，以本段当前规则为准，不覆盖旧文档。已有旧维护或恢复现场先查询 maintenance status，保留 maintenanceId、readyForChanges、待构建要求和原现场，只在检查通过后显式 maintenance end；recoveryRequired 时不得强行结束或重试新建基线。
-
-project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库和附件；源码取回与数据取回是两项独立操作。只有用户明确要求取回数据时才使用 project git data-restore-preview 并核对当前 CLI 的全部新鲜绑定，再明确提交 data-restore；预览不自动执行。先查 project git data-recovery；pending 或 blocked 时保留原件、日志和候选，仅按核实后的允许方向继续或撤回同一操作，不删除现场、不重新登记、不直接替换 SQLite。not_committed 也可能已有部分文件移动，不能据此说数据未变。完成后页面代次已更新，先处理草稿再从平台明确重新打开。任意 Node 应用自己的数据库不适用这一流程。
-
-保留现有用户数据、附件、备份和未保存草稿；不要为了修复构建或刷新页面清空数据。检查异步任务的最终状态与日志，在平台原生应用窗口验证发布结果、重复打开聚焦、关闭重开与数据保留；短期 launchUrl 的 HTTP/浏览器诊断只作补充，不能代替原生窗口验收。平台重启或工作区迁移后重新获取项目路径与入口，不要保存端口、令牌、票据、Cookie 或其他密钥。未知写入结果不要自动重放，刷新或重载前先处理草稿。
-
-完成后报告实际修改、数据库/schema 变化、构建任务结果、实际验证和已知限制；没有执行的验证请明确说明，并把这些信息写回项目说明。
 "#,
             project_root = root.display(),
             cli_path = self.cli_path.display(),
@@ -298,6 +283,7 @@ project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库
                 "本机安装随附，旧项目文件保持原样"
             },
             skill_path = skill.display(),
+            installation_skill = installation_skill.display(),
             readme_path = readme.display(),
             manifest_path = root.join("project.json").display(),
             database_docs = root.join("docs/database.md").display(),
@@ -394,6 +380,7 @@ mod tests {
         let root = paths.data_root().join("App's installation resources");
         let cli = installation(&root);
         let constraints = root.join(WINDOW_CONSTRAINTS_RESOURCE);
+        let installation_skill = root.join("skills/local-projects-app/SKILL.md");
         let resources = ProjectResources::new(root, cli.clone()).unwrap();
         let project_root = paths.workspace_root().join("业务 项目's directory");
         let skill = project_root.join(".agents/skills/local-projects-app/SKILL.md");
@@ -430,29 +417,24 @@ mod tests {
         assert!(constraints.is_file());
         let text = handoff["text"].as_str().unwrap();
         for expected in [
-            "熊猫小抽屉（开发版）是 macOS 上的本地业务应用平台",
-            "独立 SQLite 数据库",
-            "业务项目 ID：prj_current",
-            "先读取当前接管 skill（项目自带）",
+            "请先阅读并理解这个网页应用，暂时不要修改任何文件。",
+            "项目 ID：prj_current",
+            "接管 skill（项目自带）",
             "平台管理的接管记录",
-            "sourceDir、outputDir、database、attachmentsDir 和 docs 声明为准",
-            "仅为默认模板示例",
             "若清单声明不同，请读取实际声明的文件",
-            "不要修改平台源码、平台管理的 .platform/ 或手工覆盖 outputDir 声明的发布目录",
-            "@local-projects/sdk 0.1.0",
+            "等我提出具体需求，再开始修改",
+            "不修改平台源码、平台管理的 .platform/ 和 SDK（@local-projects/sdk 0.1.0），不手工覆盖发布目录",
             "未保存草稿",
-            "readyForChanges",
-            "检查异步任务的最终状态与日志",
-            "不要直接写入或替换运行中的 SQLite 文件",
-            "还必须阅读当前安装随附的最新应用窗口约束",
-            "每个应用实例最多一个原生窗口",
-            "重复打开只聚焦已有窗口",
-            "打开应用时后台启动唯一后端，关闭应用窗口就停止",
-            "不得弹出新窗口",
-            "不能代替原生窗口验收",
-            "configuration/credentials/ 私有文件，目录0700、文件0600",
-            "当前用户文件权限保护的明文",
-            "不是 macOS Keychain 或系统加密库",
+            "检查任务的最终结果",
+            "不直接写入或替换 SQLite 文件",
+            "当前安装随附，项目自带 skill 与它不一致时以它为准",
+            "每个应用只有一个窗口，重复打开只聚焦已有窗口",
+            "不弹新窗口",
+            "在应用窗口里验证",
+            "数据库与附件的 Git 取回",
+            crate::ai_prompt_rules::GIT_SAVE,
+            crate::ai_prompt_rules::DATA_CONSENT,
+            crate::ai_prompt_rules::SECRETS,
         ] {
             assert!(
                 text.contains(expected),
@@ -476,12 +458,26 @@ mod tests {
             "{quoted_cli} project build --project 'prj_current' --json"
         )));
         assert!(text.contains(&format!(
-            "{quoted_cli} project url --project 'prj_current' --json"
+            "{quoted_cli} db schema --project 'prj_current' --json"
         )));
+        assert!(text.contains(installation_skill.to_string_lossy().as_ref()));
         assert!(!text.contains("private-fixture-value"));
-        assert!(!text.contains("Codex"));
-        assert!(text.contains("修改前先用 Git 保存当前版本"));
-        assert!(text.contains("用户要求回退时，用 Git 恢复到之前的版本"));
+        for retired in [
+            "Codex",
+            "继续开发",
+            "普通话",
+            "source acquire",
+            "env git doctor",
+            "env git check",
+            "configuration/credentials",
+            "BACKUP_WORKFLOW_RETIRED",
+            "data-restore-preview",
+        ] {
+            assert!(
+                !text.contains(retired),
+                "Retired handoff wording: {retired}"
+            );
+        }
         assert_eq!(fs::read(project_root.join("README.md")).unwrap(), readme);
         assert_eq!(fs::read_to_string(skill).unwrap(), "Existing project skill");
         assert_eq!(
@@ -540,7 +536,7 @@ mod tests {
         let text = handoff["text"].as_str().unwrap();
         assert!(text.contains("当前安装缺少可核对的应用窗口约束资源"));
         assert!(!text.contains(constraint.to_string_lossy().as_ref()));
-        assert!(text.contains("每个应用实例最多一个原生窗口"));
+        assert!(text.contains("每个应用只有一个窗口"));
     }
     #[cfg(unix)]
     #[test]

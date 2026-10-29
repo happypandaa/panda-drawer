@@ -36,11 +36,12 @@ for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputEleme
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-const { createElement: h, act } = await import('react');
+const { createElement: h, act, StrictMode } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { AiProjectHelp } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/AiProjectHelp.tsx'))).href);
+const { PlatformAiIntroButton } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/PlatformAiIntroButton.tsx'))).href);
 const { buildProjectAiPrompt, checkedProjectReviewExcerpt, MAX_REVIEW_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-help.ts'))).href);
-const { PROJECT_AI_REQUIREMENTS } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
+const { PROJECT_AI_REQUIREMENTS, PROJECT_AI_NODE_PROTOCOL } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; });
@@ -75,7 +76,8 @@ test('A Git failure prompt preserves source identity and delivery while removing
   assert.match(prompt, /https:\/\/github.com\/disposable\/artificial\.git/);
   assert.match(prompt, /disposable-test/); assert.match(prompt, /缺少应用声明/);
   assert.match(prompt, /不假设失败下载文件仍存在/); assert.match(prompt, /添加本地项目/);
-  assert.match(prompt, /删除或清空应用数据.*取得用户明确同意/);
+  assert.match(prompt, /删除或清空应用数据.*取得我明确同意/);
+  assert.match(prompt, /通俗易懂的中文/); assert.doesNotMatch(prompt, /普通话/);
   assert.doesNotMatch(prompt, /synthetic-key-never-use|synthetic-control-token|synthetic-json-password|synthetic-cookie-one|synthetic-cookie-two/);
 });
 
@@ -101,12 +103,19 @@ test('Update and external-start requests use the matching next action without pe
   const update = buildProjectAiPrompt({ mode: 'update-failed', sourceKind: 'managed', sourcePath: '/disposable/author' });
   const external = buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local', sourcePath: '/disposable/author' });
   assert.match(update, /不要直接编辑平台准备的运行程序/); assert.match(update, /应用修改/); assert.doesNotMatch(update, /构建并更新|Codex/);
-  assert.match(external, /保留已有未提交改动/); assert.match(external, /提醒用户重新打开应用/);
+  assert.match(update, /^我在“熊猫小抽屉”里的这个应用“应用修改”没有成功，请帮我找原因并修好/);
+  assert.match(external, /^我在“熊猫小抽屉”里的这个应用启动失败了，请帮我找原因并修好/);
+  assert.match(external, /保留已有未提交改动/); assert.match(external, /提醒我重新打开应用/);
+  for (const prompt of [update, external]) {
+    assert.match(prompt, /等我同意再修改/);
+    assert.ok(prompt.includes(PROJECT_AI_NODE_PROTOCOL));
+    assert.doesNotMatch(prompt, /【先回答】|A\. 一句话结论|【平台要求：|普通话/);
+  }
 });
 
 test('Runtime problem prompts include real log paths, Git recovery and the stdout protocol limit', () => {
   const prompt = buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local', sourcePath: '/disposable/author', runtimeLogPaths: { current: '/disposable/control/logs/current.log', previous: '/disposable/control/logs/previous.log' } });
-  for (const expected of ['/disposable/control/logs/current.log', '/disposable/control/logs/previous.log', '修改前先用 Git 保存当前版本', '用户要求回退时，用 Git 恢复到之前的版本', 'stdout 只能输出平台控制协议消息', 'console.error', '协议错误并终止应用']) assert.ok(prompt.includes(expected), expected);
+  for (const expected of ['/disposable/control/logs/current.log', '/disposable/control/logs/previous.log', '修改前先用 Git 保存当前版本', '我要求回退时，用 Git 恢复到之前的版本', 'stdout 只能输出平台控制协议消息', 'console.error', '协议错误并终止应用']) assert.ok(prompt.includes(expected), expected);
   assert.doesNotMatch(prompt, /Codex|构建并更新/);
 });
 
@@ -154,6 +163,25 @@ test('Web mode reads bounded excerpts after selection and copies only user-selec
   assert.doesNotMatch(fixture.copies[0], /artificial-package-fragment/);
   assert.match(fixture.copies[0], /这是摘录，不是完整工程/);
 });
+
+for (const mode of ['start-failed', 'update-failed']) {
+  test(`${mode} keeps the selected public excerpts and web AI access limits`, async () => {
+    const excerpt = { sourcePath: '/disposable/author', totalBytes: 90, truncated: true, files: [{ path: 'README.md', content: 'artificial-repair-readme' }, { path: 'package.json', content: 'artificial-repair-package' }] };
+    const fixture = await setup({ mode, sourceKind: mode === 'update-failed' ? 'managed' : 'local', sourcePath: excerpt.sourcePath }, { source_review_context: () => excerpt });
+    await click(button('复制说明给 AI'));
+    assert.equal(fixture.copies.length, 1);
+    await click(document.querySelectorAll('input[type=radio]')[1]);
+    await click(document.querySelectorAll('input[type=checkbox]')[1]);
+    await click(button('复制完整说明'));
+    const prompt = fixture.copies.at(-1);
+    assert.equal(fixture.copies.length, 2);
+    assert.match(prompt, /artificial-repair-readme/);
+    assert.doesNotMatch(prompt, /artificial-repair-package/);
+    assert.match(prompt, /材料受大小限制，部分内容未包含/);
+    assert.match(prompt, /网页聊天 AI，通常无法读取本机目录/);
+    assert.match(prompt, /不要求上传真实 \.env、密钥、数据库或整个项目/);
+  });
+}
 
 test('An unsafe native excerpt remains an error and is never included in copied prompt', async () => {
   const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/author' }, { source_review_context: () => ({ sourcePath: '/disposable/author', totalBytes: 20, truncated: false, files: [{ path: '.env', content: 'synthetic-secret-fragment' }] }) });
@@ -206,4 +234,54 @@ test('Clipboard failure retains a full selectable explanation without pretending
   assert.match(document.body.textContent, /人工剪贴板失败/);
   assert.ok(document.querySelector('textarea').value.includes('【平台要求：'));
   assert.deepEqual(fixture.copies, []);
+});
+
+test('The platform introduction carries no project and reuses the maintained requirements', async () => {
+  const { buildPlatformAiIntroPrompt } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/platform-ai-intro.ts'))).href);
+  const prompt = buildPlatformAiIntroPrompt('disposable-version');
+  assert.match(prompt, /^下面是“熊猫小抽屉”平台的介绍和接入要求/);
+  assert.match(prompt, /当前版本：disposable-version/);
+  assert.match(prompt, /在我说清需求之前，不要创建或修改任何文件/);
+  assert.match(prompt, /如果我要做新项目/); assert.match(prompt, /如果我已有项目/);
+  assert.ok(prompt.endsWith(PROJECT_AI_REQUIREMENTS));
+  const intro = prompt.slice(0, prompt.length - PROJECT_AI_REQUIREMENTS.length);
+  assert.doesNotMatch(intro, /普通话|继续开发|sourcePath|"request"|项目 ID|\/disposable\//);
+  assert.match(buildPlatformAiIntroPrompt(), /当前版本：未读取/);
+});
+
+async function setupStrictPlatformIntro(writeText) {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
+  await act(async () => root.render(h(StrictMode, null, h(PlatformAiIntroButton, { platformVersion: 'disposable-version' }))));
+}
+
+test('The platform introduction copies and becomes reusable after StrictMode effect replay', async () => {
+  const writing = deferred(); const copies = [];
+  await setupStrictPlatformIntro(async text => { copies.push(text); await writing.promise; });
+  await click(button('复制平台说明给 AI'));
+  assert.equal(button('正在复制…').disabled, true);
+  await act(async () => writing.resolve());
+  assert.match(document.querySelector('[role=status]').textContent, /已复制/);
+  assert.equal(button('复制平台说明给 AI').disabled, false);
+  await click(button('复制平台说明给 AI'));
+  assert.equal(copies.length, 2);
+  assert.equal(copies[0], copies[1]);
+  assert.match(copies[0], /当前版本：disposable-version/);
+});
+
+test('The platform introduction exposes its full fallback and can retry copying in StrictMode', async () => {
+  let attempts = 0;
+  await setupStrictPlatformIntro(async () => { if (++attempts === 1) throw new Error('artificial clipboard failure'); });
+  await click(button('复制平台说明给 AI'));
+  assert.match(document.querySelector('[role=dialog]').textContent, /无法自动复制/);
+  const field = document.querySelector('textarea');
+  assert.equal(field.readOnly, true);
+  assert.match(field.value, /当前版本：disposable-version/);
+  assert.ok(field.value.endsWith(PROJECT_AI_REQUIREMENTS));
+  assert.equal(document.querySelector('[role=status]'), null);
+  await click(document.querySelector('button[aria-label="关闭平台说明"]'));
+  assert.equal(button('复制平台说明给 AI').disabled, false);
+  await click(button('复制平台说明给 AI'));
+  assert.equal(attempts, 2);
+  assert.match(document.querySelector('[role=status]').textContent, /已复制/);
 });

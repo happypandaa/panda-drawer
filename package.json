@@ -23,6 +23,7 @@
     "test:local-directory-starter": "node --test scripts/local-directory-starter-test.mjs",
     "generate:project-directory-names": "node scripts/generate-project-directory-names.mjs",
     "test:project-directory-names": "node scripts/generate-project-directory-names.mjs --check",
+    "test:ai-prompts": "node scripts/generate-project-ai-requirements.mjs --check",
     "test:development-node": "node --test scripts/package-development-node-test.mjs",
     "test:development-git": "node --test scripts/package-development-git-test.mjs",
     "test:platform-support": "node scripts/platform-support-test.mjs",

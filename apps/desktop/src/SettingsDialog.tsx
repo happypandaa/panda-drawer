@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import { Modal } from './Modal';
+import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { WorkspaceLocation } from './WorkspaceLocation';
 import type { Appearance } from './appearance';
@@ -115,6 +116,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <h3 id="settings-about-title">关于</h3>
           <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>
           <p>项目数据保存在本机；联网功能由具体应用决定。</p>
+          <p className="platform-ai-intro-hint">让 AI 先了解这个平台：新项目开工前，或判断自己的项目能否接入时使用。<PlatformAiIntroButton platformVersion={info?.version} /></p>
           <AboutPlatform info={info} />
         </section>)}
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">
