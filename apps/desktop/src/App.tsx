@@ -35,7 +35,7 @@ import { matchingProjectTask, recoverBuildResult } from './build-result-state';
 import type { BuildResultView } from './build-result-state';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import type { BootstrapInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
-import { acceptProjectDeletion, checkedProjectDeletion, observeDeletionRuntime, onProjectDeleted, projectWasDeleted, sourceWasDeleted, taskProjectOwner, taskWasDeleted } from './project-deletion';
+import { acceptProjectDeletion, checkedProjectDeletion, observeDeletionRuntime, onProjectDeleted, projectWasDeleted, taskProjectOwner, taskWasDeleted } from './project-deletion';
 import type { ProjectDeletedNotice } from './project-deletion';
 
 type AppPage = 'projects' | 'storage';
@@ -107,7 +107,7 @@ function App() {
   const [sourcesMounted, setSourcesMounted] = useState(false);
   const [sourceNeedsAttention, setSourceNeedsAttention] = useState(false);
   const [archiveImportOpen, setArchiveImportOpen] = useState(false);
-  const [sourceRepositories, setSourceRepositories] = useState<{ url: string; appId: string; name: string }[]>([]);
+  const sourceRepositories = nodeApps.filter(app => !projectWasDeleted(app.id) && app.gitSource).map(app => ({ ...app.gitSource!, appId: app.id, name: app.name }));
   const sourceTaskIds = useRef(new Set<string>());
   const sourceTaskOwners = useRef(new Map<string, string>());
   function closeSourceFlow(options?: { keepSession: boolean }) {
@@ -118,14 +118,6 @@ function App() {
     sourceTaskIds.current.clear();
     sourceTaskOwners.current.clear();
   }
-  useEffect(() => {
-    if (!showSources || !info) return;
-    let cancelled = false;
-    void invoke<{ sourceId: string; url: string }[]>('source_list').then(sources => {
-      if (!cancelled && Array.isArray(sources)) setSourceRepositories(nodeApps.filter(app => !projectWasDeleted(app.id)).flatMap(app => { const source = sources.find(source => !sourceWasDeleted(source.sourceId) && source.sourceId === app.installation?.sourceId); return source?.url ? [{ url: source.url, appId: app.id, name: app.name }] : []; }));
-    }).catch(() => { if (!cancelled) setSourceRepositories([]); });
-    return () => { cancelled = true; };
-  }, [showSources, info?.instanceId, nodeApps]);
   const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
   const [overviewVersionDraft, setOverviewVersionDraft] = useState({ dirty: false, pending: false });
   const [deleteProject, setDeleteProject] = useState<ProjectInfo | null>(null);
@@ -166,7 +158,6 @@ function App() {
     setNodeDeletionTasks(current => current.filter(task => task.appId !== id));
     setTasks(current => Object.fromEntries(Object.entries(current).filter(([key, task]) => key !== id && !taskWasDeleted(task))));
     setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => !taskWasDeleted(task))));
-    setSourceRepositories(current => current.filter(source => source.appId !== id));
     for (const taskId of sourceTaskIds.current) if (notice.taskIds.includes(taskId) || sourceTaskOwners.current.get(taskId) === id) { sourceTaskIds.current.delete(taskId); sourceTaskOwners.current.delete(taskId); }
     setBuildResults(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
     setMaintenance(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
@@ -196,7 +187,6 @@ function App() {
     setNodeDeletionTasks(current => current.filter(task => task.appId !== appId));
     setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([, task]) => task.projectId !== appId)));
     setTasks(current => Object.fromEntries(Object.entries(current).filter(([id, task]) => id !== appId && task.projectId !== appId)));
-    setSourceRepositories(current => current.filter(source => source.appId !== appId));
     for (const [taskId, owner] of sourceTaskOwners.current) {
       if (owner === appId) { sourceTaskIds.current.delete(taskId); sourceTaskOwners.current.delete(taskId); }
     }

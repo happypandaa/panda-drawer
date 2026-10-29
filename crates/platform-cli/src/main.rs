@@ -44,11 +44,6 @@ struct Cli {
 enum Command {
     /// Read compiled identity/version metadata offline, without runtime or data access.
     BuildInfo(OutputOptions),
-    /// Acquire public source without executing it, or inspect local declarations.
-    Source {
-        #[command(subcommand)]
-        command: SourceCommand,
-    },
     /// Inspect the development service without starting it.
     Service {
         #[command(subcommand)]
@@ -89,44 +84,6 @@ enum Command {
         #[command(subcommand)]
         command: EnvironmentCommand,
     },
-}
-
-#[derive(Subcommand)]
-enum SourceCommand {
-    /// Copy bounded local source into a new managed candidate, without executing it.
-    Capture {
-        #[arg(long)]
-        path: String,
-        #[arg(long)]
-        name: Option<String>,
-        #[command(flatten)]
-        output: OutputOptions,
-    },
-    List(OutputOptions),
-    Get {
-        #[arg(long)]
-        source: String,
-        #[command(flatten)]
-        output: OutputOptions,
-    },
-    Inspect {
-        #[arg(long)]
-        path: String,
-        #[command(flatten)]
-        output: OutputOptions,
-    },
-    Acquire {
-        #[arg(long)]
-        url: String,
-        #[arg(long)]
-        branch: Option<String>,
-        #[arg(long)]
-        name: Option<String>,
-        #[command(flatten)]
-        output: OutputOptions,
-    },
-    /// Request cancellation; inspect the returned task until it is final.
-    Cancel(TaskOptions),
 }
 
 #[derive(Subcommand)]
@@ -451,7 +408,6 @@ fn main() -> ExitCode {
         Command::Maintenance { command } => maintenance_command(command),
         Command::Workspace { command } => workspace_command(command),
         Command::Storage { command } => storage_command(command),
-        Command::Source { command } => source_command(command),
     };
     write_result(json_output, result)
 }
@@ -901,68 +857,6 @@ fn input_request(options: ProjectInputOptions, route: &str) -> Result<Value> {
         validate_path_field(&input, "destinationPath")?;
     }
     project_request(&options.project, "POST", route, Some(input))
-}
-
-fn source_command(command: SourceCommand) -> (bool, Result<Value>) {
-    match command {
-        SourceCommand::Capture { path, name, output } => (output.json, {
-            let body = json!({"sourcePath":path,"name":name});
-            validate_path_field(&body, "sourcePath").and_then(|()| {
-                business_request("POST", "/api/v1/sources/captures", None, Some(body))
-            })
-        }),
-        SourceCommand::List(output) => (
-            output.json,
-            business_request("GET", "/api/v1/sources", None, None),
-        ),
-        SourceCommand::Get { source, output } => (
-            output.json,
-            validate_reference_id(&source, "source").and_then(|()| {
-                business_request("GET", &format!("/api/v1/sources/{source}"), None, None)
-            }),
-        ),
-        SourceCommand::Inspect { path, output } => (
-            output.json,
-            if Path::new(&path).is_absolute() {
-                business_request(
-                    "POST",
-                    "/api/v1/sources/inspect",
-                    None,
-                    Some(json!({"sourcePath": path})),
-                )
-            } else {
-                Err(CliError::new(
-                    "INPUT_INVALID",
-                    "--path must be an absolute source directory.",
-                ))
-            },
-        ),
-        SourceCommand::Acquire {
-            url,
-            branch,
-            name,
-            output,
-        } => (
-            output.json,
-            business_request(
-                "POST",
-                "/api/v1/sources/acquisitions",
-                None,
-                Some(json!({"url":url, "branch":branch, "name":name})),
-            ),
-        ),
-        SourceCommand::Cancel(options) => (
-            options.output.json,
-            validate_reference_id(&options.task, "task").and_then(|()| {
-                business_request(
-                    "POST",
-                    &format!("/api/v1/sources/tasks/{}/cancel", options.task),
-                    None,
-                    Some(json!({})),
-                )
-            }),
-        ),
-    }
 }
 
 fn git_command(command: GitCommand) -> (bool, Result<Value>) {
@@ -2572,42 +2466,6 @@ mod tests {
         assert_eq!(result["data"]["final"], false);
         assert_eq!(result["data"]["waitTimedOut"], true);
         server.join().unwrap();
-    }
-
-    #[test]
-    fn source_acquire_accepts_an_explicit_branch_without_changing_default() {
-        for (arguments, expected) in [
-            (
-                vec![
-                    "platform",
-                    "source",
-                    "acquire",
-                    "--url",
-                    "https://github.com/example/disposable",
-                ],
-                None,
-            ),
-            (
-                vec![
-                    "platform",
-                    "source",
-                    "acquire",
-                    "--url",
-                    "https://github.com/example/disposable",
-                    "--branch",
-                    "codex/tts-providers",
-                ],
-                Some("codex/tts-providers"),
-            ),
-        ] {
-            let parsed = Cli::try_parse_from(arguments).unwrap();
-            match parsed.command {
-                Command::Source {
-                    command: SourceCommand::Acquire { branch, .. },
-                } => assert_eq!(branch.as_deref(), expected),
-                _ => panic!("expected source acquire"),
-            }
-        }
     }
 
     #[test]

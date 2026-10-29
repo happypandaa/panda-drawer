@@ -398,7 +398,8 @@ impl NodeApps {
                 }
                 let ownership = self.project_ownership();
                 let generated_source = ownership.generated_source(id)?;
-                let managed = record.managed.is_some() || generated_source.is_some();
+                let managed = record.managed.is_some()
+                    || ownership.owns_source_directory(id, &record.source_path)?;
                 let mut preserved = vec![];
                 if !managed {
                     preserved.push(record.source_path.clone());
@@ -886,7 +887,6 @@ impl NodeApps {
         native?;
         stopped?;
         permit.validate(self, &id)?;
-        self.require_no_development_operation(&id)?;
         if self.inner.lock().await.running.contains_key(&id) {
             return Err(fail("应用仍有资源未停止，未移动删除目录。"));
         }

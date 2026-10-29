@@ -51,7 +51,7 @@ export function launcherMenuPosition(anchor: { top: number; bottom: number; righ
   };
 }
 
-function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening, statuses, launcherState, description, metadata, actions, onEnter }: {
+function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening, statuses, launcherState, description, notice, metadata, actions, onEnter }: {
   id: string;
   name: string;
   runtime: 'static-web' | 'node-service';
@@ -62,6 +62,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
   statuses: string[];
   launcherState: LauncherState;
   description?: string;
+  notice?: string;
   metadata?: string;
   actions: LauncherAction[];
   onEnter: () => void;
@@ -78,7 +79,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
   const runtimeLabel = runtime === 'node-service' ? 'Node 服务项目' : '网页项目';
   const unavailable = actions.every(action => action.disabled);
   const summary = [runtimeLabel, description, ...statuses].filter(Boolean).join('。');
-  const tooltip = [name, runtimeLabel, ...statuses, title].filter(Boolean).join(' · ');
+  const tooltip = [name, runtimeLabel, ...statuses, notice, title].filter(Boolean).join(' · ');
 
   function restoreFocus() {
     (disabled ? rootRef.current : entryRef.current)?.focus({ preventScroll: true });
@@ -159,6 +160,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
       <span className="launcher-name" title={name}>{name}</span>
       <span className={`launcher-state is-${launcherState.tone}`} aria-hidden="true"><span className="launcher-state-dot" />{launcherState.label}</span>
     </button>
+    {notice && <p className="launcher-retired-note" aria-hidden="true">{notice}</p>}
     <span id={descriptionId} className="sr-only" aria-live="polite">{summary}</span>
     {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={`项目「${name}」操作`} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
       <div className="launcher-menu-caption" role="presentation">{runtime === 'node-service' ? <Server size={13} aria-hidden="true" /> : <Globe size={13} aria-hidden="true" />}{runtimeLabel}{metadata && <span>{metadata}</span>}</div>
@@ -206,7 +208,8 @@ export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onD
   const configuration = nodeConfigurationState(app);
   const runtimeBlocked = !app.configuration.canStart && configuration.blockedTab === 'runtime';
   const runtimeState = app.state === 'running' ? '运行中' : app.state === 'starting' ? '打开中' : app.state === 'stopping' ? '关闭中' : app.state === 'failed' ? '需要检查' : null;
-  const launcherState: LauncherState = app.state === 'failed' ? { label: '需要检查', tone: 'error' }
+  const launcherState: LauncherState = app.installation ? { label: '旧安装方式', tone: 'error' }
+    : app.state === 'failed' ? { label: '需要检查', tone: 'error' }
     : app.state === 'starting' || app.state === 'stopping' || opening ? { label: runtimeState ?? '进入中…', tone: 'busy' }
     : configuration.attentionLabel ? { label: configuration.attentionLabel, tone: 'attention' }
     : runtimeBlocked ? { label: '需要检查', tone: 'attention' }
@@ -214,6 +217,7 @@ export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onD
     : app.restartRequired ? { label: '待重启', tone: 'attention' }
     : { label: 'Node 服务', tone: 'idle' };
   return <LauncherTile id={app.id} name={app.name} runtime="node-service" launcherState={launcherState} disabled={blocked || opening} opening={opening} onEnter={onEnter}
+    notice={app.installation ? '这个应用使用旧的安装方式，已不再支持。请删除后重新添加。' : undefined}
     description={app.lastError ?? (configuration.needsAttention ? '进入前请先核对应用配置。' : runtimeBlocked ? '暂时无法启动，请查看运行状态。' : undefined)}
     metadata={app.restartRequired ? '已保存配置' : configuration.kind === 'complete' ? '配置完整' : undefined}
     statuses={[runtimeState, configuration.attentionLabel, app.restartRequired ? '待重启' : null, opening && !['starting', 'stopping'].includes(app.state) ? '进入中…' : null].filter((value): value is string => Boolean(value))}

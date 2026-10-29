@@ -33,6 +33,8 @@ interface Row {
   regenerable: bigint | null;
   time: string;
   needsScan: boolean;
+  folderBytes?: bigint | null;
+  instanceBytes?: bigint | null;
   project?: ProjectInfo;
   app?: NodeAppDetail;
 }
@@ -77,7 +79,12 @@ export function SpaceProjects(props: SpaceProjectsProps) {
     }),
     ...props.nodeApps.map((app): Row => {
       const row = nodeRowFor(props.nodeRows, app.id);
-      return { key: `node:${app.id}`, kind: 'node', name: app.name, sub: app.installation ? '平台安装副本' : '外部目录接入', total: bigBytes(partBytes(row)), regenerable: null, time: row?.completedAt ? timeText(row.completedAt as string | number) : '尚未统计', needsScan: false, app };
+      const folder = row?.projectFolder as StoragePart | undefined;
+      const instance = row?.instance as StoragePart | undefined;
+      const ownership = row?.sourceOwnership;
+      return { key: `node:${app.id}`, kind: 'node', name: app.name,
+        sub: ownership === 'platform' ? '平台管理的项目文件夹' : ownership === 'external' ? '用户文件夹 · 删除项目时保留' : app.installation ? '旧安装方式 · 请删除后重新添加' : '项目文件夹归属待核对',
+        total: bigBytes(partBytes(row)), folderBytes: bigBytes(partBytes(folder)), instanceBytes: bigBytes(partBytes(instance)), regenerable: null, time: row?.completedAt ? timeText(row.completedAt as string | number) : '尚未统计', needsScan: false, app };
     }),
   ];
   const cleanable = props.projects.filter((project) => (projectRegenerable(project) ?? 0n) > 0n && !busy(project));
@@ -143,7 +150,7 @@ export function SpaceProjects(props: SpaceProjectsProps) {
       {shown.map((row) => <div className="space-project-row" role="row" key={row.key}>
         <span role="cell" className="space-project-name"><strong>{row.name}</strong><small>{row.sub}</small></span>
         <span role="cell"><span className="history-chip">{row.kind === 'web' ? '网页项目' : 'Node 应用'}</span></span>
-        <span role="cell" className="space-number" title={row.total === null ? undefined : exactBytes({ $int64: row.total.toString() })}>{row.total === null ? '—' : bigText(row.total)}</span>
+        <span role="cell" className="space-number" title={row.total === null ? undefined : exactBytes({ $int64: row.total.toString() })}>{row.total === null ? '—' : bigText(row.total)}{row.kind === 'node' && <small>项目文件夹 {bigText(row.folderBytes ?? null)} · 平台数据 {bigText(row.instanceBytes ?? null)}</small>}</span>
         <span role="cell" className="space-number is-regenerable">{row.kind === 'node' ? '—' : row.regenerable === null ? '—' : bigText(row.regenerable)}</span>
         <span role="cell" className={row.needsScan ? 'space-time needs-scan' : 'space-time'}>{row.time}</span>
         <span role="cell" className="space-project-actions">
@@ -157,7 +164,7 @@ export function SpaceProjects(props: SpaceProjectsProps) {
       {rows.length > 0 && !visibleRows.length && <p className="space-empty">没有匹配的项目。</p>}
     </div>
     <div className="space-projects-footer"><span>显示 {shown.length} / 共 {visibleRows.length} 个项目 · 合计 {bigText(sumKnown(visibleRows.map((row) => row.total)))}{visibleRows.some((row) => row.total === null) ? '（不含尚未统计的项目）' : ''}</span>{visibleRows.length > pageSize && <button className="refresh-button" onClick={() => setExpanded((value) => !value)}>{expanded ? '收起' : `显示其余 ${visibleRows.length - pageSize} 个`}</button>}</div>
-    <p className="space-note">“清理”只删除开发依赖、构建缓存和日志，保留源码、数据库、文件和当前可运行的应用。Node 应用的占用在其详情中查看；删除会打开对应的删除确认。</p>
+    <p className="space-note">“清理”只删除网页项目的开发依赖、构建缓存和日志。Node 项目文件夹统计包括 node_modules；数据、配置和日志单独统计，用户自己的文件夹在删除项目时保留。删除会打开对应的删除确认。</p>
     {cleanTarget && <Modal title={cleanTarget.length === 1 ? `清理「${cleanTarget[0].name}」的可重新生成文件` : `清理 ${cleanTarget.length} 个项目的可重新生成文件`} className="space-clean-dialog" closeDisabled={pending === 'clean'} onClose={() => setCleanTarget(null)}>
       {cleanTarget.length === 1 ? <dl className="space-clean-list">{[['dependencies', '开发依赖'], ['cache', '构建缓存与日志']].map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{bigText(bigBytes(partBytes(cleanTarget[0].storage?.currentProject?.categories?.[key])))}</dd></div>)}</dl>
         : <dl className="space-clean-list">{cleanTarget.map((project) => <div key={project.id}><dt>{project.name}</dt><dd>{bigText(projectRegenerable(project))}</dd></div>)}</dl>}

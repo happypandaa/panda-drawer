@@ -9,7 +9,6 @@ import type { NodeConfigurationDraft } from './node-configuration-validation';
 import { nodeConfigurationState } from './node-configuration-state';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import type { ProjectHandoff } from './CodexHandoffPanel';
-import { NodeApplyChangesPanel } from './NodeApplyChangesPanel';
 import { LocalDirectoryPanel } from './LocalDirectoryPanel';
 import { AiProjectHelp } from './AiProjectHelp';
 import type { TaskRecord } from './types';
@@ -53,12 +52,12 @@ export function nodeConfigurationInput(app: NodeAppDetail, draft: Draft): NodeCo
       values[field.name] = value;
     }
   }
-  return { revision: app.configuration.revision, values, secrets };
+  return { revision: app.configuration.revision, ...(app.manifestDigest ? { manifestDigest: app.manifestDigest } : {}), values, secrets };
 }
 
 export type NodeAppRequest = { app: NodeAppDetail; intent: 'enter' | 'configure' | 'details' | 'delete'; token: number }
   | { app: Pick<NodeAppDetail, 'id' | 'name'>; intent: 'delete-task'; task: NodeDeletionTaskSnapshot; token: number };
-export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImportArchive, enabled, instanceId, request, addRequest = 0, onAppChanged, onAppDeleted, onDeletionTaskChanged, onDeletionAbandoned, onModalStateChange, onDraftStateChange, onTask }: {
+export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImportArchive, enabled, instanceId, request, addRequest = 0, onAppChanged, onAppDeleted, onDeletionTaskChanged, onDeletionAbandoned, onModalStateChange, onDraftStateChange }: {
   apps?: NodeAppDetail[]; workspacePath?: string; platformVersion?: string; onImportArchive?: () => void;
   enabled: boolean; request?: NodeAppRequest | null; addRequest?: number;
   instanceId?: string; onTask?: (task: TaskRecord) => void;
@@ -68,7 +67,6 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
-  const [applyPending, setApplyPending] = useState(false);
   const [savedConfiguration, setSavedConfiguration] = useState(false);
   const [tab, setTab] = useState<'overview' | 'configuration' | 'runtime'>('overview');
   const [dismissConfirm, setDismissConfirm] = useState(false);
@@ -109,8 +107,9 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   const launchFailureText = launchError || (detail?.state === 'failed' ? detail.lastError ?? '' : '');
   const canStop = detail ? detail.runRecovery?.canStop ?? ['running', 'starting', 'failed'].includes(detail.state) : false;
   const dirty = configurationDirty;
-  const blocked = !enabled || Boolean(pending) || applyPending || directoryPending || Boolean(deleteTarget);
-  const projectPath = detail?.development?.sourcePath ?? (detail && !detail.installation ? detail.sourcePath : undefined);
+  const blocked = !enabled || Boolean(pending) || directoryPending || Boolean(deleteTarget);
+  const projectPath = detail?.sourcePath;
+  const retired = Boolean(detail?.installation);
   const runtimeLogPaths = detail?.objectLayout?.controlPath ? { current: `${detail.objectLayout.controlPath}/logs/current.log`, previous: `${detail.objectLayout.controlPath}/logs/previous.log` } : undefined;
   const visibleTabs = ([['overview', '概览', Info], ...(detail?.fields.length ? [['configuration', '应用配置', KeyRound] as const] : []), ['runtime', '运行状态', Activity]] as const);
 
@@ -119,11 +118,11 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     setDeleteTarget(null); setDeletionPending(false);
   }
   const openDeletion = useCallback((app: NodeAppDetail) => {
-    if (!enabled || pendingOperation.current || applyPending || directoryPending || loading || operation.current || deleteTargetRef.current || (dirty && selected.current === app.id)) return;
+    if (!enabled || pendingOperation.current || directoryPending || loading || operation.current || deleteTargetRef.current || (dirty && selected.current === app.id)) return;
     statusRead.current++;
     const target = { app, token: ++deletionSequence.current, instanceId };
     deleteTargetRef.current = target; setDeleteTarget(target);
-  }, [enabled, applyPending, directoryPending, loading, dirty, instanceId]);
+  }, [enabled, directoryPending, loading, dirty, instanceId]);
 
   const accept = useCallback((value: NodeAppDetail, resetDraft: boolean) => {
     if (projectWasDeleted(value.id)) return;
@@ -133,6 +132,17 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       if (resetDraft) { setDraft(draftFrom(value)); setConfigurationRead((current) => current + 1); }
     }
   }, []);
+
+  const refreshMissingConfiguration = useCallback(async (cause: unknown, appId: string) => {
+    if (!cause || typeof cause !== 'object' || !('code' in cause) || cause.code !== 'NODE_CONFIGURATION_REQUIRED') return false;
+    const selection = sequence.current; const runtime = currentInstance.current;
+    try {
+      const value = await invoke<NodeAppDetail>('node_app_configuration', { appId });
+      if (!alive.current || selected.current !== appId || sequence.current !== selection || currentInstance.current !== runtime || value.id !== appId) return true;
+      accept(value, true); setModalOpen(true); setTab('configuration'); setError(''); setLaunchError('');
+      return true;
+    } catch { return false; }
+  }, [accept]);
 
   const enterApp = useCallback(async (value: NodeAppDetail) => {
     if (operation.current || !enabled) return;
@@ -147,9 +157,9 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
         if (alive.current && selected.current === appId) accept(opened, false);
       }
     } catch (cause) {
-      if (alive.current && selected.current === appId) { setError(messageFrom(cause)); setLaunchError(messageFrom(cause)); setModalOpen(true); setTab('runtime'); }
+      if (alive.current && selected.current === appId && !await refreshMissingConfiguration(cause, appId)) { setError(messageFrom(cause)); setLaunchError(messageFrom(cause)); setModalOpen(true); setTab('runtime'); }
     } finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
-  }, [accept, enabled]);
+  }, [accept, enabled, refreshMissingConfiguration]);
 
   const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
     const selection = ++sequence.current;
@@ -177,19 +187,19 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   useEffect(() => onProjectDeleted(notice => {
     if (notice.kind !== 'node' || notice.instanceId !== currentInstance.current) return;
     if (selected.current === notice.id) {
-      closeDetails(); operation.current = false; setPending(null); setApplyPending(false);
+      closeDetails(); operation.current = false; setPending(null);
       setError(''); setLaunchError(''); setStatusError(''); setNotice(''); draftCallback.current({ dirty: false, pending: false });
     } else if (deleteTargetRef.current?.app.id === notice.id) clearDeletion();
     setRequestedSelection(current => current?.id === notice.id ? null : current);
   }), []);
   useEffect(() => {
-    statusRead.current++; sequence.current++; setLoading(false); setHandoff(null); setApplyPending(false);
+    statusRead.current++; sequence.current++; setLoading(false); setHandoff(null);
     clearDeletion();
   }, [instanceId]);
   useEffect(() => {
     if (!request || request.token === seenRequest.current || projectWasDeleted(request.app.id)) return;
     if (deleteTargetRef.current) { seenRequest.current = request.token; return; }
-    if (operation.current || directoryPending || applyPending) return;
+    if (operation.current || directoryPending) return;
     seenRequest.current = request.token;
     if (request.intent === 'delete-task') {
       if (!enabled || pendingOperation.current || loading || (dirty && selected.current === request.app.id)) return;
@@ -200,16 +210,16 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     if (request.intent === 'delete') { openDeletion(request.app); return; }
     if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
     void select(request.app, request.intent === 'enter' || request.intent === 'configure' ? 'configuration' : 'overview', request.intent === 'enter');
-  }, [request, select, openDeletion, pending, directoryPending, applyPending]);
+  }, [request, select, openDeletion, pending, directoryPending]);
   useEffect(() => {
     if (!addRequest || addRequest === seenAdd.current || operation.current || directoryPending || !enabled) return;
     seenAdd.current = addRequest; setAddOpen(true); setError(''); setLaunchError('');
   }, [addRequest, enabled, pending, directoryPending]);
   useEffect(() => { modalCallback.current?.(modalOpen || addOpen || Boolean(deleteTarget)); }, [modalOpen, addOpen, Boolean(deleteTarget)]);
   useEffect(() => { if (dismissConfirm || requestedSelection) confirmation.current?.focus(); }, [dismissConfirm, requestedSelection]);
-  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || applyPending || directoryPending || deletionPending }); }, [dirty, pending, loading, applyPending, directoryPending, deletionPending]);
+  useEffect(() => { draftCallback.current({ dirty, pending: Boolean(pending) || loading || directoryPending || deletionPending }); }, [dirty, pending, loading, directoryPending, deletionPending]);
   useEffect(() => {
-    if (!enabled || !detail || pending || applyPending || loading || !modalOpen || deleteTarget) return;
+    if (!enabled || !detail || pending || loading || !modalOpen || deleteTarget) return;
     let cancelled = false; let polling = false;
     const appId = detail.id;
     const selection = sequence.current;
@@ -236,7 +246,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     window.addEventListener('focus', poll); document.addEventListener('visibilitychange', visible);
     const timer = tab === 'runtime' ? window.setInterval(poll, 1500) : null;
     return () => { cancelled = true; if (timer !== null) window.clearInterval(timer); window.removeEventListener('focus', poll); document.removeEventListener('visibilitychange', visible); };
-  }, [enabled, detail?.id, pending, applyPending, loading, modalOpen, tab, instanceId, Boolean(deleteTarget)]);
+  }, [enabled, detail?.id, pending, loading, modalOpen, tab, instanceId, Boolean(deleteTarget)]);
 
   function acceptDirectory(value: NodeAppDetail) {
     // Keep the add result visible until the user chooses its next action.
@@ -285,7 +295,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       if (command === 'node_app_stop') setNotice(value.state === 'stopped' ? '应用已关闭，相关服务已停止。已保存的配置保留。' : '关闭结果已更新，请查看应用状态。');
       if (command === 'node_app_restart') setSavedConfiguration(false);
       if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? '应用窗口已打开。关闭窗口会停止本应用。' : '打开结果已更新，请查看应用状态。');
-    } catch (cause) { if (alive.current && selected.current === appId) { setError(messageFrom(cause)); if (command === 'node_app_start' || command === 'node_app_restart') setLaunchError(messageFrom(cause)); } }
+    } catch (cause) { if (alive.current && selected.current === appId && !await refreshMissingConfiguration(cause, appId)) { setError(messageFrom(cause)); if (command === 'node_app_start' || command === 'node_app_restart') setLaunchError(messageFrom(cause)); } }
     finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
   }
 
@@ -324,7 +334,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     const appId = detail.id; const selection = sequence.current;
     const current = () => alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId;
     try {
-      const value = await invoke<ProjectHandoff>('node_development_handoff', { appId });
+      const value = await invoke<ProjectHandoff>('node_app_handoff', { appId });
       if (!current()) return;
       if (!value.projectRoot || !value.instanceId || value.instanceId !== instanceId) throw new Error('平台已变化，请重新打开详情。');
       setHandoff(value);
@@ -347,17 +357,6 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     catch (cause) { if (alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId) setError(messageFrom(cause)); }
     finally { if (alive.current) setOpeningFolder(current => current === path ? null : current); }
   }
-  async function refreshInstalled(appId: string) {
-    const selection = sequence.current; const revision = ++statusRead.current;
-    const current = () => alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId && statusRead.current === revision;
-    try {
-      const value = await invoke<NodeAppDetail>('node_app_configuration', { appId });
-      if (!current()) return;
-      statusRead.current++;
-      setDetail(value); changedCallback.current?.(value);
-      // The apply workflow owns its task and committed-but-incomplete result.
-    } catch (cause) { if (current()) setError(messageFrom(cause)); }
-  }
   function changeTab(value: typeof tab) {
     if (blocked || loading) return;
     clearDeletion();
@@ -370,21 +369,21 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     event.preventDefault(); changeTab(values[next]); document.getElementById(`${base}-${values[next]}-tab`)?.focus();
   }
 
-  const deleteDialog = deleteTarget && <NodeAppDeleteDialog key={deleteTarget.token} app={deleteTarget.app} initialTask={deleteTarget.task} enabled={enabled && !pending && !applyPending && !directoryPending && !loading} instanceId={instanceId} onClose={clearDeletion} onPendingChange={value => { if (deleteTargetRef.current?.token === deleteTarget.token) setDeletionPending(value); }} onDeleted={acceptDeletion} onTaskChanged={onDeletionTaskChanged} onAbandoned={task => { if (deleteTargetRef.current?.token !== deleteTarget.token || currentInstance.current !== deleteTarget.instanceId) return; clearDeletion(); onDeletionAbandoned?.(task); }} />;
+  const deleteDialog = deleteTarget && <NodeAppDeleteDialog key={deleteTarget.token} app={deleteTarget.app} initialTask={deleteTarget.task} enabled={enabled && !pending && !directoryPending && !loading} instanceId={instanceId} onClose={clearDeletion} onPendingChange={value => { if (deleteTargetRef.current?.token === deleteTarget.token) setDeletionPending(value); }} onDeleted={acceptDeletion} onTaskChanged={onDeletionTaskChanged} onAbandoned={task => { if (deleteTargetRef.current?.token !== deleteTarget.token || currentInstance.current !== deleteTarget.instanceId) return; clearDeletion(); onDeletionAbandoned?.(task); }} />;
 
   return <>
-    {modalOpen && detail && <Modal title={detail.name} titleIcon={<Server size={22} aria-hidden="true" />} description="Node 服务 · 本机独立数据" headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" wide closeDisabled={Boolean(pending) || applyPending || deletionPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
+    {modalOpen && detail && <Modal title={detail.name} titleIcon={<Server size={22} aria-hidden="true" />} description="Node 服务 · 本机独立数据" headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" wide closeDisabled={Boolean(pending) || deletionPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
       <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
         {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的修改</strong><p>关闭会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
         {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="切换项目确认"><strong>当前有未保存的修改</strong><p>继续会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并切换</button></div></div>}
         {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
-        {launchFailureText && <div className="node-launch-error" role="alert"><h3>「{detail.name}」没能打开</h3><p className="task-error node-inline-message">{launchFailureText}</p><p>文件在哪里：<code>{projectPath ?? '源码目录暂不可用'}</code></p><p>{detail.installation ? '请核对当前版本的运行情况。' : '应用直接运行你的文件夹里的代码，最近的修改可能影响启动。'} 启动过程中程序可能已经执行，请以实际记录核对应用数据。</p><AiProjectHelp allowCodex={false} context={{ runtimeLogPaths, mode: 'start-failed', sourceKind: detail.installation ? 'managed' : 'local', sourcePath: projectPath, appName: detail.name, appVersion: detail.version, platformVersion, issues: [launchFailureText] }} label="复制说明给 AI" className="primary-button" disabled={Boolean(pending)} /></div>}
+        {launchFailureText && !retired && <div className="node-launch-error" role="alert"><h3>「{detail.name}」没能打开</h3><p className="task-error node-inline-message">{launchFailureText}</p><p>文件在哪里：<code>{projectPath ?? '源码目录暂不可用'}</code></p><p>应用直接运行项目文件夹里的代码，最近的修改可能影响启动。 启动过程中程序可能已经执行，请以实际记录核对应用数据。</p><AiProjectHelp allowCodex={false} context={{ runtimeLogPaths, mode: 'start-failed', sourceKind: detail.gitSource ? 'git' : 'local', sourcePath: projectPath, appName: detail.name, appVersion: detail.version, platformVersion, issues: [launchFailureText] }} label="复制说明给 AI" className="primary-button" disabled={Boolean(pending)} /></div>}
         {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
-        <CodexHandoffPanel handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint="想改功能？复制提示词发给 AI，改完后关闭窗口再进入即可生效。" afterCopy={<>
+        <CodexHandoffPanel handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading || retired} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint={retired ? "此安装方式已退役，请删除后重新添加。" : "想改功能？复制提示词发给 AI，改完后关闭窗口再进入即可生效。"} afterCopy={<>
           {detail.fields.length > 0 && <button className="refresh-button" disabled={blocked || loading} onClick={() => changeTab('configuration')}><KeyRound size={18} />修改配置</button>}
           <button className="text-button detail-delete-button" disabled={blocked || loading || dirty} onClick={() => openDeletion(detail)}><Trash2 size={15} />删除项目</button>
         </>}>
-          <button className="primary-button" disabled={blocked || loading || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />{detail.runRecovery ? '查看运行状态' : '进入项目'}</button>
+          <button className="primary-button" disabled={blocked || loading || retired || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />{detail.runRecovery ? '查看运行状态' : '进入项目'}</button>
         </CodexHandoffPanel>
         {detail.lastError && <p className="task-error node-inline-message" role="alert">{detail.lastError}</p>}
         {statusError && <p className="task-error node-inline-message" role="alert">{statusError}</p>}
@@ -392,10 +391,9 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
         <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{visibleTabs.map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
         <div className="detail-overview-body node-overview-body" role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}>
           <dl className="detail-summary-facts"><div><dt>运行状态</dt><dd className={detail.state === 'running' ? 'detail-ready-text' : detail.state === 'failed' ? 'detail-error-text' : ''}>{runtimeStateLabel(detail)}{detail.restartRequired ? ' · 待重启' : ''}</dd></div><div><dt>应用配置</dt><dd className={configurationState?.kind === 'complete' ? '' : 'detail-warning-text'}>{configurationState?.overviewText}</dd></div></dl>
-          <section className="detail-location-section"><h3>项目文件夹</h3>
-            <div className="detail-location-row"><FolderOpen size={22} /><span><code>{projectPath ?? '源码目录暂不可用，请核对项目来源。'}</code></span><button className="icon-button" aria-label="复制项目文件夹" disabled={!projectPath} onClick={() => { if (projectPath) void navigator.clipboard?.writeText(projectPath).then(() => setNotice('路径已复制。'), () => setNotice('请选中完整路径后复制。')); }}><Copy size={20} /></button><button className="refresh-button" disabled={!enabled || !projectPath || openingFolder === projectPath} onClick={() => void revealSource()}>打开文件夹</button></div>
-            <p className="detail-section-note">AI 在这里改代码。数据、配置和密钥单独保存在本机，改代码不会动到它们。</p>
-            {detail.installation?.kind === 'managed' && <NodeApplyChangesPanel key={`${detail.id}:${instanceId}`} appId={detail.id} instanceId={instanceId} sourcePath={projectPath} appName={detail.name} appVersion={detail.version} platformVersion={platformVersion} runtimeLogPaths={runtimeLogPaths} disabled={!enabled || Boolean(pending) || loading || dirty || deletionPending} running={['running', 'starting', 'stopping'].includes(detail.state) || Boolean(detail.runRecovery)} onPendingChange={setApplyPending} onTask={onTask} onInstalled={() => void refreshInstalled(detail.id)} />}
+          <section className="detail-location-section"><h3>{retired ? '旧程序位置' : '项目文件夹'}</h3>
+            <div className="detail-location-row"><FolderOpen size={22} /><span><code>{projectPath ?? (retired ? '旧程序目录暂不可用。' : '源码目录暂不可用，请核对项目来源。')}</code></span><button className="icon-button" aria-label={retired ? '复制旧程序位置' : '复制项目文件夹'} disabled={!projectPath} onClick={() => { if (projectPath) void navigator.clipboard?.writeText(projectPath).then(() => setNotice('路径已复制。'), () => setNotice('请选中完整路径后复制。')); }}><Copy size={20} /></button><button className="refresh-button" disabled={!enabled || !projectPath || openingFolder === projectPath} onClick={() => void revealSource()}>打开文件夹</button></div>
+            <p className="detail-section-note">{retired ? '此位置属于已停用的安装副本。请删除项目后重新添加。' : 'AI 在这里改代码。数据、配置和密钥由平台另行保存。'}</p>
           </section>
           <section className="detail-technical-information"><h3>技术信息</h3><dl className="path-list node-technical-paths">
             <div><dt>项目 ID</dt><dd><code>{detail.id}</code></dd></div>
@@ -412,7 +410,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       </section></Modal>}
     {(!modalOpen || !detail) && deleteDialog}
     {addOpen && <Modal title="添加本地项目" titleIcon={<FolderOpen size={20} />} description="选择你的文件夹，检查后添加。原文件夹保持原位。" className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }}>
-      <LocalDirectoryPanel apps={apps} workspacePath={workspacePath} platformVersion={platformVersion} onViewDetails={app => { setAddOpen(false); void select(app); }} onImportArchive={() => { setAddOpen(false); onImportArchive?.(); }} enabled={enabled && !pending && !applyPending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }} />
+      <LocalDirectoryPanel apps={apps} workspacePath={workspacePath} platformVersion={platformVersion} onViewDetails={app => { setAddOpen(false); void select(app); }} onImportArchive={() => { setAddOpen(false); onImportArchive?.(); }} enabled={enabled && !pending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }} />
     </Modal>}
   </>;
 }

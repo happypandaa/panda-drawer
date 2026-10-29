@@ -134,6 +134,55 @@ fn inspection_is_read_only_and_hidden_or_unrelated_files_are_never_empty() {
 }
 
 #[tokio::test]
+async fn local_directory_preview_and_registration_ignore_retired_manifest_metadata() {
+    let fixture = Fixture::new();
+    fixture.initialize("Disposable editable metadata");
+    let path = fixture.source.join("local-app.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["app"]["id"] = json!("changed-author-identifier");
+    manifest["dataContract"] = json!({"retired":"arbitrary metadata"});
+    manifest["development"] = json!(false);
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let preview = fixture.preview();
+    assert_eq!(preview["state"], "ready", "{preview}");
+    let added = fixture
+        .manager
+        .register_directory(
+            fixture.source.clone(),
+            preview["expectedRevision"].as_str().unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added["sourcePath"], json!(fixture.source));
+    assert!(added["dataContract"].is_null());
+    assert!(fixture.manager.running_ids().await.is_empty());
+}
+
+#[test]
+fn generated_development_instructions_describe_direct_run_and_editable_manifest() {
+    let fixture = Fixture::new();
+    fixture.initialize("Disposable current instructions");
+    let text = fs::read_to_string(fixture.source.join("DEVELOPMENT.md")).unwrap();
+    for current in [
+        "直接运行所选文件夹",
+        "app.id",
+        "重启后生效",
+        "新增必填配置",
+        "平台不据此判断数据兼容",
+    ] {
+        assert!(text.contains(current), "{current}");
+    }
+    for retired in [
+        "独立安装副本",
+        "应用修改",
+        "不要直接改变这些声明",
+        "应用标识、配置和数据契约不兼容",
+    ] {
+        assert!(!text.contains(retired), "{retired}");
+    }
+}
+
+#[tokio::test]
 async fn registered_directory_is_identified_before_a_damaged_manifest_or_entry_budget() {
     let fixture = Fixture::new();
     let input = fixture.input("disposable existing application");
@@ -1236,7 +1285,7 @@ async fn generated_custom_workspace_source_migrates_registration_binding_and_exc
     fixture.manager.set_source_workspace(new.clone()).unwrap();
     let detail = fixture.manager.configuration(id).await.unwrap();
     assert_eq!(detail["sourcePath"], json!(target));
-    assert_eq!(detail["development"]["sourcePath"], json!(target));
+    assert_eq!(detail["objectLayout"]["source"]["path"], json!(target));
     assert_eq!(
         fixture.manager.register(target.clone()).await.unwrap()["id"],
         id
@@ -1328,7 +1377,7 @@ async fn copied_external_source_in_workspace_is_exclusive_but_original_binding_a
     fixture.manager.set_source_workspace(new.clone()).unwrap();
     let detail = fixture.manager.configuration(id).await.unwrap();
     assert_eq!(detail["sourcePath"], json!(original));
-    assert_eq!(detail["development"]["sourcePath"], json!(original));
+    assert_eq!(detail["objectLayout"]["source"]["path"], json!(original));
     assert_eq!(
         fixture
             .manager

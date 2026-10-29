@@ -8,7 +8,7 @@ import { bytesText, exactBytes, timeText } from './storage-utils';
 import type { ByteCount, RetainedWorkspaceRoot, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
-type CleanupKind = 'retainedWorkspace' | 'restoreOriginal' | 'nodeInstallation' | 'nodeGeneration' | 'sourceCopy';
+type CleanupKind = 'retainedWorkspace' | 'restoreOriginal';
 interface CleanupItem {
   id: string;
   kind: CleanupKind;
@@ -43,13 +43,10 @@ interface CleanupPanelProps {
   onRefresh: () => Promise<void>;
   onPendingChange?: (pending: boolean) => void;
 }
-const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移前的旧工作区', restoreOriginal: '取回前的原件', nodeInstallation: 'Node 安装现场', nodeGeneration: 'Node 旧程序版本', sourceCopy: '未被使用的源码副本' };
+const kinds: Record<CleanupKind, string> = { retainedWorkspace: '迁移前的旧工作区', restoreOriginal: '取回前的原件' };
 const groups: { kind: CleanupKind; description: string }[] = [
   { kind: 'retainedWorkspace', description: '迁移工作区时保留的原目录，软件已不再使用。清理会删除该目录中的全部文件，当前工作区不受影响。' },
   { kind: 'restoreOriginal', description: '从版本记录取回数据或源码时，为防万一保留的原文件。取回仍未完成时会保留。' },
-  { kind: 'nodeGeneration', description: '更新 Node 应用后留下的旧版本程序。正在使用的版本不会出现在这里。' },
-  { kind: 'nodeInstallation', description: '已经结束的 Node 应用安装留下的临时目录。还能继续的安装会保留。' },
-  { kind: 'sourceCopy', description: '获取源码时保存的副本，已没有应用或安装在使用。' },
 ];
 // Protected items carry a user-facing reason after a stable code prefix.
 const reasonText = (reason: string) => reason.startsWith('CLEANUP_ITEM_PROTECTED: ') ? reason.slice('CLEANUP_ITEM_PROTECTED: '.length) : reason;

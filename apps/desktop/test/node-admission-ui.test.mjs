@@ -151,3 +151,9 @@ test('A runtime restriction keeps restart disabled and does not ask to fill none
   assert.doesNotMatch(document.querySelector('.node-config-warning').textContent, /补齐必填/);
   await click(button('运行状态')); assert.equal(button('重启').disabled, true); noLaunch(calls);
 });
+
+test('Retired Node registrations explain their unsupported installation directly in the launcher',async()=>{
+ const value={id:'retired-fixture',name:'Retired fixture',runtime:'node-service',sourcePath:'/disposable/retired',installation:{kind:'managed',retired:true},state:'failed',restartRequired:false,lastError:'这个应用使用旧的安装方式，已不再支持。请删除后重新添加。',fields:[],configuration:{unavailable:true,revision:0,values:{},secretStatus:{},missingRequired:[],canStart:false}};
+ await render(NodeProjectCard,{app:value,blocked:false,opening:false,onEnter(){},onDetails(){},onDelete(){}});
+ const notice=document.querySelector('.launcher-retired-note');assert.ok(notice);assert.match(notice.textContent,/请删除后重新添加/);
+});

@@ -29,9 +29,7 @@ struct Admission {
 #[derive(Clone)]
 pub struct NodeOperationPermit(Arc<OperationOwner>);
 struct OperationOwner {
-    coordinator: Arc<NodeOperationCoordinator>,
     instance: Arc<InstanceAdmission>,
-    app_id: String,
     token: u64,
 }
 impl Drop for OperationOwner {
@@ -50,12 +48,6 @@ impl Drop for OperationOwner {
 impl NodeOperationPermit {
     pub fn keep_alive(&self) -> Arc<dyn Send + Sync> {
         self.0.clone()
-    }
-    pub(super) fn validate(&self, apps: &NodeApps, id: &str) -> Result<()> {
-        if self.0.app_id != id || !Arc::ptr_eq(&self.0.coordinator, &apps.operations) {
-            return Err(fail("操作归属不属于此应用。"));
-        }
-        Ok(())
     }
 }
 
@@ -298,9 +290,7 @@ impl NodeOperationCoordinator {
                 state.window_operations.insert(token);
             }
             Ok(NodeOperationPermit(Arc::new(OperationOwner {
-                coordinator: self.clone(),
                 instance: instance.clone(),
-                app_id: id.into(),
                 token,
             })))
         })

@@ -143,7 +143,7 @@ function SpaceOverview({ storage, busy, error, enabled, history, projects, nodeA
   const groups: Group[] = [
     { key: 'projects', label: '我的项目', badge: '正在使用', description: `${projects.length} 个网页项目和 ${nodeApps.length} 个 Node 应用的当前内容`, bytes: projectBytes, color: 'mine' },
     { key: 'regenerable', label: '可重新生成', badge: '可直接释放', description: `开发依赖、构建缓存和日志，下次构建会自动重新生成。${unscanned ? `另有 ${unscanned} 个项目尚未统计。` : ''}`, bytes: regenerable, color: 'regenerable' },
-    { key: 'history', label: '历史资料', badge: '确认后可释放', description: usableHistory ? '迁移前的旧工作区、取回前的原件、Node 旧版本与安装现场、未使用的源码副本。删除项目不会自动清理这些资料。' : history?.stale ? '清理后数字已变化，请在“历史资料”重新扫描。' : '尚未扫描。打开“历史资料”会自动扫描，扫描不会删除文件。', bytes: historyBytes, color: 'history' },
+    { key: 'history', label: '历史资料', badge: '确认后可释放', description: usableHistory ? '迁移前的旧工作区，以及网页项目取回前保留的原件。' : history?.stale ? '清理后数字已变化，请在“历史资料”重新扫描。' : '尚未扫描。打开“历史资料”会自动扫描，扫描不会删除文件。', bytes: historyBytes, color: 'history' },
     { key: 'software', label: '软件本身与记录', badge: '不在这里处理', description: `程序文件、软件设置、运行记录与共享缓存${usableHistory ? '' : '（含尚未扫描的历史资料）'}。`, bytes: software, color: 'software' },
   ];
   // Unscanned history stays inside the software remainder, so the bar is still whole.

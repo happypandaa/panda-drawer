@@ -49,6 +49,10 @@ pub trait SecretVault: Send + Sync {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveConfigurationRequest {
     pub revision: u64,
+    /// NodeApps checks this against the declaration used by the editor. The
+    /// lower-level store also serves callers with an already pinned manifest.
+    #[serde(default)]
+    pub manifest_digest: Option<String>,
     /// A complete ordinary-value snapshot; omitted fields use author defaults.
     pub values: BTreeMap<String, Value>,
     #[serde(default)]
@@ -113,6 +117,7 @@ pub struct ConfigurationView {
     pub saved_values: BTreeMap<String, Value>,
     pub secrets: BTreeMap<String, SecretStatus>,
     pub missing_required: Vec<String>,
+    pub invalid_fields: Vec<String>,
     pub can_start: bool,
 }
 
@@ -178,7 +183,7 @@ impl NodeConfigurationStore {
             return Err(invalid("配置已被其他窗口更新，请重新读取后再保存。"));
         }
         let fields = checked_fields(manifest)?;
-        validate_record_fields(&fields, &previous)?;
+        let (previous, _) = project_record(&fields, &previous)?;
         validate_ordinary(&fields, &request.values)?;
         for name in request.secrets.keys() {
             if !fields
@@ -309,6 +314,9 @@ impl NodeConfigurationStore {
             environment.insert(name.clone(), environment_value(value)?);
         }
         for field in fields {
+            if !field.secret {
+                continue;
+            }
             if let Some(binding) = record.secrets.get(&field.name) {
                 let credential = self.vault.get(self.instance, entry_uuid(binding)?)?;
                 validate_secret(&credential)?;
@@ -337,7 +345,7 @@ impl NodeConfigurationStore {
         record: &StoredConfiguration,
     ) -> Result<ConfigurationView> {
         let fields = checked_fields(manifest)?;
-        validate_record_fields(&fields, record)?;
+        let (record, invalid_fields) = project_record(&fields, record)?;
         let values = effective_values(&fields, &record.values)?;
         let mut secrets = BTreeMap::new();
         let mut missing_required = Vec::new();
@@ -370,10 +378,14 @@ impl NodeConfigurationStore {
         Ok(ConfigurationView {
             revision: record.revision,
             values,
-            saved_values: record.values.clone(),
+            saved_values: record.values,
             secrets,
-            can_start: missing_required.is_empty() && !binding_changed && !binding_missing,
+            can_start: missing_required.is_empty()
+                && invalid_fields.is_empty()
+                && !binding_changed
+                && !binding_missing,
             missing_required,
+            invalid_fields,
         })
     }
 
@@ -541,28 +553,57 @@ fn effective_values(
     Ok(effective)
 }
 
-fn validate_record_fields(
+/// Read a saved record through the current declaration. Retired fields never
+/// reach the editor or process environment. An explicit save, rather than a
+/// detail read, commits removal of retired or incompatible bindings.
+fn project_record(
     fields: &[&ConfigurationField],
     record: &StoredConfiguration,
-) -> Result<()> {
-    validate_ordinary(fields, &record.values)?;
-    for (name, binding) in &record.secrets {
-        if !fields
-            .iter()
-            .any(|field| field.name == *name && field.secret)
-        {
-            return Err(invalid("已保存的密钥绑定与应用声明不匹配。"));
-        }
-        entry_uuid(binding)?;
-        if binding
-            .endpoint
-            .as_ref()
-            .is_some_and(|value| !valid_url(value))
-        {
-            return Err(invalid("已保存的密钥地址绑定无效。"));
+) -> Result<(StoredConfiguration, Vec<String>)> {
+    let mut values = BTreeMap::new();
+    let mut secrets = BTreeMap::new();
+    let mut invalid_fields = Vec::new();
+    for field in fields {
+        if field.secret {
+            if record.values.contains_key(&field.name) {
+                invalid_fields.push(field.name.clone());
+            }
+            if let Some(binding) = record.secrets.get(&field.name) {
+                entry_uuid(binding)?;
+                if binding
+                    .endpoint
+                    .as_ref()
+                    .is_some_and(|value| !valid_url(value))
+                {
+                    return Err(invalid("已保存的密钥地址绑定无效。"));
+                }
+                secrets.insert(field.name.clone(), binding.clone());
+            }
+        } else {
+            // Never read a former credential into an ordinary field, including
+            // when the new declaration supplies a default with the same name.
+            if record.secrets.contains_key(&field.name) {
+                invalid_fields.push(field.name.clone());
+            }
+            if let Some(value) = record.values.get(&field.name) {
+                if validate_value(field, value).is_ok() {
+                    values.insert(field.name.clone(), value.clone());
+                } else if !invalid_fields.contains(&field.name) {
+                    invalid_fields.push(field.name.clone());
+                }
+            }
         }
     }
-    Ok(())
+    Ok((
+        StoredConfiguration {
+            version: record.version,
+            instance_id: record.instance_id.clone(),
+            revision: record.revision,
+            values,
+            secrets,
+        },
+        invalid_fields,
+    ))
 }
 
 fn valid_url(value: &str) -> bool {
@@ -998,6 +1039,7 @@ mod tests {
     fn request(revision: u64, key: Option<&str>) -> SaveConfigurationRequest {
         SaveConfigurationRequest {
             revision,
+            manifest_digest: None,
             values: BTreeMap::new(),
             secrets: key
                 .into_iter()
@@ -1307,8 +1349,109 @@ mod tests {
         let field = &mut changed.configuration.as_mut().unwrap().fields[1];
         field.secret = false;
         field.endpoint_field = None;
-        assert!(store.view(&changed).is_err());
+        let view = store.view(&changed).unwrap();
+        assert_eq!(view.invalid_fields, ["API_KEY"]);
+        assert!(!view.can_start);
+        assert!(!view.saved_values.contains_key("API_KEY"));
+        assert!(!serde_json::to_string(&view)
+            .unwrap()
+            .contains("disposable-key"));
         assert!(store.launch_snapshot(&changed).is_err());
+        let mut update = request(1, None);
+        update
+            .values
+            .insert("API_KEY".into(), json!("new ordinary value"));
+        store.save(&changed, update).unwrap();
+        let snapshot = store.launch_snapshot(&changed).unwrap();
+        assert_eq!(snapshot.environment["API_KEY"], "new ordinary value");
+        assert!(snapshot.redaction_values.is_empty());
+    }
+
+    #[test]
+    fn removed_fields_are_hidden_and_never_injected_without_mutating_on_read() {
+        let (temporary, _vault, store) = store();
+        let mut original = request(0, Some("retired-secret-value"));
+        original.values.insert("MODEL".into(), json!("two"));
+        store.save(&manifest(), original).unwrap();
+        let before = fs::read(temporary.path().join("configuration.json")).unwrap();
+        let mut changed = manifest();
+        changed
+            .configuration
+            .as_mut()
+            .unwrap()
+            .fields
+            .retain(|field| field.name != "API_KEY" && field.name != "MODEL");
+        let view = store.view(&changed).unwrap();
+        assert!(view.can_start);
+        assert!(!view.saved_values.contains_key("MODEL"));
+        assert!(!view.secrets.contains_key("API_KEY"));
+        let snapshot = store.launch_snapshot(&changed).unwrap();
+        assert!(!snapshot.environment.contains_key("API_KEY"));
+        assert!(!snapshot.environment.contains_key("MODEL"));
+        assert_eq!(
+            fs::read(temporary.path().join("configuration.json")).unwrap(),
+            before
+        );
+        store.save(&changed, request(1, None)).unwrap();
+        let record = store.read().unwrap();
+        assert!(!record.values.contains_key("MODEL"));
+        assert!(!record.secrets.contains_key("API_KEY"));
+    }
+
+    #[test]
+    fn incompatible_saved_value_requires_explicit_save_without_coercion() {
+        let (_temporary, _vault, store) = store();
+        let mut original = request(0, Some("artificial-key"));
+        original.values.insert("COUNT".into(), json!(7));
+        store.save(&manifest(), original).unwrap();
+        let mut changed = manifest();
+        let field = &mut changed.configuration.as_mut().unwrap().fields[3];
+        field.r#type = ConfigurationType::String;
+        field.default = None;
+        let view = store.view(&changed).unwrap();
+        assert_eq!(view.invalid_fields, ["COUNT"]);
+        assert!(!view.saved_values.contains_key("COUNT"));
+        assert!(!view.can_start);
+        assert!(store.launch_snapshot(&changed).is_err());
+        let mut update = request(1, None);
+        update.values.insert("COUNT".into(), json!("seven"));
+        store.save(&changed, update).unwrap();
+        assert_eq!(
+            store.launch_snapshot(&changed).unwrap().environment["COUNT"],
+            "seven"
+        );
+    }
+
+    #[test]
+    fn ordinary_values_do_not_become_credentials_when_declaration_changes() {
+        let (_temporary, _vault, store) = store();
+        let mut original = request(0, Some("artificial-key"));
+        original.values.insert("COUNT".into(), json!(7));
+        store.save(&manifest(), original).unwrap();
+        let mut changed = manifest();
+        let field = &mut changed.configuration.as_mut().unwrap().fields[3];
+        field.r#type = ConfigurationType::String;
+        field.secret = true;
+        field.required = true;
+        field.default = None;
+        let view = store.view(&changed).unwrap();
+        assert_eq!(view.invalid_fields, ["COUNT"]);
+        assert_eq!(view.secrets["COUNT"], SecretStatus::Missing);
+        assert!(!view.saved_values.contains_key("COUNT"));
+        assert!(store.launch_snapshot(&changed).is_err());
+        let mut update = request(1, None);
+        update.secrets.insert(
+            "COUNT".into(),
+            SecretAction::Replace {
+                value: "explicit-new-key".into(),
+            },
+        );
+        store.save(&changed, update).unwrap();
+        let snapshot = store.launch_snapshot(&changed).unwrap();
+        assert_eq!(snapshot.environment["COUNT"], "explicit-new-key");
+        assert!(snapshot
+            .redaction_values
+            .contains(&"explicit-new-key".to_owned()));
     }
 
     #[test]

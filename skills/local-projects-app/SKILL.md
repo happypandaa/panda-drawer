@@ -5,19 +5,19 @@ description: 接管、修改和验证熊猫小抽屉平台内的业务应用。�
 
 # 熊猫小抽屉应用开发
 
-为用户完成当前业务项目的功能，让用户在 AI 离线时仍能通过网页正常查看、录入和管理数据。用户的具体需求和已授权范围优先；不要因为本技能增加额外审批。普通兼容的页面和业务数据修改不强制进入维护；可能使旧网页失效的改表、大批量修正或整项目恢复使用下述维护流程。
+为用户完成当前业务项目的功能，让用户在 AI 离线时仍能通过网页正常查看、录入和管理数据。用户的具体需求和已授权范围优先；不要因为本技能增加额外审批。普通兼容的页面和业务数据修改不强制进入维护；改表和大批量修正先核对数据兼容性，恢复按对应现役操作的预览、确认和中断处理流程执行，不新建 ZIP 基线或维护会话。
 
 本技能随项目放在 `.agents/skills/local-projects-app/SKILL.md`。Codex、Claude Code 等工具可以直接读取它，不依赖客户端自动发现。后文 project-v1 章节的 `PROJECT_ROOT` 指包含 `project.json` 的**业务项目根目录**，不是本技能目录或平台源码目录；业务相对文件路径从这里解析，本技能的 `references/` 资源链接从技能文件所在目录解析。
 
 ## 先识别环境、接入类型与窗口约束
 
-默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物，以及可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node，登记和启动不安装依赖。Mac 内部版已将配套受管 Node/npm 接入现有 project-v1 构建入口；用平台 `env doctor` 核对实际工具，保留已有显式本机选择，失效不自动回退。构建选择不影响应用运行 Node。另有私有 Git 工具选择与诊断，以及明确发起的公开 GitHub/Gitee HTTPS 仓库 HEAD 检查；现有 project-v1 已在独立候选中准备依赖和构建，公开仓库获取已提供独立命令；已接本机源码保存、历史列表及新建定制分支；Node 安装候选可准备生产依赖，仍需原生明确确认安装；另有显式源码取回与中断处理；认证尚未接入。
+默认使用构建好的前端、平台 SDK 和 SQL／附件完成应用，确需后端 SDK、秘密凭据或服务端接口时才引入受管 Node。作者构建时使用 Node/npm，不意味着用户运行也要安装它们；交付前端完整产物、可直接执行的后端 JavaScript 和完整运行依赖。应用运行使用固定私有 Node；本地目录登记和应用启动不安装依赖，从 Git 添加只在项目文件夹准备跳过脚本的生产依赖。Mac 内部版配套 Node/npm 供 project-v1 构建和 Git 项目依赖准备使用；用平台 `env doctor` 核对实际工具，已有显式选择失效不自动回退，开发工具选择不改变运行 Node。公开仓库从平台“从 Git 添加”接入，不再提供独立来源捕获、安装候选或 Node 构建更新入口。Node 的修改、构建和 Git 版本由外部 AI 在项目目录完成；project-v1 的平台构建、历史查看和明确源码／数据取回继续按当前 CLI 提供的入口执行。
 
 Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Python、Docker、数据库服务器或额外 CLI。确有外部环境要求时，在选型前说明，分别写明本机软件与在线账号／Key 的准备、用途和缺失影响；声明不代表平台已经支持。具体环境、交付与当前构建边界同样在下述随附约束中，先读后选方案。
 
 先阅读随本技能携带的[应用环境、窗口与后端约束](references/app-window-runtime.md)：应用在平台的一个原生窗口中运行，重复打开只聚焦；Node 类型在打开时后台启动，关闭应用窗口就停止。不要用新浏览器、`window.open`、`target="_blank"`、额外 WebView 或脚本业务弹窗扩展运行方式。原生文件选择和系统权限继续按平台实际能力及用户操作使用。
 
-业务窗口可通过清单可选顶层 `window` 声明初始尺寸，之后默认记住每个项目的普通窗口尺寸；字段、`rememberSize` 与既有 Node 声明摘要门禁见随附[应用窗口尺寸](references/app-window-runtime.md#应用窗口尺寸)。这不开放网页原生窗口权限，不授权改写已登记 Node 清单或用户真实项目，也不改变平台管理窗口尺寸。
+业务窗口可通过清单可选顶层 `window` 声明初始尺寸，之后默认记住每个项目的普通窗口尺寸；字段、`rememberSize` 与有效 Node 清单在下次启动生效的规则见随附[应用窗口尺寸](references/app-window-runtime.md#应用窗口尺寸)。修改有效 Node 清单中的尺寸在下次真正启动时接受；已有窗口仍只聚焦，本机记忆尺寸按原规则优先。这不开放网页原生窗口权限，也不改变平台管理窗口尺寸。
 
 平台入口统一为“我的项目”，网页／Node 用类型图标区分，详情与配置收在页面内带 tabs 的弹窗；缺必填时点击进入先开配置 tab，保存不自动启动。macOS 管理窗口 X 只隐藏并保留 Dock、已开的业务窗口和受管服务，Dock／Reopen／重复启动恢复同一个管理窗口及页面状态；菜单退出／Cmd+Q 才安全收尾全部，非 macOS 管理窗口 X 维持正常退出。业务窗口 X 只收尾本应用受管 Node 及普通子进程，不杀用户独立 Node。隐藏管理窗口不等于服务已停止；不能因窗口消失或主进程退出就假报清理成功，硬崩溃／脱组后代按真实能力记录限制。以上覆盖旧“管理窗口 X 退出”要求，旧项目随附说明不自动改写。
 
@@ -71,7 +71,9 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 保留已注册 SQLite 文件及其 WAL/SHM，不用替换文件、删除数据库或改注册状态来修复问题。常规写入走平台接口；若用户明确要求外部数据库工具操作，另行核实平台的运行限制，完成后用 `project refresh` 通知页面重新查询，不能把它当作构建或数据库恢复命令。
 
-## Git 版本与旧维护兼容
+网页附件通过 SDK `files` 接口保存和读取。数据库保存相对 `data/attachments/` 的逻辑路径，不保存临时访问 URL。用户素材不放进 `app/public/` 或 `dist/`。SQL 与附件上传不是一个事务，业务流程需处理部分成功；SDK 的具体调用及限制见项目 `docs/platform.md`。
+
+## Git 版本与恢复状态
 
 修改前先读取当前 CLI 帮助及 `project git status`，按用户确认的作者与范围保存 Git 版本。源码版本和数据版本分别核对，不把源码提交称作数据库备份；Git 不可用时明确未保存，不另建 ZIP 或私有恢复仓库。普通源码编辑、SQL 和候选构建不要求 ZIP 基线；优先采用兼容的数据事务，由平台的具体替换操作协调必要停写、失败保留与重启检查。
 
@@ -79,33 +81,9 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库和附件；源码取回与数据取回是两项独立操作。只有用户明确要求取回数据时才使用 `project git data-restore-preview` 并核对当前 CLI 的全部新鲜绑定，再明确提交 `data-restore`；预览不自动执行。先查 `project git data-recovery`；pending 或 blocked 时保留原件、日志和候选，仅按核实后的允许方向继续或撤回同一操作，不删除现场、不重新登记、不直接替换 SQLite。not_committed 也可能已有部分文件移动，不能据此说数据未变。完成后页面代次已更新，先处理草稿再从平台明确重新打开。任意 Node 应用自己的数据库不适用这一流程。
 
-新的 `backup create` 和 `maintenance begin` 已退役，生产入口返回 `BACKUP_WORKFLOW_RETIRED`，不创建任务、不生成 ZIP、不进入维护。旧项目自己的文档若仍要求新建这些基线，以当前平台交接和 CLI 的退役结果为准；不要改写旧 SDK 或项目 skill 来绕过保护。
+`maintenance status --project "$PROJECT_ID" --json` 仍提供活动任务、构建状态和恢复门禁。旧备份读取／恢复和维护开始／结束命令已退役，不再调用；存在恢复门禁时按对应现役操作查询和处理，不修改控制记录跳过保护。
 
-只有用户任务涉及旧资料时才使用兼容入口：
-
-```sh
-"$PROJECT_CLI" backup list --project "$PROJECT_ID" --json
-"$PROJECT_CLI" backup info --project "$PROJECT_ID" --backup "$BACKUP_ID" --json
-"$PROJECT_CLI" maintenance status --project "$PROJECT_ID" --json
-```
-
-已有维护和恢复现场不会因退出 AI、重启或功能退役自动解除。保留当前 `maintenanceId`、`readyForChanges`、待构建要求和旧基线引用；不可写或基线缺失时不要重试新建基线、改控制记录或跳过门禁。允许的旧维护 SQL、事务、构建和显式恢复仍须携带当前维护 ID。
-
-```sh
-"$PROJECT_CLI" db execute --project "$PROJECT_ID" --maintenance "$MAINTENANCE_ID" --input request.json --json
-"$PROJECT_CLI" project build --project "$PROJECT_ID" --maintenance "$MAINTENANCE_ID" --json
-"$PROJECT_CLI" maintenance end --project "$PROJECT_ID" --input end-maintenance.json --json
-```
-
-结束输入为 `{"maintenanceId":"实际ID"}`。检查数据库、当前产物和待构建要求，检查通过后才显式结束；失败保留原维护和原因。结束不会撤销修改，旧页面须在处理草稿后明确重载。
-
-只有用户明确选择旧归档来替换整个当前实例时，才调用 `backup restore --project "$PROJECT_ID" --input restore.json --json`，输入 `{"backupId":"实际备份ID"}`，已有维护再带当前 ID。恢复保留完整原目录及 WAL/SHM，使用所选已有归档作为旧维护依据，不新建恢复前 ZIP；恢复成功后仍须完成检查并显式结束维护。归档后新增数据不会自动合并。
-
-若 `recoveryRequired` 或任务中断，先检查同一任务、日志、维护状态和保留现场，不重放恢复、删除证据或强行结束。旧 ZIP不自动按份数裁剪；它们与唯一 Git 历史、未完成操作、原目录都不得手工清理。现有同实例恢复不等于维护／未知归档已能安装为新实例。
-
-网页附件通过 SDK `files` 接口保存和读取。数据库保存相对 `data/attachments/` 的逻辑路径，不保存临时访问 URL。用户素材不放进 `app/public/` 或 `dist/`。SQL 与附件上传不是一个事务，业务流程需处理部分成功；SDK 的具体调用及限制见项目 `docs/platform.md`。
-
-## 导入导出、复制、直接删除与旧回收站
+## 导入导出、复制与直接删除
 
 仅在用户任务涉及这些操作时使用；正常编辑项目不需要先复制或删除。先核对当前 CLI 帮助，旧安装包可能不支持 M4。所有变更返回任务 ID，等待原任务最终状态；写入响应丢失时查询任务和项目，不自动再次复制、导入或删除。
 
@@ -114,24 +92,19 @@ project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库
 "$PROJECT_CLI" project import --input import.json --json
 "$PROJECT_CLI" project copy --project "$PROJECT_ID" --input copy.json --json
 "$PROJECT_CLI" project delete --project "$PROJECT_ID" --json
-"$PROJECT_CLI" trash list --json
-"$PROJECT_CLI" trash info --trash "$TRASH_ID" --json
-"$PROJECT_CLI" trash restore --trash "$TRASH_ID" --json
 ```
 
-导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，已有文件只有显式 `overwrite: true` 才覆盖；普通导入为 `{"archivePath":"/绝对路径/project.zip"}`，省略 `mode` 默认 `copy`，每次生成独立新 ID，允许重复获取；只有明确恢复归档身份才传 `mode: "original"`，可选 `name`。`copy.json` 可指定副本名称。维护中的导出、复制、删除须传本轮 `maintenanceId` 或 `--maintenance`。暂停外部直接文件写入后再做完整快照。
+导出输入为 `{"destinationPath":"/绝对路径/project.zip"}`，必须使用新文件名，不覆盖已有文件。普通导入为 `{"archivePath":"/绝对路径/project.zip"}`，可选 `name`；每次都生成新平台实例 ID，不提供恢复原 ID 的导入模式。`copy.json` 可指定副本名称。既有控制状态要求 `maintenanceId` 时先读取当前状态，不猜测 ID 或绕过恢复门禁；完整快照前暂停外部直接文件写入。
 
-原 ID 导入不能覆盖活跃项目、回收站或登记中的同 ID；副本得到新平台 ID，但业务主键、业务 UUID 和附件名保持。完成后使用返回的新 ID 和 `project handoff` 核对项目根，不依赖复制过来的业务 README 内旧路径或旧 ID。平台不会全局重写用户文字，也不因复制升级 SDK。已有可复用网页无需 Node 即可打开。
+导入与复制保留业务主键、业务 UUID 和附件名。完成后使用返回的新平台 ID 和 `project handoff` 核对项目根，不依赖复制过来的业务 README 内旧路径或旧 ID。平台不会全局重写用户文字，也不因复制升级 SDK。已有可复用网页无需 Node 即可打开。
 
 新实例导入／复制只接受状态明确可用、无待构建要求且数据库关系检查通过的归档。维护、未知、仍需构建或有外键问题时返回 `LEGACY_ARCHIVE_REQUIRES_REVIEW`，在登记实例前拒绝并保留原归档和候选位置；不创建 ZIP 基线、不清除原要求。先检查来源实例和错误原因，不自动重复导入或修改归档状态冒充通过。
 
-2026-10-23 当前删除规则：`project delete` 直接永久删除选中实例的源码、网页、数据库、附件等项目目录内容，不进入平台或系统回收站，无法撤销。执行前核对项目 ID、实际目录和永久删除范围，并确认用户要求删除该实例；不要将其作为编辑、导入冲突或验证的例行收尾。历史备份、外部 ZIP、旧回收项及受保护恢复证据继续保留。部分失败或结果未知时查看原任务与残留，不承诺可以恢复、不自动重放删除。
+`project delete` 直接永久删除选定实例的全部平台管理内容，包括源码与 Git、网页、数据库、附件、依赖、配置、任务和恢复材料，不进入回收站，也不保留成功删除记录。执行前核对项目 ID、实际目录和用户要求删除的范围，不将删除作为普通编辑或冲突处理的例行步骤。用户选择的外部原始目录、原始导入 ZIP，以及已完成交付到用户自选外部目录的导出 ZIP、网页下载和附件副本保留；项目内原件、平台快照／归档、内部暂存和已登记外部未完成文件仍随项目清除。部分失败或结果未知时核对原任务与残留，不自动重放删除。
 
 删除 JSON 可显式给出已核对的 `expectedDocumentEpoch`，CLI 不替换该值；省略时先只读查询当前 `project info.documentEpoch` 再绑定提交。读取失败或身份缺失时不会删除；过期身份由服务拒绝，不重新读取身份来自动重试永久删除。HTTP 直接调用必须自行提供该字段，不允许无绑定删除。
 
-`trash list/info/restore/purge` 仅兼容旧版本留下的回收项，不表示新删除可恢复。旧项恢复保留原 ID 并推进页面代次；坏库恢复保留字节并阻断业务，不创建空库。只有用户明确要求永久清除选定旧回收项才使用 `trash purge --trash "$TRASH_ID" --json`；它不连带删除历史备份、外部 ZIP 或恢复原现场。`purgeIncomplete` 需核对原任务和残留，不能承诺完整恢复。
-
-Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 Node CLI 删除入口。受管安装删除其登记、程序代次、私有配置／秘密、数据和缓存；外部目录引用只删除平台登记与私有配置／数据／缓存，整个外部目录保留。独立来源、安装登记及旧运行恢复材料保留；新流程不生成删除回执或逐文件删除明细，不手工递归清空 Node 槽。
+Node 实例在原生管理窗口预览并确认删除，没有 Node CLI 删除入口。平台下载或生成的项目文件夹（含 Git、依赖和 AI 改动）与实例数据、配置／秘密、日志、缓存、任务和归属一起删除；用户选定的外部原始源码及普通 Git 内容保留，平台私有内容和明确归属的内部材料仍清除。旧 version 2 项目在列表和详情显示不可用，不能启动；删除仍覆盖旧程序代次、安装候选和平台源码，再从 Git 或本地目录重新添加。不要手工递归清空 Node 槽或改控制记录绕过删除核对。
 
 ## 工作区迁移后的继续工作
 
@@ -139,7 +112,7 @@ Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 No
 
 迁移前停止外部编辑器、AI 和 SQLite 工具的写入，并处理未解决的 `recoveryRequired`；平台会等待自身任务，保留维护与全部历史现场后复制校验。只查询同一迁移任务，不因连接切换自动再次提交。提交新位置后即使目标暂不可用，也不自动回退到旧副本；旧根是保留现场，不继续编辑或手工清理。
 
-迁移完成后重新获取服务状态与 `project handoff`，改到返回的新项目绝对路径工作。旧编辑器工作目录不会自动跟随；旧管理凭据和网页会话失效，旧文档需要用户明确重开。固定开发身份不随工作区换位置。当前没有删除旧迁移根的 CLI 命令，也不把历史管理讨论稿当作可调用接口。
+迁移完成后重新获取服务状态与 `project handoff`，改到返回的新项目绝对路径工作。旧编辑器工作目录不会自动跟随；旧管理凭据和网页会话失效，旧文档需要用户明确重开。固定开发身份不随工作区换位置。需要清理迁移原目录时，使用当前 `workspace cleanup-plan` 查看服务生成的范围，再按预览和明确选择调用 `workspace cleanup`；不手工递归删除旧根，也不把历史管理讨论稿中的其他接口当作已实现。
 
 ## 修改、构建与验证
 
@@ -170,17 +143,17 @@ Node 独立实例删除仅在原生管理窗口预览并确认，没有新的 No
 
 ## 当前能力与交接
 
-当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait`、`maintenance status` 和 `workspace info/migrate`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。完整空间管理、历史备份另存/删除和旧迁移根清理入口尚未提供。
+当前开发版提供 `service status`、`env doctor`、`env node set/clear`、`env git doctor/set/clear/check`、`project list/create/info/url/refresh/build/handoff/export/import/copy/delete`、`db schema/execute/transaction`、`task get/wait`、`maintenance status`、`storage info/scan/files/cleanup` 和 `workspace info/storage/migrate/cleanup-plan/cleanup`。旧项目自带的 skill 与 SDK 不随升级覆盖，实际命令以安装包 CLI 帮助为准。空间与历史清理只使用当前 CLI 提供的预览及明确选择流程，不调用已退役的备份、回收站或独立源码命令。
 
 `env git doctor --json` 只读取服务选定 Git 与系统 SSH 的工具状态；系统 SSH 仅检查 `-V`，`authentication.state: not-checked` 不代表账号或仓库访问已通过。`env git set --path /绝对路径/git --json` 保存独立选择，`env git clear --json` 明确清除后恢复平台受管默认；不改变 Node 设置。旧显式路径优先，失效不自动回退；设置无法读取／解析时 `selection: unresolved`，不推测已有默认选择。本机历史列表和源码取回有独立命令；源码初始化、保存与新建分支由外部 AI 使用作者仓库的标准 Git 负责，不将工具可用当作额外能力已实现；不为工具诊断读取或复制私钥、修改用户全局 Git／SSH 配置。Git 不可用不影响成品应用运行。
 
 需要检查指定公开仓库时，明确执行 `env git check --url https://github.com/owner/repository.git --json`；也支持标准 Gitee HTTPS 仓库地址。检查在 20 秒执行预算内匿名读取 HEAD，不读取账号凭据、不克隆或下载仓库、不推送或修改项目。结果绑定该地址与本次时间，不改变 `doctor` 的认证未验证状态；`readable-no-head` 不表示仓库为空。不要把远端检查加入普通离线工具诊断，不将其扩为 SSH／私有仓库认证、仓库获取或完整路线已交付。
 
-实际源码获取使用 `source acquire --url https://github.com/owner/repository.git --json`（也支持 Gitee），返回异步任务；`task wait --task TASK_ID --json` 等待最终结果。`source list --json`、`source get --source SOURCE_ID --json` 查看下载来源、精确提交和候选目录；`source inspect --path /绝对路径 --json` 仅检查本机声明。明确接入本机源码副本用 `source capture --path /绝对路径 [--name 名称] --json`：按路径排除已知数据、凭据、依赖、Git 控制与本机状态，不能通用识别任意文件中的秘密。`source cancel --task TASK_ID --json` 只是请求取消，继续核对最终状态。下载／复制不安装或运行代码，不创建业务项目；失败和中断现场保留，重试是新目录。Node 受管安装和更新另在原生管理窗口准备并确认，没有 Node 安装 HTTP／CLI 提交入口；通用应用包和私有认证仍未开放，不以候选ID调用数据库。
+Node 项目从平台“从 Git 添加”入口接入公开仓库，由后端统一完成下载、检查、依赖准备和登记。项目文件夹就是运行目录，不创建安装副本；Git 项目由平台管理并随项目删除，外部原始目录保留。平台只执行跳过脚本的 npm ci，不执行仓库构建或生命周期脚本；需构建但缺运行文件时，让 AI 构建后用“添加本地项目”添加。失败或取消先确认写入进程已停止，再回滚；登记结果未知时查询原任务，禁止重复添加或自行删除材料。源码资料库和独立捕获／安装候选入口已移除。
 
 源码版本交给外部 AI 使用项目自己的标准 Git 管理。平台不再提供 `project git init/save/save-data/branch-create`，也不新增平台保存事务 journal。提交前核对作者身份、变更范围和秘密；不默认提交数据库、附件、配置、凭据、依赖或运行产物，不自动推送业务数据。已有 `version-data` 数据版本与源码／数据恢复功能保留；旧未完成数据保存仍可使用 `project git data-save-recovery` 只读核对，并在明确授权后以新鲜摘要调用 `data-save-finalize` 完成原任务，不能据此新建版本。
 
-`project git status --project PROJECT_ID --json` 只读检查当前范围与改动；`project git versions --project PROJECT_ID --limit 50 --json` 查看当前 HEAD 可达的本机历史。Node 受管程序的“退回上一个版本”入口已移除；外部 AI 回退源码后仍需按现行构建、准备和明确更新流程交付，源码 Git 不恢复业务数据。
+`project git status --project PROJECT_ID --json` 只读检查当前范围与改动；`project git versions --project PROJECT_ID --limit 50 --json` 查看当前 HEAD 可达的本机历史。Node 的 Git、构建和回退由外部 AI 在项目目录完成，关闭窗口后修改、重新进入生效；源码 Git 不恢复业务数据。可以修改有效 local-app.json 的 app.id、版本号和配置声明，平台实例 UUID 及数据不变。
 
 用户明确要取回已保存源码时，先停止对该项目的外部编辑，保留并保存现有改动。用 `project git source-restore-preview --project PROJECT_ID --input FILE --json`，输入 `targetCommit` 为完整40位小写SHA-1本机提交号；核对允许范围、逐文件增删改和 `canApply`。不接受任意revision／SHA-256，不联网取对象，目标清单必须逐字节一致。确认后调用 `project git source-restore --project PROJECT_ID --input FILE --json`，完整输入来自本次预览的 `targetCommit`、`expectedHead`、`expectedBranch`、`expectedSnapshot`、`expectedPlanDigest`；等待同一任务最终结果，不自动重发。
 

@@ -776,28 +776,11 @@ test('Standalone Node deletion never publishes incomplete or mismatched success 
   }
 });
 
-test('Managed overview shows the editable source and mounts only its explicit apply workflow', async () => {
-  const calls = [];
-  const value = app({ id: '11111111-1111-4111-8111-111111111111', installation: { kind: 'managed', generation: 'gen_' + 'a'.repeat(32) }, development: { sourcePath: '/disposable/author-source', runtimeIsSource: false }, objectLayout: { controlPath: '/disposable/control', data: { root: '/disposable/data', database: '/disposable/data/main.sqlite' }, configurationPath: '/disposable/configuration.json' } });
-  await setup(baseMock(value, async (command, args) => { calls.push(command); if (command === 'open_project_folder') { assert.deepEqual(args, { path: '/disposable/author-source' }); return; } if (command === 'node_development_build') return { taskId: 'build-one', type: 'nodeDevelopmentBuild', projectId: null, final: true, status: 'succeeded', result: { appId: value.id, source: { sourceId: 'src_'+'a'.repeat(32), contentDigest: 'b'.repeat(64), name: '人工源码', status: 'ready', inspection: { kind: 'node-service-source' } } } }; throw Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
-  await click(byText('概览'));
-  const overview = document.querySelector('.node-overview-body');
-  assert.match(overview.textContent, /项目文件夹.*author-source/s);
-  assert.doesNotMatch(overview.textContent, /程序来源|配置与数据|开发与更新|应用更新|源码版本|文件与版本范围|详细运行信息/);
-  assert.equal(document.querySelector('.node-install-panel'), null);
-  assert.deepEqual(calls, []);
-  await click(byText('打开文件夹'));
-  assert.deepEqual(calls, ['open_project_folder']);
-  calls.length = 0;
-  await click(byText('应用修改'));
-  assert.deepEqual(calls, ['node_development_build']);
-  assert.match(document.querySelector('.node-install-panel').textContent, /确认应用修改/);
-  assert.doesNotMatch(document.querySelector('.node-install-panel').textContent, /保留的安装记录|源码候选|安装方式与支持范围/);
-  assert.equal(byText('准备修改').disabled, false);
-  await click(byText('收起应用修改'));
-  assert.equal(document.querySelector('.node-install-panel'), null);
-  assert.equal(byText('应用修改').disabled, false);
-  assert.equal(byText('进入项目').disabled, false);
+test('Git direct overview displays the one runtime folder without an apply workflow', async () => {
+ const calls=[];const value=app({sourcePath:'/disposable/author-source',gitSource:{url:'https://github.com/disposable/source.git',branch:null},ownership:'managed'});
+ await setup(baseMock(value,async(command,args)=>{calls.push([command,args]);assert.equal(command,'open_project_folder');}),{request:{app:value,intent:'details',token:1}});
+ await click(byText('概览'));assert.match(document.querySelector('.node-overview-body').textContent,/项目文件夹.*author-source/s);assert.equal(byText('应用修改'),undefined);assert.equal(document.querySelector('.node-install-panel'),null);assert.deepEqual(calls,[]);
+ await click(byText('打开文件夹'));assert.deepEqual(calls,[['open_project_folder',{path:'/disposable/author-source'}]]);
 });
 
 test('Local overview has no update, Git, restore or Codex entrances and shows flat technical paths', async () => {
@@ -828,7 +811,7 @@ test('Viewing and copying the Node handoff use the existing command and keep man
   const calls = []; const copied = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copied.push(text); throw Error('clipboard unavailable'); } } });
   const value = app();
-  await setup(baseMock(value, async (command, args) => { calls.push([command, args]); assert.equal(command, 'node_development_handoff'); return { projectRoot: '/disposable/source', instanceId: 'instance_one', text: '人工交接全文' }; }), { instanceId: 'instance_one' });
+  await setup(baseMock(value, async (command, args) => { calls.push([command, args]); assert.equal(command, 'node_app_handoff'); return { projectRoot: '/disposable/source', instanceId: 'instance_one', text: '人工交接全文' }; }), { instanceId: 'instance_one' });
   await click(byText('查看交接说明'));
   assert.deepEqual(copied, []); assert.equal(document.querySelector('.handoff-preview textarea').value, '人工交接全文');
   assert.match(document.querySelector('.handoff-preview').textContent, /disposable\/source/);
@@ -1366,8 +1349,6 @@ test('Adding a ready local folder previews first and binds registration to the r
   assert.match(document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent, /核对下面的项目和文件夹/);
   const copyPath = byText('复制文件夹路径'); copyPath.focus(); await click(copyPath);
   assert.equal(document.activeElement, copyPath, 'A later local operation must not repeatedly pull focus back to the preview');
-  assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /org.example.inspected-data · 版本 1/);
-  assert.match(document.querySelector('[aria-label="数据声明"]').textContent, /平台未验证实际数据格式/);
   await click(byText('添加'));
   assert.deepEqual(calls.at(-1), ['node_app_directory_register', { sourcePath: '/artificial/node-source', expectedRevision: 'directory-revision-1' }]);
   assert.ok(document.querySelector('[role="dialog"]'));
@@ -2224,7 +2205,7 @@ test('A Node handoff from a previous instance never reaches the clipboard or cur
   const delayed = deferred(); const copied = []; const value = app();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
   const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
-  await setup(baseMock(value, async command => { assert.equal(command, 'node_development_handoff'); return delayed.promise; }), props);
+  await setup(baseMock(value, async command => { assert.equal(command, 'node_app_handoff'); return delayed.promise; }), props);
   await click(byText('复制提示词'));
   assert.equal(byText('正在准备说明…').disabled, true);
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
@@ -2235,11 +2216,11 @@ test('A Node handoff from a previous instance never reaches the clipboard or cur
 
 
 test('Returning from a closed business window refreshes overview actions without overview polling', async () => {
-  const value = app({ state: 'running', installation: { kind: 'managed' } }); let reads = 0;
+  const value = app({ state: 'running' }); let reads = 0;
   await setup(baseMock(value, async command => { assert.equal(command, 'node_app_status'); reads++; return { ...value, state: 'stopped' }; }));
-  await click(byText('概览')); assert.equal(byText('应用修改').disabled, true);
+  await click(byText('概览')); assert.equal(byText('应用修改'), undefined);
   await act(async () => window.dispatchEvent(new window.Event('focus')));
-  assert.equal(reads, 1); assert.equal(byText('应用修改').disabled, false);
+  assert.equal(reads, 1); assert.equal(byText('应用修改'), undefined);
   assert.equal(byText('进入项目').disabled, false);
 });
 
@@ -2292,4 +2273,26 @@ test('Session recent folders forget only their deleted owner and never persist i
   await act(async () => root.unmount()); root = null; resetRecentProjectFoldersForTests();
   await setupDirectory(async command => { throw new Error(command); }, { workspacePath: scope });
   assert.equal(document.querySelector('.local-directory-recents'), null);
+});
+
+test('A new required configuration discovered at launch opens its refreshed configuration form', async () => {
+  const initial=app(); const changed=app({configuration:{...initial.configuration,canStart:false,missingRequired:['AI_KEY'],secretStatus:{AI_KEY:'missing'}}});let reads=0;const calls=[];
+  await setup(async(command,args)=>{
+    calls.push(command);
+    if(command==='node_app_configuration')return ++reads===1?initial:changed;
+    if(command==='node_app_start')throw {code:'NODE_CONFIGURATION_REQUIRED',message:'需要配置'};
+    if(command==='node_app_status')return initial;
+    throw Error(command);
+  });
+  await click(byText('进入项目'));
+  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent,'应用配置');
+  assert.equal(document.querySelector('.node-launch-error'),null);assert.equal(calls.filter(command=>command==='node_app_start').length,1);assert.equal(reads,2);
+});
+test('Configuration submission carries the displayed manifest revision', () => {
+ const value=app({manifestDigest:'a'.repeat(64)});const input=nodeConfigurationInput(value,{ordinary:{},secrets:{}});assert.equal(input.manifestDigest,value.manifestDigest);
+});
+
+test('A retired installation stays removable and cannot advertise a source update or start',async()=>{
+ const value=app({installation:{kind:'managed',retired:true},state:'failed',lastError:'这个应用使用旧的安装方式，已不再支持。请删除后重新添加。',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:false,unavailable:true}});
+ await setup(baseMock(value));await click(byText('概览'));assert.match(document.body.textContent,/请删除后重新添加/);assert.equal(byText('进入项目').disabled,true);assert.equal(byText('复制提示词').disabled,true);assert.equal(byText('删除项目').disabled,false);assert.equal(byText('应用修改'),undefined);assert.doesNotMatch(document.body.textContent,/改完后关闭窗口再进入即可生效|AI 在这里改代码/);assert.ok(byText('旧程序位置','h3'));assert.ok(document.querySelector('[aria-label="复制旧程序位置"]'));
 });

@@ -735,8 +735,10 @@ impl BuildManager {
             .records
             .get_mut(task)
             .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task was not found"))?;
-        if !matches!(record.task_type.as_str(), "sourceAcquire" | "sourceCapture")
-            || record.status.is_final()
+        if !matches!(
+            record.task_type.as_str(),
+            "sourceAcquire" | "sourceCapture" | "nodeGitImport"
+        ) || record.status.is_final()
         {
             return Err(ApiError::new("SOURCE_IMPORT_INVALID", "来源任务身份无效。"));
         }
@@ -851,20 +853,6 @@ impl BuildManager {
         record.result = Some(result);
         record.error = Some(error);
         atomic_json(&self.task_dir(id).join("task.json"), record)
-    }
-    pub(crate) fn reconcile_operation_result(
-        &self,
-        id: &str,
-        result: Value,
-    ) -> Result<(), ApiError> {
-        let mut registry = self.registry.lock().unwrap();
-        if let Some(record) = registry.records.get_mut(id) {
-            if record.status == TaskStatus::Interrupted {
-                record.result = Some(result);
-                atomic_json(&self.task_dir(id).join("task.json"), record)?;
-            }
-        }
-        Ok(())
     }
     pub fn task(&self, id: &str) -> Result<TaskRecord, ApiError> {
         self.registry

@@ -64,7 +64,6 @@ const { resetHistoryScanForTests } = await component('history-scan-store.ts');
 const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
 const { default: App } = await component('App.tsx');
 const { resetProjectDeletionsForTests, acceptProjectDeletion, observeDeletionRuntime, projectWasDeleted } = await component('project-deletion.ts');
-const { SourceLibraryPanel: SourceAcquisitionPanel } = await component('SourceLibraryPanel.tsx');
 const { ImportPanel } = await component('LifecyclePanels.tsx');
 const { ProjectDeleteDialog } = await component('ProjectDeleteDialog.tsx');
 const { ProjectTask } = await component('ProjectTask.tsx');
@@ -145,229 +144,6 @@ test('Project import always requests a new independent identity', async () => {
   await click(buttonNamed('校验并导入'));
   assert.deepEqual(calls[1], { input: { archivePath: '/disposable/shared-project.zip', cleanupTemporaryFiles: true } });
   assert.equal(tasks.length, 2);
-});
-
-test('Source acquisition preserves failed input and blocks duplicate submission and premature close', async () => {
-  await setup(); const accepted = deferred(); const calls = []; let closed = 0;
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'source_list') return [];
-    assert.equal(command, 'source_acquire'); calls.push(args); return accepted.promise;
-  };
-  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() { closed++; } }));
-  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
-  await click(buttonNamed('获取源码')); await click(buttonNamed('正在提交…')); await key('Escape');
-  assert.equal(calls.length, 1); assert.equal(closed, 0);
-  await act(async () => accepted.reject(new Error('Source download was rejected')));
-  assert.match(dialog().textContent, /Source download was rejected/);
-  assert.equal(document.getElementById('source-url').value, 'https://github.com/disposable/source.git');
-  assert.equal(buttonNamed('获取源码').disabled, false);
-});
-
-test('Source cancel acceptance remains pending until the real task reaches its final state', async () => {
-  await setup(); let cancelled = false; const forwarded = [];
-  const task = { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'source_list') return [];
-    if (command === 'source_acquire') return task;
-    if (command === 'source_cancel') { cancelled = true; return task; }
-    assert.equal(command, 'task_get');
-    return cancelled ? { ...task, status: 'failed', final: true, error: { code: 'SOURCE_ACQUISITION_CANCELLED', message: 'Cancelled; partial files retained' } } : task;
-  };
-  await render(h(SourceAcquisitionPanel, { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} }));
-  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
-  await click(buttonNamed('获取源码')); await click(buttonNamed('取消获取'));
-  assert.match(dialog().textContent, /已请求取消，正在等待任务停止/);
-  assert.equal(buttonNamed('获取源码').disabled, true);
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
-  assert.match(dialog().textContent, /Cancelled; partial files retained/);
-  assert.equal(buttonNamed('获取源码').disabled, false);
-  assert.equal(forwarded.at(-1).final, true);
-});
-
-test('Local source inspection only requests declarations and never registers or starts an app', async () => {
-  await setup(); const calls = [];
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    calls.push([command, args]);
-    if (command === 'source_list') return [];
-    if (command === 'choose_path') { assert.equal(args.kind, 'source'); return '/disposable/local-source'; }
-    assert.equal(command, 'source_inspect');
-    return { sourcePath: args.sourcePath, inspection: { kind: 'needs-adaptation', executionState: 'not-executed', issues: ['Missing supported declaration'] } };
-  };
-  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() {} }));
-  await click(buttonNamed('检查本机源码目录'));
-  assert.match(dialog().textContent, /尚待评估的源码 · 未执行代码/);
-  assert.match(dialog().textContent, /平台未判断能否适配/);
-  assert.match(dialog().textContent, /Missing supported declaration/);
-  assert.deepEqual(calls.map(([command]) => command), ['source_list', 'choose_path', 'source_inspect']);
-});
-
-test('Local source capture is a separate explicit action and its pending request blocks closing', async () => {
-  await setup(); const accepted = deferred(); const captures = []; let closed = 0;
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'source_list') return [];
-    if (command === 'choose_path') return '/disposable/local-source';
-    if (command === 'source_inspect') return { sourcePath: args.sourcePath, inspection: { kind: 'needs-adaptation', issues: [], executionState: 'not-executed' } };
-    assert.equal(command, 'source_capture'); captures.push(args); return accepted.promise;
-  };
-  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() { closed++; } }));
-  await click(buttonNamed('检查本机源码目录')); assert.equal(captures.length, 0);
-  await click(buttonNamed('接入此目录的源码副本')); await click(buttonNamed('接入此目录的源码副本')); await key('Escape');
-  assert.equal(closed, 0); assert.deepEqual(captures, [{ input: { sourcePath: '/disposable/local-source' } }]);
-  await act(async () => accepted.reject(new Error('Capture failed; source unchanged')));
-  assert.match(dialog().textContent, /Capture failed; source unchanged/);
-  assert.match(dialog().textContent, /disposable\/local-source/);
-  assert.equal(buttonNamed('接入此目录的源码副本').disabled, false);
-});
-
-test('Source instance changes preserve input drafts, reread records and discard an older list', async () => {
-  await setup(); const older = deferred(); let reads = 0;
-  const candidate = name => ({ sourceId: name, taskId: `task_${name}`, name, status: 'ready', url: '', evidencePath: `/${name}/source` });
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    assert.equal(command, 'source_list'); return ++reads === 1 ? older.promise : [candidate('new-instance')];
-  };
-  const props = { disabled: false, onTask() {}, onClose() {} };
-  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
-  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
-  await inputValue(document.getElementById('source-name'), '未提交的备注');
-  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
-  assert.equal(reads, 2);
-  await act(async () => older.resolve([candidate('old-instance')]));
-  assert.match(dialog().textContent, /new-instance/);
-  assert.doesNotMatch(dialog().textContent, /old-instance/);
-  assert.equal(document.getElementById('source-url').value, 'https://github.com/disposable/draft.git');
-  assert.equal(document.getElementById('source-name').value, '未提交的备注');
-});
-
-test('Source instance changes discard inspected paths, source tasks and installation tasks', async () => {
-  await setup(); const forwarded = []; let reads = 0;
-  const sourceId = `src_${'1'.repeat(32)}`;
-  const candidate = { sourceId, taskId: 'task_source', name: 'old-candidate', status: 'ready', url: '', evidencePath: '/old-evidence', contentDigest: 'a'.repeat(64), inspection: { kind: 'node-service-source', issues: [], executionState: 'not-executed' } };
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'source_list') return ++reads < 3 ? [candidate] : [];
-    if (command === 'choose_path') return '/old-inspected-path';
-    if (command === 'source_inspect') return { sourcePath: args.sourcePath, inspection: candidate.inspection };
-    if (command === 'source_acquire') return { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'failed', final: true, error: { code: 'OLD_SOURCE_ERROR', message: 'old-source-error' } };
-    if (command === 'node_install_list') return { candidates: [], issues: [] };
-    assert.equal(command, 'node_install_prepare');
-    return { taskId: 'task_install', type: 'nodeInstallPrepare', projectId: null, status: 'running', final: false, phase: 'dependencies' };
-  };
-  const props = { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} };
-  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
-  await click(buttonNamed('检查本机源码目录'));
-  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
-  await click(buttonNamed('获取源码'));
-  await click(buttonNamed('查看安装候选与准备安装'));
-  await act(async () => {
-    const select = document.querySelector('.node-install-panel select');
-    Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(select, sourceId);
-    select.dispatchEvent(new window.Event('change', { bubbles: true }));
-  });
-  await click(buttonNamed('准备安装材料'));
-  assert.equal(forwarded.at(-1).type, 'nodeInstallPrepare');
-  await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
-  assert.doesNotMatch(dialog().textContent, /old-candidate|old-inspected-path|old-source-error/);
-  assert.equal(document.querySelector('.node-install-panel'), null);
-  await click(buttonNamed('查看安装候选与准备安装'));
-  assert.equal(buttonNamed('取消准备'), undefined);
-  assert.equal(forwarded.length, 2);
-});
-
-for (const delayedCommand of ['choose_path', 'source_inspect', 'source_acquire', 'source_capture', 'source_cancel']) {
-  test(`Source instance changes ignore a late ${delayedCommand} response`, async () => {
-    await setup(); const delayed = deferred(); const calls = []; const forwarded = [];
-    const task = { taskId: 'task_old_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
-    const inspection = { sourcePath: '/old-inspection', inspection: { kind: 'needs-adaptation', issues: [], executionState: 'not-executed' } };
-    globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-      calls.push([command, args]);
-      if (command === delayedCommand) return delayed.promise;
-      if (command === 'source_list') return [];
-      if (command === 'choose_path') return inspection.sourcePath;
-      if (command === 'source_inspect') return inspection;
-      if (command === 'source_acquire') return task;
-      throw new Error(`Unexpected source fixture request: ${command}`);
-    };
-    const props = { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} };
-    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
-    if (['choose_path', 'source_inspect', 'source_capture'].includes(delayedCommand)) {
-      await click(buttonNamed('检查本机源码目录'));
-      if (delayedCommand === 'source_capture') await click(buttonNamed('接入此目录的源码副本'));
-    } else {
-      await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
-      await click(buttonNamed('获取源码'));
-      if (delayedCommand === 'source_cancel') await click(buttonNamed('取消获取'));
-    }
-    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
-    const requestCount = calls.length; const forwardedCount = forwarded.length;
-    await act(async () => delayed.resolve(delayedCommand === 'choose_path' ? inspection.sourcePath : delayedCommand === 'source_inspect' ? inspection : task));
-    assert.equal(calls.length, requestCount, 'A stale action must not issue follow-up reads or inspection');
-    assert.equal(forwarded.length, forwardedCount, 'A stale task must not reach the new parent instance');
-    assert.doesNotMatch(dialog().textContent, /old-inspection|获取任务已接受|已接受接入任务|已请求取消/);
-    assert.equal(buttonNamed('取消获取'), undefined);
-    assert.equal(buttonNamed('检查本机源码目录').disabled, false);
-  });
-}
-
-test('Source instance changes ignore a late recovered task and a late task poll', async () => {
-  for (const recover of [true, false]) {
-    await setup(); const delayed = deferred(); const forwarded = []; let reads = 0; let polls = 0;
-    const task = { taskId: 'task_old_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
-    globalThis.__UI_TEST_INVOKE__ = async command => {
-      if (command === 'source_list') return ++reads === 1 && recover ? [{ sourceId: 'old-source', taskId: task.taskId, name: 'old-candidate', status: 'acquiring', url: '', evidencePath: '/old-evidence' }] : [];
-      if (command === 'source_acquire') return task;
-      assert.equal(command, 'task_get'); polls++; return delayed.promise;
-    };
-    const props = { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} };
-    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'old' }));
-    if (!recover) {
-      await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/draft.git');
-      await click(buttonNamed('获取源码'));
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
-    }
-    assert.equal(polls, 1);
-    await render(h(SourceAcquisitionPanel, { ...props, instanceId: 'new' }));
-    const forwardedCount = forwarded.length; const readCount = reads;
-    await act(async () => delayed.resolve({ ...task, final: true, status: 'failed', error: { message: 'old-task-failure' } }));
-    assert.equal(forwarded.length, forwardedCount); assert.equal(reads, readCount);
-    assert.doesNotMatch(dialog().textContent, /old-task-failure|old-candidate|old-evidence/);
-    await act(async () => root.unmount()); root = null;
-  }
-});
-
-test('Source submission refresh is not dropped behind an older list request', async () => {
-  await setup(); const older = deferred(); let reads = 0;
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'source_list') return ++reads === 1 ? older.promise : [{ sourceId: 'new-source', taskId: 'task_source', name: 'fresh-candidate', status: 'ready', url: '', evidencePath: '/fresh-evidence' }];
-    assert.equal(command, 'source_acquire');
-    return { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'succeeded', final: true };
-  };
-  await render(h(SourceAcquisitionPanel, { disabled: false, onTask() {}, onClose() {} }));
-  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
-  await click(buttonNamed('获取源码'));
-  assert.equal(reads, 2); assert.match(dialog().textContent, /fresh-candidate/);
-  await act(async () => older.resolve([]));
-  assert.match(dialog().textContent, /fresh-candidate/);
-  assert.equal(buttonNamed('刷新结果').disabled, false);
-});
-
-test('Source cancellation cannot replace a final polled task with an older running acknowledgement', async () => {
-  await setup(); const cancellation = deferred(); const forwarded = [];
-  const task = { taskId: 'task_source', type: 'sourceAcquire', projectId: null, status: 'running', final: false, phase: 'downloading' };
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'source_list') return [];
-    if (command === 'source_acquire') return task;
-    if (command === 'source_cancel') return cancellation.promise;
-    assert.equal(command, 'task_get');
-    return { ...task, final: true, status: 'failed', error: { message: 'final-cancellation-result' } };
-  };
-  await render(h(SourceAcquisitionPanel, { disabled: false, onTask(value) { forwarded.push(value); }, onClose() {} }));
-  await inputValue(document.getElementById('source-url'), 'https://github.com/disposable/source.git');
-  await click(buttonNamed('获取源码')); await click(buttonNamed('取消获取'));
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
-  await act(async () => cancellation.resolve(task));
-  assert.equal(forwarded.at(-1).final, true);
-  assert.match(dialog().textContent, /final-cancellation-result/);
-  assert.equal(buttonNamed('取消获取'), undefined);
-  assert.equal(buttonNamed('获取源码').disabled, false);
 });
 
 test('Modal names itself, focuses its heading, locks the background, and restores focus/scroll/inert state', async () => {
@@ -976,7 +752,7 @@ test('Projects tab lists both project types, cleans regenerable files after one 
   await render(h(WorkspaceHub, hubProps({ projects, nodeApps, tab: 'projects', isProjectBusy: (value) => value.id === 'prj_space_c' && false, onProjectTask: (task) => tasks.push(task.taskId), onProjectDelete: (value) => deleted.push(value.id), onNodeDelete: (value) => deleted.push(value.id) })));
   const rows = () => [...document.querySelectorAll('.space-project-row:not(.is-header)')];
   assert.equal(rows().length, 4);
-  assert.match(rows().find((row) => row.textContent.includes('Node space fixture')).textContent, /Node 应用.*外部目录接入|外部目录接入.*Node 应用/);
+  assert.match(rows().find((row) => row.textContent.includes('Node space fixture')).textContent, /Node 应用.*项目文件夹归属待核对|项目文件夹归属待核对.*Node 应用/);
   assert.equal(document.querySelector('[aria-label="清理「Space B」的可重新生成文件"]'), null);
   assert.ok(document.querySelector('[aria-label="统计「Space C」的占用"]'));
   await click(document.querySelector('[aria-label="清理「Space A」的可重新生成文件"]'));
@@ -1045,17 +821,15 @@ test('Cleanup lists every history category and shows protected reasons without i
   await setup();
   const items = [
     { id: 'datarestore_task_a', kind: 'restoreOriginal', label: '数据取回前的原件', name: 'Fixture project', projectId: 'prj_a', path: '/disposable/workspace/.platform/project-state/data-restore/prj_a/task_a', totalBytes: 10, fileCount: 1, canClean: true, blockedReasons: [] },
-    { id: 'install_a', kind: 'nodeInstallation', label: 'Node 安装现场', name: 'Fixture app', path: '/disposable/node-apps/.installations/install_a', totalBytes: 20, fileCount: 2, canClean: false, blockedReasons: ['CLEANUP_ITEM_PROTECTED: 这个安装候选还可以继续安装，保留'] },
-    { id: 'gen_a', kind: 'nodeGeneration', label: 'Node 旧程序版本', name: 'Fixture app', path: '/disposable/node-apps/app/generations/gen_a', totalBytes: 30, fileCount: 3, canClean: true, blockedReasons: [] },
-    { id: 'src_a', kind: 'sourceCopy', label: '未被使用的源码副本', name: 'Fixture source', path: '/disposable/workspace/.platform/sources/src_a', totalBytes: 40, fileCount: 4, canClean: true, blockedReasons: [] },
+    { id: 'install_a', kind: 'restoreOriginal', label: '取回前的原件', name: 'Fixture app', path: '/disposable/workspace/.platform/data-restores/restore_pending/original', totalBytes: 20, fileCount: 2, canClean: false, blockedReasons: ['CLEANUP_ITEM_PROTECTED: 这个恢复操作尚未完成，保留'] },
   ];
   globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan({ items })); };
   await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
   const rows = [...document.querySelectorAll('.workspace-cleanup-item')];
-  assert.equal(rows.length, 4);
-  assert.deepEqual([...document.querySelectorAll('.history-group h3')].map((heading) => heading.textContent), ['取回前的原件', 'Node 旧程序版本', 'Node 安装现场', '未被使用的源码副本']);
-  const blocked = rows.find((row) => row.closest('.history-group').querySelector('h3').textContent === 'Node 安装现场');
-  assert.match(blocked.textContent, /这个安装候选还可以继续安装/);
+  assert.equal(rows.length, 2);
+  assert.deepEqual([...document.querySelectorAll('.history-group h3')].map((heading) => heading.textContent), ['取回前的原件']);
+  const blocked = rows.find((row) => row.textContent.includes('这个恢复操作尚未完成'));
+  assert.match(blocked.textContent, /这个恢复操作尚未完成/);
   assert.doesNotMatch(blocked.textContent, /CLEANUP_ITEM_PROTECTED/);
   assert.equal(blocked.querySelector('input').disabled, true);
   // Selecting a whole group skips protected items.
@@ -1903,26 +1677,20 @@ test('A CLI deletion notification rejects a late project list and keeps another 
   await managerDeletion(managerRemoved(b.id, { instanceId: 'another-runtime' }));
   assert.equal(document.querySelector('.detail-metadata-form input').value, 'Keep unrelated B draft');
 });
-test('A CLI deletion removes null-projectId source tasks and a late task poll cannot restore the task center', async () => {
-  await setup(); const delayed = deferred(); const owner = 'disposable_node_cli_A';
-  const task = { taskId: 'task_cli_null_source', projectId: null, type: 'sourceAcquire', status: 'running', final: false, phase: 'downloading', result: { ownerAppId: owner } };
-  mockApp({ projects: [] }, async command => {
-    if (command === 'source_list') return [];
-    if (command === 'source_acquire') return task;
-    if (command === 'task_get') return delayed.promise;
-    throw new Error(command);
-  });
-  await render(h(App)); await click(buttonNamed('从 Git 添加'));
-  await inputValue(document.getElementById('git-import-url'), 'https://github.com/disposable/cli-source');
-  await click(buttonNamed('开始添加'));
-  await click(closeButton());
-  assert.equal(document.querySelectorAll('.task-center-entry').length, 1);
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1050)); });
-  await managerDeletion(managerRemoved(owner, { kind: 'node', taskIds: [task.taskId], sourceIds: ['src_cli_source'] }));
-  await act(async () => delayed.resolve({ ...task, final: true, status: 'succeeded', phase: 'completed', result: { ownerAppId: owner } }));
-  assert.equal(document.querySelectorAll('.task-center-entry').length, 0);
-  assert.equal(document.querySelector('.task-center-import'), null);
-  assert.doesNotMatch(document.querySelector('.task-center-panel').textContent, /task_cli_null_source|正在获取源码/);
+test('A CLI deletion revokes the unified import and ignores its late status response', async () => {
+ await setup();const delayed=deferred();const owner='disposable_node_cli_A';
+ const task={taskId:'task_cli_null_source',projectId:null,type:'nodeGitImport',status:'running',final:false,phase:'downloading',result:{ownerAppId:owner},error:null};
+ mockApp({projects:[]},async command=>{
+   if(command==='node_git_import_start')return task;
+   if(command==='node_git_import_status')return delayed.promise;
+   if(command==='task_get')return delayed.promise.then(value=>value.task);
+   throw Error(command);
+ });
+ await render(h(App));await click(buttonNamed('从 Git 添加'));await inputValue(document.getElementById('git-import-url'),'https://github.com/disposable/cli-source');await click(buttonNamed('开始添加'));await click(buttonNamed('在后台继续'));
+ assert.equal(document.querySelectorAll('.task-center-entry').length,1);
+ await managerDeletion(managerRemoved(owner,{kind:'node',taskIds:[task.taskId],sourceIds:[]}));
+ await act(async()=>delayed.resolve({task:{...task,final:true,status:'succeeded',phase:'completed'},appId:owner,sourcePath:'/disposable/source',commitState:'committed',cleanupPending:false,remainingPaths:[],app:null}));
+ assert.equal(document.querySelectorAll('.task-center-entry').length,0);assert.equal(document.querySelector('.task-center-import'),null);
 });
 
 test('An obsolete bootstrap reply cannot change the deletion runtime or erase a confirmed revocation', async () => {

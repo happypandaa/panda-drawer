@@ -2,7 +2,6 @@
 //! callers cannot submit paths or reconstruct deletion authority from JSON.
 //! The desktop additionally proves strict business-window and Node shutdown.
 use crate::{file_identity::PersistedIdentity, ApiError, RuntimePaths, RuntimeService};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -495,7 +494,32 @@ fn scope_metadata(
     );
     let owned_scopes = ownership.all_owned_scopes()?;
     let owned_paths = project_owned_paths(paths)?;
-    files.extend(owned_scopes.into_iter().map(|(path, _)| path));
+    for (ledger, owned) in owned_scopes {
+        let id = ledger
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| fail("项目源码归属标识无效，未开始清理。"))?;
+        // The live owner index remains authoritative even when a retired
+        // registration or its optional source binding is damaged or absent.
+        // source_roots verifies the UUID, captured directory identity and volume.
+        for source in ownership.source_roots(id)? {
+            let source = source
+                .to_str()
+                .ok_or_else(|| fail("项目源码目录不是有效文本路径。"))?;
+            add_preserved_unless_owned(&mut preserved, source, paths, &owned_paths)?;
+        }
+        for directory in owned.iter().filter(|directory| {
+            directory.parent() == Some(paths.data_root().join("node-source-owners").as_path())
+        }) {
+            let record = directory.join("owner.json");
+            crate::projects::check_no_symlinks(&record, true)?;
+            if record.try_exists()? {
+                files.push(record);
+            }
+        }
+        files.push(ledger);
+    }
     files.extend(
         crate::web_project_ownership::WebProjectOwnership::new(
             paths.data_root().into(),
@@ -579,15 +603,6 @@ fn scope_metadata(
     Ok((metadata, preserved.into_iter().collect()))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExternalRegistration {
-    version: u32,
-    id: String,
-    source_path: String,
-    manifest_digest: String,
-}
-
 fn node_references(
     node_root: &Path,
     slot: &Path,
@@ -601,19 +616,15 @@ fn node_references(
     if Uuid::parse_str(id).is_err() {
         return Err(fail("Node 应用登记所在目录身份无效，未开始清理。"));
     }
-    let binding_path = |value| -> Result<String, ApiError> {
-        let binding: crate::node_apps::development::NodeDevelopmentBinding =
-            serde_json::from_value(value)
-                .map_err(|_| fail("源码绑定记录无效，请先核对外部原始源码的位置。"))?;
-        binding.validate_record()?;
-        binding
-            .source_root
-            .into_os_string()
+    let string = |path: PathBuf| {
+        path.into_os_string()
             .into_string()
             .map_err(|_| fail("源码绑定目录不是有效文本路径。"))
     };
     if name == "development-source.json" {
-        return Ok(vec![binding_path(value)?]);
+        return Ok(vec![string(
+            crate::node_registration::source_binding_path(&value)?,
+        )?]);
     }
     if let Some(pending) = value
         .as_object_mut()
@@ -623,42 +634,16 @@ fn node_references(
             return Err(fail("当前应用可用状态无效，未开始清理。"));
         }
     }
-    if value["version"] == 1 {
-        let record: ExternalRegistration = serde_json::from_value(value)
-            .map_err(|_| fail("外部应用登记无效，无法核对原始源码目录。"))?;
-        if record.version != 1
-            || record.id != id
-            || record.manifest_digest.len() != 64
-            || !record
-                .manifest_digest
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(fail("外部应用登记身份无效，未开始清理。"));
+    match crate::node_registration::decode_registration(value, id, node_root)? {
+        crate::node_registration::StoredNodeRegistration::Direct(record) => {
+            Ok(vec![string(record.source_path)?])
         }
-        Ok(vec![record.source_path])
-    } else if value["version"] == 2 {
-        let record: crate::node_app_install::ManagedNodeRegistration =
-            serde_json::from_value(value)
-                .map_err(|_| fail("受管应用登记无效，无法核对原始源码绑定。"))?;
-        if record.id != id {
-            return Err(fail("受管应用登记身份不符，未开始清理。"));
-        }
-        crate::node_app_install::managed_program_path(node_root, &record)?;
-        record
+        crate::node_registration::StoredNodeRegistration::Retired(record) => record
             .development_source
-            .map(|binding| {
-                binding.validate_record()?;
-                binding
-                    .source_root
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|_| fail("源码绑定目录不是有效文本路径。"))
-            })
+            .as_ref()
+            .map(|value| crate::node_registration::source_binding_path(value).and_then(string))
             .transpose()
-            .map(|path| path.into_iter().collect())
-    } else {
-        Err(fail("未知应用登记格式，无法核对外部原始源码；未开始清理。"))
+            .map(|path| path.into_iter().collect()),
     }
 }
 
@@ -711,22 +696,67 @@ fn installation_references(
     {
         return Err(bad());
     }
-    let target: crate::node_app_install::InstallTargetSnapshot =
-        serde_json::from_value(value["target"].clone()).map_err(|_| bad())?;
-    target.validate()?;
+    // A retired journal is read only to preserve an author-selected original.
+    // It does not need an executable installer or update compatibility gates.
+    let target = &value["target"];
+    let app_id = target["appId"]
+        .as_str()
+        .filter(|id| Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+        .ok_or_else(bad)?;
+    let target_fields = [
+        "appId",
+        "registrationDigest",
+        "generation",
+        "manifest",
+        "configurationRevision",
+        "externalRegistration",
+        "developmentSource",
+    ];
+    if !target.as_object().is_some_and(|object| {
+        object
+            .keys()
+            .all(|key| target_fields.contains(&key.as_str()))
+    }) || target["configurationRevision"].as_u64().is_none()
+    {
+        return Err(bad());
+    }
+    let digest = target["registrationDigest"].as_str();
+    let generation = target["generation"].as_str();
+    let is_hex =
+        |value: &str, len| value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if (!target["registrationDigest"].is_null() && digest.is_none_or(|value| !is_hex(value, 64)))
+        || (!target["generation"].is_null()
+            && generation.is_none_or(|value| {
+                !value
+                    .strip_prefix("gen_")
+                    .is_some_and(|value| is_hex(value, 32))
+            }))
+        || (!target["manifest"].is_null() && !target["manifest"].is_object())
+        || (digest.is_none()
+            && (!target["generation"].is_null()
+                || !target["externalRegistration"].is_null()
+                || !target["developmentSource"].is_null()
+                || target["configurationRevision"] != 0))
+        || (digest.is_some() && (generation.is_some() == !target["externalRegistration"].is_null()))
+        || (digest.is_some() == target["manifest"].is_null())
+    {
+        return Err(bad());
+    }
     let mut paths = Vec::new();
-    if let Some(previous) = target.external_registration {
+    if !target["externalRegistration"].is_null() {
+        if target["externalRegistration"]["version"] != 1 {
+            return Err(bad());
+        }
         paths.extend(node_references(
             node_root,
-            &node_root.join(&target.app_id),
+            &node_root.join(app_id),
             "registration.json",
-            previous,
+            target["externalRegistration"].clone(),
         )?);
     }
-    if let Some(binding) = target.development_source {
+    if !target["developmentSource"].is_null() {
         paths.push(
-            binding
-                .source_root
+            crate::node_registration::source_binding_path(&target["developmentSource"])?
                 .into_os_string()
                 .into_string()
                 .map_err(|_| bad())?,
@@ -735,7 +765,7 @@ fn installation_references(
     if !value["registration"].is_null() {
         paths.extend(node_references(
             node_root,
-            &node_root.join(&target.app_id),
+            &node_root.join(app_id),
             "registration.json",
             value["registration"].clone(),
         )?);
@@ -748,6 +778,7 @@ fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {
     let fields = [
         "schemaVersion",
         "sourceId",
+        "ownerAppId",
         "taskId",
         "name",
         "status",

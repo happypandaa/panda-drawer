@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -25,6 +26,28 @@ type Result<T> = std::result::Result<T, TrialManifestError>;
 
 fn invalid(message: &'static str) -> TrialManifestError {
     TrialManifestError(message)
+}
+
+fn same_manifest_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    if !left.is_file()
+        || !right.is_file()
+        || left.len() != right.len()
+        || left.modified().ok() != right.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev()
+            && left.ino() == right.ino()
+            && left.nlink() == 1
+            && right.nlink() == 1
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 // An absent optional field differs from an explicitly invalid/null field.
@@ -55,6 +78,8 @@ impl TrialRuntime {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrialManifest {
+    #[serde(skip)]
+    pub(crate) source_digest: String,
     pub package_format: String,
     pub format_version: u32,
     pub runtime: TrialRuntime,
@@ -72,6 +97,31 @@ pub struct TrialManifest {
     pub documentation: Option<DocumentationDecl>,
     #[serde(default, deserialize_with = "present")]
     pub development: Option<NodeDevelopmentDecl>,
+}
+
+/// Runtime declarations deliberately do not interpret retired installation
+/// metadata. Keep the strict typed reader for fields that can affect execution;
+/// parsing through a JSON Value would silently accept duplicate fields.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeManifest {
+    package_format: String,
+    format_version: u32,
+    runtime: TrialRuntime,
+    app: AppDecl,
+    web: WebDecl,
+    #[serde(default, deserialize_with = "present")]
+    window: Option<crate::app_windows::AppWindowConfig>,
+    #[serde(default, deserialize_with = "present")]
+    backend: Option<BackendDecl>,
+    #[serde(default, deserialize_with = "present")]
+    configuration: Option<ConfigurationDecl>,
+    #[serde(default, deserialize_with = "present")]
+    documentation: Option<DocumentationDecl>,
+    #[serde(default, rename = "dataContract")]
+    _data_contract: serde::de::IgnoredAny,
+    #[serde(default, rename = "development")]
+    _development: serde::de::IgnoredAny,
 }
 
 /// Author-controlled development instructions for the one repository root.
@@ -187,18 +237,6 @@ impl DataContractDecl {
             return Err(invalid("应用数据契约标识或版本无效。"));
         }
         Ok(())
-    }
-
-    pub(crate) fn from_manifest(manifest: &Value) -> Result<Option<Self>> {
-        manifest
-            .get("dataContract")
-            .map(|value| {
-                let declaration: Self = serde_json::from_value(value.clone())
-                    .map_err(|_| invalid("应用数据契约声明无效。"))?;
-                declaration.validate()?;
-                Ok(declaration)
-            })
-            .transpose()
     }
 }
 
@@ -395,14 +433,52 @@ fn https(value: &str) -> bool {
 }
 
 impl TrialManifest {
+    pub(crate) fn parse_runtime(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(invalid("应用声明超过实验读取上限。"));
+        }
+        let runtime: RuntimeManifest = serde_json::from_slice(bytes)
+            .map_err(|_| invalid("应用声明不是受支持的严格实验格式。"))?;
+        let RuntimeManifest {
+            package_format,
+            format_version,
+            runtime,
+            app,
+            web,
+            window,
+            backend,
+            configuration,
+            documentation,
+            _data_contract: _,
+            _development: _,
+        } = runtime;
+        let manifest = Self {
+            source_digest: format!("{:x}", Sha256::digest(bytes)),
+            package_format,
+            format_version,
+            runtime,
+            app,
+            web,
+            window,
+            backend,
+            configuration,
+            documentation,
+            data_contract: None,
+            development: None,
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(invalid("应用声明超过实验读取上限。"));
         }
         // Deserialize typed structures directly: duplicate/unknown fields fail,
         // and diagnostics deliberately omit untrusted configuration contents.
-        let manifest: Self = serde_json::from_slice(bytes)
+        let mut manifest: Self = serde_json::from_slice(bytes)
             .map_err(|_| invalid("应用声明不是受支持的严格实验格式。"))?;
+        manifest.source_digest = format!("{:x}", Sha256::digest(bytes));
         manifest.validate()?;
         Ok(manifest)
     }
@@ -416,6 +492,7 @@ impl TrialManifest {
             return Err(invalid("应用目录必须为绝对路径。"));
         }
         let path = checked_child(app_dir, "local-app.json", false)?;
+        let before = fs::symlink_metadata(&path).map_err(|_| invalid("无法读取应用声明。"))?;
         let mut options = OpenOptions::new();
         options.read(true);
         #[cfg(unix)]
@@ -426,19 +503,25 @@ impl TrialManifest {
             options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
         let file = options
-            .open(path)
+            .open(&path)
             .map_err(|_| invalid("无法读取应用声明。"))?;
-        if !file
-            .metadata()
-            .map_err(|_| invalid("无法读取应用声明。"))?
-            .is_file()
-        {
+        let opened = file.metadata().map_err(|_| invalid("无法读取应用声明。"))?;
+        if !same_manifest_file(&before, &opened) {
             return Err(invalid("应用声明必须是普通文件。"));
         }
         let mut bytes = Vec::new();
-        file.take((MAX_MANIFEST_BYTES + 1) as u64)
+        (&file)
+            .take((MAX_MANIFEST_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| invalid("无法读取应用声明。"))?;
+        let after =
+            fs::symlink_metadata(&path).map_err(|_| invalid("应用声明在读取期间已变化。"))?;
+        let held = file
+            .metadata()
+            .map_err(|_| invalid("应用声明在读取期间已变化。"))?;
+        if !same_manifest_file(&opened, &after) || !same_manifest_file(&opened, &held) {
+            return Err(invalid("应用声明在读取期间已变化，请重试。"));
+        }
         Ok(bytes)
     }
 
@@ -770,6 +853,28 @@ mod tests {
             "app":{"id":"org.example.trial","name":"人工测试","version":"0.1.0"},
             "web":{"root":"public","entry":"index.html","routing":"files"},
             "backend":{"root":"server","entry":"managed.mjs","protocolVersion":1,"nodeMajor":24}})
+    }
+
+    #[test]
+    fn runtime_reader_ignores_retired_metadata_but_keeps_execution_fields_strict() {
+        let mut value = manifest();
+        value["development"] = json!({"retired":"not interpreted during startup"});
+        value["dataContract"] = json!({"retired":"not an update gate"});
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(TrialManifest::parse(&bytes).is_err());
+        let parsed = TrialManifest::parse_runtime(&bytes).unwrap();
+        assert!(parsed.development.is_none());
+        assert!(parsed.data_contract.is_none());
+        assert_eq!(
+            parsed.source_digest,
+            format!("{:x}", Sha256::digest(&bytes))
+        );
+        value["backend"]["entry"] = json!("../outside.mjs");
+        assert!(TrialManifest::parse_runtime(&serde_json::to_vec(&value).unwrap()).is_err());
+        let bytes = serde_json::to_vec(&manifest()).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        let duplicate = text.replacen("\"app\":{", "\"app\":{\"id\":\"duplicate\",", 1);
+        assert!(TrialManifest::parse_runtime(duplicate.as_bytes()).is_err());
     }
     fn field() -> Value {
         json!({"name":"AI_API_KEY","label":"AI 访问密钥","type":"string","required":false,"secret":true,

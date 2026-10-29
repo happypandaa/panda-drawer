@@ -3,9 +3,13 @@
 
 use crate::{
     node_app_configuration::{LocalFileVault, NodeConfigurationStore, SaveConfigurationRequest},
-    node_app_install::{self, InstallTargetSnapshot, ManagedNodeRegistration},
     node_app_manifest::{TrialManifest, TrialRuntime},
     node_app_proxy::NodeAppProxy,
+    node_registration::{
+        self, DirectNodeProvenance as DirectSourceProvenance,
+        DirectNodeRegistration as ExternalRegistration, RetiredNodeRegistration,
+        StoredNodeRegistration,
+    },
     node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, RuntimeStopReason, TrialStatus},
     ApiError,
 };
@@ -43,7 +47,6 @@ mod run_marker;
 pub use directory::DirectoryInitializeInput;
 #[path = "node_app_development.rs"]
 pub(crate) mod development;
-pub use development::{NodeDevelopmentSource, NodeDevelopmentSourceLease};
 const START_INTENT_CLEANUP_PREFIX: &str = ".start-intent-cleanup-";
 
 type Result<T> = std::result::Result<T, ApiError>;
@@ -57,18 +60,19 @@ fn clean_shutdown(status: &TrialStatus) -> bool {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExternalRegistration {
-    version: u32,
-    id: String,
-    source_path: PathBuf,
-    manifest_digest: String,
+struct ImportSlotOwnership {
+    app_id: String,
+    source_root: PathBuf,
+    source_identity: crate::file_identity::PersistedIdentity,
+    slot_identity: crate::file_identity::PersistedIdentity,
 }
 
 struct Registration {
     id: String,
     source_path: PathBuf,
     manifest_digest: String,
-    managed: Option<ManagedNodeRegistration>,
+    managed: Option<RetiredNodeRegistration>,
+    provenance: Option<DirectSourceProvenance>,
 }
 impl From<ExternalRegistration> for Registration {
     fn from(record: ExternalRegistration) -> Self {
@@ -77,6 +81,7 @@ impl From<ExternalRegistration> for Registration {
             source_path: record.source_path,
             manifest_digest: record.manifest_digest,
             managed: None,
+            provenance: record.provenance,
         }
     }
 }
@@ -97,14 +102,16 @@ struct RuntimeEntry {
     resources: Arc<Mutex<Option<Running>>>,
     revision: u64,
     registration_digest: String,
+    manifest: Arc<TrialManifest>,
     phase: AtomicU8,
 }
 impl RuntimeEntry {
-    fn new(revision: u64, registration_digest: String) -> Self {
+    fn new(revision: u64, registration_digest: String, manifest: Arc<TrialManifest>) -> Self {
         Self {
             resources: Arc::new(Mutex::new(None)),
             revision,
             registration_digest,
+            manifest,
             phase: AtomicU8::new(RUNTIME_STARTING),
         }
     }
@@ -131,7 +138,7 @@ impl Drop for RuntimePhaseGuard {
 
 struct PreparedRuntimeStart {
     record: Registration,
-    manifest: TrialManifest,
+    manifest: Arc<TrialManifest>,
     slot: PathBuf,
     config: RuntimeLaunchConfig,
 }
@@ -161,7 +168,6 @@ pub struct NodeApps {
     operations: Arc<operations::NodeOperationCoordinator>,
     deletion_tasks: Arc<delete_tasks::NodeDeletionTasks>,
     runtime_operations: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
-    development_active: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     directory_changes: Arc<std::sync::Mutex<()>>,
     directory_stopping: Arc<std::sync::atomic::AtomicBool>,
     source_workspace: Arc<std::sync::RwLock<Option<PathBuf>>>,
@@ -232,7 +238,6 @@ impl NodeApps {
             operations: Arc::new(operations::NodeOperationCoordinator::default()),
             deletion_tasks: Arc::new(delete_tasks::NodeDeletionTasks::default()),
             runtime_operations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-            development_active: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
             directory_changes: Arc::new(std::sync::Mutex::new(())),
             directory_stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             source_workspace: Arc::new(std::sync::RwLock::new(None)),
@@ -264,7 +269,8 @@ impl NodeApps {
                 "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
             ));
         }
-        let manifest = TrialManifest::load(source).map_err(|e| fail(e.to_string()))?;
+        let bytes = TrialManifest::read_bytes(source).map_err(|e| fail(e.to_string()))?;
+        let manifest = TrialManifest::parse_runtime(&bytes).map_err(|e| fail(e.to_string()))?;
         if manifest.runtime != TrialRuntime::NodeService {
             return Err(fail(
                 "此入口只登记带 Node 服务的应用。网页项目请继续使用我的项目。",
@@ -304,6 +310,28 @@ impl NodeApps {
             .clone())
     }
 
+    pub(crate) fn set_import_task_manager(
+        &self,
+        tasks: Arc<crate::builds::BuildManager>,
+    ) -> Result<()> {
+        // A live RuntimeHandle always resolves the current workspace manager.
+        if self.runtime.is_some() {
+            return Ok(());
+        }
+        let mut current = self
+            .task_manager
+            .lock()
+            .map_err(|_| fail("任务管理器不可用。"))?;
+        if current
+            .as_ref()
+            .is_some_and(|previous| !Arc::ptr_eq(previous, &tasks))
+        {
+            return Err(fail("项目任务管理器已变化，请重新核对工作区。"));
+        }
+        *current = Some(tasks);
+        Ok(())
+    }
+
     fn registrations(&self) -> Result<Vec<Registration>> {
         if !self.root.try_exists()? {
             return Ok(Vec::new());
@@ -326,23 +354,15 @@ impl NodeApps {
             }
             let bytes = read_small(&path)?;
             let value: Value = serde_json::from_slice(&bytes)?;
-            let version = value["version"].as_u64();
-            let record = match version {
-                Some(1) => {
-                    let record: ExternalRegistration = serde_json::from_value(value)?;
-                    Registration::from(record)
-                }
-                Some(2) => {
-                    let record: ManagedNodeRegistration = serde_json::from_value(value)?;
-                    let source_path = node_app_install::managed_program_path(&self.root, &record)?;
-                    Registration {
-                        id: record.id.clone(),
-                        source_path,
-                        manifest_digest: record.manifest_digest.clone(),
-                        managed: Some(record),
-                    }
-                }
-                _ => return Err(fail("Node 应用登记版本无效，请保留现场。")),
+            let record = match node_registration::decode_registration(value, &name, &self.root)? {
+                StoredNodeRegistration::Direct(record) => Registration::from(record),
+                StoredNodeRegistration::Retired(record) => Registration {
+                    id: record.id.clone(),
+                    source_path: record.program_path.clone(),
+                    manifest_digest: record.manifest_digest.clone(),
+                    managed: Some(record),
+                    provenance: None,
+                },
             };
             if record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
@@ -378,24 +398,21 @@ impl NodeApps {
     }
 
     fn manifest(&self, record: &Registration) -> Result<TrialManifest> {
-        let manifest = if let Some(managed) = &record.managed {
-            let program = node_app_install::verify_managed_program(&self.root, managed)?;
-            let manifest =
-                TrialManifest::load(&program).map_err(|error| fail(error.to_string()))?;
-            if manifest.runtime != TrialRuntime::NodeService {
-                return Err(fail("受管安装必须为 Node 服务应用。"));
-            }
-            manifest
-                .inspect(&program)
-                .map_err(|error| fail(error.to_string()))?;
-            manifest
-        } else {
-            self.load_source(&record.source_path)?
-        };
-        if digest_manifest(&record.source_path)? != record.manifest_digest {
-            return Err(fail(
-                "应用说明已更改，当前登记无法核对。请让 AI 检查并恢复已登记的说明后再进入项目。",
+        if record.managed.is_some() {
+            return Err(ApiError::new(
+                "NODE_REGISTRATION_RETIRED",
+                node_registration::RETIRED_NODE_MESSAGE,
             ));
+        }
+        let manifest = self.load_source(&record.source_path)?;
+        if record.managed.is_none() {
+            let binding = self
+                .read_development_binding(&record.id)?
+                .ok_or_else(|| fail("项目文件夹归属记录缺失，请重新检查。"))?;
+            if binding.source_root != record.source_path {
+                return Err(fail("项目文件夹与当前登记不符，请重新检查。"));
+            }
+            binding.validate_directory()?;
         }
         Ok(manifest)
     }
@@ -471,59 +488,31 @@ impl NodeApps {
         } else {
             "stopped"
         };
-        // Ordinary detail/configuration reads do not establish a writable
-        // development association. That requires the explicit development entry.
-        let development_source = self
-            .read_development_binding(&record.id)
-            .ok()
-            .flatten()
-            .or_else(|| {
-                record
-                    .managed
-                    .as_ref()
-                    .and_then(|managed| managed.development_source.clone())
-            })
-            .filter(|binding| binding.validate_record().is_ok());
         let mut object_layout = crate::object_layout::node_layout(
             &record.source_path,
             &self.root.join(&record.id),
             Some(manifest),
         );
-        if record.managed.is_some() {
-            object_layout["source"] = json!({"state":"unverified","path":null,"reason":"当前程序是平台独立安装的运行副本；来源候选记录另行保留，不将该副本视为已确认的开发源码。"});
-            object_layout["runtime"]["external"] = json!(false);
-            object_layout["build"] = json!({"state":"unavailable","reason":"此程序由独立安装候选准备；打开应用不会安装依赖，普通更新须重新准备并核验候选。"});
-        }
-        if let Some(source) = &development_source {
-            let available = source
-                .source(&record.id, record.managed.is_none())
-                .validate()
-                .is_ok();
-            object_layout["source"] = json!({"state":if available {"available"} else {"missing"},"path":source.source_root,"reason":if available {""} else {"源码目录已变化，请重新绑定。"}});
-            object_layout["build"] = development::build_capability(source, available);
-            if available {
-                let source_manifest = TrialManifest::load(&source.source_root).ok();
-                object_layout["versioning"] = crate::object_layout::node_layout(
-                    &source.source_root,
-                    &self.root.join(&record.id),
-                    source_manifest.as_ref(),
-                )["versioning"]
-                    .clone();
-                object_layout["versioning"]["state"] = json!("source-git");
-                object_layout["versioning"]["reason"] =
-                    json!("在“源码版本”中查看，保存版本和分支由外部 AI 管理；尚未核实远端同步。");
-            }
-        }
+        let platform_owned = self
+            .project_ownership()
+            .owns_source_directory(&record.id, &record.source_path)?;
+        object_layout["runtime"]["external"] = json!(!platform_owned);
+        object_layout["source"] = json!({"state":"available","path":record.source_path,
+            "ownership":if platform_owned {"platform"} else {"external"},
+            "preservedOnDelete":!platform_owned});
+        object_layout["build"] = json!({"state":"unavailable","reason":"直接运行项目文件夹；修改和构建由外部 AI 完成，关闭后重新进入生效。"});
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"version":manifest.app.version,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
-            "dataContract":manifest.data_contract,
+            "manifestDigest":manifest.source_digest,"gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
+            "ownership":if platform_owned {"managed"} else {"external"},
+            "dataContract":null,
             "objectLayout":object_layout,
-            "development":development_source.as_ref().map(|source|json!({"sourcePath":source.source_root,"runtimeIsSource":record.managed.is_none(),"manifestId":source.manifest_id})),
-            "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
-            "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision),
+            "development":null,
+            "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","retired":true,"generation":managed.generation,"sourceId":managed.source_id,"sourceDigest":managed.source_digest})),
+            "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision || r.manifest.source_digest != manifest.source_digest),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
-                "missingRequired":view.missing_required,"canStart":view.can_start && runtime_phase != Some(RUNTIME_STARTING) && !cleanup_pending && (!marker || running.is_some()) && !inner.shutting_down},
+                "missingRequired":view.missing_required,"invalidFields":view.invalid_fields,"canStart":view.can_start && runtime_phase != Some(RUNTIME_STARTING) && !cleanup_pending && (!marker || running.is_some()) && !inner.shutting_down},
             "fields":inspected["configuration"]["fields"]
         }))
     }
@@ -531,6 +520,186 @@ impl NodeApps {
     pub async fn register(&self, source: PathBuf) -> Result<Value> {
         let inner = self.inner.lock().await;
         self.register_locked(source, &inner)
+    }
+
+    /// Only the Git importer can supply this capability. The instance and
+    /// directory were claimed before download; this is never an external
+    /// registration shortcut or a second allocation of the instance UUID.
+    pub(crate) async fn register_published_source(
+        &self,
+        id: &str,
+        source: crate::node_git_import::VerifiedPublishedSource,
+    ) -> Result<Value> {
+        let _permit = self.admit_operation(id, "登记已发布的项目")?;
+        let _operation = self.runtime_operation(id)?.lock_owned().await;
+        let inner = self.inner.lock().await;
+        if let Some(detail) = self.reconcile_published_locked(id, &source, &inner)? {
+            return Ok(detail);
+        }
+        if !self.is_published_source(&source.source_root)
+            || !source
+                .source_identity
+                .matches_path(&source.source_root)
+                .unwrap_or(false)
+        {
+            return Err(fail("已发布的项目文件夹身份不符，未登记。"));
+        }
+        let manifest = self.load_source(&source.source_root)?;
+        if manifest.source_digest != source.manifest_digest {
+            return Err(fail("项目说明在添加期间已变化，请重新添加。"));
+        }
+        let ownership = self.project_ownership();
+        ownership.record_generated_source(id, &source.source_root)?;
+        private_dir(&self.root)?;
+        let slot = self.root.join(id);
+        let marker = ownership.directory(id)?.join("import-slot.json");
+        let mut slot_identity = None;
+        let prepared = (|| -> Result<ExternalRegistration> {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&slot)?;
+            let identity = crate::file_identity::PersistedIdentity::capture(&slot)
+                .map_err(|error| fail(error.to_string()))?;
+            slot_identity = Some(identity.clone());
+            crate::builds::atomic_json(
+                &marker,
+                &ImportSlotOwnership {
+                    app_id: id.into(),
+                    source_root: source.source_root.clone(),
+                    source_identity: source.source_identity.clone(),
+                    slot_identity: identity,
+                },
+            )?;
+            for name in ["configuration", "data", "cache", "runs"] {
+                private_dir(&slot.join(name))?;
+            }
+            let record = ExternalRegistration {
+                version: 1,
+                id: id.into(),
+                source_path: source.source_root.clone(),
+                manifest_digest: manifest.source_digest.clone(),
+                provenance: Some(DirectSourceProvenance {
+                    source_url: source.source_url.clone(),
+                    source_branch: source.source_branch.clone(),
+                }),
+            };
+            self.initialize_development_binding(&record)?;
+            if !source
+                .source_identity
+                .matches_path(&source.source_root)
+                .unwrap_or(false)
+                || digest_manifest(&source.source_root)? != source.manifest_digest
+            {
+                return Err(fail("项目文件夹在登记前已变化，未提交登记。"));
+            }
+            Ok(record)
+        })();
+        let record = match prepared {
+            Ok(record) => record,
+            Err(error) => {
+                let cleanup =
+                    self.discard_unpublished_registration(id, slot_identity.as_ref(), true);
+                if cleanup.is_ok() && marker.try_exists()? {
+                    fs::remove_file(&marker)?;
+                }
+                return Err(error
+                    .outcome("not_started")
+                    .detail("appId", id)
+                    .detail("cleanupError", cleanup.err().map(|error| json!(error))));
+            }
+        };
+        // A partial write is never published as a registration. Once rename
+        // succeeds, a lost reply or parent-sync error is a committed/unknown
+        // outcome that the importer must reconcile before deciding rollback.
+        let temporary = slot.join(".registration-import.json");
+        let publication = (|| -> Result<()> {
+            write_new_json(&temporary, &record)?;
+            move_node_record_exclusive(&temporary, &slot.join("registration.json"))?;
+            self.sync_registration_parents(id)
+        })();
+        publication.map_err(|error| {
+            error
+                .outcome("unknown")
+                .detail("registrationAttempted", true)
+                .detail("requiresRecheck", true)
+                .detail("appId", id)
+        })?;
+        self.reconcile_published_locked(id, &source, &inner)?
+            .ok_or_else(|| fail("登记提交结果需要重新核对。"))
+    }
+
+    pub(crate) async fn reconcile_published_registration(
+        &self,
+        id: &str,
+        source: &crate::node_git_import::VerifiedPublishedSource,
+    ) -> Result<Option<Value>> {
+        let _permit = self.admit_operation(id, "核对项目登记")?;
+        let _operation = self.runtime_operation(id)?.lock_owned().await;
+        let inner = self.inner.lock().await;
+        self.reconcile_published_locked(id, source, &inner)
+    }
+
+    fn reconcile_published_locked(
+        &self,
+        id: &str,
+        source: &crate::node_git_import::VerifiedPublishedSource,
+        inner: &Inner,
+    ) -> Result<Option<Value>> {
+        if Uuid::parse_str(id).is_err() || !self.is_published_source(&source.source_root) {
+            return Err(fail("项目登记归属无效，未清理。"));
+        }
+        let slot = self.root.join(id);
+        crate::projects::check_no_symlinks(&slot, true)?;
+        let registration = slot.join("registration.json");
+        crate::projects::check_no_symlinks(&registration, true)?;
+        let marker = self
+            .project_ownership()
+            .directory(id)?
+            .join("import-slot.json");
+        crate::projects::check_no_symlinks(&marker, true)?;
+        if registration.try_exists()? {
+            let record = self.registration(id)?;
+            let binding = self
+                .read_development_binding(id)?
+                .ok_or_else(|| fail("已提交登记缺少项目文件夹归属。"))?;
+            let matches = record.provenance.as_ref().is_some_and(|provenance| {
+                provenance.source_url == source.source_url
+                    && provenance.source_branch == source.source_branch
+            });
+            if record.managed.is_some()
+                || record.source_path != source.source_root
+                || !matches
+                || !binding.matches_identity(&source.source_root, &source.source_identity)
+            {
+                return Err(fail("当前登记与本次添加不符，已保留项目供核对。"));
+            }
+            self.sync_registration_parents(id)?;
+            if marker.try_exists()? {
+                fs::remove_file(&marker)?;
+            }
+            return Ok(Some(self.available_detail(&record, inner)));
+        }
+        if slot.try_exists()? {
+            let owned: ImportSlotOwnership = serde_json::from_slice(&read_small(&marker)?)?;
+            if owned.app_id != id
+                || owned.source_root != source.source_root
+                || !owned
+                    .source_identity
+                    .matches_captured(&source.source_identity)
+                || !owned.slot_identity.matches_path(&slot).unwrap_or(false)
+            {
+                return Err(fail("未提交实例目录的身份无法确认，未删除。"));
+            }
+            self.discard_unpublished_registration(id, Some(&owned.slot_identity), true)?;
+        }
+        if marker.try_exists()? {
+            fs::remove_file(marker)?;
+        }
+        Ok(None)
     }
 
     fn register_locked(&self, source: PathBuf, inner: &Inner) -> Result<Value> {
@@ -554,7 +723,7 @@ impl NodeApps {
             // Parse the declaration whose bytes the user actually previewed.
             // A reload followed by a later matching digest could observe an ABA
             // swap and attach an unpreviewed declaration to the registration.
-            let manifest = TrialManifest::parse(&bytes).map_err(|e| fail(e.to_string()))?;
+            let manifest = TrialManifest::parse_runtime(&bytes).map_err(|e| fail(e.to_string()))?;
             if manifest.runtime != TrialRuntime::NodeService {
                 return Err(directory::stale());
             }
@@ -612,7 +781,7 @@ impl NodeApps {
             for name in ["configuration", "data", "cache", "runs"] {
                 private_dir(&slot.join(name))?;
             }
-            let manifest_digest = digest_manifest(&source)?;
+            let manifest_digest = manifest.source_digest.clone();
             if expected_manifest.is_some_and(|expected| expected != manifest_digest) {
                 return Err(ApiError::new(
                     "NODE_DIRECTORY_CHANGED",
@@ -625,6 +794,7 @@ impl NodeApps {
                 id: id.clone(),
                 source_path: source.clone(),
                 manifest_digest,
+                provenance: None,
             };
             // Establish exclusive source ownership with the initial registration.
             // Detail reads no longer upgrade missing legacy bindings.
@@ -685,154 +855,6 @@ impl NodeApps {
         })
     }
 
-    /// Preparation reads only this public snapshot. It never obtains credential
-    /// values or starts a runtime, and cannot adopt an external registration.
-    pub(crate) async fn install_target_snapshot(
-        &self,
-        id: Option<&str>,
-    ) -> Result<InstallTargetSnapshot> {
-        let _permit = id
-            .map(|id| self.admit_operation(id, "准备更新"))
-            .transpose()?;
-        let inner = self.inner.lock().await;
-        if inner.shutting_down {
-            return Err(fail("平台正在关闭，不能准备安装。"));
-        }
-        id.map_or_else(
-            || Ok(InstallTargetSnapshot::fresh()),
-            |id| self.install_target_locked(id, &inner),
-        )
-    }
-
-    fn require_install_stopped(&self, id: &str, inner: &Inner) -> Result<()> {
-        self.require_not_removing(id)?;
-        self.require_no_source_restore(id)?;
-        self.require_no_development_operation(id)?;
-        if inner.shutting_down || inner.running.contains_key(id) {
-            return Err(ApiError::new(
-                "NODE_INSTALL_BUSY",
-                "请先正常关闭应用，待运行进程完成收尾后再更新。",
-            ));
-        }
-        let marker = self.root.join(id).join("active.json");
-        crate::projects::check_no_symlinks(&marker, true)?;
-        if marker.try_exists()? || has_start_intent_cleanup(&self.root.join(id))? {
-            return Err(ApiError::new(
-                "NODE_INSTALL_BUSY",
-                "运行记录尚未完成收尾，不能更新；请保留现场。",
-            ));
-        }
-        Ok(())
-    }
-
-    fn install_target_locked(&self, id: &str, inner: &Inner) -> Result<InstallTargetSnapshot> {
-        if Uuid::parse_str(id).is_err() {
-            return Err(fail("应用实例标识无效。"));
-        }
-        self.require_install_stopped(id, inner)?;
-        let record = self.registration(id)?;
-        let binding = self.development_binding(&record)?;
-        if record.managed.is_none() {
-            binding
-                .as_ref()
-                .ok_or_else(|| fail("请先确认应用源码目录。"))?
-                .source(id, true)
-                .validate()?;
-        }
-        let manifest_value = if record.managed.is_some() {
-            serde_json::from_slice(&read_small(&record.source_path.join("local-app.json"))?)?
-        } else {
-            binding
-                .as_ref()
-                .ok_or_else(|| fail("请先确认应用源码目录。"))?
-                .registered_manifest()?
-        };
-        let manifest = TrialManifest::parse(&serde_json::to_vec(&manifest_value)?)
-            .map_err(|error| fail(error.to_string()))?;
-        if record.managed.is_some() {
-            self.manifest(&record)?;
-        }
-        let revision = self
-            .store(id)?
-            .view(&manifest)
-            .map_err(|error| fail(error.to_string()))?
-            .revision;
-        Ok(InstallTargetSnapshot {
-            app_id: id.into(),
-            registration_digest: node_app_install::registration_digest(&self.root.join(id))?,
-            generation: record
-                .managed
-                .as_ref()
-                .map(|managed| managed.generation.clone()),
-            manifest: Some(manifest_value),
-            configuration_revision: revision,
-            external_registration: record
-                .managed
-                .is_none()
-                .then(|| read_small(&self.root.join(id).join("registration.json")))
-                .transpose()?
-                .map(|bytes| serde_json::from_slice(&bytes))
-                .transpose()?,
-            development_source: binding,
-        })
-    }
-
-    /// Native callers hold the window-operation lock outside this method. All
-    /// NodeApps start/restart/save/register calls share `inner`, so the fresh
-    /// snapshot/configuration check and pointer publication cannot interleave.
-    /// The closure must be synchronous, publish only the prepared candidate,
-    /// and report its actual commit outcome even if final bookkeeping fails.
-    pub(crate) async fn with_install_commit<T>(
-        &self,
-        expected: &InstallTargetSnapshot,
-        candidate_manifest: &Value,
-        commit: impl FnOnce(&InstallTargetSnapshot) -> Result<T>,
-    ) -> Result<T> {
-        expected.validate()?;
-        let _operation = self.runtime_operation(&expected.app_id)?.lock_owned().await;
-        let mut inner = self.inner.lock().await;
-        self.require_install_stopped(&expected.app_id, &inner)?;
-        let fresh = if expected.registration_digest.is_some() {
-            self.install_target_locked(&expected.app_id, &inner)?
-        } else {
-            let slot = self.root.join(&expected.app_id);
-            crate::projects::check_no_symlinks(&slot, true)?;
-            if slot.try_exists()? {
-                return Err(fail("新安装目标目录已存在，请保留现场并重新准备。"));
-            }
-            expected.clone()
-        };
-        if fresh != *expected {
-            return Err(ApiError::new(
-                "NODE_INSTALL_CHANGED",
-                "应用或配置已变化，请重新准备安装候选。",
-            ));
-        }
-        node_app_install::compatible(expected, candidate_manifest)?;
-        let manifest = TrialManifest::parse(&serde_json::to_vec(candidate_manifest)?)
-            .map_err(|error| fail(error.to_string()))?;
-        if manifest.runtime != TrialRuntime::NodeService {
-            return Err(fail("受管安装只支持 Node 服务应用。"));
-        }
-        if expected.registration_digest.is_some() {
-            // view checks bindings by metadata only. Missing required values do
-            // not prevent a code update; only explicit start may read secrets.
-            let view = self
-                .store(&expected.app_id)?
-                .view(&manifest)
-                .map_err(|error| fail(error.to_string()))?;
-            if view.revision != expected.configuration_revision {
-                return Err(ApiError::new(
-                    "NODE_INSTALL_CHANGED",
-                    "配置已变化，请重新准备。",
-                ));
-            }
-        }
-        let result = commit(&fresh)?;
-        inner.errors.remove(&expected.app_id);
-        Ok(result)
-    }
-
     pub async fn list(&self) -> Result<Vec<Value>> {
         let inner = self.inner.lock().await;
         Ok(self
@@ -850,43 +872,31 @@ impl NodeApps {
         let mut value = match result {
             Ok(detail) => detail,
             Err(error) => {
-                // A developer may edit the external declaration before its
-                // first managed publication. Show the registered configuration
-                // snapshot, while keeping launch blocked until explicit apply.
+                // Existing resources keep the declaration captured at launch;
+                // an invalid edit must not rewrite their runtime configuration.
                 let previous = (|| -> Result<Value> {
                     self.require_not_removing(&record.id)?;
-                    if record.managed.is_some() {
-                        return Err(error.clone());
-                    }
-                    let binding = self
-                        .read_development_binding(&record.id)?
-                        .ok_or_else(|| error.clone())?;
-                    binding.validate_record()?;
-                    if binding.source_root != record.source_path
-                        || binding.registered_manifest_digest != record.manifest_digest
-                    {
-                        return Err(error.clone());
-                    }
-                    let manifest =
-                        TrialManifest::parse(&serde_json::to_vec(&binding.registered_manifest()?)?)
-                            .map_err(|_| error.clone())?;
-                    let mut detail = self.detail(record, &manifest, inner)?;
-                    detail["state"] = json!("failed");
+                    let running = inner.running.get(&record.id).ok_or_else(|| error.clone())?;
+                    let mut detail = self.detail(record, &running.manifest, inner)?;
+                    detail["manifestError"] = json!(error.message);
                     detail["lastError"] = json!(error.message);
+                    detail["restartRequired"] = json!(true);
                     detail["configuration"]["canStart"] = json!(false);
                     Ok(detail)
                 })();
                 previous.unwrap_or_else(|_| json!({
                     "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                     "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
-                    "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","generation":managed.generation,"sourceId":managed.provenance.source_id,"sourceDigest":managed.provenance.source_digest})),
+                    "ownership":if record.managed.is_some() || self.project_ownership().owns_source_directory(&record.id,&record.source_path).unwrap_or(false) {"managed"} else {"external"},
+                    "gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
+                    "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","retired":true,"generation":managed.generation,"sourceId":managed.source_id,"sourceDigest":managed.source_digest})),
                     "objectLayout":null,"dataContract":null,
                     "restartRequired":false,"runningRevision":null,"lastError":error.message,
-                    "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"canStart":false},"fields":[]
+                    "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"invalidFields":[],"canStart":false},"fields":[]
                 }))
             }
         };
-        if !inner.running.contains_key(&record.id) {
+        if record.managed.is_none() && !inner.running.contains_key(&record.id) {
             let recovery = run_marker::inspect(
                 &self.root.join(&record.id),
                 &record.id,
@@ -951,9 +961,14 @@ impl NodeApps {
         let _permit = self.admit_operation(id, "保存配置")?;
         let _operation = self.runtime_operation(id)?.lock_owned().await;
         let inner = self.inner.lock().await;
-        self.require_no_development_operation(id)?;
         let record = self.registration(id)?;
         let manifest = self.manifest(&record)?;
+        if input.manifest_digest.as_deref() != Some(manifest.source_digest.as_str()) {
+            return Err(ApiError::new(
+                "NODE_MANIFEST_CHANGED",
+                "应用说明已变化，请重新读取配置后再保存。",
+            ));
+        }
         self.store(id)?
             .save(&manifest, input)
             .map_err(|e| fail(e.to_string()))?;
@@ -1026,7 +1041,6 @@ impl NodeApps {
     async fn start_admitted(&self, id: &str) -> Result<Value> {
         let (entry, record, manifest, slot, config) = {
             let mut inner = self.inner.lock().await;
-            self.require_no_development_operation(id)?;
             if inner.shutting_down {
                 return Err(fail("平台正在关闭，不能启动应用。"));
             }
@@ -1039,8 +1053,8 @@ impl NodeApps {
                 let record = self.registration(id)?;
                 return self.detail(&record, &self.manifest(&record)?, &inner);
             }
-            let record = self.registration(id)?;
-            let manifest = self.manifest(&record)?;
+            let mut record = self.registration(id)?;
+            let manifest = Arc::new(self.manifest(&record)?);
             let slot = self.root.join(id);
             if has_start_intent_cleanup(&slot)? {
                 return Err(fail(
@@ -1052,8 +1066,34 @@ impl NodeApps {
                     "上次运行尚未核对完成，已阻止再次启动。请查看运行状态。",
                 ));
             }
-            let snapshot = self
-                .store(id)?
+            if record.managed.is_none() && record.manifest_digest != manifest.source_digest {
+                let current = self.registration(id)?;
+                if current.source_path != record.source_path
+                    || current.manifest_digest != record.manifest_digest
+                {
+                    return Err(fail("应用登记已变化，请重新进入。"));
+                }
+                let updated = ExternalRegistration {
+                    version: 1,
+                    id: id.into(),
+                    source_path: record.source_path.clone(),
+                    manifest_digest: manifest.source_digest.clone(),
+                    provenance: record.provenance.clone(),
+                };
+                crate::builds::atomic_json(&slot.join("registration.json"), &updated)?;
+                record.manifest_digest = manifest.source_digest.clone();
+            }
+            let store = self.store(id)?;
+            let view = store.view(&manifest).map_err(|e| fail(e.to_string()))?;
+            if !view.can_start {
+                return Err(ApiError::new(
+                    "NODE_CONFIGURATION_REQUIRED",
+                    "应用说明已更新，请先完成配置后再打开。",
+                )
+                .detail("missingRequired", json!(view.missing_required))
+                .detail("invalidFields", json!(view.invalid_fields)));
+            }
+            let snapshot = store
                 .launch_snapshot(&manifest)
                 .map_err(|e| fail(e.to_string()))?;
             let (backend, cwd) = manifest
@@ -1075,8 +1115,9 @@ impl NodeApps {
             };
             let entry = Arc::new(RuntimeEntry::new(
                 snapshot.revision,
-                node_app_install::registration_digest(&slot)?
+                node_registration::registration_digest(&slot)?
                     .ok_or_else(|| fail("应用登记已失联。"))?,
+                manifest.clone(),
             ));
             inner.running.insert(id.into(), entry.clone());
             (entry, record, manifest, slot, config)
@@ -1113,8 +1154,16 @@ impl NodeApps {
         entry.set_phase(RUNTIME_RUNNING);
         let result = {
             let inner = self.inner.lock().await;
-            self.registration(id)
-                .and_then(|record| self.detail(&record, &self.manifest(&record)?, &inner))
+            self.registration(id).and_then(|record| {
+                let current = self.manifest(&record)?;
+                if current.source_digest != entry.manifest.source_digest {
+                    return Err(ApiError::new(
+                        "NODE_MANIFEST_CHANGED",
+                        "应用说明在启动期间已变化，请重新进入。",
+                    ));
+                }
+                self.detail(&record, &entry.manifest, &inner)
+            })
         };
         if result.is_err() {
             // Failed first open must not leave a windowless backend. A reused
@@ -1160,7 +1209,7 @@ impl NodeApps {
             }
             // Existing admitted work may finish, but publication still uses its
             // original registration and exact intent; it never adopts a swap.
-            if node_app_install::registration_digest(&slot)?.as_deref()
+            if node_registration::registration_digest(&slot)?.as_deref()
                 != Some(entry.registration_digest.as_str())
             {
                 return Err(fail("应用登记已变化，不能继续启动。"));
@@ -1881,7 +1930,7 @@ impl StartIntentOwnership {
         fs::File::open(&cleanup)?.sync_all()?;
         fs::File::open(parent)?.sync_all()?;
         let captured = cleanup.join("captured-intent");
-        move_start_intent_exclusive(path, &captured).map_err(|_| changed())?;
+        move_node_record_exclusive(path, &captured).map_err(|_| changed())?;
         observe(IntentCleanupPoint::Captured);
         let captured_is_owned = (|| -> Result<()> {
             ordinary_path(&captured, false).map_err(|_| changed())?;
@@ -1895,7 +1944,7 @@ impl StartIntentOwnership {
             // Restore only if active is still absent. A newer active marker is
             // never overwritten; either way the captured foreign object and/or
             // its restored active path survive, with the cleanup gate retained.
-            let _ = move_start_intent_exclusive(&captured, path);
+            let _ = move_node_record_exclusive(&captured, path);
             return Err(changed());
         }
         // Unlink only the verified object inside our exclusive private slot.
@@ -1915,7 +1964,7 @@ impl StartIntentOwnership {
 
 /// The same dirfd + exclusive rename primitive used by restoration transactions.
 /// Paths may be replaced at the active name; displaced objects are never overwritten.
-fn move_start_intent_exclusive(from: &Path, to: &Path) -> Result<()> {
+fn move_node_record_exclusive(from: &Path, to: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::{
@@ -1929,7 +1978,7 @@ fn move_start_intent_exclusive(from: &Path, to: &Path) -> Result<()> {
             },
         };
         let open_parent = |path: &Path| -> Result<fs::File> {
-            let parent = path.parent().ok_or_else(|| fail("启动标记目录无效。"))?;
+            let parent = path.parent().ok_or_else(|| fail("应用记录目录无效。"))?;
             ordinary_path(parent, true)?;
             Ok(OpenOptions::new()
                 .read(true)
@@ -1939,15 +1988,15 @@ fn move_start_intent_exclusive(from: &Path, to: &Path) -> Result<()> {
         let left = open_parent(from)?;
         let right = open_parent(to)?;
         if left.metadata()?.dev() != right.metadata()?.dev() {
-            return Err(fail("启动标记清理必须留在原有数据卷。"));
+            return Err(fail("应用记录提交必须留在原有数据卷。"));
         }
         let name = |path: &Path| -> Result<CString> {
             CString::new(
                 path.file_name()
-                    .ok_or_else(|| fail("启动标记名称无效。"))?
+                    .ok_or_else(|| fail("应用记录名称无效。"))?
                     .as_bytes(),
             )
-            .map_err(|_| fail("启动标记名称无效。"))
+            .map_err(|_| fail("应用记录名称无效。"))
         };
         let from = name(from)?;
         let to = name(to)?;
@@ -1961,7 +2010,7 @@ fn move_start_intent_exclusive(from: &Path, to: &Path) -> Result<()> {
             )
         } != 0
         {
-            return Err(fail("启动标记原子转移未完成，现有标记与清理记录均保留。"));
+            return Err(fail("应用记录原子提交未完成，现有记录均保留。"));
         }
         left.sync_all()?;
         right.sync_all()?;
@@ -1970,7 +2019,7 @@ fn move_start_intent_exclusive(from: &Path, to: &Path) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (from, to);
-        Err(fail("启动标记清理目前仅验证 macOS。"))
+        Err(fail("应用记录提交目前仅验证 macOS。"))
     }
 }
 
@@ -1995,5 +2044,5 @@ fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
 mod lifecycle_tests;
 
 #[cfg(test)]
-#[path = "node_apps_install_tests.rs"]
-mod install_tests;
+#[path = "node_apps_manifest_refresh_tests.rs"]
+mod manifest_refresh_tests;

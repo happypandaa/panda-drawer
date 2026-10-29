@@ -596,6 +596,78 @@ async fn proxy_test_browser(manager: &NodeApps, id: &str) -> (reqwest::Client, S
         .to_owned();
     (client, origin, cookie)
 }
+
+#[tokio::test]
+async fn direct_manifest_changes_keep_current_proxy_and_take_effect_after_restart() {
+    let fixture = Fixture::new("normal");
+    let registered = fixture
+        .manager
+        .register(fixture.source.clone())
+        .await
+        .unwrap();
+    let id = registered["id"].as_str().unwrap();
+    fixture.manager.start(id).await.unwrap();
+    let first_pid = fixture.pid(id);
+    let sentinel = fixture.slot(id).join("data/preserved-business-value");
+    fs::write(&sentinel, "keep-business-data").unwrap();
+    fs::write(
+        fixture.source.join("public/updated.html"),
+        "updated direct application",
+    )
+    .unwrap();
+    fs::copy(
+        fixture.source.join("server/fixture.mjs"),
+        fixture.source.join("server/updated.mjs"),
+    )
+    .unwrap();
+    let manifest_path = fixture.source.join("local-app.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["app"]["id"] = json!("disposable.changed.author.identity");
+    manifest["app"]["version"] = json!("2");
+    manifest["web"]["entry"] = json!("updated.html");
+    manifest["backend"]["entry"] = json!("updated.mjs");
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let preview = fixture.manager.configuration(id).await.unwrap();
+    assert_eq!(preview["state"], "running");
+    assert_eq!(preview["restartRequired"], true);
+    fixture.manager.start(id).await.unwrap();
+    assert_eq!(
+        fixture.pid(id),
+        first_pid,
+        "repeated start keeps the current process"
+    );
+    let (client, origin, cookie) = proxy_test_browser(&fixture.manager, id).await;
+    let old_page = client
+        .get(format!("{origin}/"))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(old_page.contains("Artificial lifecycle fixture"));
+    assert!(!old_page.contains("updated direct application"));
+    fixture.manager.restart(id).await.unwrap();
+    let (client, origin, cookie) = proxy_test_browser(&fixture.manager, id).await;
+    let new_page = client
+        .get(format!("{origin}/"))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(new_page.contains("updated direct application"));
+    assert_eq!(
+        fixture.manager.configuration(id).await.unwrap()["restartRequired"],
+        false
+    );
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep-business-data");
+    fixture.manager.stop_runtime(id).await.unwrap();
+}
+
 async fn wait_artificial_process_gone(pid: u32) {
     let pid: i32 = pid.try_into().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(4), async {
@@ -1370,34 +1442,6 @@ async fn residual_intent_cleanup_gate_blocks_reopen_even_without_an_active_marke
         let listed = fixture.manager.list().await.unwrap();
         assert_eq!(listed[0]["state"], "failed");
         assert_eq!(listed[0]["configuration"]["canStart"], false);
-        assert_eq!(
-            fixture
-                .manager
-                .install_target_snapshot(Some(id))
-                .await
-                .unwrap_err()
-                .code,
-            "NODE_INSTALL_BUSY"
-        );
-        assert_eq!(
-            fixture
-                .manager
-                .development_build_source_lease(id)
-                .await
-                .err()
-                .unwrap()
-                .code,
-            "NODE_INSTALL_BUSY"
-        );
-        assert_eq!(
-            fixture
-                .manager
-                .bind_development_source(id, fixture.source.clone())
-                .await
-                .unwrap_err()
-                .code,
-            "NODE_INSTALL_BUSY"
-        );
         let delete_input =
             serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
                 .unwrap();

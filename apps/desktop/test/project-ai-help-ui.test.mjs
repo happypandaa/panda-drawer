@@ -99,17 +99,12 @@ test('Process diagnostics retain useful errors beyond the issue limit and bound 
   assert.equal(checkedProcessDiagnostics(undefined), null);
 });
 
-test('Update and external-start requests use the matching next action without performing a Git rollback', () => {
-  const update = buildProjectAiPrompt({ mode: 'update-failed', sourceKind: 'managed', sourcePath: '/disposable/author' });
-  const external = buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local', sourcePath: '/disposable/author' });
-  assert.match(update, /不要直接编辑平台准备的运行程序/); assert.match(update, /应用修改/); assert.doesNotMatch(update, /构建并更新|Codex/);
-  assert.match(update, /^我在“熊猫小抽屉”里的这个应用“应用修改”没有成功，请帮我找原因并修好/);
-  assert.match(external, /^我在“熊猫小抽屉”里的这个应用启动失败了，请帮我找原因并修好/);
-  assert.match(external, /保留已有未提交改动/); assert.match(external, /提醒我重新打开应用/);
-  for (const prompt of [update, external]) {
-    assert.match(prompt, /等我同意再修改/);
+test('All start repair prompts describe the directly running folder and mutable manifest', () => {
+  for (const sourceKind of ['local','git']) {
+    const prompt = buildProjectAiPrompt({ mode: 'start-failed', sourceKind, sourcePath: '/disposable/author' });
+    assert.match(prompt, /直接运行上面文件夹/); assert.match(prompt, /app.id/); assert.match(prompt, /重启后生效/);
+    assert.doesNotMatch(prompt, /安装副本|应用修改|不要改动 local-app.json/);
     assert.ok(prompt.includes(PROJECT_AI_NODE_PROTOCOL));
-    assert.doesNotMatch(prompt, /【先回答】|A\. 一句话结论|【平台要求：|普通话/);
   }
 });
 
@@ -164,10 +159,10 @@ test('Web mode reads bounded excerpts after selection and copies only user-selec
   assert.match(fixture.copies[0], /这是摘录，不是完整工程/);
 });
 
-for (const mode of ['start-failed', 'update-failed']) {
+for (const mode of ['start-failed']) {
   test(`${mode} keeps the selected public excerpts and web AI access limits`, async () => {
     const excerpt = { sourcePath: '/disposable/author', totalBytes: 90, truncated: true, files: [{ path: 'README.md', content: 'artificial-repair-readme' }, { path: 'package.json', content: 'artificial-repair-package' }] };
-    const fixture = await setup({ mode, sourceKind: mode === 'update-failed' ? 'managed' : 'local', sourcePath: excerpt.sourcePath }, { source_review_context: () => excerpt });
+    const fixture = await setup({ mode, sourceKind: 'local', sourcePath: excerpt.sourcePath }, { source_review_context: () => excerpt });
     await click(button('复制说明给 AI'));
     assert.equal(fixture.copies.length, 1);
     await click(document.querySelectorAll('input[type=radio]')[1]);
@@ -223,7 +218,7 @@ test('Node detail failure help suppresses Codex capability checks and actions', 
   assert.equal(fixture.calls.some(([name]) => name === 'source_review_capabilities'), false);
   assert.equal(fixture.calls.some(([name]) => name === 'source_review_open_codex'), false);
   assert.equal(fixture.copies.length, 1);
-  assert.match(fixture.copies[0], /应用修改/);
+  assert.match(fixture.copies[0], /直接运行上面文件夹/);
 });
 
 test('Clipboard failure retains a full selectable explanation without pretending it was copied', async () => {
