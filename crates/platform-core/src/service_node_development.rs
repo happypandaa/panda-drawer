@@ -200,6 +200,13 @@ impl RuntimeHandle {
         apps: &NodeApps,
         app_id: &str,
     ) -> std::result::Result<Value, ApiError> {
+        // Read the display name before taking the development lease. A missing
+        // name only drops one line from the prompt.
+        let app_name = apps
+            .status(app_id)
+            .await
+            .ok()
+            .and_then(|detail| detail["name"].as_str().map(str::to_owned));
         let lease = self.node_development_lease(apps, app_id, true).await?;
         let root = &lease.source.source_root;
         crate::node_development_git::require_source_restore_clear(root)?;
@@ -207,6 +214,7 @@ impl RuntimeHandle {
             root,
             &lease._source_lease.control_path(),
             lease.source.runtime_is_source,
+            app_name.as_deref(),
         );
         Ok(json!({"text":text,"projectRoot":root,"instanceId":lease.instance_id}))
     }
@@ -238,13 +246,25 @@ fn node_handoff_text(
     root: &std::path::Path,
     control: &std::path::Path,
     runtime_is_source: bool,
+    app_name: Option<&str>,
 ) -> String {
+    use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS, STDOUT};
     let delivery = if runtime_is_source {
-        "这个应用直接运行此文件夹的代码。请先让用户关闭应用，再按需求修改；修改后提醒用户重新进入项目。修改可能使应用暂时无法启动。已登记 local-app.json 的应用身份、配置和数据契约仍受平台校验；不要直接改变这些声明或绕过登记检查。"
+        "这个应用直接运行此文件夹的代码。修改前提醒我先关闭应用窗口；改完后我重新进入项目即可生效。如果改完打不开，请先读日志排查。"
     } else {
-        "AI 修改的是源码目录，当前应用运行独立安装副本。修改并测试完成后，提醒用户关闭应用，在应用详情的项目文件夹区点击“应用修改”，按提示核对并确认；修改源码不会自动影响当前运行程序。"
+        "当前应用运行的是平台准备的安装副本，修改源码不会自动生效。改完后提醒我关闭应用，在应用详情的项目文件夹区点击“应用修改”，按提示核对并确认。"
     };
-    format!("请继续开发这个 Node 应用。\n源码仓库：{}\n\n以仓库 local-app.json 的 development 声明为准。一个应用只使用这个 Git 仓库。只修改指定源码目录，不修改平台登记、私有配置或密钥；不读取或输出真实 .env 和密钥。任何会删除或清空应用数据、数据库、上传文件的操作，先说明影响并取得用户明确同意。修改前先用 Git 保存当前版本，保留已有未提交改动；用户要求回退时，用 Git 恢复到之前的版本。完成后列出修改文件。\n{}\n\n排查问题先读取运行日志：\n本次运行：{}\n上一次运行：{}\n日志按平台持有的密钥值脱敏；不要读取私有配置或密钥文件。stdout 只能输出平台控制协议消息；普通日志一律写 stderr（使用 console.error，或把 console.log 重定向到 stderr），否则平台会判定协议错误并终止应用。\nGit 只保存源码，不能代替数据库或密钥备份。请先阅读仓库中的 AGENTS.md、README 和开发文档，再按用户需求开发。", root.display(), delivery, control.join("logs/current.log").display(), control.join("logs/previous.log").display())
+    let name = app_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("应用：{name}\n"))
+        .unwrap_or_default();
+    format!(
+        "请先阅读并理解这个 Node 应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n\n请阅读项目里的 local-app.json、AGENTS.md、README 和开发文档，再看一下最近的运行日志（如果有）：\n- 本次运行：{current}\n- 上一次运行：{previous}\n\n读完后用通俗易懂的中文告诉我：\n1. 这个应用是做什么的，主要有哪些功能\n2. 代码大致怎么组织：界面、后端、数据存在哪里\n3. 你注意到的问题或风险，例如日志里的报错、过旧的依赖\n然后等我提出具体需求，再开始修改。\n\n—— 之后修改时请遵守 ——\n- 只修改上面的项目文件夹；不修改平台登记、私有配置和密钥文件。{SECRETS}配置项由平台表单保存并在启动时注入，不要让我另建 .env。日志已按平台持有的密钥值脱敏。\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- {STDOUT}\n- 不要改动 local-app.json 里的应用身份、配置声明和数据声明，也不要绕过平台检查。\n- {delivery}\n- 完成后列出修改了哪些文件。",
+        root = root.display(),
+        current = control.join("logs/current.log").display(),
+        previous = control.join("logs/previous.log").display(),
+    )
 }
 
 #[cfg(test)]
@@ -253,36 +273,59 @@ mod handoff_tests {
     use std::path::Path;
 
     #[test]
-    fn node_handoff_uses_real_control_log_paths_and_external_git_workflow() {
+    fn node_handoff_asks_for_understanding_first_with_real_log_paths() {
         for direct in [true, false] {
             let text = node_handoff_text(
                 Path::new("/disposable/author"),
                 Path::new("/disposable/private/node-apps/instance"),
                 direct,
+                Some("Radio Bob"),
             );
+            assert!(text.starts_with("请先阅读并理解这个 Node 应用，暂时不要修改任何文件。"));
             for expected in [
+                "应用：Radio Bob",
                 "/disposable/author",
                 "/disposable/private/node-apps/instance/logs/current.log",
                 "/disposable/private/node-apps/instance/logs/previous.log",
+                "等我提出具体需求，再开始修改",
+                crate::ai_prompt_rules::GIT_SAVE,
+                crate::ai_prompt_rules::DATA_CONSENT,
+                crate::ai_prompt_rules::SECRETS,
+                crate::ai_prompt_rules::STDOUT,
                 "修改前先用 Git 保存当前版本",
-                "用户要求回退时，用 Git 恢复到之前的版本",
-                "stdout 只能输出平台控制协议消息",
+                "我要求回退时，用 Git 恢复到之前的版本",
                 "console.error",
                 "协议错误并终止应用",
             ] {
                 assert!(text.contains(expected), "Missing instruction: {expected}");
             }
-            assert!(!text.contains("Codex"));
-            assert!(!text.contains("构建并更新"));
-            assert!(!text.contains("由平台准备新版本"));
+            for retired in [
+                "继续开发",
+                "Codex",
+                "构建并更新",
+                "由平台准备新版本",
+                "普通话",
+            ] {
+                assert!(!text.contains(retired), "Retired wording: {retired}");
+            }
             if direct {
                 assert!(text.contains("重新进入项目"));
-                assert!(text.contains("不要直接改变这些声明"));
                 assert!(!text.contains("点击“应用修改”"));
             } else {
                 assert!(text.contains("点击“应用修改”"));
             }
         }
+    }
+
+    #[test]
+    fn node_handoff_omits_a_missing_application_name() {
+        let text = node_handoff_text(Path::new("/a"), Path::new("/c"), true, Some("  "));
+        assert!(!text.contains("应用："));
+        assert!(text.contains("项目文件夹：/a"));
+        assert_eq!(
+            text,
+            node_handoff_text(Path::new("/a"), Path::new("/c"), true, None)
+        );
     }
 }
 

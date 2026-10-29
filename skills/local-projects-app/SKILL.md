@@ -75,6 +75,10 @@ Node 尽量只增加一个应用服务，不依赖用户另装 Claude Code、Pyt
 
 修改前先读取当前 CLI 帮助及 `project git status`，按用户确认的作者与范围保存 Git 版本。源码版本和数据版本分别核对，不把源码提交称作数据库备份；Git 不可用时明确未保存，不另建 ZIP 或私有恢复仓库。普通源码编辑、SQL 和候选构建不要求 ZIP 基线；优先采用兼容的数据事务，由平台的具体替换操作协调必要停写、失败保留与重启检查。
 
+### 数据库与附件的 Git 取回
+
+project-v1 在 macOS 可显式预览并取回本机 Git 中已保存的数据库和附件；源码取回与数据取回是两项独立操作。只有用户明确要求取回数据时才使用 `project git data-restore-preview` 并核对当前 CLI 的全部新鲜绑定，再明确提交 `data-restore`；预览不自动执行。先查 `project git data-recovery`；pending 或 blocked 时保留原件、日志和候选，仅按核实后的允许方向继续或撤回同一操作，不删除现场、不重新登记、不直接替换 SQLite。not_committed 也可能已有部分文件移动，不能据此说数据未变。完成后页面代次已更新，先处理草稿再从平台明确重新打开。任意 Node 应用自己的数据库不适用这一流程。
+
 新的 `backup create` 和 `maintenance begin` 已退役，生产入口返回 `BACKUP_WORKFLOW_RETIRED`，不创建任务、不生成 ZIP、不进入维护。旧项目自己的文档若仍要求新建这些基线，以当前平台交接和 CLI 的退役结果为准；不要改写旧 SDK 或项目 skill 来绕过保护。
 
 只有用户任务涉及旧资料时才使用兼容入口：

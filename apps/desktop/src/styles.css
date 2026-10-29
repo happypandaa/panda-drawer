@@ -1635,3 +1635,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .import-dialog .path-input input:focus-visible, .import-dialog .create-project-form > label input:focus-visible { outline: 2px solid var(--radio-active); outline-offset: 2px; }
 .import-dialog .choice-group { flex-wrap: wrap; gap: 8px 24px; }
 .import-dialog input[type='radio'] { accent-color: var(--radio-active); }
+
+/* Project-independent platform introduction for external AI. */
+.platform-ai-intro-button { gap: 6px; white-space: nowrap; }
+.platform-ai-intro-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 12px; color: var(--muted, inherit); }
+.platform-ai-intro-hint .text-button { gap: 6px; }
+.platform-ai-intro-notice { font-size: 13px; color: var(--muted, inherit); white-space: nowrap; }
