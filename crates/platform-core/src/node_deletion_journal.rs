@@ -1481,10 +1481,10 @@ mod macos {
 
     fn read_record(path: &Path) -> Result<(File, Vec<u8>)> {
         ordinary(path, false)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(path)?;
+        let mut file = platform_native::filesystem::open_read(
+            path,
+            platform_native::filesystem::ReadOptions::NoLinksNonblockingCloseOnExec,
+        )?;
         let metadata = file.metadata()?;
         if !metadata.is_file()
             || metadata.nlink() != 1

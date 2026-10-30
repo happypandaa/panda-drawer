@@ -12,11 +12,12 @@ use crate::{
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -191,10 +192,10 @@ fn valid_project_id(id: &str) -> bool {
 }
 fn safe_file(path: &Path) -> Result<File, ApiError> {
     check_no_symlinks(path, false)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinks,
+    )?;
     if !file.metadata()?.is_file() {
         return Err(invalid("Expected an ordinary file"));
     }
@@ -202,11 +203,9 @@ fn safe_file(path: &Path) -> Result<File, ApiError> {
 }
 fn new_file(path: &Path) -> Result<File, ApiError> {
     check_no_symlinks(path, true)?;
-    Ok(OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?)
+    Ok(platform_native::filesystem::create_new_private_file(
+        path, false,
+    )?)
 }
 fn mkdir(path: &Path) -> Result<(), ApiError> {
     check_no_symlinks(path, true)?;

@@ -8,10 +8,11 @@ use super::{
     ensure_dir, ensure_unchanged, excluded, ApiError, ProjectHandle, ProjectManifest,
 };
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, OpenOptions},
     io,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
 use tempfile::TempDir;
@@ -148,10 +149,10 @@ fn copy_source(source: &Path, target: &Path) -> Result<(), ApiError> {
             copy_source(&from, &to)?;
         } else if metadata.is_file() {
             check_no_symlinks(&from, false)?;
-            let mut input = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&from)?;
+            let mut input = platform_native::filesystem::open_read(
+                &from,
+                platform_native::filesystem::ReadOptions::NoLinks,
+            )?;
             if !same_file(&metadata, &input.metadata()?) {
                 return Err(copy_changed());
             }

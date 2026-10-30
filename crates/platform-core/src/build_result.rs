@@ -3,11 +3,12 @@
 use super::{atomic_json, valid_task_id};
 use crate::{projects::check_no_symlinks, tasks::TaskRecord, ApiError};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -62,11 +63,11 @@ fn read_pointer(workspace: &Path, project: &str) -> Result<Option<Pointer>, ApiE
     if !before.is_file() || before.nlink() != 1 || before.len() > MAX_POINTER_BYTES {
         return Err(unavailable());
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&path)
-        .map_err(|_| unavailable())?;
+    let file = platform_native::filesystem::open_read(
+        &path,
+        platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+    )
+    .map_err(|_| unavailable())?;
     let opened = file.metadata().map_err(|_| unavailable())?;
     if !opened.is_file()
         || opened.nlink() != 1

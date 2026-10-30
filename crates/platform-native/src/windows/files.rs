@@ -340,6 +340,16 @@ pub fn directory_scope(file: &File) -> io::Result<(PathBuf, PinnedDirectory)> {
 }
 
 pub fn open_read_file(path: &Path) -> io::Result<File> {
+    open_read_file_with_policy(path, true)
+}
+
+/// A no-link read does not by itself prohibit hard links. Only callers whose
+/// existing contract requires single-link objects use open_read_file instead.
+pub fn open_read_file_allowing_hard_links(path: &Path) -> io::Result<File> {
+    open_read_file_with_policy(path, false)
+}
+
+fn open_read_file_with_policy(path: &Path, single_link: bool) -> io::Result<File> {
     let _scope = pin_parent(path)?;
     let name = native_path(path)?;
     let raw = unsafe {
@@ -359,10 +369,10 @@ pub fn open_read_file(path: &Path) -> io::Result<File> {
     let file = unsafe { File::from_raw_handle(raw) };
     reject_reparse(&file)?;
     let info = identity(&file)?;
-    if info.directory || info.links != 1 {
+    if info.directory || (single_link && info.links != 1) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Expected an ordinary single-link file",
+            "File does not satisfy the requested ordinary-file read policy",
         ));
     }
     Ok(file)

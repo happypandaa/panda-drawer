@@ -50,10 +50,10 @@ fn read_small(path: &Path) -> Result<Vec<u8>, ApiError> {
     if !ordinary(path)?.is_file() {
         return Err(fail("清理控制记录不是普通文件。"));
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinks,
+    )?;
     let mut bytes = Vec::new();
     file.take(32_000_001).read_to_end(&mut bytes)?;
     if bytes.len() > 32_000_000 {
@@ -290,10 +290,10 @@ impl LocalCleanupPlan {
         self.marker.verify()?;
         // Deleting/replacing the original lock would let a second process
         // initialize another instance while this one is still removing data.
-        let lock = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&self.lock.path)?;
+        let lock = platform_native::filesystem::open_read(
+            &self.lock.path,
+            platform_native::filesystem::ReadOptions::NoLinks,
+        )?;
         if !self
             .lock
             .identity

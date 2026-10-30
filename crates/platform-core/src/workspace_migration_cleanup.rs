@@ -6,11 +6,12 @@
 use crate::{file_identity::PersistedIdentity, projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
 };
 
@@ -256,10 +257,10 @@ fn entries(value: Value) -> Result<BTreeMap<PathBuf, CopyEntry>, ApiError> {
 
 fn read_metadata(path: &Path) -> Result<Value, ApiError> {
     check_no_symlinks(path, false)?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
+    let mut file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinksCloseOnExec,
+    )?;
     let before = file.metadata()?;
     if !before.is_file() || before.nlink() != 1 || before.len() > MAX_METADATA {
         return Err(blocked("迁移证明不是独立普通文件或超过大小限制。"));

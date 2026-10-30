@@ -6,9 +6,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::HashMap,
-    fs,
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
