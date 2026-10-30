@@ -10,6 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod git;
 mod owned;
 mod payload;
 pub const ARCHIVE_NAME: &str = "node-v24.22.0-win-x64.zip";
@@ -267,6 +268,21 @@ fn receive(cache: &Path) -> Result<Value> {
 
 pub fn run(args: Vec<OsString>) -> Result<Value> {
     match args.as_slice() {
+        [command, target] if command == "git-receive" => git::receive(Path::new(target)),
+        [command, target] if command == "git-inspect" => git::inspect(Path::new(target)),
+        [command, root] if command == "git-verify" => git::verify(Path::new(root)),
+        [command, source, output] if command == "git-prepare" => {
+            git::prepare(Path::new(source), Path::new(output), None)
+        }
+        [command, source, output, guard] if command == "git-prepare" => {
+            let expected: Value = serde_json::from_str(
+                guard
+                    .to_str()
+                    .ok_or_else(|| invalid("Invalid guard encoding"))?,
+            )
+            .map_err(invalid)?;
+            git::prepare(Path::new(source), Path::new(output), Some(&expected))
+        }
         [command, target] if command == "receive" => receive(Path::new(target)),
         [command, target] if command == "inspect" => Ok(metadata(&archive(Path::new(target))?)),
         [command, kind, source, output] if command == "prepare" => {

@@ -140,7 +140,7 @@ fn probe_release(root: &Path, development: bool) -> Result<()> {
     }
     Ok(())
 }
-fn inspect_tree(root: &Path) -> Result<Files> {
+pub(super) fn inspect_tree(root: &Path) -> Result<Files> {
     let mut files = Files::new();
     let mut total = 0usize;
     fn visit(
@@ -240,12 +240,12 @@ pub(super) fn verify(kind: &std::ffi::OsStr, root: &Path) -> Result<Value> {
     Ok(report(root, development))
 }
 
-struct Created {
-    files: Vec<(PathBuf, native::FileIdentity)>,
-    directories: Vec<(PathBuf, native::FileIdentity)>,
+pub(super) struct Created {
+    pub(super) files: Vec<(PathBuf, native::FileIdentity)>,
+    pub(super) directories: Vec<(PathBuf, native::FileIdentity)>,
 }
 impl Created {
-    fn directory(&mut self, path: &Path) -> Result<()> {
+    pub(super) fn directory(&mut self, path: &Path) -> Result<()> {
         native::create_private_directory(path).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -256,7 +256,7 @@ impl Created {
             .push((path.into(), native::open_no_reparse(path)?.identity));
         Ok(())
     }
-    fn write(&mut self, root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    pub(super) fn write(&mut self, root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
         // Extended Win32 paths require native separators; Path::join preserves
         // literal '/' in a string even though components() recognizes it.
         let relative: PathBuf = Path::new(name).components().collect();
@@ -279,7 +279,7 @@ impl Created {
         file.sync_all()?;
         Ok(())
     }
-    fn cleanup(&self) -> Result<()> {
+    pub(super) fn cleanup(&self) -> Result<()> {
         // Establish the complete original directory scope before removing any
         // child. Matching a moved file's ID alone cannot authorize its removal
         // from an unrelated same-name replacement directory.
