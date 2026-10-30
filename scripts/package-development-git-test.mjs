@@ -6,13 +6,20 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { DEVELOPMENT_GIT_RELEASE, gitTreeDigest, parseDevelopmentGitArguments, prepareDevelopmentGit, verifyDevelopmentGit } from './package-development-git.mjs';
+import { DEVELOPMENT_GIT_RELEASE, gitTreeDigest, parseDevelopmentGitArguments, prepareDevelopmentGit, verifyDevelopmentGit as verifyMacDevelopmentGit } from './package-development-git.mjs';
+import { verifyDevelopmentGitWindows } from './package-development-git-windows.mjs';
+import { directoryLink, fileSymlinkFixture, posixPermissions } from './package-test-fixtures.mjs';
 
 const execute = promisify(execFile);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const macArm = process.platform === 'darwin' && process.arch === 'arm64';
 const metadataName = 'development-git.json';
 const releaseBytes = await readFile(new URL('./development-git-release.json', import.meta.url));
+const windowsDependencies = process.env.WINDOWS_NATIVE_PACKAGER_HELPER ? { helper: process.env.WINDOWS_NATIVE_PACKAGER_HELPER } : {};
+const verifyDevelopmentGit = process.platform === 'win32'
+  ? root => verifyDevelopmentGitWindows(root, windowsDependencies) : verifyMacDevelopmentGit;
+const verificationMetadata = process.platform === 'win32'
+  ? await readFile(new URL('./development-git-release.windows-x64.json', import.meta.url)) : releaseBytes;
 
 async function disposable(t) {
   const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'disposable-development-git-'));
@@ -24,7 +31,7 @@ async function disposable(t) {
 async function fakePayload(root) {
   const payload = path.join(root, 'payload');
   await mkdir(payload, { mode: 0o755 });
-  await writeFile(path.join(payload, metadataName), releaseBytes, { mode: 0o644 });
+  await writeFile(path.join(payload, metadataName), verificationMetadata, { mode: 0o644 });
   return payload;
 }
 
@@ -87,16 +94,16 @@ test('Git verification rejects self-reported metadata and never executes unverif
   const fakeGit = '#!/bin/sh\n/usr/bin/touch "' + sentinel + '"\n';
   await writeFile(path.join(payload, 'bin/git'), fakeGit, { mode: 0o755 });
   await writeFile(path.join(payload, metadataName), JSON.stringify({
-    ...DEVELOPMENT_GIT_RELEASE, tree: { sha256: 'self-reported' },
+    ...JSON.parse(verificationMetadata), tree: { sha256: 'self-reported' },
   }));
-  await assert.rejects(verifyDevelopmentGit(payload));
+  await assert.rejects(verifyDevelopmentGit(payload), /metadata differs/);
   await assertMissing(sentinel);
   // A semantically identical JSON document must not replace the fixed bytes.
-  await writeFile(path.join(payload, metadataName), Buffer.concat([releaseBytes, Buffer.from('\n')]));
-  await assert.rejects(verifyDevelopmentGit(payload));
+  await writeFile(path.join(payload, metadataName), Buffer.concat([verificationMetadata, Buffer.from('\n')]));
+  await assert.rejects(verifyDevelopmentGit(payload), /metadata differs/);
   await assertMissing(sentinel);
-  await writeFile(path.join(payload, metadataName), releaseBytes);
-  await assert.rejects(verifyDevelopmentGit(payload));
+  await writeFile(path.join(payload, metadataName), verificationMetadata);
+  await assert.rejects(verifyDevelopmentGit(payload), /tree differs/);
   await assertMissing(sentinel);
 });
 
@@ -104,29 +111,33 @@ test('Git verification refuses linked ancestors, linked members and hardlinks', 
   const root = await disposable(t);
   const payload = await fakePayload(root);
   const alias = path.join(root, 'alias');
-  await symlink(payload, alias);
-  await assert.rejects(verifyDevelopmentGit(alias));
+  await directoryLink(payload, alias);
+  await assert.rejects(verifyDevelopmentGit(alias), /ordinary directory|[Rr]eparse/);
   await mkdir(path.join(payload, 'nested'), { mode: 0o755 });
   await writeFile(path.join(payload, 'nested', 'member'), 'keep', { mode: 0o644 });
-  await assert.rejects(verifyDevelopmentGit(path.join(alias, 'nested')));
+  await assert.rejects(verifyDevelopmentGit(path.join(alias, 'nested')), /ordinary directory|[Rr]eparse/);
   const outside = path.join(root, 'caller-owned');
   await writeFile(outside, 'caller bytes', { mode: 0o644 });
   const linked = path.join(payload, 'linked');
-  await symlink(outside, linked);
-  await assert.rejects(verifyDevelopmentGit(payload));
-  await unlink(linked);
+  await t.test('file symlink member', async t => {
+    if (!await fileSymlinkFixture(t, outside, linked)) return;
+    try { await assert.rejects(verifyDevelopmentGit(payload), /symbolic link|[Rr]eparse/); }
+    finally { await unlink(linked); }
+  });
   await link(outside, linked);
-  await assert.rejects(verifyDevelopmentGit(payload));
+  await assert.rejects(verifyDevelopmentGit(payload), /without links|ordinary-file read policy/);
   await unlink(linked);
   const metadata = path.join(payload, metadataName);
   await unlink(metadata);
-  await symlink(outside, metadata);
-  await assert.rejects(verifyDevelopmentGit(payload));
+  await t.test('file symlink metadata', async t => {
+    if (!await fileSymlinkFixture(t, outside, metadata)) return;
+    await assert.rejects(verifyDevelopmentGit(payload), /symbolic link|[Rr]eparse/);
+  });
   assert.equal(await readFile(outside, 'utf8'), 'caller bytes');
   assert.equal((await lstat(outside)).nlink, 1);
 });
 
-test('Git verification rejects writable or special-bit payload permissions', async t => {
+test('Git verification rejects writable or special-bit payload permissions', posixPermissions, async t => {
   const root = await disposable(t);
   const payload = await fakePayload(root);
   const metadata = path.join(payload, metadataName);

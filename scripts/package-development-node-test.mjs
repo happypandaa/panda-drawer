@@ -7,12 +7,19 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { NODE_RELEASE } from './package-node-runtime.mjs';
-import { DEVELOPMENT_NODE_RELEASE, developmentLauncher, developmentTreeDigest, extractDevelopmentNpm, parseDevelopmentArguments, prepareDevelopmentNode, verifyDevelopmentNode } from './package-development-node.mjs';
+import { DEVELOPMENT_NODE_RELEASE, developmentLauncher, developmentTreeDigest, extractDevelopmentNpm, parseDevelopmentArguments, prepareDevelopmentNode, verifyDevelopmentNode as verifyMacDevelopmentNode } from './package-development-node.mjs';
+import { verifyDevelopmentNodeWindows } from './package-development-node-windows.mjs';
+import { directoryLink, fileSymlinkFixture, posixPermissions } from './package-test-fixtures.mjs';
 
 const execute = promisify(execFile);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const macArm = process.platform === 'darwin' && process.arch === 'arm64';
 const npmRoot = `${NODE_RELEASE.archiveRoot}/lib/node_modules/npm`;
+const windowsDependencies = process.env.WINDOWS_NATIVE_PACKAGER_HELPER ? { helper: process.env.WINDOWS_NATIVE_PACKAGER_HELPER } : {};
+const verifyDevelopmentNode = process.platform === 'win32'
+  ? root => verifyDevelopmentNodeWindows(root, windowsDependencies) : verifyMacDevelopmentNode;
+const verificationMetadata = await readFile(new URL(process.platform === 'win32'
+  ? './development-node-release.windows-x64.json' : './development-node-release.json', import.meta.url));
 
 async function disposable(t) {
   const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'disposable-development-node-'));
@@ -109,10 +116,10 @@ test('verification never executes unverified bytes or trusts self-reported metad
   await mkdir(path.join(root, 'bin'));
   const sentinel = path.join(root, 'unexpected-execution');
   await writeFile(path.join(root, 'bin/node'), `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o755 });
-  await writeFile(path.join(root, 'development-node.json'), JSON.stringify({ ...DEVELOPMENT_NODE_RELEASE, tree: { sha256: 'forged' } }), { mode: 0o644 });
+  await writeFile(path.join(root, 'development-node.json'), JSON.stringify({ ...JSON.parse(verificationMetadata), tree: { sha256: 'forged' } }), { mode: 0o644 });
   await assert.rejects(verifyDevelopmentNode(root), /metadata differs/);
   await assert.rejects(lstat(sentinel), { code: 'ENOENT' });
-  await writeFile(path.join(root, 'development-node.json'), await readFile(new URL('./development-node-release.json', import.meta.url)));
+  await writeFile(path.join(root, 'development-node.json'), verificationMetadata);
   await assert.rejects(verifyDevelopmentNode(root), /tree differs/);
   await assert.rejects(lstat(sentinel), { code: 'ENOENT' });
 });
@@ -120,21 +127,24 @@ test('verification never executes unverified bytes or trusts self-reported metad
 test('verification refuses linked parents, linked files, hardlinks and empty unknown directories', async t => {
   const root = await disposable(t);
   const actual = path.join(root, 'actual'); await mkdir(actual);
-  await symlink(actual, path.join(root, 'alias'));
-  await assert.rejects(verifyDevelopmentNode(path.join(root, 'alias')), /ordinary directory/);
+  await directoryLink(actual, path.join(root, 'alias'));
+  await assert.rejects(verifyDevelopmentNode(path.join(root, 'alias')), /ordinary directory|[Rr]eparse/);
   const file = path.join(actual, 'member'); await writeFile(file, 'keep');
-  await symlink(file, path.join(actual, 'linked'));
-  await assert.rejects(verifyDevelopmentNode(actual), /symbolic link/);
-  await unlink(path.join(actual, 'linked'));
+  await t.test('file symlink member', async t => {
+    const linked = path.join(actual, 'linked');
+    if (!await fileSymlinkFixture(t, file, linked)) return;
+    try { await assert.rejects(verifyDevelopmentNode(actual), /symbolic link|[Rr]eparse/); }
+    finally { await unlink(linked); }
+  });
   await link(file, path.join(actual, 'hardlink'));
-  await assert.rejects(verifyDevelopmentNode(actual), /without links/);
+  await assert.rejects(verifyDevelopmentNode(actual), /without links|ordinary-file read policy/);
   await unlink(path.join(actual, 'hardlink'));
   await mkdir(path.join(actual, 'empty'));
-  await assert.rejects(verifyDevelopmentNode(actual), /unexpected empty/);
+  await assert.rejects(verifyDevelopmentNode(actual), /empty/i);
   assert.equal(await readFile(file, 'utf8'), 'keep');
 });
 
-test('verification rejects group-writable, world-writable and special-bit permissions', async t => {
+test('verification rejects group-writable, world-writable and special-bit permissions', posixPermissions, async t => {
   const root = await disposable(t);
   const file = path.join(root, 'development-node.json');
   await writeFile(file, await readFile(new URL('./development-node-release.json', import.meta.url)), { mode: 0o644 });

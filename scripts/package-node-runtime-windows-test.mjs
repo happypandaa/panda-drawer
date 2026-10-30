@@ -55,6 +55,20 @@ test('verified official Windows runtime relocates and does not replace an existi
  await assert.rejects(packageNodeRuntimeWindows(options,dependencies),/already exists/);
  const moved=path.join(root,'移动后 中文 空格');await rename(original,moved);
  const report=await verifyWindowsNodePayload('runtime',moved,dependencies);
+ const metadataPath=path.join(moved,'runtime.json');const metadataBytes=await readFile(metadataPath);
+ const expected=structuredClone(WINDOWS_NODE_RELEASE);delete expected.archiveName;delete expected.archiveRoot;delete expected.source.checksumUrls;
+ assert.deepEqual(JSON.parse(metadataBytes),expected);
+ await writeFile(metadataPath,Buffer.concat([metadataBytes,Buffer.from('\n')]));
+ await assert.rejects(verifyWindowsNodePayload('runtime',moved,dependencies),/metadata or member set differs/);
+ assert.deepEqual(await readFile(metadataPath),Buffer.concat([metadataBytes,Buffer.from('\n')]));await writeFile(metadataPath,metadataBytes);
+ const licensePath=path.join(moved,'LICENSE');const licenseBytes=await readFile(licensePath);
+ await writeFile(licensePath,Buffer.concat([licenseBytes,Buffer.from('\nchanged caller bytes')]));
+ await assert.rejects(verifyWindowsNodePayload('runtime',moved,dependencies),/member differs/);
+ assert.deepEqual(await readFile(licensePath),Buffer.concat([licenseBytes,Buffer.from('\nchanged caller bytes')]));await writeFile(licensePath,licenseBytes);
+ await verifyWindowsNodePayload('runtime',moved,dependencies);
+ // Reuse the same verified offline cache for a second genuinely new output.
+ const reused=path.join(root,'同一缓存的新输出');await packageNodeRuntimeWindows({...options,outputDir:reused},dependencies);
+ await verifyWindowsNodePayload('runtime',reused,dependencies);
  assert.equal((await execute(report.nodePath,['--version'],{windowsHide:true,timeout:10000,env:{SystemRoot:process.env.SystemRoot,NODE_DISABLE_COMPILE_CACHE:'1',TEMP:root,TMP:root,USERPROFILE:root,HOME:root}})).stdout.trim(),'v24.22.0');
  await writeFile(path.join(moved,'unknown'),'keep');await assert.rejects(verifyWindowsNodePayload('runtime',moved,dependencies),/member set/);
  assert.equal(await readFile(path.join(moved,'unknown'),'utf8'),'keep');
