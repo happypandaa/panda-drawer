@@ -9,7 +9,7 @@ export interface ProjectHandoff {
 }
 export type HandoffAction = 'copy';
 
-export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, onShowHelp, feedback, hint = '想改功能？复制提示词发给 AI，按项目说明完成后续操作。' }: {
+export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, onShowHelp, feedback, hint = '复制提示词发给 AI，按项目说明完成后续操作。' }: {
   handoff: ProjectHandoff | null;
   action: HandoffAction | null;
   disabled: boolean;
@@ -21,7 +21,7 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
 }) {
   const [showHelp, setShowHelp] = useState(false);
   const id = useId();
-  return <section className="detail-actions" aria-label="应用操作与交接说明">
+  return <section className="detail-actions detail-handoff" aria-label="应用操作与交接说明">
     <div className="detail-action-hint"><p>想改功能？交给 AI</p>
     <div className="detail-action-row">
       <div className="detail-copy-actions" aria-label="AI 交接">

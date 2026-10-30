@@ -1600,3 +1600,114 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .storage-application-row .space-project-name { display: flex; align-items: center; gap: 12px; }
 .storage-application-row .space-bar { width: 100%; margin: 0; }
 .storage-application-row .radio-app-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 24px; height: 24px; }
+
+/* Visual refinement (2026-10-30, design: 现有风格优化版).
+   One violet accent for primary actions and selection, white surfaces on a faint
+   lavender ground, no dot texture or header glow, consistent status colors. */
+:root[data-theme='light'] {
+  --radio-background: #f7f6fa; --radio-header: #ffffff; --radio-header-glow: transparent; --radio-footer: #ffffff;
+  --radio-text: #19171f; --radio-muted: #6e6a80; --radio-secondary: #55516a; --radio-line: #e6e3ee;
+  --radio-surface: #ffffff; --radio-subtle: #f7f6fa; --radio-selected: #efecf6; --radio-focus: #5b45c9; --radio-dots: none;
+  --radio-accent: #5b45c9; --radio-accent-hover: #4b37b2; --radio-accent-text: #ffffff; --radio-accent-soft: #eeeafb; --radio-accent-strong: #3e2e99;
+  --radio-shadow: 0 24px 60px rgba(40, 30, 80, .18);
+}
+:root[data-theme='dark'] {
+  --radio-dots: none; --radio-header-glow: transparent; --radio-header: #16151b; --radio-footer: #16151b;
+  --radio-accent: #9d8cf5; --radio-accent-hover: #b0a2f8; --radio-accent-text: #15121f; --radio-accent-soft: #29243d; --radio-accent-strong: #d3caff;
+}
+.radio-shell, .radio-header, .radio-footer { background-image: none; }
+.radio-header { box-shadow: none; }
+
+/* Primary actions use the accent; everything else stays white with a hairline. */
+:root[data-theme] .primary-button { border-color: var(--radio-accent); color: var(--radio-accent-text); background: var(--radio-accent); }
+:root[data-theme] .primary-button:hover:not(:disabled) { border-color: var(--radio-accent-hover); color: var(--radio-accent-text); background: var(--radio-accent-hover); filter: none; }
+:root[data-theme] .primary-button:disabled { border-color: var(--radio-line); color: var(--radio-muted); background: var(--radio-subtle); }
+.radio-add-actions > .primary-button { box-shadow: 0 6px 16px rgba(91, 69, 201, .22); }
+:root[data-theme='dark'] .radio-add-actions > .primary-button { box-shadow: none; }
+.radio-add-actions > button { min-height: 38px; border-radius: 12px; }
+
+/* Home heading, filters and footer. */
+.application-heading { padding: 26px 32px 8px; gap: 12px; }
+.application-heading-main h1 { font-size: 24px; font-weight: 700; }
+.application-count { font-size: 13px; }
+.radio-footer { min-height: 40px; padding: 8px 32px; background: var(--radio-footer); font-size: 12px; color: var(--radio-muted); }
+.radio-footer > span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--radio-secondary); }
+.radio-footer .text-button { color: var(--radio-accent); font-size: 12px; }
+
+/* Launcher tiles as white cards; attention state tinted. */
+.project-card.launcher-tile { padding: 16px 6px 14px; border: 1px solid var(--radio-line); border-radius: 18px; background: var(--radio-surface); }
+.project-card.launcher-tile:hover, .project-card.launcher-tile:focus-within { background: var(--radio-surface); border-color: #d6d0e8; box-shadow: 0 6px 18px rgba(40, 30, 80, .08); }
+:root[data-theme='dark'] .project-card.launcher-tile:hover, :root[data-theme='dark'] .project-card.launcher-tile:focus-within { border-color: #4a4560; box-shadow: none; }
+.project-card.launcher-tile:has(.launcher-state.is-attention) { border-color: #f2d7a8; background: #fffbf3; }
+:root[data-theme='dark'] .project-card.launcher-tile:has(.launcher-state.is-attention) { border-color: #5c4a25; background: #221d14; }
+.launcher-tile .launcher-icon { width: 64px; height: 64px; border-radius: 18px; }
+.launcher-state.is-busy .launcher-state-dot { background: var(--radio-accent); }
+
+/* Detail dialog: white header, monogram icon matching the tile, compact rhythm. */
+:root[data-theme] .software-detail-modal > .modal-header { background: var(--radio-surface); border-bottom: 0; padding: 26px 32px 10px; }
+:root[data-theme] .software-detail-modal > .modal-header h2 { font-size: 21px; line-height: 30px; }
+:root[data-theme] .modal-header h2 { color: var(--radio-text); }
+:root[data-theme] .software-detail-modal > .modal-header .modal-title-icon { width: 56px; height: 56px; border-radius: 16px; background: var(--radio-accent-soft); color: var(--radio-accent-strong); overflow: hidden; }
+.modal-title-icon .detail-monogram { display: grid; place-items: center; width: 100%; height: 100%; background: var(--tile-bg, var(--radio-accent-soft)); color: var(--tile-fg, var(--radio-accent-strong)); font-size: 24px; font-weight: 700; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-0 { --tile-bg: #e7e1f5; --tile-fg: #5b4a8b; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-1 { --tile-bg: #dbe8f4; --tile-fg: #3b6286; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-2 { --tile-bg: #d9eee3; --tile-fg: #3b7058; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-3 { --tile-bg: #f7e2d4; --tile-fg: #985733; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-4 { --tile-bg: #f5dce3; --tile-fg: #944d61; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-5 { --tile-bg: #f0e7cf; --tile-fg: #7b6330; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-6 { --tile-bg: #e1e9d5; --tile-fg: #596a3c; }
+:is(.launcher-tile, .modal-title-icon) .launcher-color-7 { --tile-bg: #e0e4ec; --tile-fg: #4b556f; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-0 { --tile-bg: #3a3352; --tile-fg: #d3c8f2; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-1 { --tile-bg: #2b3d4f; --tile-fg: #bcd6ef; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-2 { --tile-bg: #2a4238; --tile-fg: #b8e2cc; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-3 { --tile-bg: #4a3528; --tile-fg: #f1c8ad; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-4 { --tile-bg: #4a2f38; --tile-fg: #efc0cd; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-5 { --tile-bg: #463d27; --tile-fg: #e8d6a6; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-6 { --tile-bg: #37412c; --tile-fg: #cfdcb8; }
+:root[data-theme='dark'] :is(.launcher-tile, .modal-title-icon) .launcher-color-7 { --tile-bg: #343a48; --tile-fg: #c9d0e0; }
+:root[data-theme] .software-detail-modal .detail-status-badge { border: 0; border-radius: 999px; padding: 5px 12px; font-size: 12px; }
+:root[data-theme] .software-detail-modal .detail-status-badge.is-attention { color: var(--radio-warning); background: var(--radio-warning-surface); }
+
+.application-details { display: flex; flex-direction: column; gap: 18px; padding: 8px 32px 24px; }
+:root[data-theme] .software-detail-modal .application-details > .detail-actions, :root[data-theme] .software-detail-modal .application-details .application-detail-notices { padding: 0; }
+:root[data-theme] .software-detail-modal .application-primary-actions > button { min-height: 44px; padding: 8px 18px; border-radius: 12px; font-size: 14px; }
+:root[data-theme] .software-detail-modal .application-primary-actions > .primary-button { flex: 1 1 auto; justify-content: center; }
+
+/* "交给 AI" reads as one tinted block. */
+:root[data-theme] .software-detail-modal .application-details > .detail-actions.detail-handoff, :root[data-theme] .software-detail-modal .detail-handoff { display: flex; flex-direction: column; gap: 6px; padding: 16px 18px; border-radius: 16px; background: var(--radio-accent-soft); }
+:root[data-theme] .software-detail-modal .detail-handoff > .detail-action-hint { margin: 0; }
+:root[data-theme] .software-detail-modal .detail-handoff > .detail-action-hint:first-child > p { color: var(--radio-accent-strong); font-size: 14px; font-weight: 700; }
+:root[data-theme] .software-detail-modal .detail-handoff .detail-copy-prompt { min-height: 36px; padding: 6px 14px; border: 1px solid #cfc6f2; border-radius: 10px; background: var(--radio-surface); color: var(--radio-accent-strong); font-size: 13px; font-weight: 500; }
+:root[data-theme='dark'] .software-detail-modal .detail-handoff .detail-copy-prompt { border-color: #4a4268; }
+:root[data-theme] .software-detail-modal .detail-handoff .detail-copy-prompt svg { width: 16px; height: 16px; }
+:root[data-theme] .software-detail-modal .detail-handoff .detail-action-hint .text-button { color: var(--radio-accent-strong); }
+:root[data-theme] .software-detail-modal .detail-handoff .detail-handoff-help { background: var(--radio-surface); }
+
+/* Information rows as one bordered group with small outlined actions. */
+:root[data-theme] .software-detail-modal .application-detail-information { margin: 0; padding: 0; border: 1px solid var(--radio-line); border-radius: 16px; overflow: hidden; }
+.application-detail-row { grid-template-columns: 84px minmax(0, 1fr) auto; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--radio-line); font-size: 13px; }
+.application-detail-row:last-child { border-bottom: 0; }
+.application-detail-row dt { color: var(--radio-muted); }
+.application-detail-row-action :is(button, .text-button) { min-height: 30px; padding: 4px 12px; border: 1px solid var(--radio-line); border-radius: 9px; background: var(--radio-surface); color: var(--radio-text); font-size: 12px; }
+.application-detail-row-action :is(button, .text-button):hover:not(:disabled) { background: var(--radio-selected); }
+.application-detail-footer { padding: 0; font-size: 12px; }
+.application-detail-more > summary { color: var(--radio-muted); font-size: 12px; }
+:root[data-theme] .software-detail-modal .application-details > .application-detail-more { padding: 0; }
+:root[data-theme] .software-detail-modal .application-detail-footer :is(.danger-button, button) { min-height: 32px; padding: 4px 6px; border: 0; background: transparent; color: var(--radio-danger); font-size: 12px; }
+:root[data-theme] .software-detail-modal .application-detail-footer :is(.danger-button, button):hover:not(:disabled) { background: var(--radio-danger-surface); }
+:root[data-theme] .software-detail-modal .application-detail-footer svg { width: 14px; height: 14px; }
+
+/* Settings: soft selected item, white header, compact stat cards. */
+:root[data-theme] .radio-settings-modal > .modal-header { background: var(--radio-surface); }
+.settings-nav button[aria-selected='true'] { background: var(--radio-accent-soft); color: var(--radio-accent-strong); font-weight: 500; }
+.space-summary { padding: 0; border: 0; background: transparent; }
+:root[data-theme] .space-summary { border: 0; background: transparent; box-shadow: none; }
+.space-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.space-totals > div { padding: 14px 16px; border-radius: 14px; background: var(--radio-subtle); }
+.space-totals dd { font-size: 20px; letter-spacing: 0; }
+.space-totals > div:nth-child(2) { background: var(--radio-accent-soft); }
+:root[data-theme] .space-totals > div:nth-child(2) dd { color: var(--radio-accent-strong); }
+.space-note { margin: 10px 0 0; font-size: 12px; color: var(--radio-muted); }
+.space-color-mine { background: #8b7bd8; }
+.radio-app-icon { background: var(--radio-accent-soft); color: var(--radio-accent-strong); }
+@media (max-width: 720px) { .space-totals { grid-template-columns: 1fr; } .application-details { padding-inline: 24px; } }

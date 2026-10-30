@@ -22,7 +22,7 @@ export function launcherMonogram(name: string) {
   return first ? first.toLocaleUpperCase('en') : '?';
 }
 
-function iconSlot(id: string) {
+export function iconSlot(id: string) {
   let value = 0;
   for (const character of id) value = (Math.imul(value, 31) + character.codePointAt(0)!) >>> 0;
   return value % 8;
