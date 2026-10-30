@@ -608,6 +608,47 @@ pub fn rename_file(source: &Path, destination: &Path, replace: bool) -> io::Resu
     Ok(())
 }
 
+/// Publish a directory only into an absent name, including when an existing
+/// destination is empty. A move across volumes is never turned into a copy.
+pub fn rename_directory_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
+    let _source_parent = pin_parent(source)?;
+    let _destination_parent = pin_parent(destination)?;
+    let source_identity = open_no_reparse(source)?;
+    if !source_identity.identity.directory {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "Expected an ordinary directory candidate",
+        ));
+    }
+    match std::fs::symlink_metadata(destination) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Directory publication cannot replace an existing destination",
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error),
+    }
+    let from = native_path(source)?;
+    let to = native_path(destination)?;
+    unsafe {
+        checked(MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        ))?;
+    }
+    let published = open_no_reparse(destination)?;
+    if !source_identity.identity.same_object(&published.identity) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Directory publication identity is unconfirmed",
+        ));
+    }
+    Ok(())
+}
+
 pub fn verify_private(file: &File) -> io::Result<()> {
     let current = CurrentUser::load()?;
     let mut owner = null_mut();
