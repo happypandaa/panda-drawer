@@ -406,3 +406,9 @@ Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有
 同样隔离运行完整桌面测试二进制：**73 通过、8 失败**，本步目录身份、project_onboarding 共用检查及下载拒绝专项均通过。8 项失败实际为 codex_handoff 的绝对路径/安装判定 2 项、local_directory 的 Finder 参数夹具 1 项、native_process 的 POSIX shell 夹具 2 项、Node 生命周期夹具目录 fsync 1 项、尚关闭的窗口尺寸缓存发布 2 项。保留这些失败，后续分别补平台夹具与真实后端；没有将它们记为通过。两次完整测试均仅使用新建临时现场，没有运行开发数据重置、真实项目删除或实际平台服务。
 
 再次 fetch 后 main 仍为 `ac3b5d72ab79e132fcedd149c73e1201a2896576`。原始 CI 基线 run 41092968343 的 Mac / Windows 作业仍排队；Windows 服务未就绪，Mac 测试尚未实际运行。W0 仍未完成，未合入 main。对外整体百分比只是七个里程碑等权、W0 暂估完成一半所得约 7%，正式验收完成仍为 0/7，不按小步数量或编译错误减少数计算完成率。
+
+### W0.42 — Windows SDK / 模板打包 npm 执行方式
+
+新增脚本适配 `npm-command.mjs`，只在 Windows 将 SDK 与起始模板打包改为当前 Node 加实际 npm-cli.js 的参数数组，优先有效 npm_execpath，其次 Node 旁及 PATH 中的安装。找不到可用文件时明确报错，不执行 npm.cmd 或 shell。Mac 返回原 npm 命令和原参数值，两处打包调用的其余行为保持。此处仅适配开发打包工具，不代替 W1 内置 Node 发行资源或 W3/W4 项目 npm 管理。
+
+新增 6 项脚本测试及原 process 的 5 项回归共 **11/11 通过**，包含真实 Node 子进程逐值收到中文、空格、引号、&、美元符和反引号，缺失/目录伪装入口报错，Mac 仍选择原命令。实际安装的 npm 另经该 helper 执行 `--version`，结果 **11.9.0**。语法检查通过。未运行现有 Mac prepareDesktop，未触及旧资源目录；完整 SDK/template 打包和 Mac 实际执行仍待后续验证。既有完整 core/桌面测试失败与 CI 排队状态没有因此变为通过，W0 未完成。
