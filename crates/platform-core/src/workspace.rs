@@ -304,11 +304,7 @@ pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Valu
             bail!("Migration targets must be local APFS disks")
         }
         let probe = target.join(format!(".write-probe-{}", Uuid::new_v4().simple()));
-        let f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&probe)?;
+        let f = platform_native::filesystem::create_new_private_file(&probe, false)?;
         f.sync_all()?;
         drop(f);
         fs::remove_file(probe)?;
@@ -537,15 +533,11 @@ fn copy_entries(source: &Path, target: &Path, entries: &[Entry]) -> Result<()> {
                 if !m.is_file() || m.file_type().is_symlink() {
                     bail!("Source changed while copying: {}", from.display())
                 }
-                let mut input = OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&from)?;
-                let mut output = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&to)?;
+                let mut input = platform_native::filesystem::open_read(
+                    &from,
+                    platform_native::filesystem::ReadOptions::NoLinks,
+                )?;
+                let mut output = platform_native::filesystem::create_new_private_file(&to, false)?;
                 std::io::copy(&mut input, &mut output)?;
                 output.sync_all()?;
                 fs::set_permissions(&to, fs::Permissions::from_mode(e.mode))?;

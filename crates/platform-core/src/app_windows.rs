@@ -507,10 +507,10 @@ fn private_directory(path: &Path) -> Result<(), ApiError> {
 fn open_private(path: &Path) -> Result<fs::File, ApiError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     check_no_symlinks(path, false)?;
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)?;
+    let file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinksNonblockingCloseOnExec,
+    )?;
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.nlink() != 1

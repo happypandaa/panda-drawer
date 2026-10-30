@@ -1,11 +1,9 @@
 //! Window-only entry snapshots for readable projects without build provenance.
 //! Receipts are in the fixed project control root, never copied during migration.
 use super::*;
-use std::{
-    fs::OpenOptions,
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::{fs::OpenOptions, io::Read};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,10 +131,10 @@ impl ArtifactAccess {
         let owner = views.parent().ok_or_else(view_error)?;
         let container = views.join(view);
         check_no_symlinks(&container, false)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(container.join("view.json"))?;
+        let mut file = platform_native::filesystem::open_read(
+            container.join("view.json"),
+            platform_native::filesystem::ReadOptions::NoLinksCloseOnExec,
+        )?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > 16384 {
             return Err(view_error());

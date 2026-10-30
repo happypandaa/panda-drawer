@@ -7,11 +7,12 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -226,11 +227,10 @@ pub(crate) fn prepare_snapshot_locked(
         if bytes.len() as u64 > MAX_MANIFEST {
             return Err(limit());
         }
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(destination.join(MANIFEST))?;
+        let mut output = platform_native::filesystem::create_new_private_file(
+            destination.join(MANIFEST),
+            false,
+        )?;
         output.write_all(&bytes)?;
         output.sync_all()?;
         sync_directories(destination, &manifest.directories)?;

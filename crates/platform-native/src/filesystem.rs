@@ -34,6 +34,70 @@ pub fn is_reparse(metadata: &Metadata) -> bool {
     }
 }
 
+/// Preserve each existing Unix reader's flags at the platform boundary. On
+/// Windows ordinary-file handles are non-inheritable and reject reparse points;
+/// a separate caller policy decides whether hard links are admitted.
+#[derive(Clone, Copy)]
+pub enum ReadOptions {
+    NoLinks,
+    NoLinksNonblocking,
+    NoLinksCloseOnExec,
+    NoLinksNonblockingCloseOnExec,
+}
+
+pub fn open_read(path: impl AsRef<Path>, options: ReadOptions) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = libc::O_NOFOLLOW
+            | if matches!(
+                options,
+                ReadOptions::NoLinksNonblocking | ReadOptions::NoLinksNonblockingCloseOnExec
+            ) {
+                libc::O_NONBLOCK
+            } else {
+                0
+            }
+            | if matches!(
+                options,
+                ReadOptions::NoLinksCloseOnExec | ReadOptions::NoLinksNonblockingCloseOnExec
+            ) {
+                libc::O_CLOEXEC
+            } else {
+                0
+            };
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(flags)
+            .open(path)
+    }
+    #[cfg(windows)]
+    {
+        let _ = options;
+        crate::windows::files::open_read_file_allowing_hard_links(path.as_ref())
+    }
+}
+
+/// Private creation policies remain explicit, including the original Unix
+/// no-follow choice. Windows creates a protected current-user DACL atomically.
+pub fn create_new_private_file(path: impl AsRef<Path>, no_links: bool) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        if no_links {
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        options.open(path)
+    }
+    #[cfg(windows)]
+    {
+        let _ = no_links;
+        crate::windows::files::create_private_file(path.as_ref())
+    }
+}
+
 pub fn create_private_directory(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -210,5 +274,32 @@ mod tests {
         assert_eq!(chain.last().unwrap(), &path);
         assert!(chain.iter().all(|entry| entry.is_absolute()));
         assert_eq!(chain.first().unwrap().parent(), None);
+    }
+
+    #[test]
+    fn no_link_read_does_not_add_a_hard_link_admission_rule() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-read-policy-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let path = root.join("control.json");
+        let mut file = create_new_private_file(&path, false).unwrap();
+        file.write_all(b"disposable linked bytes").unwrap();
+        file.sync_all().unwrap();
+        std::fs::hard_link(&path, root.join("second-name")).unwrap();
+        for policy in [
+            ReadOptions::NoLinks,
+            ReadOptions::NoLinksNonblocking,
+            ReadOptions::NoLinksCloseOnExec,
+            ReadOptions::NoLinksNonblockingCloseOnExec,
+        ] {
+            let mut reader = open_read(&path, policy).unwrap();
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"disposable linked bytes");
+        }
+        assert!(create_new_private_file(&path, true).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"disposable linked bytes");
     }
 }

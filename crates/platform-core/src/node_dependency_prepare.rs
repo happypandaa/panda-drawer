@@ -11,10 +11,11 @@ use crate::{
     ApiError,
 };
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -708,10 +709,10 @@ fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
     if !before.is_file() || before.nlink() != 1 || before.len() > limit {
         return Err(invalid("安装文件必须是预算内的独立普通文件。"));
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinks,
+    )?;
     let opened = file.metadata()?;
     if before.dev() != opened.dev() || before.ino() != opened.ino() {
         return Err(changed());

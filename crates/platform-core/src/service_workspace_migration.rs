@@ -413,11 +413,7 @@ pub(super) async fn submit_migration(
                                     ".handoff-{}",
                                     Uuid::new_v4().simple()
                                 ));
-                                let mut file = std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create_new(true)
-                                    .mode(0o600)
-                                    .open(&temp)?;
+                                let mut file = platform_native::filesystem::create_new_private_file(&temp, false)?;
                                 std::io::Write::write_all(&mut file, updated.as_bytes())?;
                                 file.sync_all()?;
                                 std::fs::rename(&temp, &handoff_path)?;

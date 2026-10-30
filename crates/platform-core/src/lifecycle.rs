@@ -15,11 +15,12 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -215,11 +216,7 @@ fn copy_verified(from: &Path, to: &Path) -> Result<(), ApiError> {
             "Insufficient space for an independent archive copy",
         ));
     }
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(to)?;
+    let mut output = platform_native::filesystem::create_new_private_file(to, false)?;
     std::io::copy(&mut File::open(from)?, &mut output)?;
     output.sync_all()?;
     if sha256(to)? != expected || sha256(from)? != expected {
@@ -1831,13 +1828,7 @@ fn write_owned_export_stage(
     let mut output = crate::node_apps::development::with_source_ownership_admission(|| {
         validate()?;
         ownership.reserve_export_stage(project, task, stage)?;
-        let output = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(stage)
-        {
+        let output = match platform_native::filesystem::create_new_private_file(stage, true) {
             Ok(file) => file,
             Err(error) => {
                 ownership.forget_export_stage(project, task)?;
@@ -2074,11 +2065,7 @@ fn initialize_candidate(
     };
     fs::create_dir_all(root.join(".platform"))?;
     let handoff = root.join(".platform/handoff.md");
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&handoff)?;
+    let mut file = platform_native::filesystem::create_new_private_file(&handoff, false)?;
     write!(file,"# Platform-managed project handoff\n\nProject ID: `{}`\nProject root: `{}`\nRead the unchanged `README.md`, project skill and bundled documentation before editing.\nSource project: `{}`\n",project.id,final_root.display(),metadata.project_id)?;
     file.sync_all()?;
     Ok((state, diagnostics))

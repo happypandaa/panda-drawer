@@ -13,11 +13,12 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -1486,11 +1487,7 @@ pub(crate) fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Ap
     ensure_dir(parent)?;
     let temp = parent.join(format!(".write-{}", Uuid::new_v4().simple()));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)?;
+        let mut file = platform_native::filesystem::create_new_private_file(&temp, false)?;
         file.write_all(&serde_json::to_vec_pretty(value)?)?;
         file.sync_all()?;
         fs::rename(&temp, path)?;
@@ -1586,10 +1583,10 @@ fn hash_tree(root: &Path, source: bool, hasher: &mut Sha256) -> Result<(), ApiEr
         hasher.update(label.as_bytes());
         let full = root.join(path);
         let before = fs::symlink_metadata(&full)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&full)?;
+        let mut file = platform_native::filesystem::open_read(
+            &full,
+            platform_native::filesystem::ReadOptions::NoLinks,
+        )?;
         hasher.update(before.len().to_le_bytes());
         let mut buffer = [0u8; 65536];
         loop {
@@ -1728,15 +1725,11 @@ pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
         let dest = target.join(&relative);
         ensure_dir(dest.parent().unwrap())?;
         check_no_symlinks(&dest, true)?;
-        let mut input = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(source.join(relative))?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(dest)?;
+        let mut input = platform_native::filesystem::open_read(
+            source.join(relative),
+            platform_native::filesystem::ReadOptions::NoLinks,
+        )?;
+        let mut output = platform_native::filesystem::create_new_private_file(dest, false)?;
         std::io::copy(&mut input, &mut output)?;
         output.sync_all()?;
     }

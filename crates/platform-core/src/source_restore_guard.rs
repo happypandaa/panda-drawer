@@ -6,10 +6,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     fs::{self, OpenOptions},
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -495,11 +496,11 @@ fn read_journal(
     project_remaining: u64,
 ) -> Result<Vec<u8>, ApiError> {
     check_no_symlinks(path, false).map_err(|_| invalid())?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| invalid())?;
+    let mut file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+    )
+    .map_err(|_| invalid())?;
     let before = file.metadata().map_err(|_| invalid())?;
     if !before.is_file() || before.nlink() != 1 {
         return Err(invalid());

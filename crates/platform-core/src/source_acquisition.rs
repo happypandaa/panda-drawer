@@ -11,11 +11,12 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -549,10 +550,10 @@ fn ordinary_file(path: &Path) -> Result<(), ApiError> {
 fn read_small(path: &Path) -> Result<Vec<u8>, ApiError> {
     ordinary_file(path)?;
     let before = fs::symlink_metadata(path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+    let file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+    )?;
     let opened = file.metadata()?;
     if !opened.is_file()
         || opened.nlink() != 1
@@ -624,10 +625,10 @@ fn directory_digest(root: &Path) -> Result<String, ApiError> {
     let mut total = 0u64;
     for (relative, path) in files {
         let before = fs::symlink_metadata(&path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&path)?;
+        let mut file = platform_native::filesystem::open_read(
+            &path,
+            platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+        )?;
         let opened = file.metadata()?;
         if !opened.is_file()
             || opened.nlink() != 1

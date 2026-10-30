@@ -4,10 +4,11 @@ use crate::{projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     fs::{self, OpenOptions},
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
@@ -140,10 +141,10 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     if !before.is_file() || before.nlink() != 1 || before.len() > MAX_REGISTRATION_BYTES {
         return Err(invalid());
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+    let file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+    )?;
     let opened = file.metadata()?;
     if opened.dev() != before.dev() || opened.ino() != before.ino() || !opened.is_file() {
         return Err(invalid());

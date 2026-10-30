@@ -183,12 +183,7 @@ impl StoreLedger {
         // Preparing files remain inside this project's already-bound directory.
         // The outside receipt is published before any child can be removed.
         let temporary = directory.join(format!(".clear-{}", uuid::Uuid::new_v4()));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)?;
+        let mut file = platform_native::filesystem::create_new_private_file(&temporary, true)?;
         file.write_all(&serde_json::to_vec(record)?)?;
         file.sync_all()?;
         drop(file);

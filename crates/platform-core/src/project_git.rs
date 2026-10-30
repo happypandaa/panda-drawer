@@ -12,11 +12,12 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     process::Stdio,
     sync::{
@@ -1566,10 +1567,10 @@ fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, ApiError> {
     if !before.is_file() || before.nlink() != 1 || before.len() > limit {
         return Err(unsafe_path());
     }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+    let mut file = platform_native::filesystem::open_read(
+        path,
+        platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+    )?;
     if !same_file(&before, &file.metadata()?) {
         return Err(stale());
     }
