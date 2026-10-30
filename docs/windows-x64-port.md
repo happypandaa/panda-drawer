@@ -60,6 +60,7 @@
 | 符号链接 | `O_NOFOLLOW`，拒绝符号链接；明确选择本地工具时保留包管理器链接解析 | 以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，**拒绝所有重解析点**（符号链接、目录联接、挂载点），与 Mac 拒绝符号链接的位置一一对应；明确工具选择按原策略解析链接 | 共用预检查：`path_checks.rs`；文件 API：`files.rs` / `files/unix.rs` / `files/windows.rs`；原生句柄：`platform-native/src/windows/files.rs`；Git 选择文件边界：`git_environment/files.rs`；其他接入：`file_identity.rs`、`native_project_files.rs`、`source_publication.rs` |
 | 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名，发布后核对完整身份。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | 文件 API 已接入 `files/windows.rs`；项目目录发布：`project_directory_io.rs` / `platform-native/src/windows/files.rs`；原生交付的 Mac 实现在 `native_project_files/unix.rs`，Windows 入口在 journal 未实现前明确拒绝；其他待接入：`durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明 | `durable_writer.rs` |
+| 历史清理与已归属目录移除 | 描述符相对快照、内容/身份核对、unlinkat | 需实现对应原生快照、占用短暂重试与只读属性处理；完成前在任何扫描、核对回调或删除前明确拒绝 | 边界：`history_cleanup.rs`；Mac 原实现与测试：`history_cleanup/unix.rs`；Windows 临时门禁：`history_cleanup/windows.rs`，待 W5 补齐 |
 | 单实例锁 | 文件锁 | `LockFileEx` | `paths.rs` |
 | 网页存储隔离 | WebKit `data_store_identifier` | 每个项目一个 **WebView2 用户数据目录**（Tauri `data_directory`），放在平台数据目录下，以现有项目标识命名。管理器窗口使用自己的目录 | `webview_storage.rs`、`apps/desktop/src-tauri/src/native_stores.rs`、`main.rs`、`node_windows.rs` |
 | 删除网页存储 | 等 WebKit 确认存储已移除 | 关闭该项目的所有窗口 → **等待该数据目录对应的 WebView2 浏览器进程退出** → 删除目录。进程未退出时目录被占用，会删除失败 | 同上 |
