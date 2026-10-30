@@ -24,6 +24,7 @@ mod identity_upgrade;
 pub mod io_lifetime;
 mod journal_file_io;
 mod lifecycle;
+mod lifecycle_file_io;
 pub mod local_cleanup;
 mod maintenance;
 mod managed_git;
