@@ -456,3 +456,11 @@ Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有
 拆分还暴露真实 Windows 路径问题：原 value.split(path.sep) 会漏掉 Windows 也接受的正斜杠父组件。两处生产验证脚本委托 `native-path.mjs`，Windows 同时识别两种分隔符；Mac 仍只用 `/`，反斜杠仍为普通文件名字符。保持原来只拒绝 `..`、允许 `.` 后 normalize 的规则，没有借此加严 Mac。没有开启 Windows 更新能力或修改密码学验证政策。
 
 4 个相关测试文件在隔离 HOME/TEMP 中实际运行：**85 项，49 通过、0 失败、36 skipped**；32 项为上述 Mac 专属 I/O，1 项为 Unix FIFO，3 项为本机不允许的文件 symlink 夹具。原断言调用 AST 对比均保留，格式与生产脚本语法检查通过。尚未重跑整个脚本组，原 Node/Git 打包仍有待修复项；Mac 真实执行和两端 CI 仍待完成，W0/W1 均未正式完成。
+
+### W1.2 — 工作区卷信息的真实只读观察
+
+新增 Windows 原生 volume 适配，从实际已打开、拒绝重解析点并固定范围的目录 HANDLE 查询文件系统；当前用户可用空间和总空间取自系统查询，驱动器类型保留 GetDriveType 原始结果。未知类型的 local 为 null，不把 fixed 或 removable 的本机卷冒充内置设备。`workspace_file_io::filesystem` 已返回这些真实诊断信息，原 Mac statfs 分支不变。
+
+原生专项 **3/3 通过**：本机临时中文空格目录实际报告 NTFS、fixed 驱动器及真实容量；核对完整卷/目录身份与原文件字节、目录内容未变；文件或缺失路径不当作目录、缺失不创建；未知类型不返回本机/内置证明。Windows native 全目标严格 Clippy 通过。真实 core 的工作区边界专项 **1/1 通过**：能只读观察，但迁移准入、同步目录检查、复制、阶段日志仍明确拒绝，并保留既有材料。
+
+本步没有完成内置设备识别、云同步目录识别或任何迁移/删除，不开启相应权限。没有访问真实项目文件，只查询承载临时目录的卷。API 语义参考 [Microsoft GetVolumeInformationByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew) 与 Windows SDK 中的空间/驱动器类型 API；Mac 实际 CI、真实 USB/映射盘及安装包验收仍待完成。
