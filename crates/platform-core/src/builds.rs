@@ -1559,7 +1559,7 @@ fn hash_tree(root: &Path, source: bool, hasher: &mut Sha256) -> Result<(), ApiEr
         hasher.update((label.len() as u64).to_le_bytes());
         hasher.update(label.as_bytes());
         let full = root.join(path);
-        let before = fs::symlink_metadata(&full)?;
+        let before = platform_native::tool_files::Facts::capture(&full)?;
         let mut file = platform_native::filesystem::open_read(
             &full,
             platform_native::filesystem::ReadOptions::NoLinks,
@@ -1573,13 +1573,8 @@ fn hash_tree(root: &Path, source: bool, hasher: &mut Sha256) -> Result<(), ApiEr
             }
             hasher.update(&buffer[..count]);
         }
-        let after = fs::symlink_metadata(full)?;
-        if before.dev() != after.dev()
-            || before.ino() != after.ino()
-            || before.len() != after.len()
-            || before.mtime() != after.mtime()
-            || before.mtime_nsec() != after.mtime_nsec()
-        {
+        let after = platform_native::tool_files::Facts::capture(&full)?;
+        if !before.same_modified_file(&after) {
             return Err(ApiError::new(
                 "BUILD_INPUT_CHANGED",
                 "A file changed while the input was being scanned",
