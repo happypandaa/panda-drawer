@@ -2089,11 +2089,7 @@ impl ProjectStore {
             Some(path) => {
                 if fs::metadata(path)?.nlink() != 1 {
                     if allow_damaged {
-                        FileIdentity {
-                            device: 0,
-                            inode: 0,
-                            volume_uuid: None,
-                        }
+                        FileIdentity::unavailable()
                     } else {
                         return Err(ApiError::new(
                             "UNSAFE_DATABASE_PATH",
@@ -2104,11 +2100,7 @@ impl ProjectStore {
                     identity(path)?
                 }
             }
-            None if allow_damaged => FileIdentity {
-                device: 0,
-                inode: 0,
-                volume_uuid: None,
-            },
+            None if allow_damaged => FileIdentity::unavailable(),
             None => {
                 return Err(ApiError::new(
                     "DATABASE_MISSING",
@@ -2148,11 +2140,7 @@ impl ProjectStore {
             .join(format!("{id}.json"));
         if path.is_file() {
             let mut record: Registration = read_json(&path)?;
-            record.database_identity = FileIdentity {
-                device: 0,
-                inode: 0,
-                volume_uuid: None,
-            };
+            record.database_identity = FileIdentity::unavailable();
             crate::builds::atomic_json(&path, &record)?;
         }
         let control = self.control(id)?;

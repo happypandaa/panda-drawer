@@ -138,3 +138,11 @@ Git 选择文件/路径预检查移入 `git_environment/files.rs`，共用路径
 Git 工具探测、远端检查、项目 Git、源码获取的进程组配置集中到 `owned_process::prepare_command`；Mac 在原调用点仍设置 group 0，Registry 在原 spawn 前也仍设置。这个请求配置函数不创建子进程、不取得所有权、不表示 Windows Job 已建立；Registry 的 Windows 启动仍明确返回 unsupported，原生 Job 接入尚待完成。没有用 Windows 无操作分支伪造启动/终止收据。
 
 原生 crate **22 通过、1 真实子进程夹具入口默认忽略**；Windows 和 macOS ARM64 全目标严格 Clippy 通过。完整 Windows core lib 编译仍失败，诊断 **717 个错误**，Git 选择/远端模块及新边界没有报告错误。实际 Git 版本探测、SSH、联网、导入与完整进程生命周期均未验收；W0/W4 仍未完成。
+
+### W0.13 — 补齐共用身份构造遗漏
+
+检查编译诊断发现，本分支增加 `windowsFileId` 时漏改了 `projects.rs` 中 **3 处损坏数据库的占位身份构造**；这些无条件编译的代码也会导致 Mac 缺字段错误。此前局部身份 harness 没有包含这些调用点，不能证明它们已编译；这是本分支的遗漏，原始 Mac 基线仍未运行。已统一改用适配层的 `PersistedIdentity::unavailable()`，保留原来的 device/inode 零值和无 UUID 的诊断格式，业务代码不再自行填原生平台字段。该占位不是实际捕获的文件身份。
+
+Windows 的缺失材料证明还要求完整 Windows 身份：未知/旧 pair 不能只凭卷号就取得“已不存在”的收据，符合本轮不兼容旧 Windows 实验数据的范围；Mac 原有 legacy/volume UUID 路径保持不变。实际身份源码 harness **2/2 通过**，补充验证占位序列化仍为原零值格式、不能匹配实际文件，旧 pair/占位不能证明缺失；Windows 与 macOS ARM64 全目标严格 Clippy 通过。Mac 这里只做身份模块类型检查，不是完整 core 或实际 Mac 测试。
+
+Windows core lib 再次检查仍失败，诊断 **714 个错误**，已没有 E0063 缺字段错误。损坏数据库项目的完整删除/迁移尚未执行，不能由这两个局部测试推断已验收。
