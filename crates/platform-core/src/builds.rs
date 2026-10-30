@@ -1479,32 +1479,9 @@ impl BuildManager {
         Ok(())
     }
 }
-pub(crate) fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), ApiError> {
-    check_no_symlinks(path, true)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| ApiError::new("INVALID_PATH", "Missing parent directory"))?;
-    ensure_dir(parent)?;
-    let temp = parent.join(format!(".write-{}", Uuid::new_v4().simple()));
-    let result = (|| {
-        let mut file = platform_native::filesystem::create_new_private_file(&temp, false)?;
-        file.write_all(&serde_json::to_vec_pretty(value)?)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temp);
-    }
-    result
-}
-pub(crate) fn ensure_dir(path: &Path) -> Result<(), ApiError> {
-    check_no_symlinks(path, true)?;
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
+pub(crate) use crate::atomic_control_file::atomic_json;
+pub(crate) use crate::project_file_io::ensure_directory as ensure_dir;
+
 fn read_optional<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, ApiError> {
     check_no_symlinks(path, true)?;
     match fs::read(path) {

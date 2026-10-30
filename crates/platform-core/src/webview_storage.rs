@@ -1,4 +1,4 @@
-//! Native WebKit ownership outlives project files until the OS confirms removal.
+//! Native browser ownership outlives project files until the OS confirms removal.
 //! The manager's store contains only global preferences and has no project owner.
 use crate::{project_cleanup::ProjectKind, projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
@@ -147,15 +147,14 @@ impl StoreLedger {
             ));
         }
         if self.read(kind, id)?.is_none() {
-            use std::os::unix::fs::DirBuilderExt;
             check_no_symlinks(&self.data, false)?;
             let container = self.directory();
             check_no_symlinks(&container, true)?;
             if !container.exists() {
-                fs::DirBuilder::new().mode(0o700).create(&container)?;
+                platform_native::filesystem::create_private_directory(&container)?;
             }
             let directory = self.project_directory(kind, id)?;
-            fs::DirBuilder::new().mode(0o700).create(&directory)?;
+            platform_native::filesystem::create_private_directory(&directory)?;
             let directory_identity = crate::file_identity::PersistedIdentity::capture(&directory)
                 .map_err(|_| invalid())?;
             crate::builds::atomic_json(
@@ -174,7 +173,7 @@ impl StoreLedger {
     /// Only call after the native API acknowledged removal and enumeration
     /// confirmed absence. A failed file removal retains the retry authority.
     fn persist_confirmation(&self, record: &StoreRecord) -> Result<()> {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        use std::io::Write;
         let path = self.confirmation_path(record.kind, &record.id)?;
         if self.decode(record.kind, &record.id, &path, true)?.is_some() {
             return Ok(());
