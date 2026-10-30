@@ -67,14 +67,13 @@ fn actual_windows_payload_verifier_relocates_and_keeps_read_only_files() {
     let moved = root.with_file_name("moved 中文 space");
     fs::rename(&root, &moved).unwrap();
     let file = moved.join("node.exe");
-    let mut permissions = fs::metadata(&file).unwrap().permissions();
+    let original_permissions = fs::metadata(&file).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
     permissions.set_readonly(true);
     fs::set_permissions(&file, permissions).unwrap();
     verify_sync(moved.clone(), &source).unwrap();
     // Restore only the disposable fixture's original writable attribute.
-    let mut permissions = fs::metadata(&file).unwrap().permissions();
-    permissions.set_readonly(false);
-    fs::set_permissions(&file, permissions).unwrap();
+    fs::set_permissions(&file, original_permissions).unwrap();
     assert_eq!(
         fs::read_to_string(file).unwrap(),
         "synthetic node, never executed"

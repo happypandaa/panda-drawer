@@ -28,6 +28,9 @@ use std::{
 };
 use tokio::{sync::watch, task::JoinHandle};
 use uuid::Uuid;
+#[path = "node_git_import/capability.rs"]
+mod capability;
+
 type Result<T> = std::result::Result<T, ApiError>;
 
 /// Internal capability, never accepted from IPC or HTTP.
@@ -492,6 +495,7 @@ impl NodeGitImportManager {
         }) {
             return Err(invalid("项目名称无效。"));
         }
+        capability::require_start(&self.sources)?;
         self.store.check_workspace_available()?;
         self.require_idle()?;
         if self.stopping.load(Ordering::Acquire) || *stop.borrow() {
@@ -1015,6 +1019,7 @@ impl NodeGitImportManager {
         if !j.cleanup_pending && j.final_task.is_some() && j.commit_state != CommitState::Unknown {
             return self.snapshot(&j);
         }
+        capability::require_recovery()?;
         let _scope = ImportScope {
             _lease: self
                 .store
@@ -1049,6 +1054,7 @@ impl NodeGitImportManager {
         Ok(())
     }
     pub async fn recover(&self, apps: Arc<NodeApps>) -> Result<Vec<ImportSnapshot>> {
+        capability::require_recovery()?;
         self.require_idle()?;
         let unaccepted = self.unaccepted.lock().unwrap().clone();
         for (app_id, identity) in unaccepted {
