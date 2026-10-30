@@ -4,6 +4,25 @@ use crate::{path_checks::check_no_symlinks, ApiError};
 use std::fs;
 use std::{fs::File, path::Path};
 
+/// Use the caller's existing Unix observation at the same policy checkpoint.
+/// Windows obtains the real link count from a no-reparse file handle.
+pub(crate) fn observed_link_count(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+) -> std::io::Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        Ok(metadata.nlink())
+    }
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        link_count(path)
+    }
+}
+
 pub(crate) fn link_count(path: &Path) -> std::io::Result<u64> {
     #[cfg(unix)]
     {
@@ -118,8 +137,16 @@ mod tests {
         platform_native::windows::files::verify_private(&file).unwrap();
         assert!(create_new_file(&path).is_err());
         assert_eq!(link_count(&path).unwrap(), 1);
+        assert_eq!(
+            observed_link_count(&path, &fs::symlink_metadata(&path).unwrap()).unwrap(),
+            1
+        );
         fs::hard_link(&path, directory.join("disposable-link")).unwrap();
         assert_eq!(link_count(&path).unwrap(), 2);
+        assert_eq!(
+            observed_link_count(&path, &fs::symlink_metadata(&path).unwrap()).unwrap(),
+            2
+        );
         assert_eq!(fs::read(&path).unwrap(), b"disposable registry bytes");
     }
 

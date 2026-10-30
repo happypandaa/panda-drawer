@@ -23,6 +23,7 @@ pub mod git_environment;
 pub mod git_remote;
 mod history_cleanup;
 mod identity_upgrade;
+mod import_directory_io;
 pub mod io_lifetime;
 mod journal_file_io;
 mod lifecycle;

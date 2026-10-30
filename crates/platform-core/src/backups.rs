@@ -13,10 +13,10 @@ use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
@@ -208,10 +208,7 @@ fn new_file(path: &Path) -> Result<File, ApiError> {
     )?)
 }
 fn mkdir(path: &Path) -> Result<(), ApiError> {
-    check_no_symlinks(path, true)?;
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    crate::project_file_io::ensure_directory(path)
 }
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), ApiError> {
     let mut output = new_file(path)?;
@@ -228,7 +225,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ApiError>
 }
 fn sha256_file(path: &Path) -> Result<(u64, String), ApiError> {
     let mut file = safe_file(path)?;
-    let before = file.metadata()?;
+    let before = platform_native::tool_files::Facts::from_file(&file)?;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 65536];
     let mut total = 0u64;
@@ -240,15 +237,8 @@ fn sha256_file(path: &Path) -> Result<(u64, String), ApiError> {
         total += n as u64;
         digest.update(&buffer[..n]);
     }
-    let after = fs::symlink_metadata(path)?;
-    if before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || before.len() != total
-        || before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || after.file_type().is_symlink()
-    {
+    let after = platform_native::tool_files::Facts::capture(path)?;
+    if before.len() != total || !before.same_modified_file(&after) || after.is_reparse() {
         return Err(ApiError::new(
             "BACKUP_SOURCE_CHANGED",
             "A project file changed during snapshot preparation",
@@ -395,7 +385,7 @@ pub(crate) fn sqlite_snapshot_cancellable(
         )?;
     }
     let source_file = safe_file(source)?;
-    if source_file.metadata()?.nlink() != 1 {
+    if platform_native::tool_files::Facts::from_file(&source_file)?.links() != 1 {
         return Err(invalid("Database hard links are unsupported"));
     }
     drop(source_file);

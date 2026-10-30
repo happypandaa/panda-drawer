@@ -139,17 +139,7 @@ fn check(stop: &watch::Receiver<bool>, cancel: &watch::Receiver<bool>) -> Result
     Ok(())
 }
 fn private_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    check_no_symlinks(path, true)?;
-    if !path.exists() {
-        fs::create_dir_all(path)?;
-    }
-    check_no_symlinks(path, false)?;
-    if !fs::symlink_metadata(path)?.is_dir() {
-        return Err(invalid("导入位置不是普通目录。"));
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    crate::import_directory_io::private_dir(path)
 }
 impl NodeGitImportManager {
     pub fn new(
