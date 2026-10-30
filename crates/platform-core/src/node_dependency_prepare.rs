@@ -207,7 +207,7 @@ fn validate_dependency_tree(path: &Path, project_root: &Path) -> Result<()> {
                 return Err(needs_adaptation("依赖链接必须指向项目文件夹内部。"));
             }
         } else if metadata.is_file() {
-            if crate::dependency_file_io::link_count(&path, &metadata)? != 1
+            if crate::project_file_io::observed_link_count(&path, &metadata)? != 1
                 || path
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("node"))

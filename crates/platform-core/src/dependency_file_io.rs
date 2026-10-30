@@ -2,7 +2,7 @@
 use crate::{path_checks::check_no_symlinks, ApiError};
 use platform_native::tool_files::Facts;
 use std::{
-    fs::{self, Metadata},
+    fs,
     io::{Read, Write},
     path::{Component, Path},
 };
@@ -47,20 +47,6 @@ pub(crate) fn private_dir(path: &Path) -> Result<()> {
         ordinary_directory(path)?;
     }
     Ok(())
-}
-
-pub(crate) fn link_count(path: &Path, metadata: &Metadata) -> std::io::Result<u64> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let _ = path;
-        Ok(metadata.nlink())
-    }
-    #[cfg(windows)]
-    {
-        let _ = metadata;
-        crate::project_file_io::link_count(path)
-    }
 }
 
 pub(crate) fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>> {

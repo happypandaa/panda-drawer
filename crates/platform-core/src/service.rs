@@ -23,7 +23,6 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::os::unix::fs::OpenOptionsExt;
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -440,8 +439,9 @@ impl RuntimeHandle {
             )
         })?;
         if let Ok(metadata) = std::fs::symlink_metadata(&actual) {
-            use std::os::unix::fs::MetadataExt;
-            if !metadata.is_file() || metadata.nlink() != 1 {
+            if !metadata.is_file()
+                || crate::project_file_io::observed_link_count(&actual, &metadata)? != 1
+            {
                 return Err(ApiError::new(
                     "INVALID_PATH",
                     "Download target must be an independent regular file",
