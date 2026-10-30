@@ -37,7 +37,7 @@ export function NodeDeletionTasksNotice({ instanceId, revision, tasks, enabled, 
   if (!unfinished.length && !error) return null;
   return <section className="notice node-deletion-tasks" aria-label="未完成的应用删除">
     <div><strong>删除未完成</strong><p>以下任务会继续保留删除状态，应用不会自动启动。</p>
-      {unfinished.map(task => <div className="radio-task-indicator" key={task.taskId}><span>{task.name} · {nodeDeletionLabel(task)}</span><button type="button" className="text-button" disabled={!enabled} onClick={() => callbacks.current.onOpen(task)}>{task.phase === 'failed' ? '处理删除' : '查看删除进度'}</button></div>)}
+      {unfinished.map(task => <div className="node-deletion-task-entry" key={task.taskId}><span>{task.name} · {nodeDeletionLabel(task)}</span><button type="button" className="text-button" disabled={!enabled} onClick={() => callbacks.current.onOpen(task)}>{task.phase === 'failed' ? '处理删除' : '查看删除进度'}</button></div>)}
       {error && <p className="task-error" role="alert">{error}</p>}
       {error && <button type="button" className="refresh-button" onClick={() => setRetry(value => value + 1)}>重新读取删除任务</button>}
     </div>

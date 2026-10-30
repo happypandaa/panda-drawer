@@ -266,7 +266,7 @@ test('The settings integration locks its parent, stops ordinary polling and does
   assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, true);
   assert.equal(button('完成'), undefined);
   assert.equal(document.querySelector('.radio-toolbar'), null);
-  assert.equal(document.querySelector('.workspace-hub'), null);
+  assert.equal(document.querySelector('.workspace-storage-panel'), null);
   assert.equal(document.querySelector('.runtime-view'), null);
   assert.match(activeDialog().textContent, /本机项目内容已清理/);
   const count = calls.length;

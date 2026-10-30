@@ -170,7 +170,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
   </article>;
 }
 
-export function ProjectCard({ project, status, task, blocked, opening, deletingDisabled, detailsDisabled = false, onEnter, onDetails, onDelete }: {
+export function ProjectCard({ project, status, task, blocked, opening, deletingDisabled, detailsDisabled = false, running = false, onEnter, onDetails, onDelete }: {
   project: ProjectInfo;
   status?: MaintenanceStatus;
   task?: TaskRecord;
@@ -178,6 +178,7 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
   opening: boolean;
   deletingDisabled: boolean;
   detailsDisabled?: boolean;
+  running?: boolean;
   onEnter: () => void;
   onDetails: () => void;
   onDelete: () => void;
@@ -190,7 +191,7 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
     : taskStatus ? { label: taskStatus, tone: 'busy' }
     : state === 'error' || state === 'missing' ? { label: labels[state], tone: 'error' }
     : state !== 'ready' ? { label: labels[state], tone: 'attention' }
-    : { label: '网页', tone: 'idle' };
+    : running ? { label: '运行中', tone: 'running' } : { label: '网页', tone: 'idle' };
   return <LauncherTile id={project.id} name={project.name} runtime="static-web" iconDataUrl={project.iconDataUrl} launcherState={launcherState}
     disabled={blocked || project.state !== 'ready' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? '请先在详情中检查状态或构建项目' : blocked ? '请先处理项目维护或等待工作区任务完成' : undefined}
@@ -206,7 +207,7 @@ export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onD
   app: NodeAppDetail; blocked: boolean; opening: boolean; onEnter: () => void; onDetails: () => void; onDelete: () => void;
 }) {
   const configuration = nodeConfigurationState(app);
-  const runtimeBlocked = !app.configuration.canStart && configuration.blockedTab === 'runtime';
+  const runtimeBlocked = !app.configuration.canStart && configuration.blockedView === 'details';
   const runtimeState = app.state === 'running' ? '运行中' : app.state === 'starting' ? '打开中' : app.state === 'stopping' ? '关闭中' : app.state === 'failed' ? '需要检查' : null;
   const launcherState: LauncherState = app.installation ? { label: '旧安装方式', tone: 'error' }
     : app.state === 'failed' ? { label: '需要检查', tone: 'error' }

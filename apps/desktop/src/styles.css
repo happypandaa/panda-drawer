@@ -1,6 +1,6 @@
 @import './ProjectDetails.css';
-@import './ProjectStoragePanel.css';
-@import './ProjectLifecyclePanel.css';
+@import './ProjectAttachments.css';
+@import './ProjectExport.css';
 @import './ProjectDeleteDialog.css';
 @import './LocalDataCleanupPanel.css';
 @import './AddProject.css';
@@ -939,7 +939,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   white-space: nowrap;
 }
 .radio-brand-caption { display: block; margin-top: 6px; color: var(--radio-muted); font-size: 11px; line-height: 1.3; }
-.radio-primary-nav, .radio-theme-switch {
+.radio-theme-switch {
   display: inline-flex;
   align-items: center;
   padding: 3px;
@@ -947,8 +947,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 999px;
   background: transparent;
 }
-.radio-primary-nav { flex-shrink: 0; margin-inline: auto; }
-.radio-primary-nav button, .radio-theme-switch button {
+.radio-theme-switch button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -959,12 +958,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   white-space: nowrap;
   transition: background-color .15s, color .15s;
 }
-.radio-primary-nav button { min-height: 34px; padding: 7px 14px; font-size: 13px; font-weight: 500; }
-.radio-primary-nav button:hover:not(:disabled), .radio-theme-switch button:hover:not(:disabled) { background: var(--radio-selected); }
-.radio-primary-nav button:is([aria-selected='true'], [aria-pressed='true'], [data-active='true'], .active),
-.radio-theme-switch button:is([aria-selected='true'], [aria-pressed='true'], [data-active='true'], .active),
-.radio-primary-nav button[aria-pressed='true']:hover:not(:disabled),
-.radio-theme-switch button[aria-pressed='true']:hover:not(:disabled) {
+.radio-theme-switch button:hover:not(:disabled) { background: var(--radio-selected); }
+.radio-theme-switch button:is([aria-selected='true'], [aria-pressed='true'], [data-active='true'], .active), .radio-theme-switch button[aria-pressed='true']:hover:not(:disabled) {
   color: var(--radio-active-text);
   background: var(--radio-active);
 }
@@ -985,39 +980,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .radio-settings-button:hover:not(:disabled) { background: var(--radio-selected); }
 .radio-main { display: flex; flex: 1; flex-direction: column; width: 100%; max-width: none; padding: 0; margin: 0; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.radio-toolbar {
-  position: relative;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 68px;
-  flex-shrink: 0;
-  padding: 16px 32px;
-  margin: 0;
-  border-bottom: 0;
-}
-.radio-toolbar .project-search {
-  flex: 1;
-  max-width: 300px;
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border-color: var(--radio-line);
-  color: var(--radio-text);
-  background: var(--radio-subtle);
-}
-.radio-toolbar .project-search:focus-within { outline: 2px solid var(--radio-focus); outline-offset: 2px; border-color: var(--radio-line); }
-.radio-toolbar .project-search input { height: 32px; font-size: 12px; color: var(--radio-text); }
-.radio-toolbar .project-search input::placeholder { color: var(--radio-muted); }
-.radio-toolbar .project-search input:focus-visible { outline: none; }
-.radio-toolbar .project-filter { margin: 0; flex-shrink: 0; }
-.radio-toolbar-spacer { flex: 1; }
-.radio-toolbar .project-filter select { min-height: 34px; max-width: 112px; border-radius: 999px; color: var(--radio-text); background: var(--radio-subtle); font-size: 11px; }
-.radio-refresh-button { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; padding: 0; border: 1px solid var(--radio-line); border-radius: 50%; color: var(--radio-text); background: transparent; }
-.radio-refresh-button:hover:not(:disabled) { background: var(--radio-selected); }
-.radio-toolbar > .heading-actions, .radio-toolbar-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-.radio-toolbar .primary-button, .radio-toolbar .refresh-button { min-height: 34px; padding: 7px 15px; border-radius: 999px; font-size: 13px; }
 .radio-add-menu { position: relative; flex-shrink: 0; }
 .radio-add-menu > summary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 14px; border: 1px solid var(--radio-line); border-radius: 999px; list-style: none; cursor: pointer; font-size: 13px; color: var(--radio-text); background: transparent; }
 .radio-add-menu > summary::-webkit-details-marker { display: none; }
@@ -1042,8 +1004,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-list-feedback:empty { display: none; }
 .project-list-feedback > strong { display: block; margin-bottom: 8px; font-size: 13px; }
 .project-list-feedback .notice { margin-bottom: 0; }
-.radio-task-indicator { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--radio-line); border-radius: 9px; color: var(--radio-secondary); background: var(--radio-surface); font-size: 12px; }
-.radio-task-indicator .text-button { padding: 2px 0; font-size: 12px; color: var(--radio-text); }
+.node-deletion-task-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--radio-line); border-radius: 9px; color: var(--radio-secondary); background: var(--radio-surface); font-size: 12px; }
+.node-deletion-task-entry .text-button { padding: 2px 0; font-size: 12px; color: var(--radio-text); }
 .radio-tasks-empty { margin: 8px 0 0; font-size: 12px; }
 .radio-project-grid, .radio-main > .project-grid {
   display: grid;
@@ -1128,10 +1090,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .launcher-menu-item.danger:hover:not(:disabled) { background: var(--radio-danger-surface); }
 .radio-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; min-height: 32px; padding: 7px 32px; margin-top: auto; border-top: 1px solid var(--radio-line); color: var(--radio-muted); background-color: var(--radio-footer); background-image: var(--radio-dots); background-size: 18px 18px; font: 400 10px/1.6 var(--radio-mono); letter-spacing: .6px; }
 .radio-footer > span { display: inline-flex; align-items: center; gap: 7px; }
-.radio-workspace-view { width: 100%; max-width: 1180px; padding: 28px 32px; margin-inline: auto; }
-.radio-workspace-view .page-heading { margin-bottom: 24px; }
-.radio-workspace-view h1 { font-size: 23px; }
-.radio-workspace-view .workspace-hub { margin: 0; }
 .radio-main > .project-search-empty, .radio-main > .workspace-card { margin: 24px 32px; }
 .radio-main > .guide-disclosure, .radio-main > .recent-tasks { margin: 0 32px 24px; }
 .radio-main > .workspace-location { padding-inline: 32px; }
@@ -1185,9 +1143,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] .modal-dialog { box-shadow: var(--radio-shadow); }
 :root[data-theme] .modal-header { background: var(--radio-header); }
 :root[data-theme] :is(.modal-content .overview-tabs, .node-app-modal-detail > .overview-tabs) { background: var(--radio-surface); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(h2, h3, h4, dt, label, summary) { color: var(--radio-text); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(p, dd, small, code) { color: var(--radio-secondary); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(section, article, dl, details, form, li) { border-color: var(--radio-line); }
+:root[data-theme] :is(.modal-dialog, h3, h4, dt, label, summary) { color: var(--radio-text); }
+:root[data-theme] :is(.modal-dialog, dd, small, code) { color: var(--radio-secondary); }
+:root[data-theme] :is(.modal-dialog, article, dl, details, form, li) { border-color: var(--radio-line); }
 :root[data-theme] :is(.modal-header p, .modal-header .modal-close, .section-heading p, .updated-at, .status-card-label, .status-card p, .path-row dt, .runtime-details span, .runtime-details code, .resource-strip, .resource-strip > span:first-child, .workspace-footnote, .build-task-heading span, .task-id, .about-grid dt, .about-grid dd, .node-runtime-label, .workspace-current-location > span, .workspace-scope-card > span, .workspace-scope-card > p) { color: var(--radio-muted); }
 :root[data-theme] :is(.workspace-message h2, .status-card strong, .section-heading h2, .path-row dd, .notice strong, .about-grid dd, .node-field-label, .node-config-save > span, .workspace-scope-card > strong) { color: var(--radio-text); }
 :root[data-theme] :is(.path-row, .runtime-details, .resource-strip, .build-task, .node-path-form, .node-runtime-actions, .node-config-field, .node-config-save, .node-source-details, .node-inspection-preview, .overview-section, .overview-tabs, .overview-unsaved-note, .platform-update, .workspace-retention-list, .workspace-cleanup-result, .workspace-cleanup-remaining, .workspace-cleanup-receipt, .retained-roots, .retained-root-receipt, .trash-details, .history-storage-row, .attachment-row, .workspace-trash-summary) { border-color: var(--radio-line); }
@@ -1197,10 +1155,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 :root[data-theme] :is(.workspace-hub-tabs button, .overview-tabs button) { color: var(--radio-muted); }
 :root[data-theme] .workspace-hub-tabs button[aria-selected='true'] { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-surface); }
 :root[data-theme] .overview-tabs button[aria-selected='true'] { color: var(--radio-text); border-color: var(--radio-focus); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input:not([type='checkbox']):not([type='radio']), textarea, select) { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-background); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea)::placeholder { color: var(--radio-muted); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) :is(input, textarea, select):focus-visible { outline-color: var(--radio-focus); }
-:root[data-theme] :is(.modal-dialog, .radio-workspace-view) input:is([type='checkbox'], [type='radio']) { accent-color: var(--radio-focus); }
+:root[data-theme] :is(.modal-dialog, textarea, select) { color: var(--radio-text); border-color: var(--radio-line); background: var(--radio-background); }
+:root[data-theme] :is(.modal-dialog, textarea)::placeholder { color: var(--radio-muted); }
+:root[data-theme] :is(.modal-dialog, textarea, select):focus-visible { outline-color: var(--radio-focus); }
+:root[data-theme] :is(.modal-dialog, [type='radio']) { accent-color: var(--radio-focus); }
 :root[data-theme] :is(.notice-error, .danger-button, .project-delete-section, .purge-confirmation, .node-process-failed) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
 :root[data-theme] :is(.danger-button:hover:not(:disabled), .project-delete:hover:not(:disabled)) { color: var(--radio-danger); border-color: var(--radio-danger-line); background: var(--radio-danger-surface); }
 :root[data-theme] :is(.project-delete-section h3, .project-delete-section p, .task-error, .node-process-failed, .project-delete, .resource-missing) { color: var(--radio-danger); }
@@ -1228,10 +1186,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-brand-wordmark { font-size: 24px; }
   .radio-brand .brand-mark { width: 34px; height: 34px; }
   .radio-brand > img { width: 36px; height: 36px; }
-  .radio-primary-nav button { padding-inline: 11px; font-size: 12px; }
   .radio-theme-switch button { padding-inline: 10px; }
   .radio-project-grid, .radio-main > .project-grid { padding-inline: 24px; }
-  .radio-toolbar, .radio-footer { padding-inline: 24px; }
+.radio-footer { padding-inline: 24px; }
 }
 @media (max-width: 720px) {
   .radio-header { min-height: 76px; gap: 8px; padding: 12px 18px; }
@@ -1240,23 +1197,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .radio-brand > img { width: 28px; height: 28px; }
   .radio-brand-wordmark { display: none; }
   .radio-brand-caption { color: var(--radio-text); font-size: 16px; font-weight: 500; margin-top: 0; white-space: nowrap; }
-  .radio-primary-nav { padding: 2px; }
-  .radio-primary-nav button { min-height: 30px; padding: 6px 10px; font-size: 11px; }
   .radio-header-actions { gap: 6px; }
   .radio-theme-switch { padding: 2px; }
   .radio-theme-switch button { min-height: 28px; padding: 6px 8px; font-size: 10px; }
   .radio-settings-button { width: 32px; height: 32px; }
-  .radio-toolbar { min-height: 56px; padding: 11px 20px; gap: 8px; }
-  .radio-toolbar .project-search { max-width: none; min-height: 32px; padding-inline: 11px; }
-  .radio-toolbar-spacer { display: none; }
-  .radio-refresh-button { width: 32px; height: 32px; }
-  .radio-toolbar .project-search input { height: 30px; }
-  .radio-toolbar .project-filter select { max-width: 106px; padding-left: 10px; font-size: 10px; }
-  .radio-toolbar .primary-button, .radio-toolbar .refresh-button, .radio-add-menu > summary { min-height: 32px; padding: 7px 12px; font-size: 12px; }
-  .radio-toolbar > .heading-actions, .radio-toolbar-actions { gap: 8px; }
+.radio-add-menu > summary { min-height: 32px; padding: 7px 12px; font-size: 12px; }
   .radio-project-grid, .radio-main > .project-grid { padding: 12px 24px 20px; }
   .radio-footer { min-height: 32px; padding: 7px 20px; font-size: 9px; }
-  .radio-workspace-view { padding: 22px 20px; }
   .radio-notices { padding: 12px 20px 0; }
   .project-list-feedback { margin-inline: 20px; }
   .radio-main > .guide-disclosure, .radio-main > .recent-tasks { margin-inline: 20px; }
@@ -1327,15 +1274,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .radio-brand { gap: 10px; }
 .radio-brand > img { width: 30px; height: 30px; }
 .radio-brand-name { color: var(--radio-text); font-size: 15px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
-.radio-primary-nav { padding: 2px; }
-.radio-primary-nav button { min-height: 30px; padding: 5px 14px; font-size: 13px; }
 .radio-theme-switch { padding: 2px; }
 .radio-theme-switch button { width: 30px; min-height: 28px; padding: 0; font: inherit; }
 .radio-settings-button { width: 32px; height: 32px; border-color: transparent; }
 .radio-settings-button:hover:not(:disabled) { border-color: var(--radio-line); }
-
-.radio-toolbar { min-height: 60px; gap: 10px; padding: 14px 32px 6px; }
-.radio-toolbar .project-search { max-width: 320px; }
 .project-filter-chips { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .project-filter-chips button {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1348,8 +1290,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-filter-chips button:hover { background: var(--radio-selected); color: var(--radio-text); }
 .project-filter-chips button[aria-pressed='true'] { border-color: var(--radio-line); color: var(--radio-text); background: var(--radio-surface); font-weight: 500; box-shadow: 0 1px 2px #1711220d; }
 .filter-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; color: var(--radio-warning); background: var(--radio-warning-surface); font-size: 11px; font-weight: 600; line-height: 1; }
-.radio-refresh-button { width: 32px; height: 32px; border-color: transparent; color: var(--radio-secondary); }
-.radio-refresh-button:hover:not(:disabled) { color: var(--radio-text); }
 
 /* Three add actions shown side by side; Git import is the primary path. */
 .radio-add-actions, .empty-add-actions { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -1389,14 +1329,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 @media (max-width: 860px) {
   .radio-header { padding-inline: 20px; }
-  .radio-toolbar { padding-inline: 24px; }
-  .radio-toolbar .project-search { max-width: 240px; }
 }
 @media (max-width: 720px) {
   .radio-header { min-height: 52px; padding: 8px 16px; }
-  .radio-brand-name { display: none; }
-  .radio-toolbar { flex-wrap: wrap; padding: 10px 20px 4px; }
-  .radio-toolbar .project-search { flex-basis: 100%; max-width: none; order: -1; }
+
   .project-filter-chips button { padding-inline: 10px; }
   .radio-add-actions { margin-left: auto; }
   .radio-add-actions > button { min-height: 32px; padding-inline: 11px; }
@@ -1642,3 +1578,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .platform-ai-intro-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 12px; color: var(--muted, inherit); }
 .platform-ai-intro-hint .text-button { gap: 6px; }
 .platform-ai-intro-notice { font-size: 13px; color: var(--muted, inherit); white-space: nowrap; }
+
+/* Single application home: keep the existing controls and visual tokens. */
+.radio-header-actions { margin-left: auto; }
+.application-heading { display: grid; gap: 10px; padding: 14px 32px 6px; }
+.application-heading-main { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.application-heading-main h1 { margin: 0; }
+.application-heading-main .radio-add-actions { margin-left: auto; }
+.application-count { color: var(--radio-muted); }
+.project-filter-empty { margin: 24px 32px; }
+.radio-footer > span { min-width: 0; overflow-wrap: anywhere; }
+.radio-footer > button { flex-shrink: 0; }
+.import-project-card > .text-button { display: inline-flex; }
+@media (max-width: 720px) {
+  .application-heading { padding-inline: 20px; }
+  .application-heading-main .radio-add-actions { flex-wrap: wrap; }
+}
+
+/* The application list gives the occupancy bar its own flexible column. */
+.storage-application-row { grid-template-columns: minmax(130px, 1fr) minmax(100px, 2fr) auto; }
+.storage-application-row .space-project-name { display: flex; align-items: center; gap: 12px; }
+.storage-application-row .space-bar { width: 100%; margin: 0; }
+.storage-application-row .radio-app-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 24px; height: 24px; }

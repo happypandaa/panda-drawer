@@ -27,7 +27,7 @@ export function nodeConfigurationState(app: NodeAppDetail) {
     : kind === 'invalid' ? '需要核对配置'
     : kind === 'uncertain-secret' ? '配置待核对'
     : `已完整${app.fields.length ? `（${app.fields.length} 项）` : ''}`;
-  const blockedTab: 'configuration' | 'runtime' = !app.runRecovery && needsAttention && !(kind === 'uncertain-secret' && (app.state === 'failed' || Boolean(app.lastError))) ? 'configuration' : 'runtime';
-  return { kind, needsAttention, attentionLabel, overviewText, blockedTab,
+  const blockedView: 'configuration' | 'details' = !app.runRecovery && needsAttention && !(kind === 'uncertain-secret' && (app.state === 'failed' || Boolean(app.lastError))) ? 'configuration' : 'details';
+  return { kind, needsAttention, attentionLabel, overviewText, blockedView,
     actionLabel: kind === 'required' ? '补齐应用配置' : needsAttention ? '核对应用配置' : '查看或修改应用配置' };
 }

@@ -1,0 +1,25 @@
+/* Existing attachment browser styles, retained in the details disclosure. */
+.project-storage-files .project-storage-files-heading h3 { margin: 0; font-size: 18px; line-height: 28px; font-weight: 700; }
+.project-storage-files .refresh-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 16px; border-radius: 8px; font-size: 14px; line-height: 22px; }
+.project-storage-files .refresh-button:disabled { opacity: .55; cursor: not-allowed; }
+.project-storage-files { margin: 16px 0; padding: 16px 0; border-top: 1px solid var(--radio-line, #dcdce1); border-bottom: 1px solid var(--radio-line, #dcdce1); }
+.project-storage-files .project-storage-files-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.project-storage-files .project-storage-files-heading .text-button { color: var(--radio-focus, #8170aa); display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; }
+.project-storage-files .project-storage-files-heading .is-expanded { transform: rotate(90deg); }
+.project-storage-files .project-storage-file-row { display: flex; align-items: center; gap: 12px; min-height: 38px; padding: 8px; box-sizing: border-box; }
+.project-storage-files .project-storage-file-row > svg { flex-shrink: 0; }
+.project-storage-files .project-storage-file-name { font-size: 14px; line-height: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-storage-files .project-storage-file-meta { color: var(--radio-secondary, #62626c); margin-left: auto; font-size: 12px; white-space: nowrap; }
+.project-storage-files .project-storage-file-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.project-storage-files .project-storage-file-actions .icon-button { width: 24px; height: 24px; padding: 0; }
+.project-storage-files .project-storage-file-note { margin: 8px 0; font-size: 12px; line-height: 20px; }
+.project-storage-files .attachment-filters { grid-template-columns: 1fr 1.5fr 1.5fr; font-size: 12px; margin: 16px 0; }
+.project-storage-files .attachment-filters > label { display: block; font-size: 12px; }
+.project-storage-files .attachment-filters :is(input, select) { display: block; box-sizing: border-box; width: 100%; min-width: 0; margin-top: 7px; padding: 8px 10px; color: var(--radio-text, #101014); background: var(--radio-surface, white); border: 1px solid var(--radio-line, #dcdce1); border-radius: 8px; font: inherit; }
+@media (max-width: 600px) {
+  .project-storage-files .attachment-filters { grid-template-columns: 1fr 1fr; }
+  .project-storage-files .project-storage-file-row { flex-wrap: wrap; gap: 8px; }
+  .project-storage-files .project-storage-file-name { flex: 1; }
+  .project-storage-files .project-storage-file-meta { margin-left: 28px; }
+  .project-storage-files .project-storage-file-actions { margin-left: auto; }
+}

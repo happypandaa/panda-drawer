@@ -39,7 +39,7 @@ globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement: h, act, StrictMode } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ProjectLifecyclePanel } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/LifecyclePanels.tsx'))).href);
+const { ProjectExportAction } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/LifecyclePanels.tsx'))).href);
 const { Modal } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/Modal.tsx'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; });
@@ -72,7 +72,7 @@ async function setup({ commands = {}, props = {}, strict = false, parentModal = 
   let current = { project, status: ready, disabled: false, active: true, instanceId: 'instance_export_a', onTask: value => tasks.push(value), onDraftStateChange: value => drafts.push(value), ...props };
   async function render(next = {}) {
     current = { ...current, ...next };
-    let element = h(ProjectLifecyclePanel, current);
+    let element = h(ProjectExportAction, current);
     if (parentModal) element = h(Modal, { title: '项目详情', onClose: () => parentCloses.push(true) }, element);
     if (strict) element = h(StrictMode, null, element);
     await act(async () => root.render(element));
@@ -81,9 +81,9 @@ async function setup({ commands = {}, props = {}, strict = false, parentModal = 
   return { calls, tasks, drafts, render, parentCloses };
 }
 
-test('More actions contains two concise rows and only explains export after opening it', async () => {
+test('More actions contains the remaining export row and only explains export after opening it', async () => {
   const { calls, drafts } = await setup();
-  assert.equal(document.querySelectorAll('.project-more-row').length, 2);
+  assert.equal(document.querySelectorAll('.project-more-row').length, 1);
   assert.equal(document.querySelectorAll('form').length, 0);
   assert.doesNotMatch(document.body.textContent, /创建独立副本|副本名称|允许替换/);
   const trigger = button('导出 ZIP'); trigger.focus(); await click(trigger);
@@ -204,50 +204,4 @@ test('The nested export dialog owns focus and Escape while preserving the applic
   await key('Escape');
   assert.equal(exportDialog(), null); assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
   assert.equal(document.activeElement === trigger, true); assert.deepEqual(parentCloses, []);
-});
-
-test('Failed permanent deletion stays in its own dialog and requires renewed acknowledgement before retrying', async () => {
-  const failed = { ...task, type: 'delete', status: 'failed', final: true, error: { code: 'DELETE_FAILED', message: 'Disposable delete was rejected' } };
-  const { calls, tasks } = await setup({ commands: { project_delete: () => failed } });
-  await click(button('删除应用')); await click(document.querySelector('.project-delete-confirmation input')); await click(button('确认永久删除项目'));
-  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: project.documentEpoch } }]]);
-  assert.deepEqual(tasks, [failed]);
-  assert.ok(document.querySelector('.project-delete-confirmation'));
-  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
-  assert.ok(document.querySelector('[role="dialog"]').textContent.includes(project.projectRoot));
-  assert.match(document.querySelector('[role="alert"]').textContent, /Disposable delete was rejected/);
-  assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
-  assert.equal(button('确认永久删除项目').disabled, true);
-  await click(button('取消，保留项目'));
-  assert.equal(document.querySelector('[role="dialog"]'), null);
-  await click(button('删除应用'));
-  assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
-  assert.equal(button('确认永久删除项目').disabled, true);
-});
-
-test('An accepted nested deletion survives name and maintenance refreshes without unlocking either dialog', async () => {
-  const accepted = { ...task, type: 'delete' };
-  const { calls, tasks, drafts, parentCloses, render } = await setup({ parentModal: true, commands: { project_delete: () => accepted } });
-  await click(button('删除应用')); await click(document.querySelector('.project-delete-confirmation input')); await click(button('确认永久删除项目'));
-  for (const change of [
-    { project: { ...project, name: 'Refreshed nested deletion name' } },
-    { status: { ...ready, mode: 'maintenance', maintenanceId: 'maintenance_nested_first' } },
-    { status: { ...ready, mode: 'maintenance', maintenanceId: 'maintenance_nested_second' } },
-    { status: ready },
-  ]) {
-    await render({ ...change, task: accepted });
-    const nested = document.querySelector('.project-delete-modal');
-    assert.ok(nested); assert.equal(document.querySelectorAll('[role="dialog"]').length, 2);
-    const close = nested.querySelector('button[aria-label^="关闭"]');
-    assert.equal(close.disabled, true); assert.equal(button('取消，保留项目', nested).disabled, true);
-    await key('Escape'); await click(nested.parentElement); await click(close); await click(button('取消，保留项目', nested));
-    assert.ok(document.querySelector('.project-delete-modal'));
-    assert.equal(drafts.at(-1).pending, true); assert.deepEqual(parentCloses, []);
-    assert.deepEqual(tasks, [accepted]); assert.equal(calls.length, 1);
-  }
-  await render({ task: { ...accepted, status: 'failed', final: true, phase: 'failed', result: { operationOutcome: 'not_deleted' } } });
-  await click(button('取消，保留项目'));
-  assert.equal(document.querySelector('.project-delete-modal'), null);
-  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
-  assert.equal(drafts.at(-1).pending, false); assert.deepEqual(parentCloses, []);
 });

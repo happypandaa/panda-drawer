@@ -1,23 +1,21 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getAllWindows } from '@tauri-apps/api/window';
 import {
-  BookOpen, CircleAlert, Play,
+  CircleAlert, Play,
   Download, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, ShieldCheck, Hammer, Trash2, Search, Settings, ChevronRight,
+  RefreshCw, Hammer, Trash2, Settings, ChevronRight,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ProjectTask } from './ProjectTask';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
-import type { OverviewTab } from './ProjectOverview';
-import { WorkspaceHub } from './WorkspaceHub';
-import type { SpaceTab } from './WorkspaceHub';
 import { SettingsDialog } from './SettingsDialog';
 import type { SettingsSection } from './SettingsDialog';
 import { TaskCenter } from './TaskCenter';
 import { Modal } from './Modal';
-import { NodeProjectCard, ProjectCard } from './ProjectCard';
+import { launcherMonogram, NodeProjectCard, ProjectCard } from './ProjectCard';
 import { NodeAppsPanel } from './NodeAppsPanel';
 import { NodeDeletionTasksNotice } from './NodeDeletionTasksNotice';
 import type { NodeAppRequest } from './NodeAppsPanel';
@@ -25,10 +23,12 @@ import type { NodeAppDeleteResult, NodeAppDetail, NodeDeletionTaskSnapshot } fro
 import { messageFrom } from './ui-utils';
 import { useAppearance } from './appearance';
 import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
+import { ImportProjectCard } from './ImportProjectCard';
+import { canDismissGitImport, gitImportNeedsAttention } from './git-import-view-state';
+import type { GitImportViewState } from './git-import-view-state';
 import { ImportPanel } from './ArchiveImportPanel';
 import { SourceRecoveryNotice } from './SourceRecoveryNotice';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
-import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
 import { matchingProjectTask, recoverBuildResult } from './build-result-state';
@@ -38,7 +38,6 @@ import type { BootstrapInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, 
 import { acceptProjectDeletion, checkedProjectDeletion, observeDeletionRuntime, onProjectDeleted, projectWasDeleted, taskProjectOwner, taskWasDeleted } from './project-deletion';
 import type { ProjectDeletedNotice } from './project-deletion';
 
-type AppPage = 'projects' | 'storage';
 
 function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo) {
   // Only snapshots without the new field use the legacy command contract.
@@ -61,11 +60,9 @@ function isDataRecoveryDiagnostic(status: MaintenanceStatus, project: ProjectInf
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [page, setPage] = useState<AppPage>('projects');
   const { theme, setTheme } = useAppearance();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
-  const [spaceTab, setSpaceTab] = useState<SpaceTab>('overview');
   const [tasksOpen, setTasksOpen] = useState(false);
   const [showDisposable, setShowDisposable] = useState(() => { try { return window.localStorage.getItem('panda-drawer:show-disposable:v1') === '1'; } catch { return false; } });
   useEffect(() => { try { window.localStorage.setItem('panda-drawer:show-disposable:v1', showDisposable ? '1' : '0'); } catch { /* Grouping still works without storage. */ } }, [showDisposable]);
@@ -74,7 +71,8 @@ function App() {
   const [localDataPending, setLocalDataPending] = useState(false);
   const [localDataLocked, setLocalDataLocked] = useState(false);
   const localDataLock = useRef(false);
-  const settingsBusy = environmentBusy || gitEnvironmentBusy || localDataPending || localDataLocked;
+  const [storagePending, setStoragePending] = useState(false);
+  const settingsBusy = environmentBusy || gitEnvironmentBusy || localDataPending || localDataLocked || storagePending;
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   const [nodeApps, setNodeApps] = useState<NodeAppDetail[]>([]);
   const [nodeDeletionTasks, setNodeDeletionTasks] = useState<NodeDeletionTaskSnapshot[]>([]);
@@ -94,8 +92,7 @@ function App() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [opening, setOpening] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [projectFilter, setProjectFilter] = useState<'all' | 'ready' | 'attention'>('all');
+  const [projectFilter, setProjectFilter] = useState<'all' | 'running' | 'attention'>('all');
   const [tasks, setTasks] = useState<Record<string, TaskRecord>>({});
   // Space scans run automatically after builds. Keep the user's build result
   // visible while still polling the scan for its actual busy state.
@@ -105,20 +102,24 @@ function App() {
   const [lifecycleTasks, setLifecycleTasks] = useState<Record<string, TaskRecord>>({});
   const [showSources, setShowSources] = useState(false);
   const [sourcesMounted, setSourcesMounted] = useState(false);
-  const [sourceNeedsAttention, setSourceNeedsAttention] = useState(false);
+  const [sourceState, setSourceState] = useState<GitImportViewState | null>(null);
+  const [webWindows, setWebWindows] = useState<Set<string> | null>(null);
+  const listSnapshot = useRef(projects); listSnapshot.current = projects;
+  const [sourceRecoveryNeedsAttention, setSourceRecoveryNeedsAttention] = useState(false);
   const [archiveImportOpen, setArchiveImportOpen] = useState(false);
   const sourceRepositories = nodeApps.filter(app => !projectWasDeleted(app.id) && app.gitSource).map(app => ({ ...app.gitSource!, appId: app.id, name: app.name }));
+  const sourceRecoveryOpenRef = useRef<(() => void) | null>(null);
   const sourceTaskIds = useRef(new Set<string>());
   const sourceTaskOwners = useRef(new Map<string, string>());
   function closeSourceFlow(options?: { keepSession: boolean }) {
     setShowSources(false);
-    if (options?.keepSession) return;
+    if (options?.keepSession || sourceState && !projectWasDeleted(sourceState.snapshot?.appId ?? '') && !(sourceState.task && taskWasDeleted(sourceState.task)) && (sourceState.busy || sourceState.view === 'unknown' || sourceState.snapshot?.cleanupPending)) return;
     setSourcesMounted(false);
-    setSourceNeedsAttention(false);
+    setSourceState(null);
     sourceTaskIds.current.clear();
     sourceTaskOwners.current.clear();
   }
-  const [overview, setOverview] = useState<{ project: ProjectInfo; tab: OverviewTab } | null>(null);
+  const [overview, setOverview] = useState<{ project: ProjectInfo } | null>(null);
   const [overviewVersionDraft, setOverviewVersionDraft] = useState({ dirty: false, pending: false });
   const [deleteProject, setDeleteProject] = useState<ProjectInfo | null>(null);
   const [deletePending, setDeletePending] = useState(false);
@@ -145,7 +146,7 @@ function App() {
   const selectedOverviewId = useRef<string | null>(null);
   const selectedOverviewRoot = useRef<string | null>(null);
   const overviewDismissGuard = useRef<(() => boolean) | null>(null);
-  const feedbackScope = `${page}:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : deleteProject ? `delete:${deleteProject.id}` : overview ? `project:${overview.project.id}` : 'page'}`;
+  const feedbackScope = `projects:${settingsOpen ? 'settings' : showCreate ? 'create' : nodeModalOpen ? 'node' : showSources ? 'sources' : deleteProject ? `delete:${deleteProject.id}` : overview ? `project:${overview.project.id}` : 'page'}`;
   const { capture, isCurrent, error: showError, success: showSuccess, recover, reset, dismiss, forgetProject: forgetFeedback, messages } = useManagementFeedback(feedbackScope);
   function forgetDeletedProject(notice: ProjectDeletedNotice) {
     const id = notice.id;
@@ -172,10 +173,6 @@ function App() {
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
   const reportOverviewDevelopment = useCallback((state: { dirty: boolean; pending: boolean }) => { setOverviewVersionDraft(state); }, []);
-  function navigatePage(value: AppPage) {
-    if (localDataLock.current || value === page || nodeDraft.pending || nodeModalOpen || deleteProject) return;
-    setPage(value);
-  }
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
     if (projectWasDeleted(app.id)) return;
     nodeListRevision.current++;
@@ -222,20 +219,20 @@ function App() {
     selectedOverviewRoot.current = null;
     setOverview(null); setReloadProjectId(null);
   }, [clearHandoff]);
-  function openOverview(project: ProjectInfo, tab: OverviewTab) {
+  function openOverview(project: ProjectInfo) {
     if (nodeDraft.pending || nodeModalOpen || deleteProject) return;
     clearHandoff();
     selectedOverviewId.current = project.id;
     selectedOverviewRoot.current = project.projectRoot;
     setReloadProjectId(null);
-    setOverview({ project, tab });
+    setOverview({ project });
   }
   function openDelete(project: ProjectInfo) {
     if (nodeDraft.pending || nodeModalOpen || deleteProject || deletePending) return;
     clearHandoff();
     setDeleteProject(project);
   }
-  const { migrating, paused, cleanupTask, cleanupBusy } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
+  const { migrating, paused, cleanupBusy } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
   const workspaceBusy = migrating || paused || cleanupBusy || localDataLocked;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
@@ -275,6 +272,12 @@ function App() {
         clearHandoff();
         setBuildResults({});
         setNodeDeletionTasks([]);
+        // Old service tasks cannot gate writes in the newly observed workspace.
+        // Current workspace tasks are accepted below from its own snapshot.
+        setLifecycleTasks({});
+        sourceTaskIds.current.clear(); sourceTaskOwners.current.clear();
+        setSourceState(null); setSourcesMounted(false); setShowSources(false);
+        setSourceRecoveryNeedsAttention(false);
         showError(origin, '工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。');
       }
       const list = rawList.filter(project => !projectWasDeleted(project.id));
@@ -403,20 +406,48 @@ function App() {
   }, [refresh]);
 
   useEffect(() => {
-    if (localDataLocked || !info || page !== 'projects' || workspaceBusy || !nodeApps.length) return;
+    if (localDataLocked || !info || workspaceBusy) return;
     let cancelled = false; let polling = false;
-    const timer = window.setInterval(() => {
-      if (localDataLock.current || polling || nodeInteraction.current.pending || nodeInteraction.current.modal) return;
+    const read = async () => {
+      if (cancelled || localDataLock.current || polling) return;
       polling = true;
       const revision = nodeListRevision.current;
       const generation = requestId.current;
       const origin = capture();
-      void invoke<NodeAppDetail[]>('node_app_list').then((values) => {
-        if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) { setNodeApps(values.filter(app => !projectWasDeleted(app.id))); recover('node-list'); }
-      }).catch(() => { if (!cancelled && revision === nodeListRevision.current && generation === requestId.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) showError(origin, '带本地服务的项目状态暂未更新，请刷新后核对。', 'node-list', { backgroundKey: 'node-list' }); }).finally(() => { polling = false; });
-    }, 2000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [Boolean(info), page, workspaceBusy, nodeApps.length, capture, showError, recover, localDataLocked]);
+      const current = () => !cancelled && !localDataLock.current && generation === requestId.current;
+      try {
+        const runtime = await invoke<BootstrapInfo>('bootstrap_info');
+        if (!current()) return;
+        if (runtime.instanceId !== instanceId.current || runtime.workspaceRoot !== serviceWorkspaceRoot.current) { void refresh(); return; }
+        const results = await Promise.allSettled([
+          invoke<ProjectInfo[]>('project_list'),
+          invoke<NodeAppDetail[]>('node_app_list'),
+          getAllWindows(),
+        ]);
+        if (!current()) return;
+        const [web, node, windows] = results;
+        if (web.status === 'fulfilled') {
+          const values = web.value.filter(project => !projectWasDeleted(project.id));
+          const identity = (project: ProjectInfo) => JSON.stringify([project.id, project.projectRoot, project.documentEpoch, project.state, project.buildInfo?.sourceState, project.buildInfo?.stale, project.buildInfo?.provenance?.buildId, project.buildInfo?.provenance?.completedAt, project.buildInfo?.dataRecoveryRequired, project.buildInfo?.dataRecoveryState]);
+          if (values.length !== listSnapshot.current.length || values.some(value => !listSnapshot.current.some(previous => identity(previous) === identity(value)))) void refresh();
+          else setProjects(values);
+          recover('project-list');
+        } else showError(origin, '应用列表暂时无法更新，正在保留上次读取的内容。', 'main', { backgroundKey: 'project-list' });
+        if (node.status === 'fulfilled') {
+          if (revision === nodeListRevision.current && !nodeInteraction.current.pending && !nodeInteraction.current.modal) setNodeApps(node.value.filter(app => !projectWasDeleted(app.id)));
+          recover('node-list');
+        } else showError(origin, '本地服务状态暂时无法更新，正在保留上次读取的内容。', 'node-list', { backgroundKey: 'node-list' });
+        if (windows.status === 'fulfilled') { setWebWindows(new Set(windows.value.map(value => value.label))); recover('window-status'); }
+        else showError(origin, '应用窗口状态暂时无法核对，正在保留上次读取的状态。', 'main', { backgroundKey: 'window-status' });
+      } catch (cause) { if (current()) showError(origin, messageFrom(cause), 'main', { backgroundKey: 'workspace-read' }); }
+      finally { polling = false; }
+    };
+    void read();
+    const timer = window.setInterval(() => void read(), 2000);
+    const onFocus = () => { void refresh().then(read); };
+    window.addEventListener('focus', onFocus);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener('focus', onFocus); };
+  }, [Boolean(info), workspaceBusy, refresh, capture, showError, recover, localDataLocked]);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -434,8 +465,8 @@ function App() {
         setName('');
         setDescription('');
         setShowCreate(false);
-        openOverview(project, 'overview');
-        showSuccess(origin, `已创建「${project.name}」。可以直接进入项目；点击“复制 AI 接手说明”，粘贴给其他 AI 并补充你的需求。`, 'main', `${page}:project:${project.id}`);
+        openOverview(project);
+        showSuccess(origin, `已创建「${project.name}」。可以直接进入项目；点击“复制 AI 接手说明”，粘贴给其他 AI 并补充你的需求。`, 'main', `projects:project:${project.id}`);
       }
       await refresh();
     } catch (cause) {
@@ -455,6 +486,7 @@ function App() {
     try {
       const result = await invoke<OpenProjectResult>('project_open', { projectId: project.id, target, reload });
       if (request !== openRequest.current || projectWasDeleted(project.id)) return;
+      void getAllWindows().then(values => { if (request === openRequest.current && !localDataLock.current) setWebWindows(new Set(values.map(value => value.label))); }).catch(() => {});
       showSuccess(origin, reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
     } catch (cause) {
       if (request === openRequest.current && !projectWasDeleted(project.id)) showError(origin, messageFrom(cause));
@@ -506,7 +538,7 @@ function App() {
 
   useEffect(() => {
     if (localDataLocked) return;
-    const pending = Object.values(lifecycleTasks).filter((task) => !task.final);
+    const pending = Object.values(lifecycleTasks).filter(task => !task.final && !(task.type === 'nodeGitImport' && sourceTaskIds.current.has(task.taskId)));
     if (!pending.length) return;
     let cancelled = false; let polling = false;
     const timer = window.setInterval(() => {
@@ -635,11 +667,11 @@ function App() {
         const matchesOverview = Boolean(selectedOverviewId.current === requestedDelete.projectId && overview && matchesTarget(projects.find(project => project.id === overview.project.id) ?? overview.project));
         if (matchesDialog) setDeleteProject(null);
         if (matchesOverview) dismissOverview();
-        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，其平台管理的源码、数据、构建、恢复和任务材料也已清除，本次删除不可撤销。', 'main', `${page}:page`);
+        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, '项目已永久删除，其平台管理的源码、数据、构建、恢复和任务材料也已清除，本次删除不可撤销。', 'main', 'projects:page');
       }
     }
     setRequestedDelete(null);
-  }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh, isCurrent, showSuccess, page, info?.instanceId, deleteProject, overview, projects]);
+  }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh, isCurrent, showSuccess, info?.instanceId, deleteProject, overview, projects]);
 
   function projectBlocked(project: ProjectInfo) {
     const status = maintenance[project.id];
@@ -653,47 +685,43 @@ function App() {
   const deletionTarget = currentDeleteProject ?? deleteProject;
   const projectReady = (project: ProjectInfo) => project.state === 'ready' && !projectBlocked(project);
   const nodeReady = (app: NodeAppDetail) => app.configuration.canStart && !['failed', 'starting', 'stopping'].includes(app.state) && !workspaceBusy;
-  const filteredProjects = projects.filter((project) => {
-    const matchesQuery = `${project.name} ${project.description ?? ''} ${project.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const ready = projectReady(project);
-    return matchesQuery && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
-  });
+  const webRunning = (project: ProjectInfo) => webWindows?.has(`project-${project.id}`) ?? false;
+  const showImportCard = Boolean(sourceState && !(sourceState.view === 'success' && !sourceState.snapshot?.cleanupPending && sourceState.snapshot?.commitState === 'committed' && nodeApps.some(app => app.id === sourceState.snapshot?.appId)));
   const deletingNodeIds = new Set(nodeDeletionTasks.filter(task => !['deleted', 'abandoned'].includes(task.phase)).map(task => task.appId));
-  const availableNodeApps = nodeApps.filter(app => !deletingNodeIds.has(app.id));
-  const filteredNodeApps = availableNodeApps.filter((app) => {
-    const matches = `${app.name} ${app.id} ${app.sourcePath} Node 服务项目`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const ready = nodeReady(app);
-    return matches && (projectFilter === 'all' || (projectFilter === 'ready' ? ready : !ready));
-  });
-  const attentionCount = projects.filter((project) => !projectReady(project)).length + availableNodeApps.filter((app) => !nodeReady(app)).length;
-  const runningCount = availableNodeApps.filter((app) => app.state === 'running').length;
-  const filterChoices = [['all', '全部'], ['ready', '可使用'], ['attention', '需要处理']] as const;
-  // Disposable validation projects follow the "可丢弃" naming convention; keep them out of the way unless searched for.
+  const availableNodeApps = nodeApps.filter(app => !deletingNodeIds.has(app.id) && !(showImportCard && sourceState?.snapshot?.appId === app.id));
+  const filteredProjects = projects.filter(project => projectFilter === 'all' || (projectFilter === 'running' ? webRunning(project) : !projectReady(project)));
+  const filteredNodeApps = availableNodeApps.filter(app => projectFilter === 'all' || (projectFilter === 'running' ? app.state === 'running' : !nodeReady(app)));
+  const attentionCount = projects.filter(project => !projectReady(project)).length + availableNodeApps.filter(app => !nodeReady(app)).length + (showImportCard && sourceState && gitImportNeedsAttention(sourceState) ? 1 : 0);
+  const runningCount = projects.filter(webRunning).length + availableNodeApps.filter(app => app.state === 'running').length;
+  const filterChoices = [['all', '全部'], ['running', '运行中'], ['attention', '需要处理']] as const;
   const isDisposable = (name: string) => name.includes('可丢弃');
-  const groupDisposable = !query.trim();
-  const mainProjects = groupDisposable ? filteredProjects.filter((project) => !isDisposable(project.name)) : filteredProjects;
-  const mainNodeApps = groupDisposable ? filteredNodeApps.filter((app) => !isDisposable(app.name)) : filteredNodeApps;
-  const disposableProjects = groupDisposable ? filteredProjects.filter((project) => isDisposable(project.name)) : [];
-  const disposableNodeApps = groupDisposable ? filteredNodeApps.filter((app) => isDisposable(app.name)) : [];
+  const mainProjects = filteredProjects.filter(project => !isDisposable(project.name));
+  const mainNodeApps = filteredNodeApps.filter(app => !isDisposable(app.name));
+  const disposableProjects = filteredProjects.filter(project => isDisposable(project.name));
+  const disposableNodeApps = filteredNodeApps.filter(app => isDisposable(app.name));
   const disposableCount = disposableProjects.length + disposableNodeApps.length;
   const totalProjects = projects.length + availableNodeApps.length;
-  const filteredCount = filteredProjects.length + filteredNodeApps.length;
-  const activeLifecycleTasks = Object.values(lifecycleTasks).filter((task) => !task.final);
-  const completedLifecycleTasks = Object.values(lifecycleTasks).filter((task) => task.final).slice(-6).reverse();
-  const failedLifecycleTasks = completedLifecycleTasks.filter((task) => task.status === 'failed' || task.status === 'interrupted');
+  const importVisible = showImportCard && (projectFilter === 'all' || projectFilter === 'attention' && sourceState && gitImportNeedsAttention(sourceState));
+  const filteredCount = filteredProjects.length + filteredNodeApps.length + (importVisible ? 1 : 0);
+  const activeLifecycleTasks = Object.values(lifecycleTasks).filter(task => !task.final);
   const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
   const addBlocked = !info || workspaceBusy || nodeDraft.pending || nodeModalOpen;
-  const addActions = (className: string) => <div className={className} role="group" aria-label="添加项目">
-    <button className="refresh-button" disabled={addBlocked || creating} onClick={() => { if (!addBlocked) setShowCreate(true); }}><Plus size={15} aria-hidden="true" />新建项目</button>
-    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setNodeAddRequest((value) => value + 1); }}><FolderOpen size={15} aria-hidden="true" />添加本地项目</button>
-    <button className="primary-button" disabled={addBlocked} onClick={() => { if (!addBlocked) { setSourcesMounted(true); setShowSources(true); setSourceNeedsAttention(false); } }}><Download size={15} aria-hidden="true" />从 Git 添加</button>
+  const addActions = (className: string) => <div className={className} role="group" aria-label="添加应用">
+    <button className="primary-button" disabled={addBlocked} onClick={() => { if (!addBlocked) { setSourcesMounted(true); setShowSources(true); } }}><Download size={15} aria-hidden="true" />从 Git 添加</button>
+    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setNodeAddRequest(value => value + 1); }}><FolderOpen size={15} aria-hidden="true" />本机文件夹</button>
+    <button className="refresh-button" disabled={addBlocked || creating} onClick={() => { if (!addBlocked) setShowCreate(true); }}><Plus size={15} aria-hidden="true" />新建</button>
   </div>;
   const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
-  const openSpace = (tab?: SpaceTab) => { if (tab) setSpaceTab(tab); navigatePage('storage'); };
-  const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter((task) => !lifecycleTasks[task.taskId])].filter(task => !taskWasDeleted(task)).reverse().slice(0, 20);
-  const projectName = (projectId: string | null) => projectId ? projects.find((project) => project.id === projectId)?.name ?? null : null;
+  const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter(task => !lifecycleTasks[task.taskId])].filter(task => !taskWasDeleted(task)).reverse();
+  const projectName = (projectId: string | null) => projectId ? projects.find(project => project.id === projectId)?.name ?? nodeApps.find(app => app.id === projectId)?.name ?? (sourceState?.snapshot?.appId === projectId ? sourceState.name : null) : null;
+  function removeImportCard() {
+    if (!sourceState || !canDismissGitImport(sourceState)) return;
+    const taskId = sourceState.task?.taskId;
+    if (taskId) setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== taskId)));
+    closeSourceFlow();
+  }
   const lockLocalData = useCallback(() => {
     localDataLock.current = true;
     requestId.current++; nodeListRevision.current++; handoffRequest.current++;
@@ -703,7 +731,7 @@ function App() {
     || nodeDraft.pending || nodeDraft.dirty || nodeModalOpen || Boolean(overview) || Boolean(deleteProject) || deletePending
     || creating || Boolean(opening) || building.length > 0 || activeLifecycleTasks.length > 0 || Object.values(tasks).some(task => !task.final)
     || nodeDeletionTasks.some(task => !['deleted', 'abandoned'].includes(task.phase));
-  const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending || deletePending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending || deletePending} detailsDisabled={nodeDraft.pending || deletePending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project, 'overview')} onDelete={() => openDelete(project)} />;
+  const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={`web:${project.id}`} project={project} running={webRunning(project)} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending || deletePending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending || deletePending} detailsDisabled={nodeDraft.pending || deletePending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project)} onDelete={() => openDelete(project)} />;
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
   return (
@@ -713,25 +741,16 @@ function App() {
           <img src="/panda-app-drawer.png" alt="" />
           <strong className="radio-brand-name">熊猫小抽屉</strong>
         </div>
-        <nav className="radio-primary-nav" aria-label="工作台导航">
-          <button aria-current={page === 'projects' ? 'page' : undefined} aria-pressed={page === 'projects'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('projects')}>我的项目</button>
-          <button aria-current={page === 'storage' ? 'page' : undefined} aria-pressed={page === 'storage'} disabled={nodeDraft.pending || localDataLocked} onClick={() => navigatePage('storage')}>空间</button>
-        </nav>
         <div className="radio-header-actions">
-          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} open={tasksOpen} onOpenChange={setTasksOpen} importFlow={sourcesMounted ? { needsAttention: sourceNeedsAttention, onOpen: () => { setTasksOpen(false); setShowSources(true); setSourceNeedsAttention(false); } } : undefined} onViewTask={task => { if (sourceTaskIds.current.has(task.taskId)) { setTasksOpen(false); setShowSources(true); setSourceNeedsAttention(false); } }} canViewTask={task => sourceTaskIds.current.has(task.taskId)} />}
+          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} open={tasksOpen} onOpenChange={setTasksOpen} importFlow={sourceState ? { taskId: sourceState.task?.taskId, active: sourceState.busy, needsAttention: gitImportNeedsAttention(sourceState), onOpen: () => { setTasksOpen(false); setShowSources(true); } } : undefined} recoveryFlow={sourceRecoveryNeedsAttention ? { needsAttention: true, onOpen: () => { setTasksOpen(false); sourceRecoveryOpenRef.current?.(); } } : undefined} onViewTask={task => { if (sourceTaskIds.current.has(task.taskId)) { setTasksOpen(false); setShowSources(true); } }} canViewTask={task => sourceTaskIds.current.has(task.taskId)} />}
           <button className="radio-settings-button" aria-label="设置" title="设置" disabled={nodeDraft.pending || localDataLocked} onClick={() => openSettings()}><Settings size={17} /></button>
         </div>
       </header>
-      {page === 'projects' && !localDataLocked && <div className="radio-toolbar">
-        <label className="project-search"><Search size={16} /><span className="sr-only">搜索项目</span><input type="search" data-modal-return-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目…" /></label>
-        <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
-        <div className="radio-toolbar-spacer" />
-        <button className="radio-refresh-button" aria-label="刷新项目和运行状态" aria-busy={loading} title={loading ? '正在刷新' : checkedAt ? `刷新 · 上次更新 ${checkedAt}` : '刷新项目和运行状态'} disabled={loading || !inDesktop || nodeDraft.pending} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'rotating' : undefined} /></button>
-        <PlatformAiIntroButton platformVersion={info?.version} className="text-button platform-ai-intro-button" label="平台说明给 AI" />
-        {addActions('radio-add-actions')}
-      </div>}
-      <main className={`radio-main${page === 'storage' ? ' radio-workspace-view' : ''}`}>
-        <h1 className="sr-only">{page === 'projects' ? '我的项目' : '空间'}</h1>
+      <main className="radio-main">
+        {!localDataLocked && <div className="application-heading">
+          <div className="application-heading-main"><h1>我的应用</h1><span className="application-count" role="status">{totalProjects} 个 · {runningCount} 个运行中</span>{addActions('radio-add-actions')}</div>
+          <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
+        </div>}
         <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
@@ -739,27 +758,28 @@ function App() {
           {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
           {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>工作区已暂停，需要查看处理</strong><p>请查看迁移任务结果并刷新状态；已有窗口的草稿保留。</p></div></div>}
-          {(activeLifecycleTasks.length > 0 || failedLifecycleTasks.length > 0) && <div className="radio-task-indicator" role="status"><span>{activeLifecycleTasks.length > 0 ? `${activeLifecycleTasks.length} 项管理任务正在进行` : `${failedLifecycleTasks.length} 项管理任务需要查看`}</span><button className="text-button" onClick={() => setTasksOpen(true)}>查看任务</button></div>}
         </div>
-          {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : page === 'projects' ? <>
-            {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => { setSourcesMounted(true); setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
-      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => { setShowSources(false); setTasksOpen(true); }} onAttention={() => { setSourceNeedsAttention(true); }} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (taskWasDeleted(task)) return; sourceTaskIds.current.add(task.taskId); const owner = taskProjectOwner(task); if (owner) sourceTaskOwners.current.set(task.taskId, owner); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
+          {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : <>
+            {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => setSourceRecoveryNeedsAttention(true)} onOpenReady={open => { sourceRecoveryOpenRef.current = open; }} onAttentionChange={setSourceRecoveryNeedsAttention} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
+      {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => setShowSources(false)} onStateChange={setSourceState} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (taskWasDeleted(task)) return; sourceTaskIds.current.add(task.taskId); const owner = taskProjectOwner(task); if (owner) sourceTaskOwners.current.set(task.taskId, owner); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
-            <div className="sr-only" role="status">{query.trim() || projectFilter !== 'all' ? `${filteredCount} / ${totalProjects} 个项目` : `${totalProjects} 个项目`}{loading ? '，正在读取' : ''}</div>
+            <div className="sr-only" role="status">{filteredCount} 个应用{loading ? '，正在读取' : ''}</div>
             {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label="项目列表">
+              {importVisible && sourceState && <ImportProjectCard state={sourceState} onView={() => setShowSources(true)} onRemove={removeImportCard} />}
               {mainProjects.map(renderProjectCard)}
               {mainNodeApps.map(renderNodeCard)}
               {disposableCount > 0 && <div className="project-group-divider"><button type="button" className="project-group-toggle" aria-expanded={showDisposable} onClick={() => setShowDisposable((value) => !value)}><ChevronRight size={14} aria-hidden="true" />测试项目<span>{disposableCount}</span></button></div>}
               {disposableCount > 0 && showDisposable && <>{disposableProjects.map(renderProjectCard)}{disposableNodeApps.map(renderNodeCard)}</>}
-            </section> : totalProjects > 0 ? <section className="project-search-empty"><Search size={28} /><h2>没有找到匹配的项目</h2><p>试试其他关键词，或清除状态筛选。</p><button className="refresh-button" onClick={() => { setQuery(''); setProjectFilter('all'); }}>显示全部项目</button></section> : <section className="workspace-card empty-projects">
+            </section> : totalProjects > 0 ? <section className="project-filter-empty"><FolderOpen size={28} /><h2>没有符合筛选的应用</h2><button className="refresh-button" onClick={() => setProjectFilter('all')}>显示全部应用</button></section> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
-              <div className="workspace-message"><h2>{loading ? '正在读取你的项目…' : info ? '从第一个项目开始' : '连接桌面应用，查看项目'}</h2><p>{info ? '从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && addActions('empty-add-actions')}{info && <p className="platform-ai-intro-hint">准备自己做一个新项目，或想先问问能不能接入？<PlatformAiIntroButton platformVersion={info.version} /></p>}</div>
+              <div className="workspace-message"><h2>{loading ? '正在读取你的应用…' : info ? '从第一个应用开始' : '连接桌面应用，查看应用'}</h2><p>{info ? '从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。' : '实际项目列表由桌面应用读取。'}</p>{info && addActions('empty-add-actions')}</div>
             </section>}
-          </> : <WorkspaceHub workspace={workspace} revision={refreshVersion} enabled={Boolean(info) && !nodeDraft.pending} migrating={migrating} paused={paused} cleanupTask={cleanupTask} projects={projects} nodeApps={availableNodeApps} tab={spaceTab} onTabChange={setSpaceTab} isProjectBusy={(project) => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some((task) => task.projectId === project.id && !task.final)} onTask={acceptLifecycleTask} onProjectTask={(task, project) => acceptTask(task, project)} onRefresh={refresh} onProjectDetails={(project) => openOverview(project, 'storage')} onProjectDelete={openDelete} onNodeDetails={(app) => requestNodeApp(app, 'details')} onNodeDelete={(app) => requestNodeApp(app, 'delete')} onOpenSettings={(section) => openSettings(section)} />}
+          </>}
       </main>
-      <footer className="radio-footer"><span>{query.trim() || projectFilter !== 'all' ? `显示 ${filteredCount} / 共 ${totalProjects} 个应用` : `共 ${totalProjects} 个应用`}{runningCount > 0 ? ` · ${runningCount} 个运行中` : ''}</span><span title={info?.workspaceRoot}><ShieldCheck size={12} aria-hidden="true" />数据保存在本机</span></footer>
-      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onOpenHistory={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('history'); }} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onOpenSpace={() => { if (settingsBusy) return; setSettingsOpen(false); openSpace('overview'); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} projects={projects} nodeApps={nodeApps} />}
+      <footer className="radio-footer"><span title={info?.workspaceRoot}>项目文件夹 {info?.workspaceRoot ?? '等待读取'}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>在访达中打开</button></footer>
+      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} nodeApps={nodeApps} />}
+
         {!localDataLocked && <NodeAppsPanel apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {archiveImportOpen && <ImportPanel disabled={workspaceBusy} instanceId={info?.instanceId} onTask={acceptLifecycleTask} onCompleted={() => void refresh()} onClose={() => setArchiveImportOpen(false)} />}
@@ -774,19 +794,15 @@ function App() {
             <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? '正在创建…' : '创建项目'}</button><button type="button" className="refresh-button" disabled={creating} onClick={() => setShowCreate(false)}>取消</button></div>
           </form>
         </Modal>}
-        {overviewProject && overview && <Modal title={overviewProject.name} description="网页应用 · 本机独立数据" titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <BookOpen size={20} />} headerAside={<span className={`detail-status-badge${overviewProject.state === 'ready' ? ' is-ready' : ''}`}><span />{({ ready: '可使用', unbuilt: '等待构建', error: '需要检查', missing: '文件缺失', maintenance: '操作暂停', recoveryRequired: '有操作待处理' })[overviewProject.state]}</span>} className="software-detail-modal" wide beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
+        {overviewProject && overview && <Modal title={overviewProject.name} description="网页应用 · 本机独立数据" titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <span aria-hidden="true">{launcherMonogram(overviewProject.name)}</span>} headerAside={<span className={`detail-status-badge${webRunning(overviewProject) ? ' is-ready' : ''}`}><span />{overviewProject.state === 'ready' ? webWindows === null ? '状态待核对' : webRunning(overviewProject) ? '运行中' : '已停止' : ({ unbuilt: '等待构建', error: '出错', missing: '文件缺失', maintenance: '操作暂停', recoveryRequired: '需要处理' })[overviewProject.state]}</span>} className="software-detail-modal" beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
           {feedback}
           {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作删除或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
-          <CodexHandoffPanel key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onPrepare={action => void copyHandoff(overviewProject, action)} onShowHelp={() => void copyHandoff(overviewProject, 'copy', false)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} buildAction={<button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? '构建中…' : '构建更新'}</button>}>
-            <button className="primary-button" disabled={overviewUnavailable || overviewVersionDraft.dirty || overviewVersionDraft.pending || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Play size={20} />进入应用</button>
-            <button className="refresh-button" disabled={!inDesktop || localDataLocked || !overviewProject.projectRoot} onClick={() => { const origin = capture(); void invoke('open_project_folder', { path: overviewProject.projectRoot }).catch(cause => showError(origin, messageFrom(cause))); }}><FolderOpen size={20} />打开文件夹</button>
-          </CodexHandoffPanel>
-          <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
+          <ProjectOverview key={overviewProject.id} project={overviewProject} instanceId={info?.instanceId} running={webWindows === null ? undefined : webRunning(overviewProject)} actions={<><button className="primary-button" disabled={overviewUnavailable || overviewVersionDraft.dirty || overviewVersionDraft.pending || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Play size={20} />打开</button><button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? '构建中…' : '构建更新'}</button></>} handoff={<CodexHandoffPanel key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onPrepare={action => void copyHandoff(overviewProject, action)} onShowHelp={() => void copyHandoff(overviewProject, 'copy', false)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} />} notices={<>          <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
           {buildResults[overviewProject.id]?.issues.map(issue => <p className="task-error" role="alert" key={issue}>{issue}</p>)}
           <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' ? buildResults[overviewProject.id]?.task ?? tasks[overviewProject.id] : tasks[overviewProject.id] ?? buildResults[overviewProject.id]?.task} />
-          <ProjectOverview key={overviewProject.id} project={overviewProject} instanceId={info?.instanceId} technicalDetails={<> <BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />
+</>} onDelete={() => openDelete(overviewProject)} technicalDetails={<> <BuildState project={overviewProject} /><ProjectDetails project={overviewProject} />
             {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />重新加载项目窗口</button>}
-            {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} initialTab={overview.tab} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
+            {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
         </Modal>}
     </div>
   );
@@ -807,7 +823,7 @@ function ProjectDetails({ project }: { project: ProjectInfo }) {
     {project.buildInfo?.reason && <p className="project-help">构建来源：{project.buildInfo.reason}</p>}
     {project.buildInfo?.provenance && <p className="project-help">{project.buildInfo.origin === 'bundledTemplate' ? '初始应用打包时间' : '最近成功构建'}：{new Date(project.buildInfo.provenance.completedAt).toLocaleString('zh-CN', { hour12: false })} · Node {project.buildInfo.provenance.node?.version ?? project.buildInfo.provenance.nodeVersion ?? '版本未记录'}</p>}
     {project.issues.length > 0 && <ul className="project-issues">{project.issues.map((issue, index) => <li key={`${index}:${issue}`}>{issue}</li>)}</ul>}
-    <dl><div><dt>项目目录</dt><dd><code>{project.projectRoot}</code></dd></div><div><dt>数据库</dt><dd><code>{location(project.manifest?.database)}</code></dd></div><div><dt>用户素材</dt><dd><code>{location(project.manifest?.attachmentsDir)}</code></dd></div><div><dt>给 AI 的说明</dt><dd><code>{location(project.manifest?.docs?.readme)}</code></dd></div><div><dt>项目体积</dt><dd>请从项目概览的“空间与素材”查看扫描结果</dd></div></dl>
+    <dl><div><dt>项目目录</dt><dd><code>{project.projectRoot}</code></dd></div><div><dt>数据库</dt><dd><code>{location(project.manifest?.database)}</code></dd></div><div><dt>用户素材</dt><dd><code>{location(project.manifest?.attachmentsDir)}</code></dd></div><div><dt>给 AI 的说明</dt><dd><code>{location(project.manifest?.docs?.readme)}</code></dd></div></dl>
   </div>;
 }
 const sourceLabels = { unbuilt: '尚未构建', matched: '源码与网页一致', modified: '源码已修改 · 网页仍为旧版', unknown: '构建来源未知' };

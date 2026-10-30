@@ -5,7 +5,9 @@ import { Modal } from './Modal';
 import { ProjectTask } from './ProjectTask';
 import { markHistoryScanStale, publishHistoryScan } from './history-scan-store';
 import { bytesText, exactBytes, timeText } from './storage-utils';
-import type { ByteCount, TaskRecord } from './types';
+import type { ByteCount, ProjectInfo, TaskRecord } from './types';
+import { bigBytes, bigText, partBytes } from './storage-utils';
+import { projectRegenerable, regenerableCategories } from './workspace-storage-data';
 import { messageFrom } from './ui-utils';
 
 type CleanupKind = 'restoreOriginal';
@@ -31,10 +33,15 @@ interface CleanupPlan {
 }
 interface CleanupPanelProps {
   workspaceRoot: string | null;
+  instanceId?: string;
   revision: number;
   enabled: boolean;
   active: boolean;
   migrating: boolean;
+  compact?: boolean;
+  projects?: ProjectInfo[];
+  isProjectBusy?: (project: ProjectInfo) => boolean;
+  onProjectTask?: (task: TaskRecord, project: ProjectInfo) => void;
   // Scan once when the panel first becomes active without a usable result.
   autoScan?: boolean;
   cleanupTask?: TaskRecord | null;
@@ -61,6 +68,10 @@ function readPlan(result: Record<string, unknown> | null): CleanupPlan {
   if (!result.preserved.every((value) => typeof value === 'string')) throw new Error('清理范围缺少明确的保留内容，请重新扫描。');
   return result as unknown as CleanupPlan;
 }
+function checkedTask(value: TaskRecord, type: string, taskId?: string, projectId?: string): TaskRecord {
+  if (!value || typeof value.taskId !== 'string' || !value.taskId || value.type !== type || typeof value.final !== 'boolean' || !['queued', 'running', 'succeeded', 'failed', 'interrupted'].includes(value.status) || value.final !== ['succeeded', 'failed', 'interrupted'].includes(value.status) || taskId && value.taskId !== taskId || projectId && value.projectId !== projectId || !projectId && value.projectId != null) throw new Error('清理任务回执身份或格式不符，实际提交结果需要核对；不会重复提交。');
+  return value;
+}
 function countText(value: ByteCount | undefined) {
   if (value == null) return '文件数尚未统计';
   try { const count = typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64); return count < 0n ? '文件数未知' : `${count} 个文件`; } catch { return '文件数未知'; }
@@ -85,6 +96,11 @@ function focusAndReveal(element: HTMLElement | null) {
 }
 
 export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+  const [projectResults, setProjectResults] = useState<TaskRecord[]>([]);
+  const observedTasks = useRef(new Map<string, TaskRecord>());
+  const [planInstance, setPlanInstance] = useState(props.instanceId);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [previewTask, setPreviewTask] = useState<TaskRecord | null>(null);
@@ -112,6 +128,8 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   const id = useId();
   const clearConfirmation = useCallback(() => { setReviewed(null); setAcknowledged(false); }, []);
   const track = useCallback((task: TaskRecord, report = true) => {
+    if (observedTasks.current.get(task.taskId)?.final && !task.final) return;
+    observedTasks.current.set(task.taskId, task);
     if (report) callbacks.current.onTask(task);
     if (!alive.current) return;
     if (task.type === 'workspaceCleanupPreview') setPreviewTask(task);
@@ -127,19 +145,19 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       if (task.status === 'succeeded') {
         try {
           const value = readPlan(task.result);
-          setPlan(value); setSelected([]); setConsumed(false); setNow(Date.now()); setScannedAt(Date.now()); clearConfirmation();
+          setPlan(value); setSelected([]); setSelectedProjects([]); setConsumed(false); setNow(Date.now()); setScannedAt(Date.now()); clearConfirmation();
           publishHistoryScan(value.workspaceRoot, value.items);
         } catch (cause) { setError(messageFrom(cause)); }
       }
     } else {
       clearConfirmation(); markHistoryScanStale();
       if (runningCleanupTasks.current.delete(task.taskId)) setResultFocus({ taskId: task.taskId });
-      void callbacks.current.onRefresh().catch((cause) => { if (alive.current) setError(`清理任务已结束，但重新读取空间失败：${messageFrom(cause)}`); });
+      if (!operation.current) void callbacks.current.onRefresh().catch((cause) => { if (alive.current) setError(`清理任务已结束，但重新读取空间失败：${messageFrom(cause)}`); });
     }
   }, [clearConfirmation]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { if (props.cleanupTask) track(props.cleanupTask, false); }, [props.cleanupTask, track]);
-  useEffect(() => { clearConfirmation(); }, [props.active, props.migrating, props.revision, props.workspaceRoot, clearConfirmation]);
+  useEffect(() => { clearConfirmation(); }, [props.active, props.migrating, props.revision, props.workspaceRoot, props.instanceId, clearConfirmation]);
   useEffect(() => {
     if (!plan) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -152,7 +170,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
     const timers = new Set<ReturnType<typeof setTimeout>>();
     function schedule(taskId: string, delay: number) { const timer = setTimeout(() => { timers.delete(timer); void poll(taskId); }, delay); timers.add(timer); }
     async function poll(taskId: string) {
-      try { const task = await invoke<TaskRecord>('task_get', { taskId }); if (cancelled) return; track(task); if (!task.final) schedule(taskId, 1000); }
+      try { const expected = tasks.find(task => task.taskId === taskId)!; const task = checkedTask(await invoke<TaskRecord>('task_get', { taskId }), expected.type, taskId); if (cancelled) return; track(task); if (!task.final) schedule(taskId, 1000); }
       catch (cause) { if (!cancelled) { setPollError(`任务状态暂未读取，操作仍可能继续：${messageFrom(cause)}`); schedule(taskId, 2000); } }
     }
     for (const task of tasks) schedule(task.taskId, 500);
@@ -162,11 +180,16 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   const previewRunning = Boolean(previewTask && !previewTask.final);
   const blocked = !props.enabled || !props.active || props.migrating || Boolean(pending) || cleanupRunning || previewRunning;
   const expired = Boolean(plan && now >= plan.expiresAt);
-  const wrongWorkspace = Boolean(plan && plan.workspaceRoot !== props.workspaceRoot);
+  const wrongWorkspace = Boolean(plan && plan.workspaceRoot !== props.workspaceRoot || planInstance !== props.instanceId);
   const planBlocked = blocked || !plan || expired || wrongWorkspace || consumed;
   const selectedItems = plan?.items.filter((item) => selected.includes(item.id)) ?? [];
-  const fingerprint = JSON.stringify([plan, [...selected].sort(), props.workspaceRoot, props.revision]);
-  const confirmationCurrent = reviewed === fingerprint && selectedItems.length > 0 && selectedItems.every(cleanable);
+  const temporaryProjects = (props.projects ?? []).filter(project => (projectRegenerable(project) ?? 0n) > 0n);
+  const selectedTargets = temporaryProjects.filter(project => selectedProjects.includes(project.id));
+  const fingerprint = JSON.stringify([plan, [...selected].sort(), selectedTargets.map(project => [project.id, project.projectRoot, project.documentEpoch, project.storage, props.isProjectBusy?.(project)]), props.workspaceRoot, props.instanceId, props.revision]);
+  const selectedCount = selectedItems.length + selectedTargets.length;
+  const confirmationCurrent = reviewed === fingerprint && selectedCount > 0 && selectedItems.every(cleanable) && selectedTargets.every(project => !props.isProjectBusy?.(project));
+  const selectedTotal = selectedItems.reduce((sum, item) => sum + (exact(item.totalBytes) ?? 0n), 0n) + selectedTargets.reduce((sum, project) => sum + (projectRegenerable(project) ?? 0n), 0n);
+  const selectedTotalText = `${selectedTargets.length ? '约 ' : selectedItems.some(item => exact(item.totalBytes) === null) ? '至少 ' : ''}${bigText(selectedTotal)}`;
   useEffect(() => {
     if (!resultFocus || handledResultFocus.current === resultFocus) return;
     // Consume hidden-tab requests too, so returning to a tab never steals focus.
@@ -175,29 +198,74 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   }, [resultFocus, props.active, cleanupTask?.taskId]);
   const preview = useCallback(async () => {
     if (blocked || operation.current) return;
-    operation.current = true; setPending('preview'); setError(''); setPollError(''); setNotice(''); setPlan(null); setSelected([]); clearConfirmation();
-    try { track(await invoke<TaskRecord>('workspace_cleanup_preview')); }
+    operation.current = true; setPlanInstance(props.instanceId); setPending('preview'); setError(''); setPollError(''); setNotice(''); setPlan(null); setSelected([]); setSelectedProjects([]); clearConfirmation();
+    try { track(checkedTask(await invoke<TaskRecord>('workspace_cleanup_preview'), 'workspaceCleanupPreview')); }
     catch (cause) { if (alive.current) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
-  }, [blocked, clearConfirmation, track]);
+  }, [blocked, clearConfirmation, track, props.instanceId]);
   useEffect(() => {
     if (!props.autoScan || autoScanned.current || blocked || plan) return;
     autoScanned.current = true;
     void preview();
   }, [props.autoScan, blocked, plan, preview]);
+  async function waitForFinal(initial: TaskRecord, project?: ProjectInfo) {
+    let task = initial;
+    while (!task.final) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (!alive.current) throw new Error('清理面板已关闭，后续清理未提交。请核对已提交的任务后重新扫描。');
+      const observed = observedTasks.current.get(task.taskId);
+      if (observed?.final) { task = checkedTask(observed, initial.type, initial.taskId, project?.id); break; }
+      try {
+        task = checkedTask(await invoke<TaskRecord>('task_get', { taskId: task.taskId }), initial.type, initial.taskId, project?.id);
+        if (project) {
+          callbacks.current.onProjectTask?.(task, project);
+          setProjectResults(current => [...current.filter(value => value.taskId !== task.taskId), task]);
+        } else track(task);
+        setPollError('');
+      } catch (cause) {
+        throw new Error(`任务状态暂未读取，操作仍可能继续：${messageFrom(cause)}。后续项目未提交；请核对同一任务后重新扫描，不会重复提交。`);
+      }
+    }
+    return task;
+  }
   async function submit() {
     if (planBlocked || operation.current || !plan || Date.now() >= plan.expiresAt || !confirmationCurrent || !acknowledged) return;
     operation.current = true; setPending('cleanup'); setConsumed(true); setError(''); setPollError(''); setNotice(''); callbacks.current.onPendingChange?.(true);
-    // The service requires its fixed phrase; the explicit checkbox is the user's confirmation.
-    const input = { planId: plan.planId, itemIds: selectedItems.map((item) => item.id), confirmation: plan.confirmationText };
+    const input = { planId: plan.planId, itemIds: selectedItems.map(item => item.id), confirmation: plan.confirmationText };
+    // Capture the reviewed targets. Refreshing a completed task must not alter this batch.
+    const targets = [...selectedTargets];
+    const batchInstance = props.instanceId;
     clearConfirmation();
     try {
-      const task = await invoke<TaskRecord>('workspace_cleanup', { input });
-      track(task);
-      if (alive.current && task.type === 'workspaceCleanup') setResultFocus({ taskId: task.taskId });
+      // History plans expire and require no running project operation. Complete history first.
+      if (selectedItems.length) {
+        const task = checkedTask(await invoke<TaskRecord>('workspace_cleanup', { input }), 'workspaceCleanup');
+        track(task);
+        setResultFocus({ taskId: task.taskId });
+        const final = await waitForFinal(task);
+        if (final.status !== 'succeeded' || final.result?.completed !== true) throw new Error('旧资料清理未完整成功，后续临时文件清理未提交；请核对结果后重新扫描。');
+      }
+      for (const project of targets) {
+        const currentProject = callbacks.current.projects?.find(value => value.id === project.id);
+        if (!alive.current || callbacks.current.instanceId !== batchInstance || callbacks.current.workspaceRoot !== plan.workspaceRoot || !currentProject || currentProject.documentEpoch !== project.documentEpoch || currentProject.projectRoot !== project.projectRoot || callbacks.current.migrating || callbacks.current.isProjectBusy?.(currentProject)) throw new Error(`「${project.name}」当前不能清理，后续项目未提交；请重新核对。`);
+        const task = checkedTask(await invoke<TaskRecord>('storage_cleanup', { projectId: project.id, input: { categories: [...regenerableCategories] } }), 'storageCleanup', undefined, project.id);
+        callbacks.current.onProjectTask?.(task, project);
+        setProjectResults(current => [...current, task]);
+        const final = await waitForFinal(task, project);
+        if (final.status !== 'succeeded' || final.result?.completed === false) throw new Error(`「${project.name}」清理未完整成功，后续项目未提交；请核对结果后重新扫描。`);
+      }
+      markHistoryScanStale();
+      setNotice('所选清理任务已结束，请核对实际删除与保留结果。');
     }
     catch (cause) { if (alive.current) setError(`${messageFrom(cause)}。写入结果可能需要核对；请重新扫描，不会自动重复提交。`); }
-    finally { operation.current = false; callbacks.current.onPendingChange?.(false); if (alive.current) setPending(null); }
+    finally {
+      markHistoryScanStale();
+      operation.current = false; callbacks.current.onPendingChange?.(false);
+      if (alive.current) {
+        setPending(null);
+        try { await callbacks.current.onRefresh(); } catch (cause) { setError(`清理任务已结束，但重新读取空间失败：${messageFrom(cause)}`); }
+      }
+    }
   }
   function toggle(item: CleanupItem, checked: boolean) {
     setSelected((current) => checked ? [...current.filter((value) => value !== item.id), item.id] : current.filter((value) => value !== item.id));
@@ -210,13 +278,22 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   }
   async function copyPath(value: string) { try { await navigator.clipboard.writeText(value); if (alive.current) setNotice('目录路径已复制。'); } catch { if (alive.current) setNotice('无法自动复制，请选中显示的完整目录路径手动复制。'); } }
   const scanning = pending === 'preview' || previewRunning;
-  return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-title`}>
+  const body = <>
     <div className="history-heading">
-      <div><h2 id={`${id}-title`}>历史资料</h2><p>这里列出网页项目取回数据或源码前保留的原件。勾选不再需要的内容，确认后永久删除。当前项目和未完成的恢复不在此删除范围。</p></div>
+      <div><h2 id={`${id}-title`}>{props.compact ? '临时文件和旧资料' : '历史资料'}</h2><p>这里列出网页项目取回数据或源码前保留的原件。勾选不再需要的内容，确认后永久删除。当前项目和未完成的恢复不在此删除范围。</p></div>
       <div className="history-scan-status">{scanning ? <span role="status">正在扫描…</span> : scannedAt ? <span>{props.autoScan ? '已自动扫描' : '已扫描'} · {timeText(scannedAt)}</span> : null}<button className="refresh-button" disabled={blocked} onClick={() => void preview()}><RefreshCw size={14} />{scanning ? '正在扫描…' : plan ? '重新扫描' : '扫描可清理范围'}</button></div>
     </div>
     {previewTask && (!previewTask.final || previewTask.status !== 'succeeded') && <ProjectTask task={previewTask} />}
     {!plan && !scanning && !previewTask && <div className="workspace-cleanup-intro"><ShieldCheck size={19} /><p>扫描只读取目录，不会删除文件。没有默认勾选；永久清理无法撤销。</p></div>}
+    {temporaryProjects.length > 0 && <section className="history-group" aria-label="可重新生成文件">
+      <div className="history-group-heading"><h3>临时文件</h3><button type="button" className="text-button" disabled={planBlocked} onClick={() => { setSelectedProjects(temporaryProjects.filter(project => !props.isProjectBusy?.(project)).map(project => project.id)); clearConfirmation(); }}>全选临时文件</button></div>
+      {temporaryProjects.map(project => <article className="workspace-cleanup-item" key={project.id}>
+        <input type="checkbox" aria-label={`选择「${project.name}」的临时文件`} checked={selectedProjects.includes(project.id)} disabled={planBlocked || Boolean(props.isProjectBusy?.(project))} onChange={event => { setSelectedProjects(current => event.target.checked ? [...current.filter(id => id !== project.id), project.id] : current.filter(id => id !== project.id)); clearConfirmation(); }} />
+        <div className="workspace-cleanup-item-main"><strong>{project.name}</strong><p>来源：开发依赖、构建缓存与可清理的任务日志</p><code className="workspace-cleanup-path">{project.projectRoot}</code><p>开发依赖 {bigText(bigBytes(partBytes(project.storage?.currentProject.categories?.dependencies)))} · 构建缓存与日志 {bigText(bigBytes(partBytes(project.storage?.currentProject.categories?.cache)))}</p>{props.isProjectBusy?.(project) && <p>当前有任务或恢复状态需要处理，暂不可清理。</p>}</div>
+        <strong className="workspace-cleanup-size">约 {bigText(projectRegenerable(project))}</strong>
+      </article>)}
+      <p>以上为最近统计的估计值；受保护的内容会保留。源码、数据库、用户文件与当前应用不在临时文件清理范围。</p>
+    </section>}
     {plan && <>
       <div className="workspace-cleanup-plan"><p>以下大小为普通文件的逻辑字节，不等于实际可释放的物理磁盘空间。范围在 {timeText(plan.expiresAt)} 前有效，过期后需重新扫描。</p></div>
       {(expired || wrongWorkspace || consumed) && <p className="workspace-operation-status" role="status">{wrongWorkspace ? '工作区已改变，请重新扫描。' : consumed ? '本次范围已经提交过，请等待最终结果后重新扫描核对，不能直接重复提交。' : '本次范围已过期，请重新扫描后再选择和确认。'}</p>}
@@ -241,22 +318,34 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       })}</div> : <div className="workspace-empty-state"><Trash2 size={26} /><p>没有发现历史资料</p><span>无需为了让空间数字归零而删除平台程序或当前项目。</span></div>}
       <details className="workspace-disclosure workspace-cleanup-preserved"><summary>始终保留的内容</summary><div className="workspace-disclosure-body">{plan.preserved.length ? <ul>{plan.preserved.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>范围之外的文件保持原样。</p>}</div></details>
       <div className="history-selection-bar" role="region" aria-label="已选历史资料">
-        <strong>已选 {selectedItems.length} 项 · 共 {totalText(selectedItems)}</strong><span>清理后无法恢复</span>
-        <button className="refresh-button" disabled={!selectedItems.length || pending === 'cleanup'} onClick={() => { setSelected([]); clearConfirmation(); }}>取消选择</button>
-        <button ref={reviewButton} className="danger-button" disabled={planBlocked || !selectedItems.length || !selectedItems.every(cleanable)} onClick={() => { setAcknowledged(false); setReviewed(fingerprint); }}>清理所选…</button>
+        <strong>已选 {selectedCount} 项 · 共 {selectedTotalText}</strong><span>清理后无法恢复</span>
+        <button className="refresh-button" disabled={!selectedCount || pending === 'cleanup'} onClick={() => { setSelected([]); setSelectedProjects([]); clearConfirmation(); }}>取消选择</button>
+        <button ref={reviewButton} className="danger-button" disabled={planBlocked || !selectedCount || !selectedItems.every(cleanable) || selectedTargets.some(project => props.isProjectBusy?.(project))} onClick={() => { setAcknowledged(false); setReviewed(fingerprint); }}>清理所选…</button>
       </div>
     </>}
-    {confirmationCurrent && plan && <Modal title={`永久清理 ${selectedItems.length} 项历史资料？`} className="history-cleanup-dialog" closeDisabled={pending === 'cleanup'} onClose={clearConfirmation}>
-      <ul className="history-confirm-list">{selectedItems.map((item) => <li key={item.id}><span><strong>{item.name || item.label}</strong><small>{kinds[item.kind]}{item.projectId ? ` · 项目 ${item.projectId}` : ''}</small></span><span>{bytesText(item.totalBytes)}</span></li>)}</ul>
-      <p className="history-confirm-total">合计 {totalText(selectedItems)}</p>
+    </>;
+  const confirmation = confirmationCurrent && plan && <>
+      <ul className="history-confirm-list">{selectedItems.map((item) => <li key={item.id}><span><strong>{item.name || item.label}</strong><small>来源：{kinds[item.kind]}{item.projectId ? ` · 项目 ${item.projectId}` : ''}</small><code>{item.path}</code></span><span>{bytesText(item.totalBytes)}</span></li>)}</ul>
+      {selectedTargets.map(project => <div className="workspace-cleanup-item" key={project.id}><div><strong>{project.name}</strong><p>来源：开发依赖、构建缓存与可清理的任务日志</p><code>{project.projectRoot}</code></div><strong>约 {bigText(projectRegenerable(project))}</strong></div>)}
+      <p className="history-confirm-total">合计 {selectedTotalText}</p>
       <p>所选目录会直接永久删除，其中全部文件都无法恢复。不会删除当前项目和未勾选的历史资料。请先停止外部 AI、编辑器或工具访问这些目录。</p>
       <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={planBlocked} onChange={(event) => setAcknowledged(event.target.checked)} />我理解这些内容将永久删除，无法恢复</label>
       <details className="workspace-disclosure"><summary>技术详情</summary><div className="workspace-disclosure-body"><p>当前工作区：<code>{plan.workspaceRoot}</code></p><ul>{selectedItems.map((item) => <li key={item.id}><code>{item.path}</code></li>)}</ul><p>计划 {plan.planId} · 有效至 {timeText(plan.expiresAt)}。提交时会再次核对每一项，范围变化时不会删除。</p>{plan.preserved.length > 0 && <><p>始终保留：</p><ul>{plan.preserved.map((value, index) => <li key={index}>{value}</li>)}</ul></>}</div></details>
-      <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'cleanup'} onClick={clearConfirmation}>取消，保留</button><button className="danger-button" disabled={planBlocked || !acknowledged} onClick={() => void submit()}>{pending === 'cleanup' ? '正在提交…' : `永久清理 ${totalText(selectedItems)}`}</button></div>
-    </Modal>}
+      <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'cleanup'} onClick={clearConfirmation}>{props.compact ? '返回选择' : '取消，保留'}</button><button className="danger-button" disabled={planBlocked || !acknowledged} onClick={() => void submit()}>{pending === 'cleanup' ? '正在提交…' : `永久清理 ${selectedTotalText}`}</button></div>
+    </>;
+  const results = <>
     {cleanupTask && <div className="workspace-cleanup-result"><h3 ref={resultHeading} tabIndex={-1}>清理结果</h3><ProjectTask task={cleanupTask} /><CleanupResult task={cleanupTask} /></div>}
+    {projectResults.map(task => <div className="workspace-cleanup-result" key={task.taskId}><ProjectTask task={task} /></div>)}
     {(pending === 'cleanup' || cleanupRunning) && <p className="workspace-operation-status" role="status">清理任务会持续执行，切换页面不会取消。完成前，删除、迁移和其他清理操作暂时不可用。</p>}
     {(error || pollError) && <p className="task-error" role="alert">{error || pollError}</p>}{notice && <p className="workspace-inline-notice" role="status">{notice}</p>}
+  </>;
+  if (!props.compact) return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-title`}>{body}{confirmation && <Modal title={`永久清理 ${selectedCount} 项历史资料？`} className="history-cleanup-dialog" closeDisabled={pending === 'cleanup'} onClose={clearConfirmation}>{confirmation}</Modal>}{results}</section>;
+  return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-card-title`}>
+    <div className="section-heading"><div><h2 id={`${id}-card-title`}>临时文件和旧资料</h2><p>清理可重新生成的文件和已结束取回操作保留的原件。先核对明细，再选择并确认。</p></div><button type="button" className="refresh-button" disabled={blocked} onClick={() => { setReviewOpen(true); if (!plan || expired || consumed || wrongWorkspace) void preview(); }}>清理</button></div>
+    {reviewOpen && <Modal title={confirmation ? `永久清理 ${selectedCount} 项内容？` : '核对临时文件和旧资料'} className="history-cleanup-dialog" closeDisabled={pending === 'cleanup'} onClose={() => { setReviewOpen(false); clearConfirmation(); }}>
+      {confirmation || body}{results}
+    </Modal>}
+    {!reviewOpen && results}
   </section>;
 }
 

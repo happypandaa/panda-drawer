@@ -35,7 +35,7 @@ Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, co
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ProjectStoragePanel } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/StoragePanels.tsx'))).href);
+const { ProjectAttachmentBrowser } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/StoragePanels.tsx'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -67,8 +67,8 @@ async function setup({ props = {}, overrides = {} } = {}) {
   };
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
-  let current = { project, status: ready, disabled: false, onTask: value => tasks.push(value), onChanged: async () => {}, onDraftStateChange: value => drafts.push(value), ...props };
-  const render = async changes => { current = { ...current, ...changes }; await act(async () => root.render(h(ProjectStoragePanel, current))); };
+  let current = { project, status: ready, disabled: false, blocked: false, onBusyChange: pending => drafts.push({ pending }), onTask: value => tasks.push(value), onChanged: async () => {}, onDraftStateChange: value => drafts.push(value), ...props };
+  const render = async changes => { current = { ...current, ...changes }; await act(async () => root.render(h(ProjectAttachmentBrowser, current))); };
   await render({});
   return { calls, tasks, drafts, render };
 }
@@ -79,69 +79,6 @@ const checkbox = text => [...document.querySelectorAll('label')].find(label => l
 const field = text => [...document.querySelectorAll('label')].find(label => label.textContent.startsWith(text))?.querySelector('input,select');
 async function change(element, value) { await act(async () => { const prototype = element.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value); element.dispatchEvent(new dom.window.Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); }); }
 async function reviewCleanup() { await click(byText('查看可清理内容')); await click(checkbox('开发依赖')); await click(byText('检查清理范围')); await click(checkbox('我已核对应用和清理范围')); }
-
-test('Space details show a complete proportion bar and seven purpose rows, without legacy history controls', async () => {
-  await setup();
-  assert.equal(document.querySelector('.project-storage-total strong').textContent, '280 B');
-  assert.equal(document.querySelectorAll('.project-storage-categories > div').length, 7);
-  assert.equal(document.querySelectorAll('.project-storage-bar span').length, 7);
-  assert.match(document.querySelector('.project-storage-category-ratio').textContent, /3\.5%/);
-  assert.match(document.body.textContent, /当前可运行的应用文件/);
-  assert.doesNotMatch(document.body.textContent, /关联历史占用|\/disposable\/history|备份与维护/);
-  assert.equal(document.querySelector('.cleanup-options'), null);
-  assert.equal(document.querySelector('.attachment-filters'), null);
-});
-
-for (const [label, override] of [
-  ['partial', { complete: false }], ['stale', { stale: true }], ['unknown category', { categories: {} }], ['mismatched total', { totalBytes: 281 }], ['zero total', { totalBytes: 0 }],
-]) test(`A ${label} scan never turns known categories into an artificial 100 percent`, async () => {
-  await setup({ overrides: { storage_info: () => storage(override) } });
-  assert.equal(document.querySelectorAll('.project-storage-bar span').length, 0);
-  assert.equal([...document.querySelectorAll('.project-storage-category-ratio')].every(row => row.textContent === '—'), true);
-  assert.match(document.querySelector('.project-storage-bar').getAttribute('aria-label'), /暂不可用/);
-});
-
-test('Ready applications clean only explicit selections without a legacy baseline and serialize duplicate submission', async () => {
-  const pending = deferred();
-  const { calls, drafts, tasks } = await setup({ overrides: { storage_cleanup: () => pending.promise } });
-  assert.equal(byText('查看可清理内容').disabled, false);
-  await reviewCleanup();
-  assert.deepEqual(drafts.at(-1), { dirty: true, pending: false });
-  const button = byText('确认清理');
-  await act(async () => { button.click(); button.click(); });
-  assert.deepEqual(commandCalls(calls, 'storage_cleanup'), [['storage_cleanup', { projectId: project.id, input: { categories: ['dependencies'] } }]]);
-  assert.deepEqual(drafts.at(-1), { dirty: true, pending: true });
-  await act(async () => pending.resolve(accepted()));
-  assert.equal(tasks.length, 1);
-  assert.equal(document.querySelector('.operation-confirmation'), null);
-  assert.deepEqual(drafts.at(-1), { dirty: false, pending: false });
-});
-
-test('Ready maintenance remains compatible with its ID; unfinished maintenance and recovery block cleanup', async () => {
-  const { calls, render } = await setup({ props: { status: { ...ready, mode: 'maintenance', readyForChanges: true, maintenanceId: 'maintenance_disposable' } } });
-  await reviewCleanup(); await click(byText('确认清理'));
-  assert.deepEqual(commandCalls(calls, 'storage_cleanup')[0][1].input, { categories: ['dependencies'], maintenanceId: 'maintenance_disposable' });
-  for (const status of [{ ...ready, mode: 'maintenance', readyForChanges: false }, { ...ready, recoveryRequired: true }, { ...ready, activeTask: 'active_task' }]) {
-    await render({ status });
-    assert.equal(byText('查看可清理内容').disabled, true);
-  }
-  assert.equal(commandCalls(calls, 'storage_cleanup').length, 1);
-});
-
-test('Changing tabs expires cleanup acknowledgment while keeping selected ranges for review', async () => {
-  const { calls, render } = await setup();
-  await reviewCleanup();
-  await render({ active: false });
-  assert.equal(document.querySelector('.operation-confirmation'), null);
-  assert.equal(checkbox('开发依赖').checked, true);
-  assert.equal(byText('重新扫描').disabled, true);
-  assert.equal(byText('检查清理范围').disabled, true);
-  await render({ active: true });
-  await click(byText('检查清理范围'));
-  assert.equal(checkbox('我已核对应用和清理范围').checked, false);
-  assert.equal(byText('确认清理').disabled, true);
-  assert.equal(commandCalls(calls, 'storage_cleanup').length, 0);
-});
 
 test('User files start with two real rows and expand into filtering and serialized pagination', async () => {
   const page = deferred();
@@ -167,9 +104,9 @@ test('Preview closes on hidden state and a late result cannot reopen it', async 
   await click(byText('浏览全部文件'));
   await click(document.querySelector('[aria-label="预览 first.png"]'));
   assert.equal(drafts.at(-1).pending, true);
-  await render({ active: false });
+  await render({ blocked: true });
   await act(async () => preview.resolve({ dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png' }));
-  await render({ active: true });
+  await render({ blocked: false });
   assert.equal(document.querySelector('.attachment-preview'), null);
   assert.equal(drafts.at(-1).pending, false);
 });
@@ -188,14 +125,4 @@ test('Invalid preview media is rejected and downloads are serialized with an epo
   await act(async () => download.resolve({ savedPath: '/disposable/saved.png' }));
   assert.match(document.body.textContent, /已保存到 \/disposable\/saved.png/);
   assert.equal(drafts.at(-1).pending, false);
-});
-
-test('Late statistics and accepted requests cannot mutate a different application scope', async () => {
-  const oldInfo = deferred(); const scan = deferred(); let reads = 0;
-  const { tasks, render } = await setup({ overrides: { storage_info: () => ++reads === 1 ? oldInfo.promise : storage(), storage_scan: () => scan.promise } });
-  await click(byText('重新扫描'));
-  await render({ project: { ...project, id: 'prj_storage_next', documentEpoch: 'epoch_b' } });
-  await act(async () => { oldInfo.resolve(storage({ totalBytes: 99999 })); scan.resolve(accepted('storageScan')); });
-  assert.equal(document.querySelector('.project-storage-total strong').textContent, '280 B');
-  assert.equal(tasks.length, 0);
 });
