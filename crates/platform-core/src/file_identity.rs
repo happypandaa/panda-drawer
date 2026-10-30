@@ -2,16 +2,21 @@
 //! descriptor-relative operations while the process is running. On macOS a
 //! device number can change after reboot or remount; the volume UUID cannot be
 //! replaced by that temporary number in an on-disk identity.
-use anyhow::{bail, Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::{
     ffi::CString,
-    fs::File,
-    io,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{ffi::OsStrExt, fs::MetadataExt},
     },
+};
+use std::{
+    fs::File,
+    io,
     path::{Component, Path},
 };
 use uuid::Uuid;
@@ -26,6 +31,8 @@ pub(crate) struct PersistedIdentity {
     pub(crate) inode: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) volume_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) windows_file_id: Option<[u8; 16]>,
 }
 
 impl<'de> Deserialize<'de> for PersistedIdentity {
@@ -37,6 +44,8 @@ impl<'de> Deserialize<'de> for PersistedIdentity {
             inode: u64,
             #[serde(default)]
             volume_uuid: Option<String>,
+            #[serde(default)]
+            windows_file_id: Option<[u8; 16]>,
         }
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -49,11 +58,13 @@ impl<'de> Deserialize<'de> for PersistedIdentity {
                 device: value.device,
                 inode: value.inode,
                 volume_uuid: value.volume_uuid,
+                windows_file_id: value.windows_file_id,
             },
             Representation::LegacyPair((device, inode)) => Self {
                 device,
                 inode,
                 volume_uuid: None,
+                windows_file_id: None,
             },
         })
     }
@@ -67,23 +78,37 @@ impl PersistedIdentity {
     /// Use an already-open descriptor when a mutation's safety boundary is the
     /// descriptor itself. This does not establish that any path still names it.
     pub(crate) fn from_file(file: &File) -> Result<Self> {
-        let metadata = file.metadata()?;
-        if !metadata.is_dir() && !metadata.is_file() {
-            bail!("Persistent identity requires an ordinary file or directory")
+        #[cfg(windows)]
+        {
+            let identity = platform_native::windows::files::identity(file)?;
+            Ok(Self {
+                device: identity.volume_serial,
+                inode: u64::from_le_bytes(identity.file_id[..8].try_into().unwrap()),
+                volume_uuid: None,
+                windows_file_id: Some(identity.file_id),
+            })
         }
-        #[cfg(target_os = "macos")]
-        let volume_uuid = Some(volume_uuid(file)?);
-        #[cfg(not(target_os = "macos"))]
-        let volume_uuid = None;
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            volume_uuid,
-        })
+        #[cfg(unix)]
+        {
+            let metadata = file.metadata()?;
+            if !metadata.is_dir() && !metadata.is_file() {
+                bail!("Persistent identity requires an ordinary file or directory")
+            }
+            #[cfg(target_os = "macos")]
+            let volume_uuid = Some(volume_uuid(file)?);
+            #[cfg(not(target_os = "macos"))]
+            let volume_uuid = None;
+            Ok(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                volume_uuid,
+                windows_file_id: None,
+            })
+        }
     }
 
     pub(crate) fn is_legacy(&self) -> bool {
-        self.volume_uuid.is_none()
+        self.volume_uuid.is_none() && self.windows_file_id.is_none()
     }
 
     pub(crate) fn legacy_pair(&self) -> (u64, u64) {
@@ -94,11 +119,19 @@ impl PersistedIdentity {
     /// be used as an equivalence relation for records spanning boots.
     pub(crate) fn same_runtime_object(&self, observed: &Self) -> bool {
         self.legacy_pair() == observed.legacy_pair()
+            && self.windows_file_id == observed.windows_file_id
     }
 
     /// A stable record requires the same non-nil volume UUID and inode. A legacy
     /// record never gains permission to ignore a mismatching device number.
     pub(crate) fn matches_captured(&self, observed: &Self) -> bool {
+        if self.windows_file_id.is_some() || observed.windows_file_id.is_some() {
+            return self.windows_file_id.is_some()
+                && self.windows_file_id == observed.windows_file_id
+                && self.device == observed.device
+                && self.volume_uuid.is_none()
+                && observed.volume_uuid.is_none();
+        }
         if self.inode != observed.inode {
             return false;
         }
@@ -118,7 +151,7 @@ impl PersistedIdentity {
         if self.matches_captured(&observed) {
             return Ok(true);
         }
-        if self.is_legacy() && self.inode == observed.inode {
+        if self.is_legacy() && observed.windows_file_id.is_none() && self.inode == observed.inode {
             // Receipts are created only by the explicit, independently audited
             // offline repair. Reading one does not bind or mutate a journal.
             return crate::identity_upgrade::legacy_identity_matches(path, self.device, self.inode);
@@ -167,6 +200,60 @@ impl PersistedIdentity {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn windows_identity_roundtrip_keeps_all_128_bits_and_rejects_old_windows_pairs() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-core-identity-中文 space-")
+            .tempdir()
+            .unwrap();
+        let path = temp.path().canonicalize().unwrap().join("disposable.txt");
+        fs::write(&path, b"disposable identity").unwrap();
+        let captured = PersistedIdentity::capture(&path).unwrap();
+        assert!(!captured.is_legacy());
+        assert!(captured.volume_uuid.is_none());
+        assert!(captured.windows_file_id.is_some());
+        let value = serde_json::to_value(&captured).unwrap();
+        assert!(value.get("volumeUuid").is_none());
+        assert_eq!(value["windowsFileId"].as_array().unwrap().len(), 16);
+        let decoded: PersistedIdentity = serde_json::from_value(value).unwrap();
+        assert!(decoded.matches_path(&path).unwrap());
+        let mut changed = decoded.clone();
+        changed.windows_file_id.as_mut().unwrap()[15] ^= 1;
+        assert_eq!(changed.inode, decoded.inode);
+        assert!(!changed.matches_captured(&decoded));
+        let old: PersistedIdentity = serde_json::from_value(
+            serde_json::json!({"device":captured.device,"inode":captured.inode}),
+        )
+        .unwrap();
+        assert!(!old.matches_path(&path).unwrap());
+    }
+
+    #[test]
+    fn windows_identity_detects_replacement_and_checks_volume_before_accepting_absence() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-core-identity-disposable-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("disposable.txt");
+        fs::write(&path, b"original disposable file").unwrap();
+        let captured = PersistedIdentity::capture(&path).unwrap();
+        fs::rename(&path, root.join("retained.txt")).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        assert!(!captured.matches_path(&path).unwrap());
+        fs::remove_file(&path).unwrap();
+        assert!(captured.absent_on_expected_volume(&path).unwrap());
+        let mut wrong_volume = captured.clone();
+        wrong_volume.device ^= 1;
+        assert!(wrong_volume.absent_on_expected_volume(&path).is_err());
+    }
+}
+
 fn valid_uuid(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value).ok().filter(|uuid| !uuid.is_nil())
 }
@@ -175,6 +262,7 @@ fn valid_uuid(value: &str) -> Option<Uuid> {
 /// descriptor, and re-open the chain to reject ancestors replaced while the
 /// volume attributes were read. Mutating callers must still retain their own
 /// descriptor-relative protection after this point-in-time observation.
+#[cfg(unix)]
 pub(crate) fn capture(path: &Path) -> Result<PersistedIdentity> {
     let opened = OpenedPath::open(path)?;
     let identity = PersistedIdentity::from_file(&opened.file)?;
@@ -182,11 +270,19 @@ pub(crate) fn capture(path: &Path) -> Result<PersistedIdentity> {
     Ok(identity)
 }
 
+#[cfg(windows)]
+pub(crate) fn capture(path: &Path) -> Result<PersistedIdentity> {
+    let opened = platform_native::windows::files::open_no_reparse(path)?;
+    PersistedIdentity::from_file(&opened.file)
+}
+
+#[cfg(unix)]
 struct OpenedPath {
     file: File,
     chain: Vec<(u64, u64)>,
 }
 
+#[cfg(unix)]
 impl OpenedPath {
     fn open(path: &Path) -> Result<Self> {
         if !path.is_absolute() {
@@ -239,6 +335,7 @@ impl OpenedPath {
     }
 }
 
+#[cfg(unix)]
 fn opened(fd: libc::c_int) -> io::Result<File> {
     if fd < 0 {
         Err(io::Error::last_os_error())
@@ -247,6 +344,7 @@ fn opened(fd: libc::c_int) -> io::Result<File> {
     }
 }
 
+#[cfg(unix)]
 fn runtime_pair(file: &File) -> io::Result<(u64, u64)> {
     let metadata = file.metadata()?;
     Ok((metadata.dev(), metadata.ino()))
@@ -288,7 +386,7 @@ fn volume_uuid(file: &File) -> Result<String> {
     Ok(uuid.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
@@ -298,6 +396,7 @@ mod tests {
             device,
             inode,
             volume_uuid: volume_uuid.map(str::to_owned),
+            windows_file_id: None,
         }
     }
     #[test]

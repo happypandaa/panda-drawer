@@ -86,6 +86,8 @@ pub(crate) mod strict_identity {
         device: u64,
         inode: u64,
         volume_uuid: Option<String>,
+        #[serde(default)]
+        windows_file_id: Option<[u8; 16]>,
     }
     impl From<Identity> for PersistedIdentity {
         fn from(value: Identity) -> Self {
@@ -93,6 +95,7 @@ pub(crate) mod strict_identity {
                 device: value.device,
                 inode: value.inode,
                 volume_uuid: value.volume_uuid,
+                windows_file_id: value.windows_file_id,
             }
         }
     }
