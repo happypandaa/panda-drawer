@@ -34,6 +34,7 @@ mod managed_git;
 mod managed_toolchain;
 mod metadata;
 mod metadata_file_io;
+mod migration_metadata_io;
 mod native_project_files;
 pub mod native_project_io;
 pub mod node_app_configuration;

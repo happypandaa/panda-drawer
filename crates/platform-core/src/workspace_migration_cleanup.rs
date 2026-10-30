@@ -3,20 +3,17 @@
 //! This module does not decide that a runtime has reopened. Its caller must
 //! supply that receipt only after the new runtime is usable and all old native
 //! and HTTP file access has actually drained. It never pauses the new store.
-use crate::{file_identity::PersistedIdentity, projects::check_no_symlinks, ApiError};
+use crate::migration_metadata_io::read_metadata;
+use crate::{file_identity::PersistedIdentity, ApiError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Read,
+    fs,
     path::{Component, Path, PathBuf},
 };
 
 const SELECTION: &str = ".platform/workspace-selection.json";
-const MAX_METADATA: u64 = 32_000_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -253,36 +250,6 @@ fn entries(value: Value) -> Result<BTreeMap<PathBuf, CopyEntry>, ApiError> {
         }
     }
     Ok(result)
-}
-
-fn read_metadata(path: &Path) -> Result<Value, ApiError> {
-    check_no_symlinks(path, false)?;
-    let mut file = platform_native::filesystem::open_read(
-        path,
-        platform_native::filesystem::ReadOptions::NoLinksCloseOnExec,
-    )?;
-    let before = file.metadata()?;
-    if !before.is_file() || before.nlink() != 1 || before.len() > MAX_METADATA {
-        return Err(blocked("迁移证明不是独立普通文件或超过大小限制。"));
-    }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(MAX_METADATA + 1)
-        .read_to_end(&mut bytes)?;
-    let after = file.metadata()?;
-    if bytes.len() as u64 > MAX_METADATA
-        || before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || before.ctime() != after.ctime()
-        || before.ctime_nsec() != after.ctime_nsec()
-        || after.nlink() != 1
-    {
-        return Err(blocked("读取迁移证明时文件发生变化。"));
-    }
-    serde_json::from_slice(&bytes).map_err(|_| blocked("迁移证明不是有效 JSON。"))
 }
 
 fn authorize(
