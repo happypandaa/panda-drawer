@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {mkdtemp,mkdir,writeFile,readFile,readdir,rename,rm} from 'node:fs/promises';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import os from 'node:os';
+import path from 'node:path';
+import {WINDOWS_DEVELOPMENT_NODE_RELEASE,prepareDevelopmentNodeWindows,verifyDevelopmentNodeWindows} from './package-development-node-windows.mjs';
+import {DEVELOPMENT_NODE_RELEASE} from './package-development-node.mjs';
+const windows=process.platform==='win32'&&process.arch==='x64';
+const dependencies=process.env.WINDOWS_NATIVE_PACKAGER_HELPER?{helper:process.env.WINDOWS_NATIVE_PACKAGER_HELPER}:{};
+const execute=promisify(execFile);
+test('Windows development anchor keeps the actual complete npm tree and Mac anchor unchanged',()=>{
+ assert.equal(WINDOWS_DEVELOPMENT_NODE_RELEASE.tree.fileCount,1928);assert.equal(WINDOWS_DEVELOPMENT_NODE_RELEASE.tree.totalBytes,106576314);
+ assert.equal(WINDOWS_DEVELOPMENT_NODE_RELEASE.tree.sha256,'83be5396482b6d982395c8054e27b33c1dfd7b381e0ee78165833fb0d2fe93ee');
+ assert.deepEqual(WINDOWS_DEVELOPMENT_NODE_RELEASE.executables,['node.exe']);assert.equal(DEVELOPMENT_NODE_RELEASE.tree.fileCount,1930);assert.equal(DEVELOPMENT_NODE_RELEASE.platform,'darwin');
+});
+test('real Windows development Node runs npm ci offline after relocation using JS entry points',{skip:!windows||!process.env.NODE_RUNTIME_WINDOWS_TEST_CACHE},async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'disposable-windows-development-node-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const original=path.join(root,'开发工具 中文 空格');await prepareDevelopmentNodeWindows({outputDir:original,cacheDir:process.env.NODE_RUNTIME_WINDOWS_TEST_CACHE,offline:true},dependencies);
+ const moved=path.join(root,'移动后 开发工具');await rename(original,moved);const report=await verifyDevelopmentNodeWindows(moved,dependencies);
+ const sample=path.join(root,'临时 零依赖项目');await mkdir(sample);const pkg={name:'disposable-windows-node-check',version:'1.0.0',scripts:{install:'node -e "require(\'node:fs\').writeFileSync(\'script-ran\',\'bad\')"'}};
+ await writeFile(path.join(sample,'package.json'),JSON.stringify(pkg));await writeFile(path.join(sample,'package-lock.json'),JSON.stringify({name:pkg.name,version:pkg.version,lockfileVersion:3,requires:true,packages:{'':{name:pkg.name,version:pkg.version,hasInstallScript:true}}}));
+ const env={SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,ComSpec:process.env.ComSpec,PATH:`${report.binPath};${path.join(process.env.SystemRoot,'System32')}`,HOME:root,USERPROFILE:root,APPDATA:root,LOCALAPPDATA:root,TEMP:root,TMP:root,NODE_DISABLE_COMPILE_CACHE:'1',npm_config_cache:path.join(root,'npm-cache'),npm_config_update_notifier:'false',npm_config_logs_max:'0'};
+ const options={cwd:sample,env,windowsHide:true,timeout:30000,maxBuffer:65536};
+ for(const entry of [report.npmPath,report.npxPath])assert.equal((await execute(report.nodePath,[entry,'--version'],options)).stdout.trim(),'11.19.1');
+ await execute(report.nodePath,[report.npmPath,'ci','--offline','--omit=dev','--ignore-scripts','--no-audit','--no-fund'],options);
+ assert.equal((await readdir(sample)).includes('script-ran'),false);
+ await verifyDevelopmentNodeWindows(moved,dependencies);
+ await writeFile(path.join(moved,'unexpected.js'),'never executed');await assert.rejects(verifyDevelopmentNodeWindows(moved,dependencies),/tree differs/);assert.equal(await readFile(path.join(moved,'unexpected.js'),'utf8'),'never executed');
+});
