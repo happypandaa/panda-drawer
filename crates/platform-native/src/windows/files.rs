@@ -32,8 +32,8 @@ use windows_sys::Win32::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
         FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_STANDARD_INFO, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        OPEN_ALWAYS, OPEN_EXISTING,
+        FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, OPEN_ALWAYS, OPEN_EXISTING,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -542,6 +542,34 @@ fn make_object_private(path: &Path, directory: bool) -> io::Result<()> {
 
 pub fn create_private_file(path: &Path) -> io::Result<File> {
     open_private_file(path, false, true)
+}
+
+/// Apply the real Windows read-only attribute to the opened object. Attribute
+/// access is independent of file-content write access, including for files
+/// already read-only. File::set_permissions uses SetFileInformationByHandle:
+/// https://doc.rust-lang.org/std/fs/struct.File.html#method.set_permissions
+pub fn set_read_only(path: &Path, read_only: bool) -> io::Result<()> {
+    let _scope = pin_parent(path)?;
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_readonly(read_only);
+    file.set_permissions(permissions)
 }
 
 pub fn open_private_file(path: &Path, create: bool, create_new: bool) -> io::Result<File> {

@@ -4,6 +4,7 @@
 //! The caller owns the project operation gate and
 //! freezes business operations only while `prepare_snapshot` reads the live project.
 //! Compression, verification and publication exclusively read the prepared snapshot.
+pub use crate::archive_permissions::{ArchivePermissions, FileEntry};
 use crate::{
     builds::{self, BuildProvenance, StarterProvenance},
     projects::{check_no_symlinks, checked_relative, validate_manifest},
@@ -12,8 +13,6 @@ use crate::{
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
@@ -82,20 +81,6 @@ pub struct SnapshotOptions {
     pub snapshot_state: SnapshotState,
     pub pending_build: PendingBuild,
     pub build_provenance: Option<PortableBuildProvenance>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FileEntry {
-    /// Relative to the archived project, without the `project/` ZIP prefix.
-    pub path: String,
-    pub bytes: u64,
-    pub sha256: String,
-    #[serde(default = "default_mode")]
-    pub mode: u32,
-}
-fn default_mode() -> u32 {
-    0o600
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -309,7 +294,7 @@ fn inventory(root: &Path, excluded_paths: &[String]) -> Result<Inventory, ApiErr
                 visit(root, &path, excluded_paths, result)?;
             } else if ty.is_file() {
                 let (bytes, sha256) = sha256_file(&root.join(&path))?;
-                let mode = fs::metadata(root.join(&path))?.permissions().mode() & 0o777;
+                let mode = ArchivePermissions::capture(&fs::metadata(root.join(&path))?);
                 result.files.push(FileEntry {
                     path,
                     bytes,
@@ -343,7 +328,7 @@ fn copy_file_verified(source: &Path, target: &Path, expected: &FileEntry) -> Res
     let mut output = new_file(target)?;
     let bytes = std::io::copy(&mut input, &mut output)?;
     output.sync_all()?;
-    fs::set_permissions(target, fs::Permissions::from_mode(expected.mode & 0o777))?;
+    expected.mode.apply(target)?;
     if bytes != expected.bytes || sha256_file(target)?.1 != expected.sha256 {
         return Err(ApiError::new(
             "BACKUP_SOURCE_CHANGED",
@@ -586,7 +571,7 @@ pub fn prepare_snapshot(
         };
         write_json(&snapshot_dir.join("backup.json"), &manifest)?;
         sync_directories(&destination, &manifest.directories)?;
-        File::open(snapshot_dir)?.sync_all()?;
+        platform_native::filesystem::sync_directory(snapshot_dir)?;
         Ok(PreparedSnapshot {
             root: snapshot_dir.to_owned(),
             manifest,
@@ -600,9 +585,9 @@ pub fn prepare_snapshot(
 
 fn sync_directories(root: &Path, directories: &[String]) -> Result<(), ApiError> {
     for path in directories.iter().rev() {
-        File::open(root.join(path))?.sync_all()?;
+        platform_native::filesystem::sync_directory(&root.join(path))?;
     }
-    File::open(root)?.sync_all()?;
+    platform_native::filesystem::sync_directory(root)?;
     Ok(())
 }
 
@@ -643,10 +628,10 @@ pub fn publish_snapshot(
         }
         validate_project(&project, &snapshot.manifest)?;
         let mut zip = ZipWriter::new(new_file(&temporary)?);
-        let file_options = SimpleFileOptions::default()
+        let compressed_options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .large_file(true)
-            .unix_permissions(0o600);
+            .large_file(true);
+        let file_options = compressed_options.unix_permissions(0o600);
         zip.start_file("backup.json", file_options)
             .map_err(zip_error)?;
         zip.write_all(&serde_json::to_vec_pretty(&snapshot.manifest)?)?;
@@ -665,7 +650,11 @@ pub fn publish_snapshot(
         for entry in &snapshot.manifest.files {
             zip.start_file(
                 format!("project/{}", entry.path),
-                file_options.unix_permissions(entry.mode & 0o777),
+                entry
+                    .mode
+                    .unix_mode()
+                    .map(|mode| file_options.unix_permissions(mode))
+                    .unwrap_or(compressed_options),
             )
             .map_err(zip_error)?;
             let mut input = safe_file(&project.join(&entry.path))?;
@@ -676,7 +665,7 @@ pub fn publish_snapshot(
         // Atomic create-if-absent publication. A same-ID history file is never overwritten.
         fs::hard_link(&temporary, archive_path)?;
         fs::remove_file(&temporary)?;
-        File::open(parent)?.sync_all()?;
+        platform_native::filesystem::sync_directory(parent)?;
         verified.path = archive_path.to_owned();
         Ok(verified)
     })();
@@ -788,9 +777,7 @@ fn validate_backup_manifest(manifest: &BackupManifest) -> Result<(), ApiError> {
     let mut total = 0u64;
     for entry in &manifest.files {
         clean_path(&entry.path)?;
-        if !paths.insert(entry.path.clone())
-            || !valid_digest(&entry.sha256)
-            || entry.mode & !0o777 != 0
+        if !paths.insert(entry.path.clone()) || !valid_digest(&entry.sha256) || !entry.mode.valid()
         {
             return Err(invalid("Invalid or duplicate file manifest entry"));
         }
@@ -1012,10 +999,7 @@ fn verify_files(
             output.sync_all()?;
         }
         if let Some(root) = destination {
-            fs::set_permissions(
-                root.join(relative),
-                fs::Permissions::from_mode(entry.mode & 0o777),
-            )?;
+            entry.mode.apply(&root.join(relative))?;
         }
     }
     if !expected.is_empty() {
@@ -1334,7 +1318,7 @@ pub fn restore_provenance(
     }
     sync_directories(&generation, &tree.directories)?;
     write_json(&root.join(".platform/restored-build.json"), &record)?;
-    File::open(root.join(".platform"))?.sync_all()?;
+    platform_native::filesystem::sync_directory(&root.join(".platform"))?;
     Ok(Some(record))
 }
 
@@ -1734,7 +1718,7 @@ mod tests {
             path: "README.md".into(),
             bytes,
             sha256,
-            mode: 0o600,
+            mode: ArchivePermissions::Unix(0o600),
         };
         fs::write(&source, b"external edit").unwrap();
         assert_eq!(
