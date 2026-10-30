@@ -366,3 +366,14 @@ Windows 本机版本、源码/数据恢复、恢复证明读取与构建 Git 准
 新增两项共用 wire 专项，验证恢复 action 及未知字段政策、显式 null 与省略 expectedHead 的原区别；数据为纯格式占位，不代表有效摘要或恢复许可。新增 Windows 真实临时现场门禁专项，验证现有字节/完整身份保留、不创建缺失根、不生成其他文件。源码 harness **67/67 通过**及 Windows 全目标严格 Clippy 通过；Mac ARM64 对共用 DTO 及既有原生文件模块的严格 Clippy 通过，**不包含完整 Unix Git 实现的类型检查/执行**。未使用的项目、任务、进程、关闭结果和恢复状态只有静态参数/结果类型，未构造成功对象或回执。另用独立 Rust include 小型夹具实际确认原模块和测试名字的路径规则，不能代替真实 Mac 流程。
 
 完整 Windows core lib 仍失败，诊断 **9 个错误、13 个警告**，剩余错误均在数据恢复登记的 Unix 元数据证明中。本步实际 Windows Git API/共用 DTO 无错误，Mac CI 及完整旧 Git/恢复测试尚未运行，W0 未完成，未合入 main。
+
+
+### W0.39 — 数据恢复登记证明边界；Windows core lib 首次编译通过
+
+数据恢复登记的 read_proof 与 metadata_stamp 搬入 `data_restore_proof_io/unix.rs`，原调用入口委托适配层并传入原 invalid/changed 错误函数。Unix 函数体与原 tuple 逐项比对，除两个错误函数参数、可见性与格式外一致；原 FileProof 数据、严格身份反序列化与其余登记/恢复流程未改写。没有把持久的 Unix mode 当作可随意替换的临时数字。
+
+Windows 原生不可变证明仍未实现，入口在 I/O 或错误策略调用之前明确拒绝 `data-restore-registration-proof`，不构造虚假的 FileProof/mode。新增真实临时现场门禁专项覆盖两种 keep 策略、缺失不创建、错误策略不调用、原字节/完整身份保留；这不是完成了原生证明、恢复或删除。原登记测试文件保留，未实际运行完整恢复流程。
+
+实际源码 harness **68/68 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；其中 FileProof 只是匹配原字段的静态返回类型，Windows 分支不能构造，Mac 仅原函数的目标类型检查。原 Unix 源码比对通过。
+
+`cargo check --locked --offline -p platform-core --lib` 在本机 Windows **首次通过**，仍有 **79 个警告**（类型错误消除后完整报告了尚未使用的能力/导入）。这是核心库的生产 lib 检查，不包含完整 workspace、CLI、桌面、测试或安装包。尚未开放总运行门禁，Windows 运行器服务与 Mac 基线仍未完成；W0 仍未完成，未合入 main。

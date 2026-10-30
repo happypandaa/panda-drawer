@@ -14,6 +14,7 @@ pub mod builds;
 mod cleanup_file_io;
 mod control;
 mod data_restore_guard;
+mod data_restore_proof_io;
 mod database;
 mod dependency_file_io;
 mod durable_writer;
