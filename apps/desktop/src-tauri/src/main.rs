@@ -9,6 +9,7 @@ mod desktop_path_io;
 mod desktop_partial_startup;
 mod desktop_shutdown;
 mod desktop_shutdown_native;
+mod desktop_webview_profile;
 mod engine_downloads;
 mod local_data_cleanup;
 mod local_directory;
@@ -85,12 +86,7 @@ struct AppState {
 }
 
 fn is_manager_url(url: &Url, development: bool) -> bool {
-    let bundled = url.scheme() == "tauri" && url.host_str() == Some("localhost");
-    let developing = development
-        && url.scheme() == "http"
-        && url.host_str() == Some("127.0.0.1")
-        && url.port() == Some(1420);
-    url.username().is_empty() && url.password().is_none() && (bundled || developing)
+    desktop_webview_profile::is_manager_url(url, development)
 }
 
 fn require_manager(window: &tauri::WebviewWindow) -> Result<(), ApiError> {
@@ -2276,9 +2272,9 @@ fn build_manager_window(app: &tauri::AppHandle) -> Result<(), ApiError> {
         .iter()
         .find(|window| window.label == "manager")
         .ok_or_else(|| ApiError::new("MANAGER_WINDOW_CONFIG_MISSING", "管理窗口配置缺失。"))?;
-    tauri::WebviewWindowBuilder::from_config(app, config)
-        .map_err(|e| ApiError::new("MANAGER_WINDOW_OPEN_FAILED", e.to_string()))?
-        .data_store_identifier(platform_core::webview_storage::manager_identifier())
+    let builder = tauri::WebviewWindowBuilder::from_config(app, config)
+        .map_err(|e| ApiError::new("MANAGER_WINDOW_OPEN_FAILED", e.to_string()))?;
+    desktop_webview_profile::manager_builder(app, builder)?
         .on_navigation(|url| is_manager_url(url, cfg!(debug_assertions)))
         .on_download(|_, _| false)
         .on_new_window(|_, _| NewWindowResponse::Deny)
@@ -2295,7 +2291,7 @@ async fn initialize_native_storage(app: tauri::AppHandle) {
         .run(async move {
             // Setup has returned to the native event loop. WK callbacks must never
             // be awaited by setup's main-thread block_on.
-            match native_stores::clear_default_and_verify(&app).await {
+            match desktop_webview_profile::initialize_storage(&app).await {
                 Ok(()) => {
                     if let Err(error) = app.state::<AppState>().node_apps.resume_deletions().await {
                         handle.fail_native_startup(error);
@@ -2380,10 +2376,14 @@ fn main() {
                 &app.package_info().version.to_string(),
             )?;
             platform_core::platform_support::require_runtime()?;
+            if !desktop_webview_profile::runtime_available(app.handle()) {
+                return Ok(());
+            }
             let mut started_runtime = None;
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
             let lock = paths.acquire_lock()?;
+            desktop_webview_profile::initialize(app.handle(), paths.data_root())?;
             let InstalledResources {
                 info: resources,
                 cli_path,
@@ -2391,7 +2391,7 @@ fn main() {
                 cli_executable,
             } = resource_info(app)?;
             let node_data_root = paths.data_root().to_path_buf();
-            let runtime_node = resource_root.join("node-runtime/bin/node");
+            let runtime_node = platform_core::resources::runtime_node_path(&resource_root);
             let runtime = tauri::async_runtime::block_on(RuntimeService::start_desktop_with_resources(
                 paths,
                 lock,
@@ -2465,7 +2465,7 @@ fn main() {
                         shutdown: std::sync::Arc::new(desktop_shutdown::DesktopShutdown::default()),
                         exit_ready: std::sync::atomic::AtomicBool::new(false),
                     });
-                    build_manager_window(app.handle())?;
+                    desktop_webview_profile::build_failure_manager(app.handle())?;
                 }
             }
             if let Some(failure) = app.try_state::<StartupFailure>() {
@@ -2497,6 +2497,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
     fn manager_urls_never_include_project_runtime() {
         assert!(is_manager_url(
             &Url::parse("tauri://localhost/index.html").unwrap(),

@@ -520,3 +520,13 @@ Windows 完整 core 编译通过（测试目标仍有 63 项既有/阶段警告�
 StorageManager / CleanupManager 与 Mac 相同，构造只保留实际 paths/store/tasks/maintenance/instance 上下文，创建本实例真实 stop、runner、reader、latest 与删除标记状态。latest_task 查询实例自己的实际 Option 和任务管理器，不再固定报错；None 仅表示该实例没有已提交任务，不证明磁盘没有旧 journal。shutdown/quiesce 真正 join 自己登记的 runner 并等待 reader；失败仍报告 SHUTDOWN_JOIN_FAILED、resource_closed=false。所有未完成扫描、清理、forget 和目录移除仍在接纳前拒绝；finish_deleted_project 只退役内存标记，不代替磁盘成功收据。没有对构造增加整个数据目录必须为空的条件。
 
 真实 core 重新编译后 WriterOwner **4/4**、Storage coordinator **2/2**、Cleanup **3/3** 通过；后者包含原临时目录删除拒绝测试。真实 Tokio worker/reader 未释放时 shutdown 确实等待，故意失败 worker 的错误被实际 join 捕获。Writer 临时现场确认未创建缺失根、保留原文件。独立 coordinator harness 严格 Clippy 通过；首轮真实接线曾因 Rust path 子模块定位错误失败，已改显式路径并经真实 core check/test 验证通过。原 Unix 实现及测试正文未改，没有启动服务、认领旧现场或开放总门禁；主界面和完整 core 回归仍待后续。
+
+### W1.9 — 管理器 WebView2 目录、运行时查询及 Windows origin
+
+新增桌面 `desktop_webview_profile` 适配层。取得真实 RuntimePaths 和实例锁后，Windows 初始化固定 data-root/webview-manager 私有目录，持有实际目录/祖先 HANDLE 和完整身份至 app state 释放；创建管理器前复核身份，显式传入 `data_directory`，不回退到默认目录。已有偏好保留，不扫描或删除项目 store。Windows 原生启动准备只证明该隔离目录已初始化；没有把原 WebKit 默认清理改成成功。Mac 原 data_store_identifier、URL 判定、默认 clear-and-verify 行为及原测试正文经机械对比保留。
+
+setup 在创建工作区/服务/WebView 前，通过锁定 Tauri/Wry 的真实 WebView2 loader 查询 Evergreen 版本；缺失/不可观察时显示原生中文安装提示，返回事件循环，关闭提示后退出。管理器 origin 适配为 Windows 默认 `http://tauri.localhost` 默认端口，保留原开发地址/无账号密码限制，其他 HTTP listener、项目地址和相似域名不能取得管理器权限。main 只委托适配；同时接上 W1.7 的执行引擎路径 API，不再写死 bin/node。
+
+真实 desktop 测试二进制专项 **6/6 通过**：真实私有目录、偏好保留、持有期间目录/祖先替换拒绝、普通文件/目录联接拒绝且外部字节保留、origin 和缺失查询结果分类。实际 loader 只读返回 **156.0.4314.50**，没有创建 WebView。缺失分支是模拟查询结果，没有卸载本机共享 runtime，也未实测缺失机器上的原生对话框。独立专项/Windows 严格 Clippy 通过；Mac 交叉尝试因 Objective-C 依赖找不到 Mac `cc` 停止，未提供 Mac 执行证明。
+
+真实 desktop 构建仍使用仅排除缺失 resources/externalBin 的诊断 TAURI_CONFIG，保留 3 项阶段 unused 警告；不代表正常资源打包、npm run dev 或 UI/安装包验收。未改项目 store 删除、native_stores 或 core webview_storage，未开启总门禁。管理器 HANDLE 的最终清理释放仍需 W5 整体流程验证。
