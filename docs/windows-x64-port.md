@@ -57,7 +57,7 @@
 | 私有文件和目录 | 目录 0700、文件 0600、校验属主 uid | 创建时设置受保护的 DACL：只授予当前用户 SID 完全控制，不继承父目录权限。校验属主为当前用户 | 共享文件适配：`crates/platform-native/src/filesystem.rs`；日志原生操作：`crates/platform-native/src/runtime_logs/`；Windows 原语：`crates/platform-native/src/windows/files.rs`；待接入：`durable_writer.rs`、`node_app_configuration.rs` |
 | 文件身份 | dev + ino、nlink | 卷序列号 + 完整 128 位 FileId（`GetFileInformationByHandleEx` / `FileIdInfo`）、链接数 | Windows 原语：`crates/platform-native/src/windows/files.rs`；业务接入点：`file_identity.rs`、`metadata.rs` |
 | 符号链接 | `O_NOFOLLOW`，拒绝符号链接 | 以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，**拒绝所有重解析点**（符号链接、目录联接、挂载点），与 Mac 拒绝符号链接的位置一一对应 | 文件 API 边界：`files.rs` / `files/unix.rs` / `files/windows.rs`；原生句柄作用域：`platform-native/src/windows/files.rs`；其他接入：`file_identity.rs`、`native_project_files.rs`、`source_publication.rs` |
-| 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | `durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |
+| 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | 文件 API 已接入 `files/windows.rs`；原生交付的 Mac 实现在 `native_project_files/unix.rs`，Windows 入口在 journal 未实现前明确拒绝；其他待接入：`durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明 | `durable_writer.rs` |
 | 单实例锁 | 文件锁 | `LockFileEx` | `paths.rs` |
 | 网页存储隔离 | WebKit `data_store_identifier` | 每个项目一个 **WebView2 用户数据目录**（Tauri `data_directory`），放在平台数据目录下，以现有项目标识命名。管理器窗口使用自己的目录 | `webview_storage.rs`、`apps/desktop/src-tauri/src/native_stores.rs`、`main.rs`、`node_windows.rs` |
