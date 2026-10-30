@@ -7,50 +7,6 @@ use unicode_normalization::UnicodeNormalization;
 #[path = "project_git_data_objects.rs"]
 pub(super) mod objects;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitDataRestorePreviewInput {
-    pub target_commit: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DataVersionSummary {
-    pub database_bytes: u64,
-    pub attachment_count: usize,
-    pub attachment_bytes: u64,
-    pub directory_count: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DataAttachmentChange {
-    pub path: String,
-    pub kind: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitDataRestorePreview {
-    pub repository_root: PathBuf,
-    pub head: GitHead,
-    pub target_commit: String,
-    pub document_epoch: String,
-    pub snapshot_digest: String,
-    pub live_data_digest: String,
-    pub target_snapshot_digest: String,
-    pub plan_digest: String,
-    pub current: DataVersionSummary,
-    pub target: DataVersionSummary,
-    pub attachment_changes: Vec<DataAttachmentChange>,
-    pub directory_changes: Vec<DataAttachmentChange>,
-    pub database_changed: bool,
-    pub can_apply: bool,
-    pub apply_implemented: bool,
-    pub reason: String,
-    pub issues: Vec<ApiError>,
-}
-
 impl ProjectGitManager {
     pub async fn data_restore_preview(
         &self,

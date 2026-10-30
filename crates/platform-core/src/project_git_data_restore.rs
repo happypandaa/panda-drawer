@@ -19,61 +19,6 @@ mod transaction;
 pub(crate) use transaction::inspect_completion;
 pub(crate) use transaction::metadata_usage;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitDataRestoreApplyInput {
-    pub target_commit: String,
-    pub expected_head: String,
-    pub expected_branch: String,
-    pub expected_snapshot: String,
-    pub expected_document_epoch: String,
-    pub expected_live_data_digest: String,
-    pub expected_target_snapshot_digest: String,
-    pub expected_plan_digest: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitDataRestoreRecoverInput {
-    pub restore_task_id: String,
-    pub expected_plan_digest: String,
-    pub expected_journal_digest: String,
-    pub action: RestoreAction,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DataRestoreSlotState {
-    pub kind: String,
-    pub path: String,
-    pub state: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DataRestoreRecoveryOperation {
-    pub restore_task_id: String,
-    pub target_commit: String,
-    pub phase: String,
-    pub plan_digest: String,
-    pub journal_digest: String,
-    pub operation_outcome: String,
-    pub data_state: String,
-    pub document_epoch: Option<String>,
-    pub can_continue: bool,
-    pub can_undo: bool,
-    pub completion_published: bool,
-    pub original_retained: bool,
-    pub retained_path: PathBuf,
-    pub slots: Vec<DataRestoreSlotState>,
-    pub issues: Vec<ApiError>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitDataRestoreRecoveryStatus {
-    pub state: String,
-    pub business_blocked: bool,
-    pub operations: Vec<DataRestoreRecoveryOperation>,
-    pub issues: Vec<ApiError>,
-}
-
 enum Request {
     Apply(GitDataRestoreApplyInput),
     Recover(GitDataRestoreRecoverInput),

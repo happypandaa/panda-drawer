@@ -9,34 +9,6 @@ const JOURNAL_LIMIT: u64 = 4 * 1024 * 1024;
 const MIN_FREE: u64 = 64 * 1024 * 1024;
 const RESTORE_POLICY: &str = "project-source-restore-v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitSourceRestorePreviewInput {
-    pub target_commit: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitSourceRestoreApplyInput {
-    pub target_commit: String,
-    pub expected_head: String,
-    pub expected_branch: String,
-    pub expected_snapshot: String,
-    pub expected_plan_digest: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitSourceRestoreRecoverInput {
-    pub restore_task_id: String,
-    pub expected_plan_digest: String,
-    pub expected_journal_digest: String,
-    pub action: RestoreAction,
-}
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RestoreAction {
-    Continue,
-    Undo,
-}
 impl GitSourceRestoreRecoverInput {
     pub(super) fn task_kind(&self) -> &'static str {
         match self.action {
@@ -44,65 +16,6 @@ impl GitSourceRestoreRecoverInput {
             RestoreAction::Undo => "gitSourceRestoreUndo",
         }
     }
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RestoreDescriptor {
-    pub sha256: String,
-    pub size: u64,
-    pub executable: bool,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RestoreChange {
-    pub path: String,
-    pub kind: String,
-    pub before: Option<RestoreDescriptor>,
-    pub after: Option<RestoreDescriptor>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitSourceRestorePreview {
-    pub repository_root: PathBuf,
-    pub head: GitHead,
-    pub target_commit: String,
-    pub snapshot_digest: String,
-    pub plan_digest: String,
-    pub changes: Vec<RestoreChange>,
-    pub total_files: usize,
-    pub total_bytes: u64,
-    pub can_apply: bool,
-    pub issues: Vec<ApiError>,
-    pub git: ExecutableInfo,
-    pub database: Value,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoveryChange {
-    pub path: String,
-    pub kind: String,
-    pub state: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoveryOperation {
-    pub restore_task_id: String,
-    pub target_commit: String,
-    pub phase: String,
-    pub plan_digest: String,
-    pub journal_digest: String,
-    pub can_continue: bool,
-    pub can_undo: bool,
-    pub changes: Vec<RecoveryChange>,
-    pub issues: Vec<ApiError>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitSourceRestoreRecoveryStatus {
-    pub state: String,
-    pub operations: Vec<RecoveryOperation>,
-    pub issues: Vec<ApiError>,
-    pub database: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
