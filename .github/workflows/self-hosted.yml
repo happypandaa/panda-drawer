@@ -1,0 +1,54 @@
+name: Self-hosted CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Optional full commit SHA to check with the current CI harness
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Keep queued baseline checks: a sleeping Mac must not lose the original result.
+concurrency:
+  group: self-hosted-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_ref || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci-harness
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          path: source
+          persist-credentials: false
+      - name: Compile and run all existing tests in an isolated test home
+        run: node ci-harness/scripts/ci.mjs source
+
+  windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci-harness
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          path: source
+          persist-credentials: false
+      - name: Compile and run all existing tests in an isolated test home
+        run: node ci-harness/scripts/ci.mjs source
