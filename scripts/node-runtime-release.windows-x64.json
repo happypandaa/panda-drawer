@@ -1,0 +1,25 @@
+{
+  "arch": "x64",
+  "archiveName": "node-v24.22.0-win-x64.zip",
+  "archiveRoot": "node-v24.22.0-win-x64",
+  "binary": {
+    "path": "node.exe",
+    "sha256": "ba93f9a70bd86fce3ebbb39ec758501458453467aa92a34a0a3602d1e3fc2b9c",
+    "size": 93882184
+  },
+  "license": {
+    "path": "LICENSE",
+    "sha256": "ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9"
+  },
+  "platform": "win32",
+  "schemaVersion": 1,
+  "source": {
+    "checksumUrls": [
+      "https://nodejs.org/download/release/v24.22.0/SHASUMS256.txt",
+      "https://nodejs.org/dist/v24.22.0/SHASUMS256.txt"
+    ],
+    "sha256": "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3",
+    "url": "https://nodejs.org/download/release/v24.22.0/node-v24.22.0-win-x64.zip"
+  },
+  "version": "24.22.0"
+}

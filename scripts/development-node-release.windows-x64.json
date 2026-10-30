@@ -1,0 +1,18 @@
+{
+  "arch": "x64",
+  "archiveName": "node-v24.22.0-win-x64.zip",
+  "archiveSha256": "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3",
+  "executables": [
+    "node.exe"
+  ],
+  "nodeVersion": "24.22.0",
+  "npmVersion": "11.19.1",
+  "platform": "win32",
+  "schemaVersion": 1,
+  "tree": {
+    "fileCount": 1928,
+    "rule": "sorted-utf8-path-nul-size-nul-sha256-lf-v1",
+    "sha256": "83be5396482b6d982395c8054e27b33c1dfd7b381e0ee78165833fb0d2fe93ee",
+    "totalBytes": 106576314
+  }
+}

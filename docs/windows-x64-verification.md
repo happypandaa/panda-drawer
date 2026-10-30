@@ -494,3 +494,13 @@ fixed、NVMe、没有 hotplug 或没有查询错误均不作为内置证明。�
 原生专项 **9/9 通过**：extent 多盘/重复/截断/零值/超大值、BOOL 值与类型、聚合与未知 bus、GUID 路径，以及实际普通未提升用户的 C 盘临时目录 / D 盘仓库目录只读观察。两盘实际分别绑定 disk 0 / 1，NTFS、internal=true；测试只要求返回结构/身份保持，不要求所有测试机器都为内置。Windows 全目标严格 Clippy 与 Mac ARM64 交叉 Clippy 通过，后者仅类型检查。root 另执行真实 core 工作区边界专项 **1/1 通过**，迁移/复制/阶段日志仍拒绝且保留现场。
 
 没有修改系统 ACL、注册表或安装工具，没有读写真实项目内容。USB、Thunderbolt、网络/映射盘、物理拔盘尚未实测，不能作为第 7 节迁移验收通过。原生语义依据 [Microsoft volume extents](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-ioctl_volume_get_volume_disk_extents)、[storage device number](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-ioctl_storage_get_device_number) 和 [PnP property API](https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/nf-cfgmgr32-cm_get_devnode_propertyw)。同步根发现与实际工作区迁移仍待后续。
+
+### W1.6 — 固定 Windows Node 发行资源与真实打包
+
+新增独立 Windows runtime / development release JSON、打包入口与源码构建的 `native-packager`。原 Mac 两份 JSON 和两个打包入口保持；Cargo 仅增加成员及其锁定依赖条目，没有依赖版本漂移。新 JSON 受现有 LF 属性约束。源为 [Node 24.22.0 官方发行](https://nodejs.org/en/blog/release/v24.22.0) 的 win-x64 ZIP，完整 37,733,703 字节、SHA256 `f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3`，与官方两份 SHASUMS256 文本一致。先完整校验 ZIP，再解析/核对 PE AMD64、许可证、固定 JSON 及完整 npm 树，之后才执行 Node/npm/npx。实际 node.exe 为 93,882,184 字节，开发树 1,928 文件、106,576,314 字节；完整成员摘要写入源控 JSON，不由下载后的 metadata 提供替换信任。
+
+Windows helper 使用实际私有文件、完整 FileId、父目录范围和 Job/pipes。审查修复了清理前必须绑定全部已创建目录、双 reader 收口、UTF-16/UNC 名字、接收进程 close 等待及尾部分隔符重叠检查。另发现路径改名存在源目录同名替换窗口，现新增只作用于 Windows 的 `rename_directory_noreplace_expected`：打开 DELETE HANDLE 并验证期望完整身份后，以 FileRenameInfo 改名；不把当前路径重新认领为原 stage，不覆盖已有目标。真实测试在打开后换走原目录并放入外部同名目录，确认只发布已绑定原对象、保留替代目录；打开前替换拒绝、空目标占位保留、改名后观察丢失仍返回 unknown 并保留现场。
+
+最终专项实际结果：native 全组 **44 通过、1 ignored 专用子进程夹具**；packager **6/6**；重建 helper 后 Windows 两组 JS **8/8、无 skip**。JS 真实核验固定 ZIP、runtime/development 准备、中文空格路径迁移、Node/npm/npx 版本、离线 `npm ci --omit=dev --ignore-scripts`，并确认测试 install 脚本没有执行；损坏、占用、硬链接、目录联接及未知成员均拒绝并保留调用方材料。默认源码构建 helper 和独立新缓存的真实联网下载分支也通过。native/packager 的 Windows 与 Mac ARM64 严格 Clippy 通过；Mac 只是交叉类型检查。
+
+所有资源与下载仅写到新建缓存/临时现场，没有重用或删除既有 resources、安装资源、runner 或用户项目；不提交下载、应用或本地证据。本步还未接入正常 desktop prepare、运行时路径和资源锚点，未启动主界面，不代表 W1 或安装包验收通过。两端 CI 仍排队，W0 未完成。

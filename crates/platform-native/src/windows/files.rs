@@ -27,13 +27,13 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileDispositionInfo, FileIdInfo,
-        FileStandardInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW, MoveFileExW,
-        SetFileInformationByHandle, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        FileRenameInfo, FileStandardInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+        MoveFileExW, SetFileInformationByHandle, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, OPEN_ALWAYS, OPEN_EXISTING,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_ALWAYS, OPEN_EXISTING,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -686,6 +686,78 @@ pub fn rename_directory_noreplace(source: &Path, destination: &Path) -> io::Resu
     rename_directory_with_hook(source, destination, || {})
 }
 
+/// Publish the exact owned directory, never a same-name replacement. The source
+/// DELETE handle remains bound to its full identity through the native rename.
+/// Destination-parent handles pin the absolute target namespace throughout.
+pub fn rename_directory_noreplace_expected(
+    source: &Path,
+    destination: &Path,
+    expected: &FileIdentity,
+) -> io::Result<()> {
+    rename_expected_directory_with_hook(source, destination, expected, || {}, || {})
+}
+
+fn rename_expected_directory_with_hook(
+    source: &Path,
+    destination: &Path,
+    expected: &FileIdentity,
+    before_move: impl FnOnce(),
+    after_move: impl FnOnce(),
+) -> io::Result<()> {
+    let _source_parent = pin_parent(source)?;
+    let _destination_parent = pin_parent(destination)?;
+    let from = native_path(source)?;
+    let raw = unsafe {
+        CreateFileW(
+            from.as_ptr(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    let captured = identity(&file)?;
+    if !captured.directory || !expected.directory || !expected.same_object(&captured) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Owned directory changed before publication",
+        ));
+    }
+    let name = native_path(destination)?;
+    // The variable-length Win32 structure must retain its native alignment.
+    // Leave ReplaceIfExists false and RootDirectory null; the complete UTF-16
+    // destination is protected by the pinned directory/ancestor handles above.
+    let size = size_of::<FILE_RENAME_INFO>() + name.len() * size_of::<u16>();
+    let mut buffer = vec![0usize; size.div_ceil(size_of::<usize>())];
+    let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*information).FileNameLength = ((name.len() - 1) * size_of::<u16>()) as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            (*information).FileName.as_mut_ptr(),
+            name.len(),
+        );
+    }
+    before_move();
+    unsafe {
+        checked(SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileRenameInfo,
+            information.cast(),
+            size as u32,
+        ))?;
+    }
+    after_move();
+    confirm_publication(destination, expected)
+}
+
 fn rename_directory_with_hook(
     source: &Path,
     destination: &Path,
@@ -959,6 +1031,92 @@ mod tests {
         assert_eq!(
             fs::read(retained.join("payload")).unwrap(),
             b"published disposable directory bytes"
+        );
+    }
+
+    #[test]
+    fn expected_directory_publication_never_moves_a_same_name_replacement() {
+        for replace_after_open in [false, true] {
+            let temporary = tempfile::Builder::new()
+                .prefix("panda-disposable-bound-publication-")
+                .tempdir()
+                .unwrap();
+            let root = temporary.path().canonicalize().unwrap();
+            let source = root.join("owned 中文 stage");
+            let retained = root.join("renamed-owned-stage");
+            let destination = root.join("published 中文 payload");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("payload"), b"owned disposable bytes").unwrap();
+            let expected = open_no_reparse(&source).unwrap().identity;
+            let replace = || {
+                fs::rename(&source, &retained).unwrap();
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("foreign"), b"preserve external replacement").unwrap();
+            };
+            let result = if replace_after_open {
+                rename_expected_directory_with_hook(
+                    &source,
+                    &destination,
+                    &expected,
+                    replace,
+                    || {},
+                )
+            } else {
+                replace();
+                rename_directory_noreplace_expected(&source, &destination, &expected)
+            };
+            assert_eq!(
+                fs::read(source.join("foreign")).unwrap(),
+                b"preserve external replacement"
+            );
+            if replace_after_open {
+                result.unwrap();
+                assert!(!retained.exists());
+                assert!(expected.same_object(&open_no_reparse(&destination).unwrap().identity));
+                assert_eq!(
+                    fs::read(destination.join("payload")).unwrap(),
+                    b"owned disposable bytes"
+                );
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("changed before publication"));
+                assert!(!destination.exists());
+                assert!(expected.same_object(&open_no_reparse(&retained).unwrap().identity));
+            }
+        }
+    }
+
+    #[test]
+    fn expected_directory_publication_preserves_occupied_targets_and_reports_unknown_commit() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let source = root.join("candidate");
+        let destination = root.join("occupied");
+        let retained = root.join("retained-published-directory");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("payload"), b"owned disposable bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let expected = open_no_reparse(&source).unwrap().identity;
+        let occupied = open_no_reparse(&destination).unwrap().identity;
+        assert!(rename_directory_noreplace_expected(&source, &destination, &expected).is_err());
+        assert!(occupied.same_object(&open_no_reparse(&destination).unwrap().identity));
+        assert!(expected.same_object(&open_no_reparse(&source).unwrap().identity));
+        fs::remove_dir(&destination).unwrap();
+        let error = rename_expected_directory_with_hook(
+            &source,
+            &destination,
+            &expected,
+            || {},
+            || fs::rename(&destination, &retained).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Publication outcome is unknown"));
+        assert!(expected.same_object(&open_no_reparse(&retained).unwrap().identity));
+        assert_eq!(
+            fs::read(retained.join("payload")).unwrap(),
+            b"owned disposable bytes"
         );
     }
 
