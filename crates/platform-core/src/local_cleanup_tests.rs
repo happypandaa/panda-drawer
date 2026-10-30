@@ -4,6 +4,7 @@ use super::*;
 const CONTROL: &str = ".local-cleanup";
 use crate::{CreateProjectInput, TaskStatus};
 use std::os::unix::{fs::symlink, fs::MetadataExt};
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
 async fn fixture() -> (tempfile::TempDir, RuntimePaths, RuntimeService) {
     let (temporary, paths) = RuntimePaths::for_test();

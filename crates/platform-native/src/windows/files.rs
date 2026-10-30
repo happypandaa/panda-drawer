@@ -381,6 +381,21 @@ fn open_read_file_with_policy(path: &Path, single_link: bool) -> io::Result<File
 /// Delete the actual, checked object through its handle. A replacement between
 /// selection and opening is rejected without unlinking the replacement.
 pub fn remove_file(path: &Path, expected: &FileIdentity) -> io::Result<()> {
+    remove_file_with_link_policy(path, expected, true)
+}
+
+/// Removing one explicitly owned name does not require taking ownership of
+/// other names for the same object. Use only where the existing host policy
+/// admits hard links; callers needing independent files keep remove_file.
+pub fn remove_file_allowing_hard_links(path: &Path, expected: &FileIdentity) -> io::Result<()> {
+    remove_file_with_link_policy(path, expected, false)
+}
+
+fn remove_file_with_link_policy(
+    path: &Path,
+    expected: &FileIdentity,
+    require_single_link: bool,
+) -> io::Result<()> {
     let _scope = pin_parent(path)?;
     let name = native_path(path)?;
     let raw = unsafe {
@@ -400,7 +415,10 @@ pub fn remove_file(path: &Path, expected: &FileIdentity) -> io::Result<()> {
     let file = unsafe { File::from_raw_handle(raw) };
     reject_reparse(&file)?;
     let captured = identity(&file)?;
-    if captured.directory || captured.links != 1 || !expected.same_object(&captured) {
+    if captured.directory
+        || (require_single_link && captured.links != 1)
+        || !expected.same_object(&captured)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "File changed before deletion",
@@ -1101,5 +1119,29 @@ mod tests {
         );
         fs::remove_dir(&link).unwrap();
         assert_eq!(fs::read(target.join("sample.txt")).unwrap(), b"disposable");
+    }
+
+    #[test]
+    fn explicit_owned_name_removal_does_not_add_an_independent_file_requirement() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-linked-name-removal-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let path = root.join("owned-name");
+        let retained = root.join("retained-name");
+        std::fs::write(&path, b"disposable linked bytes").unwrap();
+        std::fs::hard_link(&path, &retained).unwrap();
+        let expected = open_no_reparse(&path).unwrap();
+        assert!(remove_file(&path, &expected.identity).is_err());
+        assert!(path.exists());
+        remove_file_allowing_hard_links(&path, &expected.identity).unwrap();
+        drop(expected);
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(&retained).unwrap(),
+            b"disposable linked bytes"
+        );
+        assert_eq!(open_no_reparse(&retained).unwrap().identity.links, 1);
     }
 }
