@@ -44,7 +44,7 @@
 
 ## 4 平台适配层：Mac 与 Windows 对照
 
-先在 Mac 上把下表各项收拢到适配模块（Mac 行为不变、Mac 测试全部通过），再实现 Windows 一侧。表中"现在位置"是主要涉及的文件，不是完整清单；开始前用 `grep -rE 'cfg\(unix|target_os = "macos"|libc::|std::os::unix'` 列出全部位置。
+先把下表各项收拢到适配模块（Mac 行为不变，以 macOS CI 全部测试通过为准），再实现 Windows 一侧。表中"现在位置"是主要涉及的文件，不是完整清单；开始前用 `grep -rE 'cfg\(unix|target_os = "macos"|libc::|std::os::unix'` 列出全部位置。
 
 | 能力 | Mac 现在的做法 | Windows 实现 | 现在位置（主要） |
 |---|---|---|---|
@@ -90,9 +90,11 @@
 
 **W0：CI 与编译**
 - 新增 GitHub Actions：`macos-15`（arm64）与 `windows-latest`，每次推送和 PR 运行 Rust 编译与测试、`tsc -b`、界面测试（`npm run test:ui`）、脚本测试。
-- 在 Mac 上完成第 4 节的适配层重构，Mac 行为不变。
+- **先提交 CI，再做重构。** W0 可以在 Windows 机器上完成：Mac 行为以 macOS CI 的结果为准，CI 没有覆盖到的 Mac 改动不要做。
+- 完成第 4 节的适配层重构，Mac 行为不变。
+- macOS CI 额外产出一个未签名的开发版安装包（.app 或 .dmg）作为构建产物，供用户在 Mac 上做冒烟验收；如果因资源或签名限制无法产出，在验证记录中说明原因。
 - main 在 Windows 上编译通过。尚未实现的能力明确报错。
-- 完成标准：两套 CI 绿色；Mac 全部现有测试通过。
+- 完成标准：两套 CI 绿色；Mac 全部现有测试通过；用户在 Mac 上冒烟验收通过（打开主界面、运行一个 Node 应用、停止并删除一个临时项目）后再合并到 main。
 
 **W1：平台能启动**
 - Windows 内置 Node、MinGit 的打包脚本与 release json；资源完整性锚点。
