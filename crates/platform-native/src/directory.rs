@@ -6,6 +6,8 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 #[cfg(unix)]
+pub(crate) use unix::metadata_stamp;
+#[cfg(unix)]
 pub use unix::{child_directory, inspect, stamp, Names};
 #[cfg(windows)]
 pub use windows::{child_directory, inspect, stamp, Names};

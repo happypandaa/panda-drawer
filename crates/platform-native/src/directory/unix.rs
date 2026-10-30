@@ -13,8 +13,10 @@ use std::{
 };
 
 pub fn stamp(file: &File) -> io::Result<Stamp> {
-    let m = file.metadata()?;
-    Ok(Stamp {
+    Ok(metadata_stamp(&file.metadata()?))
+}
+pub(crate) fn metadata_stamp(m: &std::fs::Metadata) -> Stamp {
+    Stamp {
         identity: ObjectIdentity::Unix {
             device: m.dev(),
             inode: m.ino(),
@@ -27,7 +29,7 @@ pub fn stamp(file: &File) -> io::Result<Stamp> {
             changed: m.ctime(),
             changed_ns: m.ctime_nsec(),
         },
-    })
+    }
 }
 fn c(name: &OsStr) -> io::Result<CString> {
     super::valid_name(name)?;

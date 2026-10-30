@@ -71,6 +71,18 @@ impl Facts {
     pub fn modified(&self) -> io::Result<std::time::SystemTime> {
         self.metadata.modified()
     }
+    /// The existing transient snapshot stamp deliberately excludes link count;
+    /// callers keep their separate admission/checking rule for that fact.
+    pub fn stamp(&self) -> crate::directory::Stamp {
+        #[cfg(unix)]
+        {
+            crate::directory::metadata_stamp(&self.metadata)
+        }
+        #[cfg(windows)]
+        {
+            self.stamp.clone()
+        }
+    }
     pub fn links(&self) -> u64 {
         #[cfg(unix)]
         {
@@ -299,6 +311,7 @@ mod tests {
         fs::write(&path, b"disposable resource bytes").unwrap();
         let before = Facts::capture(&path).unwrap();
         let held = open_read(&path).unwrap();
+        assert_eq!(before.stamp(), crate::directory::stamp(&held).unwrap());
         assert!(before.unchanged(&Facts::from_file(&held).unwrap()));
         assert_eq!(before.links(), 1);
         let date = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
