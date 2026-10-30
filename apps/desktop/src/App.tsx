@@ -14,6 +14,7 @@ import { ProjectDeleteDialog } from './ProjectDeleteDialog';
 import { SettingsDialog } from './SettingsDialog';
 import type { SettingsSection } from './SettingsDialog';
 import { TaskCenter } from './TaskCenter';
+import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { Modal } from './Modal';
 import { iconSlot, launcherMonogram, NodeProjectCard, ProjectCard } from './ProjectCard';
 import { NodeAppsPanel } from './NodeAppsPanel';
@@ -748,7 +749,7 @@ function App() {
       </header>
       <main className="radio-main">
         {!localDataLocked && <div className="application-heading">
-          <div className="application-heading-main"><h1>我的应用</h1><span className="application-count" role="status">{totalProjects} 个 · {runningCount} 个运行中</span>{addActions('radio-add-actions')}</div>
+          <div className="application-heading-main"><h1>我的应用</h1><span className="application-count" role="status">{totalProjects} 个 · {runningCount} 个运行中</span><div className="application-heading-actions"><PlatformAiIntroButton platformVersion={info?.version} className="text-button platform-ai-intro-button home-ai-intro" label="让 AI 了解平台" disabled={!info} />{addActions('radio-add-actions')}</div></div>
           <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
         </div>}
         <div className="radio-notices">
