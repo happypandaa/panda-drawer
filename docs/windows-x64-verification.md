@@ -252,3 +252,11 @@ Windows 的真实磁盘/文件快照、摘要、非执行 Git 获取与复制仍
 新增 3 项真实临时 journal 测试：缺失不创建、两种大小界限在预算扣除前拒绝、正常读取按实际长度扣预算；读取期间同名替代被拒绝且原件/替代字节均保留；硬链接和 Windows 目录联接拒绝且不扣预算。实际读取源码 harness **47/47 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过。身份源码 harness **3/3 通过**，新增核对完整身份、最低兼容 pair 相同但高位不同、旧 pair 在已开句柄上的拒绝；两个目标严格 Clippy 通过。Mac 仅目标类型检查，未实际运行。
 
 完整 Windows core lib 仍失败，诊断 **212 个错误**，本步业务/适配入口没有错误；之后清理了本步四个不再需要的生产 import，并保留测试用名称。数据恢复独占目录发布仍在 Windows 关闭，完整恢复、删除、迁移与 GUI 未验收，W0 未完成，未合入 main。
+
+### W0.27 — 控制 JSON 的原子写入
+
+`builds::atomic_json` 保留原入口，委托 `atomic_control_file.rs`；`builds::ensure_dir` 委托此前的项目私有目录适配。Unix 原 no-link 预检查、目录创建/chmod 0700、write-create-new-0600、pretty JSON、文件刷新、rename、父目录刷新及失败临时名清理顺序保留，错误及内容格式不变。Windows 通过受保护 DACL 创建私有临时文件，刷新后用原生改名发布；提交后观察失败明确返回 unknown 并保留关联临时材料，目录无法 fsync 的限制写在适配层注释内。未给 Mac 增加新的准入或新的提交后错误分类。
+
+网页存储账本的两个新建目录调用接入同一个私有目录原语，Mac 仍为原 DirBuilder 0700；去掉已搬离读取 flags 的 Unix trait import。**没有据此实现或验证 WebView2 数据目录、浏览器进程等待、清理确认与完整账本删除**，这些仍待 W2/W5，现有 Mac 测试保留。
+
+新增实际控制写入测试，验证中文空格临时路径、重复发布后只留当前内容、真实私有 DACL，以及独占占用时旧内容保留、准备文件清理、释放后重试成功。源码 harness **49/49 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；Mac 仅类型检查。未在 harness 执行网页存储账本整体、构建或业务 journal。完整 core lib 仍失败，诊断 **207 个错误、20 个警告**，本步控制写入和账本创建入口未报错。W0 未完成，未合入 main。
