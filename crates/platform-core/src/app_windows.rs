@@ -492,35 +492,7 @@ impl WindowSizeStore {
     }
 }
 
-fn private_directory(path: &Path) -> Result<(), ApiError> {
-    use std::os::unix::fs::MetadataExt;
-    check_no_symlinks(path, false)?;
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o7777 != 0o700
-    {
-        return Err(invalid("窗口尺寸目录必须是本项目私有目录。"));
-    }
-    Ok(())
-}
-fn open_private(path: &Path) -> Result<fs::File, ApiError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    check_no_symlinks(path, false)?;
-    let file = platform_native::filesystem::open_read(
-        path,
-        platform_native::filesystem::ReadOptions::NoLinksNonblockingCloseOnExec,
-    )?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o7777 != 0o600
-    {
-        return Err(invalid("窗口尺寸文件必须是本项目私有普通文件。"));
-    }
-    Ok(file)
-}
+use crate::window_cache_io::{open_private, private_directory};
 fn read_snapshot(path: &Path) -> Result<Option<Snapshot>, ApiError> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
