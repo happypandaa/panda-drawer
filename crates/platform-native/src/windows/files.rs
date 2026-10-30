@@ -18,12 +18,12 @@ use windows_sys::Win32::{
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+            GetSecurityInfo, SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
         },
-        EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, TokenUser,
-        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
-        TOKEN_USER,
+        EqualSid, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+        GetTokenInformation, TokenUser, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileDispositionInfo, FileIdInfo,
@@ -40,6 +40,7 @@ use windows_sys::Win32::{
 
 const READ_CONTROL: u32 = 0x0002_0000;
 const DELETE: u32 = 0x0001_0000;
+const WRITE_DAC: u32 = 0x0004_0000;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -417,6 +418,90 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
     verify_private(&created.file)
 }
 
+/// Apply the existing private-directory policy to an empty directory explicitly
+/// admitted by startup. Do not change an owner or inspect system-parent DACLs.
+pub fn make_directory_private(path: &Path) -> io::Result<()> {
+    let _parent = pin_parent(path)?;
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    if !identity(&file)?.directory {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "Expected an admitted directory",
+        ));
+    }
+    let current = CurrentUser::load()?;
+    let mut owner = null_mut();
+    let mut descriptor = null_mut();
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    let _owner_descriptor = LocalAllocation(descriptor);
+    if owner.is_null() || unsafe { EqualSid(owner, current.sid()) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Directory does not belong to the current user",
+        ));
+    }
+    let security = PrivateSecurity::new()?;
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = null_mut();
+    unsafe {
+        checked(GetSecurityDescriptorDacl(
+            security.allocation.0,
+            &mut present,
+            &mut dacl,
+            &mut defaulted,
+        ))?;
+    }
+    if present == 0 || dacl.is_null() {
+        return Err(io::Error::other("Private directory DACL is absent"));
+    }
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            dacl,
+            null(),
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    verify_private(&file)
+}
+
 pub fn create_private_file(path: &Path) -> io::Result<File> {
     open_private_file(path, false, true)
 }
@@ -628,6 +713,87 @@ mod tests {
         assert!(verify_private(&open_no_reparse(&path).unwrap().file).is_err());
     }
 
+    fn security_bytes(path: &Path) -> Vec<u8> {
+        let opened = open_no_reparse(path).unwrap();
+        let mut descriptor = null_mut();
+        let result = unsafe {
+            GetSecurityInfo(
+                opened.file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(result, 0);
+        let allocation = LocalAllocation(descriptor);
+        let length =
+            unsafe { windows_sys::Win32::Security::GetSecurityDescriptorLength(descriptor) };
+        assert!(length > 0);
+        let bytes = unsafe { std::slice::from_raw_parts(descriptor.cast::<u8>(), length as usize) }
+            .to_vec();
+        drop(allocation);
+        bytes
+    }
+
+    #[test]
+    fn admitted_directory_gets_private_access_without_changing_parent_security() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-empty-root-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let target = root.join("admitted-empty-directory");
+        fs::create_dir(&target).unwrap();
+        let parent_before = security_bytes(&root);
+        assert!(verify_private(&open_no_reparse(&target).unwrap().file).is_err());
+        make_directory_private(&target).unwrap();
+        verify_private(&open_no_reparse(&target).unwrap().file).unwrap();
+        assert_eq!(security_bytes(&root), parent_before);
+        create_private_file(&target.join("disposable-marker.json"))
+            .unwrap()
+            .write_all(b"disposable marker")
+            .unwrap();
+        make_directory_private(&target).unwrap();
+        assert_eq!(
+            fs::read(target.join("disposable-marker.json")).unwrap(),
+            b"disposable marker"
+        );
+        assert_eq!(security_bytes(&root), parent_before);
+    }
+
+    #[test]
+    fn directory_protection_rejects_files_and_junctions_without_changing_their_targets() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-root-permission-boundary-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let file = root.join("retained-file.txt");
+        fs::write(&file, b"retained disposable bytes").unwrap();
+        let before = security_bytes(&file);
+        assert!(make_directory_private(&file).is_err());
+        assert_eq!(security_bytes(&file), before);
+        assert_eq!(fs::read(&file).unwrap(), b"retained disposable bytes");
+        let target = root.join("retained-directory");
+        fs::create_dir(&target).unwrap();
+        let before = security_bytes(&target);
+        let link = root.join("disposable-junction");
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(make_directory_private(&link).is_err());
+        assert_eq!(security_bytes(&target), before);
+        fs::remove_dir(link).unwrap();
+    }
+
     #[test]
     fn occupied_replacement_keeps_both_files_and_succeeds_after_the_handle_closes() {
         use std::{fs::OpenOptions, io::Write, os::windows::fs::OpenOptionsExt};
@@ -721,6 +887,22 @@ mod tests {
         );
         assert!(open_no_reparse(&link).is_err());
         assert!(open_no_reparse(&link.join("sample.txt")).is_err());
+        assert_eq!(
+            crate::filesystem::find_reparse_component(&link, false).unwrap(),
+            Some(link.clone())
+        );
+        assert_eq!(
+            crate::filesystem::find_reparse_component(&link.join("sample.txt"), false).unwrap(),
+            Some(link.clone())
+        );
+        assert_eq!(
+            crate::filesystem::find_reparse_component(&target.join("missing/child"), true).unwrap(),
+            None
+        );
+        assert!(
+            crate::filesystem::find_reparse_component(&target.join("missing/child"), false)
+                .is_err()
+        );
         fs::remove_dir(&link).unwrap();
         assert_eq!(fs::read(target.join("sample.txt")).unwrap(), b"disposable");
     }
