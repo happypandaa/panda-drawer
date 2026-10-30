@@ -146,3 +146,11 @@ Git 工具探测、远端检查、项目 Git、源码获取的进程组配置集
 Windows 的缺失材料证明还要求完整 Windows 身份：未知/旧 pair 不能只凭卷号就取得“已不存在”的收据，符合本轮不兼容旧 Windows 实验数据的范围；Mac 原有 legacy/volume UUID 路径保持不变。实际身份源码 harness **2/2 通过**，补充验证占位序列化仍为原零值格式、不能匹配实际文件，旧 pair/占位不能证明缺失；Windows 与 macOS ARM64 全目标严格 Clippy 通过。Mac 这里只做身份模块类型检查，不是完整 core 或实际 Mac 测试。
 
 Windows core lib 再次检查仍失败，诊断 **714 个错误**，已没有 E0063 缺字段错误。损坏数据库项目的完整删除/迁移尚未执行，不能由这两个局部测试推断已验收。
+
+### W0.14 — 项目目录不覆盖发布适配
+
+`projects.rs` 的目录发布入口委托给 `project_directory_io.rs`。Unix 原先的目录描述符、renameatx_np EXCL / renameat2 NOREPLACE、错误和父目录同步函数体与原 blob 核对一致；只将原调用方提供的错误构造及 Unix trait import 搬入适配边界。Windows 固定父目录、拒绝重解析点，以不带覆盖标志的 MoveFileExW 发布目录，并核对完整 FileId；既有空目录也不能覆盖。若改名后无法确认身份，明确返回 unknown，不声称已经回滚或 stage 仍在。
+
+新增 2 项真实 Windows 临时目录测试：已有空目录拒绝且双方身份、候选内容不变，明确移除测试空目标后发布保留身份和字节；持有不共享删除的目录句柄时发布失败且候选保留，释放后可重试；目录联接被拒绝且目标字节不变。实际源码 harness 合计 **25/25 通过**，Windows 与 macOS ARM64 全目标严格 Clippy 通过；Mac 仅类型检查，未执行。未测试完整项目创建、SQLite 初始化、删除任务或崩溃 journal，不能据此认定 W2/W5 已完成。
+
+重新拉取后远程 main 仍为 `ac3b5d72`。完整 Windows core lib 仍失败，诊断 **707 个错误**；本步目录发布适配没有错误。最初 CI 基线的 macOS 和 Windows 任务仍排队，本机尚未发现运行器服务或服务安装成功状态。W0 尚未完成，未合入 main。
