@@ -530,3 +530,11 @@ setup 在创建工作区/服务/WebView 前，通过锁定 Tauri/Wry 的真实 W
 真实 desktop 测试二进制专项 **6/6 通过**：真实私有目录、偏好保留、持有期间目录/祖先替换拒绝、普通文件/目录联接拒绝且外部字节保留、origin 和缺失查询结果分类。实际 loader 只读返回 **156.0.4314.50**，没有创建 WebView。缺失分支是模拟查询结果，没有卸载本机共享 runtime，也未实测缺失机器上的原生对话框。独立专项/Windows 严格 Clippy 通过；Mac 交叉尝试因 Objective-C 依赖找不到 Mac `cc` 停止，未提供 Mac 执行证明。
 
 真实 desktop 构建仍使用仅排除缺失 resources/externalBin 的诊断 TAURI_CONFIG，保留 3 项阶段 unused 警告；不代表正常资源打包、npm run dev 或 UI/安装包验收。未改项目 store 删除、native_stores 或 core webview_storage，未开启总门禁。管理器 HANDLE 的最终清理释放仍需 W5 整体流程验证。
+
+### W1.10 — Node 删除目录的真实只读缺失/空清单
+
+Windows NodeDeletionJournal::list 委托独立适配器：固定真实 data-root/祖先及 journal 根 HANDLE，从已绑定路径观察固定 node-deletion-tasks。真实缺失或无任何 entry 的根才返回空清单；二次观察及完整身份/修改时间发现变化时报告 unconfirmed。原始 verbatim 混合分隔符先由已打开目录取得真实路径，不能把标准 API 的错误路径 NotFound 冒充缺失。与 Mac 空根规则一致，不额外要求该空根受保护私有 DACL。
+
+任何已有子项（包括未发布 .creating、空 UUID 容器、未知文件）、重解析点、类型/IO/身份变化均保留并明确报告未实现恢复或无法核实；不自动收养、续删、删除空壳或返回虚构任务。create/load、所有破坏性方法和卸载清理归属仍关闭。Mac 原完整实现正文机械比对保持。
+
+真实 core 专项 **7/7**，覆盖缺失/继承权限空根、中文空格和原始混合 verbatim、检查期间新增材料、普通文件/缺失父目录、目录联接目标保留，以及实际 list 转发与其他能力仍拒绝。独立 Clippy 通过。随后重跑完整桌面：**84 通过、1 失败、1 ignored 专用子进程夹具**；同一个 Node 生命周期用例已越过 journal 构造，现实际失败在 LocalFileVault 尚未验证 Windows 密钥文件权限，注册已提交的状态仍如实报告。没有跳过或删除该失败，未称完整桌面绿色；完整 core 和主界面尚未重跑/启动。
