@@ -47,6 +47,15 @@ Get-Service 'actions.runner.*'
 
 保留默认的 `self-hosted`、`Windows`、`X64` 标签。不要把日常平台工作区作为 `_work`。服务运行账户需要访问编译工具；仓库本地 `.tools` Rust 不会自动出现在新 checkout 中，应在 runner 的 `.env` 配置既有 `CARGO_HOME`、`RUSTUP_HOME`、`PANDA_CI_RUST_BIN`。不能因为注册缺少权限就宣称服务已安装。
 
+本仓库提供 `scripts/install-windows-runner.ps1`：固定官方 `actions/runner` **2.338.2**，校验该 release asset 的 SHA256 `a1f17aa987fc8158bc7521d284912267a0d01b7c2c4684b33c86783b5e8221cc`，拒绝覆盖已注册运行器。管理员 PowerShell 可从只保存在本机的临时 token 文件注册：
+
+```powershell
+.\scripts\install-windows-runner.ps1 -RegistrationTokenFile C:\local-temp\runner-token.txt `
+  -CargoHome D:\dev\postgresUI\.tools\cargo -RustupHome D:\dev\postgresUI\.tools\rustup
+```
+
+`-PrepareOnly` 只下载、校验、解压和核对版本，不要求管理员或 token，不表示服务已安装。注册 token 由子进程环境传入，不写入文档、脚本参数或仓库。注册完成后由提供者处理本机临时 token 文件；脚本不删除任意用户文件。
+
 ## 基线、检查与无人值守推进
 
 工作流用当前提交的 CI harness 检查独立的 source checkout。`scripts/ci.mjs` 为测试建立唯一 `.test-artifacts/self-hosted-ci-*`，把测试子进程的 HOME、USERPROFILE、LOCALAPPDATA、APPDATA、XDG 目录及临时目录指向其中；保留原来的 Rust 安装位置。不会启动开发桌面程序或调用操作真实开发项目的 live/restart 脚本，不增加产品的任意数据根覆盖入口。
