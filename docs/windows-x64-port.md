@@ -63,6 +63,8 @@
 | 旧卷身份离线修复 | 已确认旧 Mac 迁移材料的卷 UUID 绑定 | 本轮不兼容旧 Windows 实验数据，不能用 Mac 卷身份修复取得 Windows 归属；直接明确拒绝 | `identity_upgrade.rs`；Mac 原实现与测试：`identity_upgrade/unix.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明 | `durable_writer.rs` |
 | 历史清理与已归属目录移除 | 描述符相对快照、内容/身份核对、unlinkat | 需实现对应原生快照、占用短暂重试与只读属性处理；完成前在任何扫描、核对回调或删除前明确拒绝 | 边界：`history_cleanup.rs`；Mac 原实现与测试：`history_cleanup/unix.rs`；Windows 临时门禁：`history_cleanup/windows.rs`，待 W5 补齐 |
+| 持久写入者与空间核算 | 私有持久标记、Mac boot session UUID、描述符扫描/核算与任务清理 | 不猜测 boot UUID 或合成已关闭收据；需接入实际 Job/IO 归属与原生扫描，完成前明确拒绝 | `durable_writer.rs`、`storage.rs`、各自 `unix.rs` / `windows.rs` 子模块；待 W3/W5 完成 |
+| 网页项目独立文件删除 | 同卷私有暂存、原子不覆盖改名、状态 journal、身份核对后 unlink | Windows 删除/恢复尚未完成时，移除与范围核对入口明确拒绝，不将纯计划校验当作删除权限 | `web_file_deletion.rs` 及其平台子模块；待 W5 完成 |
 | 单实例锁 | 文件锁 | `LockFileEx` | `paths.rs` |
 | 网页存储隔离 | WebKit `data_store_identifier` | 每个项目一个 **WebView2 用户数据目录**（Tauri `data_directory`），放在平台数据目录下，以现有项目标识命名。管理器窗口使用自己的目录 | `webview_storage.rs`、`apps/desktop/src-tauri/src/native_stores.rs`、`main.rs`、`node_windows.rs` |
 | 删除网页存储 | 等 WebKit 确认存储已移除 | 关闭该项目的所有窗口 → **等待该数据目录对应的 WebView2 浏览器进程退出** → 删除目录。进程未退出时目录被占用，会删除失败 | 同上 |

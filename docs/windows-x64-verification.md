@@ -186,3 +186,11 @@ Windows core lib 再次检查仍失败，诊断 **714 个错误**，已没有 E0
 `identity_upgrade.rs` 将原 Mac 卷 UUID 离线修复实现与测试完整保留到 Unix 子模块。Windows 按本文“不兼容旧实验数据”的范围拒绝该旧材料修复入口，不读取/改写旧材料，不返回身份匹配成功。正常 Windows 新身份仍使用完整 FileId，未借此删除任何资料。
 
 直接引用实际 Windows 边界的独立 compile harness 严格 Clippy 通过；未使用的 Source/Node 接收者只提供类型占位，没有构造真实运行实例或取得 lease。原来的身份/删除门禁 **3/3 测试仍通过**，没有把 compile-only 入口记为目录登记、Git 发布、旧修复或 GUI 验收。Mac 搬移源码未在这个 harness 编译/执行，必须等待实际 Mac CI。完整 Windows core lib 仍失败，诊断 **481 个错误**，本步边界未报告错误。W0 未完成，运行门禁关闭，未合入 main。
+
+### W0.19 — 持久写入、空间核算与文件删除的编译边界
+
+`durable_writer.rs`、`storage.rs`、`web_file_deletion.rs` 按平台收拢。Unix 全部实现与原测试保留在子模块，与原 blob 核对一致，仅调整两个测试文件的相对引用。Windows 的持久写入、空间扫描/清理及独立文件删除尚未实现，构造/执行和范围检查在 I/O、回调或任务接纳前返回对应能力的未完成错误；不合成 Mac boot session UUID，不返回虚假的已关闭、已移除或空间总量。暂不构造能够接受任务的空管理器，运行门禁仍关闭。
+
+Windows 的文件删除计划仅保留原纯数据结构、路径/状态格式检查与授权范围比较；这些函数不表示材料已检查或取得删除权限，实际 owned-scopes 与删除入口仍明确拒绝。后续 W3/W5 必须接入真实 Job/IO、Windows 快照、删除 journal、只读属性与占用重试；以上不是永久删除功能或删除验收。
+
+实际 Windows 入口的独立 compile harness 全目标严格 Clippy 通过；未使用的管理器/归属参数为静态类型占位，未构造实际业务实例。没有新增成功扫描/删除测试，也没有将原先 3 项身份/门禁测试当作这些功能的验证。完整 Windows core lib 仍失败，诊断 **363 个错误**；本步没有错误，报告的两个未使用 import 已修正。Mac 搬移源码仍未实际运行，W0 未完成，未合入 main。
