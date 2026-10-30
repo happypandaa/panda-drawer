@@ -538,3 +538,13 @@ Windows NodeDeletionJournal::list 委托独立适配器：固定真实 data-root
 任何已有子项（包括未发布 .creating、空 UUID 容器、未知文件）、重解析点、类型/IO/身份变化均保留并明确报告未实现恢复或无法核实；不自动收养、续删、删除空壳或返回虚构任务。create/load、所有破坏性方法和卸载清理归属仍关闭。Mac 原完整实现正文机械比对保持。
 
 真实 core 专项 **7/7**，覆盖缺失/继承权限空根、中文空格和原始混合 verbatim、检查期间新增材料、普通文件/缺失父目录、目录联接目标保留，以及实际 list 转发与其他能力仍拒绝。独立 Clippy 通过。随后重跑完整桌面：**84 通过、1 失败、1 ignored 专用子进程夹具**；同一个 Node 生命周期用例已越过 journal 构造，现实际失败在 LocalFileVault 尚未验证 Windows 密钥文件权限，注册已提交的状态仍如实报告。没有跳过或删除该失败，未称完整桌面绿色；完整 core 和主界面尚未重跑/启动。
+
+### W1.11 — 官方 MinGit 固定发行、原生打包与真实 Git 操作
+
+经 [Git for Windows 官方稳定发行](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.4) 与 release API 独立核验，选择 2026-10-26 发布的 v2.56.0.windows.4（当时 latest，非 prerelease）。固定 MinGit-2.56.0.4-64-bit.zip 为 **39,846,926 字节**，SHA256 `e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877`。Windows 新 JSON/入口完整记录实际许可证、375 文件/96,237,338 字节文件树和执行文件清单，使用上游现有 UCRT64 布局、cmd/git.exe，不沿用旧 mingw64 假设。完整 ZIP 校验先于解析，完整树/编译声明匹配先于任何执行；保留整包，未把自带 getprocaddr32.exe 等辅助成员冒称全为 AMD64，主 Git 则核验 AMD64。
+
+native-packager 新 Git 模块复用实际私有新建、全部目录先固定身份再清理、真实 Job 与双管道收口；探测 version/exec-path 后再次全树核验，再通过期望源 HANDLE 发布。下载 receiver 私有 partial 也改用绑定文件 HANDLE、不覆盖缓存名字；完整 size/SHA 不符仅清理自己绑定的新 partial，调用方缓存/未知结果保留。新原语没有改变 Mac 代码或已有目录原语政策。
+
+最终实际组合 JS **14/14、0 skip**（原 Windows Node 8 + MinGit 6）；native 全组 **45 通过、1 ignored 专用子进程夹具**，packager **8/8**；Win/Mac ARM64 交叉严格 Clippy 通过，Mac 仍仅类型检查。真实 Git 2.56.0.windows.4 在中文空格迁移目录完成版本、exec-path、临时仓库 init/add/commit/switch/本地 clone；另无 --template 的默认 init，生成的 description、info/exclude、hooks/pre-commit.sample 与已验证模板逐字节相同。损坏包、占用、junction/hardlink、尾部分隔符重叠及错流 partial 清理均实际通过。
+
+正式固定 URL 经 GitHub 官方 release-assets 重定向的联网下载/receiver/prepare 入口也通过；首次 TLS 建立前 ECONNRESET 没有生成缓存/输出，随后在全新目录重试成功。没有将本地 clone 冒充 GitHub/Gitee 远程导入，没有操作真实仓库或项目、旧 resources 或 runner。未改 Mac 三份原 release JSON/打包默认入口；尚未接正常 desktop prepare 或 core Git 锚点，不代表 W1/W4/W6 验收完成。

@@ -694,6 +694,28 @@ pub fn rename_directory_noreplace_expected(
     destination: &Path,
     expected: &FileIdentity,
 ) -> io::Result<()> {
+    if !expected.directory {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "Expected a directory identity",
+        ));
+    }
+    rename_expected_directory_with_hook(source, destination, expected, || {}, || {})
+}
+
+/// Publish an independently owned ordinary file through its exact DELETE
+/// handle. This is the file counterpart of the owned-directory publication.
+pub fn rename_file_noreplace_expected(
+    source: &Path,
+    destination: &Path,
+    expected: &FileIdentity,
+) -> io::Result<()> {
+    if expected.directory || expected.links != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected an independent file identity",
+        ));
+    }
     rename_expected_directory_with_hook(source, destination, expected, || {}, || {})
 }
 
@@ -724,10 +746,13 @@ fn rename_expected_directory_with_hook(
     let file = unsafe { File::from_raw_handle(raw) };
     reject_reparse(&file)?;
     let captured = identity(&file)?;
-    if !captured.directory || !expected.directory || !expected.same_object(&captured) {
+    if captured.directory != expected.directory
+        || (!captured.directory && captured.links != 1)
+        || !expected.same_object(&captured)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Owned directory changed before publication",
+            "Owned object changed before publication",
         ));
     }
     let name = native_path(destination)?;
@@ -1118,6 +1143,43 @@ mod tests {
             fs::read(retained.join("payload")).unwrap(),
             b"owned disposable bytes"
         );
+    }
+
+    #[test]
+    fn expected_file_publication_uses_the_owned_handle_and_never_overwrites_a_target() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let source = root.join("download.partial");
+        let retained = root.join("retained-owned.partial");
+        let destination = root.join("fixed-archive.zip");
+        fs::write(&source, b"verified disposable archive").unwrap();
+        fs::write(&destination, b"occupied caller archive").unwrap();
+        let expected = open_no_reparse(&source).unwrap().identity;
+        assert!(rename_file_noreplace_expected(&source, &destination, &expected).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"occupied caller archive");
+        fs::remove_file(&destination).unwrap();
+        rename_expected_directory_with_hook(
+            &source,
+            &destination,
+            &expected,
+            || {
+                fs::rename(&source, &retained).unwrap();
+                fs::write(&source, b"preserve foreign replacement").unwrap();
+            },
+            || {},
+        )
+        .unwrap();
+        assert!(expected.same_object(&open_no_reparse(&destination).unwrap().identity));
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"verified disposable archive"
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"preserve foreign replacement");
+        assert!(!retained.exists());
+        assert!(
+            rename_file_noreplace_expected(&source, &root.join("unrelated"), &expected).is_err()
+        );
+        assert_eq!(fs::read(source).unwrap(), b"preserve foreign replacement");
     }
 
     fn security_bytes(path: &Path) -> Vec<u8> {
