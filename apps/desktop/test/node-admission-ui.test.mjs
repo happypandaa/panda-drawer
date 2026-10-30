@@ -54,11 +54,13 @@ async function render(Component, props) {
 }
 const button = label => [...document.querySelectorAll('button')].find(value => value.textContent.trim() === label);
 async function click(value) { assert.ok(value); await act(async () => value.click()); }
-const selectedTab = () => document.querySelector('[role=tab][aria-selected=true]')?.textContent;
-const facts = () => document.querySelector('.detail-summary-facts').textContent;
+const selectedView = () => document.querySelector('.node-configuration-form') ? '应用配置' : '详情';
+async function showDetails() { if (button('返回详情')) await click(button('返回详情')); }
+const facts = () => document.querySelector('.application-detail-information')?.textContent ?? document.querySelector('[role=dialog]').textContent;
 async function panel(value, intent = 'enter') {
   const calls = [];
   globalThis.__NODE_ADMISSION_INVOKE__ = async (command, args) => {
+    if (command === 'workspace_storage') return { workspace: {}, nodeApps: [], otherLocalLocations: [] };
     calls.push([command, args]);
     if (command === 'node_app_configuration' || command === 'node_app_status') return value;
     if (command === 'node_app_start') return { ...value, state: 'running' };
@@ -85,56 +87,56 @@ test('An unfinished runtime intent is shown as a runtime failure with complete c
 test('A complete but runtime-blocked entry opens runtime status and cannot issue start/open/restart', async () => {
   const value = app({ state: 'failed', lastError: '人工保留的 active intent 故障' });
   const calls = await panel(value);
-  assert.equal(selectedTab(), '运行状态'); assert.match(document.querySelector('[role=dialog]').textContent, /人工保留的 active intent 故障/);
-  await click(button('概览')); assert.match(facts(), /已完整（1 项）/); assert.doesNotMatch(facts(), /缺少 0/);
-  assert.ok(button('修改配置'));
-  await click(button('进入项目')); assert.equal(selectedTab(), '运行状态'); noLaunch(calls);
+  assert.equal(selectedView(), '详情'); assert.match(document.querySelector('[role=dialog]').textContent, /人工保留的 active intent 故障/);
+  await showDetails(); assert.match(facts(), /已填写 0 项/); assert.doesNotMatch(facts(), /缺少 0/);
+  assert.ok(button('修改'));
+  await click(button('打开')); assert.equal(selectedView(), '详情'); noLaunch(calls);
 });
 
 test('A stopped complete configuration with another admission restriction also opens runtime status', async () => {
-  const calls = await panel(app()); assert.equal(selectedTab(), '运行状态'); noLaunch(calls);
+  const calls = await panel(app()); assert.equal(selectedView(), '详情'); noLaunch(calls);
 });
 
 test('Missing required fields still lead to configuration and show their actual positive count', async () => {
   const value = app({ fields: [field('REQUIRED', { required: true })], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['REQUIRED'], canStart: false } });
-  const calls = await panel(value); assert.equal(selectedTab(), '应用配置');
-  await click(button('概览')); assert.match(facts(), /缺少 1 项必填/);
-  assert.ok(button('修改配置'));
-  await click(button('进入项目')); assert.equal(selectedTab(), '应用配置'); noLaunch(calls);
+  const calls = await panel(value); assert.equal(selectedView(), '应用配置');
+  await showDetails(); assert.match(facts(), /缺少 1 项必填/);
+  assert.ok(button('修改'));
+  await click(button('打开')); assert.equal(selectedView(), '应用配置'); noLaunch(calls);
 });
 
 test('An optional saved secret with a changed endpoint remains a configuration problem despite no required omissions', async () => {
   const value = app({ fields: [field('API_URL', { type: 'url', default: 'https://example.invalid/api' }), field('API_KEY', { secret: true, endpointField: 'API_URL' })], configuration: { revision: 1, values: {}, secretStatus: { API_KEY: 'endpoint-changed' }, missingRequired: [], canStart: false } });
-  const calls = await panel(value); assert.equal(selectedTab(), '应用配置');
+  const calls = await panel(value); assert.equal(selectedView(), '应用配置');
   assert.match(document.querySelector('.node-endpoint-confirmation').textContent, /确认密钥的使用目标/);
-  await click(button('概览')); assert.match(facts(), /密钥地址需确认/); assert.doesNotMatch(facts(), /已完整|缺少 0/);
-  await click(button('进入项目')); noLaunch(calls);
+  await showDetails(); assert.match(facts(), /密钥地址需确认/); assert.doesNotMatch(facts(), /已完整|缺少 0/);
+  await click(button('打开')); noLaunch(calls);
 });
 
 test('Invalid saved field formats cannot be mistaken for complete configuration when the required list is empty', async () => {
   const value = app({ fields: [field('API_URL', { type: 'url' })], configuration: { revision: 1, values: { API_URL: 'http://example.invalid/api' }, secretStatus: {}, missingRequired: [], canStart: false } });
-  const calls = await panel(value); assert.equal(selectedTab(), '应用配置');
+  const calls = await panel(value); assert.equal(selectedView(), '应用配置');
   assert.equal(document.querySelector('input[type=url]').checkValidity(), false);
-  await click(button('概览')); assert.match(facts(), /需要核对配置/); assert.doesNotMatch(facts(), /已完整|缺少 0/); noLaunch(calls);
+  await showDetails(); assert.match(facts(), /需要核对配置/); assert.doesNotMatch(facts(), /已完整|缺少 0/); noLaunch(calls);
 });
 
 test('An unavailable configuration remains unknown and directs the user to the preserved runtime error', async () => {
   const value = app({ state: 'failed', fields: [], lastError: '人工配置读取或来源校验错误', configuration: { unavailable: true, revision: 0, values: {}, secretStatus: {}, missingRequired: [], canStart: false } });
-  const calls = await panel(value); assert.equal(selectedTab(), '运行状态');
+  const calls = await panel(value); assert.equal(selectedView(), '详情');
   assert.match(document.querySelector('[role=dialog]').textContent, /人工配置读取或来源校验错误/);
-  await click(button('概览')); assert.match(facts(), /暂不可核对/); assert.doesNotMatch(facts(), /已完整|缺少 0/); noLaunch(calls);
+  await showDetails(); assert.equal(button('修改'), undefined); assert.doesNotMatch(facts(), /已完整|缺少 0/); noLaunch(calls);
 });
 
 test('A blocked optional missing secret is conservatively reviewed without inventing missing required fields', async () => {
   const value = app({ fields: [field('OPTIONAL_KEY', { secret: true })], configuration: { revision: 1, values: {}, secretStatus: { OPTIONAL_KEY: 'missing' }, missingRequired: [], canStart: false } });
-  const calls = await panel(value); assert.equal(selectedTab(), '应用配置');
-  await click(button('概览')); assert.match(facts(), /配置待核对/); assert.doesNotMatch(facts(), /已完整|缺少 0/); noLaunch(calls);
+  const calls = await panel(value); assert.equal(selectedView(), '应用配置');
+  await showDetails(); assert.match(facts(), /配置待核对/); assert.doesNotMatch(facts(), /已完整|缺少 0/); noLaunch(calls);
 });
 
 test('A runtime error still takes the entry tab when optional-secret provenance is ambiguous', async () => {
   const value = app({ state: 'failed', lastError: '人工运行故障仍待处理', fields: [field('OPTIONAL_KEY', { secret: true })], configuration: { revision: 1, values: {}, secretStatus: { OPTIONAL_KEY: 'missing' }, missingRequired: [], canStart: false } });
-  const calls = await panel(value); assert.equal(selectedTab(), '运行状态');
-  await click(button('概览')); assert.match(facts(), /配置待核对/); noLaunch(calls);
+  const calls = await panel(value); assert.equal(selectedView(), '详情');
+  await showDetails(); assert.match(facts(), /配置待核对/); noLaunch(calls);
 });
 
 test('An unset optional secret does not prevent entry when the backend allows starting', async () => {
@@ -147,9 +149,9 @@ test('An unset optional secret does not prevent entry when the backend allows st
 test('A runtime restriction keeps restart disabled and does not ask to fill nonexistent required fields', async () => {
   const value = app({ state: 'running', restartRequired: true, runningRevision: 0 });
   const calls = await panel(value, 'details');
-  assert.match(document.querySelector('.node-config-warning').textContent, /当前暂不能重启，请先查看运行状态/);
+  assert.match(document.querySelector('.node-config-warning').textContent, /当前暂不能重启，请先核对运行状态/);
   assert.doesNotMatch(document.querySelector('.node-config-warning').textContent, /补齐必填/);
-  await click(button('运行状态')); assert.equal(button('重启').disabled, true); noLaunch(calls);
+  assert.equal(button('立即重启'), undefined); noLaunch(calls);
 });
 
 test('Retired Node registrations explain their unsupported installation directly in the launcher',async()=>{

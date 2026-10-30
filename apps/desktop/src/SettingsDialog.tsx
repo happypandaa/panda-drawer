@@ -7,19 +7,19 @@ import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import { Modal } from './Modal';
 import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
-import { WorkspaceLocation } from './WorkspaceLocation';
+import { WorkspaceStoragePanel } from './WorkspaceStoragePanel';
 import type { Appearance } from './appearance';
 import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo, ProjectInfo } from './types';
 import { messageFrom } from './ui-utils';
 import type { NodeAppDetail } from './node-app-types';
 
-export type SettingsSection = 'general' | 'storage' | 'tools' | 'diagnostics' | 'about' | 'uninstall';
+export type SettingsSection = 'general' | 'storage' | 'runtime' | 'ai' | 'about' | 'uninstall';
 const sections: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: '通用' },
-  { id: 'storage', label: '存储位置' },
-  { id: 'tools', label: '开发工具' },
-  { id: 'diagnostics', label: '诊断信息' },
-  { id: 'about', label: '关于' },
+  { id: 'storage', label: '存储与清理' },
+  { id: 'runtime', label: '运行环境' },
+  { id: 'ai', label: '给 AI 的平台说明' },
+  { id: 'about', label: '关于与更新' },
 ];
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
   sdk: 'SDK 0.1.0', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
@@ -46,9 +46,11 @@ export interface SettingsDialogProps {
   onClose: () => void;
   onTask: (task: TaskRecord) => void;
   onRefresh: () => Promise<void>;
-  onOpenHistory: () => void;
+  revision: number;
+  onProjectTask: (task: TaskRecord, project: ProjectInfo) => void;
+  isProjectBusy?: (project: ProjectInfo) => boolean;
+  onStoragePending?: (pending: boolean) => void;
   onCreateProject: () => void;
-  onOpenSpace: () => void;
   onEnvironmentPending: (pending: boolean) => void;
   onGitPending: (pending: boolean) => void;
   onLocalDataPending: (pending: boolean) => void;
@@ -58,6 +60,9 @@ export interface SettingsDialogProps {
 export function SettingsDialog(props: SettingsDialogProps) {
   const { info, section } = props;
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
+  const [storagePending, setStoragePending] = useState(false);
+  const settingsBlocked = props.closeDisabled || storagePending;
+  const reportStoragePending = useCallback((pending: boolean) => { setStoragePending(pending); props.onStoragePending?.(pending); }, [props.onStoragePending]);
   const [copyNotice, setCopyNotice] = useState('');
   async function copyDiagnostics() {
     const lines = [
@@ -70,14 +75,14 @@ export function SettingsDialog(props: SettingsDialogProps) {
   }
   const locked = props.localDataLocked;
   const panel = (id: SettingsSection, children: ReactNode) => locked && id !== 'uninstall' ? null : <div className="settings-panel" role="tabpanel" id={`settings-${id}-panel`} aria-labelledby={locked ? undefined : `settings-${id}-tab`} hidden={!locked && section !== id}>{children}</div>;
-  return <Modal title="设置" className="radio-settings-modal" wide closeDisabled={props.closeDisabled} onClose={props.onClose}>
+  return <Modal title="设置" className="radio-settings-modal" wide closeDisabled={settingsBlocked} onClose={props.onClose}>
     {props.feedback}
     {/* One stable tree: a terminal local-data lock must not remount its panel. */}
     <div className={`settings-layout${props.localDataLocked ? ' is-locked' : ''}`}>
       {!props.localDataLocked && <nav className="settings-nav" aria-label="设置分区"><div role="tablist" aria-orientation="vertical" aria-label="设置分区">
-        {sections.map(({ id, label }) => <button key={id} id={`settings-${id}-tab`} type="button" role="tab" aria-selected={section === id} aria-controls={`settings-${id}-panel`} onClick={() => props.onSection(id)}>{label}</button>)}
+        {sections.map(({ id, label }) => <button key={id} id={`settings-${id}-tab`} type="button" role="tab" aria-selected={section === id} aria-controls={`settings-${id}-panel`} disabled={settingsBlocked} onClick={() => props.onSection(id)}>{label}</button>)}
         <hr />
-        <button id="settings-uninstall-tab" type="button" role="tab" className="settings-nav-danger" aria-selected={section === 'uninstall'} aria-controls="settings-uninstall-panel" onClick={() => props.onSection('uninstall')}>卸载前清除数据</button>
+        <button id="settings-uninstall-tab" type="button" role="tab" className="settings-nav-danger" aria-selected={section === 'uninstall'} aria-controls="settings-uninstall-panel" disabled={settingsBlocked} onClick={() => props.onSection('uninstall')}>卸载前清除数据</button>
       </div></nav>}
       <div className="settings-content">
         {panel('general', <section className="settings-section" aria-labelledby="settings-general-title">
@@ -86,17 +91,16 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <button aria-label="切换亮色主题" title="浅色" aria-pressed={props.theme === 'light'} onClick={() => props.onTheme('light')}><Sun size={15} aria-hidden="true" />浅色</button>
             <button aria-label="切换暗色主题" title="深色" aria-pressed={props.theme === 'dark'} onClick={() => props.onTheme('dark')}><Moon size={15} aria-hidden="true" />深色</button>
           </div></div>
-          <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => props.onSection('tools')} onStorage={props.onOpenSpace} /></details>
+          <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => { if (!settingsBlocked) props.onSection('runtime'); }} onStorage={() => { if (!settingsBlocked) props.onSection('storage'); }} /></details>
           <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。</p></div>
         </section>)}
-        {panel('storage', <><section className="settings-project-directory"><h3>项目目录</h3><p>新建的项目和从 Git 添加的项目都保存在这里，你和 AI 都可以修改；卸载前清理会删除它们。更改位置使用下方工作区迁移。</p><code>{info ? info.workspaceRoot : '等待读取'}</code><p>应用数据另存于平台管理的位置；你的外部文件夹仍留在原位置。</p></section><WorkspaceLocation workspace={props.workspace} dataRoot={info?.dataRoot} enabled={Boolean(info) && !props.cleanupBusy} active={section === 'storage'} migrating={props.workspaceBlocked} onTask={props.onTask} onRefresh={props.onRefresh} onOpenHistory={props.onOpenHistory} /></>)}
-        {panel('tools', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
-          <h3 id="settings-runtime-title">开发工具</h3>
+        {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} cleanupBusy={props.cleanupBusy} cleanupTask={props.workspace?.cleanupTask} projects={props.projects ?? []} nodeApps={props.nodeApps ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
+        {panel('runtime', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
+          <h3 id="settings-runtime-title">运行环境</h3>
           <p className="settings-lead">只影响项目构建和版本保存；应用运行使用平台自带的 Node，不受这里影响。</p>
           <BuildEnvironment enabled={Boolean(info)} onPendingChange={props.onEnvironmentPending} />
           <GitEnvironmentPanel enabled={Boolean(info)} onPendingChange={props.onGitPending} />
-        </section>)}
-        {panel('diagnostics', <section className="settings-section" aria-labelledby="settings-diagnostics-title">
+          <section className="settings-section" aria-labelledby="settings-diagnostics-title">
           <div className="section-heading"><div><h3 id="settings-diagnostics-title">诊断信息</h3><p>遇到问题时复制给开发者或 AI。</p></div><button className="refresh-button" onClick={() => void copyDiagnostics()}><Copy size={14} />复制全部诊断信息</button></div>
           {copyNotice && <p className="workspace-inline-notice" role="status">{copyNotice}</p>}
           <dl className="radio-settings-summary"><div><dt>平台服务</dt><dd>{info ? '已就绪' : props.loading ? '读取中…' : '未连接'}</dd></div><div><dt>包内资源</dt><dd>{info ? resourcesReady ? '读取正常' : '需要检查' : '尚未读取'}</dd></div></dl>
@@ -111,22 +115,23 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <div className="runtime-details"><div><span>运行程序</span><code>{info?.displayName ?? '尚未读取'}</code></div><div><span>应用标识</span><code>{info?.identifier ?? '尚未读取'}</code></div><div><span>实例 ID</span><code>{info?.instanceId ?? '尚未读取'}</code></div><div><span>接口版本</span><code>{info ? `v${info.apiVersion}` : '尚未读取'}</code></div></div>
             <div className="resource-strip"><span>资源探测</span>{(Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => <span className={`resource-item ${info ? info.resources[key] ? 'resource-ok' : 'resource-missing' : ''}`} key={key}>{info ? info.resources[key] ? <Check size={13} /> : <CircleAlert size={13} /> : <span className="unknown-dot" />}{label}</span>)}</div>
           </section>
+          </section>
         </section>)}
+        {panel('ai', <section className="settings-section" aria-labelledby="settings-ai-title"><h3 id="settings-ai-title">给 AI 的平台说明</h3><p>新项目开工前，或判断已有项目能否接入时，把平台说明交给 AI。</p><PlatformAiIntroButton platformVersion={info?.version} /></section>)}
         {panel('about', <section className="settings-section radio-settings-about" aria-labelledby="settings-about-title">
-          <h3 id="settings-about-title">关于</h3>
+          <h3 id="settings-about-title">关于与更新</h3>
           <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>
           <p>项目数据保存在本机；联网功能由具体应用决定。</p>
-          <p className="platform-ai-intro-hint">让 AI 先了解这个平台：新项目开工前，或判断自己的项目能否接入时使用。<PlatformAiIntroButton platformVersion={info?.version} /></p>
           <AboutPlatform info={info} />
         </section>)}
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">
           <h3 id="settings-uninstall-title">卸载前清除数据</h3>
-          <p className="settings-lead">通常在卸载熊猫小抽屉之前使用。只想释放空间请用“空间”页。</p>
+          <p className="settings-lead">通常在卸载熊猫小抽屉之前使用。只想释放空间请用“存储与清理”。</p>
           <LocalDataCleanupPanel managedProjects={[...(props.projects ?? []).map(project => ({ name: project.name, path: project.projectRoot })), ...(props.nodeApps ?? []).filter(app => app.installation).map(app => ({ name: app.name, path: app.development?.sourcePath ?? app.objectLayout?.source.path ?? app.sourcePath }))]} externalProjectCount={(props.nodeApps ?? []).filter(app => !app.installation).length} instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
         </section>)}
       </div>
     </div>
-    {!props.localDataLocked && <div className="radio-settings-footer"><span>熊猫小抽屉</span><button className="refresh-button" disabled={props.closeDisabled} onClick={props.onClose}>完成</button></div>}
+    {!props.localDataLocked && <div className="radio-settings-footer"><span>熊猫小抽屉</span><button className="refresh-button" disabled={settingsBlocked} onClick={props.onClose}>完成</button></div>}
   </Modal>;
 }
 

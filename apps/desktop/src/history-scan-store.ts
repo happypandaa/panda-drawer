@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from 'react';
 import type { ByteCount } from './types';
 
-// The latest history preview for one workspace in this app session. Overview
-// totals are taken from it only; the overview never starts a scan itself.
+// The latest history preview for one workspace in this app session. Storage settings
+// totals use it without repeating history scans in background polling.
 export interface HistoryScanSummary {
   workspaceRoot: string;
   scannedAt: number;
@@ -12,8 +12,6 @@ export interface HistoryScanSummary {
   totalBytes: bigint;
   totalComplete: boolean;
   cleanableBytes: bigint;
-  // Old Node program versions live inside installed app folders.
-  nodeGenerationBytes: bigint;
   stale: boolean;
 }
 
@@ -31,7 +29,7 @@ export function publishHistoryScan(workspaceRoot: string, items: { kind: string;
   current = {
     workspaceRoot, scannedAt: Date.now(), itemCount: items.length, cleanableCount: cleanable.length,
     totalBytes: sum(items.map((item) => item.totalBytes)), totalComplete: items.every((item) => exact(item.totalBytes) !== null), cleanableBytes: sum(cleanable.map((item) => item.totalBytes)),
-    nodeGenerationBytes: sum(items.filter((item) => item.kind === 'nodeGeneration').map((item) => item.totalBytes)), stale: false,
+    stale: false,
   };
   emit();
 }

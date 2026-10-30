@@ -13,7 +13,7 @@ await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/node-form-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__NODE_FORM_INVOKE__(command, ...args); export const isTauri = () => true; export const listen = async (name, callback) => { const listeners = globalThis.__NODE_EVENT_LISTENERS__ ??= new Map(); listeners.set(name, callback); return () => listeners.delete(name); };\n');
+await writeFile(mockPath, 'export const invoke = (command, ...args) => command === "source_import_recover" ? Promise.resolve([]) : globalThis.__NODE_FORM_INVOKE__(command, ...args); export const isTauri = () => true; export const getAllWindows = async () => globalThis.__UI_WINDOWS__ ?? []; export const listen = async (name, callback) => { const listeners = globalThis.__NODE_EVENT_LISTENERS__ ??= new Map(); listeners.set(name, callback); return () => listeners.delete(name); };\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {
@@ -30,7 +30,7 @@ async function component(name) {
       assert.ok(dependency);
       source = source.replaceAll(`${match[1]}${match[2]}${match[1]}`, JSON.stringify(pathToFileURL(await compile(dependency)).href));
     }
-    source = source.replaceAll(/(['"])@tauri-apps\/api\/(?:core|event)\1/g, JSON.stringify(pathToFileURL(mockPath).href));
+    source = source.replaceAll(/(['"])@tauri-apps\/api\/(?:core|event|window)\1/g, JSON.stringify(pathToFileURL(mockPath).href));
     await writeFile(target, source);
     return target;
   }
@@ -67,9 +67,10 @@ function app(extra = {}) { return { id: 'node_fixture', name: 'Disposable Node f
 async function setup(mock, props = {}, Component = NodeAppsPanel) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
-  const { deletionTasksMock, ...componentProps } = props;
+  const { deletionTasksMock, workspaceStorageMock, ...componentProps } = props;
   const previews = new Map();
   globalThis.__NODE_FORM_INVOKE__ = async (command, args) => {
+    if (command === 'workspace_storage') return workspaceStorageMock ? workspaceStorageMock(args) : { workspace: {}, nodeApps: [], otherLocalLocations: [] };
     if (command === 'node_app_delete_tasks') return deletionTasksMock ? deletionTasksMock(args) : [];
     const value = await mock(command, args);
     if (command === 'node_app_delete_preview') previews.set(args.appId, value);
@@ -80,7 +81,7 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
     return value;
   };
   await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...componentProps })));
-  if (Component === NodeAppsPanel && props.request !== null && !['delete', 'delete-task'].includes(props.request?.intent) && document.querySelector('[role=dialog]') && byText('应用配置')) await click(byText('应用配置'));
+  if (Component === NodeAppsPanel && props.request !== null && !['delete', 'delete-task'].includes(props.request?.intent) && document.querySelector('[role=dialog]') && byText('修改')) await click(byText('修改'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
 function input(name) { const label = [...document.querySelectorAll('.node-field-label')].find((element) => element.textContent === `设置 ${name}`); assert.ok(label, name); return document.getElementById(label.htmlFor); }
@@ -100,7 +101,8 @@ async function openDetails(name) {
   await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
   await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
 }
-async function submit() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
+async function saveAndContinueEditing() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); if (!document.querySelector('.node-configuration-form') && byText('修改')) await click(byText('修改')); }
+async function showDetails() { if (byText('返回详情')) await click(byText('返回详情')); }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 function baseMock(value, action) { return async (command, args) => { if (command === 'node_app_list') return [value]; if (command === 'node_app_configuration') return value; return action(command, args); }; }
 
@@ -653,21 +655,21 @@ test('Cancelling deletion from Node details preserves the selected tab and form 
     assert.equal(command, 'node_app_delete_preview'); previews++; return deletionPreview(value);
   });
   const form = document.querySelector('.node-configuration-form');
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
-  const trigger = byText('删除项目'); trigger.focus();
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '应用配置');
+  const trigger = byText('停止并删除…'); trigger.focus();
   await click(trigger);
   assert.equal(document.querySelectorAll('[role=dialog]').length, 2);
   deleteDialog();
   await click(byText('取消，保留项目'));
   assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '应用配置');
   assert.equal(document.querySelector('.node-configuration-form'), form, 'Cancelling deletion must not recreate the configuration form');
   assert.equal(document.querySelector('.node-detail-modal').contains(document.activeElement), true, 'Cancelling the nested deletion keeps focus in the original details');
   assert.equal(configurationReads, 1);
   await change(input('AI_KEY'), 'artificial-private-draft');
-  assert.equal(byText('删除项目').disabled, true);
+  assert.equal(byText('停止并删除…').disabled, true);
   assert.equal(previews, 1);
-  await change(input('AI_KEY'), ''); await click(byText('删除项目'));
+  await change(input('AI_KEY'), ''); await click(byText('停止并删除…'));
   assert.equal(previews, 2); assert.equal(document.querySelector('.node-delete-confirmation input').checked, false);
 });
 
@@ -733,9 +735,9 @@ test('A late status observation cannot resurrect a deleted Node app or its clear
       if (command === 'node_app_delete_submit') return { appId: value.id, operationOutcome: 'deleted', ownership: 'managed', sourcePreserved: false, evidenceRetained: false };
       throw new Error(command);
     }), { instanceId: 'same', request: { app: value, intent: 'details', token: 1 }, onAppChanged: value => changes.push(value), onAppDeleted: id => deleted.push(id) });
-    await click(byText('运行状态'));
+    await showDetails();
     await act(async () => { for (const callback of timers.values()) callback(); });
-    await click(byText('删除项目')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
+    await click(byText('停止并删除…')); await click(document.querySelector('.node-delete-confirmation input')); await click(byText('确认永久删除项目'));
     const observations = changes.length;
     await act(async () => delayed.resolve({ ...value, state: 'running' }));
     assert.deepEqual(deleted, [value.id]); assert.equal(changes.length, observations); assert.equal(document.querySelector('[role=dialog]'), null);
@@ -779,32 +781,30 @@ test('Standalone Node deletion never publishes incomplete or mismatched success 
 test('Git direct overview displays the one runtime folder without an apply workflow', async () => {
  const calls=[];const value=app({sourcePath:'/disposable/author-source',gitSource:{url:'https://github.com/disposable/source.git',branch:null},ownership:'managed'});
  await setup(baseMock(value,async(command,args)=>{calls.push([command,args]);assert.equal(command,'open_project_folder');}),{request:{app:value,intent:'details',token:1}});
- await click(byText('概览'));assert.match(document.querySelector('.node-overview-body').textContent,/项目文件夹.*author-source/s);assert.equal(byText('应用修改'),undefined);assert.equal(document.querySelector('.node-install-panel'),null);assert.deepEqual(calls,[]);
- await click(byText('打开文件夹'));assert.deepEqual(calls,[['open_project_folder',{path:'/disposable/author-source'}]]);
+ await showDetails();assert.match(document.querySelector('.application-details').textContent,/项目文件夹.*author-source/s);assert.equal(byText('应用修改'),undefined);assert.equal(document.querySelector('.node-install-panel'),null);assert.deepEqual(calls,[]);
+ await click([...document.querySelectorAll('.application-detail-row')].find(row => row.textContent.startsWith('项目文件夹')).querySelector('button'));assert.deepEqual(calls,[['open_project_folder',{path:'/disposable/author-source'}]]);
 });
 
-test('Local overview has no update, Git, restore or Codex entrances and shows flat technical paths', async () => {
+test('Node details share the compact actions and information rows without retired development entrances', async () => {
   const calls = [];
   await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); if (command === 'open_project_folder') return; throw Error(command); }));
-  await click(byText('概览'));
-  assert.equal(byText('应用修改'), undefined);
-  assert.equal(document.querySelector('.node-overview-body details'), null);
-  assert.deepEqual([...document.querySelectorAll('.detail-action-row button')].map(value => value.textContent), ['进入项目', '复制提示词', '修改配置', '删除项目']);
-  assert.equal(document.querySelectorAll('.detail-action-note').length, 0);
-  assert.match(document.querySelector('.detail-action-hint').textContent, /想改功能？复制提示词发给 AI，改完后关闭窗口再进入即可生效。/);
-  assert.doesNotMatch(document.querySelector('.node-overview-body').textContent, /构建并更新|源码版本|Codex|安装副本说明|文件与版本范围/);
-  await click(byText('打开文件夹'));
+  await showDetails();
+  assert.equal(document.querySelector('[role=tablist]'), null);
+  assert.deepEqual([...document.querySelectorAll('.application-detail-row dt')].map(value => value.textContent), ['应用配置', '项目文件夹', '占用空间', '运行日志']);
+  assert.deepEqual([...document.querySelectorAll('.application-primary-actions button')].map(value => value.textContent), ['打开']);
+  assert.match(document.querySelector('.detail-action-hint').textContent, /想改功能？交给 AI/);
+  assert.doesNotMatch(document.querySelector('.application-details').textContent, /构建并更新|源码版本|Codex|安装副本说明|文件与版本范围/);
+  await click([...document.querySelectorAll('.application-detail-row')].find(row => row.textContent.startsWith('项目文件夹')).querySelector('button'));
   assert.deepEqual(calls, [['open_project_folder', { path: '/not-a-real-source' }]]);
 });
 
-test('Empty fields hide configuration navigation including keyboard and configure requests', async () => {
+test('Empty fields hide the configuration row and form including configure requests', async () => {
   const value = app({ fields: [] });
   await setup(baseMock(value, async command => { throw Error(command); }), { request: { app: value, intent: 'configure', token: 1 } });
-  assert.equal(byText('修改配置'), undefined); assert.equal(byText('应用配置'), undefined);
-  assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '运行状态']);
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
-  await act(async () => document.querySelector('[role=tab][aria-selected=true]').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })));
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  assert.equal(byText('修改'), undefined);
+  assert.equal(document.querySelector('.node-configuration-form'), null);
+  assert.equal(document.querySelector('[role=tablist]'), null);
+  assert.deepEqual([...document.querySelectorAll('.application-detail-row dt')].map(value => value.textContent), ['项目文件夹', '占用空间', '运行日志']);
 });
 
 test('Viewing and copying the Node handoff use the existing command and keep manual clipboard fallback', async () => {
@@ -812,30 +812,27 @@ test('Viewing and copying the Node handoff use the existing command and keep man
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copied.push(text); throw Error('clipboard unavailable'); } } });
   const value = app();
   await setup(baseMock(value, async (command, args) => { calls.push([command, args]); assert.equal(command, 'node_app_handoff'); return { projectRoot: '/disposable/source', instanceId: 'instance_one', text: '人工交接全文' }; }), { instanceId: 'instance_one' });
-  await click(byText('查看交接说明'));
+  await showDetails(); await click(byText('查看交接说明'));
   assert.deepEqual(copied, []); assert.equal(document.querySelector('.handoff-preview textarea').value, '人工交接全文');
   assert.match(document.querySelector('.handoff-preview').textContent, /disposable\/source/);
-  await click(byText('复制提示词'));
+  await showDetails(); await click(byText('复制提示词'));
   assert.deepEqual(copied, ['人工交接全文']); assert.match(document.body.textContent, /请手动复制下方完整说明/);
-  assert.equal(calls.length, 2); assert.equal(byText('进入项目').disabled, false);
+  assert.equal(calls.length, 2); assert.equal(byText('打开').disabled, false);
   assert.doesNotMatch(document.querySelector('.detail-actions').textContent, /Codex/);
 });
 
-test('Runtime polling exists only on its visible tab, coalesces and stops when closed', async () => {
+test('Runtime observations coalesce throughout the visible details and stop when closed', async () => {
   const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 0;
   window.setInterval = callback => { const id = ++timerId; timers.set(id, callback); return id; };
   window.clearInterval = id => timers.delete(id);
   const delayed = deferred(); let reads = 0;
   try {
     await setup(baseMock(app(), async command => { assert.equal(command, 'node_app_status'); reads++; return delayed.promise; }));
-    assert.equal(timers.size, 0); assert.equal(byText('刷新运行状态'), undefined);
-    await click(byText('运行状态')); assert.equal(timers.size, 1);
+    assert.equal(timers.size, 1); assert.equal(byText('刷新运行状态'), undefined);
     await act(async () => { for (const callback of timers.values()) { callback(); callback(); } });
     assert.equal(reads, 1);
-    await click(byText('概览')); assert.equal(timers.size, 0);
     await act(async () => delayed.resolve(app({ state: 'running' })));
-    assert.doesNotMatch(document.querySelector('.detail-status-badge').textContent, /运行中/);
-    await click(byText('运行状态')); assert.equal(timers.size, 1);
+    assert.match(document.querySelector('.detail-status-badge').textContent, /运行中/);
     await click(document.querySelector('[aria-label^="关闭Disposable"]')); assert.equal(timers.size, 0);
   } finally { window.setInterval = originalInterval; window.clearInterval = originalClear; }
 });
@@ -952,7 +949,7 @@ test('Selecting another app never carries its explanation or invalid required fi
   assert.equal(document.querySelector('.node-field-help-modal'), null);
   assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
   assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
-  await click(byText('应用配置'));
+  await click(byText('修改'));
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), null);
   assert.equal(input('AI_KEY').value, '');
   assert.equal(input('MODEL').value, '');
@@ -967,8 +964,8 @@ test('An entry failure switches away from configuration and unmounts its explana
     return entered.promise;
   }), { request: { app: value, intent: 'details', token: 1 } });
   await change(input('MODEL'), 'draft retained after entry failure');
-  assert.equal(byText('进入项目').disabled, false, 'Returning to an already running app does not need to apply this draft');
-  await click(byText('进入项目'));
+  assert.equal(byText('打开').disabled, false, 'Returning to an already running app does not need to apply this draft');
+  await click(byText('打开'));
   assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
   assert.equal(input('MODEL').disabled, true);
   await click(byLabel('设置 MODEL说明'));
@@ -979,12 +976,12 @@ test('An entry failure switches away from configuration and unmounts its explana
   assert.ok(explanation.contains(document.activeElement));
 
   await act(async () => entered.reject(new Error('Artificial entry focus failure')));
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '详情');
   assert.equal(document.querySelector('.node-field-help-modal'), null, 'A hidden configuration panel cannot retain a child modal on the stack');
   assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
   assert.match(document.querySelector('[role=alert]').textContent, /Artificial entry focus failure/);
   assert.equal(document.activeElement.closest('[hidden], [inert]'), null);
-  await click(byText('应用配置'));
+  await click(byText('修改'));
   assert.equal(document.querySelector('.node-field-help-modal'), null, 'Returning to configuration does not reopen the previous explanation');
   assert.equal(input('MODEL').value, 'draft retained after entry failure');
   assert.equal(input('MODEL').disabled, false);
@@ -1011,7 +1008,7 @@ test('Missing required fields use invalid controls while an incomplete configura
   assert.equal(input('ENABLED').getAttribute('aria-invalid'), null);
   assert.equal(input('AI_KEY').checkValidity(), true, 'Missing values do not use a blocking native constraint');
   await change(input('MODEL'), 'partial draft');
-  await submit();
+  await saveAndContinueEditing();
   assert.deepEqual(calls, [['node_app_configuration_save', { appId: value.id, input: { revision: 1, values: { MODEL: 'partial draft' }, secrets: { AI_KEY: { action: 'keep' } } } }]]);
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
   assert.equal(input('REQUIRED').getAttribute('aria-invalid'), 'true');
@@ -1031,7 +1028,7 @@ test('A malformed URL is highlighted on blur, blocks native save and focuses its
   await act(async () => { input('AI_URL').focus(); input('AI_URL').blur(); });
   assert.equal(input('AI_URL').getAttribute('aria-invalid'), 'true');
   assert.match(document.getElementById(input('AI_URL').getAttribute('aria-describedby')).textContent, /HTTPS 地址/);
-  await submit();
+  await saveAndContinueEditing();
   assert.deepEqual(calls, []);
   assert.equal(document.activeElement, input('AI_URL'));
   let invalidUrlValid;
@@ -1040,7 +1037,7 @@ test('A malformed URL is highlighted on blur, blocks native save and focuses its
   await change(input('AI_URL'), 'https://corrected.example.invalid/api');
   assert.equal(input('AI_URL').getAttribute('aria-invalid'), null);
   assert.equal(input('AI_URL').checkValidity(), true);
-  await submit();
+  await saveAndContinueEditing();
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'node_app_configuration_save');
   assert.deepEqual(calls[0][1].input.values, { AI_URL: 'https://corrected.example.invalid/api' });
@@ -1054,7 +1051,7 @@ test('Unsafe or fractional integers are rejected before save and correcting to z
   }));
   for (const invalid of ['9007199254740993', '1.5']) {
     await change(input('LIMIT'), invalid);
-    await submit();
+    await saveAndContinueEditing();
     assert.deepEqual(calls, []);
     assert.equal(document.activeElement, input('LIMIT'));
     assert.equal(input('LIMIT').getAttribute('aria-invalid'), 'true');
@@ -1063,7 +1060,7 @@ test('Unsafe or fractional integers are rejected before save and correcting to z
   await change(input('LIMIT'), '0');
   assert.equal(input('LIMIT').getAttribute('aria-invalid'), null);
   assert.equal(input('LIMIT').checkValidity(), true);
-  await submit();
+  await saveAndContinueEditing();
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0][1].input.values, { LIMIT: 0 });
 });
@@ -1091,7 +1088,7 @@ for (const clearEvent of ['input', 'submit']) {
     });
     assert.equal(number.value, '');
     await act(async () => number.dispatchEvent(new window.Event('input', { bubbles: true })));
-    await submit();
+    await saveAndContinueEditing();
     assert.deepEqual(calls, []);
     assert.equal(number.getAttribute('aria-invalid'), 'true');
     assert.equal(document.activeElement, number);
@@ -1109,7 +1106,7 @@ for (const clearEvent of ['input', 'submit']) {
       assert.equal(number.getAttribute('aria-invalid'), null);
       assert.equal(number.validity.customError, false);
     }
-    await submit();
+    await saveAndContinueEditing();
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0][1].input.values, { MODEL: 'draft for native numeric validation' });
     assert.equal(Object.hasOwn(calls[0][1].input.values, 'LIMIT'), false, 'Clearing uses the declared default instead of saving an unfinished number');
@@ -1163,7 +1160,7 @@ test('Save keeps false and zero, omits empty ordinary values, clears accepted se
   await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); assert.equal(command, 'node_app_configuration_save'); return saved; }), { onDraftStateChange: (value) => states.push(value) });
   await change(input('LIMIT'), '0'); await change(input('ENABLED'), 'false'); await change(input('MODE'), 'two');
   await change(input('AI_KEY'), 'artificial-secret-only');
-  await submit();
+  await saveAndContinueEditing();
   assert.deepEqual(calls, [['node_app_configuration_save', { appId: 'node_fixture', input: { revision: 1, values: { LIMIT: 0, ENABLED: false, MODE: 'two' }, secrets: { AI_KEY: { action: 'replace', value: 'artificial-secret-only' } } } }]]);
   assert.equal(input('AI_KEY').value, ''); assert.equal(document.body.textContent.includes('artificial-secret-only'), false);
   assert.deepEqual(states.at(-1), { dirty: false, pending: false });
@@ -1177,12 +1174,12 @@ test('Removing a saved key requires an explicit action; a blank password keeps i
     const removed = args.input.secrets.AI_KEY.action === 'unbind';
     return app({ configuration: { revision: calls.length + 1, values: { MODEL: 'manual-model' }, secretStatus: { AI_KEY: removed ? 'missing' : 'set' }, missingRequired: removed ? ['AI_KEY'] : [], canStart: !removed } });
   }));
-  await change(input('MODEL'), 'manual-model'); await submit();
+  await change(input('MODEL'), 'manual-model'); await saveAndContinueEditing();
   assert.deepEqual(calls[0][1].input.secrets, { AI_KEY: { action: 'keep' } });
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), null, 'A stored required key does not need to be typed again');
   await click(byLabel('移除此应用的密钥'));
   assert.equal(input('AI_KEY').disabled, true);
-  await submit();
+  await saveAndContinueEditing();
   assert.deepEqual(calls[1][1].input.secrets, { AI_KEY: { action: 'unbind' } });
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
   assert.equal(input('AI_KEY').disabled, false, 'A required key can be supplied again after removal is saved');
@@ -1195,13 +1192,13 @@ test('A changed endpoint needs an explicit rebind, and editing the target again 
   await change(input('AI_URL'), 'https://new.example.invalid/api');
   const checkbox = () => document.querySelector('.node-endpoint-confirmation input[type="checkbox"]');
   assert.ok(checkbox()); assert.equal(checkbox().checked, false);
-  await submit();
+  await saveAndContinueEditing();
   assert.equal(calls.length, 0, 'An unconfirmed credential target is rejected before any native save');
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
   assert.equal(document.activeElement, input('AI_KEY'));
   await click(checkbox());
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), null);
-  await submit();
+  await saveAndContinueEditing();
   assert.deepEqual(calls[0][1].input.secrets, { AI_KEY: { action: 'rebind' } });
   await change(input('AI_URL'), 'https://third.example.invalid/api');
   assert.equal(checkbox().checked, false);
@@ -1212,11 +1209,11 @@ test('Failed saves preserve the draft and reject duplicate pending submissions',
   const accepted = deferred(); let saves = 0;
   await setup(baseMock(app(), async (command) => { assert.equal(command, 'node_app_configuration_save'); saves++; return accepted.promise; }));
   await change(input('AI_KEY'), 'fixture-draft');
-  await submit(); await submit(); assert.equal(saves, 1);
+  await saveAndContinueEditing(); await saveAndContinueEditing(); assert.equal(saves, 1);
   await act(async () => accepted.reject({ code: 'CONFIGURATION_REVISION_CHANGED', message: '配置已被其他窗口修改，请重新核对' }));
   assert.equal(input('AI_KEY').value, 'fixture-draft');
   assert.match(document.querySelector('[role="alert"]').textContent, /其他窗口/);
-  assert.equal(byText('进入项目').disabled, true);
+  assert.equal(byText('打开').disabled, true);
 });
 
 test('Opening an app makes one native start request, then returning delegates only its app ID', async () => {
@@ -1224,13 +1221,13 @@ test('Opening an app makes one native start request, then returning delegates on
   await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); if (command === 'node_app_start') return accepted.promise; if (command === 'node_app_open') return; throw new Error(command); }));
   assert.equal(byText('打开应用页面'), undefined);
   assert.equal(byText('启动应用'), undefined);
-  await click(byText('进入项目')); await click(byText('进入项目'));
+  await click(byText('打开')); await click(byText('打开'));
   assert.deepEqual(calls, [['node_app_start', { appId: 'node_fixture' }]]);
   await act(async () => accepted.resolve(app({ state: 'running', runningRevision: 1 })));
-  await click(byText('进入项目'));
+  await click(byText('打开'));
   assert.deepEqual(calls[1], ['node_app_open', { appId: 'node_fixture' }]);
   assert.equal(calls.length, 2);
-  assert.ok(byText('进入项目'));
+  assert.ok(byText('打开'));
 });
 
 test('Returning to an open application never starts a second instance and gates duplicate pending focus requests', async () => {
@@ -1238,10 +1235,10 @@ test('Returning to an open application never starts a second instance and gates 
   await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async (command, args) => {
     calls.push([command, args]); assert.equal(command, 'node_app_open'); return focus.promise;
   }));
-  await click(byText('进入项目')); await click(byText('进入项目'));
+  await click(byText('打开')); await click(byText('打开'));
   assert.deepEqual(calls, [['node_app_open', { appId: 'node_fixture' }]]);
   await act(async () => focus.resolve());
-  assert.equal(byText('进入项目').disabled, false);
+  assert.equal(byText('打开').disabled, false);
 });
 
 test('Closing an app sends one stop request and returns the manager to its unopened state', async () => {
@@ -1249,12 +1246,12 @@ test('Closing an app sends one stop request and returns the manager to its unope
   await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async (command, args) => {
     calls.push([command, args]); assert.equal(command, 'node_app_stop'); return closed.promise;
   }));
-  await click(byText('运行状态'));
-  await click(byText('关闭应用')); await click(byText('关闭应用'));
+  await showDetails();
+  await click(byText('停止运行')); await click(byText('停止运行'));
   assert.deepEqual(calls, [['node_app_stop', { appId: 'node_fixture' }]]);
   await act(async () => closed.resolve(app()));
-  assert.equal(byText('关闭应用').disabled, true);
-  assert.equal(byText('进入项目').disabled, false);
+  assert.equal(byText('停止运行'), undefined);
+  assert.equal(byText('打开').disabled, false);
   assert.match(document.body.textContent, /应用已关闭，相关服务已停止/);
 });
 
@@ -1266,41 +1263,41 @@ test('A verified orphaned runtime can be stopped without opening a second instan
     assert.equal(command, 'node_app_stop');
     return app({ runRecovery: null });
   }), { request: { app: value, intent: 'details', token: 1 } });
-  await click(byText('查看运行状态'));
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
-  assert.match(document.querySelector('.node-runtime-actions').parentElement.textContent, /当前遗留运行.*可以停止此遗留运行/);
+  await click(byText('打开'));
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '详情');
+  assert.match(document.querySelector('.application-details').textContent, /可以停止此遗留运行/);
   assert.equal(byText('停止遗留运行').disabled, false);
   await click(byText('停止遗留运行'));
   assert.deepEqual(calls, [['node_app_stop', { appId: value.id }]]);
   assert.equal(byText('停止遗留运行'), undefined);
-  assert.equal(byText('关闭应用').disabled, true);
-  assert.equal(byText('进入项目').disabled, false);
-  assert.doesNotMatch(document.querySelector('.node-runtime-actions').parentElement.textContent, /可以停止此遗留运行/);
+  assert.equal(byText('停止运行'), undefined);
+  assert.equal(byText('打开').disabled, false);
+  assert.doesNotMatch(document.querySelector('.application-details').textContent, /可以停止此遗留运行/);
 });
 
 test('An unconfirmed old runtime explains why stop is unavailable and routes entry to runtime status', async () => {
   const value = app({ state: 'failed', lastError: '运行身份无法确认，请重启电脑后重新核对。', runRecovery: { state: 'unconfirmed', canStop: false, message: '运行身份无法确认，请重启电脑后重新核对。' }, configuration: { ...app().configuration, missingRequired: ['AI_KEY'], secretStatus: { AI_KEY: 'missing' }, canStart: false } });
   const calls = [];
   await setup(baseMock(value, async (command, args) => { calls.push([command, args]); throw new Error(`Unexpected execution while identity is unknown: ${command}`); }), { request: { app: value, intent: 'details', token: 1 } });
-  await click(byText('查看运行状态'));
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
-  const runtime = document.querySelector('.node-runtime-actions').parentElement;
-  assert.match(runtime.textContent, /当前运行待核对/);
+  await click(byText('打开'));
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '详情');
+  const runtime = document.querySelector('.application-details');
+  assert.match(document.querySelector('.detail-status-badge').textContent, /运行待核对/);
   assert.match(runtime.querySelector('[role=status]').textContent, /请重启电脑后重新核对/);
-  assert.equal(byText('关闭应用').disabled, true);
-  assert.equal(byText('重启').disabled, true);
-  await click(byText('关闭应用')); await click(byText('查看运行状态'));
+  assert.equal(byText('停止运行'), undefined);
+  assert.equal(byText('立即重启'), undefined);
+  await click(byText('打开'));
   assert.deepEqual(calls, []);
 });
 
 test('Incomplete required configuration blocks opening an application and identifies the field to finish', async () => {
   await setup(baseMock(app({ configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'missing' }, missingRequired: ['AI_KEY'], canStart: false } }), async (command) => { throw new Error(command); }));
-  assert.equal(byText('进入项目').disabled, false);
+  assert.equal(byText('打开').disabled, false);
   assert.equal(document.querySelector('.node-config-warning'), null);
   assert.equal(input('AI_KEY').getAttribute('aria-invalid'), 'true');
   assert.match(document.getElementById(input('AI_KEY').getAttribute('aria-describedby')).textContent, /请填写此项/);
   assert.equal(input('AI_URL').getAttribute('aria-invalid'), null, 'A required default address is already complete');
-  await click(byText('进入项目'));
+  await click(byText('打开'));
 });
 
 test('Saving configuration does not reopen a running window; applying it requires an explicit restart', async () => {
@@ -1312,14 +1309,14 @@ test('Saving configuration does not reopen a running window; applying it require
     assert.equal(command, 'node_app_restart');
     return app({ state: 'running', runningRevision: 2, configuration });
   }));
-  await change(input('MODEL'), 'new-artificial-model'); await submit();
+  await change(input('MODEL'), 'new-artificial-model'); await saveAndContinueEditing();
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'node_app_configuration_save');
-  assert.match(document.querySelector('.node-configuration-body').textContent, /已保存，重启后生效/);
+  await showDetails(); assert.match(document.body.textContent, /已保存，重启后生效/);
   await click(byText('立即重启'));
   assert.deepEqual(calls[1], ['node_app_restart', { appId: 'node_fixture' }]);
   assert.equal(calls.length, 2);
-  assert.ok(byText('进入项目'));
+  assert.ok(byText('打开'));
 });
 
 function directoryReview(state = 'ready', extra = {}) {
@@ -1422,7 +1419,7 @@ test('Choosing configuration from a local add result never starts the app even i
   assert.ok(byText('去设置')); assert.equal(calls.some(([command]) => command === 'node_app_configuration'), false);
   await click(byText('去设置'));
   assert.equal(document.querySelector('.local-directory-panel'), null);
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '应用配置');
   assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 1);
   assert.equal(calls.some(([command]) => command === 'node_app_start' || command === 'node_app_open'), false);
 });
@@ -1434,10 +1431,10 @@ test('An explicit configure request opens configuration without starting a ready
     if (command === 'node_app_configuration') return value;
     throw new Error(command);
   }, { request: { app: value, intent: 'configure', token: 1 } });
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '应用配置');
   assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 1);
   assert.equal(calls.some(([command]) => command === 'node_app_start' || command === 'node_app_open'), false);
-  assert.ok(byText('进入项目'));
+  assert.ok(byText('打开'));
 });
 
 test('An empty folder uses one explicit generate-and-add action with its reviewed revision and name', async () => {
@@ -1834,7 +1831,7 @@ test('A late configuration read from an old service instance cannot replace the 
     assert.equal(document.querySelector('.node-app-detail').getAttribute('aria-busy'), 'true');
     await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
     assert.equal(document.querySelector('.node-app-detail').getAttribute('aria-busy'), 'false');
-    await click(byText('应用配置'));
+    await click(byText('修改'));
     await change(input('MODEL'), 'current instance model');
     await change(input('AI_KEY'), 'artificial-current-instance-key');
     const count = changes.length;
@@ -1865,13 +1862,13 @@ test('A save crossing a service-instance change remains single-flight and ignore
     }), props);
     await change(input('MODEL'), 'draft across instance change');
     await change(input('AI_KEY'), 'artificial-cross-instance-key');
-    await submit();
+    await saveAndContinueEditing();
     assert.equal(writes.length, 1);
     await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
     assert.equal(input('MODEL').disabled, true);
     assert.equal(byText('保存中…').disabled, true);
     assert.deepEqual(states.at(-1), { dirty: true, pending: true });
-    await submit();
+    await saveAndContinueEditing();
     assert.equal(writes.length, 1, 'Pending native writes remain single-flight across an instance change');
     const count = changes.length;
     await act(async () => outcome === 'resolve'
@@ -1884,7 +1881,7 @@ test('A save crossing a service-instance change remains single-flight and ignore
     assert.deepEqual(states.at(-1), { dirty: true, pending: false });
     assert.doesNotMatch(document.body.textContent, /late-saved-value|Artificial old save error|配置已保存/);
     assert.equal(writes.length, 1, 'No write is replayed automatically');
-    await submit();
+    await saveAndContinueEditing();
     assert.equal(writes.length, 2);
     assert.equal(writes[1].input.revision, 1);
     assert.equal(writes[1].input.values.MODEL, 'draft across instance change');
@@ -1915,7 +1912,7 @@ test('A mismatched save result preserves ordinary and secret drafts and never cl
   const count = changes.length;
   await change(input('MODEL'), 'my model after mismatched save');
   await change(input('AI_KEY'), 'artificial-mismatched-save-key');
-  await submit();
+  await saveAndContinueEditing();
   assert.equal(changes.length, count);
   assert.match(document.querySelector('[role=alert]').textContent, /应用身份不符/);
   assert.equal(input('MODEL').value, 'my model after mismatched save');
@@ -1934,12 +1931,12 @@ test('Status observations never replace a configuration draft or its original re
       assert.equal(command, 'node_app_configuration_save'); calls.push(args); throw new Error('Fixture revision conflict');
     }));
     await change(input('MODEL'), 'my-draft'); await change(input('AI_KEY'), 'my-artificial-draft-key');
-    await click(byText('运行状态'));
+    await showDetails();
     await act(async () => { ticks.at(-1)(); });
-    await click(byText('应用配置'));
+    await click(byText('修改'));
     assert.equal(input('MODEL').value, 'my-draft');
     assert.equal(input('AI_KEY').value, 'my-artificial-draft-key');
-    await submit();
+    await saveAndContinueEditing();
     assert.equal(calls[0].input.revision, 1);
     assert.equal(calls[0].input.values.MODEL, 'my-draft');
   } finally { window.setInterval = originalInterval; }
@@ -1948,7 +1945,7 @@ test('Status observations never replace a configuration draft or its original re
 test('Node detail tabs retain secret drafts and closing asks before discarding them', async () => {
   await setup(baseMock(app(), async (command) => { throw new Error(command); }));
   await change(input('AI_KEY'), 'artificial-unsaved-tab-key');
-  await click(byText('概览')); await click(byText('运行状态')); await click(byText('应用配置'));
+  await showDetails(); await showDetails(); await click(byText('修改'));
   assert.equal(input('AI_KEY').value, 'artificial-unsaved-tab-key');
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   assert.ok(document.querySelector('[aria-label="关闭配置确认"]'));
@@ -2010,7 +2007,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   });
   await setup(async (command, args) => { calls.push([command, args]); return mock(command, args); }, {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 0);
-  await click(byText('添加本地项目')); await click(byText('选择文件夹…'));
+  await click(byText('本机文件夹')); await click(byText('选择文件夹…'));
   await change(document.querySelector('.local-directory-empty input'), value.name);
   await click(byText('生成并添加项目'));
   assert.deepEqual(calls.filter(([command]) => command === 'node_app_directory_initialize_and_register'), [['node_app_directory_initialize_and_register', { sourcePath, input: { expectedRevision: 'directory-revision-1', name: value.name } }]]);
@@ -2021,12 +2018,14 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.match(document.querySelector('[role=dialog]').textContent, /正在生成并添加项目/);
   assert.equal(document.querySelector('.local-directory-prompt'), null);
   assert.doesNotMatch(document.querySelector('[role=dialog]').textContent, /Artificial retained empty-folder AI prompt/);
-  assert.ok([...document.querySelectorAll('.radio-primary-nav button')].every(button => button.disabled));
+  const addButtons = [...document.querySelectorAll('.application-heading [aria-label="添加应用"] button')];
+  assert.equal(addButtons.length, 3);
+  assert.ok(addButtons.every(button => button.disabled));
   assert.equal(byText('添加'), undefined);
   await act(async () => completed.resolve(value));
   assert.equal(document.querySelectorAll('.project-card').length, 1, 'The registration callback must update the real App list immediately');
   assert.ok(byLabel(`进入项目「${value.name}」`));
-  assert.match(document.querySelector('.radio-footer').textContent, /共 1 个应用/);
+  assert.match(document.querySelector('.application-count').textContent, /1 个/);
   assert.ok(document.querySelector('.local-directory-panel'), 'A successful combined command keeps the completion step visible');
   assert.match(document.querySelector('[role=dialog]').textContent, /添加成功/);
   assert.equal(document.querySelector('[role=tab]'), null);
@@ -2038,7 +2037,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.equal(document.querySelector('[role="dialog"]'), null);
   assert.equal(document.querySelectorAll('.project-card').length, 1);
   const listReads = calls.filter(([command]) => command === 'node_app_list').length;
-  await click(byLabel('刷新项目和运行状态'));
+  await act(async () => window.dispatchEvent(new window.Event('focus')));
   assert.ok(calls.filter(([command]) => command === 'node_app_list').length > listReads);
   assert.equal(document.querySelectorAll('.project-card').length, 1, 'A fresh backend list must retain the registered application');
   assert.ok(byLabel(`进入项目「${value.name}」`));
@@ -2086,19 +2085,14 @@ test('Deleting from a Node launcher action removes the app only after an explici
   }
 });
 
-test('All project types share My Projects, counts and search without a separate Node navigation', async () => {
+test('All project types share My Applications and counts without navigation or search', async () => {
   const state = { nodes: [app()], projects: [{ id: 'prj_static', name: 'Static fixture', description: 'Artificial webpage', state: 'ready', issues: [], projectRoot: '/artificial/static', manifest: null }] };
   await setup(shellMock(state), {}, App);
   assert.equal(document.querySelectorAll('.project-card').length, 2);
-  assert.match(document.querySelector('.radio-footer').textContent, /共 2 个应用/);
-  assert.deepEqual([...document.querySelectorAll('.radio-primary-nav button')].map(value => value.textContent), ['我的项目', '空间']);
-  assert.match(document.querySelector('.project-grid').textContent, /网页项目/);
-  assert.match(document.querySelector('.project-grid').textContent, /Node 服务项目/);
-  await change(document.querySelector('input[type="search"]'), 'Disposable');
-  assert.equal(document.querySelectorAll('.project-card').length, 1);
-  assert.match(document.querySelector('.radio-footer').textContent, /显示 1 \/ 共 2 个应用/);
-  await change(document.querySelector('input[type="search"]'), 'no match artificial');
-  assert.match(document.querySelector('.project-search-empty').textContent, /没有找到匹配/);
+  assert.match(document.querySelector('.application-heading-main').textContent, /2 个/);
+  assert.equal(document.querySelector('.radio-primary-nav'), null);
+  assert.equal(document.querySelector('input[type="search"]'), null);
+  assert.match(document.querySelector('.radio-footer').textContent, /项目文件夹/);
 });
 
 test('Entering a Node project with a missing key opens its configuration, saving never opens it automatically', async () => {
@@ -2116,11 +2110,11 @@ test('Entering a Node project with a missing key opens its configuration, saving
   const enter = document.querySelector('.project-card .primary-button');
   assert.equal(enter.disabled, false);
   await click(enter);
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '应用配置');
   assert.equal(calls.length, 0);
-  await change(input('AI_KEY'), 'artificial-explicit-entry-key'); await submit();
+  await change(input('AI_KEY'), 'artificial-explicit-entry-key'); await saveAndContinueEditing();
   assert.equal(calls.length, 1); assert.equal(calls[0][0], 'node_app_configuration_save');
-  await click([...document.querySelectorAll('[role=dialog] button')].find(value => value.textContent === '进入项目'));
+  await click([...document.querySelectorAll('[role=dialog] button')].find(value => value.textContent === '打开'));
   assert.deepEqual(calls[1], ['node_app_start', { appId: 'node_fixture' }]);
   assert.equal(input('AI_KEY').value, '');
 });
@@ -2129,15 +2123,15 @@ test('Node details reopen without a secret and expose only supported tabs and ac
   const state = { nodes: [app()] };
   await setup(shellMock(state), {}, App);
   await openDetails('Disposable Node fixture');
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '概览');
-  assert.deepEqual([...document.querySelectorAll('[role=tab]')].map(value => value.textContent), ['概览', '应用配置', '运行状态']);
-  assert.ok(byText('删除项目'));
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '详情');
+  assert.equal(document.querySelector('[role=tablist]'), null);
+  assert.ok(byText('停止并删除…'));
   assert.equal([...document.querySelectorAll('[role=dialog] button')].some(value => /备份维护/.test(value.textContent)), false);
-  await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-close-draft');
+  await click(byText('修改')); await change(input('AI_KEY'), 'artificial-close-draft');
   await click(document.querySelector('[aria-label^="关闭Disposable"]'));
   await click(byText('丢弃草稿并关闭'));
   assert.equal(document.querySelector('[role=dialog]'), null);
-  await openDetails('Disposable Node fixture'); await click(byText('应用配置'));
+  await openDetails('Disposable Node fixture'); await click(byText('修改'));
   assert.equal(input('AI_KEY').value, '');
 });
 
@@ -2157,22 +2151,18 @@ test('Closing read-only details revokes a late configuration result before anoth
   await openDetails('Second artificial fixture');
   await act(async () => delayed.resolve(app({ name: 'Outdated first project', configuration: { revision: 99, values: { MODEL: 'stale-model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true } })));
   assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
-  await click(byText('应用配置'));
+  await click(byText('修改'));
   assert.equal(input('MODEL').value, '');
 });
 
-test('Node tabs support keyboard navigation and preserve drafts without a reload action', async () => {
+test('Returning between details and configuration preserves drafts without tab navigation', async () => {
   await setup(baseMock(app(), async (command) => { throw new Error(command); }));
-  const configurationTab = document.querySelector('[role=tab][aria-selected=true]');
-  await act(async () => configurationTab.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })));
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '运行状态');
-  assert.equal(document.activeElement.textContent, '运行状态');
-  await click(byText('应用配置')); await change(input('AI_KEY'), 'artificial-reload-draft');
+  await change(input('AI_KEY'), 'artificial-reload-draft');
   assert.equal(byText('重新读取配置'), undefined);
-  await click(byText('概览')); await click(byText('应用配置'));
+  await showDetails(); await click(byText('修改'));
   assert.equal(document.querySelectorAll('[role=dialog]').length, 1);
   assert.equal(input('AI_KEY').value, 'artificial-reload-draft');
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent, '应用配置');
+  assert.equal(document.querySelector('[role=tablist]'), null);
 });
 
 test('Pending Node entry blocks competing create, import and static detail dialogs until its failure settles', async () => {
@@ -2186,11 +2176,11 @@ test('Pending Node entry blocks competing create, import and static detail dialo
   assert.equal(document.querySelector('[role=dialog]'), null);
   const staticTile = document.querySelector('[aria-label="进入项目「Static fixture」"]').closest('article');
   assert.equal(document.querySelector('.launcher-more'), null);
-  assert.equal(byText('新建项目').disabled, true);
-  assert.equal(byText('添加本地项目').disabled, true);
+  assert.equal(byText('新建').disabled, true);
+  assert.equal(byText('本机文件夹').disabled, true);
   assert.equal(byText('从 Git 添加').disabled, true);
   await act(async () => staticTile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-  await click(byText('新建项目')); await click(byText('添加本地项目')); await click(byText('从 Git 添加'));
+  await click(byText('新建')); await click(byText('本机文件夹')); await click(byText('从 Git 添加'));
   assert.equal(document.querySelector('[role=menu]'), null);
   assert.equal(document.querySelector('[role=dialog]'), null);
   await act(async () => configuration.reject(new Error('Artificial configuration read failure')));
@@ -2206,22 +2196,22 @@ test('A Node handoff from a previous instance never reaches the clipboard or cur
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
   const props = { enabled: true, instanceId: 'old', onDraftStateChange() {}, request: { app: value, intent: 'details', token: 1 } };
   await setup(baseMock(value, async command => { assert.equal(command, 'node_app_handoff'); return delayed.promise; }), props);
-  await click(byText('复制提示词'));
+  await showDetails(); await click(byText('复制提示词'));
   assert.equal(byText('正在准备说明…').disabled, true);
   await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new' })));
   await act(async () => delayed.resolve({ instanceId: 'old', projectRoot: '/disposable/old', text: 'obsolete handoff' }));
   assert.deepEqual(copied, []); assert.equal(document.querySelector('.handoff-preview'), null);
-  assert.equal(byText('进入项目').disabled, false);
+  assert.equal(byText('打开').disabled, false);
 });
 
 
 test('Returning from a closed business window refreshes overview actions without overview polling', async () => {
   const value = app({ state: 'running' }); let reads = 0;
   await setup(baseMock(value, async command => { assert.equal(command, 'node_app_status'); reads++; return { ...value, state: 'stopped' }; }));
-  await click(byText('概览')); assert.equal(byText('应用修改'), undefined);
+  await showDetails(); assert.equal(byText('应用修改'), undefined);
   await act(async () => window.dispatchEvent(new window.Event('focus')));
   assert.equal(reads, 1); assert.equal(byText('应用修改'), undefined);
-  assert.equal(byText('进入项目').disabled, false);
+  assert.equal(byText('打开').disabled, false);
 });
 
 
@@ -2231,11 +2221,11 @@ test('Entering after a stopped save clears its success notice without offering a
     if (command === 'node_app_configuration_save') return app({ configuration });
     assert.equal(command, 'node_app_start'); return app({ state: 'running', runningRevision: 2, configuration });
   }));
-  await change(input('MODEL'), 'saved-before-entry'); await submit();
-  assert.match(document.querySelector('.node-configuration-body').textContent, /已保存，下次进入时生效/);
-  await click(byText('进入项目'));
+  await change(input('MODEL'), 'saved-before-entry'); await saveAndContinueEditing();
+  await showDetails(); assert.match(document.body.textContent, /已保存，下次进入时生效/);
+  await click(byText('打开'));
   assert.equal(byText('立即重启'), undefined);
-  assert.doesNotMatch(document.querySelector('.node-configuration-body').textContent, /重启后生效|下次进入时生效/);
+  assert.doesNotMatch(document.body.textContent, /重启后生效|下次进入时生效/);
 });
 
 
@@ -2284,15 +2274,47 @@ test('A new required configuration discovered at launch opens its refreshed conf
     if(command==='node_app_status')return initial;
     throw Error(command);
   });
-  await click(byText('进入项目'));
-  assert.equal(document.querySelector('[role=tab][aria-selected=true]').textContent,'应用配置');
+  await click(byText('打开'));
+  assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'),'应用配置');
   assert.equal(document.querySelector('.node-launch-error'),null);assert.equal(calls.filter(command=>command==='node_app_start').length,1);assert.equal(reads,2);
 });
 test('Configuration submission carries the displayed manifest revision', () => {
  const value=app({manifestDigest:'a'.repeat(64)});const input=nodeConfigurationInput(value,{ordinary:{},secrets:{}});assert.equal(input.manifestDigest,value.manifestDigest);
 });
 
-test('A retired installation stays removable and cannot advertise a source update or start',async()=>{
- const value=app({installation:{kind:'managed',retired:true},state:'failed',lastError:'这个应用使用旧的安装方式，已不再支持。请删除后重新添加。',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:false,unavailable:true}});
- await setup(baseMock(value));await click(byText('概览'));assert.match(document.body.textContent,/请删除后重新添加/);assert.equal(byText('进入项目').disabled,true);assert.equal(byText('复制提示词').disabled,true);assert.equal(byText('删除项目').disabled,false);assert.equal(byText('应用修改'),undefined);assert.doesNotMatch(document.body.textContent,/改完后关闭窗口再进入即可生效|AI 在这里改代码/);assert.ok(byText('旧程序位置','h3'));assert.ok(document.querySelector('[aria-label="复制旧程序位置"]'));
+test('A retired installation stays removable and cannot advertise a source update or start', async()=>{
+ const value=app({installation:{kind:'managed',generation:'old-generation',sourceId:'old-source',sourceDigest:'old-digest'}});
+ await setup(baseMock(value));await showDetails();assert.match(document.body.textContent,/请删除后重新添加/);assert.equal(byText('打开').disabled,true);assert.equal(byText('复制提示词').disabled,true);assert.equal(byText('停止并删除…').disabled,false);assert.equal(byText('应用修改'),undefined);
+});
+
+
+test('Saving application configuration returns to details without opening or restarting the app', async () => {
+  const calls = [];
+  await setup(baseMock(app(), async (command, args) => {
+    calls.push([command, args]); assert.equal(command, 'node_app_configuration_save');
+    return app({ configuration: { ...app().configuration, revision: 2, values: { MODEL: 'saved-model' } } });
+  }));
+  await change(input('MODEL'), 'saved-model');
+  await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+  assert.equal(document.querySelector('.node-configuration-form'), null);
+  assert.equal(document.querySelector('[role=tablist]'), null);
+  assert.match(document.querySelector('.application-detail-information').textContent, /应用配置已填写 2 项/);
+  assert.match(document.body.textContent, /已保存，下次进入时生效/);
+  assert.equal(calls.length, 1);
+});
+
+test('Node details use their matched storage measurement and copy both bounded runtime log paths', async () => {
+  const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
+  const value = app({ objectLayout: { controlPath: '/disposable/control', data: { root: '/disposable/data' } } });
+  await setup(baseMock(value, async command => { throw new Error(command); }), {
+    request: { app: value, intent: 'details', token: 1 },
+    workspaceStorageMock: () => ({ workspace: {}, nodeApps: [{ scope: { appId: 'other-app' }, totalBytes: 99999, complete: true }, { scope: { appId: value.id }, totalBytes: 4000, complete: true }], otherLocalLocations: [] }),
+  });
+  await showDetails();
+  const rows = [...document.querySelectorAll('.application-detail-row')];
+  assert.equal(rows.find(row => row.querySelector('dt').textContent === '占用空间').querySelector('dd').textContent, '4.0 KB');
+  await click(byText('复制路径'));
+  assert.deepEqual(copied, ['/disposable/control/logs/current.log\n/disposable/control/logs/previous.log']);
+  assert.equal(document.querySelector('[role=tablist]'), null);
 });

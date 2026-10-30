@@ -9,7 +9,7 @@ export interface ProjectHandoff {
 }
 export type HandoffAction = 'copy';
 
-export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, onShowHelp, feedback, children, afterCopy, buildAction, hint = '想改功能？复制提示词发给 AI，按项目说明完成后续操作。' }: {
+export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClear, onShowHelp, feedback, hint = '想改功能？复制提示词发给 AI，按项目说明完成后续操作。' }: {
   handoff: ProjectHandoff | null;
   action: HandoffAction | null;
   disabled: boolean;
@@ -17,21 +17,17 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
   onClear: () => void;
   onShowHelp?: () => void;
   feedback?: ReactNode;
-  children?: ReactNode;
-  afterCopy?: ReactNode;
-  buildAction?: ReactNode;
   hint?: string;
 }) {
   const [showHelp, setShowHelp] = useState(false);
   const id = useId();
   return <section className="detail-actions" aria-label="应用操作与交接说明">
+    <div className="detail-action-hint"><p>想改功能？交给 AI</p>
     <div className="detail-action-row">
-      {children}
-      <div className={afterCopy ? 'detail-copy-actions' : 'detail-development-actions'} aria-label="AI 交接">
+      <div className="detail-copy-actions" aria-label="AI 交接">
         <button className="refresh-button detail-copy-prompt" disabled={disabled || action !== null} onClick={() => onPrepare('copy')}><Copy size={20} />{action === 'copy' ? '正在准备说明…' : '复制提示词'}</button>
-        {buildAction}
       </div>
-      {afterCopy}
+    </div>
     </div>
     <div className="detail-action-hint"><p>{hint}</p><button className="text-button" disabled={disabled || action !== null} aria-expanded={showHelp || Boolean(handoff)} onClick={() => { if (showHelp || handoff) { setShowHelp(false); if (handoff) onClear(); } else { setShowHelp(true); onShowHelp?.(); } }}>{showHelp || handoff ? '收起交接说明' : '查看交接说明'}<ChevronRight size={16} /></button></div>
     {feedback}

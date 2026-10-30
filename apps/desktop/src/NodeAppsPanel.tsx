@@ -1,8 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, Copy, FolderOpen, Info, KeyRound, Monitor, RefreshCw, Server, Square, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
+import { FolderOpen, Monitor, Square, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { Modal } from './Modal';
+import { ApplicationDetails, ApplicationDetailRow } from './ApplicationDetails';
+import { bytesText, partBytes } from './storage-utils';
+import type { WorkspaceStorage } from './workspace-storage-data';
+import { nodeRowFor } from './workspace-storage-data';
+import { launcherMonogram } from './ProjectCard';
+import type { StoragePart } from './types';
 import { NodeAppDeleteDialog } from './NodeAppDeleteDialog';
 import { NodeConfigurationForm } from './NodeConfigurationForm';
 import type { NodeConfigurationDraft } from './node-configuration-validation';
@@ -67,8 +73,8 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
-  const [savedConfiguration, setSavedConfiguration] = useState(false);
-  const [tab, setTab] = useState<'overview' | 'configuration' | 'runtime'>('overview');
+  const [view, setView] = useState<'details' | 'configuration'>('details');
+  const [storage, setStorage] = useState<StoragePart | null>(null);
   const [dismissConfirm, setDismissConfirm] = useState(false);
   const [detail, setDetail] = useState<NodeAppDetail | null>(null);
   const [draft, setDraft] = useState<Draft>({ ordinary: {}, secrets: {} });
@@ -101,7 +107,6 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   const selected = useRef<string | null>(null);
   const confirmation = useRef<HTMLDivElement>(null);
   const draftCallback = useRef(onDraftStateChange); draftCallback.current = onDraftStateChange;
-  const base = useId();
   const configurationDirty = Boolean(detail && JSON.stringify(draft) !== JSON.stringify(draftFrom(detail)));
   const configurationState = detail ? nodeConfigurationState(detail) : null;
   const launchFailureText = launchError || (detail?.state === 'failed' ? detail.lastError ?? '' : '');
@@ -111,7 +116,6 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
   const projectPath = detail?.sourcePath;
   const retired = Boolean(detail?.installation);
   const runtimeLogPaths = detail?.objectLayout?.controlPath ? { current: `${detail.objectLayout.controlPath}/logs/current.log`, previous: `${detail.objectLayout.controlPath}/logs/previous.log` } : undefined;
-  const visibleTabs = ([['overview', '概览', Info], ...(detail?.fields.length ? [['configuration', '应用配置', KeyRound] as const] : []), ['runtime', '运行状态', Activity]] as const);
 
   function clearDeletion() {
     deleteTargetRef.current = null;
@@ -139,44 +143,44 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     try {
       const value = await invoke<NodeAppDetail>('node_app_configuration', { appId });
       if (!alive.current || selected.current !== appId || sequence.current !== selection || currentInstance.current !== runtime || value.id !== appId) return true;
-      accept(value, true); setModalOpen(true); setTab('configuration'); setError(''); setLaunchError('');
+      accept(value, true); setModalOpen(true); setView('configuration'); setError(''); setLaunchError('');
       return true;
     } catch { return false; }
   }, [accept]);
 
   const enterApp = useCallback(async (value: NodeAppDetail) => {
     if (operation.current || !enabled) return;
-    if (value.runRecovery || !value.configuration.canStart) { setModalOpen(true); setTab(nodeConfigurationState(value).blockedTab); return; }
+    if (value.runRecovery || !value.configuration.canStart) { setModalOpen(true); setView(nodeConfigurationState(value).blockedView); return; }
     operation.current = true; setPending('enter'); setError(''); setLaunchError(''); setNotice('');
     const appId = value.id;
     try {
       if (value.state === 'running') await invoke('node_app_open', { appId });
       else {
-        setSavedConfiguration(false);
+
         const opened = await invoke<NodeAppDetail>('node_app_start', { appId });
         if (alive.current && selected.current === appId) accept(opened, false);
       }
     } catch (cause) {
-      if (alive.current && selected.current === appId && !await refreshMissingConfiguration(cause, appId)) { setError(messageFrom(cause)); setLaunchError(messageFrom(cause)); setModalOpen(true); setTab('runtime'); }
+      if (alive.current && selected.current === appId && !await refreshMissingConfiguration(cause, appId)) { setError(messageFrom(cause)); setLaunchError(messageFrom(cause)); setModalOpen(true); setView('details'); }
     } finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
   }, [accept, enabled, refreshMissingConfiguration]);
 
-  const select = useCallback(async (app: NodeAppDetail, initialTab: 'overview' | 'configuration' | 'runtime' = 'overview', enter = false) => {
+  const select = useCallback(async (app: NodeAppDetail, initialView: 'details' | 'configuration' = 'details', enter = false) => {
     const selection = ++sequence.current;
     const current = () => alive.current && selected.current === app.id && sequence.current === selection && currentInstance.current === instanceId;
     selected.current = app.id;
     clearDeletion();
-    setHandoff(null); setSavedConfiguration(false);
+    setHandoff(null);
     setDetail(app); setDraft(draftFrom(app)); setError(''); setLaunchError(''); setStatusError(''); setNotice(''); setLoading(true);
-    setTab(initialTab === 'configuration' && !app.fields.length ? 'overview' : initialTab); setDismissConfirm(false); setModalOpen(!enter);
+    setView(initialView === 'configuration' && !app.fields.length ? 'details' : initialView); setDismissConfirm(false); setModalOpen(!enter);
     try {
       const value = await invoke<NodeAppDetail>('node_app_configuration', { appId: app.id });
       if (!current()) return;
       if (value.id !== app.id) throw new Error('配置返回的应用身份不符，请重新读取。');
       accept(value, true);
-      if (initialTab === 'configuration') setTab(value.fields.length ? 'configuration' : 'overview');
+      if (initialView === 'configuration') setView(value.fields.length ? 'configuration' : 'details');
       if (enter) {
-        if (!value.configuration.canStart) { setModalOpen(true); setTab(nodeConfigurationState(value).blockedTab); }
+        if (!value.configuration.canStart) { setModalOpen(true); setView(nodeConfigurationState(value).blockedView); }
         else await enterApp(value);
       }
     } catch (cause) { if (current()) { setError(messageFrom(cause)); setModalOpen(true); } }
@@ -209,7 +213,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     }
     if (request.intent === 'delete') { openDeletion(request.app); return; }
     if (dirty && selected.current !== request.app.id) { setRequestedSelection(request.app); return; }
-    void select(request.app, request.intent === 'enter' || request.intent === 'configure' ? 'configuration' : 'overview', request.intent === 'enter');
+    void select(request.app, request.intent === 'enter' || request.intent === 'configure' ? 'configuration' : 'details', request.intent === 'enter');
   }, [request, select, openDeletion, pending, directoryPending]);
   useEffect(() => {
     if (!addRequest || addRequest === seenAdd.current || operation.current || directoryPending || !enabled) return;
@@ -241,12 +245,12 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       }).catch(() => { if (current()) setStatusError('运行状态暂时无法更新，正在自动重试。应用不会因此自动重启。'); }).finally(() => { polling = false; });
     };
     // Returning from the business window must also refresh overview actions.
-    // Only the runtime tab schedules repeated observations.
+    // Observe the shared details view without replacing configuration drafts.
     const visible = () => { if (document.visibilityState === 'visible') poll(); };
     window.addEventListener('focus', poll); document.addEventListener('visibilitychange', visible);
-    const timer = tab === 'runtime' ? window.setInterval(poll, 1500) : null;
+    const timer = window.setInterval(poll, 1500);
     return () => { cancelled = true; if (timer !== null) window.clearInterval(timer); window.removeEventListener('focus', poll); document.removeEventListener('visibilitychange', visible); };
-  }, [enabled, detail?.id, pending, loading, modalOpen, tab, instanceId, Boolean(deleteTarget)]);
+  }, [enabled, detail?.id, pending, loading, modalOpen, view, instanceId, Boolean(deleteTarget)]);
 
   function acceptDirectory(value: NodeAppDetail) {
     // Keep the add result visible until the user chooses its next action.
@@ -274,7 +278,8 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       if (!current()) return;
       if (value.id !== appId) throw new Error('保存结果的应用身份不符，请重新读取配置后核对。');
       accept(value, true);
-      setSavedConfiguration(true);
+      setView('details');
+      setNotice(value.state === 'running' ? '已保存，重启后生效' : '已保存，下次进入时生效');
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
     finally {
       // A workspace change revokes this response, while the pending write still
@@ -293,7 +298,6 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
       accept(value, !dirty);
       setStatusError('');
       if (command === 'node_app_stop') setNotice(value.state === 'stopped' ? '应用已关闭，相关服务已停止。已保存的配置保留。' : '关闭结果已更新，请查看应用状态。');
-      if (command === 'node_app_restart') setSavedConfiguration(false);
       if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? '应用窗口已打开。关闭窗口会停止本应用。' : '打开结果已更新，请查看应用状态。');
     } catch (cause) { if (alive.current && selected.current === appId && !await refreshMissingConfiguration(cause, appId)) { setError(messageFrom(cause)); if (command === 'node_app_start' || command === 'node_app_restart') setLaunchError(messageFrom(cause)); } }
     finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
@@ -310,12 +314,12 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
 
   function ordinaryChange(name: string, value: string) {
     setDraft((current) => ({ ...current, ordinary: { ...current.ordinary, [name]: value }, secrets: Object.fromEntries(Object.entries(current.secrets).map(([key, edit]) => [key, detail?.fields.find((field) => field.name === key)?.endpointField === name && edit.action === 'rebind' ? { action: 'keep', value: '' } : edit])) }));
-    setNotice(''); setSavedConfiguration(false);
+    setNotice('');
   }
-  function secretChange(name: string, edit: SecretDraft) { setDraft((current) => ({ ...current, secrets: { ...current.secrets, [name]: edit } })); setNotice(''); setSavedConfiguration(false); }
+  function secretChange(name: string, edit: SecretDraft) { setDraft((current) => ({ ...current, secrets: { ...current.secrets, [name]: edit } })); setNotice('');  }
   function closeDetails() {
     sequence.current++; statusRead.current++; selected.current = null; clearDeletion(); setModalOpen(false); setDetail(null);
-    setHandoff(null); setSavedConfiguration(false);
+    setHandoff(null);
     setDraft({ ordinary: {}, secrets: {} }); setDismissConfirm(false); setRequestedSelection(null); setLoading(false);
   }
   function acceptDeletion(appId: string, result: NodeAppDeleteResult) {
@@ -357,55 +361,42 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, onImp
     catch (cause) { if (alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId) setError(messageFrom(cause)); }
     finally { if (alive.current) setOpeningFolder(current => current === path ? null : current); }
   }
-  function changeTab(value: typeof tab) {
+  function changeView(value: typeof view) {
     if (blocked || loading) return;
-    clearDeletion();
-    setTab(value); setDismissConfirm(false);
+    clearDeletion(); setView(value); setDismissConfirm(false);
   }
-  function tabKeys(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const values = visibleTabs.map(([value]) => value);
-    const next = event.key === 'ArrowRight' ? (index + 1) % values.length : event.key === 'ArrowLeft' ? (index + values.length - 1) % values.length : event.key === 'Home' ? 0 : event.key === 'End' ? values.length - 1 : null;
-    if (next === null || blocked || loading) return;
-    event.preventDefault(); changeTab(values[next]); document.getElementById(`${base}-${values[next]}-tab`)?.focus();
-  }
+  useEffect(() => {
+    if (!enabled || !modalOpen || !detail) return;
+    let cancelled = false;
+    setStorage(null);
+    void invoke<WorkspaceStorage>('workspace_storage').then(value => {
+      if (!cancelled) setStorage(nodeRowFor(value.nodeApps, detail.id) ?? null);
+    }).catch(() => { /* An unknown measurement stays unknown. */ });
+    return () => { cancelled = true; };
+  }, [enabled, modalOpen, detail?.id, instanceId]);
 
   const deleteDialog = deleteTarget && <NodeAppDeleteDialog key={deleteTarget.token} app={deleteTarget.app} initialTask={deleteTarget.task} enabled={enabled && !pending && !directoryPending && !loading} instanceId={instanceId} onClose={clearDeletion} onPendingChange={value => { if (deleteTargetRef.current?.token === deleteTarget.token) setDeletionPending(value); }} onDeleted={acceptDeletion} onTaskChanged={onDeletionTaskChanged} onAbandoned={task => { if (deleteTargetRef.current?.token !== deleteTarget.token || currentInstance.current !== deleteTarget.instanceId) return; clearDeletion(); onDeletionAbandoned?.(task); }} />;
 
   return <>
-    {modalOpen && detail && <Modal title={detail.name} titleIcon={<Server size={22} aria-hidden="true" />} description="Node 服务 · 本机独立数据" headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" wide closeDisabled={Boolean(pending) || deletionPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
+    {modalOpen && detail && <Modal title={detail.name} titleIcon={<span className="launcher-monogram">{launcherMonogram(detail.name)}</span>} description="Node 服务 · 本机独立数据" headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : detail.runRecovery ? runtimeStateLabel(detail) : configurationState?.needsAttention ? '需要配置' : detail.state === 'failed' ? '出错' : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" closeDisabled={Boolean(pending) || deletionPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
       <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
         {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的修改</strong><p>关闭会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
         {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="切换项目确认"><strong>当前有未保存的修改</strong><p>继续会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并切换</button></div></div>}
         {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
         {launchFailureText && !retired && <div className="node-launch-error" role="alert"><h3>「{detail.name}」没能打开</h3><p className="task-error node-inline-message">{launchFailureText}</p><p>文件在哪里：<code>{projectPath ?? '源码目录暂不可用'}</code></p><p>应用直接运行项目文件夹里的代码，最近的修改可能影响启动。 启动过程中程序可能已经执行，请以实际记录核对应用数据。</p><AiProjectHelp allowCodex={false} context={{ runtimeLogPaths, mode: 'start-failed', sourceKind: detail.gitSource ? 'git' : 'local', sourcePath: projectPath, appName: detail.name, appVersion: detail.version, platformVersion, issues: [launchFailureText] }} label="复制说明给 AI" className="primary-button" disabled={Boolean(pending)} /></div>}
         {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
-        <CodexHandoffPanel handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading || retired} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint={retired ? "此安装方式已退役，请删除后重新添加。" : "想改功能？复制提示词发给 AI，改完后关闭窗口再进入即可生效。"} afterCopy={<>
-          {detail.fields.length > 0 && <button className="refresh-button" disabled={blocked || loading} onClick={() => changeTab('configuration')}><KeyRound size={18} />修改配置</button>}
-          <button className="text-button detail-delete-button" disabled={blocked || loading || dirty} onClick={() => openDeletion(detail)}><Trash2 size={15} />删除项目</button>
-        </>}>
-          <button className="primary-button" disabled={blocked || loading || retired || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />{detail.runRecovery ? '查看运行状态' : '进入项目'}</button>
-        </CodexHandoffPanel>
-        {detail.lastError && <p className="task-error node-inline-message" role="alert">{detail.lastError}</p>}
-        {statusError && <p className="task-error node-inline-message" role="alert">{statusError}</p>}
-        {detail.restartRequired && !(tab === 'configuration' && savedConfiguration) && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : configurationState?.needsAttention ? '请先核对应用配置，再重启应用。' : '当前暂不能重启，请先查看运行状态。'}</p>}
-        <div className="overview-tabs" role="tablist" aria-label="Node 项目详情">{visibleTabs.map(([value, label, Icon], index) => <button key={value} id={`${base}-${value}-tab`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${base}-${value}-panel`} tabIndex={tab === value ? 0 : -1} disabled={blocked || loading} onClick={() => changeTab(value)} onKeyDown={(event) => tabKeys(event, index)}><Icon size={14} />{label}</button>)}</div>
-        <div className="detail-overview-body node-overview-body" role="tabpanel" id={`${base}-overview-panel`} aria-labelledby={`${base}-overview-tab`} hidden={tab !== 'overview'}>
-          <dl className="detail-summary-facts"><div><dt>运行状态</dt><dd className={detail.state === 'running' ? 'detail-ready-text' : detail.state === 'failed' ? 'detail-error-text' : ''}>{runtimeStateLabel(detail)}{detail.restartRequired ? ' · 待重启' : ''}</dd></div><div><dt>应用配置</dt><dd className={configurationState?.kind === 'complete' ? '' : 'detail-warning-text'}>{configurationState?.overviewText}</dd></div></dl>
-          <section className="detail-location-section"><h3>{retired ? '旧程序位置' : '项目文件夹'}</h3>
-            <div className="detail-location-row"><FolderOpen size={22} /><span><code>{projectPath ?? (retired ? '旧程序目录暂不可用。' : '源码目录暂不可用，请核对项目来源。')}</code></span><button className="icon-button" aria-label={retired ? '复制旧程序位置' : '复制项目文件夹'} disabled={!projectPath} onClick={() => { if (projectPath) void navigator.clipboard?.writeText(projectPath).then(() => setNotice('路径已复制。'), () => setNotice('请选中完整路径后复制。')); }}><Copy size={20} /></button><button className="refresh-button" disabled={!enabled || !projectPath || openingFolder === projectPath} onClick={() => void revealSource()}>打开文件夹</button></div>
-            <p className="detail-section-note">{retired ? '此位置属于已停用的安装副本。请删除项目后重新添加。' : 'AI 在这里改代码。数据、配置和密钥由平台另行保存。'}</p>
-          </section>
-          <section className="detail-technical-information"><h3>技术信息</h3><dl className="path-list node-technical-paths">
-            <div><dt>项目 ID</dt><dd><code>{detail.id}</code></dd></div>
-            <div><dt>数据目录</dt><dd><code>{detail.objectLayout?.data.root ?? '路径暂不可用'}</code></dd></div>
-            <div><dt>数据库</dt><dd><code>{detail.objectLayout?.data.database ?? '未声明或路径暂不可用'}</code></dd></div>
-            <div><dt>配置文件路径</dt><dd><code>{detail.objectLayout?.configurationPath ?? '路径暂不可用'}</code></dd></div>
-          </dl></section>
-        </div>
-        <div className="detail-overview-body" role="tabpanel" id={`${base}-runtime-panel`} aria-labelledby={`${base}-runtime-tab`} hidden={tab !== 'runtime'}><h3>运行状态</h3><p className="detail-section-note">当前{runtimeStateLabel(detail)}。{detail.runRecovery ? '此处核对上次运行的服务；关闭此详情弹窗不会停止服务。' : '关闭应用窗口会停止本应用；关闭此详情弹窗不会关闭应用窗口。'}</p>{detail.runRecovery && <p className={detail.runRecovery.canStop ? 'project-help' : 'task-error'} role="status">{detail.runRecovery.message}</p>}<div className="node-runtime-actions"><button className="refresh-button" disabled={blocked || loading || !canStop} onClick={() => void run('node_app_stop')}><Square size={14} />{detail.runRecovery?.state === 'orphaned' ? '停止遗留运行' : '关闭应用'}</button><button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart || detail.state !== 'running'} onClick={() => void run('node_app_restart')}><RefreshCw size={14} />重启</button></div></div>
-        {detail.fields.length > 0 && <div className="detail-overview-body node-configuration-body" role="tabpanel" id={`${base}-configuration-panel`} aria-labelledby={`${base}-configuration-tab`} hidden={tab !== 'configuration'}>
-        {detail.configuration.unavailable ? <p className="task-error" role="alert">配置暂不可用，请先检查运行状态。</p> : <NodeConfigurationForm key={`${instanceId ?? ''}:${detail.id}:${configurationRead}`} app={detail} draft={draft} active={tab === 'configuration' && !deleteTarget} disabled={blocked || loading} dirty={configurationDirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} savedNotice={savedConfiguration ? detail.state === 'running' ? '已保存，重启后生效' : '已保存，下次进入时生效' : undefined} onRestart={savedConfiguration && detail.state === 'running' && detail.restartRequired ? () => void run('node_app_restart') : undefined} restartDisabled={dirty || !detail.configuration.canStart} onOpenHelp={(name) => void open('node_app_open_help', name)} />}
-        </div>}
+        <ApplicationDetails
+          children={view === 'configuration' ? <div className="detail-overview-body node-configuration-body">
+          <div className="detail-section-heading"><h3>应用配置</h3><button className="text-button" disabled={blocked || loading} onClick={() => changeView('details')}>返回详情</button></div>
+          {detail.configuration.unavailable ? <p className="task-error" role="alert">配置暂不可用，请先检查运行状态。</p> : <NodeConfigurationForm key={`${instanceId ?? ''}:${detail.id}:${configurationRead}`} app={detail} draft={draft} active={!deleteTarget} disabled={blocked || loading} dirty={configurationDirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} onOpenHelp={(name) => void open('node_app_open_help', name)} />}
+        </div> : undefined}
+          notices={<>{detail.runRecovery && <p className={detail.runRecovery.canStop ? 'project-help' : 'task-error'} role="status">{detail.runRecovery.message}</p>}{detail.lastError && <p className="task-error" role="alert">{detail.lastError}</p>}{statusError && <p className="task-error" role="alert">{statusError}</p>}{detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : configurationState?.needsAttention ? '请先核对应用配置，再重启应用。' : '当前暂不能重启，请先核对运行状态。'}</p>}{detail.state === 'running' && detail.restartRequired && detail.configuration.canStart && <button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart} onClick={() => void run('node_app_restart')}>立即重启</button>}</>}
+          actions={<><button className="primary-button" disabled={blocked || loading || retired || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />打开</button>{canStop && <button className="refresh-button" disabled={blocked || loading} onClick={() => void run('node_app_stop')}><Square size={14} />{detail.runRecovery?.state === 'orphaned' ? '停止遗留运行' : '停止运行'}</button>}</>}
+          handoff={view === 'details' ? <CodexHandoffPanel handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading || retired} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint={retired ? '此安装方式已退役，请删除后重新添加。' : '复制提示词发给 AI，改完后关闭窗口再打开即可生效。'} /> : undefined}
+          information={view === 'details' ? <>{detail.fields.length > 0 && <ApplicationDetailRow label="应用配置" action={<button className="text-button" disabled={blocked || loading} onClick={() => changeView('configuration')}>修改</button>}><span>{configurationState?.needsAttention || configurationState?.kind === 'unavailable' ? configurationState.overviewText : `已填写 ${detail.fields.filter(field => field.secret ? detail.configuration.secretStatus[field.name] === 'set' : Object.hasOwn(detail.configuration.values, field.name)).length} 项`}</span></ApplicationDetailRow>}<ApplicationDetailRow label="项目文件夹" action={projectPath ? <button className="text-button" disabled={!enabled || openingFolder === projectPath} onClick={() => void revealSource()}>打开</button> : undefined}><code>{projectPath ?? '源码目录暂不可用，请核对项目来源。'}</code></ApplicationDetailRow><ApplicationDetailRow label="占用空间">{bytesText(partBytes(storage ?? undefined))}{storage && (!storage.complete || storage.stale) ? ' · 部分统计或待更新' : ''}</ApplicationDetailRow>{<ApplicationDetailRow label="运行日志" action={runtimeLogPaths ? <button className="text-button" onClick={() => void navigator.clipboard?.writeText(`${runtimeLogPaths.current}\n${runtimeLogPaths.previous}`).then(() => setNotice('日志路径已复制。'), () => setNotice('请选中完整路径后复制。'))}>复制路径</button> : undefined}><code>{runtimeLogPaths?.current ?? '路径暂不可用'}</code></ApplicationDetailRow>}</> : undefined}
+          more={view === 'details' ? <details className="detail-overview-body application-detail-more"><summary>更多</summary><dl className="path-list node-technical-paths"><div><dt>项目 ID</dt><dd><code>{detail.id}</code></dd></div><div><dt>数据目录</dt><dd><code>{detail.objectLayout?.data.root ?? '路径暂不可用'}</code></dd></div><div><dt>数据库</dt><dd><code>{detail.objectLayout?.data.database ?? '未声明或路径暂不可用'}</code></dd></div><div><dt>配置文件路径</dt><dd><code>{detail.objectLayout?.configurationPath ?? '路径暂不可用'}</code></dd></div></dl></details> : undefined}
+          deleteAction={<button className="danger-button" disabled={blocked || loading || dirty} onClick={() => openDeletion(detail)}><Trash2 size={15} />停止并删除…</button>}
+        />
         {deleteDialog}
       </section></Modal>}
     {(!modalOpen || !detail) && deleteDialog}

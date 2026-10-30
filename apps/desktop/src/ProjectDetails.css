@@ -2,7 +2,7 @@
 .modal-title-group > div { min-width: 0; }
 .modal-title-icon { display: inline-flex; width: 44px; height: 44px; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 12px; background: var(--radio-header); color: var(--radio-focus); }
 .modal-title-icon img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; }
-:root[data-theme] .software-detail-modal { width: min(1040px, calc(100vw - 48px)); }
+:root[data-theme] .software-detail-modal { width: min(600px, calc(100vw - 48px)); }
 :root[data-theme] .software-detail-modal > .modal-header { align-items: center; gap: 16px; padding: 24px 32px; }
 :root[data-theme] .software-detail-modal > .modal-header .modal-title-group { flex: 1; }
 :root[data-theme] .software-detail-modal > .modal-header .modal-title-icon { width: 48px; height: 48px; background: var(--radio-focus); color: var(--radio-active-text); }
@@ -25,8 +25,6 @@
 :root[data-theme] .software-detail-modal .detail-actions .handoff-preview { margin-top: 16px; }
 :root[data-theme] .software-detail-modal .handoff-preview textarea { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid var(--radio-line); border-radius: 8px; resize: vertical; color: var(--radio-text); background: var(--radio-subtle); font: 12px/1.7 ui-monospace, monospace; }
 :root[data-theme] .software-detail-modal .detail-overview { margin: 0; padding: 0; border: 0; border-radius: 0; }
-:root[data-theme] .software-detail-modal .overview-tabs { top: 0; padding: 0 32px; margin: 0; gap: 8px; }
-:root[data-theme] .software-detail-modal .overview-tabs > button { min-width: 128px; min-height: 54px; justify-content: center; padding: 14px 16px; font-size: 14px; line-height: 22px; border-bottom-width: 3px; }
 :root[data-theme] .software-detail-modal .detail-overview-body { display: flex; flex-direction: column; gap: 24px; padding: 32px; }
 :root[data-theme] .software-detail-modal [hidden] { display: none !important; }
 :root[data-theme] .software-detail-modal .detail-overview-body h3 { margin: 0; font-size: 18px; line-height: 28px; }
@@ -66,19 +64,15 @@
 :root[data-theme] .software-detail-modal .detail-development-actions { width: 100%; margin-left: 0; }
 :root[data-theme] .software-detail-modal { width: calc(100vw - 32px); }
 :root[data-theme] .software-detail-modal > .modal-header, :root[data-theme] .software-detail-modal .detail-overview-body, :root[data-theme] .software-detail-modal .detail-actions { padding-left: 24px; padding-right: 24px; }
-:root[data-theme] .software-detail-modal .overview-tabs { padding-left: 24px; padding-right: 24px; }
 }
 @media (max-width: 640px) {
 :root[data-theme] .software-detail-modal .detail-summary-facts { grid-template-columns: 1fr; gap: 16px; }
 :root[data-theme] .software-detail-modal .detail-status-badge { padding: 4px 8px; }
 :root[data-theme] .software-detail-modal .detail-action-hint { align-items: flex-start; }
-:root[data-theme] .software-detail-modal .overview-tabs > button { min-width: 0; flex: 1; padding-left: 8px; padding-right: 8px; }
 }
-:root[data-theme] .modal-dialog.software-detail-modal { width: min(1040px, calc(100vw - 48px)); }
-:root[data-theme] .software-detail-modal .project-storage-panel.overview-body, :root[data-theme] .software-detail-modal [role="tabpanel"] > .project-more-panel { padding: 32px; }
+:root[data-theme] .modal-dialog.software-detail-modal { width: min(600px, calc(100vw - 48px)); }
 :root[data-theme] .software-detail-modal svg { stroke-width: 1.7; }
 .operation-recovery-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-@media (max-width: 900px) { :root[data-theme] .software-detail-modal .project-storage-panel.overview-body, :root[data-theme] .software-detail-modal [role="tabpanel"] > .project-more-panel { padding: 24px; } }
 
 /* Node service details share the software detail layout (2026-10-24). */
 :root[data-theme] .software-detail-modal .detail-status-badge.is-idle { color: var(--radio-secondary); background: var(--radio-subtle); }
@@ -90,14 +84,10 @@
 :root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button:disabled { color: var(--radio-muted); opacity: .6; }
 :root[data-theme] .software-detail-modal .detail-section-note { margin: 0; color: var(--radio-secondary); font-size: 13px; line-height: 22px; }
 .node-detail-modal .node-app-modal-detail { padding: 0; border: 0; background: transparent; }
-.node-detail-modal .node-app-modal-detail > .overview-tabs { position: sticky; top: 0; padding-top: 0; }
-:root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] { padding: 28px 32px 32px; }
-:root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] > h3 { color: var(--radio-text); font-size: 18px; line-height: 28px; margin: 0; }
 :root[data-theme] .node-detail-modal .node-app-modal-detail > :is(.operation-confirmation, .node-inline-message, .node-config-warning, .node-delete-confirmation) { margin: 16px 32px 0; }
 :root[data-theme] .node-detail-modal .node-runtime-actions { padding: 0; border: 0; background: transparent; }
 :root[data-theme] .node-detail-modal .detail-technical-information > * + * { margin-top: 10px; }
 @media (max-width: 760px) {
-  :root[data-theme] .node-detail-modal .node-app-modal-detail > [role=tabpanel] { padding: 24px; }
   :root[data-theme] .node-detail-modal .node-app-modal-detail > :is(.operation-confirmation, .node-inline-message, .node-config-warning, .node-delete-confirmation) { margin-inline: 24px; }
   :root[data-theme] .software-detail-modal .detail-summary-facts { grid-template-columns: 1fr; gap: 12px; }
 }
@@ -117,3 +107,22 @@
 
 :root[data-theme] .software-detail-modal .detail-copy-actions { display: inline-flex; align-items: center; }
 :root[data-theme] .software-detail-modal .detail-copy-actions > button { min-height: 40px; padding: 8px 16px; gap: 8px; border-radius: 8px; font-size: 14px; line-height: 22px; }
+
+/* Shared compact application detail structure; existing visual tokens are reused. */
+:root[data-theme] .software-detail-modal .application-detail-information { margin: 0; padding: 0 32px; }
+.application-detail-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) auto; align-items: center; gap: 16px; padding-block: 16px; border-bottom: 1px solid var(--radio-line); }
+.application-detail-row dt { color: var(--radio-secondary); }
+.application-detail-row dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.application-detail-row code { font: inherit; }
+.application-detail-row-action { justify-self: end; }
+.application-detail-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 32px; }
+.application-detail-footer p { margin: 0; color: var(--radio-secondary); }
+.application-detail-notices { padding: 0 32px; }
+.application-detail-more > summary { cursor: pointer; }
+:root[data-theme] .software-detail-modal .application-detail-more { display: block; }
+.application-detail-more > * + * { margin-top: 24px; }
+@media (max-width: 640px) {
+  :root[data-theme] .software-detail-modal .application-detail-information, .application-detail-notices { padding-inline: 24px; }
+  .application-detail-footer { padding-inline: 24px; }
+  .application-detail-row { grid-template-columns: 80px minmax(0, 1fr) auto; }
+}

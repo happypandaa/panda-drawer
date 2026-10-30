@@ -57,10 +57,9 @@ export interface WorkspaceLocationProps {
   migrating: boolean;
   onTask: (task: TaskRecord) => void;
   onRefresh: () => Promise<void>;
-  onOpenHistory?: () => void;
 }
 
-// Settings › 存储位置: where things live, and moving the whole workspace.
+// Settings › 存储与清理: where things live, and moving the whole workspace.
 export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrating, onTask, onRefresh }: WorkspaceLocationProps) {
   const [expanded, setExpanded] = useState(false);
   const [destination, setDestination] = useState('');
@@ -117,12 +116,11 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
   }
   const step = tracker.running || pending ? 3 : confirmedPath ? 2 : 1;
   return <section className="lifecycle-card workspace-location-card" aria-labelledby="workspace-location-title">
-    <div className="section-heading"><div><h2 id="workspace-location-title">存储位置</h2><p>软件管理的内容保存在下面两个位置。</p></div><button className="refresh-button" disabled={!enabled || refreshing || pending} onClick={() => void refresh()}><RefreshCw size={14} />{refreshing ? '刷新中…' : '刷新状态'}</button></div>
-    <div className="settings-location-row"><div><h3>项目工作区</h3><p>网页项目的源码、数据库和文件，以及平台管理的 Node 项目文件夹保存在这里。</p><code>{workspace?.workspaceRoot ?? '尚未读取'}</code>{workspace?.filesystem && <small>文件系统 {workspace.filesystem}</small>}</div><button className="refresh-button" disabled={!workspace} onClick={() => void copyPath(workspace?.workspaceRoot, '工作区')}><Copy size={14} />复制路径</button></div>
-    <div className="settings-location-row"><div><h3>软件数据目录</h3><p>存放 Node 的配置、数据、日志，以及软件设置和运行记录。迁移工作区时不会移动。</p><code>{dataRoot ?? '尚未读取'}</code></div><button className="refresh-button" disabled={!dataRoot} onClick={() => void copyPath(dataRoot, '数据目录')}><Copy size={14} />复制路径</button></div>
-    <div className="settings-migration">
-      <div className="settings-migration-heading"><div><h3>迁移工作区</h3><p>把工作区移到新位置，比如外置磁盘。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。</p></div><button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起' : '迁移工作区'}</button></div>
-      {expanded && <div className="workspace-migration-form" id={`${inputId}-migration`}>
+    <div className="section-heading"><div><h2 id="workspace-location-title">项目文件夹</h2><p>新建和从 Git 添加的应用保存在这里。</p></div><button className="refresh-button" disabled={!enabled || refreshing || pending} onClick={() => void refresh()}><RefreshCw size={14} />{refreshing ? '刷新中…' : '刷新状态'}</button></div>
+    <div className="settings-location-row"><div><code>{workspace?.workspaceRoot ?? '尚未读取'}</code>{workspace?.filesystem && <small>文件系统 {workspace.filesystem}</small>}</div><button className="refresh-button" disabled={!workspace || !enabled || migrating} onClick={() => { if (workspace?.workspaceRoot) void invoke('open_project_folder', { path: workspace.workspaceRoot }).catch(cause => setError(messageFrom(cause))); }}><FolderOpen size={14} />在访达中打开</button><button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起' : '更换位置'}</button></div>
+    {expanded && <div className="settings-migration">
+      <div className="settings-migration-heading"><div><h3>迁移工作区</h3><p>把工作区移到新位置，比如外置磁盘。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。</p></div></div>
+      <div className="workspace-migration-form" id={`${inputId}-migration`}>
         <ol className="settings-steps" aria-label="迁移步骤">{['选择位置', '核对', '迁移中'].map((label, index) => <li key={label} aria-current={step === index + 1 ? 'step' : undefined}>{index + 1} {label}</li>)}</ol>
         <form onSubmit={(event) => { event.preventDefault(); if (!blocked && destination.trim().startsWith('/')) { setConfirmedPath(destination.trim()); setAcknowledged(false); } }}>
           <div className="path-input"><label htmlFor={inputId}>新的工作区位置</label><div className="path-input-controls"><input id={inputId} value={destination} disabled={blocked} onChange={(event) => editDestination(event.target.value)} placeholder="/Volumes/磁盘/新工作区" autoComplete="off" /><button className="refresh-button" type="button" disabled={blocked} onClick={() => void choose()}><FolderOpen size={14} />{choosing ? '选择中…' : '选择…'}</button></div></div>
@@ -130,11 +128,11 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
           <button className="refresh-button" type="submit" disabled={blocked || !destination.trim().startsWith('/')}>下一步：核对<ArrowRight size={14} /></button>
         </form>
         {confirmedPath && <div className="operation-confirmation workspace-migration-confirmation"><strong>确认迁移整个工作区</strong><p>来源：<code>{workspace?.workspaceRoot}</code><br />目标：<code>{confirmedPath}</code></p><p>迁移包含网页项目和平台管理的 Node 项目文件夹。新位置成功重开后，原目录会自动永久删除。请处理窗口草稿后重新进入项目，并重新复制 AI 路径。</p><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对来源和目标，并处理各窗口草稿与外部写入</label><div className="confirmation-actions"><button className="primary-button" disabled={blocked || !acknowledged} onClick={() => void migrate()}>{pending ? '提交中…' : '确认开始迁移'}</button><button className="refresh-button" disabled={pending || tracker.running} onClick={() => { setConfirmedPath(null); setAcknowledged(false); }}>取消</button></div></div>}
-      </div>}
-    </div>
+      </div>
+    </div>}
     {pendingRecords.length > 0 && <div className="settings-history-notice" role="status"><span>当前工作区可继续使用；有 {pendingRecords.length} 个迁移原目录的删除尚未完成。请核对下面的残留路径并重试。</span></div>}
     {pendingRecords.length > 0 && <section className="retained-roots workspace-source-cleanup" aria-label="迁移原目录收尾">{pendingRecords.map((record, index) => <article className="retained-root-record" key={record.taskId ?? index}><strong>原目录删除未完成</strong><code>{record.sourceCleanup?.sourcePath ?? record.path ?? record.sourcePath ?? '原目录路径未记录'}</code>{record.sourceCleanup?.error && <p className="task-error">{messageFrom(record.sourceCleanup.error)}</p>}<p>当前工作区可继续使用。重试仅针对这次迁移登记的原目录。</p>{record.taskId && <button className="refresh-button" disabled={retryBlocked} onClick={() => void retryCleanup(record)}>{retryPending || cleanupTracker.running ? '正在删除原目录…' : '重试删除'}</button>}</article>)}</section>}
-    <details className="workspace-disclosure"><summary>技术信息与迁移记录</summary><div className="workspace-disclosure-body"><dl className="path-list"><div className="path-row"><dt>工作区格式</dt><dd>{workspace?.formatVersion ?? '未知'}</dd></div><div className="path-row"><dt>文件系统</dt><dd>{workspace?.filesystem ?? '尚未读取'}</dd></div></dl>{records.length ? <div className="retained-roots"><h3>迁移原目录记录</h3><p>这里显示迁移前的位置及当前是否可读取。平台使用上方当前工作区，不会自动切回原目录。</p>{records.map((record, index) => {
+    <details className="workspace-disclosure"><summary>技术信息与迁移记录</summary><details className="workspace-disclosure"><summary>软件数据目录</summary><div className="settings-location-row"><div><h3>软件数据目录</h3><p>存放 Node 的配置、数据、日志，以及软件设置和运行记录。迁移工作区时不会移动。</p><code>{dataRoot ?? '尚未读取'}</code></div><button className="refresh-button" disabled={!dataRoot} onClick={() => void copyPath(dataRoot, '数据目录')}><Copy size={14} />复制路径</button></div></details><div className="workspace-disclosure-body"><dl className="path-list"><div className="path-row"><dt>工作区格式</dt><dd>{workspace?.formatVersion ?? '未知'}</dd></div><div className="path-row"><dt>文件系统</dt><dd>{workspace?.filesystem ?? '尚未读取'}</dd></div></dl>{records.length ? <div className="retained-roots"><h3>迁移原目录记录</h3><p>这里显示迁移前的位置及当前是否可读取。平台使用上方当前工作区，不会自动切回原目录。</p>{records.map((record, index) => {
       const cleanup = record.sourceCleanup;
       const absent = record.absent === true || cleanup?.phase === 'absent';
       const pendingCleanup = cleanup?.cleanupPending === true;

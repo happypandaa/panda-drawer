@@ -42,9 +42,9 @@ export function ProjectTask({ task }: { task: TaskRecord }) {
     rolled_back: '本次数据取回已撤回。请核对恢复状态，处理未保存内容后重新打开项目。',
   });
   if (task.type === 'workspaceMigrationCleanup') Object.assign(outcomes, {
-    committed: '当前工作区可继续使用，原目录删除尚未完成。请刷新存储位置，核对残留路径后重试。',
-    committed_needs_attention: '当前工作区可继续使用，原目录删除需要检查。请刷新存储位置并核对错误和残留路径。',
-    unknown: '原目录删除结果尚未确认。当前工作区可继续使用；请查询同一任务和存储位置，不自动重复提交。',
+    committed: '当前工作区可继续使用，原目录删除尚未完成。请刷新设置 › 存储与清理，核对残留路径后重试。',
+    committed_needs_attention: '当前工作区可继续使用，原目录删除需要检查。请刷新设置 › 存储与清理并核对错误和残留路径。',
+    unknown: '原目录删除结果尚未确认。当前工作区可继续使用；请查询同一任务和设置 › 存储与清理，不自动重复提交。',
     not_committed: '本次尚未完成原目录删除。当前工作区可继续使用，请核对错误后重试。',
   });
   const dataRestoreSuccess = displayResult?.pending === true || displayResult?.businessBlocked === true
@@ -56,7 +56,7 @@ export function ProjectTask({ task }: { task: TaskRecord }) {
   const sourceCleanup = task.result?.sourceCleanup && typeof task.result.sourceCleanup === 'object' ? task.result.sourceCleanup as Record<string, unknown> : null;
   const migrationCleanupPending = task.result?.cleanupPending === true || sourceCleanup?.cleanupPending === true;
   const migrationSourceCompleted = sourceCleanup?.completed === true || task.result?.sourceRetained === false;
-  const migrationSuccess = migrationCleanupPending ? '新工作区可继续使用，原目录删除尚未完成。请在存储位置核对残留路径并重试。' : migrationSourceCompleted ? '工作区迁移已完成，原目录收尾已完成。处理草稿后，请重新进入项目并重新复制 AI 路径。' : '迁移任务已结束，请在存储位置核对当前工作区和原目录状态。';
+  const migrationSuccess = migrationCleanupPending ? '新工作区可继续使用，原目录删除尚未完成。请在设置 › 存储与清理核对残留路径并重试。' : migrationSourceCompleted ? '工作区迁移已完成，原目录收尾已完成。处理草稿后，请重新进入项目并重新复制 AI 路径。' : '迁移任务已结束，请在设置 › 存储与清理核对当前工作区和原目录状态。';
   const successMessages: Record<string, string> = { nodeGitImport: '项目已添加，临时文件已清理。', gitSourceRestoreApply: sourceRestoreSuccess, gitSourceRestoreContinue: sourceRestoreSuccess, gitSourceRestoreUndo: sourceRestoreSuccess, gitBranchCreate: '已创建并切换定制分支。源码、数据库和当前运行网页保持不变。', gitInitialize: '本机源码仓库已建立；尚未保存首个版本。', gitSave: '源码版本已保存。本次未重新捕获业务数据库和附件，已有数据版本保持。', gitDataSave: '源码及一致性数据库、附件版本已保存在本机 Git。当前业务数据和运行程序保持。', gitDataSaveFinalize: outcome === 'not_committed' ? '已确认此前保存没有提交。当前源码、业务数据库和附件保持，候选现场保留。' : '已完成此前已提交数据版本的保存收尾，当前业务数据库和附件保持。', workspaceCleanupPreview: '检查已完成。核对所列范围并明确选择后，才会永久清理。', workspaceCleanup: '历史清理任务已结束，请核对实际删除、失败和残留范围。逻辑字节不等于磁盘实际释放量。', storageScan: '扫描已完成，请查看空间分类、完成状态与扫描时间。', storageCleanup: '清理已结束。实际删除逻辑字节与文件系统可用空间变化可能不同，请查看结果和错误信息。', export: '项目归档已完成，可从下方路径找到 ZIP。', import: '项目已导入，请在项目列表中查看状态并打开。', copy: '独立副本已创建，请在项目列表中查看。', delete: typeof outcome === 'string' && outcomes[outcome] ? outcomes[outcome] : '删除任务已结束，但永久删除结果尚不能确认。请核对项目状态和错误信息，不要重复提交。', workspaceMigration: migrationSuccess, workspaceMigrationCleanup: migrationCleanupPending ? '新工作区可继续使用，原目录删除仍需检查。请刷新状态并核对残留路径。' : '迁移原目录收尾已完成，当前工作区可继续使用。' };
   Object.assign(successMessages, { gitDataRestoreApply: dataRestoreSuccess, gitDataRestoreContinue: dataRestoreSuccess, gitDataRestoreUndo: dataRestoreSuccess });
   const durabilityWarning = task.error?.details?.durabilityWarning;
