@@ -148,7 +148,7 @@ impl EnvironmentManager {
             npm: None,
             selection: "detected".into(),
             configured_node_path: None,
-            managed_node_path: self.managed_root.as_ref().map(|root| root.join("bin/node")),
+            managed_node_path: self.managed_root.as_deref().map(crate::node_tool_layout::node),
             supported_node_range: "^22.12.0 || ^24.0.0".into(),
             recommended_node: "24 LTS".into(),
             download_url: "https://nodejs.org/en/download".into(),
@@ -425,18 +425,7 @@ async fn probe_with_boundary<G: Clone + Send + 'static>(
     })
 }
 pub(crate) fn npm_entry_candidates(candidate: &Path, node_path: &Path) -> [PathBuf; 4] {
-    [
-        candidate
-            .parent()
-            .unwrap()
-            .join("../lib/node_modules/npm/bin/npm-cli.js"),
-        node_path
-            .parent()
-            .unwrap()
-            .join("../lib/node_modules/npm/bin/npm-cli.js"),
-        candidate.parent().unwrap().join("npm"),
-        node_path.parent().unwrap().join("npm"),
-    ]
+    crate::node_tool_layout::npm_entry_candidates(candidate, node_path)
 }
 
 async fn probe_managed<G: Clone + Send + 'static>(
