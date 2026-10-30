@@ -49,6 +49,9 @@ export async function repairGeneratedNodeRuntimePermissions(directory) {
 }
 
 export async function prepareDesktop({ release = false } = {}) {
+  if (process.platform === 'win32') {
+    return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release });
+  }
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('M0 packaging currently supports macOS on Apple Silicon only.');
   }

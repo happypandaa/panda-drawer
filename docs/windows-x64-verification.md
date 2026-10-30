@@ -572,3 +572,13 @@ managed_git/layout 选择固定 Windows JSON、win32/x64、cmd/git.exe 与 UCRT6
 root 真实 core 专项 **9/9**（原 Windows 文件事实 4 + 新 payload/layout 5），作者独立严格 Clippy 和 Mac ARM64 交叉 Clippy 通过，后者仅类型检查。临时合成字节从未执行，覆盖原生 schema/外来伪签名拒绝、搬迁、只读、改/缺/多/metadata/空目录及必要辅助目录。另对正常 Windows prepare 实际新产物，以临时 inspector 调用生产 `managed_git::verify`，完整 **375 文件、96,237,338 字节** 与固定锚点匹配，路径/版本正确；生产 `managed_toolchain::verify` 也核验该准备产物的 **1,928 文件** 与固定 Node/npm 锚点匹配。此处只读核验没有再次执行工具、访问仓库或项目。
 
 W1.13 后 root 另重跑原桌面生命周期失败用例：已实际越过配置/注册权限，现到第 73 行 submit_deletion 时明确报 NODE_DELETION_PLATFORM_UNSUPPORTED（W5 的 journal 创建尚未实现）。保留该失败，没有将单个前置后端通过记为完整桌面绿色。顺便移除 Unix 适配文件末尾的一行多余空白，不改任何 Mac 函数正文。正常 Tauri 部署、主界面与两端 CI 仍待验证。
+
+### W1.15 — 正常 Windows prepare 与真实 Tauri 调试部署
+
+正常 prepare/desktop 入口委托 Windows 适配，每次在仓库工具目录新建资源与独立 Cargo target，不重用旧 resources、旧 stage 或已有应用。准备固定 Node/runtime、MinGit、SDK、模板、技能与 README，最后编译本次 target 的实际 CLI。当前 Node 直接执行 Tauri JS；用户参数之后、应用参数分隔符之前依次合并 resources/externalBin reset 和本次精确配置，保留原参数数组。Mac 准备正文、Tauri 命令和标准输出工作流保持。Windows 配置已选择 currentUser NSIS / Evergreen downloadBootstrapper，尚未生成或安装 NSIS。
+
+首轮 immutable SDK 检查发现早期 Windows 检出的干净 SDK 文本仍是 CRLF。核对每个文件归一化后逐字等于 HEAD，才恢复这五个干净文件的确切 HEAD 字节；刷新 Git 索引后 SDK 无差异。没有改版本、tgz、vendor、完整性声明，也没有绕过 immutable 检查。第二次联网 Git TLS 在生成输出前失败，保留准备现场；第三次正常 `node scripts/prepare-desktop.mjs` 完整通过，包括 SDK immutable、官方 Node/npm/Git、模板 npm ci/build，以及全新 target 的实际 CLI 编译。
+
+使用该正常准备结果执行真实 Tauri `build --debug --no-bundle` 通过：生成桌面 exe **45,647,872 字节**，已复制 sidecar **11,423,232 字节**，SHA256 `2a760fde9e86146beb268c649587a11822c4520f286e8080c71793156cb91a4f` 与本次 CLI 精确一致，实际 --help 通过。部署后的七个资源根准确；11 个 SDK/模板/技能/README 必要文件与准备源逐字相同。另调用实际生产 verifier 核验已部署 Node **1,928 文件**和 Git **375 文件 / 96,237,338 字节**，完整树及固定锚点均通过。这里没有再次执行已部署工具或访问真实项目。
+
+Tauri CLI help 入口也通过。复审补上受控 Windows 准备模式的转发 Cargo 输出覆盖参数拒绝，防止命令行 target-dir 覆盖本次独立 target；与 Mac 标准打包同样不接纳自定义输出，Mac 原参数处理保持。参数回归 **3/3** 验证 reset/map 顺序、两种覆盖形式拒绝及 Mac 原调用，普通 `--locked` 仍传入。首次真实完整部署不再依赖排除资源的诊断配置；仍有 9 项既有/阶段编译警告。没有启动桌面应用、服务或真实数据目录，不代表 `npm run dev` 主界面、设置、W1 或第 7 节验收完成。最近两次 CI 状态查询遇到连接传输错误，不能据此更新排队/执行状态；尚无 Mac 基线或双端绿色证据，分支不合并。配置合并和 Windows 安装选项依据 [Tauri configuration files](https://v2.tauri.app/develop/configuration-files/) 与 [Windows installer](https://v2.tauri.app/distribute/windows-installer/)。
