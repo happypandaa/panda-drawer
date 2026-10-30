@@ -170,3 +170,11 @@ Windows core lib 再次检查仍失败，诊断 **714 个错误**，已没有 E0
 `node_process_scope.rs` 的操作目录读取交给 `operation_directory.rs`：Unix 保留原 symlink_metadata、打开 flags 和 dev/ino 检查，Windows 在前后核对完整身份并持有实际目录句柄。测试用延迟写入也经文件适配创建，没有将虚构的 Unix 权限值用于 Windows。元数据原有 Mac inode/符号链接断言保留，Windows 补充对应完整身份/目录联接断言；尚未执行该完整业务测试文件。
 
 新增 3 项真实临时对象测试，验证元数据读取大小界限及硬链接/联接拒绝、独占占用时旧字节和 stage 保留且 committed 为 false、释放重试成功且修订身份改变、持有操作目录时改名失败以及释放后拒绝同名联接。实际源码 harness **30/30 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；原生 crate 两个目标的全目标严格 Clippy 通过。Mac 只是目标类型检查，不是实际回归。完整 core lib 仍失败，诊断 **682 个错误**，本步业务/适配模块未报告错误；没有验证真实 GUI、图标导入全链或 Node 作业关闭，W0 未完成。
+
+### W0.17 — 清理能力的未完成边界
+
+`history_cleanup.rs` 成为平台入口；Unix 原先完整实现与测试搬入 `history_cleanup/unix.rs`，仅改变测试模块相对路径，与原 blob 按规范化换行核对一致。Windows 尚未实现目录快照、受控删除、占用重试、只读属性处理和清理任务，因此构造管理器以及所有移除/状态入口明确报 `PLATFORM_FEATURE_UNAVAILABLE`、`owned-directory-cleanup`、`not_started`，不扫描、调用验证回调或删除文件。不构造能接受工作的空管理器，不伪造删除/关闭/缺失收据。这是 W0 的临时能力门禁，W5 仍必须完整实现，不是永久不支持，也不能据此开放运行门禁或认定启动通过。
+
+独立 harness 直接引用实际 Windows 边界、错误和文件身份源码，**3/3 通过**（身份 2 项 + 新门禁 1 项），严格 Clippy 通过。新测试使用真实临时目录与完整捕获身份，验证两种移除入口拒绝、回调不调用、目录身份/字节/邻接条目保留。未使用的构造参数仅提供类型占位，没有业务实例、运行根发现或成功的清理执行；没有覆盖完整清理任务。搬移后的 Mac 实现未在此 harness 编译/执行，仍须实际 Mac CI。
+
+完整 Windows core lib 检查仍失败，诊断 **618 个错误**，清理适配边界未报告错误；未合入 main，W0 未完成。
