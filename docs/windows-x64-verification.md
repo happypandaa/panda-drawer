@@ -412,3 +412,9 @@ Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有
 新增脚本适配 `npm-command.mjs`，只在 Windows 将 SDK 与起始模板打包改为当前 Node 加实际 npm-cli.js 的参数数组，优先有效 npm_execpath，其次 Node 旁及 PATH 中的安装。找不到可用文件时明确报错，不执行 npm.cmd 或 shell。Mac 返回原 npm 命令和原参数值，两处打包调用的其余行为保持。此处仅适配开发打包工具，不代替 W1 内置 Node 发行资源或 W3/W4 项目 npm 管理。
 
 新增 6 项脚本测试及原 process 的 5 项回归共 **11/11 通过**，包含真实 Node 子进程逐值收到中文、空格、引号、&、美元符和反引号，缺失/目录伪装入口报错，Mac 仍选择原命令。实际安装的 npm 另经该 helper 执行 `--version`，结果 **11.9.0**。语法检查通过。未运行现有 Mac prepareDesktop，未触及旧资源目录；完整 SDK/template 打包和 Mac 实际执行仍待后续验证。既有完整 core/桌面测试失败与 CI 排队状态没有因此变为通过，W0 未完成。
+
+### W0.43 — 生成源码归属的 Windows 路径前缀
+
+完整 core 测试中两项生成源码归属用例，在进入完整身份绑定之前被原 Unix components 白名单拒绝了 Windows 的 canonical VerbatimDisk 前缀。将纯词法判断委托 `platform-native::filesystem::is_explicit_non_root_absolute_path`：Mac 的绝对路径、非根目录和 RootDir/Normal 判断与原源码比较一致；Windows 仅额外接纳 Prefix。不引入存在性、UTF-8、ACL、canonicalize 相等或盘型准入；网络/内置 NTFS 限制仍属于工作区层，语法通过不等于获得目录归属或删除许可。
+
+新增原生 Windows 专项 **2/2 通过**，覆盖中文空格 canonical 缺失子路径、不创建材料、Disk/VerbatimDisk/UNC 表示，以及相对、盘根、ParentDir 拒绝。Windows / Mac ARM64 全目标严格 Clippy 通过，Mac 仅类型检查。随后在真实完整 core 二进制分别执行原 `generated_roots_are_explicit_and_identity_bound` 与 `missing_known_generated_material_on_another_volume_is_not_deleted`，均 **1/1 通过**；保留原测试体、对象替代拒绝及缺失身份拒绝断言，没有启用任何删除流程。其余 371 个库测试及 9 个集成测试分别过滤，尚未重跑完整 core，不能据此换算完整测试新通过数。W0 未完成，未合入 main。
