@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,7 +14,7 @@ use std::{
 
 pub const MIN_WIDTH: f64 = 640.0;
 pub const MIN_HEIGHT: f64 = 480.0;
-const MAX_CACHE_BYTES: u64 = 4096;
+pub(crate) const MAX_CACHE_BYTES: u64 = 4096;
 const MAX_ENTRIES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -193,10 +193,10 @@ struct Cache {
     project_id: String,
     size: LogicalWindowSize,
 }
-#[derive(Clone)]
-struct Snapshot {
-    bytes: Vec<u8>,
-    identity: crate::file_identity::PersistedIdentity,
+#[derive(Clone, Debug)]
+pub(crate) struct Snapshot {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) identity: crate::file_identity::PersistedIdentity,
 }
 struct Entry {
     saved: Option<LogicalWindowSize>,
@@ -263,6 +263,7 @@ impl WindowSizeStore {
         // Never recreate an owner from a late window callback. Its current
         // ownership index must still exist before any preference publication.
         open_private(&owner.join("ownership.json"))?;
+        crate::window_cache_io::recover(&owner)?;
         Ok(owner)
     }
     fn load(&self, identity: &WindowIdentity) -> Result<Entry, ApiError> {
@@ -454,6 +455,7 @@ impl WindowSizeStore {
             Ok(_) => (),
         }
         private_directory(&owner)?;
+        crate::window_cache_io::recover(&owner)?;
         let targets = fs::read_dir(&owner)?
             .map(|entry| entry.map(|entry| entry.path()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -493,7 +495,7 @@ impl WindowSizeStore {
 }
 
 use crate::window_cache_io::{open_private, private_directory};
-fn read_snapshot(path: &Path) -> Result<Option<Snapshot>, ApiError> {
+pub(crate) fn read_snapshot(path: &Path) -> Result<Option<Snapshot>, ApiError> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -512,7 +514,7 @@ fn read_snapshot(path: &Path) -> Result<Option<Snapshot>, ApiError> {
     }
     Ok(Some(Snapshot { bytes, identity }))
 }
-fn same_snapshot(left: Option<&Snapshot>, right: Option<&Snapshot>) -> bool {
+pub(crate) fn same_snapshot(left: Option<&Snapshot>, right: Option<&Snapshot>) -> bool {
     match (left, right) {
         (None, None) => true,
         (Some(left), Some(right)) => {
@@ -521,205 +523,7 @@ fn same_snapshot(left: Option<&Snapshot>, right: Option<&Snapshot>) -> bool {
         _ => false,
     }
 }
-#[cfg(target_os = "macos")]
-fn publish_cache(
-    owner: &Path,
-    previous: Option<&Snapshot>,
-    bytes: &[u8],
-    before_publish: &mut impl FnMut(),
-) -> Result<Snapshot, ApiError> {
-    use std::{
-        ffi::CString,
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::fs::OpenOptionsExt,
-        },
-    };
-    let path = owner.join("window-size.json");
-    if !same_snapshot(read_snapshot(&path)?.as_ref(), previous) {
-        return Err(ApiError::new(
-            "WINDOW_CACHE_CHANGED",
-            "本项目窗口尺寸缓存已被外部修改，已停止写入。",
-        ));
-    }
-    private_directory(owner)?;
-    let directory = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(owner)?;
-    let name = format!(".window-size-write-{}.json", uuid::Uuid::new_v4());
-    let temporary = owner.join(&name);
-    let from = CString::new(name).unwrap();
-    let to = CString::new("window-size.json").unwrap();
-    let descriptor = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            from.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if descriptor < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut pending = unsafe { fs::File::from_raw_fd(descriptor) };
-    pending.write_all(bytes)?;
-    pending.sync_all()?;
-    let identity = crate::file_identity::PersistedIdentity::from_file(&pending)
-        .map_err(|_| invalid("窗口尺寸暂存身份无法核验。"))?;
-    before_publish();
-    if unsafe {
-        libc::renameatx_np(
-            directory.as_raw_fd(),
-            from.as_ptr(),
-            directory.as_raw_fd(),
-            to.as_ptr(),
-            if previous.is_some() {
-                libc::RENAME_SWAP
-            } else {
-                libc::RENAME_EXCL
-            },
-        )
-    } != 0
-    {
-        return Err(ApiError::new(
-            "WINDOW_CACHE_PUBLISH_FAILED",
-            "窗口尺寸缓存未发布，暂存仍在本项目控制目录。",
-        )
-        .detail("conflictPath", temporary.to_string_lossy().into_owned()));
-    }
-    directory.sync_all()?;
-    let current = read_snapshot(&path)?.ok_or_else(|| invalid("窗口尺寸缓存发布结果缺失。"))?;
-    if current.bytes != bytes || !identity.same_runtime_object(&current.identity) {
-        return Err(ApiError::new(
-            "WINDOW_CACHE_CHANGED",
-            "窗口尺寸缓存发布时发生外部变化，现场保留在本项目控制目录。",
-        ));
-    }
-    if let Some(previous) = previous {
-        let displaced = read_snapshot(&temporary)?;
-        if !same_snapshot(displaced.as_ref(), Some(previous)) {
-            return Err(ApiError::new(
-                "WINDOW_CACHE_CHANGED",
-                "外部窗口尺寸文件已换出保留，本项目停止继续写入。",
-            )
-            .detail("conflictPath", temporary.to_string_lossy().into_owned()));
-        }
-        retire_file(
-            owner,
-            temporary.file_name().unwrap(),
-            &previous.identity,
-            Some(&previous.bytes),
-        )?;
-    }
-    Ok(current)
-}
-#[cfg(not(target_os = "macos"))]
-fn publish_cache(
-    _: &Path,
-    _: Option<&Snapshot>,
-    _: &[u8],
-    _: &mut impl FnMut(),
-) -> Result<Snapshot, ApiError> {
-    Err(ApiError::new(
-        "WINDOW_CACHE_UNSUPPORTED",
-        "当前系统尚未启用原子窗口尺寸缓存发布。",
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn retire_file(
-    owner: &Path,
-    name: &std::ffi::OsStr,
-    expected: &crate::file_identity::PersistedIdentity,
-    bytes: Option<&[u8]>,
-) -> Result<(), ApiError> {
-    use std::{
-        ffi::CString,
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-        },
-    };
-    private_directory(owner)?;
-    let directory = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(owner)?;
-    let from = CString::new(name.as_bytes()).map_err(|_| invalid("窗口尺寸文件名无效。"))?;
-    let to = CString::new(format!(
-        ".window-size-retiring-{}.json",
-        uuid::Uuid::new_v4()
-    ))
-    .unwrap();
-    if unsafe {
-        libc::renameatx_np(
-            directory.as_raw_fd(),
-            from.as_ptr(),
-            directory.as_raw_fd(),
-            to.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let result = (|| {
-        let descriptor = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                to.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
-            )
-        };
-        if descriptor < 0 {
-            return Err(invalid("窗口尺寸移除身份无法核验。"));
-        }
-        let file = unsafe { fs::File::from_raw_fd(descriptor) };
-        let observed = crate::file_identity::PersistedIdentity::from_file(&file)
-            .map_err(|_| invalid("窗口尺寸移除身份无法核验。"))?;
-        if !expected.same_runtime_object(&observed) {
-            return Err(invalid("窗口尺寸文件身份已变化，未删除。"));
-        }
-        if let Some(expected_bytes) = bytes {
-            let mut current = Vec::new();
-            file.take(MAX_CACHE_BYTES + 1).read_to_end(&mut current)?;
-            if current != expected_bytes {
-                return Err(invalid("窗口尺寸文件内容已变化，未删除。"));
-            }
-        }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        unsafe {
-            libc::renameatx_np(
-                directory.as_raw_fd(),
-                to.as_ptr(),
-                directory.as_raw_fd(),
-                from.as_ptr(),
-                libc::RENAME_EXCL,
-            );
-        }
-        return Err(error);
-    }
-    if unsafe { libc::unlinkat(directory.as_raw_fd(), to.as_ptr(), 0) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    directory.sync_all()?;
-    Ok(())
-}
-#[cfg(not(target_os = "macos"))]
-fn retire_file(
-    _: &Path,
-    _: &std::ffi::OsStr,
-    _: &crate::file_identity::PersistedIdentity,
-    _: Option<&[u8]>,
-) -> Result<(), ApiError> {
-    Err(ApiError::new(
-        "WINDOW_CACHE_UNSUPPORTED",
-        "当前系统尚未启用窗口尺寸缓存清理。",
-    ))
-}
+use crate::window_cache_io::{publish_cache, retire_file};
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {

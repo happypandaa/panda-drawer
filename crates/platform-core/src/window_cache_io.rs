@@ -1,7 +1,48 @@
-//! Native private reads for project window preferences. No roots are discovered
-//! and no cache is created, published or retired by this adapter.
+//! Native private window preference I/O. No application roots are discovered.
 use crate::{path_checks::check_no_symlinks, ApiError};
 use std::{fs::File, path::Path};
+
+#[cfg(target_os = "macos")]
+#[path = "window_cache_io/macos.rs"]
+mod macos;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{publish_cache, retire_file};
+#[cfg(windows)]
+#[path = "window_cache_io/windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub(crate) use windows::{publish_cache, recover, retire_file};
+
+#[cfg(not(windows))]
+pub(crate) fn recover(_: &Path) -> Result<(), ApiError> {
+    Ok(())
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+pub(crate) fn publish_cache(
+    _: &Path,
+    _: Option<&crate::app_windows::Snapshot>,
+    _: &[u8],
+    _: &mut impl FnMut(),
+) -> Result<crate::app_windows::Snapshot, ApiError> {
+    Err(ApiError::new(
+        "WINDOW_CACHE_UNSUPPORTED",
+        "当前系统尚未启用原子窗口尺寸缓存发布。",
+    ))
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+pub(crate) fn retire_file(
+    _: &Path,
+    _: &std::ffi::OsStr,
+    _: &crate::file_identity::PersistedIdentity,
+    _: Option<&[u8]>,
+) -> Result<(), ApiError> {
+    Err(ApiError::new(
+        "WINDOW_CACHE_UNSUPPORTED",
+        "当前系统尚未启用窗口尺寸缓存清理。",
+    ))
+}
 
 fn invalid(message: &str) -> ApiError {
     ApiError::new("INVALID_WINDOW_CACHE", message)
