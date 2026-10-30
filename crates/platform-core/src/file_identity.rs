@@ -71,6 +71,17 @@ impl<'de> Deserialize<'de> for PersistedIdentity {
 }
 
 impl PersistedIdentity {
+    /// Existing damaged-database diagnostic marker, never a captured object.
+    /// Keep its platform fields here so callers do not construct native IDs.
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            device: 0,
+            inode: 0,
+            volume_uuid: None,
+            windows_file_id: None,
+        }
+    }
+
     pub(crate) fn capture(path: &Path) -> Result<Self> {
         capture(path)
     }
@@ -162,6 +173,10 @@ impl PersistedIdentity {
     /// Missing material is an absent target only while its expected volume can
     /// still be observed. An unplugged old workspace must not count as deletion.
     pub(crate) fn absent_on_expected_volume(&self, path: &Path) -> Result<bool> {
+        #[cfg(windows)]
+        if self.windows_file_id.is_none() || self.volume_uuid.is_some() {
+            bail!("A complete Windows file identity is required to verify absence")
+        }
         if !path.is_absolute()
             || path
                 .components()
@@ -231,6 +246,18 @@ mod windows_tests {
         )
         .unwrap();
         assert!(!old.matches_path(&path).unwrap());
+        assert!(old
+            .absent_on_expected_volume(&path.with_file_name("missing-disposable"))
+            .is_err());
+        let unavailable = PersistedIdentity::unavailable();
+        assert_eq!(
+            serde_json::to_value(&unavailable).unwrap(),
+            serde_json::json!({"device":0,"inode":0})
+        );
+        assert!(!unavailable.matches_path(&path).unwrap());
+        assert!(unavailable
+            .absent_on_expected_volume(&path.with_file_name("missing-disposable"))
+            .is_err());
     }
 
     #[test]
