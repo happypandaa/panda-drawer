@@ -2,15 +2,11 @@
 //! All content and recursive directory access stay beneath open directory
 //! descriptors; path checks are not the boundary against symlink replacement.
 use crate::{files, ApiError};
+use platform_native::directory::{self as native, Kind, Stamp};
 use serde_json::{json, Value};
 use std::{
-    ffi::{CStr, CString},
-    fs::{File, Metadata},
-    io::{self, Read},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
+    fs::File,
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -27,17 +23,14 @@ fn invalid(message: &str) -> ApiError {
 fn changed() -> ApiError {
     invalid("摘录时项目文件夹或文件发生变化，请重新准备。")
 }
-fn same_object(left: &Metadata, right: &Metadata) -> bool {
-    left.dev() == right.dev() && left.ino() == right.ino()
+fn same_object(left: &Stamp, right: &Stamp) -> bool {
+    left.identity == right.identity
 }
-fn unchanged(left: &Metadata, right: &Metadata) -> bool {
-    same_object(left, right)
-        && left.len() == right.len()
-        && left.mode() == right.mode()
-        && left.mtime() == right.mtime()
-        && left.mtime_nsec() == right.mtime_nsec()
-        && left.ctime() == right.ctime()
-        && left.ctime_nsec() == right.ctime_nsec()
+fn unchanged(left: &Stamp, right: &Stamp) -> bool {
+    left == right
+}
+fn stamp(file: &File) -> Result<Stamp, ApiError> {
+    native::stamp(file).map_err(files::error)
 }
 
 pub fn review_root(source: &Path, data: &Path, workspace: &Path) -> Result<PathBuf, ApiError> {
@@ -47,7 +40,7 @@ pub fn review_root(source: &Path, data: &Path, workspace: &Path) -> Result<PathB
     let selected = files::root(source)?;
     let source = source.canonicalize()?;
     let current = files::root(&source)?;
-    if !same_object(&selected.metadata()?, &current.metadata()?) {
+    if !same_object(&stamp(&selected)?, &stamp(&current)?) {
         return Err(changed());
     }
     let data = data.canonicalize()?;
@@ -115,17 +108,17 @@ fn public_file(root: &File, relative: &str, remaining: usize) -> Result<Option<E
         Err(error) if error.code == "FILE_NOT_FOUND" => return Ok(None),
         Err(error) => return Err(error),
     };
-    let before = file.metadata()?;
+    let before = stamp(&file)?;
     let limit = remaining.min(FILE_READ_LIMIT);
     let mut bytes = Vec::new();
     (&mut file)
         .take((limit + 1) as u64)
         .read_to_end(&mut bytes)?;
-    let after = file.metadata()?;
+    let after = stamp(&file)?;
     // Reopen by the same anchored root to reject renames and replacement even
     // when the original descriptor itself was not modified.
     let current = files::read(root, relative)?;
-    if !unchanged(&before, &after) || !unchanged(&before, &current.metadata()?) {
+    if !unchanged(&before, &after) || !unchanged(&before, &stamp(&current)?) {
         return Err(changed());
     }
     let mut truncated = bytes.len() > limit;
@@ -188,44 +181,8 @@ fn public_file(root: &File, relative: &str, remaining: usize) -> Result<Option<E
     Ok(Some(Excerpt { content, truncated }))
 }
 
-struct DirectoryStream(*mut libc::DIR);
-impl Drop for DirectoryStream {
-    fn drop(&mut self) {
-        unsafe {
-            libc::closedir(self.0);
-        }
-    }
-}
-fn stream(directory: &File) -> Result<DirectoryStream, ApiError> {
-    let descriptor = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
-    if descriptor < 0 {
-        return Err(files::error(io::Error::last_os_error()));
-    }
-    let pointer = unsafe { libc::fdopendir(descriptor) };
-    if pointer.is_null() {
-        let error = io::Error::last_os_error();
-        unsafe {
-            libc::close(descriptor);
-        }
-        return Err(files::error(error));
-    }
-    unsafe {
-        libc::rewinddir(pointer);
-    }
-    Ok(DirectoryStream(pointer))
-}
-fn open_directory(parent: &File, name: &CString) -> Result<File, ApiError> {
-    let descriptor = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if descriptor < 0 {
-        return Err(files::error(io::Error::last_os_error()));
-    }
-    Ok(unsafe { File::from_raw_fd(descriptor) })
+fn open_directory(parent: &File, name: &str) -> Result<File, ApiError> {
+    native::child_directory(parent, std::ffi::OsStr::new(name)).map_err(files::error)
 }
 
 #[derive(Default)]
@@ -247,57 +204,27 @@ fn tree(directory: &File, prefix: &str, depth: usize, output: &mut Tree) -> Resu
         output.truncated = true;
         return Ok(());
     }
-    let before = directory.metadata()?;
-    let listing = stream(directory)?;
+    let before = stamp(directory)?;
+    let mut listing = native::Names::open(directory).map_err(files::error)?;
     loop {
         if output.full() {
             output.truncated = true;
             break;
         }
-        #[cfg(target_os = "macos")]
-        unsafe {
-            *libc::__error() = 0;
-        }
-        #[cfg(not(target_os = "macos"))]
-        unsafe {
-            *libc::__errno_location() = 0;
-        }
-        let entry = unsafe { libc::readdir(listing.0) };
-        if entry.is_null() {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error().unwrap_or(0) != 0 {
-                return Err(files::error(error));
-            }
+        let Some(entry) = listing.next_name().map_err(files::error)? else {
             break;
-        }
-        let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if bytes == b"." || bytes == b".." {
-            continue;
-        }
+        };
         output.scanned += 1;
-        let Ok(name) = std::str::from_utf8(bytes) else {
+        let Some(name) = entry.to_str() else {
             output.truncated = true;
             continue;
         };
         if excluded(name) || name.chars().any(char::is_control) || name.contains('\\') {
             continue;
         }
-        let name_c = CString::new(bytes).map_err(|_| invalid("项目文件名无效。"))?;
-        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-        if unsafe {
-            libc::fstatat(
-                directory.as_raw_fd(),
-                name_c.as_ptr(),
-                metadata.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } != 0
-        {
-            return Err(files::error(io::Error::last_os_error()));
-        }
-        let metadata = unsafe { metadata.assume_init() };
-        let kind = metadata.st_mode & libc::S_IFMT;
-        if kind != libc::S_IFDIR && kind != libc::S_IFREG {
+        let metadata = native::inspect(directory, &entry).map_err(files::error)?;
+        let kind = metadata.kind;
+        if kind == Kind::Other {
             continue;
         }
         let relative = if prefix.is_empty() {
@@ -305,7 +232,10 @@ fn tree(directory: &File, prefix: &str, depth: usize, output: &mut Tree) -> Resu
         } else {
             format!("{prefix}/{name}")
         };
-        let line = format!("{relative}{}", if kind == libc::S_IFDIR { "/" } else { "" });
+        let line = format!(
+            "{relative}{}",
+            if kind == Kind::Directory { "/" } else { "" }
+        );
         let separator = usize::from(!output.content.is_empty());
         if output.content.len() + separator + line.len() > TREE_BYTES {
             output.truncated = true;
@@ -316,24 +246,24 @@ fn tree(directory: &File, prefix: &str, depth: usize, output: &mut Tree) -> Resu
         }
         output.content.push_str(&line);
         output.entries += 1;
-        if kind == libc::S_IFDIR {
+        if kind == Kind::Directory {
             if depth >= 3 {
                 output.truncated = true;
                 continue;
             }
-            let child = open_directory(directory, &name_c)?;
-            let opened = child.metadata()?;
-            if opened.dev() != metadata.st_dev as u64 || opened.ino() != metadata.st_ino {
+            let child = open_directory(directory, name)?;
+            let opened = stamp(&child)?;
+            if metadata.identity.as_ref() != Some(&opened.identity) {
                 return Err(changed());
             }
             tree(&child, &relative, depth + 1, output)?;
-            let current = open_directory(directory, &name_c)?;
-            if !same_object(&opened, &current.metadata()?) {
+            let current = open_directory(directory, name)?;
+            if !same_object(&opened, &stamp(&current)?) {
                 return Err(changed());
             }
         }
     }
-    if !unchanged(&before, &directory.metadata()?) {
+    if !unchanged(&before, &stamp(directory)?) {
         return Err(changed());
     }
     Ok(())
@@ -342,7 +272,7 @@ fn tree(directory: &File, prefix: &str, depth: usize, output: &mut Tree) -> Resu
 pub fn context(source: &Path, data: &Path, workspace: &Path) -> Result<Value, ApiError> {
     let path = review_root(source, data, workspace)?;
     let root = files::root(&path)?;
-    let original = root.metadata()?;
+    let original = stamp(&root)?;
     let mut listing = Tree::default();
     tree(&root, "", 1, &mut listing)?;
     let mut used = TREE_LABEL.len() + listing.content.len();
@@ -394,7 +324,7 @@ pub fn context(source: &Path, data: &Path, workspace: &Path) -> Result<Value, Ap
         }
     }
     let current = files::root(&path)?;
-    if !unchanged(&original, &current.metadata()?) {
+    if !unchanged(&original, &stamp(&current)?) {
         return Err(changed());
     }
     Ok(
@@ -431,6 +361,7 @@ mod tests {
             "final path+content UTF-8 budget exceeded: {actual}"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn excerpts_exclude_private_data_links_and_template_values() {
         let (_temporary, data, project) = fixture();
@@ -497,6 +428,7 @@ mod tests {
         assert_budget(&result);
         assert!(!result.to_string().contains("private-fixture"));
     }
+    #[cfg(unix)]
     #[test]
     fn declared_entry_cannot_read_through_a_symlinked_parent() {
         let (_temporary, data, project) = fixture();
@@ -522,6 +454,7 @@ mod tests {
         assert!(!result.to_string().contains("private-note-fixture"));
         assert_budget(&result);
     }
+    #[cfg(unix)]
     #[test]
     fn opened_directories_stay_anchored_when_parent_paths_are_replaced() {
         let (_temporary, data, project) = fixture();
@@ -529,13 +462,13 @@ mod tests {
         fs::create_dir(&backend).unwrap();
         fs::write(backend.join("server.mjs"), "public-fixture").unwrap();
         let directory = files::root(&project).unwrap();
-        let child = open_directory(&directory, &CString::new("backend").unwrap()).unwrap();
+        let child = open_directory(&directory, "backend").unwrap();
         let private = data.join("private");
         fs::create_dir(&private).unwrap();
         fs::write(private.join("server.mjs"), "private-fixture").unwrap();
         fs::rename(&backend, project.join("previous-backend")).unwrap();
         std::os::unix::fs::symlink(&private, &backend).unwrap();
-        assert!(open_directory(&directory, &CString::new("backend").unwrap()).is_err());
+        assert!(open_directory(&directory, "backend").is_err());
         assert!(public_file(&directory, "backend/server.mjs", 1024).is_err());
         let excerpt = public_file(&child, "server.mjs", 1024).unwrap().unwrap();
         assert_eq!(excerpt.content, "public-fixture");
@@ -553,5 +486,87 @@ mod tests {
         let private = data.join("node-apps/application");
         fs::create_dir_all(&private).unwrap();
         assert!(review_root(&private, &data, &workspace).is_err());
+    }
+
+    #[cfg(windows)]
+    fn junction(source: &Path, destination: &Path) {
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(destination)
+            .arg(source)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_excerpts_exclude_private_files_hardlinks_and_template_values() {
+        let (_temporary, data, project) = fixture();
+        for name in [".env", "accounts.db", "README.md", ".env.example"] {
+            fs::write(project.join(name), "API_KEY=private-fixture\npublic text").unwrap();
+        }
+        fs::create_dir(project.join("uploads")).unwrap();
+        fs::write(project.join("uploads/private.txt"), "private-fixture").unwrap();
+        fs::hard_link(project.join(".env"), project.join("package.json")).unwrap();
+        assert!(context(&project, &data, &data.join("workspace")).is_err());
+        fs::remove_file(project.join("package.json")).unwrap();
+        let result = context(&project, &data, &data.join("workspace")).unwrap();
+        let text = result.to_string();
+        for private in ["private-fixture", "accounts.db", "private.txt"] {
+            assert!(!text.contains(private));
+        }
+        assert!(text.contains("在平台设置中填写"));
+        assert_budget(&result);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_declared_entry_cannot_read_through_a_directory_junction() {
+        let (_temporary, data, project) = fixture();
+        let private = data.join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("server.mjs"), "private-fixture").unwrap();
+        fs::write(
+            project.join("local-app.json"),
+            r#"{"backend":{"root":"backend","entry":"server.mjs"}}"#,
+        )
+        .unwrap();
+        let backend = project.join("backend");
+        junction(&private, &backend);
+        assert!(context(&project, &data, &data.join("workspace")).is_err());
+        fs::remove_dir(backend).unwrap();
+        assert_eq!(
+            fs::read(private.join("server.mjs")).unwrap(),
+            b"private-fixture"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_held_directory_cannot_be_replaced_and_reopening_rejects_a_later_junction() {
+        let (_temporary, data, project) = fixture();
+        let backend = project.join("backend");
+        fs::create_dir(&backend).unwrap();
+        fs::write(backend.join("server.mjs"), "public-fixture").unwrap();
+        let root = files::root(&project).unwrap();
+        let child = open_directory(&root, "backend").unwrap();
+        assert!(fs::rename(&backend, project.join("previous-backend")).is_err());
+        assert_eq!(
+            public_file(&child, "server.mjs", 1024)
+                .unwrap()
+                .unwrap()
+                .content,
+            "public-fixture"
+        );
+        drop(child);
+        fs::rename(&backend, project.join("previous-backend")).unwrap();
+        let private = data.join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("server.mjs"), "private-fixture").unwrap();
+        junction(&private, &backend);
+        assert!(open_directory(&root, "backend").is_err());
+        assert!(public_file(&root, "backend/server.mjs", 1024).is_err());
+        fs::remove_dir(backend).unwrap();
     }
 }
