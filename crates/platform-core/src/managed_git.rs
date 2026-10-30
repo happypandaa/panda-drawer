@@ -5,7 +5,6 @@
 
 use crate::ApiError;
 use platform_native::tool_files::{self as native_tools, Facts as Metadata};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -14,36 +13,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const RELEASE: &str = include_str!("../../../scripts/development-git-release.json");
+#[path = "managed_git/layout.rs"]
+mod layout;
+use layout::Release;
+
+const RELEASE: &str = layout::RELEASE;
 const METADATA_FILE: &str = "development-git.json";
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TREE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
 const MAX_FILES: usize = 1_000;
 const MAX_ENTRIES: usize = 2_000;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Release {
-    schema_version: u32,
-    git_version: String,
-    platform: String,
-    arch: String,
-    source: serde_json::Value,
-    build: serde_json::Value,
-    signature: serde_json::Value,
-    tree: Tree,
-    executables: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Tree {
-    rule: String,
-    file_count: usize,
-    total_bytes: u64,
-    sha256: String,
-}
 
 #[derive(Debug)]
 pub(crate) struct VerifiedGit {
@@ -88,8 +68,7 @@ fn release(bytes: &str) -> Result<Release, ApiError> {
     if release.schema_version != 1
         || release.git_version.is_empty()
         || !release.source.is_object()
-        || !release.build.is_object()
-        || !release.signature.is_object()
+        || !layout::metadata_supported(&release)
         || release.tree.rule != "sorted-utf8-path-nul-size-nul-sha256-lf-v1"
         || release.tree.file_count == 0
         || release.tree.file_count > MAX_FILES
@@ -97,22 +76,14 @@ fn release(bytes: &str) -> Result<Release, ApiError> {
         || !digest_valid(&release.tree.sha256)
         || !release.executables.iter().all(|path| relative_valid(path))
         || release.executables.iter().collect::<HashSet<_>>().len() != release.executables.len()
-        || !["bin/git"]
+        || !layout::required_executables()
             .iter()
             .all(|required| release.executables.iter().any(|path| path == required))
     {
         return Err(invalid("程序内的私有 Git 工具发行声明不受支持。"));
     }
-    let platform = if cfg!(target_os = "macos") {
-        "darwin"
-    } else {
-        std::env::consts::OS
-    };
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        std::env::consts::ARCH
-    };
+    let platform = layout::platform();
+    let arch = layout::arch();
     if release.platform != platform || release.arch != arch {
         return Err(ApiError::new(
             "MANAGED_GIT_PLATFORM_UNSUPPORTED",
@@ -312,7 +283,7 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedGit, ApiErr
             "私有 Git 文件树与固定发行版本不一致，请修复应用安装。",
         ));
     }
-    for required in ["libexec/git-core", "share/git-core/templates"] {
+    for required in layout::required_directories() {
         if !inspection
             .directories
             .iter()
@@ -322,12 +293,16 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedGit, ApiErr
         }
     }
     Ok(VerifiedGit {
-        git: root.join("bin/git"),
-        exec_path: root.join("libexec/git-core"),
-        template_path: root.join("share/git-core/templates"),
+        git: layout::git(&root),
+        exec_path: layout::exec_path(&root),
+        template_path: layout::template_path(&root),
         root,
         git_version: release.git_version,
     })
+}
+
+pub(crate) fn executable_path(root: &Path) -> PathBuf {
+    layout::git(root)
 }
 
 pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedGit, ApiError> {
@@ -341,9 +316,9 @@ pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedGit, ApiError> {
             )?;
             let source = release(RELEASE)?;
             Ok(VerifiedGit {
-                git: root.join("bin/git"),
-                exec_path: root.join("libexec/git-core"),
-                template_path: root.join("share/git-core/templates"),
+                git: layout::git(&root),
+                exec_path: layout::exec_path(&root),
+                template_path: layout::template_path(&root),
                 root,
                 git_version: source.git_version,
             })
@@ -410,6 +385,10 @@ pub(crate) mod verification_pause {
 mod windows_tests {
     include!("managed_tool_files_windows_tests.rs");
 }
+
+#[cfg(all(test, windows))]
+#[path = "managed_git/windows_tests.rs"]
+mod windows_payload_tests;
 
 #[cfg(all(test, unix))]
 mod tests {

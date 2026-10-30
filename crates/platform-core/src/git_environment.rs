@@ -161,7 +161,10 @@ impl GitEnvironmentManager {
             git: None,
             selection: "unresolved".into(),
             configured_git_path: None,
-            managed_git_path: self.managed_root.as_ref().map(|root| root.join("bin/git")),
+            managed_git_path: self
+                .managed_root
+                .as_ref()
+                .map(|root| crate::managed_git::executable_path(root)),
             ssh: SshEnvironmentInfo {
                 ready: false,
                 selection: "system".into(),
@@ -491,7 +494,10 @@ async fn probe_managed(
     processes: &OwnedProcessRegistry,
     keep_alive: ProbeKeepAlive,
 ) -> Result<GitToolchain, ApiError> {
-    debug_assert_eq!(verified.git, verified.root.join("bin/git"));
+    debug_assert_eq!(
+        verified.git,
+        crate::managed_git::executable_path(&verified.root)
+    );
     let toolchain = probe_git(
         verified.git,
         Some(verified.exec_path),
