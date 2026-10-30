@@ -1,0 +1,490 @@
+//! Handle-bound identity, no-reparse access and private creation. Parent ACLs
+//! are not audited or changed; protection is applied only to objects we create.
+use super::{checked, native_path, wide};
+use std::{
+    ffi::{c_void, OsStr},
+    fs::File,
+    io,
+    mem::{size_of, zeroed},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    path::Path,
+    ptr::{null, null_mut},
+};
+use windows_sys::Win32::{
+    Foundation::{LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE},
+    Security::{
+        Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+        },
+        EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, TokenUser,
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
+        TOKEN_USER,
+    },
+    Storage::FileSystem::{
+        CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileIdInfo, FileStandardInfo,
+        GetFileInformationByHandleEx, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, OPEN_EXISTING,
+    },
+    System::Threading::{GetCurrentProcess, OpenProcessToken},
+};
+
+const READ_CONTROL: u32 = 0x0002_0000;
+const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileIdentity {
+    pub volume_serial: u64,
+    pub file_id: [u8; 16],
+    pub links: u32,
+    pub directory: bool,
+}
+impl FileIdentity {
+    pub fn same_object(&self, other: &Self) -> bool {
+        self.volume_serial == other.volume_serial && self.file_id == other.file_id
+    }
+}
+
+pub fn identity(file: &File) -> io::Result<FileIdentity> {
+    let handle = file.as_raw_handle();
+    let mut id: FILE_ID_INFO = unsafe { zeroed() };
+    let mut standard: FILE_STANDARD_INFO = unsafe { zeroed() };
+    unsafe {
+        checked(GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        ))?;
+        checked(GetFileInformationByHandleEx(
+            handle,
+            FileStandardInfo,
+            (&mut standard as *mut FILE_STANDARD_INFO).cast(),
+            size_of::<FILE_STANDARD_INFO>() as u32,
+        ))?;
+    }
+    Ok(FileIdentity {
+        volume_serial: id.VolumeSerialNumber,
+        file_id: id.FileId.Identifier,
+        links: standard.NumberOfLinks,
+        directory: standard.Directory,
+    })
+}
+
+fn reject_reparse(file: &File) -> io::Result<()> {
+    let mut info: FILE_ATTRIBUTE_TAG_INFO = unsafe { zeroed() };
+    unsafe {
+        checked(GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        ))?;
+    }
+    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Reparse points are not allowed at this file boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn open_component(path: &Path, ancestors: bool) -> io::Result<File> {
+    let name = native_path(path)?;
+    // An ancestor stays pinned against rename while a checked operation owns it.
+    // This is the Windows equivalent of retained descriptor-relative traversal.
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | if ancestors { 0 } else { FILE_SHARE_DELETE };
+    // Attribute-only handles do not pin a directory against modern POSIX-style
+    // rename. Directory read access participates in the sharing contract.
+    let access = FILE_READ_ATTRIBUTES
+        | if ancestors {
+            FILE_LIST_DIRECTORY
+        } else {
+            READ_CONTROL
+        };
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            access,
+            share,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    Ok(file)
+}
+
+/// Keeps every ancestor handle alive. No system-parent ownership/ACL admission
+/// is imposed: only the existing no-link and object-identity boundary is enforced.
+pub struct CheckedPath {
+    pub file: File,
+    pub identity: FileIdentity,
+    _ancestors: Vec<File>,
+}
+pub fn open_no_reparse(path: &Path) -> io::Result<CheckedPath> {
+    native_path(path)?;
+    let mut ancestors = Vec::new();
+    let mut chain: Vec<_> = path.ancestors().skip(1).collect();
+    chain.reverse();
+    for ancestor in chain {
+        let file = open_component(ancestor, true)?;
+        if !identity(&file)?.directory {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "An ancestor is not a directory",
+            ));
+        }
+        ancestors.push(file);
+    }
+    let file = open_component(path, false)?;
+    let captured = identity(&file)?;
+    Ok(CheckedPath {
+        file,
+        identity: captured,
+        _ancestors: ancestors,
+    })
+}
+
+struct CurrentUser {
+    _token: OwnedHandle,
+    bytes: Vec<usize>,
+}
+impl CurrentUser {
+    fn load() -> io::Result<Self> {
+        let mut raw: HANDLE = null_mut();
+        unsafe {
+            checked(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw))?;
+        }
+        let token = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut length = 0u32;
+        unsafe {
+            GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut length);
+        }
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut bytes = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        unsafe {
+            checked(GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                bytes.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            ))?;
+        }
+        Ok(Self {
+            _token: token,
+            bytes,
+        })
+    }
+    fn sid(&self) -> PSID {
+        unsafe { (*(self.bytes.as_ptr().cast::<TOKEN_USER>())).User.Sid }
+    }
+    fn text(&self) -> io::Result<String> {
+        let mut result = null_mut();
+        unsafe {
+            checked(ConvertSidToStringSidW(self.sid(), &mut result))?;
+        }
+        let allocation = LocalAllocation(result.cast());
+        let mut length = 0;
+        unsafe {
+            while *result.add(length) != 0 {
+                length += 1;
+            }
+        }
+        let text = String::from_utf16(unsafe { std::slice::from_raw_parts(result, length) })
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid account SID"));
+        drop(allocation);
+        text
+    }
+}
+struct LocalAllocation(*mut c_void);
+impl Drop for LocalAllocation {
+    fn drop(&mut self) {
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
+
+struct PrivateSecurity {
+    allocation: LocalAllocation,
+}
+impl PrivateSecurity {
+    fn new() -> io::Result<Self> {
+        let sid = CurrentUser::load()?.text()?;
+        let sddl = wide(OsStr::new(&format!("O:{sid}D:P(A;;FA;;;{sid})")))?;
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        unsafe {
+            checked(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                null_mut(),
+            ))?;
+        }
+        Ok(Self {
+            allocation: LocalAllocation(descriptor),
+        })
+    }
+    fn attributes(&self) -> SECURITY_ATTRIBUTES {
+        SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: self.allocation.0,
+            bInheritHandle: 0,
+        }
+    }
+}
+
+fn pin_parent(path: &Path) -> io::Result<(CheckedPath, File)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Object has no parent"))?;
+    let checked = open_no_reparse(parent)?;
+    let pinned = open_component(parent, true)?;
+    if !checked.identity.directory || !checked.identity.same_object(&identity(&pinned)?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Parent directory changed before private creation",
+        ));
+    }
+    Ok((checked, pinned))
+}
+
+pub fn create_private_directory(path: &Path) -> io::Result<()> {
+    let _parent = pin_parent(path)?;
+    let security = PrivateSecurity::new()?;
+    let name = native_path(path)?;
+    unsafe {
+        checked(CreateDirectoryW(name.as_ptr(), &security.attributes()))?;
+    }
+    let created = open_no_reparse(path)?;
+    verify_private(&created.file)
+}
+
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    let _parent = pin_parent(path)?;
+    let security = PrivateSecurity::new()?;
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            &security.attributes(),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    verify_private(&file)?;
+    Ok(file)
+}
+
+pub fn verify_private(file: &File) -> io::Result<()> {
+    let current = CurrentUser::load()?;
+    let mut owner = null_mut();
+    let mut dacl: *mut ACL = null_mut();
+    let mut descriptor = null_mut();
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    let _allocation = LocalAllocation(descriptor);
+    let mut control = 0u16;
+    let mut revision = 0;
+    unsafe {
+        checked(GetSecurityDescriptorControl(
+            descriptor,
+            &mut control,
+            &mut revision,
+        ))?;
+    }
+    let valid = unsafe {
+        !owner.is_null()
+            && EqualSid(owner, current.sid()) != 0
+            && !dacl.is_null()
+            && control & SE_DACL_PROTECTED != 0
+            && (*dacl).AceCount == 1
+    };
+    if !valid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Expected current-user ownership and a protected private DACL",
+        ));
+    }
+    let mut raw_ace = null_mut();
+    unsafe {
+        checked(GetAce(dacl, 0, &mut raw_ace))?;
+    }
+    let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+    if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE
+        || ace.Mask & 0x001f_01ff != 0x001f_01ff
+        || unsafe {
+            EqualSid(
+                (&ace.SidStart as *const u32).cast_mut().cast(),
+                current.sid(),
+            )
+        } == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Expected one current-user full-control ACE",
+        ));
+    }
+    Ok(())
+}
+
+/// Windows cannot fsync directory handles. File contents are flushed with
+/// File::sync_all / FlushFileBuffers; namespace crash recovery uses journals.
+pub fn sync_directory(_directory: &File) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::ffi::OsStrExt;
+    use std::{
+        fs,
+        io::{Read, Seek, SeekFrom, Write},
+    };
+
+    #[test]
+    fn private_creation_identity_and_replacement_use_real_handles() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-native-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let private = root.join("disposable-私有 folder");
+        create_private_directory(&private).unwrap();
+        let path = private.join("secret.json");
+        let mut file = create_private_file(&path).unwrap();
+        verify_private(&file).unwrap();
+        file.write_all(b"artificial-test-data").unwrap();
+        file.sync_all().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"artificial-test-data");
+        let first = identity(&file).unwrap();
+        assert_eq!(first.file_id.len(), 16);
+        assert_eq!(first.links, 1);
+        assert!(!first.directory);
+        assert!(first.same_object(&open_no_reparse(&path).unwrap().identity));
+        assert!(create_private_file(&path).is_err());
+        fs::rename(&path, private.join("retained.json")).unwrap();
+        let replacement = create_private_file(&path).unwrap();
+        assert!(!first.same_object(&identity(&replacement).unwrap()));
+        drop(replacement);
+        drop(file);
+    }
+
+    #[test]
+    fn ordinary_inherited_acl_is_not_reported_as_private() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-native-中文 space-")
+            .tempdir()
+            .unwrap();
+        let path = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("disposable-public.txt");
+        fs::write(&path, b"disposable").unwrap();
+        assert!(verify_private(&open_no_reparse(&path).unwrap().file).is_err());
+    }
+
+    #[test]
+    fn private_creation_parent_cannot_be_renamed_during_the_operation() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-native-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let parent = root.join("disposable-parent");
+        let moved = root.join("disposable-moved-parent");
+        fs::create_dir(&parent).unwrap();
+        let guard = pin_parent(&parent.join("new-file")).unwrap();
+        assert!(fs::rename(&parent, &moved).is_err());
+        assert!(parent.is_dir());
+        drop(guard);
+        fs::rename(&parent, &moved).unwrap();
+        assert!(moved.is_dir());
+    }
+
+    #[test]
+    fn long_unicode_paths_work_without_registry_changes() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-native-中文 space-")
+            .tempdir()
+            .unwrap();
+        let mut path = temp.path().canonicalize().unwrap();
+        for number in 0..14 {
+            path = path.join(format!("disposable-中文 long component {number}"));
+            create_private_directory(&path).unwrap();
+        }
+        assert!(path.as_os_str().encode_wide().count() > 260);
+        let file_path = path.join("sample.txt");
+        let file = create_private_file(&file_path).unwrap();
+        assert!(identity(&file)
+            .unwrap()
+            .same_object(&open_no_reparse(&file_path).unwrap().identity));
+    }
+
+    #[test]
+    fn junctions_are_rejected_at_the_leaf_and_in_ancestors() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-native-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let target = root.join("disposable-target");
+        let link = root.join("disposable-junction");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("sample.txt"), b"disposable").unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Could not create the disposable junction fixture"
+        );
+        assert!(open_no_reparse(&link).is_err());
+        assert!(open_no_reparse(&link.join("sample.txt")).is_err());
+        fs::remove_dir(&link).unwrap();
+        assert_eq!(fs::read(target.join("sample.txt")).unwrap(), b"disposable");
+    }
+}
