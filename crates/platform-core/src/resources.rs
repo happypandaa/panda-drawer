@@ -9,6 +9,11 @@ use std::{
 const WINDOW_CONSTRAINTS_RESOURCE: &str =
     "skills/local-projects-app/references/app-window-runtime.md";
 
+/// The pinned application execution engine is independent of development Node.
+pub fn runtime_node_path(resource_root: &Path) -> PathBuf {
+    crate::node_tool_layout::node(&resource_root.join("node-runtime"))
+}
+
 #[derive(Clone)]
 pub struct ProjectResources {
     root: PathBuf,

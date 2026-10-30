@@ -504,3 +504,11 @@ Windows helper 使用实际私有文件、完整 FileId、父目录范围和 Job
 最终专项实际结果：native 全组 **44 通过、1 ignored 专用子进程夹具**；packager **6/6**；重建 helper 后 Windows 两组 JS **8/8、无 skip**。JS 真实核验固定 ZIP、runtime/development 准备、中文空格路径迁移、Node/npm/npx 版本、离线 `npm ci --omit=dev --ignore-scripts`，并确认测试 install 脚本没有执行；损坏、占用、硬链接、目录联接及未知成员均拒绝并保留调用方材料。默认源码构建 helper 和独立新缓存的真实联网下载分支也通过。native/packager 的 Windows 与 Mac ARM64 严格 Clippy 通过；Mac 只是交叉类型检查。
 
 所有资源与下载仅写到新建缓存/临时现场，没有重用或删除既有 resources、安装资源、runner 或用户项目；不提交下载、应用或本地证据。本步还未接入正常 desktop prepare、运行时路径和资源锚点，未启动主界面，不代表 W1 或安装包验收通过。两端 CI 仍排队，W0 未完成。
+
+### W1.7 — core 的 Windows Node 锚点、布局与只读验证
+
+新增 `node_tool_layout` 适配层：Windows 分别选择固定 runtime/development JSON、win32/x64 名称、node.exe 与 node_modules/npm/bin/npm-cli.js；Mac 保持原 JSON、darwin/arm64、bin/node 与 lib 路径。`managed_toolchain` 仍执行原完整树、字节一致 metadata、预算、无链接与前后身份/变化核对，只委托平台布局。`node_apps` 的运行摘要选择 Windows 固定 node.exe 摘要，资源模块提供执行引擎路径 API。运行环境报告不再显示不存在的 Windows bin/node；Windows 本地 npm 候选为实际 JS 入口，Mac 原四项候选逐值保持。
+
+真实完整 core 库二进制重新构建后，新增 Windows verifier **3/3**、布局 **1/1** 通过。固定源控声明解析成功；临时合成字节从未执行，用于验证真实文件树、中文路径迁移、只读文件仍可读、篡改/缺失/未知成员/metadata 拒绝且不修复调用方材料。实际官方 Node/npm 可执行验证见 W1.6，不能把合成 verifier 测试称作再次运行发行二进制。
+
+Windows 完整 core 编译通过（测试目标仍有 63 项既有/阶段警告）。Mac adapter 单模块实际编译为 ARM64 metadata 通过；尝试整个 core Mac 交叉 check，先补取 Cargo.lock 已锁定的目标源码，随后在 libsqlite3-sys 找不到 Mac C 编译器 `cc` 处停止，尚未检查完整 core。这是 Windows 主机的交叉工具限制，不能当作 Mac 基线测试失败或通过；没有安装 Mac SDK、伪造原生库或减少 Mac 测试。正常桌面资源准备、受管 Job 业务调用及主界面启动仍未完成，运行总门禁保持关闭。

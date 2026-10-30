@@ -52,6 +52,7 @@ pub(crate) mod node_process_scope;
 mod node_project_ownership;
 pub(crate) mod node_registration;
 mod node_runtime_log;
+mod node_tool_layout;
 pub mod node_runtime_trial;
 pub mod object_layout;
 #[allow(dead_code)] // Registry foundation; legacy helper ports are a separate step.

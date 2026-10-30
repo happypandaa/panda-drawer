@@ -229,7 +229,7 @@ impl NodeApps {
             crate::production_resources::runtime_node_digest()?
         } else {
             let release: Value =
-                serde_json::from_str(include_str!("../../../scripts/node-runtime-release.json"))?;
+                serde_json::from_str(crate::node_tool_layout::RUNTIME_RELEASE)?;
             release["binary"]["sha256"]
                 .as_str()
                 .ok_or_else(|| fail("内置 Node 校验信息无效。"))?

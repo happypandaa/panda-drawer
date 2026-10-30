@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const RELEASE: &str = include_str!("../../../scripts/development-node-release.json");
+const RELEASE: &str = crate::node_tool_layout::DEVELOPMENT_RELEASE;
 const METADATA_FILE: &str = "development-node.json";
 const MAX_FILE_BYTES: u64 = 160 * 1024 * 1024;
 const MAX_TREE_BYTES: u64 = 180 * 1024 * 1024;
@@ -96,22 +96,14 @@ fn release(bytes: &str) -> Result<Release, ApiError> {
         || !digest_valid(&release.tree.sha256)
         || !release.executables.iter().all(|path| relative_valid(path))
         || release.executables.iter().collect::<HashSet<_>>().len() != release.executables.len()
-        || !["bin/node", "bin/npm", "bin/npx"]
+        || !crate::node_tool_layout::required_executables()
             .iter()
             .all(|required| release.executables.iter().any(|path| path == required))
     {
         return Err(invalid("程序内的受管开发工具发行声明不受支持。"));
     }
-    let platform = if cfg!(target_os = "macos") {
-        "darwin"
-    } else {
-        std::env::consts::OS
-    };
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        std::env::consts::ARCH
-    };
+    let platform = crate::node_tool_layout::platform();
+    let arch = crate::node_tool_layout::arch();
     if release.platform != platform || release.arch != arch {
         return Err(ApiError::new(
             "MANAGED_NODE_PLATFORM_UNSUPPORTED",
@@ -312,8 +304,8 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedToolchain, 
         ));
     }
     Ok(VerifiedToolchain {
-        node: root.join("bin/node"),
-        npm: root.join("lib/node_modules/npm/bin/npm-cli.js"),
+        node: crate::node_tool_layout::node(&root),
+        npm: crate::node_tool_layout::npm(&root),
         root,
         node_version: release.node_version,
         npm_version: release.npm_version,
@@ -329,8 +321,8 @@ pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedToolchain, ApiError>
             )?;
             let source = release(RELEASE)?;
             Ok(VerifiedToolchain {
-                node: root.join("bin/node"),
-                npm: root.join("lib/node_modules/npm/bin/npm-cli.js"),
+                node: crate::node_tool_layout::node(&root),
+                npm: crate::node_tool_layout::npm(&root),
                 root,
                 node_version: source.node_version,
                 npm_version: source.npm_version,
@@ -348,6 +340,10 @@ pub(crate) async fn verify(root: PathBuf) -> Result<VerifiedToolchain, ApiError>
 mod windows_tests {
     include!("managed_tool_files_windows_tests.rs");
 }
+
+#[cfg(all(test, windows))]
+#[path = "managed_toolchain_windows_tests.rs"]
+mod windows_payload_tests;
 
 #[cfg(all(test, unix))]
 mod tests {
