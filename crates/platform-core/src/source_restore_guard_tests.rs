@@ -2,7 +2,9 @@
 use super::*;
 use crate::{builds::BuildManager, CreateProjectInput, ProjectStore, RuntimePaths, RuntimeService};
 use serde_json::{json, Value};
-use std::{os::unix::fs::symlink, sync::Arc, time::Duration};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::{sync::Arc, time::Duration};
 
 fn journal(workspace: &Path, project: &str, task: &str, phase: &str) -> PathBuf {
     let path = workspace
@@ -107,6 +109,7 @@ fn source_restore_guard_recovery_permit_binds_task_project_plan_and_exact_bytes(
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn source_restore_guard_corruption_is_local_and_unsafe_files_are_not_followed() {
     let temp = tempfile::tempdir().unwrap();
@@ -358,6 +361,7 @@ fn source_restore_guard_publication_serializes_cross_project_admission() {
     assert!(!root.join(ROOT).join("prj_two").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn source_restore_guard_publication_preserves_existing_or_unsafe_records() {
     let temp = tempfile::tempdir().unwrap();

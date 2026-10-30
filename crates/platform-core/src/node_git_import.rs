@@ -1155,6 +1155,6 @@ fn read_manifest(root: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "node_git_import_tests.rs"]
 mod tests;

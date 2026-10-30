@@ -1289,6 +1289,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "node_app_proxy_shutdown_tests.rs"]
 mod shutdown_tests;

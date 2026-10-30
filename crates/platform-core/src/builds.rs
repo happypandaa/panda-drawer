@@ -2279,7 +2279,7 @@ fn reconcile_recovered_tasks(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::CreateProjectInput;
@@ -2866,6 +2866,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "build_npm_logs_tests.rs"]
 mod npm_logs_tests;

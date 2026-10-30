@@ -404,6 +404,6 @@ pub(crate) fn cleanup_source(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "workspace_migration_cleanup_tests.rs"]
 mod tests;

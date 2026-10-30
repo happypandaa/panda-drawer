@@ -1782,6 +1782,7 @@ mod tests {
         assert!(project.root.join("README.md").is_file());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_source_is_rejected_but_excluded_dependency_symlinks_are_ignored() {
         let (temporary, _store, project) = fixture().await;

@@ -281,6 +281,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn headless_migration_check_rejects_dangling_record_directory_links() {
         for name in ["node-apps", "node-project-ownership", "node-deletion-tasks"] {

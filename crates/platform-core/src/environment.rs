@@ -510,13 +510,14 @@ async fn probe_managed<G: Clone + Send + 'static>(
         path,
     })
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "environment_owned_process_tests.rs"]
 mod owned_process_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::{Builder, TempDir};
 
@@ -530,6 +531,7 @@ mod tests {
     }
 
     // A probe stub tests selection routing only, never real Node/npm compatibility.
+    #[cfg(unix)]
     fn probe_stub(root: &Path) -> PathBuf {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("lib/node_modules/npm/bin")).unwrap();
@@ -566,6 +568,7 @@ mod tests {
             assert!(!supported_node(v));
         }
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn global_node_selection_rejects_project_paths_and_project_owned_npm_before_execution() {
         use std::os::unix::fs::symlink;
@@ -624,6 +627,7 @@ mod tests {
         assert_eq!(fs::read(data.join("toolchain.json")).unwrap(), settings);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn explicit_v1_selection_is_preserved_over_managed_default() {
         let (_temp, root) = disposable();
@@ -671,6 +675,7 @@ mod tests {
         assert!(!data.exists());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn npm_javascript_entry_is_preferred_to_an_ordinary_shell_shim() {
         let (_temp, root) = disposable();
@@ -684,6 +689,7 @@ mod tests {
         assert_eq!(probe(&node).await.unwrap_err().code, "NPM_NOT_FOUND");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn extensionless_local_npm_is_probed_by_the_selected_node() {
         let (_temp, root) = disposable();

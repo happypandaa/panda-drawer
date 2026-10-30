@@ -2427,7 +2427,7 @@ pub(crate) fn publish_directory_noreplace(from: &Path, to: &Path) -> Result<(), 
     crate::project_directory_io::publish_directory_noreplace(from, to, directory_mapping_error)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_directory_mapping_tests.rs"]
 mod project_directory_mapping_tests;
 
@@ -2860,6 +2860,7 @@ mod tests {
             42
         );
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn symlinks_and_replaced_database_are_rejected() {
         let (temp, store) = store();

@@ -3927,6 +3927,7 @@ mod tests {
         service.shutdown().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn attachment_publication_conflicts_ranges_and_static_boundaries() {
         let (_temp, _paths, service, client) = start().await;
@@ -4327,7 +4328,7 @@ mod object_layout_tests;
 #[path = "service_git_environment_tests.rs"]
 mod git_environment_tests;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "service_git_remote_tests.rs"]
 mod git_remote_tests;
 
@@ -4339,7 +4340,7 @@ mod editor_handoff_tests;
 #[path = "service_source_tests.rs"]
 mod source_tests;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "service_project_git_tests.rs"]
 mod project_git_tests;
 
