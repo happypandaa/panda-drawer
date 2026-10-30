@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
+import { hasTraversal } from './native-path.mjs';
 import { pathToFileURL } from 'node:url';
 import { UPDATE_POLICY, assessStableUpdate, generateStaticManifest, parseProtocolJson, validateStaticManifest } from './update-manifest-protocol.mjs';
 import { verifyUpdateArtifact } from './update-artifact-verification.mjs';
@@ -25,7 +26,7 @@ export function parseManifestArguments(args) {
 }
 
 async function checkedPath(value, output = false) {
-  if (!path.isAbsolute(value) || value.split(path.sep).some(part => part === '..') || value.includes('\0')) throw new Error('Manifest paths must be absolute and contain no parent traversal.');
+  if (!path.isAbsolute(value) || hasTraversal(value) || value.includes('\0')) throw new Error('Manifest paths must be absolute and contain no parent traversal.');
   const target = path.normalize(value);
   const parent = path.dirname(target);
   let current = path.parse(parent).root;

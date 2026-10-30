@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { createHash, createPublicKey, timingSafeEqual, verify } from 'node:crypto';
 import path from 'node:path';
+import { hasTraversal } from './native-path.mjs';
 import { UPDATE_POLICY, assessStableUpdate, validateSignatureFormat, validateStaticManifest } from './update-manifest-protocol.mjs';
 
 export const ARTIFACT_VERIFICATION_BUDGET = Object.freeze({ publicKeyBytes: 8 * 1024, chunkBytes: 64 * 1024 });
@@ -28,7 +29,7 @@ function publicKey(encoded) {
 }
 
 async function checkedFile(value, maxBytes) {
-  requireValue(typeof value === 'string' && path.isAbsolute(value) && !value.includes('\0') && !value.split(path.sep).includes('..'), 'Verification paths must be absolute without parent traversal.');
+  requireValue(typeof value === 'string' && path.isAbsolute(value) && !value.includes('\0') && !hasTraversal(value), 'Verification paths must be absolute without parent traversal.');
   const target = path.normalize(value);
   let current = path.parse(target).root;
   const parts = target.slice(current.length).split(path.sep).filter(Boolean);

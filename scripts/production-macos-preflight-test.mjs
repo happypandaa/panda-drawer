@@ -7,6 +7,12 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { strictJson, validateInputs } from './production-macos-preflight.mjs';
 
+// Keep pure validation on both hosts; the filesystem planner prepares the
+// macOS production layout and enforces its Unix ownership/permission contract.
+const macPreflightFilesystem = {
+  skip: process.platform !== 'darwin' && 'macOS production-preflight filesystem fixture; no Windows production proof',
+};
+
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const script = 'scripts/production-macos-preflight.mjs';
 const files = {
@@ -89,7 +95,7 @@ test('development layout or identity drift refuses planning instead of inheritin
   }
 });
 
-test('default check works from an unrelated cwd, is read-only and reports all pending proof honestly', async t => {
+test('default check works from an unrelated cwd, is read-only and reports all pending proof honestly', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const result = run(root);
   assert.equal(result.status, 0, result.stderr);
@@ -105,7 +111,7 @@ test('default check works from an unrelated cwd, is read-only and reports all pe
   await noTarget(root); await preservedInputs(root);
 });
 
-test('prepare exclusively creates private metadata and empty future slots without touching development outputs', async t => {
+test('prepare exclusively creates private metadata and empty future slots without touching development outputs', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const sentinel = path.join(root, 'target/release/bundle/macos/熊猫小抽屉.app/sentinel');
   const developmentResource = path.join(root, 'apps/desktop/src-tauri/resources/sentinel');
@@ -128,7 +134,7 @@ test('prepare exclusively creates private metadata and empty future slots withou
   await preservedInputs(root);
 });
 
-test('Tauri merge patch removes development resources/hooks and exclusively selects isolated production inputs', async t => {
+test('Tauri merge patch removes development resources/hooks and exclusively selects isolated production inputs', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const result = run(root, ['prepare']); assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
@@ -160,12 +166,17 @@ test('CLI rejects identity/root/config/output options and environment overrides 
     const result = run(root, ['prepare'], { [key]: 'SYNTHETIC_VALUE_NOT_TO_PRINT' });
     assert.equal(result.status, 1); assert.ok(result.stderr.includes(key)); assert.ok(!result.stderr.includes('SYNTHETIC_VALUE_NOT_TO_PRINT'));
   }
+  await noTarget(root);
+});
+
+test('Mac preflight accepts only the fixed deployment target without creating output', macPreflightFilesystem, async t => {
+  const root = await fixture(t);
   assert.equal(run(root, ['prepare'], { MACOSX_DEPLOYMENT_TARGET: '14.0' }).status, 1);
   assert.equal(run(root, ['check'], { MACOSX_DEPLOYMENT_TARGET: '15.0' }).status, 0);
   await noTarget(root);
 });
 
-test('signing environment values are not read or emitted and cannot enable any operation', async t => {
+test('signing environment values are not read or emitted and cannot enable any operation', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const result = run(root, ['prepare'], { APPLE_SIGNING_IDENTITY: 'SYNTHETIC_PRIVATE_MARKER', APPLE_PASSWORD: 'SYNTHETIC_PRIVATE_MARKER', TAURI_SIGNING_PRIVATE_KEY: 'SYNTHETIC_PRIVATE_MARKER' });
   assert.equal(result.status, 0, result.stderr);
@@ -177,7 +188,7 @@ test('signing environment values are not read or emitted and cannot enable any o
   for (const forbidden of ['node:child_process', 'fetch(', 'node:https', 'node:http', 'process.env.APPLE', 'process.env.TAURI_SIGNING']) assert.ok(!source.includes(forbidden));
 });
 
-test('configured public policy still leaves all actual signing/build/installation proofs pending', async t => {
+test('configured public policy still leaves all actual signing/build/installation proofs pending', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   await writeFile(path.join(root, files.signingPolicy), changed('signingPolicy', policy => { policy.expectedTeamId = 'ABCDEFGHI1'; policy.nodeEntitlementsSha256 = 'a'.repeat(64); policy.gitEntitlementsSha256 = 'b'.repeat(64); }).signingPolicy);
   const result = run(root); assert.equal(result.status, 0, result.stderr);
@@ -187,7 +198,7 @@ test('configured public policy still leaves all actual signing/build/installatio
   await noTarget(root);
 });
 
-test('extra platform configuration, linked inputs and linked input ancestors refuse before mutation', async t => {
+test('extra platform configuration, linked inputs and linked input ancestors refuse before mutation', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const extra = path.join(root, 'apps/desktop/src-tauri/tauri.macos.conf.json');
   await writeFile(extra, '{}');
@@ -205,7 +216,7 @@ test('extra platform configuration, linked inputs and linked input ancestors ref
   await noTarget(root);
 });
 
-test('linked or permissive output parents refuse without following or deleting their contents', async t => {
+test('linked or permissive output parents refuse without following or deleting their contents', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const outside = path.join(root, 'outside'); await mkdir(outside); await writeFile(path.join(outside, 'sentinel'), 'retain');
   await symlink(outside, path.join(root, 'target'));
@@ -220,7 +231,7 @@ test('linked or permissive output parents refuse without following or deleting t
   assert.deepEqual(await readdir(path.join(root, 'target/production-macos')), []);
 });
 
-test('missing or malformed source metadata does not leave a partial output', async t => {
+test('missing or malformed source metadata does not leave a partial output', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   await writeFile(path.join(root, files.nodeRuntime), '{"schemaVersion":1,"schemaVersion":1}');
   let result = run(root, ['prepare']); assert.equal(result.status, 1); assert.match(result.stderr, /重复/); await noTarget(root);
@@ -228,7 +239,7 @@ test('missing or malformed source metadata does not leave a partial output', asy
   result = run(root, ['prepare']); assert.equal(result.status, 1); await noTarget(root);
 });
 
-test('invoking through a repository symlink still uses the script repository and never the current directory', async t => {
+test('invoking through a repository symlink still uses the script repository and never the current directory', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const linkRoot = path.join(root, 'workspace-link'); await symlink(root, linkRoot);
   const result = run(linkRoot, ['check']); assert.equal(result.status, 0, result.stderr);

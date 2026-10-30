@@ -5,6 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { desktopPackagePlan, validateDesktopPackageIdentity, withDesktopPackageOutput } from './desktop-package-output.mjs';
 
+// These fixtures exercise the existing macOS app/DMG transaction. They do not
+// validate Windows NSIS output, which needs its own packaging acceptance.
+const macPackageFilesystem = {
+  skip: process.platform !== 'darwin' && 'macOS app/DMG filesystem fixture; Windows NSIS acceptance remains separate',
+};
+
 const configuration = {
   productName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.happypandaa.pandadrawer', bundle: { targets: ['app', 'dmg'] },
 };
@@ -80,7 +86,7 @@ test('only previous generated outputs may retain the exact legacy development id
   assert.throws(() => desktopPackagePlan({ root: '/x', args: ['build'], configuration: { ...configuration, identifier: previous.CFBundleIdentifier }, platform: 'darwin', arch: 'arm64', environment: {} }));
 });
 
-test('identity migration accepts the prior generated package and restores it on a failed new build', async t => {
+test('identity migration accepts the prior generated package and restores it on a failed new build', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const previous = { ...JSON.parse(await readFile(appFile(f.app))), identifier: 'dev.localprojects.platform.m0' };
   await writeFile(appFile(f.app), JSON.stringify(previous));
@@ -110,7 +116,7 @@ test('rejects custom output or identity overrides and unknown bundle types befor
   }
 });
 
-test('brand migration removes only the three exact verified generated product names', async t => {
+test('brand migration removes only the three exact verified generated product names', macPackageFilesystem, async t => {
   const f = await fixture(t);
   await f.writeFormerApp();
   await writeFile(f.formerDmg, 'old-dmg');
@@ -140,7 +146,7 @@ test('brand migration removes only the three exact verified generated product na
   await noTransaction(f);
 });
 
-test('failed renamed build restores all three brands at their exact previous paths', async t => {
+test('failed renamed build restores all three brands at their exact previous paths', macPackageFilesystem, async t => {
   const f = await fixture(t, ['build']);
   await f.writeFormerApp();
   await writeFile(f.formerDmg, 'old-dmg');
@@ -160,7 +166,7 @@ test('failed renamed build restores all three brands at their exact previous pat
   await noTransaction(f);
 });
 
-test('first renamed build failure restores legacy packages without retaining the partial new brand', async t => {
+test('first renamed build failure restores legacy packages without retaining the partial new brand', macPackageFilesystem, async t => {
   const f = await fixture(t, ['build']);
   await rm(f.app, { recursive: true });
   await rm(f.dmg);
@@ -181,7 +187,7 @@ test('first renamed build failure restores legacy packages without retaining the
   await noTransaction(f);
 });
 
-test('either legacy app running under its historical path blocks a renamed build before mutation', async t => {
+test('either legacy app running under its historical path blocks a renamed build before mutation', macPackageFilesystem, async t => {
   const f = await fixture(t);
   await f.writeFormerApp();
   await writeFile(f.formerDmg, 'old-dmg');
@@ -201,7 +207,7 @@ test('either legacy app running under its historical path blocks a renamed build
   await noTransaction(f);
 });
 
-test('source-directory symlink aliases preserve running protection for all exact generated app names and binaries', async t => {
+test('source-directory symlink aliases preserve running protection for all exact generated app names and binaries', macPackageFilesystem, async t => {
   const f = await fixture(t);
   await f.writeFormerApp();
   await f.writeLegacyApp();
@@ -224,7 +230,7 @@ test('source-directory symlink aliases preserve running protection for all exact
   }
 });
 
-test('symlink comparison does not match nearby app names or unknown executable names', async t => {
+test('symlink comparison does not match nearby app names or unknown executable names', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const alias = path.join(f.root, 'previous-source-name');
   await symlink(f.root, alias);
@@ -244,7 +250,7 @@ test('symlink comparison does not match nearby app names or unknown executable n
   await noTransaction(f);
 });
 
-test('a legacy filename with a different bundle name or identity is preserved and blocks cleanup', async t => {
+test('a legacy filename with a different bundle name or identity is preserved and blocks cleanup', macPackageFilesystem, async t => {
   for (const identity of [
     { identifier: 'dev.happypandaa.pandadrawer', bundleName: '熊猫小抽屉' },
     { identifier: 'foreign', bundleName: 'Local Projects Dev' },
@@ -261,7 +267,7 @@ test('a legacy filename with a different bundle name or identity is preserved an
   }
 });
 
-test('app-only success retains new app and removes only verified old app/DMGs', async t => {
+test('app-only success retains new app and removes only verified old app/DMGs', macPackageFilesystem, async t => {
   const f = await fixture(t);
   await writeFile(f.oldDmg, 'old-dmg');
   const unrelated = path.join(path.dirname(f.dmg), 'unrelated.dmg');
@@ -276,7 +282,7 @@ test('app-only success retains new app and removes only verified old app/DMGs', 
   await noTransaction(f);
 });
 
-test('full build verifies and retains latest app and DMG', async t => {
+test('full build verifies and retains latest app and DMG', macPackageFilesystem, async t => {
   const f = await fixture(t, ['build']);
   const report = await withDesktopPackageOutput(f.plan, async () => {
     await f.writeApp('new');
@@ -287,7 +293,7 @@ test('full build verifies and retains latest app and DMG', async t => {
   await noTransaction(f);
 });
 
-test('upgrade accepts signed older outputs without development tools and requires tools in new app and DMG', async t => {
+test('upgrade accepts signed older outputs without development tools and requires tools in new app and DMG', macPackageFilesystem, async t => {
   const f = await fixture(t, ['build']);
   await f.writeLegacyApp();
   await writeFile(f.legacyDmg, 'old-dmg');
@@ -311,7 +317,7 @@ test('upgrade accepts signed older outputs without development tools and require
   await noTransaction(f);
 });
 
-test('missing development tools in either new artifact restores the verified older outputs', async t => {
+test('missing development tools in either new artifact restores the verified older outputs', macPackageFilesystem, async t => {
   for (const rejectedKind of ['verifyApp', 'verifyDmg']) {
     const f = await fixture(t, ['build']);
     let built = false;
@@ -334,7 +340,7 @@ test('missing development tools in either new artifact restores the verified old
   }
 });
 
-test('failed build restores previous packages and removes partial generated outputs', async t => {
+test('failed build restores previous packages and removes partial generated outputs', macPackageFilesystem, async t => {
   const f = await fixture(t);
   await writeFile(f.oldDmg, 'old-dmg');
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => {
@@ -347,7 +353,7 @@ test('failed build restores previous packages and removes partial generated outp
   await noTransaction(f);
 });
 
-test('failed new-package validation restores old app and DMG', async t => {
+test('failed new-package validation restores old app and DMG', macPackageFilesystem, async t => {
   const f = await fixture(t, ['build']);
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => f.writeApp('new'), f.verifiers), { code: 'ENOENT' });
   assert.equal(JSON.parse(await readFile(appFile(f.app))).value, 'old');
@@ -355,7 +361,7 @@ test('failed new-package validation restores old app and DMG', async t => {
   await noTransaction(f);
 });
 
-test('running current app blocks preparation and leaves all packages unchanged', async t => {
+test('running current app blocks preparation and leaves all packages unchanged', macPackageFilesystem, async t => {
   const f = await fixture(t);
   let builds = 0;
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => { builds += 1; }, {
@@ -366,7 +372,7 @@ test('running current app blocks preparation and leaves all packages unchanged',
   await noTransaction(f);
 });
 
-test('foreign app identity fails before replacing any generated file', async t => {
+test('foreign app identity fails before replacing any generated file', macPackageFilesystem, async t => {
   const f = await fixture(t);
   await writeFile(appFile(f.app), JSON.stringify({ identifier: 'foreign', value: 'keep' }));
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => assert.fail('must not build'), f.verifiers));
@@ -375,7 +381,7 @@ test('foreign app identity fails before replacing any generated file', async t =
   await noTransaction(f);
 });
 
-test('symbolic-link output parents are rejected without following or deleting them', async t => {
+test('symbolic-link output parents are rejected without following or deleting them', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const external = path.join(f.root, 'preserved');
   await mkdir(external);
@@ -388,7 +394,7 @@ test('symbolic-link output parents are rejected without following or deleting th
   await noTransaction(f);
 });
 
-test('symbolic-link package candidates are rejected and target remains untouched', async t => {
+test('symbolic-link package candidates are rejected and target remains untouched', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const external = path.join(f.root, 'preserved-dmg');
   await writeFile(external, 'keep');
@@ -400,7 +406,7 @@ test('symbolic-link package candidates are rejected and target remains untouched
   await noTransaction(f);
 });
 
-test('an existing lock prevents concurrent build or ambiguous crash recovery', async t => {
+test('an existing lock prevents concurrent build or ambiguous crash recovery', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const lock = path.join(f.root, 'target', '.desktop-package-build.lock');
   await mkdir(lock);
@@ -410,7 +416,7 @@ test('an existing lock prevents concurrent build or ambiguous crash recovery', a
   assert.equal(await readFile(f.dmg, 'utf8'), 'old-dmg');
 });
 
-test('a recovery failure preserves old packages and lock instead of guessing a cleanup', async t => {
+test('a recovery failure preserves old packages and lock instead of guessing a cleanup', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const external = path.join(f.root, 'preserved');
   await mkdir(external);
@@ -429,7 +435,7 @@ test('a recovery failure preserves old packages and lock instead of guessing a c
 });
 
 
-test('an old app launched from staging is retained with recovery record instead of deleted', async t => {
+test('an old app launched from staging is retained with recovery record instead of deleted', macPackageFilesystem, async t => {
   const f = await fixture(t);
   let samples = 0;
   await assert.rejects(withDesktopPackageOutput(f.plan, async () => f.writeApp('new'), {
@@ -448,7 +454,7 @@ test('an old app launched from staging is retained with recovery record instead 
   assert.ok((await lstat(path.join(f.root, 'target', '.desktop-package-build.lock'))).isDirectory());
 });
 
-test('an old app launched through a source-directory alias from staging retains its recovery record', async t => {
+test('an old app launched through a source-directory alias from staging retains its recovery record', macPackageFilesystem, async t => {
   const f = await fixture(t);
   const alias = path.join(f.root, 'previous-source-name');
   await symlink(f.root, alias);

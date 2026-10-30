@@ -43,6 +43,15 @@ async function fixture(data = Buffer.from('disposable actual artifact bytes'), o
   await writeFile(artifact, data); await writeFile(publicKeyPath, publicBox()); await writeFile(input, JSON.stringify(value));
   return { folder, artifact, publicKeyPath, input, manifest: value };
 }
+
+async function fileSymlinkFixture(t, target, destination) {
+  try { await symlink(target, destination); return true; } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+    t.diagnostic(`Windows file symlink fixture unavailable (${error.code}); this case provides no file-symlink rejection proof.`);
+    t.skip('Windows host does not permit this disposable file symlink fixture');
+    return false;
+  }
+}
 function editSignature(value, edit) {
   const lines = Buffer.from(value, 'base64').toString().replace(/\n$/, '').split('\n');
   edit(lines);
@@ -129,13 +138,20 @@ test('Public-key decoding rejects noncanonical base64, wrong packet length and h
   }
 });
 
-test('Symlink and hardlink artifacts or public keys and oversized inputs are rejected without reading them', async () => {
+test('Symlink and hardlink artifacts or public keys are rejected without reading them', async t => {
   for (const field of ['artifact', 'publicKeyPath']) for (const kind of ['symlink', 'hardlink']) {
-    const f = await fixture(); const original = f[field]; const moved = original + '.original';
-    const bytes = await readFile(original); await rm(original); await writeFile(moved, bytes);
-    if (kind === 'symlink') await symlink(moved, original); else await link(moved, original);
-    await assert.rejects(verifyUpdateArtifact(f), /ordinary file/);
+    await t.test(`${field}: ${kind}`, async t => {
+      const f = await fixture(); const original = f[field]; const moved = original + '.original';
+      const bytes = await readFile(original); await rm(original); await writeFile(moved, bytes);
+      if (kind === 'symlink') {
+        if (!await fileSymlinkFixture(t, moved, original)) return;
+      } else await link(moved, original);
+      await assert.rejects(verifyUpdateArtifact(f), /ordinary file/);
+    });
   }
+});
+
+test('Oversized artifacts and public keys are rejected before verification', async () => {
   const large = await fixture(Buffer.from('small'));
   const file = await open(large.artifact, 'r+'); await file.truncate(1024 * 1024 * 1024 + 1); await file.close();
   await assert.rejects(verifyUpdateArtifact(large), /bounded/);
@@ -143,11 +159,19 @@ test('Symlink and hardlink artifacts or public keys and oversized inputs are rej
   await assert.rejects(verifyUpdateArtifact(f), /bounded/);
 });
 
-test('Relative, traversing and symlink-parent inputs never become verification sources', async () => {
+test('Relative and traversing inputs never become verification sources', async () => {
   const f = await fixture();
-  const alias = path.join(root, 'parent-alias'); await symlink(f.folder, alias);
-  for (const artifact of [name, path.join(alias, name), `${f.folder}/../${path.basename(f.folder)}/${name}`]) await assert.rejects(verifyUpdateArtifact({ ...f, artifact }));
-  for (const publicKeyPath of ['operator.pub', path.join(alias, 'operator.pub'), `${f.folder}/../${path.basename(f.folder)}/operator.pub`]) await assert.rejects(verifyUpdateArtifact({ ...f, publicKeyPath }));
+  for (const artifact of [name, `${f.folder}/../${path.basename(f.folder)}/${name}`]) await assert.rejects(verifyUpdateArtifact({ ...f, artifact }));
+  for (const publicKeyPath of ['operator.pub', `${f.folder}/../${path.basename(f.folder)}/operator.pub`]) await assert.rejects(verifyUpdateArtifact({ ...f, publicKeyPath }));
+});
+
+test('Directory-link parents never become verification sources', async () => {
+  const f = await fixture();
+  const alias = path.join(root, 'parent-alias');
+  if (process.platform === 'win32') await symlink(f.folder, alias, 'junction');
+  else await symlink(f.folder, alias);
+  await assert.rejects(verifyUpdateArtifact({ ...f, artifact: path.join(alias, name) }));
+  await assert.rejects(verifyUpdateArtifact({ ...f, publicKeyPath: path.join(alias, 'operator.pub') }));
 });
 
 test('An in-flight artifact overwrite never verifies a different byte sequence', async () => {
@@ -160,35 +184,45 @@ test('An in-flight artifact overwrite never verifies a different byte sequence',
   await rejected;
 });
 
-test('Manifest input rejects deterministic FIFO and named-file swaps around its actual open', async t => {
+async function manifestInputSwap(t, phase) {
   const actualOpen = promises.open;
-  for (const phase of ['fifo-before-open', 'replacement-before-open', 'replacement-after-open']) {
-    const f = await fixture(); let swapped = false;
-    const original = f.input + '.preserved';
-    const replace = async () => {
-      await rename(f.input, original);
-      if (phase === 'fifo-before-open') {
-        const result = spawnSync('/usr/bin/mkfifo', [f.input], { encoding: 'utf8' });
-        assert.equal(result.status, 0, 'Disposable FIFO creation failed.');
-      } else await writeFile(f.input, JSON.stringify(f.manifest));
-    };
-    t.mock.method(promises, 'open', async (target, flags, ...rest) => {
-      if (target !== f.input || swapped) return actualOpen(target, flags, ...rest);
-      swapped = true;
-      if (phase === 'replacement-after-open') {
-        const handle = await actualOpen(target, flags, ...rest); await replace(); return handle;
-      }
-      // Fail safely instead of hanging the regression if NONBLOCK disappears.
-      assert.notEqual(flags & constants.O_NONBLOCK, 0, 'Manifest open must remain bounded when its named file becomes a FIFO.');
-      await replace();
-      return actualOpen(target, flags, ...rest);
-    });
-    syncBuiltinESMExports();
-    try {
-      await assert.rejects(runManifestCommand({ command: 'verify', input: f.input, artifact: f.artifact, publicKeyPath: f.publicKeyPath }), /Manifest input (?:is invalid|changed)/);
-      assert.equal(swapped, true);
-      assert.deepEqual(JSON.parse(await readFile(original, 'utf8')), f.manifest);
-    } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  const f = await fixture(); let swapped = false;
+  const original = f.input + '.preserved';
+  const replace = async () => {
+    await rename(f.input, original);
+    if (phase === 'fifo-before-open') {
+      const result = spawnSync('/usr/bin/mkfifo', [f.input], { encoding: 'utf8' });
+      assert.equal(result.status, 0, 'Disposable FIFO creation failed.');
+    } else await writeFile(f.input, JSON.stringify(f.manifest));
+  };
+  t.mock.method(promises, 'open', async (target, flags, ...rest) => {
+    if (target !== f.input || swapped) return actualOpen(target, flags, ...rest);
+    swapped = true;
+    if (phase === 'replacement-after-open') {
+      const handle = await actualOpen(target, flags, ...rest); await replace(); return handle;
+    }
+    // Fail safely instead of hanging the regression if NONBLOCK disappears.
+    if (process.platform !== 'win32') assert.notEqual(flags & constants.O_NONBLOCK, 0, 'Manifest open must remain bounded when its named file becomes a FIFO.');
+    await replace();
+    return actualOpen(target, flags, ...rest);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(runManifestCommand({ command: 'verify', input: f.input, artifact: f.artifact, publicKeyPath: f.publicKeyPath }), /Manifest input (?:is invalid|changed)/);
+    assert.equal(swapped, true);
+    assert.deepEqual(JSON.parse(await readFile(original, 'utf8')), f.manifest);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+}
+
+test('Manifest input rejects a deterministic Unix FIFO around its actual open', {
+  skip: process.platform === 'win32' && 'Unix FIFO/nonblocking-open fixture; real named-file replacement checks run on Windows',
+}, async t => {
+  await manifestInputSwap(t, 'fifo-before-open');
+});
+
+test('Manifest input rejects named-file swaps around its actual open', async t => {
+  for (const phase of ['replacement-before-open', 'replacement-after-open']) {
+    await t.test(phase, async t => manifestInputSwap(t, phase));
   }
 });
 
