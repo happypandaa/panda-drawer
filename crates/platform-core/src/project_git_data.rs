@@ -2,33 +2,6 @@
 //! operation's unfinished publication and displaced current snapshot evidence.
 use super::*;
 
-#[cfg(test)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitDataSaveInput {
-    #[serde(deserialize_with = "required_head")]
-    pub expected_head: Option<String>,
-    pub expected_snapshot: String,
-    pub message: String,
-    pub author: GitAuthor,
-}
-#[cfg(test)]
-impl From<GitDataSaveInput> for GitSaveInput {
-    fn from(input: GitDataSaveInput) -> Self {
-        Self {
-            expected_head: input.expected_head,
-            expected_snapshot: input.expected_snapshot,
-            message: input.message,
-            author: input.author,
-        }
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GitDataSaveFinalizeInput {
-    pub save_task_id: String,
-    pub expected_journal_digest: String,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct DataPublication {
