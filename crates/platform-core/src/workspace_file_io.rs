@@ -36,6 +36,9 @@ pub(crate) fn filesystem(path: &Path) -> Result<Value> {
             "availableBytes": info.available_bytes,
             "totalBytes": info.total_bytes,
             "driveType": info.drive_type,
+            "internal": info.internal,
+            "internalDiskNumbers": info.internal_disk_numbers,
+            "internalDiagnostic": info.internal_diagnostic,
         }))
     }
 }
@@ -130,6 +133,8 @@ mod tests {
         assert!(observed["totalBytes"]
             .as_u64()
             .is_some_and(|bytes| bytes > 0));
+        assert!(observed["internal"].is_boolean() || observed["internal"].is_null());
+        assert!(observed["internalDiskNumbers"].is_array());
         for error in [
             require_unsynced(&source).unwrap_err(),
             require_supported_filesystem(&Value::Null).unwrap_err(),

@@ -6,6 +6,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationByHandleW, GetVolumePathNameW,
 };
 
+mod internal;
+
 #[derive(Debug)]
 pub struct VolumeInfo {
     pub filesystem: String,
@@ -14,6 +16,11 @@ pub struct VolumeInfo {
     pub total_bytes: u64,
     /// The actual GetDriveTypeW result; unknown values remain unknown.
     pub drive_type: u32,
+    /// Positive PnP membership observations for every backing disk are required.
+    /// Unresolved device mappings and virtual backing stores remain unknown.
+    pub internal: Option<bool>,
+    pub internal_disk_numbers: Vec<u32>,
+    pub internal_diagnostic: Option<String>,
 }
 
 impl VolumeInfo {
@@ -73,12 +80,18 @@ pub fn inspect(path: &Path) -> io::Result<VolumeInfo> {
             ptr::null_mut(),
         )
     })?;
+    // Failure to discover device topology does not erase ordinary volume facts.
+    // This observation grants no migration, copying or cleanup authority.
+    let internal = internal::observe(&directory);
     Ok(VolumeInfo {
         filesystem,
         volume_serial: identity.volume_serial,
         available_bytes,
         total_bytes,
         drive_type,
+        internal: internal.internal,
+        internal_disk_numbers: internal.disk_numbers,
+        internal_diagnostic: internal.diagnostic,
     })
 }
 
@@ -122,6 +135,27 @@ mod tests {
     }
 
     #[test]
+    fn read_only_observation_of_the_repository_volume_preserves_its_directory_identity() {
+        // This is the CI source checkout, not the platform's workspace or data.
+        // Together with the temporary-directory test it exercises this host's
+        // actual source volume as well as the configured temporary volume.
+        let root = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let before = files::open_no_reparse(&root).unwrap().identity;
+        let volume = inspect(&root).unwrap();
+        assert_eq!(volume.volume_serial, before.volume_serial);
+        assert!(!volume.filesystem.is_empty());
+        assert!(before.same_object(&files::open_no_reparse(&root).unwrap().identity));
+        match volume.internal {
+            Some(_) => {
+                assert!(!volume.internal_disk_numbers.is_empty());
+                assert!(volume.internal_diagnostic.is_none());
+            }
+            None => assert!(volume.internal_diagnostic.is_some()),
+        }
+        eprintln!("Actual source-checkout volume: {volume:?}");
+    }
+
+    #[test]
     fn unknown_drive_types_do_not_supply_a_local_or_internal_claim() {
         let mut info = VolumeInfo {
             filesystem: String::new(),
@@ -129,6 +163,9 @@ mod tests {
             available_bytes: 0,
             total_bytes: 0,
             drive_type: 0,
+            internal: None,
+            internal_disk_numbers: vec![],
+            internal_diagnostic: None,
         };
         for raw in [0, 1, 7, u32::MAX] {
             info.drive_type = raw;
