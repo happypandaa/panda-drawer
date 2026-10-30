@@ -37,6 +37,10 @@ pub fn is_explicit_non_root_absolute_path(path: &Path) -> bool {
 }
 
 pub fn path_components(path: &Path) -> Vec<std::path::PathBuf> {
+    #[cfg(windows)]
+    let normalized = crate::windows::separator_path(path);
+    #[cfg(windows)]
+    let path = normalized.as_path();
     let mut current = std::path::PathBuf::new();
     let mut result = Vec::new();
     for component in path.components() {
