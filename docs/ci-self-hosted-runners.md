@@ -51,10 +51,11 @@ Get-Service 'actions.runner.*'
 
 ```powershell
 .\scripts\install-windows-runner.ps1 -RegistrationTokenFile C:\local-temp\runner-token.txt `
-  -CargoHome D:\dev\postgresUI\.tools\cargo -RustupHome D:\dev\postgresUI\.tools\rustup
+  -CargoHome C:\actions-runner-panda\cargo-cache -RustupHome D:\dev\postgresUI\.tools\rustup `
+  -RustBin D:\dev\postgresUI\.tools\cargo\bin
 ```
 
-`-PrepareOnly` 只下载、校验、解压和核对版本，不要求管理员或 token，不表示服务已安装。注册 token 由子进程环境传入，不写入文档、脚本参数或仓库。注册完成后由提供者处理本机临时 token 文件；脚本不删除任意用户文件。
+先创建 `cargo-cache` 目录。`-RustBin` 允许服务只读取现有 Rust 程序与 rustup 工具链，把 Cargo 下载和可写缓存放在独立 runner 目录，不授予服务对日常开发 Cargo 缓存的写权限。`-PrepareOnly` 只下载、校验、解压和核对版本，不要求管理员或 token，不表示服务已安装。注册 token 由子进程环境传入，不写入文档、脚本参数或仓库。注册完成后由提供者处理本机临时 token 文件；脚本不删除任意用户文件。
 
 ## 基线、检查与无人值守推进
 
