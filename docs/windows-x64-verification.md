@@ -582,3 +582,9 @@ W1.13 后 root 另重跑原桌面生命周期失败用例：已实际越过配�
 使用该正常准备结果执行真实 Tauri `build --debug --no-bundle` 通过：生成桌面 exe **45,647,872 字节**，已复制 sidecar **11,423,232 字节**，SHA256 `2a760fde9e86146beb268c649587a11822c4520f286e8080c71793156cb91a4f` 与本次 CLI 精确一致，实际 --help 通过。部署后的七个资源根准确；11 个 SDK/模板/技能/README 必要文件与准备源逐字相同。另调用实际生产 verifier 核验已部署 Node **1,928 文件**和 Git **375 文件 / 96,237,338 字节**，完整树及固定锚点均通过。这里没有再次执行已部署工具或访问真实项目。
 
 Tauri CLI help 入口也通过。复审补上受控 Windows 准备模式的转发 Cargo 输出覆盖参数拒绝，防止命令行 target-dir 覆盖本次独立 target；与 Mac 标准打包同样不接纳自定义输出，Mac 原参数处理保持。参数回归 **3/3** 验证 reset/map 顺序、两种覆盖形式拒绝及 Mac 原调用，普通 `--locked` 仍传入。首次真实完整部署不再依赖排除资源的诊断配置；仍有 9 项既有/阶段编译警告。没有启动桌面应用、服务或真实数据目录，不代表 `npm run dev` 主界面、设置、W1 或第 7 节验收完成。最近两次 CI 状态查询遇到连接传输错误，不能据此更新排队/执行状态；尚无 Mac 基线或双端绿色证据，分支不合并。配置合并和 Windows 安装选项依据 [Tauri configuration files](https://v2.tauri.app/develop/configuration-files/) 与 [Windows installer](https://v2.tauri.app/distribute/windows-installer/)。
+
+### W1.16 — Git 添加在未实现操作前明确拒绝
+
+新增 node_git_import/capability 适配。Windows 新请求保留原 URL/分支/UUID/名称校验、去重与已有状态语义，然后在创建接纳材料、归属、任务或临时文件前返回实际 sources 能力错误。recover 第一行及非终态 retry_cleanup 取得操作范围前明确拒绝未实现恢复；已终态快照仍照常返回。记录与未知材料保留，空内存记录也不冒充已完成磁盘恢复。Mac 三处 no-op；移除新增调用与模块声明后，原入口正文逐字保持。
+
+真实 core 库二进制纯 guard 专项作者与 root 各 **2/2**，确认原错误全部字段和 retryable 保留，恢复明确 accepted=false/not_started 且无虚构 recovered；未启动 manager/service，未证明整个导入端到端无写入。真正导入、取消、恢复和清理仍待 W4，运行总门禁未改。此步另将 W1.7 合成 Node 临时文件的测试属性清理改为恢复捕获的原始 permissions；root 实际文件访问 **4/4**、payload verifier **3/3** 通过，没有改产品权限政策或执行合成字节。

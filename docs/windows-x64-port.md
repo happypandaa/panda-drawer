@@ -67,6 +67,7 @@
 | 本机目录登记与可编辑源码发布 | 描述符绑定的只读检查、空目录初始化、候选复制与发布恢复 | 对应的 HANDLE 绑定与候选发布完成前明确拒绝，不写入用户目录、不假定已登记；待 W4 实现 | `node_app_directory.rs`、`source_publication.rs`；Mac 原实现分别保留在各自 `unix.rs` 子模块 |
 | 外部 ZIP 导出发布 | 原子不覆盖改名、目录/文件身份复核、替代材料保留或独占归还 | 发布和中断恢复未完成时，在改名或验证回调前明确拒绝，保留已准备的临时材料；待后续补齐 | `lifecycle_file_io.rs`；原 Unix 发布实现在 `lifecycle_file_io/unix.rs`，生命周期目录类型预检查也经该边界 |
 | 受控 Git 源码获取 | 原生磁盘预算、文件树/摘要核对、非执行复制 | URL/分支政策和输入/候选数据共用；实际获取、复制、就绪或归属核对尚未完成时明确拒绝 | `source_acquisition.rs`；共用 `source_acquisition/types.rs` / `url.rs`；Unix 原流程在 `unix.rs`，Windows 临时门禁在 `windows.rs`，待 W4 完成 |
+| Git 添加任务的未完成能力接纳 | 原任务去重/状态、接纳与中断清理顺序 | 新导入在任何接纳材料/任务写入前保留实际源码能力错误；恢复和非终态清理重试先明确拒绝，已有终态查询保持，不伪造空恢复结果 | `node_git_import/capability.rs`；共享入口仅调用，Mac 适配 no-op，真实导入与恢复待 W4 |
 | npm 准备的输入与私有临时文件 | 原 no-follow 读取，单链接/大小准入，dev/ino、len、mtime 与 mode 变化核对；0700/0600 创建 | 实际完整身份、大小、修改时间和只读权限变化；当前用户私有 DACL，独占新建且刷新；不合成执行位，不增加 ctime/链接数变化要求 | `dependency_file_io.rs` / `platform-native::tool_files::Facts::same_modified_permissions`，接入 `node_dependency_prepare.rs`；真实 npm/Job 运行仍待 W3/W4 集成 |
 | 构建输入文件复制 | 原前后 dev/ino、len、mtime 与 mode 核对；副本私有 0600，原可执行文件副本 0700 | 完整原生身份、大小、修改时间与只读属性核对；副本独立私有可写，不伪造执行位，不额外拒绝原来允许的源硬链接 | `build_source_io.rs`，由 `build_candidate.rs` 调用；完整构建运行与发布仍待 W2 |
 | 导入临时目录与归档只读观察 | 原目录类型/no-link/chmod；摘要按 dev/ino、len、mtime 复核；真实单链接检查 | 只调整已选目录自己的私有 DACL；摘要以完整身份、大小和修改时间复核，链接数来自实际句柄；归档权限数据见下项 | `import_directory_io.rs`、`project_file_io.rs` 的已观察链接数入口；接入 `node_git_import.rs`、`service.rs`、`backups.rs` |
