@@ -4,6 +4,7 @@
 pub mod directory;
 pub mod filesystem;
 pub mod runtime_logs;
+pub mod tool_files;
 
 #[cfg(windows)]
 pub mod windows;

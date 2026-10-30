@@ -4,14 +4,14 @@
 //! change permissions, or inspect the Node/npm toolchain or any repository.
 
 use crate::ApiError;
+use platform_native::tool_files::{self as native_tools, Facts as Metadata};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    fs::{self, File, Metadata, OpenOptions},
+    fs::{self, File},
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 const RELEASE: &str = include_str!("../../../scripts/development-git-release.json");
@@ -123,39 +123,22 @@ fn release(bytes: &str) -> Result<Release, ApiError> {
 }
 
 fn same_identity(left: &Metadata, right: &Metadata) -> bool {
-    left.dev() == right.dev() && left.ino() == right.ino()
+    left.same_object(right)
 }
-
 fn unchanged(left: &Metadata, right: &Metadata) -> bool {
-    same_identity(left, right)
-        && left.len() == right.len()
-        && left.mode() == right.mode()
-        && left.nlink() == right.nlink()
-        && left.mtime() == right.mtime()
-        && left.mtime_nsec() == right.mtime_nsec()
-        && left.ctime() == right.ctime()
-        && left.ctime_nsec() == right.ctime_nsec()
+    left.unchanged(right)
 }
 
 fn directory_chain(root: &Path) -> Result<Vec<(PathBuf, Metadata)>, ApiError> {
-    if !root.is_absolute()
-        || root
-            .to_str()
-            .is_none_or(|path| path.contains('\\') || path.chars().any(char::is_control))
-        || root
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-    {
+    if !native_tools::absolute_path_valid(root) {
         return Err(invalid(
             "私有 Git 工具必须位于不含越界或控制字符的绝对路径。",
         ));
     }
-    let mut current = PathBuf::new();
     let mut chain = Vec::new();
-    for component in root.components() {
-        current.push(component.as_os_str());
-        let info = fs::symlink_metadata(&current).map_err(|error| io_error(&current, error))?;
-        if !info.is_dir() || info.file_type().is_symlink() {
+    for current in platform_native::filesystem::path_components(root) {
+        let info = Metadata::capture(&current).map_err(|error| io_error(&current, error))?;
+        if !info.is_dir() || info.is_reparse() {
             return Err(invalid(format!(
                 "私有 Git 工具路径包含链接或非目录：{}",
                 current.display()
@@ -167,30 +150,20 @@ fn directory_chain(root: &Path) -> Result<Vec<(PathBuf, Metadata)>, ApiError> {
 }
 
 fn open_ordinary(path: &Path, before: &Metadata, executable: bool) -> Result<File, ApiError> {
-    let permissions = before.mode() & 0o7777;
-    let allowed = if executable {
-        [0o555, 0o755]
-    } else {
-        [0o444, 0o644]
-    };
     if !before.is_file()
-        || before.file_type().is_symlink()
-        || before.nlink() != 1
+        || before.is_reparse()
+        || before.links() != 1
         || before.len() > MAX_FILE_BYTES
-        || !allowed.contains(&permissions)
+        || !before.permissions_valid(executable)
     {
         return Err(invalid(format!(
             "私有 Git 工具需要权限正确、无链接的普通文件：{}",
             path.display()
         )));
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| io_error(path, error))?;
-    let opened = file.metadata().map_err(|error| io_error(path, error))?;
-    if !unchanged(before, &opened) || !opened.is_file() || opened.nlink() != 1 {
+    let file = native_tools::open_read(path).map_err(|error| io_error(path, error))?;
+    let opened = Metadata::from_file(&file).map_err(|error| io_error(path, error))?;
+    if !unchanged(before, &opened) || !opened.is_file() || opened.links() != 1 {
         return Err(invalid("私有 Git 工具文件在打开时发生变化。"));
     }
     Ok(file)
@@ -211,12 +184,11 @@ impl Inspection<'_> {
             return Err(invalid("私有 Git 工具目录深度超过允许范围。"));
         }
         let directory = root.join(relative);
-        let before =
-            fs::symlink_metadata(&directory).map_err(|error| io_error(&directory, error))?;
-        if !before.is_dir() || before.file_type().is_symlink() {
+        let before = Metadata::capture(&directory).map_err(|error| io_error(&directory, error))?;
+        if !before.is_dir() || before.is_reparse() {
             return Err(invalid("私有 Git 工具中存在链接或非普通目录。"));
         }
-        if ![0o555, 0o755].contains(&(before.mode() & 0o7777)) {
+        if !before.permissions_valid(true) {
             return Err(invalid("私有 Git 工具目录权限必须为 0555 或 0755。"));
         }
         let mut found = false;
@@ -228,13 +200,12 @@ impl Inspection<'_> {
             }
             let entry = entry.map_err(|error| io_error(&directory, error))?;
             let child = relative.join(entry.file_name());
-            let name = child
-                .to_str()
+            let name = native_tools::relative_name(&child)
                 .filter(|path| relative_valid(path))
                 .ok_or_else(|| invalid("私有 Git 工具包含不受支持的文件名。"))?;
             let path = root.join(&child);
-            let info = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
-            if info.file_type().is_symlink() {
+            let info = Metadata::capture(&path).map_err(|error| io_error(&path, error))?;
+            if info.is_reparse() {
                 return Err(invalid(format!(
                     "私有 Git 工具包含符号链接：{}",
                     path.display()
@@ -252,11 +223,11 @@ impl Inspection<'_> {
                 .checked_add(info.len())
                 .filter(|total| *total <= MAX_TREE_BYTES)
                 .ok_or_else(|| invalid("私有 Git 工具超过允许大小。"))?;
-            let is_metadata = name == METADATA_FILE;
+            let is_metadata = name.as_ref() == METADATA_FILE;
             if is_metadata && info.len() > MAX_METADATA_BYTES {
                 return Err(invalid("私有 Git 工具发行声明超过允许大小。"));
             }
-            let mut file = open_ordinary(&path, &info, self.executables.contains(name))?;
+            let mut file = open_ordinary(&path, &info, self.executables.contains(name.as_ref()))?;
             let mut hasher = Sha256::new();
             let mut size = 0u64;
             let mut metadata_bytes = Vec::new();
@@ -277,8 +248,8 @@ impl Inspection<'_> {
                     metadata_bytes.extend_from_slice(&buffer[..count]);
                 }
             }
-            let after = file.metadata().map_err(|error| io_error(&path, error))?;
-            let path_after = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+            let after = Metadata::from_file(&file).map_err(|error| io_error(&path, error))?;
+            let path_after = Metadata::capture(&path).map_err(|error| io_error(&path, error))?;
             if size != info.len() || !unchanged(&info, &after) || !unchanged(&info, &path_after) {
                 return Err(invalid("私有 Git 工具文件在读取时发生变化。"));
             }
@@ -286,7 +257,7 @@ impl Inspection<'_> {
                 self.metadata = Some(metadata_bytes);
             } else {
                 self.files
-                    .push((name.to_owned(), size, format!("{:x}", hasher.finalize())));
+                    .push((name.into_owned(), size, format!("{:x}", hasher.finalize())));
             }
         }
         if !found {
@@ -310,14 +281,14 @@ fn verify_sync(root: PathBuf, release_bytes: &str) -> Result<VerifiedGit, ApiErr
     };
     inspection.visit(&root, Path::new(""))?;
     for (path, before) in &inspection.directories {
-        let after = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+        let after = Metadata::capture(path).map_err(|error| io_error(path, error))?;
         if !after.is_dir() || !unchanged(before, &after) {
             return Err(invalid("私有 Git 工具目录在校验时发生变化。"));
         }
     }
     for (path, before) in chain {
-        let after = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
-        if !after.is_dir() || after.file_type().is_symlink() || !same_identity(&before, &after) {
+        let after = Metadata::capture(&path).map_err(|error| io_error(&path, error))?;
+        if !after.is_dir() || after.is_reparse() || !same_identity(&before, &after) {
             return Err(invalid("私有 Git 工具父目录在校验时发生变化。"));
         }
     }
@@ -435,11 +406,16 @@ pub(crate) mod verification_pause {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    include!("managed_tool_files_windows_tests.rs");
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
     use tempfile::{Builder, TempDir};
 
     fn sample() -> (TempDir, PathBuf, String) {
