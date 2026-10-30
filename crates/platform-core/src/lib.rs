@@ -4,6 +4,7 @@
 #[rustfmt::skip]
 pub mod ai_prompt_rules;
 pub mod app_windows;
+mod archive_permissions;
 mod atomic_control_file;
 pub mod backups;
 pub mod build_artifacts;

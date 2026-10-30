@@ -333,3 +333,14 @@ Git 导入的私有临时目录创建委托 `import_directory_io.rs`；Unix 保�
 新增原生真实临时硬链接专项 **1/1 通过**：原独立文件政策拒绝并保留，明确已绑定名字的政策仅移除所选名字，另一名字及字节保留。新增业务适配专项覆盖同样的实际移除，以及叶对象替代、父目录身份不匹配均拒绝且两份字节保留。源码 harness **60/60 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；原生两个目标全目标严格 Clippy 通过。完整原生组本步未重复运行。原卸载测试文件保留并按 Unix 构建，把其依赖的 CString/OsStrExt 显式导入原测试，避免父模块搬移后的漏导入；完整卸载/Mac 测试均未执行。
 
 完整 Windows core lib 仍失败，诊断 **102 个错误、14 个警告**，本步卸载文件适配无错误。所有移除只发生在明确命名的临时测试目录，未操作真实开发项目、数据根、原始目录或导出。W0 未完成，未合入 main。
+
+
+### W0.36 — 归档的原生权限数据
+
+归档 `FileEntry` 与权限操作收拢到 `archive_permissions.rs`。Mac 的 `mode` 仍序列化为原 0–0777 数字，缺失仍默认 0600，显式 null/非法值仍拒绝，恢复仍执行原路径 chmod 并保留原 0777 掩码；原 ZIP 权限数字及压缩选项不变。Windows 记录明确的 `mode: {"windowsReadOnly": bool}`，值来自实际 metadata，不伪造 Unix 执行位、mode 或 ACL 权限证明。Windows ZIP 数据项不写伪造的观测 Unix mode；归档清单保留真实只读状态。新副本仍以受保护 DACL 创建，再通过原生属性访问句柄调整只读位，不因此创建缺失文件。
+
+跨系统读取当前格式时，Windows 将 Unix 文件没有任何写位映射为只读属性；Mac 对 Windows 文件使用私有 0600/0400，不凭空补执行位。该支持只新增明确 Windows 变体，不改变既有 Mac 数字格式。五处归档目录刷新接入原同步边界：Unix 原 File::open/fsync 不变，Windows 按文档跳过目录 fsync；SQLite 内容文件的实际同步保留。原备份测试文件与其余逻辑保留，仅为一个 FileEntry 夹具显式注明 Unix 权限数据。
+
+新增共用格式专项，直接使用实际 FileEntry 验证原 JSON 字节形状、缺失默认值、null 拒绝，及数字模式/Windows 变体格式；这些只是格式检查，不证明完整归档。新增实际 Windows 私有文件只读往返专项，验证属性可设置/清除、完整身份和字节不变、私有 DACL 保留、旧数字只读模式可映射、缺失不创建。源码 harness **63/63 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；原生两目标全目标严格 Clippy 通过。Mac 仅类型检查，未执行完整归档、SQLite、ZIP 导入/导出或恢复。
+
+完整 Windows core lib 仍失败，诊断 **99 个错误、14 个警告**，归档与权限适配无错误。初始 CI 基线 macOS/Windows 仍排队，Mac 原始基线没有结果；不得据此声称绿色。生命周期外部导出发布仍关闭，W0 未完成，未合入 main。
