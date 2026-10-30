@@ -40,6 +40,8 @@ const DIGEST_RULE: u32 = 1;
 mod build_result;
 #[path = "build_candidate.rs"]
 mod candidate;
+#[path = "builds/startup.rs"]
+mod startup;
 pub use build_result::BuildResultRecovery;
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,6 +166,7 @@ impl BuildManager {
         managed_node: Option<PathBuf>,
         managed_git: Option<PathBuf>,
     ) -> Result<Arc<Self>, ApiError> {
+        startup::require_supported_inventory(paths.workspace_root())?;
         let tasks = paths.workspace_root().join(".platform/tasks");
         ensure_dir(&tasks)?;
         ensure_dir(
@@ -171,45 +174,7 @@ impl BuildManager {
                 .workspace_root()
                 .join(".platform/project-state/builds"),
         )?;
-        let mut records = HashMap::new();
-        let mut legacy_build_times = HashMap::new();
-        for entry in fs::read_dir(&tasks)? {
-            let path = entry?.path();
-            if !path.is_dir() {
-                continue;
-            }
-            check_no_symlinks(&path, false)?;
-            let record_path = path.join("task.json");
-            if !record_path.is_file() {
-                continue;
-            }
-            let mut record: TaskRecord = serde_json::from_slice(&fs::read(&record_path)?)?;
-            if !valid_task_id(&record.task_id)
-                || path.file_name().and_then(|x| x.to_str()) != Some(record.task_id.as_str())
-            {
-                return Err(ApiError::new(
-                    "TASK_RECORD_INVALID",
-                    "Task record identity does not match its directory",
-                ));
-            }
-            if record.task_type == "build" {
-                // Startup recovery rewrites task.json. Capture the old mtime
-                // first; it is only a labelled fallback, never submission order.
-                legacy_build_times
-                    .insert(record.task_id.clone(), build_result::modified(&record_path));
-            }
-            if !record.status.is_final() {
-                record.status = TaskStatus::Interrupted;
-                record.error = Some(ApiError::new(
-                    "TASK_INTERRUPTED",
-                    "Platform exited before the task finished; no automatic retry was performed",
-                ));
-                atomic_json(&record_path, &record)?;
-            }
-            records.insert(record.task_id.clone(), record);
-        }
-        recover_publications(&paths, &store)?;
-        reconcile_recovered_tasks(&paths, &store, &base_url, &mut records)?;
+        let (records, legacy_build_times) = startup::recover_startup(&paths, &store, &base_url)?;
         let artifacts = crate::build_artifacts::ArtifactAccess::new(paths.clone(), store.clone());
         let (sender, mut receiver) = mpsc::channel::<String>(BUILD_QUEUE);
         let (events, _) = broadcast::channel(64);
@@ -244,7 +209,9 @@ impl BuildManager {
             #[cfg(test)]
             reader_fixture: Mutex::new(None),
         });
-        manager.cleanup_startup_artifacts();
+        if let Err(issue) = startup::cleanup_artifacts(&manager) {
+            eprintln!("Build startup cleanup pending: {}", issue.code);
+        }
         let weak = Arc::downgrade(&manager);
         let handle = tokio::spawn(async move {
             loop {
