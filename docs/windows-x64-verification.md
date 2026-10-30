@@ -440,3 +440,9 @@ Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有
 另按 CI 的同一安全单测白名单运行 12 个脚本测试文件（不包含 live/restart 测试），子进程 HOME/USERPROFILE/APPDATA/TEMP/npm cache 均隔离在新建临时目录：**154 项，97 通过、50 失败、7 skipped**。失败实际涉及 Mac app/DMG 输出路径、Unix 链接与权限夹具、Mac Node/Git 归档权限验证、Mac production preflight 及更新签名输入；也包含 Windows 盘符遍历的共用路径问题，须逐项分类修复，不能全部用平台跳过来取得绿色。Mac 原测试尚未在 Mac 运行，不能称这 50 项为原始 Mac 基线失败。W0.42 新 npm helper / process 共 11 项仍通过。
 
 本次为补齐实际验证记录，没有改写测试或启用总运行门禁。两端原始基线 CI 仍排队，尚无可合并 main 的双绿色证据。Windows 普通源代码编译通过、Mac 目标类型检查、上述本机测试和最终安装包验收是不同证据，W0 至 W6 仍无正式完成项。
+
+### W1 准备 — 在待合并的 W0 基础上继续，未宣称里程碑完成
+
+按第 6 节 Mac 离线排队时继续工作的规则，再次 fetch，main 仍为 `ac3b5d72ab79e132fcedd149c73e1201a2896576` 且为当前分支祖先；从 W0 的 `42479c5` 开叠放短分支 `win/w1-startup`。W0 原分支保留，没有合入 main 或删分支。W0 仍有 Windows 功能后端及脚本测试失败，不只是缺 Mac 结果；后续逐项修复并按依赖顺序取得双 CI 绿色，才能依次快进合并。
+
+当前并行开展真实 Windows Node 资源准备设计、窗口尺寸缓存原生事务及脚本单测平台范围修复。尚未开放总运行门禁，没有将 W1 计为正式完成，也未把未实现能力改成成功返回。两份官方 Node 24.22.0 校验文本与发行页已核对 Windows ZIP 摘要，后续必须完整验证 ZIP 后才解析、执行或记录成员摘要；现有 Mac release JSON/默认打包入口保持。
