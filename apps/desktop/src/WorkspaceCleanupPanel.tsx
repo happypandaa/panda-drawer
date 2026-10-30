@@ -341,7 +341,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
   </>;
   if (!props.compact) return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-title`}>{body}{confirmation && <Modal title={`永久清理 ${selectedCount} 项历史资料？`} className="history-cleanup-dialog" closeDisabled={pending === 'cleanup'} onClose={clearConfirmation}>{confirmation}</Modal>}{results}</section>;
   return <section className="lifecycle-card workspace-cleanup-card" aria-labelledby={`${id}-card-title`}>
-    <div className="section-heading"><div><h2 id={`${id}-card-title`}>临时文件和旧资料</h2><p>清理可重新生成的文件和已结束取回操作保留的原件。先核对明细，再选择并确认。</p></div><button type="button" className="refresh-button" disabled={blocked} onClick={() => { setReviewOpen(true); if (!plan || expired || consumed || wrongWorkspace) void preview(); }}>清理</button></div>
+    <div className="section-heading"><div><h2 id={`${id}-card-title`}>临时文件和旧资料</h2><p>清理可重新生成的文件和已结束取回操作保留的原件。先核对明细，再选择并确认。</p></div><button type="button" className="primary-button" disabled={blocked} onClick={() => { setReviewOpen(true); if (!plan || expired || consumed || wrongWorkspace) void preview(); }}>清理</button></div>
     {reviewOpen && <Modal title={confirmation ? `永久清理 ${selectedCount} 项内容？` : '核对临时文件和旧资料'} className="history-cleanup-dialog" closeDisabled={pending === 'cleanup'} onClose={() => { setReviewOpen(false); clearConfirmation(); }}>
       {confirmation || body}{results}
     </Modal>}

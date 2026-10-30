@@ -111,3 +111,14 @@
 - 新增 [docs/main-layout-verification.md](../docs/main-layout-verification.md)
 - 修改 [docs/node-detail-simplification.md](../docs/node-detail-simplification.md)
 - 修改 [docs/space-and-settings.md](../docs/space-and-settings.md)
+
+## 2026-10-30 视觉细节调整
+
+按画布“现有风格优化版”调整配色与细节，不改结构和行为。
+
+- 颜色：浅色主题改为淡灰紫底、白色顶栏／卡片／页脚，去掉点阵纹理和顶栏光晕；新增 `--radio-accent` 等变量，主按钮（从 Git 添加、打开、清理）统一用紫色，深色主题对应浅紫。设置分类选中改为淡紫底。
+- 首页：应用卡片改白底细边，需要配置的卡片带淡橙底；页脚路径用等宽字体，“在访达中打开”用强调色。
+- 详情：头部改白底，图标改用与列表一致的首字配色（导出 `iconSlot`）；状态徽章按语义着色（需要配置为橙、已停止为灰、出错为红，修正此前“需要配置”显示为绿色）；“交给 AI”收成一个淡紫色块并去掉提示语里重复的“想改功能？”；信息行合成一个圆角分组，行内操作改为小描边按钮；“停止并删除…”改为底部红色文字按钮；深色主题标题颜色修正。
+- 设置 › 存储与清理：三个数字改为小卡片、字号 20px；“清理”改为主按钮。
+
+验证：`tsc -b` 通过；`npm run test:ui` 479 项通过。jsdom 渲染模拟数据后在 Chromium 截图核对首页、两类详情（含深色）和存储设置。未在真实 WKWebView 中目视验收。
