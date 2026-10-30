@@ -2,12 +2,15 @@
 //! are not audited or changed; protection is applied only to objects we create.
 use super::{checked, native_path, wide};
 use std::{
-    ffi::{c_void, OsStr},
+    ffi::{c_void, OsStr, OsString},
     fs::File,
     io,
     mem::{size_of, zeroed},
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    path::Path,
+    os::windows::{
+        ffi::OsStringExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
+    path::{Path, PathBuf},
     ptr::{null, null_mut},
 };
 use windows_sys::Win32::{
@@ -23,17 +26,20 @@ use windows_sys::Win32::{
         TOKEN_USER,
     },
     Storage::FileSystem::{
-        CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileIdInfo, FileStandardInfo,
-        GetFileInformationByHandleEx, MoveFileExW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_ALWAYS, OPEN_EXISTING,
+        CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileDispositionInfo, FileIdInfo,
+        FileStandardInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW, MoveFileExW,
+        SetFileInformationByHandle, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_STANDARD_INFO, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        OPEN_ALWAYS, OPEN_EXISTING,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
 const READ_CONTROL: u32 = 0x0002_0000;
+const DELETE: u32 = 0x0001_0000;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,6 +291,119 @@ pub fn pin_directory(path: &Path) -> io::Result<PinnedDirectory> {
         _scope: checked,
         _pin: pinned,
     })
+}
+
+/// The returned descriptor pins its directory against rename. Each later
+/// relative operation resolves this actual handle afresh, then pins its scope.
+pub fn directory_file(path: &Path) -> io::Result<File> {
+    let directory = pin_directory(path)?;
+    Ok(directory._pin)
+}
+
+pub fn directory_scope(file: &File) -> io::Result<(PathBuf, PinnedDirectory)> {
+    let expected = identity(file)?;
+    if !expected.directory {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "Expected a directory handle",
+        ));
+    }
+    let mut buffer = vec![0u16; 32768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            0,
+        )
+    };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize >= buffer.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Directory path exceeds the Windows namespace limit",
+        ));
+    }
+    buffer.truncate(length as usize);
+    let path = PathBuf::from(OsString::from_wide(&buffer));
+    let scope = pin_directory(&path)?;
+    if !expected.same_object(&identity(&scope.file)?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Directory path no longer identifies its handle",
+        ));
+    }
+    Ok((path, scope))
+}
+
+pub fn open_read_file(path: &Path) -> io::Result<File> {
+    let _scope = pin_parent(path)?;
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    let info = identity(&file)?;
+    if info.directory || info.links != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected an ordinary single-link file",
+        ));
+    }
+    Ok(file)
+}
+
+/// Delete the actual, checked object through its handle. A replacement between
+/// selection and opening is rejected without unlinking the replacement.
+pub fn remove_file(path: &Path, expected: &FileIdentity) -> io::Result<()> {
+    let _scope = pin_parent(path)?;
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    let captured = identity(&file)?;
+    if captured.directory || captured.links != 1 || !expected.same_object(&captured) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "File changed before deletion",
+        ));
+    }
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    unsafe {
+        checked(SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        ))
+    }
 }
 
 pub fn create_private_directory(path: &Path) -> io::Result<()> {
