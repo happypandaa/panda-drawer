@@ -274,3 +274,11 @@ Windows 的真实磁盘/文件快照、摘要、非执行 Git 获取与复制仍
 构建树摘要读取前后改用已有原生事实和 same-modified-file 比较。Unix 仍只比较原 dev/ino、len、mtime/mtime_nsec；不加入 mode、ctime 或链接数条件。Windows 使用完整身份、大小和原生修改时间，不用低位 inode 代替身份。文件清单、排序、路径标签、长度编码、内容摘要算法、错误与整个扫描后再核对文件集合的步骤不变。
 
 复用 W0.21/W0.28 已通过的实际原生变化政策专项，不新增镜像实现的测试。完整 Windows core lib 仍失败，诊断 **188 个错误、19 个警告**，构建模块只剩保留给原子模块的 import 警告，没有该扫描入口错误。未运行完整构建、发布流程、完整 core 测试或 Mac 回归，不据此认定 W0/W2 完成，未合入 main。
+
+### W0.30 — 生命周期的外部导出发布边界
+
+生命周期原外部导出发布与独占改名函数搬入 `lifecycle_file_io/unix.rs`，除入口可见性外与原函数体逐字核对一致；原 Unix 竞态专项文件保留并按 Unix 构建。Windows 在发布改名或 checkpoint 回调之前明确返回 `external-export-publication` 的未完成错误，不将文件改名冒充完整的导出/恢复协议；后续仍须实现，不是永久不支持导出。准备和归属仍由原调用方持有，该边界不创建或删除材料。
+
+原生命周期目录预检查曾返回 dev/ino tuple，但仅有的两个生产调用方都丢弃该值。现将它收拢为只检查原普通目录/no-link 条件的 `require_directory`，移除没有用途的身份返回值；真正持久捕获/匹配仍走原 `PersistedIdentity`，Windows 保留完整 FileId，没有用低位 pair 作新证明。没有改动持久协议或 Mac 的目录准入和检查顺序。
+
+新增 Windows 临时文件专项验证发布门禁不调用回调、不移动或覆盖 stage/既有目标，完整身份和字节保留；字节明确是非 ZIP 占位内容，不证明 ZIP 生成。实际读取/身份/门禁源码 harness **52/52 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；Mac 包含原发布函数的目标类型检查，未执行原竞态专项，离线 legacy repair 入口在 harness 只作不可调用的类型替身。完整 core lib 仍失败，诊断 **178 个错误、17 个警告**，生命周期发布边界未报错；之后将 checkpoint 枚举导入限于原 Unix 测试。完整导出、删除、Mac CI 均未验收，W0 未完成。
