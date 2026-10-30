@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { npmCommand } from './npm-command.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ignored = new Set(['node_modules', 'dist', '.git', '.hg', '.svn', '.vite', '.cache']);
@@ -46,7 +47,8 @@ export async function packageTemplate(output) {
     await cp(templateSource, source, { recursive: true, filter: sourceFilter });
     const sourceDigest = await treeDigest(source);
     const npm = (args) => {
-      const result = spawnSync('npm', args, { cwd: source, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+      const invocation = npmCommand(args);
+      const result = spawnSync(invocation.command, invocation.args, { cwd: source, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
       if (result.status !== 0) throw new Error(result.stderr || result.stdout || 'Template npm command failed');
       return result.stdout.trim();
     };

@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, copyFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { npmCommand } from './npm-command.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sdk = join(root, 'packages/sdk')
@@ -24,7 +25,8 @@ async function installImmutable(source, destination) {
 }
 
 try {
-  const result = spawnSync('npm', ['pack', '--json', '--pack-destination', temporary], { cwd: sdk, encoding: 'utf8' })
+  const npm = npmCommand(['pack', '--json', '--pack-destination', temporary])
+  const result = spawnSync(npm.command, npm.args, { cwd: sdk, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(result.stderr || 'npm pack failed')
   const packages = JSON.parse(result.stdout)
   if (packages.length !== 1 || packages[0].filename !== filename) throw new Error('Unexpected npm package name')
