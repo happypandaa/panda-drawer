@@ -3,11 +3,8 @@
 use super::{atomic_json, valid_task_id};
 use crate::{projects::check_no_symlinks, tasks::TaskRecord, ApiError};
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -46,8 +43,8 @@ fn path(workspace: &Path, project: &str) -> PathBuf {
 
 pub(super) fn modified(path: &Path) -> Option<SystemTime> {
     check_no_symlinks(path, false).ok()?;
-    let meta = fs::symlink_metadata(path).ok()?;
-    (meta.is_file() && meta.nlink() == 1)
+    let meta = platform_native::tool_files::Facts::capture(path).ok()?;
+    (meta.is_file() && meta.links() == 1)
         .then(|| meta.modified().ok())
         .flatten()
 }
@@ -55,12 +52,12 @@ pub(super) fn modified(path: &Path) -> Option<SystemTime> {
 fn read_pointer(workspace: &Path, project: &str) -> Result<Option<Pointer>, ApiError> {
     let path = path(workspace, project);
     check_no_symlinks(&path, true).map_err(|_| unavailable())?;
-    let before = match fs::symlink_metadata(&path) {
+    let before = match platform_native::tool_files::Facts::capture(&path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(unavailable()),
     };
-    if !before.is_file() || before.nlink() != 1 || before.len() > MAX_POINTER_BYTES {
+    if !before.is_file() || before.links() != 1 || before.len() > MAX_POINTER_BYTES {
         return Err(unavailable());
     }
     let file = platform_native::filesystem::open_read(
@@ -68,11 +65,8 @@ fn read_pointer(workspace: &Path, project: &str) -> Result<Option<Pointer>, ApiE
         platform_native::filesystem::ReadOptions::NoLinksNonblocking,
     )
     .map_err(|_| unavailable())?;
-    let opened = file.metadata().map_err(|_| unavailable())?;
-    if !opened.is_file()
-        || opened.nlink() != 1
-        || (opened.dev(), opened.ino()) != (before.dev(), before.ino())
-    {
+    let opened = platform_native::tool_files::Facts::from_file(&file).map_err(|_| unavailable())?;
+    if !opened.is_file() || opened.links() != 1 || !opened.same_object(&before) {
         return Err(unavailable());
     }
     let mut bytes = Vec::new();

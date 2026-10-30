@@ -4,10 +4,8 @@ use crate::{projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::Read,
     path::{Component, Path, PathBuf},
 };
@@ -137,29 +135,23 @@ pub(crate) fn decode_registration(
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     check_no_symlinks(path, false)?;
-    let before = fs::symlink_metadata(path)?;
-    if !before.is_file() || before.nlink() != 1 || before.len() > MAX_REGISTRATION_BYTES {
+    let before = platform_native::tool_files::Facts::capture(path)?;
+    if !before.is_file() || before.links() != 1 || before.len() > MAX_REGISTRATION_BYTES {
         return Err(invalid());
     }
     let file = platform_native::filesystem::open_read(
         path,
         platform_native::filesystem::ReadOptions::NoLinksNonblocking,
     )?;
-    let opened = file.metadata()?;
-    if opened.dev() != before.dev() || opened.ino() != before.ino() || !opened.is_file() {
+    let opened = platform_native::tool_files::Facts::from_file(&file)?;
+    if !opened.same_object(&before) || !opened.is_file() {
         return Err(invalid());
     }
     let mut bytes = Vec::new();
     file.take(MAX_REGISTRATION_BYTES + 1)
         .read_to_end(&mut bytes)?;
-    let after = fs::symlink_metadata(path)?;
-    if bytes.len() as u64 > MAX_REGISTRATION_BYTES
-        || before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-    {
+    let after = platform_native::tool_files::Facts::capture(path)?;
+    if bytes.len() as u64 > MAX_REGISTRATION_BYTES || !before.same_modified_file(&after) {
         return Err(invalid());
     }
     Ok(bytes)
@@ -192,18 +184,26 @@ pub(crate) fn source_binding_path(value: &Value) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn disposable_path(name: &str) -> PathBuf {
+        #[cfg(unix)]
+        let root = PathBuf::from("/disposable");
+        #[cfg(windows)]
+        let root = std::env::temp_dir().join("panda-disposable-registration-decoding");
+        root.join(name)
+    }
     #[test]
     fn direct_records_accept_optional_git_provenance() {
         let id = Uuid::new_v4().to_string();
-        let mut value = json!({"version":1,"id":id,"sourcePath":"/disposable/source","manifestDigest":"a".repeat(64)});
+        let mut value = json!({"version":1,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
         assert!(matches!(
-            decode_registration(value.clone(), &id, Path::new("/disposable/nodes")).unwrap(),
+            decode_registration(value.clone(), &id, disposable_path("nodes").as_path()).unwrap(),
             StoredNodeRegistration::Direct(_)
         ));
         value["provenance"] =
             json!({"sourceUrl":"https://github.com/example/disposable","sourceBranch":null});
         assert!(matches!(
-            decode_registration(value, &id, Path::new("/disposable/nodes")).unwrap(),
+            decode_registration(value, &id, disposable_path("nodes").as_path()).unwrap(),
             StoredNodeRegistration::Direct(_)
         ));
     }
@@ -212,13 +212,14 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         let mut value = json!({"version":2,"id":id,"kind":"managed","generation":format!("gen_{}", "1".repeat(32)),"manifestDigest":"a".repeat(64),"provenance":{"sourceId":format!("src_{}", "2".repeat(32)),"sourceDigest":"b".repeat(64)}});
         let StoredNodeRegistration::Retired(record) =
-            decode_registration(value.clone(), &id, Path::new("/disposable/nodes")).unwrap()
+            decode_registration(value.clone(), &id, disposable_path("nodes").as_path()).unwrap()
         else {
             panic!("expected retired record");
         };
         assert_eq!(
             record.program_path,
-            Path::new("/disposable/nodes")
+            disposable_path("nodes")
+                .as_path()
                 .join(&id)
                 .join("generations")
                 .join(format!("gen_{}", "1".repeat(32)))
@@ -230,20 +231,21 @@ mod tests {
         ] {
             value["generation"] = generation;
             let StoredNodeRegistration::Retired(record) =
-                decode_registration(value.clone(), &id, Path::new("/disposable/nodes")).unwrap()
+                decode_registration(value.clone(), &id, disposable_path("nodes").as_path())
+                    .unwrap()
             else {
                 panic!("expected retired record");
             };
             assert_eq!(
                 record.program_path,
-                Path::new("/disposable/nodes").join(&id)
+                disposable_path("nodes").as_path().join(&id)
             );
             assert!(record.generation.is_empty());
         }
         assert!(decode_registration(
             value.clone(),
             &Uuid::new_v4().to_string(),
-            Path::new("/disposable/nodes")
+            disposable_path("nodes").as_path()
         )
         .is_err());
         assert!(decode_registration(value, &id, Path::new("relative-node-root")).is_err());
@@ -251,19 +253,64 @@ mod tests {
     #[test]
     fn instance_uuid_and_path_identity_are_distinct_from_author_app_identity() {
         let id = Uuid::new_v4().to_string();
-        let value = json!({"version":1,"id":id,"sourcePath":"/disposable/source","manifestDigest":"a".repeat(64)});
+        let value = json!({"version":1,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
         assert!(decode_registration(
             value,
             &Uuid::new_v4().to_string(),
-            Path::new("/disposable/nodes")
+            disposable_path("nodes").as_path()
         )
         .is_err());
         assert_eq!(
             source_binding_path(
-                &json!({"sourceRoot":"/disposable/source","manifestId":"changed-author-id"})
+                &json!({"sourceRoot":disposable_path("source"),"manifestId":"changed-author-id"})
             )
             .unwrap(),
-            Path::new("/disposable/source")
+            disposable_path("source")
         );
+    }
+
+    #[test]
+    fn registration_digest_reads_only_bounded_independent_files_and_never_creates_missing_files() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-registration-read-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let slot = root.join("slot");
+        fs::create_dir(&slot).unwrap();
+        assert!(registration_digest(&slot).unwrap().is_none());
+        assert_eq!(fs::read_dir(&slot).unwrap().count(), 0);
+        let path = slot.join("registration.json");
+        let bytes = b"{\"disposable\":true}";
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            registration_digest(&slot).unwrap(),
+            Some(format!("{:x}", Sha256::digest(bytes)))
+        );
+        fs::hard_link(&path, slot.join("second-name")).unwrap();
+        assert!(registration_digest(&slot).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(slot.join("second-name")).unwrap();
+        fs::write(&path, vec![b'x'; MAX_REGISTRATION_BYTES as usize + 1]).unwrap();
+        assert!(registration_digest(&slot).is_err());
+        fs::write(&path, bytes).unwrap();
+        #[cfg(windows)]
+        {
+            let junction = root.join("disposable-junction");
+            assert!(std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&junction)
+                .arg(&slot)
+                .output()
+                .unwrap()
+                .status
+                .success());
+            assert_eq!(
+                registration_digest(&junction).unwrap_err().code,
+                "UNSAFE_PATH"
+            );
+            fs::remove_dir(junction).unwrap();
+        }
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 }

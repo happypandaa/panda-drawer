@@ -68,6 +68,9 @@ impl Facts {
     pub fn is_empty(&self) -> bool {
         self.metadata.len() == 0
     }
+    pub fn modified(&self) -> io::Result<std::time::SystemTime> {
+        self.metadata.modified()
+    }
     pub fn links(&self) -> u64 {
         #[cfg(unix)]
         {
@@ -143,6 +146,32 @@ impl Facts {
                 changed_100ns.to_le_bytes().to_vec(),
             ]
             .concat()
+        }
+    }
+    /// The existing registration policy checks identity, size and modification
+    /// time only. Do not strengthen it with mode, ctime or link-count changes.
+    pub fn same_modified_file(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            self.same_object(other)
+                && self.len() == other.len()
+                && self.metadata.mtime() == other.metadata.mtime()
+                && self.metadata.mtime_nsec() == other.metadata.mtime_nsec()
+        }
+        #[cfg(windows)]
+        {
+            let crate::directory::Change::Windows {
+                length,
+                modified_100ns,
+                ..
+            } = &self.stamp.change;
+            let crate::directory::Change::Windows {
+                length: other_length,
+                modified_100ns: other_modified,
+                ..
+            } = &other.stamp.change;
+            self.same_object(other) && length == other_length && modified_100ns == other_modified
         }
     }
     pub fn unchanged(&self, other: &Self) -> bool {
@@ -309,5 +338,31 @@ mod tests {
             .unwrap(),
             "lib/node_modules/npm/bin/npm-cli.js"
         );
+    }
+
+    #[test]
+    fn registration_change_policy_does_not_add_link_count_or_change_time_checks() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-registration-facts-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let path = root.join("registration.json");
+        fs::write(&path, b"disposable metadata").unwrap();
+        let before = Facts::capture(&path).unwrap();
+        fs::hard_link(&path, root.join("second-name")).unwrap();
+        let linked = Facts::capture(&path).unwrap();
+        assert_eq!(linked.links(), 2);
+        assert!(before.same_modified_file(&linked));
+        assert!(!before.unchanged(&linked));
+        fs::write(
+            &path,
+            b"changed disposable metadata with a different length",
+        )
+        .unwrap();
+        assert!(!before.same_modified_file(&Facts::capture(&path).unwrap()));
+        fs::rename(&path, root.join("retained-original")).unwrap();
+        fs::write(&path, b"disposable metadata").unwrap();
+        assert!(!before.same_modified_file(&Facts::capture(&path).unwrap()));
     }
 }

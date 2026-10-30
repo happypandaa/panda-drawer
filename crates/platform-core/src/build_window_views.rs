@@ -1,9 +1,7 @@
 //! Window-only entry snapshots for readable projects without build provenance.
 //! Receipts are in the fixed project control root, never copied during migration.
 use super::*;
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::{fs::OpenOptions, io::Read};
+use std::io::Read;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -135,8 +133,8 @@ impl ArtifactAccess {
             container.join("view.json"),
             platform_native::filesystem::ReadOptions::NoLinksCloseOnExec,
         )?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > 16384 {
+        let metadata = platform_native::tool_files::Facts::from_file(&file)?;
+        if !metadata.is_file() || metadata.links() != 1 || metadata.len() > 16384 {
             return Err(view_error());
         }
         let mut bytes = vec![];
