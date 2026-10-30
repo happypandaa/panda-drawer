@@ -1,4 +1,4 @@
-import { Sparkles } from 'lucide-react';
+import { Check, Copy, Eye, Sparkles } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { buildPlatformAiIntroPrompt } from './platform-ai-intro';
@@ -41,4 +41,50 @@ export function PlatformAiIntroButton({ platformVersion, className = 'text-butto
       <div className="project-ai-preview"><label htmlFor="platform-ai-intro-text">给 AI 的平台说明</label><textarea id="platform-ai-intro-text" readOnly rows={14} value={preview} onFocus={event => event.currentTarget.select()} /></div>
     </Modal>}
   </>;
+}
+
+/** Compact home entry: label, icon-only copy with in-place confirmation, and a full-text viewer. */
+export function PlatformAiIntroCompact({ platformVersion, disabled = false }: { platformVersion?: string; disabled?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  const [viewCopied, setViewCopied] = useState<'idle' | 'done' | 'failed'>('idle');
+  const alive = useRef(true);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; if (timer.current) clearTimeout(timer.current); };
+  }, []);
+  const text = () => buildPlatformAiIntroPrompt(platformVersion);
+  async function write(value: string) {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(value);
+  }
+  async function copy() {
+    if (copying || disabled) return;
+    setCopying(true);
+    try {
+      await write(text());
+      if (!alive.current) return;
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => { if (alive.current) setCopied(false); }, 2000);
+    } catch {
+      if (alive.current) { setViewCopied('failed'); setViewing(true); }
+    } finally { if (alive.current) setCopying(false); }
+  }
+  async function copyFromView() {
+    try { await write(text()); if (alive.current) setViewCopied('done'); }
+    catch { if (alive.current) setViewCopied('failed'); }
+  }
+  return <div className="ai-intro-chip" role="group" aria-label="给 AI 的平台说明" title="不带任何项目，只介绍平台：新项目开工前，或判断项目能否接入时发给 AI">
+    <span className="ai-intro-chip-label"><Sparkles size={14} aria-hidden="true" />平台说明</span>
+    <button type="button" className="ai-intro-chip-button" aria-label={copied ? '已复制平台说明' : '复制平台说明'} title={copied ? '已复制' : '复制，发给任意 AI'} disabled={disabled || copying} onClick={() => void copy()}>{copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}</button>
+    <button type="button" className="ai-intro-chip-button" aria-label="查看平台说明" title="查看全文" disabled={disabled} onClick={() => { setViewCopied('idle'); setViewing(true); }}><Eye size={15} aria-hidden="true" /></button>
+    <span className="sr-only" role="status">{copied ? '已复制，可以发给任意 AI。' : ''}</span>
+    {viewing && <Modal title="平台说明" description={viewCopied === 'failed' ? '无法自动复制。请选中下方全部内容，手动复制后发给 AI。' : '发给任意 AI，让它了解熊猫小抽屉能做什么。新项目开工前，或判断项目能否接入时使用。'} onClose={() => setViewing(false)}>
+      <div className="project-ai-preview"><label htmlFor="platform-ai-intro-view">给 AI 的平台说明</label><textarea id="platform-ai-intro-view" readOnly rows={14} value={text()} onFocus={event => event.currentTarget.select()} /></div>
+      <div className="ai-intro-view-actions">{viewCopied === 'done' && <span role="status">已复制</span>}<button type="button" className="primary-button" onClick={() => void copyFromView()}><Copy size={15} aria-hidden="true" />复制全文</button></div>
+    </Modal>}
+  </div>;
 }

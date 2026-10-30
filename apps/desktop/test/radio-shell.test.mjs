@@ -224,10 +224,10 @@ test('The heading contains add actions, a platform AI entry and filters without 
   assert.equal(document.querySelector('.radio-toolbar'), null);
   assert.equal(document.querySelector('input[type="search"]'), null);
   assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]'), null);
-  const intro = document.querySelector('.application-heading .home-ai-intro');
+  const intro = document.querySelector('.application-heading [aria-label="给 AI 的平台说明"]');
   assert.ok(intro);
-  assert.equal(intro.textContent, '让 AI 了解平台');
   assert.equal(intro.closest('[aria-label="添加应用"]'), null);
+  assert.deepEqual([...intro.querySelectorAll('button')].map(element => element.getAttribute('aria-label')), ['复制平台说明', '查看平台说明']);
   assert.equal(filter.closest('[aria-label="添加应用"]'), null);
   assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['从 Git 添加', '本机文件夹', '新建']);
   assert.deepEqual([...filter.querySelectorAll('button')].map(item => item.textContent), ['全部', '运行中', '需要处理']);
@@ -721,4 +721,25 @@ test('Full cleanup locks the real shell before native preference clearing and la
   assert.match(document.querySelector('.local-data-cleanup-result').textContent, /项目网页存储已收到系统删除确认/);
   assert.equal(window.localStorage.length, 0);
   assert.equal(document.querySelector('[aria-label="设置"]').disabled, true);
+});
+
+test('The home platform introduction copies in place and opens a full-text viewer', async () => {
+  const copies = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copies.push(text); } } });
+  await setup();
+  const intro = document.querySelector('.application-heading [aria-label="给 AI 的平台说明"]');
+  const visible = () => [...intro.children].filter(element => !element.classList.contains('sr-only')).map(element => element.textContent).join('|');
+  const before = visible();
+  await click(intro.querySelector('[aria-label="复制平台说明"]'));
+  assert.equal(copies.length, 1);
+  assert.match(copies[0], /当前版本：0\.0\.0-fixture/);
+  assert.ok(intro.querySelector('[aria-label="已复制平台说明"]'));
+  assert.equal(visible(), before, 'Copy feedback does not insert visible text beside the actions');
+  assert.match(intro.querySelector('.sr-only[role=status]').textContent, /已复制/);
+  await click(intro.querySelector('[aria-label="查看平台说明"]'));
+  assert.equal(dialog().querySelector('h2').textContent, '平台说明');
+  assert.match(dialog().querySelector('textarea').value, /当前版本：0\.0\.0-fixture/);
+  await click(byText('复制全文', dialog()));
+  assert.equal(copies.length, 2);
+  assert.match(dialog().textContent, /已复制/);
 });
