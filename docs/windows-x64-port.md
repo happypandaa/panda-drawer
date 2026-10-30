@@ -48,14 +48,14 @@
 
 | 能力 | Mac 现在的做法 | Windows 实现 | 现在位置（主要） |
 |---|---|---|---|
-| 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。停止时先发 stdout 协议的关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不要用 Ctrl+Break 代替 | `owned_process*.rs`、`node_runtime_trial.rs`、`node_process_identity.rs`、`git_environment.rs`、`builds.rs` |
+| 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。停止时先发 stdout 协议的关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不要用 Ctrl+Break 代替 | Windows 原语：`crates/platform-native/src/windows/process.rs`；业务接入点：`owned_process*.rs`、`node_runtime_trial.rs`、`node_process_identity.rs`、`git_environment.rs`、`builds.rs` |
 | 子进程管道 | `UnixStream::pair` | 匿名管道（tokio `process` 的 piped stdio 或 Win32 管道），协议内容不变 | `owned_process.rs` |
 | 退出状态 | `waitid`、信号 | `GetExitCodeProcess`；没有信号，界面显示退出码 | `node_runtime_trial.rs` |
 | 进程身份核对 | PID + 启动时间 + 进程组 | PID + `GetProcessTimes` 创建时间 + `QueryFullProcessImageNameW` 路径。核对后再操作 | `node_process_identity.rs`、`node_run_marker.rs` |
 | 开机时间 | `sysctl KERN_BOOTTIME` | 当前时间减 `GetTickCount64` | `node_process_identity.rs` |
 | 遗留运行 | 平台崩溃后应用进程可能存活，需要核对接管 | 因为设置了 KILL_ON_JOB_CLOSE，平台进程一退出，应用进程就随 Job 结束。启动时的标记核对仍要执行，通常会判定为已停止并清除 | `node_run_marker.rs` |
-| 私有文件和目录 | 目录 0700、文件 0600、校验属主 uid | 创建时设置受保护的 DACL：只授予当前用户 SID 完全控制，不继承父目录权限。校验属主为当前用户 | `durable_writer.rs`、`node_app_configuration.rs`、`node_runtime_log.rs`、`paths.rs` |
-| 文件身份 | dev + ino、nlink | 卷序列号 + FileId（`GetFileInformationByHandleEx` / `FileIdInfo`）、链接数 | `file_identity.rs`、`metadata.rs` |
+| 私有文件和目录 | 目录 0700、文件 0600、校验属主 uid | 创建时设置受保护的 DACL：只授予当前用户 SID 完全控制，不继承父目录权限。校验属主为当前用户 | Windows 原语：`crates/platform-native/src/windows/files.rs`；业务接入点：`durable_writer.rs`、`node_app_configuration.rs`、`node_runtime_log.rs`、`paths.rs` |
+| 文件身份 | dev + ino、nlink | 卷序列号 + 完整 128 位 FileId（`GetFileInformationByHandleEx` / `FileIdInfo`）、链接数 | Windows 原语：`crates/platform-native/src/windows/files.rs`；业务接入点：`file_identity.rs`、`metadata.rs` |
 | 符号链接 | `O_NOFOLLOW`，拒绝符号链接 | 以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，**拒绝所有重解析点**（符号链接、目录联接、挂载点），与 Mac 拒绝符号链接的位置一一对应 | `file_identity.rs`、`native_project_files.rs`、`source_publication.rs` |
 | 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | `durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明 | `durable_writer.rs` |
@@ -70,6 +70,8 @@
 | 资源完整性锚点 | 编译时写入资源摘要（`signed_resources_unix.rs`） | 实现 Windows 对应版本，覆盖 Windows 资源树 | `crates/platform-core/build_support/` |
 | 运行门禁 | — | `platform_support.rs` 当前对 Windows 返回 `PLATFORM_STAGE_UNAVAILABLE`。在 W1 完成时改为开放，未完成的能力用第 2 节第 3 条的方式单独关闭 | `platform_support.rs` |
 | 更新 | `platform-update-handoff`、`platform-update-witness` 为 macOS 实现 | 本轮不实现，保证在 Windows 上能编译（用 `cfg` 隔离），门禁关闭 | `crates/platform-update-*` |
+
+2026-10-31 实施状态：新增的 `platform-native` 只提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；**现有业务尚未完成接入**，Mac 代码尚未收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
 
 ## 5 Windows 特有的问题（必须处理）
 
