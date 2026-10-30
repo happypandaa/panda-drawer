@@ -588,3 +588,11 @@ Tauri CLI help 入口也通过。复审补上受控 Windows 准备模式的转�
 新增 node_git_import/capability 适配。Windows 新请求保留原 URL/分支/UUID/名称校验、去重与已有状态语义，然后在创建接纳材料、归属、任务或临时文件前返回实际 sources 能力错误。recover 第一行及非终态 retry_cleanup 取得操作范围前明确拒绝未实现恢复；已终态快照仍照常返回。记录与未知材料保留，空内存记录也不冒充已完成磁盘恢复。Mac 三处 no-op；移除新增调用与模块声明后，原入口正文逐字保持。
 
 真实 core 库二进制纯 guard 专项作者与 root 各 **2/2**，确认原错误全部字段和 retryable 保留，恢复明确 accepted=false/not_started 且无虚构 recovered；未启动 manager/service，未证明整个导入端到端无写入。真正导入、取消、恢复和清理仍待 W4，运行总门禁未改。此步另将 W1.7 合成 Node 临时文件的测试属性清理改为恢复捕获的原始 permissions；root 实际文件访问 **4/4**、payload verifier **3/3** 通过，没有改产品权限政策或执行合成字节。
+
+### W1.17 — 初始化前核实迁移恢复范围
+
+Windows 在 Paths 原 runtime/migrations 目录创建前，以及共享 recover_startup 入口，检查固定 data-root/migrations 的实际 Missing/Empty；不要求整个工作区或数据根为空。保持实际目录/祖先 HANDLE、完整身份与前后观察，任意子项、重解析点、IO/身份/观察变化保留并报告未实现或 unconfirmed。settings 仍引用迁移而 journal 缺失时报告 WORKSPACE_MIGRATION_FAILED / inconsistent / unknown，不清引用、不把物理空根冒充旧源清理完成。初始检查允许 settings 真实缺失，运行恢复要求真实设置存在。
+
+复审发现设置读取最初误用了单链接 reader，已改为允许原规则接受的硬链接；保留 RuntimePaths 原普通/no-reparse、private DACL 与 1 MiB 大小政策，没有增加系统父 ACL 或链接数准入。真实 core 观察器最终 **8/8**、Paths 检查与共享接线 **5/5**，包含私有 hardlink settings、中文混合 verbatim 路径、并发新增、junction/文件、未知记录、有效但未提交/epochs/退休材料，以及只在真实缺失时创建原目录。独立严格 Clippy 通过；所有现场均临时创建，没有读写真实工作区或迁移记录。
+
+Mac 恢复函数正文机械搬到适配层逐字保留，初始检查 no-op、原目录创建顺序保持；Mac 运行仍待 CI。没有调用完整 initialize、服务或 UI，没有改总运行门禁；Windows 真正迁移恢复与自动删除旧根待 W5。
