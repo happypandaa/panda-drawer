@@ -16,6 +16,9 @@ const MARKER: &str = ".environment.json";
 /// folder to this data directory so another folder is never adopted silently.
 const HOME_WORKSPACE_MARKER: &str = ".platform/workspace-default.json";
 
+#[path = "paths/workspace_admission.rs"]
+mod workspace_admission;
+
 #[derive(Clone, Debug)]
 pub struct RuntimePaths {
     data_root: PathBuf,
@@ -139,6 +142,7 @@ impl RuntimePaths {
             settings.migration_id.as_deref(),
         )?;
         paths.workspace_root = settings.workspace_root;
+        workspace_admission::require_volume(paths.workspace_root())?;
         paths.validate_existing()?;
         Ok(paths)
     }
@@ -194,13 +198,7 @@ impl RuntimePaths {
             // people and external AI tools can find their projects.
             paths.workspace_root = new_workspace_root(paths.data_root())?;
             let home_workspace = paths.workspace_root != paths.data_root.join("workspace");
-            for dir in [
-                paths.workspace_root.clone(),
-                paths.workspace_root.join("projects"),
-                paths.workspace_root.join(".platform"),
-            ] {
-                ensure_directory_tree(&dir)?;
-            }
+            paths.initialize_workspace_directories()?;
             if home_workspace {
                 atomic_private_json(
                     &paths.workspace_root.join(HOME_WORKSPACE_MARKER),
@@ -232,9 +230,26 @@ impl RuntimePaths {
                 settings.migration_id.as_deref(),
             )?;
             paths.workspace_root = settings.workspace_root;
+            workspace_admission::require_volume(paths.workspace_root())?;
         }
         paths.validate_existing()?;
         Ok(paths)
+    }
+
+    fn initialize_workspace_directories(&self) -> Result<()> {
+        // A missing default is admitted on its nearest actual ancestor before
+        // creating workspace material. Recheck the actual created directory
+        // before publishing its marker or the selected-workspace settings.
+        workspace_admission::require_volume(self.workspace_root())?;
+        for dir in [
+            self.workspace_root.clone(),
+            self.workspace_root.join("projects"),
+            self.workspace_root.join(".platform"),
+        ] {
+            ensure_directory_tree(&dir)?;
+        }
+        workspace_admission::require_volume(self.workspace_root())?;
+        Ok(())
     }
 
     fn prepare_runtime_directories(&self) -> Result<()> {
@@ -994,3 +1009,7 @@ mod tests {
 #[cfg(all(test, windows))]
 #[path = "paths/windows_startup_tests.rs"]
 mod windows_startup_tests;
+
+#[cfg(all(test, windows))]
+#[path = "paths/windows_workspace_admission_tests.rs"]
+mod windows_workspace_admission_tests;
