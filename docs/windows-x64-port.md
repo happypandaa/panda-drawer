@@ -86,7 +86,9 @@
 | 编辑器确认的目录身份 | 求助摘录前后核对路径与 dev/ino，不按目录内容变化撤销确认 | 核对卷序列号与完整 128 位 FileId；不新增时间、权限或内容变化比较 | `desktop_path_io.rs`，由 `project_onboarding.rs` 调用；原生观察复用 `platform-native::tool_files::Facts` |
 | 管理器关闭与应用事件 | 关闭管理器隐藏窗口，Dock Reopen 显示；退出先等待受管服务排空 | 保留已有非 Mac 关闭后退出政策，退出同样等待排空；没有 Cocoa Reopen 事件 | `desktop_app_events.rs`；`main.rs` 仅注册两个事件处理入口 |
 | 桌面平台图标 | 现有熊猫 PNG / ICNS | 从同一已跟踪 PNG 通过仓库已安装 Tauri CLI 转换 ICO，保留原 Mac 素材 | `apps/desktop/src-tauri/icons/icon.ico`；图标不是应用或安装包产物 |
-| 在文件管理器中打开 | `/usr/bin/open -a Finder` | `explorer.exe <路径>`。注意 explorer 的退出码不可靠，不能据此判断失败 | `apps/desktop/src-tauri/src/local_directory.rs` |
+| 在文件管理器中打开 | `/usr/bin/open -a Finder` | SystemRoot 下的 `explorer.exe <路径>`；选文件为独立 `/select,<路径>` 参数。只确认创建派发进程，不等待不可靠的退出码或终止用户的 Explorer；真实窗口定位待验收 | `apps/desktop/src-tauri/src/local_directory.rs` |
+| 自动打开已安装编辑器 | 原 Mac bundle ID、Apple 签名验证及 workspace URL 派发 | 安装验证与自动打开暂未完成，入口明确拒绝；界面可继续提供手动选择目录与复制接手说明，不伪造已安装路径 | `codex_handoff.rs`；原 Mac 全文/测试在 `codex_handoff/macos.rs` 同层保留，临时边界在 `unavailable.rs` |
+| Node 普通路径观察与目录同步 | 原逐组件 symlink_metadata；明确目录 File::open / sync_all，文件刷新另保留 | 跳过孤立盘符，观察实际路径并拒绝所有重解析点；真实观察目录后跳过无等价的目录 fsync，文件仍真实刷新 | `node_apps.rs` 委托 `platform-native::filesystem::{path_components,is_reparse,sync_directory}`；Node 删除 journal / 私有写入完整后端仍待后续补齐 |
 | 默认路径 | `~/PandaDrawer`、`~/Library/Application Support` | `%USERPROFILE%\PandaDrawer`、`%LOCALAPPDATA%`（`dirs` crate 已能返回） | `paths.rs` |
 | 生成源码路径的词法检查 | 绝对、非根目录，components 仅 RootDir/Normal；沿用 Rust 的当前组件归一化 | 额外接受原生 Prefix（含 canonicalize 的 VerbatimDisk）；此处不读取目录、不额外检查 ACL/卷类型或授予归属 | `platform-native::filesystem::is_explicit_non_root_absolute_path`，由 `node_project_ownership.rs` 委托；后续完整身份与本机卷政策保留 |
 | 内置 Node | darwin-arm64 的 Node 24.22.0 | 官方 `node-v24.22.0-win-x64.zip`，固定 SHA256，写入 release json；直接执行 `node.exe npm-cli.js`，不走 `.cmd` 包装 | `scripts/node-runtime-release.json`、`development-node-release.json`、`package-*.mjs`、`managed_toolchain.rs`；只读文件事实适配：`platform-native/src/tool_files.rs`，Windows 发行资源待 W1 |

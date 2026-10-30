@@ -65,10 +65,46 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn timeout_kills_and_reaps_the_exact_artificial_child() {
+        #[cfg(unix)]
         let mut command = Command::new("/bin/sleep");
+        #[cfg(unix)]
         command.arg("30");
+        #[cfg(windows)]
+        let temporary = tempfile::Builder::new()
+            .prefix("disposable-native-dispatch-timeout-")
+            .tempdir()
+            .unwrap();
+        #[cfg(windows)]
+        let ready = temporary.path().join("child-ready");
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "native_process::tests::windows_artificial_wait_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("PANDA_NATIVE_DISPATCH_TEST_READY", &ready)
+                .kill_on_drop(true)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            command
+        };
         let mut child = command.spawn().unwrap();
         let pid = child.id().unwrap();
+        #[cfg(windows)]
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() {
+                assert!(child.try_wait().unwrap().is_none(), "Fixture exited early");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("The exact child fixture must enter its real wait before testing timeout");
         assert_eq!(
             finish(&mut child, Duration::from_millis(10))
                 .await
@@ -83,10 +119,37 @@ mod tests {
     }
     #[tokio::test]
     async fn bounded_artificial_output_finishes_before_returning() {
+        #[cfg(unix)]
         let mut command = Command::new("/usr/bin/printf");
+        #[cfg(unix)]
         command.arg("artificial output");
+        #[cfg(windows)]
+        let command = {
+            let system_root = std::env::var_os("SystemRoot").expect("Windows system root");
+            let mut command = Command::new(
+                std::path::PathBuf::from(system_root)
+                    .join("System32")
+                    .join("cmd.exe"),
+            );
+            // Fixed input only: no user text is interpolated into this shell command.
+            command
+                .args(["/d", "/c", "<nul set /p=artificial output&exit /b 0"])
+                .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            command
+        };
         let output = output(command, Duration::from_secs(2)).await.unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"artificial output");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Child fixture invoked by the exact timeout test"]
+    fn windows_artificial_wait_fixture() {
+        let Some(ready) = std::env::var_os("PANDA_NATIVE_DISPATCH_TEST_READY") else {
+            return;
+        };
+        std::fs::write(ready, b"ready").unwrap();
+        std::thread::sleep(Duration::from_secs(30));
     }
 }
