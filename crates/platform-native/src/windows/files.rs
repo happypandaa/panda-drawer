@@ -421,6 +421,16 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
 /// Apply the existing private-directory policy to an empty directory explicitly
 /// admitted by startup. Do not change an owner or inspect system-parent DACLs.
 pub fn make_directory_private(path: &Path) -> io::Result<()> {
+    make_object_private(path, true)
+}
+
+/// Apply the file counterpart of the private-directory policy to an admitted
+/// platform file. This changes its DACL, never its owner or parent permissions.
+pub fn make_file_private(path: &Path) -> io::Result<()> {
+    make_object_private(path, false)
+}
+
+fn make_object_private(path: &Path, directory: bool) -> io::Result<()> {
     let _parent = pin_parent(path)?;
     let name = native_path(path)?;
     let raw = unsafe {
@@ -439,10 +449,10 @@ pub fn make_directory_private(path: &Path) -> io::Result<()> {
     }
     let file = unsafe { File::from_raw_handle(raw) };
     reject_reparse(&file)?;
-    if !identity(&file)?.directory {
+    if identity(&file)?.directory != directory {
         return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "Expected an admitted directory",
+            io::ErrorKind::InvalidInput,
+            "Admitted object has an unexpected file type",
         ));
     }
     let current = CurrentUser::load()?;
@@ -467,7 +477,7 @@ pub fn make_directory_private(path: &Path) -> io::Result<()> {
     if owner.is_null() || unsafe { EqualSid(owner, current.sid()) } == 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Directory does not belong to the current user",
+            "Object does not belong to the current user",
         ));
     }
     let security = PrivateSecurity::new()?;
@@ -483,7 +493,7 @@ pub fn make_directory_private(path: &Path) -> io::Result<()> {
         ))?;
     }
     if present == 0 || dacl.is_null() {
-        return Err(io::Error::other("Private directory DACL is absent"));
+        return Err(io::Error::other("Private object DACL is absent"));
     }
     let result = unsafe {
         SetSecurityInfo(
