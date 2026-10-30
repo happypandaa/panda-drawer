@@ -1,5 +1,6 @@
 use super::*;
-use std::os::unix::fs::symlink;
+#[cfg(unix)]
+use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 
 fn write(root: &Path, path: &str, value: Value) {
     let path = root.join(path);
@@ -40,6 +41,7 @@ fn fixture(root: &Path) {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn copy_preserves_executables_and_empty_directories_without_sharing_files_or_git() {
     let temp = tempfile::tempdir().unwrap();

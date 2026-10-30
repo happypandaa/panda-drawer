@@ -748,6 +748,6 @@ fn stopped() -> ApiError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_data_restore_registration_tests.rs"]
 mod tests;

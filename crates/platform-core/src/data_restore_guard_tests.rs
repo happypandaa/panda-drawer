@@ -39,6 +39,7 @@ fn missing_corrupt_and_unknown_journals_block_without_adopting_or_cleaning_them(
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn data_restore_guard_rejects_symlink_and_overbudget_record_without_following_it() {
     use std::os::unix::fs::symlink;

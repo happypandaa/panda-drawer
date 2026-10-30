@@ -199,6 +199,7 @@ pub(crate) fn require_source_excludes_global_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     fn fixture() -> (tempfile::TempDir, ProjectToolBoundary) {
         let temp = tempfile::tempdir().unwrap();
@@ -213,6 +214,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "disposable tool path, never executed").unwrap();
     }
+    #[cfg(unix)]
     #[test]
     fn fixed_project_material_and_both_symlink_directions_cannot_be_global_tools() {
         let (temp, boundary) = fixture();
@@ -247,6 +249,7 @@ mod tests {
             "GLOBAL_TOOL_PROJECT_OWNED"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn outside_generated_and_original_claimed_sources_cannot_supply_global_tools() {
         let (temp, boundary) = fixture();
@@ -359,6 +362,7 @@ mod tests {
             "GLOBAL_TOOL_PROJECT_OWNED"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn source_admission_checks_configured_raw_resolved_and_npm_paths_without_probing() {
         let (temp, boundary) = fixture();

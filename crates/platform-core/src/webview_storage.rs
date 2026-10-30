@@ -391,6 +391,7 @@ mod tests {
         ledger.require_all_clear().unwrap();
         assert!(fs::read_dir(ledger.directory()).unwrap().next().is_none());
     }
+    #[cfg(unix)]
     #[test]
     fn corrupt_foreign_and_symlink_records_cannot_authorize_native_removal() {
         use std::os::unix::fs::{symlink, PermissionsExt};

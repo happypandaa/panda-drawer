@@ -1916,7 +1916,7 @@ fn initialize_candidate(
     Ok((state, diagnostics))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "lifecycle_tests.rs"]
 mod tests;
 

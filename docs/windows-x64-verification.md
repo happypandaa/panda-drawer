@@ -377,3 +377,14 @@ Windows 原生不可变证明仍未实现，入口在 I/O 或错误策略调用�
 实际源码 harness **68/68 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；其中 FileProof 只是匹配原字段的静态返回类型，Windows 分支不能构造，Mac 仅原函数的目标类型检查。原 Unix 源码比对通过。
 
 `cargo check --locked --offline -p platform-core --lib` 在本机 Windows **首次通过**，仍有 **79 个警告**（类型错误消除后完整报告了尚未使用的能力/导入）。这是核心库的生产 lib 检查，不包含完整 workspace、CLI、桌面、测试或安装包。尚未开放总运行门禁，Windows 运行器服务与 Mac 基线仍未完成；W0 仍未完成，未合入 main。
+
+
+### W0.40 — Windows 测试目标编译与 Unix 原生夹具范围
+
+Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有 76 个错误，均来自 Unix 权限/链接、FIFO/信号、shell 进程夹具或已按 Unix 构建的 proxy 夹具被跨平台引用。将 12 个依赖这些原生后端的测试模块限制为 Unix：Node Git 导入、环境受管进程、原生交付 I/O、迁移旧根清理、生命周期、数据恢复登记、构建完整流程及 npm 日志、HTTP Git 远程/版本、proxy 关闭、可读目录映射。**这些模块的 Mac 测试体和执行条件没有删除或弱化**，Mac 上 Unix 条件为真；Windows 对应完整业务流程仍须 W1–W5 补齐，现有原生/门禁专项不能当作相同业务覆盖。
+
+对混合测试模块只为 Unix 符号链接、执行权限、POSIX probe 等 16 个单项添加 Unix 条件，其余共用的版本政策、配置缺失、输入/恢复格式、预算和路径政策继续在 Windows 编译。没有因为 Mac 测试失败而删除或跳过 Mac 用例，原始 Mac 基线仍未实际运行。
+
+检查还发现 W0.32 移走父模块 Unix traits 后，原构建复制测试通过 super::* 依赖的 MetadataExt/PermissionsExt 未显式导入。这是本分支的测试编译遗漏，现与 symlink 一起放在该 Unix 夹具自己的 import 中；未把它归为原始 main 的失败。修改只涉及测试编译范围、依赖导入及格式，没有改变业务实现或原测试断言。
+
+`cargo check --locked --offline -p platform-core --tests` **通过**：lib 仍有 79 个警告，lib test 有 67 个警告。随后首次使用完整真实 platform-core 测试二进制（非静态类型 harness）运行本机 Git 门禁和数据证明门禁，两项均 **1/1 通过**；分别过滤其余 371 个库测试和 9 个集成测试，未把未运行者当作通过。没有运行完整 Windows 测试组或桌面，W0 仍未完成，未合入 main。
