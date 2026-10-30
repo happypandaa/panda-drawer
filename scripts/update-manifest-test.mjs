@@ -7,6 +7,20 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { UPDATE_POLICY, assessStableUpdate, automaticCheckPolicy, compareVersions, generateStaticManifest, parseProtocolJson, parseVersion, releaseAssetUrl, validateSignatureFormat, validateStaticManifest } from './update-manifest-protocol.mjs';
 import { parseManifestArguments, runManifestCommand } from './update-manifest.mjs';
+import { hasTraversal } from './native-path.mjs';
+
+test('Native traversal checks keep Mac backslash names and reject Windows parent components with either separator', () => {
+  for (const value of ['C:\\workspace\\..\\file.json', 'C:/workspace/../file.json', 'C:\\workspace/../file.json', 'C:/workspace\\..\\file.json']) {
+    assert.equal(hasTraversal(value, { platform: 'win32' }), true);
+  }
+  for (const value of ['C:\\工作区\\.env', 'C:/workspace/..notes', 'C:\\workspace\\.\\file.json', 'C:/workspace/./file.json', 'C:\\workspace/.../file.json']) {
+    assert.equal(hasTraversal(value, { platform: 'win32' }), false);
+  }
+  for (const value of ['/workspace/../file.json', '../file.json']) assert.equal(hasTraversal(value, { platform: 'darwin' }), true);
+  for (const value of ['/workspace/..\\file.json', '/workspace\\..\\file.json', '/workspace/./file.json', '/workspace/.env']) {
+    assert.equal(hasTraversal(value, { platform: 'darwin' }), false);
+  }
+});
 
 test('verify arguments require explicit artifact and public-key inputs without adding identity or source overrides', () => {
   const args = ['verify', '--input', '/tmp/latest.json', '--artifact', '/tmp/app.app.tar.gz', '--public-key', '/tmp/operator.pub'];
@@ -34,6 +48,15 @@ async function disposable(t) {
   const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'disposable-panda-update-manifest-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
+}
+
+async function fileSymlinkFixture(t, target, destination) {
+  try { await symlink(target, destination); return true; } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+    t.diagnostic(`Windows file symlink fixture unavailable (${error.code}); this case provides no file-symlink rejection proof.`);
+    t.skip('Windows host does not permit this disposable file symlink fixture');
+    return false;
+  }
 }
 
 test('generation uses only the official static fields and the fixed tagged repository URL', () => {
@@ -171,17 +194,26 @@ test('actual CLI generates and revalidates a new local manifest without overwrit
 
 test('CLI refuses linked or oversized input and linked output without changing the original file', async t => {
   const root = await disposable(t); const input = path.join(root, 'metadata.json'); const linked = path.join(root, 'linked.json');
-  await writeFile(input, JSON.stringify(metadata())); await symlink(input, linked);
-  await assert.rejects(runManifestCommand({ command: 'validate', input: linked }));
-  await assert.rejects(runManifestCommand({ command: 'generate', input, output: linked }));
-  assert.deepEqual(JSON.parse(await readFile(input)), metadata());
-  const oversized = path.join(root, 'oversized.json'); await writeFile(oversized, Buffer.alloc(UPDATE_POLICY.maxDocumentBytes + 1));
-  await assert.rejects(runManifestCommand({ command: 'validate', input: oversized }));
-  await assert.rejects(runManifestCommand({ command: 'validate', input: 'relative.json' }));
-  const alias = path.join(root, 'alias'); await symlink(root, alias);
-  await assert.rejects(runManifestCommand({ command: 'validate', input: path.join(alias, 'metadata.json') }));
-  await assert.rejects(runManifestCommand({ command: 'generate', input, output: path.join(alias, 'new.json') }));
-  await assert.rejects(lstat(path.join(root, 'new.json')), { code: 'ENOENT' });
+  await writeFile(input, JSON.stringify(metadata()));
+  await t.test('file symlink input and output', async t => {
+    if (!await fileSymlinkFixture(t, input, linked)) return;
+    await assert.rejects(runManifestCommand({ command: 'validate', input: linked }));
+    await assert.rejects(runManifestCommand({ command: 'generate', input, output: linked }));
+    assert.deepEqual(JSON.parse(await readFile(input)), metadata());
+  });
+  await t.test('oversized and relative inputs', async () => {
+    const oversized = path.join(root, 'oversized.json'); await writeFile(oversized, Buffer.alloc(UPDATE_POLICY.maxDocumentBytes + 1));
+    await assert.rejects(runManifestCommand({ command: 'validate', input: oversized }));
+    await assert.rejects(runManifestCommand({ command: 'validate', input: 'relative.json' }));
+  });
+  await t.test('directory-link input and output parents', async () => {
+    const alias = path.join(root, 'alias');
+    if (process.platform === 'win32') await symlink(root, alias, 'junction');
+    else await symlink(root, alias);
+    await assert.rejects(runManifestCommand({ command: 'validate', input: path.join(alias, 'metadata.json') }));
+    await assert.rejects(runManifestCommand({ command: 'generate', input, output: path.join(alias, 'new.json') }));
+    await assert.rejects(lstat(path.join(root, 'new.json')), { code: 'ENOENT' });
+  });
 });
 
 test('invalid signed metadata fails before creating any requested output', async t => {
