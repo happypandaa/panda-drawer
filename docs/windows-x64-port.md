@@ -54,7 +54,7 @@
 | 进程身份核对 | PID + 启动时间 + 进程组 | PID + `GetProcessTimes` 创建时间 + `QueryFullProcessImageNameW` 路径。核对后再操作 | `node_process_identity.rs`、`node_run_marker.rs` |
 | 开机时间 | `sysctl KERN_BOOTTIME` | 当前时间减 `GetTickCount64` | `node_process_identity.rs` |
 | 遗留运行 | 平台崩溃后应用进程可能存活，需要核对接管 | 因为设置了 KILL_ON_JOB_CLOSE，平台进程一退出，应用进程就随 Job 结束。启动时的标记核对仍要执行，通常会判定为已停止并清除 | `node_run_marker.rs` |
-| 私有文件和目录 | 目录 0700、文件 0600、校验属主 uid | 创建时设置受保护的 DACL：只授予当前用户 SID 完全控制，不继承父目录权限。校验属主为当前用户 | Windows 原语：`crates/platform-native/src/windows/files.rs`；业务接入点：`durable_writer.rs`、`node_app_configuration.rs`、`node_runtime_log.rs`、`paths.rs` |
+| 私有文件和目录 | 目录 0700、文件 0600、校验属主 uid | 创建时设置受保护的 DACL：只授予当前用户 SID 完全控制，不继承父目录权限。校验属主为当前用户 | 共享文件适配：`crates/platform-native/src/filesystem.rs`；日志原生操作：`crates/platform-native/src/runtime_logs/`；Windows 原语：`crates/platform-native/src/windows/files.rs`；待接入：`durable_writer.rs`、`node_app_configuration.rs` |
 | 文件身份 | dev + ino、nlink | 卷序列号 + 完整 128 位 FileId（`GetFileInformationByHandleEx` / `FileIdInfo`）、链接数 | Windows 原语：`crates/platform-native/src/windows/files.rs`；业务接入点：`file_identity.rs`、`metadata.rs` |
 | 符号链接 | `O_NOFOLLOW`，拒绝符号链接 | 以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，**拒绝所有重解析点**（符号链接、目录联接、挂载点），与 Mac 拒绝符号链接的位置一一对应 | `file_identity.rs`、`native_project_files.rs`、`source_publication.rs` |
 | 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | `durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |

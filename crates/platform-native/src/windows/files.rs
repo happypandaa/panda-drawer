@@ -264,6 +264,29 @@ fn pin_parent(path: &Path) -> io::Result<(CheckedPath, File)> {
     Ok((checked, pinned))
 }
 
+/// Pins the directory itself as well as its ancestors, retaining a separate
+/// attribute/security handle so callers can validate only their owned object.
+pub struct PinnedDirectory {
+    pub file: File,
+    _scope: CheckedPath,
+    _pin: File,
+}
+pub fn pin_directory(path: &Path) -> io::Result<PinnedDirectory> {
+    let checked = open_no_reparse(path)?;
+    let pinned = open_component(path, true)?;
+    if !checked.identity.directory || !checked.identity.same_object(&identity(&pinned)?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Directory changed before it could be pinned",
+        ));
+    }
+    Ok(PinnedDirectory {
+        file: checked.file.try_clone()?,
+        _scope: checked,
+        _pin: pinned,
+    })
+}
+
 pub fn create_private_directory(path: &Path) -> io::Result<()> {
     let _parent = pin_parent(path)?;
     let security = PrivateSecurity::new()?;
