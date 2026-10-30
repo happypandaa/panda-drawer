@@ -554,3 +554,13 @@ native-packager 新 Git 模块复用实际私有新建、全部目录先固定�
 `resource_info` 经 desktop_installation 适配层委托。Mac 原完整函数正文、错误与 debug fallback 逐字保留；Windows 仅使用 Tauri resource_dir/resources 和当前桌面 exe 旁的 local-projects-dev.exe，不选旧源码 resources、Mac 无扩展名或带 target triple 的打包源 sidecar。资源缺失时保留原布尔诊断/None，真正准入仍由 core 验证；不从路径存在性生成完整性证明，没有新增任意根覆盖或旧数据兼容入口。
 
 真实桌面二进制专项 **3/3**：中文路径与部署后固定文件名、缺失时不选择同目录旧名字/源目录、临时资源布尔报告与不可读文本，所有合成 sidecar 字节从未执行，调用方材料保留。构建使用资源排除诊断配置，尚未证明真实 Tauri dev/安装包的部署行为；正常 Windows fresh 资源准备仍在接入验证。未改 Mac 行为，CI 仍待实际执行。
+
+### W1.13 — Windows 明文配置与实际本地密钥槽
+
+配置平台代码收拢到适配文件，Mac lock/read/commit/完整 LocalFileVault helpers 的生产正文逐字保留，共用 save 与回滚业务正文未改。Windows 使用当前 SID 私有 DACL、普通 no-reparse 文件、完整 FileId 和原单链接政策；普通配置按 Mac 原规则仅修已核验当前用户 leaf，凭据既有权限不符只拒绝，不读旧 provider 兜底，不改系统父 ACL。仍是平台私有明文槽，不引入 DPAPI、系统 vault 或不同的密钥契约。
+
+配置覆盖使用私有新文件的实际 DELETE HANDLE，所有父范围、身份、类型/链接数/权限及路径检查在原生提交前完成。FileRenameInfo 成功就是与 Mac rename 相同的提交点，之后只 best-effort 目录同步，不再把提交后的观察失败变成 save Err，避免共用回滚删掉已被新配置引用的 secret。外部资源 packager 的后验 unknown 政策没有改。LocalFileVault 真实支持不可覆盖 insert/get/contains 和只回滚本次创建项；root/entry 替换、未知清理项均保留并拒绝，不把“初始空”冒充后端完整。
+
+作者独立完整 core 配置组 **22/22**，root 随后在真实主 target 完整 core 测试二进制再次 **22/22**；包含原 18 项业务测试及 4 项 Windows 实际文件测试。覆盖真实 save/reload/启动快照/修订覆盖、private DACL、hardlink/junction、错误 credential DACL、空/超限/UTF-8、root/entry 替换、unknown 清理，以及真实 rename 被目录阻挡时只回滚新 secret、保留旧配置和旧 secret。native 全组 **45 通过、1 ignored 专用夹具**、packager **8/8**，两目标 native 严格 Clippy 通过（Mac 仅类型检查）。复审无阻塞。
+
+没有运行应用后端或读写真实凭据；所有配置/删除测试只用临时新现场。原桌面生命周期用例与完整桌面组尚需在此后端上再次验证，不能提前记为绿色。W3 真实配置注入/日志脱敏、W5 项目全量删除和 Mac CI 仍待完成。
