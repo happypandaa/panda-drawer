@@ -282,3 +282,14 @@ Windows 的真实磁盘/文件快照、摘要、非执行 Git 获取与复制仍
 原生命周期目录预检查曾返回 dev/ino tuple，但仅有的两个生产调用方都丢弃该值。现将它收拢为只检查原普通目录/no-link 条件的 `require_directory`，移除没有用途的身份返回值；真正持久捕获/匹配仍走原 `PersistedIdentity`，Windows 保留完整 FileId，没有用低位 pair 作新证明。没有改动持久协议或 Mac 的目录准入和检查顺序。
 
 新增 Windows 临时文件专项验证发布门禁不调用回调、不移动或覆盖 stage/既有目标，完整身份和字节保留；字节明确是非 ZIP 占位内容，不证明 ZIP 生成。实际读取/身份/门禁源码 harness **52/52 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；Mac 包含原发布函数的目标类型检查，未执行原竞态专项，离线 legacy repair 入口在 harness 只作不可调用的类型替身。完整 core lib 仍失败，诊断 **178 个错误、17 个警告**，生命周期发布边界未报错；之后将 checkpoint 枚举导入限于原 Unix 测试。完整导出、删除、Mac CI 均未验收，W0 未完成。
+
+
+### W0.31 — npm 准备的真实文件输入与私有配置
+
+`node_dependency_prepare.rs` 的目录、输入读取与独占写入收拢到 `dependency_file_io.rs`。Unix 原绝对路径/no-link 检查、create_dir_all 后 chmod 0700、文件新建 0600/0700、O_NOFOLLOW、文件刷新与错误政策保留；输入读取仍在原时点只比较 dev/ino、len、mtime/mtime_nsec 和 mode，不追加 ctime 或完成后的链接数条件。Windows 对应完整身份、大小、原生修改时间与真实只读权限；创建使用受保护当前用户 DACL，不以虚构执行位宣称二进制可执行。
+
+依赖树与空间扫描通过原生重解析点观察区分目录，不将 Windows junction 当普通目录继续递归。依赖最终链接仍沿用原来的“相对目标且解析后在项目内”政策；普通文件的真实链接数由适配器读取，Mac 直接使用原已读 metadata 的 nlink。npm 参数、脚本禁用、预算、任务归属与中断收尾逻辑未改变。原 `/bin/sh` 与 Unix 链接夹具测试文件完整保留并按 Unix 构建；实际 Windows npm 运行、取消清理和导入仍未验收，Job 集成尚待完成。
+
+新增真实 Windows 临时文件测试验证读取缺失不创建、大小界限、硬链接拒绝且内容/身份保留，以及多级私有 npm 目录、独占文件新建、已存在不覆盖、既存父目录权限不变；`.exe` 名字里的内容只是非程序字节，未执行。实际文件源码 harness **54/54 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；未在该 harness 包含完整 npm 协调器。原生完整测试 **28 通过、1 真实子进程夹具入口默认忽略**，新增实际只读属性变化与未追加 ctime/链接数规则的断言；两目标全目标严格 Clippy 通过，Mac 仅类型检查。
+
+完整 Windows core lib 仍失败，诊断 **159 个错误、16 个警告**，本步输入适配与依赖准备模块无错误。初始 CI 基线两任务仍排队，本机未发现运行器服务；Mac 原始基线未运行，不能声称绿色或列出原始失败测试。W0 未完成，未合入 main。
