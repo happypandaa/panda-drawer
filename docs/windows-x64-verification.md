@@ -260,3 +260,11 @@ Windows 的真实磁盘/文件快照、摘要、非执行 Git 获取与复制仍
 网页存储账本的两个新建目录调用接入同一个私有目录原语，Mac 仍为原 DirBuilder 0700；去掉已搬离读取 flags 的 Unix trait import。**没有据此实现或验证 WebView2 数据目录、浏览器进程等待、清理确认与完整账本删除**，这些仍待 W2/W5，现有 Mac 测试保留。
 
 新增实际控制写入测试，验证中文空格临时路径、重复发布后只留当前内容、真实私有 DACL，以及独占占用时旧内容保留、准备文件清理、释放后重试成功。源码 harness **49/49 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；Mac 仅类型检查。未在 harness 执行网页存储账本整体、构建或业务 journal。完整 core lib 仍失败，诊断 **207 个错误、20 个警告**，本步控制写入和账本创建入口未报错。W0 未完成，未合入 main。
+
+### W0.28 — 数据快照的临时身份观察
+
+`project_version_data.rs` 的进程内 FileStamp 改用原生 Stamp。Unix 保留原 tuple 的全部字段：dev/ino、mode、len、mtime/mtime_nsec、ctime/ctime_nsec，仍在原位置读取 metadata；不误用另外包含链接数的更严格工具 unchanged 政策。Windows 使用完整原生 FileId 和实际属性/时间；原有“普通单链接”准入仍在原调用点单独检查。该 Stamp 只用于本次读取/复制/目录枚举的一致性核对，没有改动持久 `DataFile` / snapshot manifest 的字段、摘要和格式。
+
+两个数据候选目录的创建复用原私有目录适配，Mac 仍为 create_dir 后 chmod 0700；目录同步沿用原顺序，通过平台函数在 Windows 明确跳过不可用的目录 fsync。文件内容刷新与现有预算、取消、SQLite 和业务冻结流程未改变，未据此认定 Windows 数据快照全链可用。
+
+原生文件事实专项 **3/3 通过**，增加了从 path metadata 与真实已开句柄取得的观察戳一致性断言，既有实际时间修改、同名替代及不同变化政策的专项仍通过；原生 crate 的 Windows / macOS ARM64 全目标严格 Clippy 通过。完整 Windows core lib 仍失败，诊断 **196 个错误、19 个警告**，数据快照模块未再报错。此处没有运行完整数据快照测试文件、SQLite 快照、附件整链或 Mac 实际回归；原测试文件保留。W0 未完成，未合入 main。

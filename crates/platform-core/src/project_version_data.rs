@@ -7,11 +7,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
@@ -145,8 +143,7 @@ pub(crate) fn prepare_snapshot_locked(
     if destination.starts_with(&project.root) {
         return Err(invalid("数据快照必须先在独立操作目录准备。"));
     }
-    fs::create_dir(destination)?;
-    fs::set_permissions(destination, fs::Permissions::from_mode(0o700))?;
+    crate::project_file_io::create_private_directory(destination)?;
     let result = (|| {
         let live_attachments = project.root.join(&project.manifest.attachments_dir);
         let before =
@@ -163,8 +160,7 @@ pub(crate) fn prepare_snapshot_locked(
         }
         let source_root = files::root(&live_attachments)?;
         let attachment_destination = destination.join("attachments");
-        fs::create_dir(&attachment_destination)?;
-        fs::set_permissions(&attachment_destination, fs::Permissions::from_mode(0o700))?;
+        crate::project_file_io::create_private_directory(&attachment_destination)?;
         let destination_root = files::root(&attachment_destination)?;
         for directory in &before.directories {
             check_cancel(stop, cancel)?;
@@ -372,7 +368,7 @@ pub(crate) fn tracked_files(snapshot: &PreparedDataSnapshot) -> BTreeMap<String,
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileStamp {
     file: DataFile,
-    identity: (u64, u64, u32, u64, i64, i64, i64, i64),
+    identity: platform_native::directory::Stamp,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Inventory {
@@ -381,26 +377,14 @@ struct Inventory {
     bytes: u64,
 }
 
-fn stamp(metadata: &fs::Metadata) -> (u64, u64, u32, u64, i64, i64, i64, i64) {
-    (
-        metadata.dev(),
-        metadata.ino(),
-        metadata.mode(),
-        metadata.len(),
-        metadata.mtime(),
-        metadata.mtime_nsec(),
-        metadata.ctime(),
-        metadata.ctime_nsec(),
-    )
-}
 fn hash_file(
     mut input: File,
     max_bytes: u64,
     stop: &watch::Receiver<bool>,
     cancel: &watch::Receiver<bool>,
 ) -> Result<FileStamp, ApiError> {
-    let before = input.metadata()?;
-    if !before.is_file() || before.nlink() != 1 {
+    let before = platform_native::tool_files::Facts::from_file(&input)?;
+    if !before.is_file() || before.links() != 1 {
         return Err(invalid("数据快照仅接受无硬链接的普通文件。"));
     }
     if before.len() > max_bytes {
@@ -421,7 +405,9 @@ fn hash_file(
         }
         digest.update(&buffer[..count]);
     }
-    if stamp(&input.metadata()?) != stamp(&before) || total != before.len() {
+    if platform_native::tool_files::Facts::from_file(&input)?.stamp() != before.stamp()
+        || total != before.len()
+    {
         return Err(changed());
     }
     Ok(FileStamp {
@@ -429,7 +415,7 @@ fn hash_file(
             bytes: total,
             sha256: format!("{:x}", digest.finalize()),
         },
-        identity: stamp(&before),
+        identity: before.stamp(),
     })
 }
 fn copy_hashed(
@@ -439,7 +425,7 @@ fn copy_hashed(
     stop: &watch::Receiver<bool>,
     cancel: &watch::Receiver<bool>,
 ) -> Result<DataFile, ApiError> {
-    let before = input.metadata()?;
+    let before = platform_native::tool_files::Facts::from_file(&input)?;
     if before.len() > max_bytes {
         return Err(limit());
     }
@@ -459,7 +445,9 @@ fn copy_hashed(
         output.write_all(&buffer[..count])?;
         digest.update(&buffer[..count]);
     }
-    if stamp(&input.metadata()?) != stamp(&before) || total != before.len() {
+    if platform_native::tool_files::Facts::from_file(&input)?.stamp() != before.stamp()
+        || total != before.len()
+    {
         return Err(changed());
     }
     Ok(DataFile {
@@ -487,7 +475,7 @@ fn attachment_inventory(
         check_cancel(stop, cancel)?;
         let directory = root.join(&relative);
         check_no_symlinks(&directory, false)?;
-        let before = fs::symlink_metadata(&directory)?;
+        let before = platform_native::tool_files::Facts::capture(&directory)?;
         if !before.is_dir() {
             return Err(changed());
         }
@@ -522,21 +510,21 @@ fn attachment_inventory(
             if !paths.insert(folded) {
                 return Err(invalid("附件路径在当前卷上可能发生大小写或 Unicode 碰撞。"));
             }
-            let metadata = fs::symlink_metadata(entry.path())?;
+            let metadata = platform_native::tool_files::Facts::capture(&entry.path())?;
             if metadata.is_dir() {
                 // Open the same path relative to the original descriptor before
                 // treating its path-based enumeration as an ordinary directory.
                 let _ = files::parent(&root_fd, &format!("{path}/.snapshot-probe"), false)?;
                 result.directories.push(path.clone());
                 pending.push(path);
-            } else if metadata.is_file() && metadata.nlink() == 1 {
+            } else if metadata.is_file() && metadata.links() == 1 {
                 let file = hash_file(
                     files::read(&root_fd, &path)?,
                     limits.max_file_bytes,
                     stop,
                     cancel,
                 )?;
-                if file.identity != stamp(&metadata) {
+                if file.identity != metadata.stamp() {
                     return Err(changed());
                 }
                 result.bytes = result
@@ -551,7 +539,7 @@ fn attachment_inventory(
                 return Err(invalid("附件含链接或特殊文件；未跳过文件后保存残缺版本。"));
             }
         }
-        if stamp(&fs::symlink_metadata(directory)?) != stamp(&before) {
+        if platform_native::tool_files::Facts::capture(&directory)?.stamp() != before.stamp() {
             return Err(changed());
         }
     }
@@ -560,10 +548,10 @@ fn attachment_inventory(
 }
 fn sync_directories(root: &Path, directories: &[String]) -> Result<(), ApiError> {
     for directory in directories.iter().rev() {
-        File::open(root.join("attachments").join(directory))?.sync_all()?;
+        platform_native::filesystem::sync_directory(&root.join("attachments").join(directory))?;
     }
-    File::open(root.join("attachments"))?.sync_all()?;
-    File::open(root)?.sync_all()?;
+    platform_native::filesystem::sync_directory(&root.join("attachments"))?;
+    platform_native::filesystem::sync_directory(root)?;
     Ok(())
 }
 fn check_cancel(
