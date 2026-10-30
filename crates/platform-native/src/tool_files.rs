@@ -186,6 +186,25 @@ impl Facts {
             self.same_object(other) && length == other_length && modified_100ns == other_modified
         }
     }
+    /// Dependency input readers additionally observe Unix mode. Windows has no
+    /// Unix execute bits; compare the real read-only permission alongside type.
+    /// Neither host adds ctime or link-count checks to this change policy.
+    pub fn same_modified_permissions(&self, other: &Self) -> bool {
+        if !self.same_modified_file(other) {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            self.metadata.mode() == other.metadata.mode()
+        }
+        #[cfg(windows)]
+        {
+            self.is_file() == other.is_file()
+                && self.is_dir() == other.is_dir()
+                && self.metadata.permissions().readonly() == other.metadata.permissions().readonly()
+        }
+    }
     pub fn unchanged(&self, other: &Self) -> bool {
         #[cfg(unix)]
         {
@@ -367,6 +386,7 @@ mod tests {
         let linked = Facts::capture(&path).unwrap();
         assert_eq!(linked.links(), 2);
         assert!(before.same_modified_file(&linked));
+        assert!(before.same_modified_permissions(&linked));
         assert!(!before.unchanged(&linked));
         fs::write(
             &path,
@@ -377,5 +397,27 @@ mod tests {
         fs::rename(&path, root.join("retained-original")).unwrap();
         fs::write(&path, b"disposable metadata").unwrap();
         assert!(!before.same_modified_file(&Facts::capture(&path).unwrap()));
+    }
+
+    #[test]
+    fn dependency_change_policy_observes_permissions_without_requiring_change_time() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-dependency-permissions-")
+            .tempdir()
+            .unwrap();
+        let path = temporary.path().canonicalize().unwrap().join("input.json");
+        fs::write(&path, b"disposable dependency input").unwrap();
+        let original_permissions = fs::metadata(&path).unwrap().permissions();
+        let before = Facts::capture(&path).unwrap();
+        let mut read_only = original_permissions.clone();
+        read_only.set_readonly(true);
+        fs::set_permissions(&path, read_only).unwrap();
+        let after = Facts::capture(&path).unwrap();
+        // Restore the disposable file before assertions so failed assertions
+        // cannot leave a read-only fixture behind on Windows.
+        fs::set_permissions(&path, original_permissions).unwrap();
+        assert!(before.same_modified_file(&after));
+        assert!(!before.same_modified_permissions(&after));
+        assert_eq!(fs::read(path).unwrap(), b"disposable dependency input");
     }
 }

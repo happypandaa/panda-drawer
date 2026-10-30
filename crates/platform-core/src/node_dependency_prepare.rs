@@ -2,6 +2,7 @@
 //! This never builds or runs project scripts. Private npm state belongs to the
 //! import operation and actual process ownership survives interrupted waiters.
 use crate::{
+    dependency_file_io::{ordinary_directory, private_dir, read_file, write_new},
     environment::Toolchain,
     node_app_manifest::TrialManifest,
     node_process_scope::NodeProcessScope,
@@ -11,12 +12,9 @@ use crate::{
     ApiError,
 };
 use serde_json::{json, Value};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
-    fs::{self, OpenOptions},
-    io::{Read, Write},
-    path::{Component, Path, PathBuf},
+    fs,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::{process::Command, sync::watch, time::Instant};
@@ -32,9 +30,6 @@ fn failure(code: &str, message: &str) -> ApiError {
 }
 fn invalid(message: &str) -> ApiError {
     failure("NODE_INSTALL_INVALID", message)
-}
-fn changed() -> ApiError {
-    failure("NODE_DEPENDENCY_CHANGED", "依赖准备时项目文件发生变化。")
 }
 #[derive(Clone, Copy)]
 pub(crate) struct NpmSpaceBudget {
@@ -202,9 +197,9 @@ fn validate_dependency_tree(path: &Path, project_root: &Path) -> Result<()> {
     for entry in fs::read_dir(path)? {
         let path = entry?.path();
         let metadata = fs::symlink_metadata(&path)?;
-        if metadata.is_dir() {
+        if metadata.is_dir() && !platform_native::filesystem::is_reparse(&metadata) {
             validate_dependency_tree(&path, project_root)?;
-        } else if metadata.file_type().is_symlink() {
+        } else if platform_native::filesystem::is_reparse(&metadata) {
             let target = fs::read_link(&path)?;
             if target.is_absolute()
                 || !fs::canonicalize(&path).is_ok_and(|target| target.starts_with(project_root))
@@ -212,7 +207,7 @@ fn validate_dependency_tree(path: &Path, project_root: &Path) -> Result<()> {
                 return Err(needs_adaptation("依赖链接必须指向项目文件夹内部。"));
             }
         } else if metadata.is_file() {
-            if metadata.nlink() != 1
+            if crate::dependency_file_io::link_count(&path, &metadata)? != 1
                 || path
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("node"))
@@ -440,7 +435,7 @@ fn scan_dependency_space(
             if usage.0.is_multiple_of(256) {
                 free_space(operation, control, available)?;
             }
-            if metadata.is_dir() {
+            if metadata.is_dir() && !platform_native::filesystem::is_reparse(&metadata) {
                 visit(
                     operation,
                     &entry.path(),
@@ -449,7 +444,7 @@ fn scan_dependency_space(
                     available,
                     usage,
                 )?;
-            } else if metadata.is_file() || metadata.file_type().is_symlink() {
+            } else if metadata.is_file() || platform_native::filesystem::is_reparse(&metadata) {
                 // Metadata only: never open file contents or follow npm's links.
                 // Final program validation separately checks relative bin links
                 // and rejects hard links; transient cache links are counted here.
@@ -682,72 +677,9 @@ async fn npm_ci_with_budget(
     }
     check_npm_space(operation, project_root, control).await
 }
-fn ordinary_directory(path: &Path) -> Result<()> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
-    {
-        return Err(invalid("安装路径必须为规范的绝对路径。"));
-    }
-    check_no_symlinks(path, false)?;
-    if !fs::metadata(path)?.is_dir() {
-        return Err(invalid("安装路径不是普通目录。"));
-    }
-    Ok(())
-}
-fn private_dir(path: &Path) -> Result<()> {
-    check_no_symlinks(path, true)?;
-    fs::create_dir_all(path)?;
-    ordinary_directory(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    check_no_symlinks(path, false)?;
-    let before = fs::symlink_metadata(path)?;
-    if !before.is_file() || before.nlink() != 1 || before.len() > limit {
-        return Err(invalid("安装文件必须是预算内的独立普通文件。"));
-    }
-    let file = platform_native::filesystem::open_read(
-        path,
-        platform_native::filesystem::ReadOptions::NoLinks,
-    )?;
-    let opened = file.metadata()?;
-    if before.dev() != opened.dev() || before.ino() != opened.ino() {
-        return Err(changed());
-    }
-    let mut bytes = vec![];
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    let after = fs::symlink_metadata(path)?;
-    if bytes.len() as u64 > limit
-        || before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || before.mode() != after.mode()
-    {
-        return Err(changed());
-    }
-    Ok(bytes)
-}
 pub(crate) fn read_small(path: &Path) -> Result<Vec<u8>> {
     read_file(path, MAX_METADATA)
 }
-fn write_new(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
-    check_no_symlinks(path, true)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(if executable { 0o700 } else { 0o600 })
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
-}
-
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "node_dependency_prepare_tests.rs"]
 mod tests;

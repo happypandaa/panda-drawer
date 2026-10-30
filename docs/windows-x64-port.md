@@ -65,6 +65,7 @@
 | 本机目录登记与可编辑源码发布 | 描述符绑定的只读检查、空目录初始化、候选复制与发布恢复 | 对应的 HANDLE 绑定与候选发布完成前明确拒绝，不写入用户目录、不假定已登记；待 W4 实现 | `node_app_directory.rs`、`source_publication.rs`；Mac 原实现分别保留在各自 `unix.rs` 子模块 |
 | 外部 ZIP 导出发布 | 原子不覆盖改名、目录/文件身份复核、替代材料保留或独占归还 | 发布和中断恢复未完成时，在改名或验证回调前明确拒绝，保留已准备的临时材料；待后续补齐 | `lifecycle_file_io.rs`；原 Unix 发布实现在 `lifecycle_file_io/unix.rs`，生命周期目录类型预检查也经该边界 |
 | 受控 Git 源码获取 | 原生磁盘预算、文件树/摘要核对、非执行复制 | URL/分支政策和输入/候选数据共用；实际获取、复制、就绪或归属核对尚未完成时明确拒绝 | `source_acquisition.rs`；共用 `source_acquisition/types.rs` / `url.rs`；Unix 原流程在 `unix.rs`，Windows 临时门禁在 `windows.rs`，待 W4 完成 |
+| npm 准备的输入与私有临时文件 | 原 no-follow 读取，单链接/大小准入，dev/ino、len、mtime 与 mode 变化核对；0700/0600 创建 | 实际完整身份、大小、修改时间和只读权限变化；当前用户私有 DACL，独占新建且刷新；不合成执行位，不增加 ctime/链接数变化要求 | `dependency_file_io.rs` / `platform-native::tool_files::Facts::same_modified_permissions`，接入 `node_dependency_prepare.rs`；真实 npm/Job 运行仍待 W3/W4 集成 |
 | 旧卷身份离线修复 | 已确认旧 Mac 迁移材料的卷 UUID 绑定 | 本轮不兼容旧 Windows 实验数据，不能用 Mac 卷身份修复取得 Windows 归属；直接明确拒绝 | `identity_upgrade.rs`；Mac 原实现与测试：`identity_upgrade/unix.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明。控制 JSON 在发布后观察失败时保留 unknown，不走提交前清理 | `atomic_control_file.rs`（`builds::atomic_json` 保留原入口）、`platform-native/src/filesystem.rs`；持久进程写入者仍在 `durable_writer.rs` 的未完成边界内 |
 | 历史清理与已归属目录移除 | 描述符相对快照、内容/身份核对、unlinkat | 需实现对应原生快照、占用短暂重试与只读属性处理；完成前在任何扫描、核对回调或删除前明确拒绝 | 边界：`history_cleanup.rs`；Mac 原实现与测试：`history_cleanup/unix.rs`；Windows 临时门禁：`history_cleanup/windows.rs`，待 W5 补齐 |

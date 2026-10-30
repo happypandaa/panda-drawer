@@ -12,6 +12,7 @@ pub mod builds;
 mod control;
 mod data_restore_guard;
 mod database;
+mod dependency_file_io;
 mod durable_writer;
 pub mod environment;
 mod error;
