@@ -610,3 +610,11 @@ BuildManager 首条平台检查只观察工作区固定 `.platform/tasks` 与 `.
 真实完整 core 库二进制专项 **7/7**：两固定范围缺失/空、已有最终/非最终/未知/发布记录保留、检查间新增、真实 junction、原始混合分隔符，以及首次检查后出现实际 running task 时第二次检查拒绝、原状态和 error=None 均不变。观察器严格 Clippy 通过。Mac 原恢复语句收拢到适配层，除新函数引用参数所需的两处借用和格式调整外保持；小型 Mac ARM64 签名 harness 直接引用该适配源码与真实 TaskRecord，目标 Clippy 通过，仅类型检查，不是完整 core 或 Mac 运行证明。总运行门禁仍未改，完整 manager/service/GUI 尚未启动，真正 Windows 构建恢复/清理待 W2。
 
 2026-10-31（Asia/Shanghai）通过已登录浏览器只读核实原始 [CI run 41092968343](https://github.com/happypandaa/panda-drawer/actions/runs/41092968343)：页面明确 macos / windows 均 Queued，创建约 7 小时。没有执行结果，不能确认 Mac 绿色或列出基线失败；尚未超过 24 小时。Windows 运行器服务本机仍未发现，没有重新尝试之前被自动审批拒绝的用户态注册。
+
+### W1.20 — 打包脚本共享回归与原生平台夹具
+
+只运行 CI 明确列出的安全 JS 单测，未执行 live/restart/compatibility 脚本。该次基线 **185 项：126 通过、16 失败、43 跳过**，失败均来自旧打包测试将 Mac 绝对路径、rename/chmod 和链接夹具用于 Windows。保留共享 tar/hash/锚点/成员/超限/拒绝执行业务覆盖；Windows 文件树验证改用实际 Windows verifier，目录链接使用实际 junction，host metadata 夹具从对应固定声明派生再篡改，确保失败确实命中预期检查。
+
+完整明确白名单最终实际 **189 项：137 通过、0 失败、52 跳过**；之后两处 host metadata 夹具细化，相关两文件再实测 **25 项：13 通过、0 失败、12 跳过**，没有据此追加完整组通过数。比基线新增的 9 个跳过为：Node/Git 两项 POSIX mode 位；runtime 成功 Mac rename/权限、成功缓存发布、目录 HANDLE chmod 三项；以及本机真实创建返回 EPERM 的四个文件 symlink 子项。其 parent 共享测试、hardlink/junction/并发不覆盖/材料保留断言继续运行。没有删除或跳过共享业务测试；不以 junction 冒充已测文件符号链接。
+
+该完整组复用已建 helper 与官方缓存，实际执行 Windows Node/npm/npx、中文空格搬迁、离线 npm ci，以及 MinGit 临时仓库提交/分支/clone，均通过；新增 runtime 逐字节 metadata、LICENSE 篡改拒绝保留及同缓存第二个全新输出验证。未改产品源码或 Mac 算法，Mac 本轮只保留原测试执行规则，未实际运行。此处是本机脚本组绿色，不能当作双端 CI、完整 Rust 或 GUI 绿色。

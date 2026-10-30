@@ -5,8 +5,9 @@ import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, sy
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { extractRuntimeTar, NODE_RELEASE, packageNodeRuntime, parseRuntimeArguments, verifyRuntimeBytes } from './package-node-runtime.mjs';
+import { extractRuntimeTar, NODE_RELEASE, packageNodeRuntime as packageMacNodeRuntime, parseRuntimeArguments, verifyRuntimeBytes } from './package-node-runtime.mjs';
 import { repairGeneratedNodeRuntimePermissions } from './prepare-desktop.mjs';
+import { directoryLink, fileSymlinkFixture, macRuntimePublication } from './package-test-fixtures.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const host = { platform: 'darwin', arch: 'arm64' };
@@ -15,6 +16,18 @@ const binary = Buffer.alloc(32, 1);
 binary.writeUInt32LE(0xfeedfacf, 0);
 binary.writeUInt32LE(0x0100000c, 4);
 const license = Buffer.from('Artificial fixture license; never a real executable.\n');
+
+// The injected Darwin host exercises shared checksum/rejection ordering using
+// artificial bytes. Spell Windows fixture locations with accepted separators;
+// the successful Mac rename/chmod transaction is tested only on POSIX hosts.
+function packageNodeRuntime(options, dependencies) {
+  if (process.platform !== 'win32') return packageMacNodeRuntime(options, dependencies);
+  const nativeOptions = { ...options };
+  for (const name of ['output', 'outputDir', 'cache', 'cacheDir']) {
+    if (typeof nativeOptions[name] === 'string') nativeOptions[name] = nativeOptions[name].replaceAll('\\', '/');
+  }
+  return packageMacNodeRuntime(nativeOptions, dependencies);
+}
 
 function tarEntry(name, bytes = Buffer.alloc(0), type = '0') {
   const header = Buffer.alloc(512);
@@ -107,7 +120,7 @@ test('unsupported hosts fail before download or output creation', async (t) => {
   assert.deepEqual(await readdir(root), []);
 });
 
-test('verified fixture publishes only binary, complete LICENSE and exact metadata with packaging-compatible permissions', async (t) => {
+test('verified fixture publishes only binary, complete LICENSE and exact metadata with packaging-compatible permissions', macRuntimePublication, async (t) => {
   const root = await ownedRoot(t);
   const value = fixture();
   const output = path.join(root, 'private runtime 中文');
@@ -130,7 +143,7 @@ test('verified fixture publishes only binary, complete LICENSE and exact metadat
   assert.equal((await readdir(root)).filter((name) => name.startsWith('.node-runtime-')).length, 0);
 });
 
-test('validated cached bytes are reused without download', async (t) => {
+test('validated cached bytes are reused without download', macRuntimePublication, async (t) => {
   const root = await ownedRoot(t);
   const value = fixture();
   const cache = path.join(root, 'cache');
@@ -147,7 +160,7 @@ test('existing caller output, including empty directories or dangling links, is 
   const dangling = path.join(root, 'dangling');
   await mkdir(present); await mkdir(empty);
   await writeFile(path.join(present, 'keep'), 'caller data');
-  await symlink(path.join(root, 'missing'), dangling);
+  await directoryLink(path.join(root, 'missing'), dangling);
   for (const output of [present, empty, dangling]) await assert.rejects(packageNodeRuntime({ output }, dependencies(value)), /already exists/);
   assert.equal(await readFile(path.join(present, 'keep'), 'utf8'), 'caller data');
   assert.deepEqual(await readdir(empty), []);
@@ -157,7 +170,7 @@ test('existing caller output, including empty directories or dangling links, is 
 test('parent symlinks, parent traversal and cache overlap are rejected without touching caller files', async (t) => {
   const root = await ownedRoot(t);
   const real = path.join(root, 'real'); await mkdir(real);
-  const alias = path.join(root, 'alias'); await symlink(real, alias);
+  const alias = path.join(root, 'alias'); await directoryLink(real, alias);
   const value = fixture();
   for (const options of [
     { output: path.join(alias, 'new') },
@@ -180,9 +193,14 @@ test('corrupt, linked or non-file cache entries are preserved and never executed
   assert.equal(await readFile(cacheFile, 'utf8'), 'corrupt caller cache');
   await rm(cacheFile);
   const source = path.join(root, 'original'); await writeFile(source, value.archive);
-  await symlink(source, cacheFile); await assert.rejects(run(), /ordinary file/);
-  assert.ok((await lstat(cacheFile)).isSymbolicLink());
-  await rm(cacheFile); await link(source, cacheFile); await assert.rejects(run(), /ordinary file/);
+  await t.test('file symlink cache', async t => {
+    if (!await fileSymlinkFixture(t, source, cacheFile)) return;
+    try {
+      await assert.rejects(run(), /ordinary file/);
+      assert.ok((await lstat(cacheFile)).isSymbolicLink());
+    } finally { await rm(cacheFile); }
+  });
+  await link(source, cacheFile); await assert.rejects(run(), /ordinary file/);
   assert.equal((await lstat(cacheFile)).nlink, 2);
   await rm(cacheFile); await mkdir(cacheFile); await assert.rejects(run(), /ordinary file/);
 });
@@ -242,7 +260,7 @@ test('binary architecture is checked independently of a supplied matching digest
   assert.throws(() => verifyRuntimeBytes({ binary: altered, license }, value.release), /native arm64 Mach-O/);
 });
 
-test('desktop rebuild repairs only known stale generated runtime modes without changing contents', async (t) => {
+test('desktop rebuild repairs only known stale generated runtime modes without changing contents', macRuntimePublication, async (t) => {
   const root = await ownedRoot(t);
   const copy = path.join(root, 'node-runtime');
   await mkdir(copy); await mkdir(path.join(copy, 'bin'));
