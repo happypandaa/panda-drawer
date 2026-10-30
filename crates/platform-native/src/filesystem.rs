@@ -12,8 +12,8 @@ pub fn path_components(path: &Path) -> Vec<std::path::PathBuf> {
     for component in path.components() {
         current.push(component);
         // C: alone means the drive's current directory. Inspect C:\ only once
-        // RootDir joins its prefix; Unix starts with its ordinary root component.
-        if current.is_absolute() {
+        // RootDir joins its prefix. Preserve ordinary relative traversal too.
+        if !matches!(component, std::path::Component::Prefix(_)) {
             result.push(current.clone());
         }
     }
@@ -43,6 +43,64 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
     {
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+}
+
+pub fn find_reparse_component(
+    path: &Path,
+    allow_missing: bool,
+) -> io::Result<Option<std::path::PathBuf>> {
+    for component in path_components(path) {
+        match std::fs::symlink_metadata(&component) {
+            Ok(metadata) if is_reparse(&metadata) => return Ok(Some(component)),
+            Ok(_) => (),
+            Err(error) if allow_missing && error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+pub fn make_directory_private(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        crate::windows::files::make_directory_private(path)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    }
+}
+
+pub fn directory_is_private(path: &Path) -> io::Result<bool> {
+    #[cfg(windows)]
+    {
+        let opened = crate::windows::files::open_no_reparse(path)?;
+        if !opened.identity.directory {
+            return Ok(false);
+        }
+        match crate::windows::files::verify_private(&opened.file) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(std::fs::metadata(path)?.permissions().mode() & 0o077 == 0)
+    }
+}
+
+pub fn private_directory_requirement() -> &'static str {
+    #[cfg(windows)]
+    {
+        "current-user access only"
+    }
+    #[cfg(unix)]
+    {
+        "mode 0700"
     }
 }
 
@@ -111,6 +169,9 @@ mod tests {
         let root = temp.path().canonicalize().unwrap();
         let directory = root.join("disposable-private");
         create_private_directory(&directory).unwrap();
+        assert!(directory_is_private(&directory).unwrap());
+        make_directory_private(&directory).unwrap();
+        assert!(directory_is_private(&directory).unwrap());
         let destination = directory.join("settings.json");
         let mut old = open_private_file(&destination, false, true).unwrap();
         old.write_all(b"old disposable settings").unwrap();

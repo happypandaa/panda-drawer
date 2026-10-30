@@ -171,8 +171,7 @@ impl RuntimePaths {
                     root.display()
                 );
             }
-            #[cfg(unix)]
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+            native_fs::make_directory_private(&root)?;
             create_private_json(
                 &marker,
                 &EnvironmentMarker {
@@ -284,9 +283,11 @@ impl RuntimePaths {
 
     fn validate_marker(&self) -> Result<()> {
         reject_symlink_components(&self.data_root)?;
-        #[cfg(unix)]
-        if fs::metadata(&self.data_root)?.permissions().mode() & 0o077 != 0 {
-            bail!("Development data directory must be private (mode 0700)");
+        if !native_fs::directory_is_private(&self.data_root)? {
+            bail!(
+                "Development data directory must be private ({})",
+                native_fs::private_directory_requirement()
+            );
         }
         let marker: EnvironmentMarker = read_private_json(&self.data_root.join(MARKER))?;
         if marker.schema_version != 1
