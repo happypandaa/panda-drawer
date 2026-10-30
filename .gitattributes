@@ -1,0 +1,12 @@
+# Reference data, templates, prompts and sources are compared byte for byte.
+# Keep identical checkout bytes on both self-hosted platforms.
+* text=auto eol=lf
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.woff -text
+*.woff2 -text
+*.icns -text
+*.ico -text
+*.tgz -text
+*.zip -text
