@@ -584,6 +584,15 @@ pub fn following_metadata_file(path: &Path) -> io::Result<File> {
 }
 
 pub fn rename_file(source: &Path, destination: &Path, replace: bool) -> io::Result<()> {
+    rename_file_with_hook(source, destination, replace, || {})
+}
+
+fn rename_file_with_hook(
+    source: &Path,
+    destination: &Path,
+    replace: bool,
+    after_move: impl FnOnce(),
+) -> io::Result<()> {
     let _source_parent = pin_parent(source)?;
     let _destination_parent = pin_parent(destination)?;
     let source_identity = open_no_reparse(source)?;
@@ -618,19 +627,21 @@ pub fn rename_file(source: &Path, destination: &Path, replace: bool) -> io::Resu
                 },
         ))?;
     }
-    let published = open_no_reparse(destination)?;
-    if !source_identity.identity.same_object(&published.identity) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Published file identity is unconfirmed",
-        ));
-    }
-    Ok(())
+    after_move();
+    confirm_publication(destination, &source_identity.identity)
 }
 
 /// Publish a directory only into an absent name, including when an existing
 /// destination is empty. A move across volumes is never turned into a copy.
 pub fn rename_directory_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
+    rename_directory_with_hook(source, destination, || {})
+}
+
+fn rename_directory_with_hook(
+    source: &Path,
+    destination: &Path,
+    after_move: impl FnOnce(),
+) -> io::Result<()> {
     let _source_parent = pin_parent(source)?;
     let _destination_parent = pin_parent(destination)?;
     let source_identity = open_no_reparse(source)?;
@@ -659,14 +670,43 @@ pub fn rename_directory_noreplace(source: &Path, destination: &Path) -> io::Resu
             MOVEFILE_WRITE_THROUGH,
         ))?;
     }
-    let published = open_no_reparse(destination)?;
-    if !source_identity.identity.same_object(&published.identity) {
-        return Err(io::Error::new(
+    after_move();
+    confirm_publication(destination, &source_identity.identity)
+}
+
+fn confirm_publication(destination: &Path, expected: &FileIdentity) -> io::Result<()> {
+    // The move already returned success. Every subsequent inspection failure,
+    // including NotFound/sharing/access errors, is an unknown post-commit
+    // outcome. Preserve the underlying I/O cause, never classify it as a clean
+    // pre-commit failure that could authorize rollback of related material.
+    let published = open_no_reparse(destination).map_err(publication_unknown)?;
+    if !expected.same_object(&published.identity) {
+        return Err(publication_unknown(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Directory publication identity is unconfirmed",
-        ));
+            "Publication identity is unconfirmed after the move",
+        )));
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct UnconfirmedPublication(io::Error);
+impl std::fmt::Display for UnconfirmedPublication {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Publication outcome is unknown after the move: {}",
+            self.0
+        )
+    }
+}
+impl std::error::Error for UnconfirmedPublication {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+fn publication_unknown(cause: io::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, UnconfirmedPublication(cause))
 }
 
 pub fn verify_private(file: &File) -> io::Result<()> {
@@ -793,6 +833,80 @@ mod tests {
             .join("disposable-public.txt");
         fs::write(&path, b"disposable").unwrap();
         assert!(verify_private(&open_no_reparse(&path).unwrap().file).is_err());
+    }
+
+    #[test]
+    fn failed_file_inspection_after_a_real_move_is_an_unknown_outcome() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-file-postcommit-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let source = root.join("candidate");
+        let destination = root.join("destination");
+        let retained = root.join("retained-published-file");
+        fs::write(&source, b"published disposable bytes").unwrap();
+        fs::write(&destination, b"old disposable bytes").unwrap();
+        let expected = open_no_reparse(&source).unwrap().identity;
+        let error = rename_file_with_hook(&source, &destination, true, || {
+            // Deterministically change the public name after the real native
+            // move, before its observation; no foreign/non-test data is used.
+            fs::rename(&destination, &retained).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let cause = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<UnconfirmedPublication>()
+            .unwrap();
+        assert_eq!(cause.0.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("outcome is unknown"));
+        assert!(!source.exists());
+        assert!(!destination.exists());
+        assert!(expected.same_object(&open_no_reparse(&retained).unwrap().identity));
+        assert_eq!(fs::read(retained).unwrap(), b"published disposable bytes");
+    }
+
+    #[test]
+    fn failed_directory_inspection_after_a_real_move_is_an_unknown_outcome() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-directory-postcommit-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let source = root.join("candidate");
+        let destination = root.join("destination");
+        let retained = root.join("retained-published-directory");
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("payload"),
+            b"published disposable directory bytes",
+        )
+        .unwrap();
+        let expected = open_no_reparse(&source).unwrap().identity;
+        let error = rename_directory_with_hook(&source, &destination, || {
+            fs::rename(&destination, &retained).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<UnconfirmedPublication>()
+                .unwrap()
+                .0
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!source.exists());
+        assert!(!destination.exists());
+        assert!(expected.same_object(&open_no_reparse(&retained).unwrap().identity));
+        assert_eq!(
+            fs::read(retained.join("payload")).unwrap(),
+            b"published disposable directory bytes"
+        );
     }
 
     fn security_bytes(path: &Path) -> Vec<u8> {
