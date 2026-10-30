@@ -88,6 +88,7 @@
 | 桌面平台图标 | 现有熊猫 PNG / ICNS | 从同一已跟踪 PNG 通过仓库已安装 Tauri CLI 转换 ICO，保留原 Mac 素材 | `apps/desktop/src-tauri/icons/icon.ico`；图标不是应用或安装包产物 |
 | 在文件管理器中打开 | `/usr/bin/open -a Finder` | `explorer.exe <路径>`。注意 explorer 的退出码不可靠，不能据此判断失败 | `apps/desktop/src-tauri/src/local_directory.rs` |
 | 默认路径 | `~/PandaDrawer`、`~/Library/Application Support` | `%USERPROFILE%\PandaDrawer`、`%LOCALAPPDATA%`（`dirs` crate 已能返回） | `paths.rs` |
+| 生成源码路径的词法检查 | 绝对、非根目录，components 仅 RootDir/Normal；沿用 Rust 的当前组件归一化 | 额外接受原生 Prefix（含 canonicalize 的 VerbatimDisk）；此处不读取目录、不额外检查 ACL/卷类型或授予归属 | `platform-native::filesystem::is_explicit_non_root_absolute_path`，由 `node_project_ownership.rs` 委托；后续完整身份与本机卷政策保留 |
 | 内置 Node | darwin-arm64 的 Node 24.22.0 | 官方 `node-v24.22.0-win-x64.zip`，固定 SHA256，写入 release json；直接执行 `node.exe npm-cli.js`，不走 `.cmd` 包装 | `scripts/node-runtime-release.json`、`development-node-release.json`、`package-*.mjs`、`managed_toolchain.rs`；只读文件事实适配：`platform-native/src/tool_files.rs`，Windows 发行资源待 W1 |
 | SDK 与起始模板打包的 npm | 原 `spawnSync('npm', args)` | 使用当前 Node 直接执行实际 `npm-cli.js`；参数保持数组，找不到入口时报错，不回退到 `.cmd` | `scripts/npm-command.mjs`，接入 `package-sdk.mjs`、`package-template.mjs`；Mac 原 npm 调用保持 |
 | 内置 Git | 源码构建的 Mac arm64 Git | Git for Windows 的 **MinGit 64 位**（官方便携版，专为嵌入设计）。实施时选当时最新稳定版，固定版本和 SHA256 | `scripts/development-git-release.json`、`package-development-git.mjs`、`managed_git.rs`、`git_environment.rs`；只读文件事实适配：`platform-native/src/tool_files.rs`，Windows 发行资源待 W1 |

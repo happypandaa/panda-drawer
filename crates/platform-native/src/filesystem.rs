@@ -6,6 +6,36 @@ use std::{
     path::Path,
 };
 
+/// Lexical shape only: this does not inspect or claim a directory. Filesystem,
+/// volume and ownership checks remain with the caller's existing I/O boundary.
+pub fn is_explicit_non_root_absolute_path(path: &Path) -> bool {
+    if !path.is_absolute() || path.parent().is_none() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        !path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+    }
+    #[cfg(windows)]
+    {
+        // Both Disk and VerbatimDisk (returned by canonicalize) carry a prefix.
+        // A prefix alone does not grant local-volume or filesystem permission.
+        !path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Prefix(_)
+                    | std::path::Component::RootDir
+                    | std::path::Component::Normal(_)
+            )
+        })
+    }
+}
+
 pub fn path_components(path: &Path) -> Vec<std::path::PathBuf> {
     let mut current = std::path::PathBuf::new();
     let mut result = Vec::new();
@@ -223,6 +253,73 @@ mod tests {
         fs,
         io::{Read, Write},
     };
+
+    #[test]
+    fn explicit_path_shape_accepts_a_canonical_root_child_without_creating_it() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-explicit-path-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let candidate = root.join("disposable-generated-中文 space");
+        assert!(!candidate.exists());
+        assert!(is_explicit_non_root_absolute_path(&candidate));
+        assert!(!candidate.exists());
+        assert!(fs::read_dir(&root).unwrap().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_path_shape_accepts_windows_prefixes_without_adding_volume_admission() {
+        for path in [
+            r"C:\中文 space\project",
+            r"\\?\C:\中文 space\project",
+            r"\\server\share\project",
+            r"\\?\UNC\server\share\project",
+            r"C:\folder\.\project",
+        ] {
+            assert!(
+                is_explicit_non_root_absolute_path(Path::new(path)),
+                "{path}"
+            );
+        }
+        for path in [
+            "",
+            r"relative\project",
+            r"C:relative\project",
+            r"\rooted\project",
+            r"C:\",
+            r"\\?\C:\",
+            r"C:\folder\..\project",
+            r"\\?\C:\folder\..\project",
+        ] {
+            assert!(
+                !is_explicit_non_root_absolute_path(Path::new(path)),
+                "{path}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_path_shape_preserves_the_existing_unix_component_policy() {
+        for path in [
+            "/tmp/中文 space/project",
+            "/tmp/./project",
+            "/missing/project",
+        ] {
+            assert!(
+                is_explicit_non_root_absolute_path(Path::new(path)),
+                "{path}"
+            );
+        }
+        for path in ["", "/", "relative/project", "/tmp/../project"] {
+            assert!(
+                !is_explicit_non_root_absolute_path(Path::new(path)),
+                "{path}"
+            );
+        }
+    }
 
     #[test]
     fn private_file_publication_replaces_closed_metadata_with_new_bytes() {

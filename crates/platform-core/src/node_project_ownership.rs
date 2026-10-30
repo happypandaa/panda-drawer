@@ -922,15 +922,7 @@ fn deduplicate_paths(paths: &mut Vec<PathBuf>) {
     }
 }
 fn validate_generated_path(path: &Path) -> Result<()> {
-    if !path.is_absolute()
-        || path.parent().is_none()
-        || path.components().any(|part| {
-            !matches!(
-                part,
-                std::path::Component::RootDir | std::path::Component::Normal(_)
-            )
-        })
-    {
+    if !platform_native::filesystem::is_explicit_non_root_absolute_path(path) {
         return Err(invalid("生成项目根目录必须是明确的绝对目录。"));
     }
     Ok(())
