@@ -1,8 +1,8 @@
 //! Manager-only, read-only AI context and explicit editor dispatch.
-use super::{codex_handoff, require_manager, ApiError, AppState};
+use super::{codex_handoff, desktop_path_io, require_manager, ApiError, AppState};
 use platform_core::{BootstrapInfo, RuntimeHandle};
 use serde_json::{json, Value};
-use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
+use std::path::PathBuf;
 use tauri::Manager;
 
 #[derive(Clone)]
@@ -33,8 +33,7 @@ impl ReviewRuntime {
 struct ReviewRoot {
     selected: PathBuf,
     root: PathBuf,
-    device: u64,
-    inode: u64,
+    identity: desktop_path_io::DirectoryIdentity,
 }
 impl ReviewRoot {
     fn new(selected: PathBuf, runtime: &ReviewRuntime) -> Result<Self, ApiError> {
@@ -43,21 +42,16 @@ impl ReviewRoot {
             &runtime.data,
             &runtime.workspace,
         )?;
-        let metadata = fs::symlink_metadata(&root)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(changed());
-        }
+        let identity = desktop_path_io::directory_identity(&root)?.ok_or_else(changed)?;
         Ok(Self {
             selected,
             root,
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            identity,
         })
     }
     fn validate(&self, runtime: &ReviewRuntime) -> Result<(), ApiError> {
         let current = Self::new(self.selected.clone(), runtime)?;
-        if current.root != self.root || current.device != self.device || current.inode != self.inode
-        {
+        if current.root != self.root || current.identity != self.identity {
             return Err(changed());
         }
         Ok(())
@@ -173,12 +167,16 @@ pub(super) async fn source_review_open_codex(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn fixture() -> (tempfile::TempDir, ReviewRuntime, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let fixture_root = temp.path().canonicalize().unwrap();
         let data = fixture_root.join("disposable-platform");
+        #[cfg(unix)]
         let project = fixture_root.join("disposable-project $(echo test) #?&.app");
+        #[cfg(windows)]
+        let project = fixture_root.join("disposable-project $(echo test) #&.app");
         fs::create_dir(&data).unwrap();
         fs::create_dir(&project).unwrap();
         let runtime = ReviewRuntime {
@@ -229,10 +227,13 @@ mod tests {
 
     #[test]
     fn links_and_platform_private_roots_are_not_editor_or_excerpt_targets() {
-        let (temp, runtime, project) = fixture();
-        let linked = temp.path().canonicalize().unwrap().join("disposable-link");
-        std::os::unix::fs::symlink(&project, &linked).unwrap();
-        assert!(ReviewRoot::new(linked, &runtime).is_err());
+        let (_temp, runtime, _project) = fixture();
+        #[cfg(unix)]
+        {
+            let linked = _temp.path().canonicalize().unwrap().join("disposable-link");
+            std::os::unix::fs::symlink(&_project, &linked).unwrap();
+            assert!(ReviewRoot::new(linked, &runtime).is_err());
+        }
         assert!(ReviewRoot::new(runtime.data.clone(), &runtime).is_err());
         let private = runtime.data.join("configuration");
         fs::create_dir(&private).unwrap();

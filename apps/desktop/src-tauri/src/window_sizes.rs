@@ -192,7 +192,10 @@ impl WindowSizes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, path::Path};
+    #[cfg(unix)]
     fn owner(root: &Path, id: &str) -> std::path::PathBuf {
         let parent = root.join("web-project-ownership");
         let owner = parent.join(id);
@@ -206,6 +209,21 @@ mod tests {
             fs::Permissions::from_mode(0o600),
         )
         .unwrap();
+        owner
+    }
+    #[cfg(windows)]
+    fn owner(root: &Path, id: &str) -> std::path::PathBuf {
+        use platform_native::filesystem::{create_new_private_file, create_private_directory};
+        use std::io::Write;
+        let parent = root.join("web-project-ownership");
+        if !parent.exists() {
+            create_private_directory(&parent).unwrap();
+        }
+        let owner = parent.join(id);
+        create_private_directory(&owner).unwrap();
+        let mut file = create_new_private_file(owner.join("ownership.json"), true).unwrap();
+        file.write_all(b"{}").unwrap();
+        file.sync_all().unwrap();
         owner
     }
     fn binding(store: &WindowSizeStore, id: &str) -> Binding {
