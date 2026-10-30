@@ -392,26 +392,69 @@ fn read_identity(pid: u32, handle: &OwnedHandle) -> io::Result<ProcessIdentity> 
         executable: PathBuf::from(OsString::from_wide(&path)),
     })
 }
-pub fn observe(identity: &ProcessIdentity) -> io::Result<bool> {
+fn open_observable(pid: u32) -> io::Result<Option<OwnedHandle>> {
+    if pid <= 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid process identity",
+        ));
+    }
     let raw = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
             0,
-            identity.pid,
+            pid,
         )
     };
     if raw.is_null() {
         return if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
-            Ok(false)
+            Ok(None)
         } else {
             Err(io::Error::last_os_error())
         };
     }
-    let handle = owned(raw)?;
+    Ok(Some(owned(raw)?))
+}
+
+/// Observation only. The caller must already own and retain a direct child to
+/// use this as a capture; opening a PID never grants ownership or termination.
+pub fn capture_live(pid: u32) -> io::Result<Option<ProcessIdentity>> {
+    let Some(handle) = open_observable(pid)? else {
+        return Ok(None);
+    };
     if exit_code(&handle)?.is_some() {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(read_identity(identity.pid, &handle)? == *identity)
+    let identity = read_identity(pid, &handle)?;
+    if exit_code(&handle)?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(identity))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessObservation {
+    Matching,
+    Stopped,
+    Different,
+}
+
+pub fn observation(identity: &ProcessIdentity) -> io::Result<ProcessObservation> {
+    let Some(handle) = open_observable(identity.pid)? else {
+        return Ok(ProcessObservation::Stopped);
+    };
+    if exit_code(&handle)?.is_some() {
+        return Ok(ProcessObservation::Stopped);
+    }
+    Ok(if read_identity(identity.pid, &handle)? == *identity {
+        ProcessObservation::Matching
+    } else {
+        ProcessObservation::Different
+    })
+}
+
+pub fn observe(identity: &ProcessIdentity) -> io::Result<bool> {
+    Ok(observation(identity)? == ProcessObservation::Matching)
 }
 /// This follows the port standard's uptime observation; callers must allow for
 /// timer granularity and must not turn this estimate into a fabricated UUID.
