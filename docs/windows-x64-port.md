@@ -71,7 +71,7 @@
 | 运行门禁 | — | `platform_support.rs` 当前对 Windows 返回 `PLATFORM_STAGE_UNAVAILABLE`。在 W1 完成时改为开放，未完成的能力用第 2 节第 3 条的方式单独关闭 | `platform_support.rs` |
 | 更新 | `platform-update-handoff`、`platform-update-witness` 为 macOS 实现 | 本轮不实现，保证在 Windows 上能编译（用 `cfg` 隔离），门禁关闭 | `crates/platform-update-*` |
 
-2026-10-31 实施状态：新增的 `platform-native` 提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；core 的 `file_identity.rs` 已接入完整 Windows 身份，其他业务仍待逐项接入，Mac 代码尚未收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
+2026-10-31 实施状态：新增的 `platform-native` 提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；core 的 `file_identity.rs` 已接入完整 Windows 身份，`paths.rs` 的私有创建、逐级路径检查和元数据替换通过 `platform-native/src/filesystem.rs` 适配，Unix 分支保留原有 mode、no-follow、rename 和目录 fsync。其他业务仍待逐项接入，Mac 代码尚未全部收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
 
 ## 5 Windows 特有的问题（必须处理）
 

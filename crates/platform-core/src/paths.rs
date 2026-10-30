@@ -1,14 +1,15 @@
 use crate::{API_VERSION, APP_IDENTIFIER, ENVIRONMENT};
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
+use platform_native::filesystem as native_fs;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
 const MARKER: &str = ".environment.json";
 /// Written into a new installation's visible home workspace. It ties that
@@ -617,7 +618,7 @@ fn home_workspace_candidate(home: &Path, base: &str, data_root: &Path) -> Result
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
             Ok(meta)
                 if meta.is_dir()
-                    && !meta.file_type().is_symlink()
+                    && !native_fs::is_reparse(&meta)
                     && fs::read_dir(&candidate)?.next().is_none() =>
             {
                 return Ok(candidate)
@@ -661,12 +662,10 @@ fn require_absolute_clean_path(path: &Path) -> Result<()> {
 
 fn reject_symlink_components(path: &Path) -> Result<()> {
     require_absolute_clean_path(path)?;
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component);
+    for current in native_fs::path_components(path) {
         let metadata = fs::symlink_metadata(&current)
             .with_context(|| format!("Cannot inspect {}", current.display()))?;
-        if metadata.file_type().is_symlink() {
+        if native_fs::is_reparse(&metadata) {
             bail!(
                 "Symlink is not permitted in runtime paths: {}",
                 current.display()
@@ -678,17 +677,12 @@ fn reject_symlink_components(path: &Path) -> Result<()> {
 
 fn ensure_directory_tree(path: &Path) -> Result<()> {
     require_absolute_clean_path(path)?;
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component);
+    for current in native_fs::path_components(path) {
         match fs::symlink_metadata(&current) {
-            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => (),
+            Ok(meta) if meta.is_dir() && !native_fs::is_reparse(&meta) => (),
             Ok(_) => bail!("Expected an ordinary directory: {}", current.display()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut builder = fs::DirBuilder::new();
-                #[cfg(unix)]
-                builder.mode(0o700);
-                match builder.create(&current) {
+                match native_fs::create_private_directory(&current) {
                     Ok(()) => (),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                         reject_symlink_components(&current)?;
@@ -708,22 +702,11 @@ fn ensure_directory_tree(path: &Path) -> Result<()> {
 fn open_private(path: &Path, create: bool, create_new: bool) -> Result<File> {
     reject_symlink_components(path.parent().context("File has no parent")?)?;
     if let Ok(metadata) = fs::symlink_metadata(path) {
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
+        if !metadata.is_file() || native_fs::is_reparse(&metadata) {
             bail!("Expected an ordinary private file: {}", path.display());
         }
     }
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(create || create_new)
-        .create(create)
-        .create_new(create_new);
-    #[cfg(unix)]
-    options
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let file = options
-        .open(path)
+    let file = native_fs::open_private_file(path, create, create_new)
         .with_context(|| format!("Cannot open {}", path.display()))?;
     #[cfg(unix)]
     if file.metadata()?.permissions().mode() & 0o077 != 0 {
@@ -766,7 +749,7 @@ fn atomic_private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("File has no parent")?;
     reject_symlink_components(parent)?;
     if let Ok(metadata) = fs::symlink_metadata(path) {
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
+        if !metadata.is_file() || native_fs::is_reparse(&metadata) {
             bail!(
                 "Refusing to replace non-file runtime metadata: {}",
                 path.display()
@@ -778,8 +761,8 @@ fn atomic_private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         let mut file = open_private(&temp, false, true)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        fs::rename(&temp, path)?;
-        File::open(parent)?.sync_all()?;
+        native_fs::replace_file(&temp, path)?;
+        native_fs::sync_directory(parent)?;
         Ok(())
     })();
     if result.is_err() {

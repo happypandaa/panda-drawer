@@ -24,10 +24,11 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, FileAttributeTagInfo, FileIdInfo, FileStandardInfo,
-        GetFileInformationByHandleEx, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        GetFileInformationByHandleEx, MoveFileExW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, OPEN_EXISTING,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_ALWAYS, OPEN_EXISTING,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -275,16 +276,32 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
 }
 
 pub fn create_private_file(path: &Path) -> io::Result<File> {
+    open_private_file(path, false, true)
+}
+
+pub fn open_private_file(path: &Path, create: bool, create_new: bool) -> io::Result<File> {
     let _parent = pin_parent(path)?;
     let security = PrivateSecurity::new()?;
     let name = native_path(path)?;
     let raw = unsafe {
         CreateFileW(
             name.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+            GENERIC_READ
+                | READ_CONTROL
+                | if create || create_new {
+                    GENERIC_WRITE
+                } else {
+                    0
+                },
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             &security.attributes(),
-            CREATE_NEW,
+            if create_new {
+                CREATE_NEW
+            } else if create {
+                OPEN_ALWAYS
+            } else {
+                OPEN_EXISTING
+            },
             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             null_mut(),
         )
@@ -296,6 +313,51 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
     reject_reparse(&file)?;
     verify_private(&file)?;
     Ok(file)
+}
+
+pub fn rename_file(source: &Path, destination: &Path, replace: bool) -> io::Result<()> {
+    let _source_parent = pin_parent(source)?;
+    let _destination_parent = pin_parent(destination)?;
+    let source_identity = open_no_reparse(source)?;
+    if source_identity.identity.directory {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "File replacement cannot rename a directory",
+        ));
+    }
+    match open_no_reparse(destination) {
+        Ok(target) if target.identity.directory => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "File replacement cannot overwrite a directory",
+            ))
+        }
+        Ok(_) => (),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error),
+    }
+    let from = native_path(source)?;
+    let to = native_path(destination)?;
+    unsafe {
+        checked(MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_WRITE_THROUGH
+                | if replace {
+                    MOVEFILE_REPLACE_EXISTING
+                } else {
+                    0
+                },
+        ))?;
+    }
+    let published = open_no_reparse(destination)?;
+    if !source_identity.identity.same_object(&published.identity) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Published file identity is unconfirmed",
+        ));
+    }
+    Ok(())
 }
 
 pub fn verify_private(file: &File) -> io::Result<()> {
@@ -422,6 +484,39 @@ mod tests {
             .join("disposable-public.txt");
         fs::write(&path, b"disposable").unwrap();
         assert!(verify_private(&open_no_reparse(&path).unwrap().file).is_err());
+    }
+
+    #[test]
+    fn occupied_replacement_keeps_both_files_and_succeeds_after_the_handle_closes() {
+        use std::{fs::OpenOptions, io::Write, os::windows::fs::OpenOptionsExt};
+        let temp = tempfile::Builder::new()
+            .prefix("panda-native-occupied-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join(".write-disposable");
+        let destination = root.join("disposable-settings.json");
+        create_private_file(&source)
+            .unwrap()
+            .write_all(b"new disposable bytes")
+            .unwrap();
+        create_private_file(&destination)
+            .unwrap()
+            .write_all(b"old disposable bytes")
+            .unwrap();
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&destination)
+            .unwrap();
+        let error = rename_file(&source, &destination, true).unwrap_err();
+        assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+        assert_eq!(fs::read(&source).unwrap(), b"new disposable bytes");
+        drop(blocker);
+        assert_eq!(fs::read(&destination).unwrap(), b"old disposable bytes");
+        rename_file(&source, &destination, true).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read(&destination).unwrap(), b"new disposable bytes");
     }
 
     #[test]
