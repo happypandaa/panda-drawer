@@ -8,11 +8,8 @@ use super::{
     ensure_dir, ensure_unchanged, excluded, ApiError, ProjectHandle, ProjectManifest,
 };
 use serde_json::{json, Value};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
-    fs::{self, OpenOptions},
-    io,
+    fs,
     path::{Component, Path, PathBuf},
 };
 use tempfile::TempDir;
@@ -121,14 +118,6 @@ impl Drop for BuildCandidate {
     }
 }
 
-fn same_file(before: &fs::Metadata, after: &fs::Metadata) -> bool {
-    before.dev() == after.dev()
-        && before.ino() == after.ino()
-        && before.len() == after.len()
-        && before.mtime() == after.mtime()
-        && before.mtime_nsec() == after.mtime_nsec()
-        && before.mode() == after.mode()
-}
 fn copy_source(source: &Path, target: &Path) -> Result<(), ApiError> {
     check_no_symlinks(source, false)?;
     ensure_dir(target)?;
@@ -148,32 +137,7 @@ fn copy_source(source: &Path, target: &Path) -> Result<(), ApiError> {
         if metadata.is_dir() {
             copy_source(&from, &to)?;
         } else if metadata.is_file() {
-            check_no_symlinks(&from, false)?;
-            let mut input = platform_native::filesystem::open_read(
-                &from,
-                platform_native::filesystem::ReadOptions::NoLinks,
-            )?;
-            if !same_file(&metadata, &input.metadata()?) {
-                return Err(copy_changed());
-            }
-            let mode = if metadata.mode() & 0o111 == 0 {
-                0o600
-            } else {
-                0o700
-            };
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(mode)
-                .open(&to)?;
-            io::copy(&mut input, &mut output)?;
-            output.set_permissions(fs::Permissions::from_mode(mode))?;
-            output.sync_all()?;
-            if !same_file(&metadata, &input.metadata()?)
-                || !same_file(&metadata, &fs::symlink_metadata(&from)?)
-            {
-                return Err(copy_changed());
-            }
+            crate::build_source_io::copy_file(&from, &to, &metadata)?;
         } else {
             return Err(ApiError::new(
                 "BUILD_INPUT_UNSAFE",
@@ -182,12 +146,6 @@ fn copy_source(source: &Path, target: &Path) -> Result<(), ApiError> {
         }
     }
     Ok(())
-}
-fn copy_changed() -> ApiError {
-    ApiError::new(
-        "BUILD_INPUT_CHANGED",
-        "A source file changed while being copied",
-    )
 }
 fn unsupported(message: &str) -> ApiError {
     ApiError::new("BUILD_LOCAL_DEPENDENCY_UNSUPPORTED", message)

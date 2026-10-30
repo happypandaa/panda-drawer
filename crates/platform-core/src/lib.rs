@@ -8,6 +8,7 @@ mod atomic_control_file;
 pub mod backups;
 pub mod build_artifacts;
 pub mod build_profile;
+mod build_source_io;
 pub mod builds;
 mod control;
 mod data_restore_guard;
