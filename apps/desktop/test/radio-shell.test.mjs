@@ -217,14 +217,17 @@ test('Unavailable browser storage falls back to light and still permits both the
   assert.equal(document.documentElement.dataset.theme, 'light');
 });
 
-test('The heading contains add actions and filters without a search, refresh or platform AI entry', async () => {
+test('The heading contains add actions, a platform AI entry and filters without a search or refresh', async () => {
   await setup();
   const filter = document.querySelector('[aria-label="筛选项目状态"]');
   assert.ok(filter.closest('.application-heading'));
   assert.equal(document.querySelector('.radio-toolbar'), null);
   assert.equal(document.querySelector('input[type="search"]'), null);
   assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]'), null);
-  assert.equal(document.querySelector('.platform-ai-intro-button'), null);
+  const intro = document.querySelector('.application-heading .home-ai-intro');
+  assert.ok(intro);
+  assert.equal(intro.textContent, '让 AI 了解平台');
+  assert.equal(intro.closest('[aria-label="添加应用"]'), null);
   assert.equal(filter.closest('[aria-label="添加应用"]'), null);
   assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['从 Git 添加', '本机文件夹', '新建']);
   assert.deepEqual([...filter.querySelectorAll('button')].map(item => item.textContent), ['全部', '运行中', '需要处理']);

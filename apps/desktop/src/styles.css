@@ -1711,3 +1711,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .space-color-mine { background: #8b7bd8; }
 .radio-app-icon { background: var(--radio-accent-soft); color: var(--radio-accent-strong); }
 @media (max-width: 720px) { .space-totals { grid-template-columns: 1fr; } .application-details { padding-inline: 24px; } }
+
+/* Home platform-introduction entry sits quietly beside the add actions. */
+.application-heading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-left: auto; }
+.application-heading-main .application-heading-actions .radio-add-actions { margin-left: 0; }
+#root .application-heading-actions .home-ai-intro, .application-heading-actions .text-button.home-ai-intro { min-height: 34px; padding: 4px 6px; color: var(--radio-accent-strong, var(--radio-focus)); font-size: 13px; }
+#root .application-heading-actions .home-ai-intro:hover:not(:disabled) { color: var(--radio-accent); background: var(--radio-accent-soft); border-radius: 8px; }
+.application-heading-actions .platform-ai-intro-notice { font-size: 12px; color: var(--radio-success); }
