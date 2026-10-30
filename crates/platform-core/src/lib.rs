@@ -21,6 +21,7 @@ pub mod git_remote;
 mod history_cleanup;
 mod identity_upgrade;
 pub mod io_lifetime;
+mod journal_file_io;
 mod lifecycle;
 pub mod local_cleanup;
 mod maintenance;

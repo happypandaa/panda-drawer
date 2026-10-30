@@ -6,11 +6,10 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(test)]
+use std::fs::OpenOptions;
 use std::{
-    fs::{self, OpenOptions},
-    io::Read,
+    fs,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
@@ -495,47 +494,16 @@ fn read_journal(
     budget: &mut ReadBudget,
     project_remaining: u64,
 ) -> Result<Vec<u8>, ApiError> {
-    check_no_symlinks(path, false).map_err(|_| invalid())?;
-    let mut file = platform_native::filesystem::open_read(
+    crate::journal_file_io::read_snapshot(
         path,
-        platform_native::filesystem::ReadOptions::NoLinksNonblocking,
+        MAX_JOURNAL,
+        project_remaining,
+        |bytes| budget.bytes(bytes),
+        invalid,
+        limit,
     )
-    .map_err(|_| invalid())?;
-    let before = file.metadata().map_err(|_| invalid())?;
-    if !before.is_file() || before.nlink() != 1 {
-        return Err(invalid());
-    }
-    if before.len() > MAX_JOURNAL || before.len() > project_remaining {
-        return Err(limit());
-    }
-    budget.bytes(before.len())?;
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(before.len())
-        .read_to_end(&mut bytes)
-        .map_err(|_| invalid())?;
-    let after = file.metadata().map_err(|_| invalid())?;
-    check_no_symlinks(path, false).map_err(|_| invalid())?;
-    let current = fs::symlink_metadata(path).map_err(|_| invalid())?;
-    if bytes.len() as u64 != before.len()
-        || !same_file(&before, &after)
-        || !same_file(&after, &current)
-    {
-        return Err(invalid());
-    }
-    Ok(bytes)
 }
-fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    a.dev() == b.dev()
-        && a.ino() == b.ino()
-        && a.mode() == b.mode()
-        && a.nlink() == b.nlink()
-        && a.len() == b.len()
-        && a.mtime() == b.mtime()
-        && a.mtime_nsec() == b.mtime_nsec()
-        && a.ctime() == b.ctime()
-        && a.ctime_nsec() == b.ctime_nsec()
-}
+
 fn valid_task(value: &str) -> bool {
     valid_id(value) && value.starts_with("task_")
 }

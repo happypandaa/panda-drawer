@@ -133,6 +133,23 @@ impl PersistedIdentity {
             && self.windows_file_id == observed.windows_file_id
     }
 
+    /// Compare a retained runtime identity to an already open object without
+    /// acquiring any new persistent volume-binding authority on Unix.
+    pub(crate) fn matches_open_runtime(&self, file: &File) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            let metadata = file.metadata()?;
+            Ok(self.device == metadata.dev() && self.inode == metadata.ino())
+        }
+        #[cfg(windows)]
+        {
+            let observed = platform_native::windows::files::identity(file)?;
+            Ok(self.windows_file_id == Some(observed.file_id)
+                && self.device == observed.volume_serial
+                && self.volume_uuid.is_none())
+        }
+    }
+
     /// A stable record requires the same non-nil volume UUID and inode. A legacy
     /// record never gains permission to ignore a mismatching device number.
     pub(crate) fn matches_captured(&self, observed: &Self) -> bool {
@@ -241,11 +258,15 @@ mod windows_tests {
         changed.windows_file_id.as_mut().unwrap()[15] ^= 1;
         assert_eq!(changed.inode, decoded.inode);
         assert!(!changed.matches_captured(&decoded));
+        let opened = fs::File::open(&path).unwrap();
+        assert!(decoded.matches_open_runtime(&opened).unwrap());
+        assert!(!changed.matches_open_runtime(&opened).unwrap());
         let old: PersistedIdentity = serde_json::from_value(
             serde_json::json!({"device":captured.device,"inode":captured.inode}),
         )
         .unwrap();
         assert!(!old.matches_path(&path).unwrap());
+        assert!(!old.matches_open_runtime(&opened).unwrap());
         assert!(old
             .absent_on_expected_volume(&path.with_file_name("missing-disposable"))
             .is_err());

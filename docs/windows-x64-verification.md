@@ -242,3 +242,13 @@ Windows 的文件删除计划仅保留原纯数据结构、路径/状态格式�
 Windows 的真实磁盘/文件快照、摘要、非执行 Git 获取与复制仍未完成；原生管理器构造、获取、就绪及归属核对入口明确返回 `non-executing-source-acquisition` / `PLATFORM_FEATURE_UNAVAILABLE` / `not_started`，不运行 Git、不分配任务、不读取或复制候选。不以不存在的 Unix executable/mode 字段伪造就绪或接入权限；已有源码发布仍单独保持关闭。后续 W4 必须实现这些能力，不是永久不支持 Git 导入。
 
 直接引用实际 Windows 边界及共用数据/政策的独立 harness **44/44 通过**，其中新增覆盖正是原来两项已搬移的 URL/分支测试；Windows 全目标严格 Clippy 通过。Mac 目标对共用数据/政策及既有文件模块的全目标严格 Clippy 通过；**未包含、未运行搬移后的完整 Unix 获取流程**。构造器未使用的管理器/环境参数只有静态类型占位，没有实际获取实例或 lease。完整 Windows core lib 仍失败，诊断 **248 个错误、22 个警告**，源码获取边界未报错误；W0 未完成，未合入 main。
+
+### W0.26 — 恢复 journal 的有界只读快照
+
+两个恢复 guard 的重复 journal 读取收拢到 `journal_file_io.rs`。业务保留原最大字节数、项目剩余预算、累计预算扣除与错误构造；普通单链接/大小检查在扣预算和读内容之前，读取长度仍为已观察的长度。Unix 前后仍按原 dev/ino、mode、nlink、len、mtime/mtime_nsec、ctime/ctime_nsec 比较；Windows 对应完整 FileId、链接数、大小、原生属性与变化/修改时间。不替 guard 声称恢复成功，不创建、修复或删除 journal。
+
+数据恢复候选的已开句柄核对改用 `PersistedIdentity::matches_open_runtime`：Unix 在原时点只读取 metadata 并比较原 dev/ino，不增加一次持久卷 UUID 准入；Windows 比较实际完整 FileId 与卷号，旧 pair 不能匹配。原 Mac guard 测试文件未删除，仍保留其通过父模块使用的测试 OpenOptions 导入；完整 guard/恢复业务测试未在本机执行。
+
+新增 3 项真实临时 journal 测试：缺失不创建、两种大小界限在预算扣除前拒绝、正常读取按实际长度扣预算；读取期间同名替代被拒绝且原件/替代字节均保留；硬链接和 Windows 目录联接拒绝且不扣预算。实际读取源码 harness **47/47 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过。身份源码 harness **3/3 通过**，新增核对完整身份、最低兼容 pair 相同但高位不同、旧 pair 在已开句柄上的拒绝；两个目标严格 Clippy 通过。Mac 仅目标类型检查，未实际运行。
+
+完整 Windows core lib 仍失败，诊断 **212 个错误**，本步业务/适配入口没有错误；之后清理了本步四个不再需要的生产 import，并保留测试用名称。数据恢复独占目录发布仍在 Windows 关闭，完整恢复、删除、迁移与 GUI 未验收，W0 未完成，未合入 main。
