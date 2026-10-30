@@ -2885,6 +2885,7 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "tempfile",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

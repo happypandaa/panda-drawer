@@ -618,3 +618,15 @@ BuildManager 首条平台检查只观察工作区固定 `.platform/tasks` 与 `.
 完整明确白名单最终实际 **189 项：137 通过、0 失败、52 跳过**；之后两处 host metadata 夹具细化，相关两文件再实测 **25 项：13 通过、0 失败、12 跳过**，没有据此追加完整组通过数。比基线新增的 9 个跳过为：Node/Git 两项 POSIX mode 位；runtime 成功 Mac rename/权限、成功缓存发布、目录 HANDLE chmod 三项；以及本机真实创建返回 EPERM 的四个文件 symlink 子项。其 parent 共享测试、hardlink/junction/并发不覆盖/材料保留断言继续运行。没有删除或跳过共享业务测试；不以 junction 冒充已测文件符号链接。
 
 该完整组复用已建 helper 与官方缓存，实际执行 Windows Node/npm/npx、中文空格搬迁、离线 npm ci，以及 MinGit 临时仓库提交/分支/clone，均通过；新增 runtime 逐字节 metadata、LICENSE 篡改拒绝保留及同缓存第二个全新输出验证。未改产品源码或 Mac 算法，Mac 本轮只保留原测试执行规则，未实际运行。此处是本机脚本组绿色，不能当作双端 CI、完整 Rust 或 GUI 绿色。
+
+### W1.21 — 首启工作区卷准入及独立同步根观察
+
+Windows Paths 经适配层在新候选创建前检查最近实际既有普通父目录，创建后检查实际工作区，再发布原 workspace marker/settings；已有选中工作区和 discover 同样只查实际卷。沿用既有真实 HANDLE/完整身份/全部 backing disks/PnP 证据，要求 local NTFS 且 internal=Some(true)；不把 fixed/NVMe/未知当内置。不新增整个已选工作区必须为空的限制，不改父 ACL，不增加公开 root override。Mac 委托 no-op，反向内联原创建循环后 initialize_at/discover 与原正文机械一致。
+
+独立同步原语以 [CfGetSyncRootInfoByHandle](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfgetsyncrootinfobyhandle) 观察真实 Cloud Files 成员，并枚举 [GetCurrentSyncRoots](https://learn.microsoft.com/en-us/uwp/api/windows.storage.provider.storageprovidersyncrootmanager.getcurrentsyncroots?view=winrt-26100) 的当前/legacy 注册根；两端实际目录 HANDLE 转同一 normalized Volume GUID 命名空间后逐组件比较，注册别名/junction/mount 不靠拼写排除。无法打开/查询/枚举保留 unknown，未猜 OneDrive/Dropbox 路径。Mac 原同步政策仅用于迁移目标，因此此原语没有接到默认首启或每次启动，尚未开放迁移。
+
+真实并行测试发现每次新建/关闭最后 MTA 会遇到 CO_E_MTA_SHUTDOWN，未串行测试掩盖或吞错；改为进程寿命内单一专属 MTA 查询线程，不改 Tauri STA/Tokio 调用线程公寓。每次查询释放 COM 对象，启动/查询/通道失败明确返回；该只读线程等待请求，不持有项目文件或写入/注册内容。static sender 在进程结束时由 OS 回收线程，不声称正常退出前显式 join/RoUninitialize。依赖仅增加 Cargo.lock 已有 windows 0.62.2 的直接引用与 API features，无版本升级或新二进制来源。
+
+实际 core Paths 检查 **8/8**（新增卷 3 + 既有迁移 5）；完整 native **51 通过、1 个既有专用子进程夹具 ignored**；Windows 和 Mac ARM64 交叉全目标严格 Clippy 通过，Mac 仅类型检查。新增 native 六项包括实际 STA、GUID 别名、unknown、并行查询、本机 NTFS 和临时 Cloud Files 正向注册：仅对新建 disposable 目录注册，根/子目录均被同步原语拒绝，而 volume-only 仍接受；按绑定完整身份实际注销并查询 NotRegistered，测试目录已不存在。所有成功注册的历次试验（含失败的 MTA 那轮）均确认注销，无测试注册遗留，没有改变既有 provider 或读取项目内容。
+
+普通临时目录查询真实系统注册根仅记录数量，不记录用户根路径。外置 USB、网络/映射盘和真实移动工作区尚未验收；未运行真实 initialize/GUI，不能据本步称 W1/W5 或 Windows 10 验收完成。

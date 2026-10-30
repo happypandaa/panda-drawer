@@ -2,6 +2,7 @@
 pub mod files;
 pub mod process;
 pub mod volume;
+pub mod workspace;
 
 use std::{
     ffi::{OsStr, OsString},
