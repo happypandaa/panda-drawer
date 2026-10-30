@@ -30,7 +30,8 @@ impl RuntimeLog {
     /// Called only at actual launch, after preflight. Focusing an existing app
     /// and read-only preflight never rotate its logs.
     pub(crate) fn start(control: &Path) -> Result<Self> {
-        let file = private_current(control).map_err(|_| failure())?;
+        let file = platform_native::runtime_logs::private_current(control, LOG_LIMIT as u64)
+            .map_err(|_| failure())?;
         Ok(Self(Arc::new(Mutex::new(LogState { file, error: None }))))
     }
     #[cfg(test)]
@@ -71,17 +72,7 @@ fn append_bounded(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
         return Err(std::io::Error::other("oversized log line"));
     }
     let metadata = file.metadata()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if !metadata.is_file()
-            || metadata.nlink() != 1
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o7777 != 0o600
-        {
-            return Err(std::io::Error::other("unsafe runtime log inode"));
-        }
-    }
+    platform_native::runtime_logs::validate_file(file, &metadata)?;
     let len = metadata.len();
     if len.saturating_add(bytes.len() as u64) > LOG_LIMIT as u64 {
         // Leave 64 KiB of headroom so repeated short diagnostic lines do
@@ -232,135 +223,12 @@ impl DiagnosticLines {
     }
 }
 
-#[cfg(unix)]
-fn private_current(control: &Path) -> std::io::Result<File> {
-    use std::{
-        ffi::CString,
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::{ffi::OsStrExt, fs::MetadataExt},
-        },
-        path::Component,
-    };
-    fn c(value: &[u8]) -> std::io::Result<CString> {
-        CString::new(value).map_err(|_| std::io::Error::other("invalid log path"))
-    }
-    fn opened(fd: i32) -> std::io::Result<File> {
-        if fd < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(unsafe { File::from_raw_fd(fd) })
-        }
-    }
-    let mut directory = opened(unsafe {
-        libc::open(
-            c(b"/")?.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        )
-    })?;
-    if !control.is_absolute() {
-        return Err(std::io::Error::other("relative log path"));
-    }
-    for part in control.components() {
-        match part {
-            Component::RootDir => (),
-            Component::Normal(name) => {
-                directory = opened(unsafe {
-                    libc::openat(
-                        directory.as_raw_fd(),
-                        c(name.as_bytes())?.as_ptr(),
-                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                })?;
-            }
-            _ => return Err(std::io::Error::other("noncanonical log path")),
-        }
-    }
-    let logs = c(b"logs")?;
-    if unsafe { libc::mkdirat(directory.as_raw_fd(), logs.as_ptr(), 0o700) } != 0
-        && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    let directory = opened(unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            logs.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    })?;
-    let metadata = directory.metadata()?;
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7777 != 0o700 {
-        return Err(std::io::Error::other("unsafe log directory"));
-    }
-    let current = c(b"current.log")?;
-    let previous = c(b"previous.log")?;
-    // Open every existing target without following links or blocking on FIFOs,
-    // and inspect the inode before rename/removal. The directory FD pins scope.
-    let check = |name: &CString| -> std::io::Result<bool> {
-        let fd = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
-            return Ok(false);
-        }
-        let file = opened(fd)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.nlink() != 1
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o7777 != 0o600
-            || metadata.len() > LOG_LIMIT as u64
-        {
-            return Err(std::io::Error::other("unsafe log file"));
-        }
-        Ok(true)
-    };
-    let has_current = check(&current)?;
-    let has_previous = check(&previous)?;
-    if has_current {
-        if has_previous
-            && unsafe { libc::unlinkat(directory.as_raw_fd(), previous.as_ptr(), 0) } != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        if unsafe {
-            libc::renameat(
-                directory.as_raw_fd(),
-                current.as_ptr(),
-                directory.as_raw_fd(),
-                previous.as_ptr(),
-            )
-        } != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    opened(unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            current.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    })
-}
-#[cfg(not(unix))]
-fn private_current(_control: &Path) -> std::io::Result<File> {
-    Err(std::io::Error::other("private runtime logs unsupported"))
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        fs,
-        os::unix::fs::{symlink, PermissionsExt},
-    };
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
     fn root() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("disposable-node-runtime-logs-")
@@ -419,22 +287,25 @@ mod tests {
         assert!(old.len() <= LOG_LIMIT);
         assert!(old.contains("***\nnewest\n"));
         assert!(!old.contains("artificial-key"));
-        assert_eq!(
-            fs::metadata(path.join("logs"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(path.join("logs/current.log"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::metadata(path.join("logs"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(path.join("logs/current.log"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         drop(lines);
         drop(log);
         let second = RuntimeLog::start(&path).unwrap();
@@ -469,6 +340,7 @@ mod tests {
             .lines()
             .all(|line| line == "x" || line == "latest-short-line"));
     }
+    #[cfg(unix)]
     #[test]
     fn refuses_links_special_files_and_wrong_permissions() {
         for kind in [
