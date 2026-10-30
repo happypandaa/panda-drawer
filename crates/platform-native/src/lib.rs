@@ -3,6 +3,7 @@
 
 pub mod directory;
 pub mod filesystem;
+pub mod process_status;
 pub mod runtime_logs;
 pub mod tool_files;
 

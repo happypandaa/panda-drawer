@@ -50,7 +50,7 @@
 |---|---|---|---|
 | 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。停止时先发 stdout 协议的关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不要用 Ctrl+Break 代替 | 请求配置收拢到 `owned_process::prepare_command`；Windows 原语：`crates/platform-native/src/windows/process.rs`；实际 Registry/Node 业务接入仍待完成：`owned_process*.rs`、`node_runtime_trial.rs`、`builds.rs` |
 | 子进程管道 | `UnixStream::pair` | 匿名管道（tokio `process` 的 piped stdio 或 Win32 管道），协议内容不变 | `owned_process.rs` |
-| 退出状态 | `waitid`、信号 | `GetExitCodeProcess`；没有信号，界面显示退出码 | `node_runtime_trial.rs` |
+| 退出状态 | `waitid`、信号 | `GetExitCodeProcess`；没有 Unix 信号，界面显示退出码 | 原生 Job 查询：`platform-native/src/windows/process.rs`；退出信号观察：`platform-native/src/process_status.rs`，接入 `node_runtime_trial.rs`、`process_diagnostics.rs` |
 | 进程身份核对 | PID + 启动时间 + 进程组 | PID + `GetProcessTimes` 完整 100 纳秒创建时间 + `QueryFullProcessImageNameW` 路径。旧标记只观察，不取得 Job 终止权限 | 边界：`node_process_identity.rs`；Mac 原实现：`node_process_identity/unix.rs`；Windows：`node_process_identity/windows.rs` 与 `platform-native/src/windows/process.rs`；标记接入：`node_run_marker.rs` |
 | 开机时间 | `sysctl KERN_BOOTTIME` | 当前时间减 `GetTickCount64` | `node_process_identity/unix.rs`、`node_process_identity/windows.rs` |
 | 遗留运行 | 平台崩溃后应用进程可能存活，需要核对接管 | 因为设置了 KILL_ON_JOB_CLOSE，平台进程一退出，应用进程就随 Job 结束。启动时的标记核对仍要执行，通常会判定为已停止并清除 | `node_run_marker.rs` |

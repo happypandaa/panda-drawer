@@ -5,7 +5,6 @@ use regex::Regex;
 use serde_json::json;
 use std::{
     collections::VecDeque,
-    os::unix::process::ExitStatusExt,
     process::ExitStatus,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -148,7 +147,7 @@ impl ProcessDiagnostics {
             json!({
                 "command": bounded_prefix(&scrub(command), 256),
                 "exitCode": status.and_then(ExitStatus::code),
-                "signal": status.and_then(ExitStatusExt::signal),
+                "signal": status.and_then(platform_native::process_status::signal),
                 "nodeVersion": bounded_prefix(&scrub(&tools.node.version), 128),
                 "npmVersion": bounded_prefix(&scrub(&tools.npm.version), 128),
                 "stdout": stdout,
@@ -214,6 +213,10 @@ fn scrub(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::environment::ExecutableInfo;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
 
     fn tools() -> Toolchain {
         Toolchain {
@@ -240,11 +243,15 @@ mod tests {
             .read("npm error code E404\n下载失败\n".as_bytes(), "stderr", None)
             .await
             .unwrap();
+        #[cfg(unix)]
+        let failed = ExitStatus::from_raw(42 << 8);
+        #[cfg(windows)]
+        let failed = ExitStatus::from_raw(42);
         let error = capture.attach(
             ApiError::new("TEST", "failed"),
             "npm ci",
             &tools(),
-            Some(&ExitStatus::from_raw(42 << 8)),
+            Some(&failed),
         );
         let detail = &error.details["processDiagnostics"];
         assert_eq!(detail["exitCode"], 42);
@@ -260,8 +267,16 @@ mod tests {
             &tools(),
             Some(&ExitStatus::from_raw(15)),
         );
-        assert!(signalled.details["processDiagnostics"]["exitCode"].is_null());
-        assert_eq!(signalled.details["processDiagnostics"]["signal"], 15);
+        #[cfg(unix)]
+        {
+            assert!(signalled.details["processDiagnostics"]["exitCode"].is_null());
+            assert_eq!(signalled.details["processDiagnostics"]["signal"], 15);
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(signalled.details["processDiagnostics"]["exitCode"], 15);
+            assert!(signalled.details["processDiagnostics"]["signal"].is_null());
+        }
     }
 
     #[test]

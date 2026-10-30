@@ -1195,13 +1195,7 @@ impl NodeRuntimeTrial {
             .await
             .map_err(|_| fail("TRIAL_STOP_FAILED", "Could not reap the owned trial leader"))?;
         self.status.exit_code = exit.code();
-        #[cfg(unix)]
-        let signal = {
-            use std::os::unix::process::ExitStatusExt;
-            exit.signal()
-        };
-        #[cfg(not(unix))]
-        let signal = None;
+        let signal = platform_native::process_status::signal(&exit);
         self.record_exit(exit.code(), signal);
         self.status.state = if self.status.forced
             || self.control_failed.load(Ordering::Acquire)
@@ -1344,13 +1338,7 @@ impl Drop for NodeRuntimeTrial {
                 let exit_logged = self.exit_logged;
                 handle.spawn(async move {
                     if let Ok(exit) = child.wait().await {
-                        #[cfg(unix)]
-                        let signal = {
-                            use std::os::unix::process::ExitStatusExt;
-                            exit.signal()
-                        };
-                        #[cfg(not(unix))]
-                        let signal = None;
+                        let signal = platform_native::process_status::signal(&exit);
                         if !exit_logged {
                             log.event("exited", json!({"exitCode":exit.code(),"signal":signal}));
                         }
