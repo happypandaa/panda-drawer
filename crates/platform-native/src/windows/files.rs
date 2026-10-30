@@ -479,8 +479,12 @@ fn make_object_private(path: &Path, directory: bool) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { File::from_raw_handle(raw) };
-    reject_reparse(&file)?;
-    if identity(&file)?.directory != directory {
+    make_opened_object_private(&file, directory)
+}
+
+fn make_opened_object_private(file: &File, directory: bool) -> io::Result<()> {
+    reject_reparse(file)?;
+    if identity(file)?.directory != directory {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Admitted object has an unexpected file type",
@@ -540,11 +544,56 @@ fn make_object_private(path: &Path, directory: bool) -> io::Result<()> {
     if result != 0 {
         return Err(io::Error::from_raw_os_error(result as i32));
     }
-    verify_private(&file)
+    verify_private(file)
 }
 
 pub fn create_private_file(path: &Path) -> io::Result<File> {
     open_private_file(path, false, true)
+}
+
+/// Atomically creates a private file whose original handle can publish it.
+pub fn create_private_file_for_publication(path: &Path) -> io::Result<File> {
+    open_private_file_with_access(path, false, true, DELETE)
+}
+
+/// Repair permissions only on this admitted, current-user ordinary file. The
+/// actual opened file blocks rename while its DACL is checked and repaired.
+/// Newly created callers supply the original ID before any permission change.
+pub fn open_owned_file_private(
+    path: &Path,
+    write: bool,
+    expected: Option<&FileIdentity>,
+) -> io::Result<File> {
+    let _parent = pin_parent(path)?;
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | READ_CONTROL | WRITE_DAC | if write { GENERIC_WRITE } else { 0 },
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(raw) };
+    reject_reparse(&file)?;
+    let captured = identity(&file)?;
+    if captured.directory
+        || captured.links != 1
+        || expected.is_some_and(|expected| !expected.same_object(&captured))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Admitted private file changed or is not an independent file",
+        ));
+    }
+    make_opened_object_private(&file, false)?;
+    Ok(file)
 }
 
 /// Apply the real Windows read-only attribute to the opened object. Attribute
@@ -576,6 +625,15 @@ pub fn set_read_only(path: &Path, read_only: bool) -> io::Result<()> {
 }
 
 pub fn open_private_file(path: &Path, create: bool, create_new: bool) -> io::Result<File> {
+    open_private_file_with_access(path, create, create_new, 0)
+}
+
+fn open_private_file_with_access(
+    path: &Path,
+    create: bool,
+    create_new: bool,
+    extra_access: u32,
+) -> io::Result<File> {
     let _parent = pin_parent(path)?;
     let security = PrivateSecurity::new()?;
     let name = native_path(path)?;
@@ -584,6 +642,7 @@ pub fn open_private_file(path: &Path, create: bool, create_new: bool) -> io::Res
             name.as_ptr(),
             GENERIC_READ
                 | READ_CONTROL
+                | extra_access
                 | if create || create_new {
                     GENERIC_WRITE
                 } else {
@@ -755,14 +814,43 @@ fn rename_expected_directory_with_hook(
             "Owned object changed before publication",
         ));
     }
+    before_move();
+    rename_opened_handle(&file, destination, false)?;
+    after_move();
+    confirm_publication(destination, expected)
+}
+
+/// For an admitted private file created with DELETE access, native success is
+/// the commit point. No fallible observation follows the successful rename;
+/// transactional callers must not roll back referenced material afterward.
+pub fn rename_private_file_handle(
+    file: &File,
+    destination: &Path,
+    replace: bool,
+) -> io::Result<()> {
+    let _parent = pin_parent(destination)?;
+    reject_reparse(file)?;
+    let captured = identity(file)?;
+    if captured.directory || captured.links != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected an independent private file",
+        ));
+    }
+    verify_private(file)?;
+    rename_opened_handle(file, destination, replace)
+}
+
+fn rename_opened_handle(file: &File, destination: &Path, replace: bool) -> io::Result<()> {
     let name = native_path(destination)?;
     // The variable-length Win32 structure must retain its native alignment.
-    // Leave ReplaceIfExists false and RootDirectory null; the complete UTF-16
+    // Leave RootDirectory null; the complete UTF-16
     // destination is protected by the pinned directory/ancestor handles above.
     let size = size_of::<FILE_RENAME_INFO>() + name.len() * size_of::<u16>();
     let mut buffer = vec![0usize; size.div_ceil(size_of::<usize>())];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {
+        (*information).Anonymous.ReplaceIfExists = replace;
         (*information).FileNameLength = ((name.len() - 1) * size_of::<u16>()) as u32;
         std::ptr::copy_nonoverlapping(
             name.as_ptr(),
@@ -770,17 +858,14 @@ fn rename_expected_directory_with_hook(
             name.len(),
         );
     }
-    before_move();
     unsafe {
         checked(SetFileInformationByHandle(
             file.as_raw_handle(),
             FileRenameInfo,
             information.cast(),
             size as u32,
-        ))?;
+        ))
     }
-    after_move();
-    confirm_publication(destination, expected)
 }
 
 fn rename_directory_with_hook(
