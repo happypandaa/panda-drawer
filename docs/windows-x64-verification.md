@@ -388,3 +388,21 @@ Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有
 检查还发现 W0.32 移走父模块 Unix traits 后，原构建复制测试通过 super::* 依赖的 MetadataExt/PermissionsExt 未显式导入。这是本分支的测试编译遗漏，现与 symlink 一起放在该 Unix 夹具自己的 import 中；未把它归为原始 main 的失败。修改只涉及测试编译范围、依赖导入及格式，没有改变业务实现或原测试断言。
 
 `cargo check --locked --offline -p platform-core --tests` **通过**：lib 仍有 79 个警告，lib test 有 67 个警告。随后首次使用完整真实 platform-core 测试二进制（非静态类型 harness）运行本机 Git 门禁和数据证明门禁，两项均 **1/1 通过**；分别过滤其余 371 个库测试和 9 个集成测试，未把未运行者当作通过。没有运行完整 Windows 测试组或桌面，W0 仍未完成，未合入 main。
+
+### W0.41 — 桌面原生边界、源码编译与首次完整本机测试结果
+
+`project_onboarding.rs` 的目录确认改为委托 `desktop_path_io.rs`：Mac 仍在相同位置使用 symlink_metadata 的 dev/ino 和目录/no-link 判断；Windows 使用实际完整原生文件身份。确认只比较对象身份，不新增目录时间、权限或内容比较。临时目录测试实际验证内容编辑不撤销确认、同名替换会撤销、文件不是目录、缺失不创建；专项 **2/2 通过**，对应真实源码的 Windows / Mac ARM64 严格 Clippy 通过。后者只检查类型，不代表 Mac 桌面执行或 CI。
+
+管理器窗口关闭和应用退出处理移入 `desktop_app_events.rs`；原 Mac 关闭隐藏、Dock Reopen、退出排空和 forced-exit 处理不变，Cocoa 专属事件只在该适配层编译。Windows 保留此前的非 Mac 关闭后退出分支。Mac 事件执行仍待真实 CI/回归，不用源码比较冒充运行证明。
+
+网页下载原 Unix 正文（含 8 个测试）通过同层 include 保留，除搬移说明外逐字核对；Windows 尚未实现下载写入归属及外部发布，Requested 可见报告 PLATFORM_FEATURE_UNAVAILABLE 并拒绝，既不绑定 engine/writer，也不创建 stage 或重写 destination。未受理的 Finished 无论 success/path 一律拒绝，不收养或删除外部文件。使用真实 Tauri DownloadEvent 和 ApiError 的临时现场专项 **2/2 通过**及严格 Clippy 通过；尚未实际启动 WebView2 下载或原生对话框，这不是完成下载功能。
+
+通过已安装的 Tauri CLI 从现有熊猫 `128x128@2x.png` 转换并纳入 Windows 所需 `icon.ico`，核对 16/24/32/48/64/256 像素条目边界；Mac PNG/ICNS 没有改动，没有引入新下载来源或应用产物。桌面测试中只适配原生夹具：Mac 原权限设置保留，Windows 创建实际私有 DACL；Windows 文件名避开不合法的问号，Mac 原文件名保持；Unix 符号链接夹具保留，其余私有目录拒绝检查在两端继续执行，Windows 链接覆盖仍由原生目录联接专项提供。
+
+本机 `platform-cli` **实际 build 通过**，未运行平台服务。Windows 桌面生产 bin、桌面 all-targets 和完整 workspace all-targets **源码 check 通过**（core lib 仍有 79 个警告，桌面生产目标 9 个、测试目标 4 个警告）。这三次桌面相关检查均用进程内 TAURI_CONFIG 暂时移除 bundle.resources / externalBin，以诊断源码；**正常资源准备、sidecar 嵌入、桌面打包/启动仍未通过**。没有删除或复用旧 `resources/windows*`、`.windows-preparing-*` 树作为证据。
+
+首次在隔离 HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP 的真实 Windows 测试进程运行完整 core 库：**184 通过、186 失败、2 ignored**，失败后 9 个集成测试未执行。失败主要来自仍关闭的运行门禁、Windows 配置目录前缀/权限与密钥后端、原目录 fsync、生成目录路径校验和待实现的能力；不能据此声称 Mac 原基线失败。没有删除或跳过这些失败用例来取得绿色。
+
+同样隔离运行完整桌面测试二进制：**73 通过、8 失败**，本步目录身份、project_onboarding 共用检查及下载拒绝专项均通过。8 项失败实际为 codex_handoff 的绝对路径/安装判定 2 项、local_directory 的 Finder 参数夹具 1 项、native_process 的 POSIX shell 夹具 2 项、Node 生命周期夹具目录 fsync 1 项、尚关闭的窗口尺寸缓存发布 2 项。保留这些失败，后续分别补平台夹具与真实后端；没有将它们记为通过。两次完整测试均仅使用新建临时现场，没有运行开发数据重置、真实项目删除或实际平台服务。
+
+再次 fetch 后 main 仍为 `ac3b5d72ab79e132fcedd149c73e1201a2896576`。原始 CI 基线 run 41092968343 的 Mac / Windows 作业仍排队；Windows 服务未就绪，Mac 测试尚未实际运行。W0 仍未完成，未合入 main。对外整体百分比只是七个里程碑等权、W0 暂估完成一半所得约 7%，正式验收完成仍为 0/7，不按小步数量或编译错误减少数计算完成率。

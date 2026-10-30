@@ -3,7 +3,9 @@
 mod browser_download;
 mod business_window_lifetime;
 mod codex_handoff;
+mod desktop_app_events;
 mod desktop_monitor;
+mod desktop_path_io;
 mod desktop_partial_startup;
 mod desktop_shutdown;
 mod desktop_shutdown_native;
@@ -2483,56 +2485,11 @@ fn main() {
             tray.build(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let Some(state) = window.app_handle().try_state::<AppState>() {
-                if !matches!(event, tauri::WindowEvent::Destroyed) {
-                    if let Ok(_io_lease) = state.handle.io_lifetime().admit_cleanup() { state.window_sizes.on_event(window, event); }
-                }
-            }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "manager" {
-                    api.prevent_close();
-                    if window.app_handle().try_state::<AppState>().is_some_and(|state| state.local_data_cleanup.active()) {
-                        return;
-                    }
-                    // On macOS, closing the manager keeps the application and
-                    // its managed services in the Dock. Reopen restores this
-                    // same window; only an explicit quit runs safe shutdown.
-                    #[cfg(target_os = "macos")]
-                    if let Err(error) = window.hide() {
-                        eprintln!("Unable to hide management window: {error}");
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    window.app_handle().exit(0);
-                }
-            }
-
-        })
+        .on_window_event(desktop_app_events::window_event)
         .build(tauri::generate_context!())
         .expect("Unable to start isolated M5 desktop application");
 
-    app.run(|app, event| match event {
-        tauri::RunEvent::ExitRequested { api, .. } => {
-            let wait_for_running = app
-                .try_state::<AppState>()
-                .is_some_and(|state| !state.exit_ready.load(std::sync::atomic::Ordering::Acquire));
-            let wait_for_partial = app.try_state::<StartupFailure>().is_some_and(|failure| {
-                failure.runtime.is_some()
-                    && !failure
-                        .exit_ready
-                        .load(std::sync::atomic::Ordering::Acquire)
-            });
-            if wait_for_running || wait_for_partial {
-                api.prevent_exit();
-                request_safe_shutdown(app);
-            }
-        }
-        // Cocoa/forced termination can bypass the preventable request. Keep a
-        // owned cleanup fallback without blocking the event loop or claiming crash guarantees.
-        tauri::RunEvent::Exit => desktop_shutdown_native::forced_exit(app),
-        tauri::RunEvent::Reopen { .. } => show_manager(app),
-        _ => {}
-    });
+    app.run(desktop_app_events::run_event);
 }
 
 #[cfg(test)]

@@ -82,6 +82,10 @@
 | 单实例锁 | 文件锁 | `LockFileEx` | `paths.rs` |
 | 网页存储隔离 | WebKit `data_store_identifier` | 每个项目一个 **WebView2 用户数据目录**（Tauri `data_directory`），放在平台数据目录下，以现有项目标识命名。管理器窗口使用自己的目录 | `webview_storage.rs`、`apps/desktop/src-tauri/src/native_stores.rs`、`main.rs`、`node_windows.rs` |
 | 删除网页存储 | 等 WebKit 确认存储已移除 | 关闭该项目的所有窗口 → **等待该数据目录对应的 WebView2 浏览器进程退出** → 删除目录。进程未退出时目录被占用，会删除失败 | 同上 |
+| 网页下载与外部保存 | 原 WKWebView stage、写入归属、Finished 与用户所选位置发布 | WebView2 写入归属与外部发布未完成时，在 Requested 可见报告并拒绝；不修改 destination、不取得 writer，未受理的 Finished 不构成交付 | `browser_download.rs`；原 Unix 正文与 8 个测试在 `browser_download/unix.rs` 保持原模块层级；Windows 边界在 `browser_download/windows.rs` |
+| 编辑器确认的目录身份 | 求助摘录前后核对路径与 dev/ino，不按目录内容变化撤销确认 | 核对卷序列号与完整 128 位 FileId；不新增时间、权限或内容变化比较 | `desktop_path_io.rs`，由 `project_onboarding.rs` 调用；原生观察复用 `platform-native::tool_files::Facts` |
+| 管理器关闭与应用事件 | 关闭管理器隐藏窗口，Dock Reopen 显示；退出先等待受管服务排空 | 保留已有非 Mac 关闭后退出政策，退出同样等待排空；没有 Cocoa Reopen 事件 | `desktop_app_events.rs`；`main.rs` 仅注册两个事件处理入口 |
+| 桌面平台图标 | 现有熊猫 PNG / ICNS | 从同一已跟踪 PNG 通过仓库已安装 Tauri CLI 转换 ICO，保留原 Mac 素材 | `apps/desktop/src-tauri/icons/icon.ico`；图标不是应用或安装包产物 |
 | 在文件管理器中打开 | `/usr/bin/open -a Finder` | `explorer.exe <路径>`。注意 explorer 的退出码不可靠，不能据此判断失败 | `apps/desktop/src-tauri/src/local_directory.rs` |
 | 默认路径 | `~/PandaDrawer`、`~/Library/Application Support` | `%USERPROFILE%\PandaDrawer`、`%LOCALAPPDATA%`（`dirs` crate 已能返回） | `paths.rs` |
 | 内置 Node | darwin-arm64 的 Node 24.22.0 | 官方 `node-v24.22.0-win-x64.zip`，固定 SHA256，写入 release json；直接执行 `node.exe npm-cli.js`，不走 `.cmd` 包装 | `scripts/node-runtime-release.json`、`development-node-release.json`、`package-*.mjs`、`managed_toolchain.rs`；只读文件事实适配：`platform-native/src/tool_files.rs`，Windows 发行资源待 W1 |

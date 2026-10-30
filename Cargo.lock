@@ -2855,6 +2855,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-web-kit",
  "platform-core",
+ "platform-native",
  "platform-update-handoff",
  "serde",
  "serde_json",
