@@ -564,3 +564,11 @@ native-packager 新 Git 模块复用实际私有新建、全部目录先固定�
 作者独立完整 core 配置组 **22/22**，root 随后在真实主 target 完整 core 测试二进制再次 **22/22**；包含原 18 项业务测试及 4 项 Windows 实际文件测试。覆盖真实 save/reload/启动快照/修订覆盖、private DACL、hardlink/junction、错误 credential DACL、空/超限/UTF-8、root/entry 替换、unknown 清理，以及真实 rename 被目录阻挡时只回滚新 secret、保留旧配置和旧 secret。native 全组 **45 通过、1 ignored 专用夹具**、packager **8/8**，两目标 native 严格 Clippy 通过（Mac 仅类型检查）。复审无阻塞。
 
 没有运行应用后端或读写真实凭据；所有配置/删除测试只用临时新现场。原桌面生命周期用例与完整桌面组尚需在此后端上再次验证，不能提前记为绿色。W3 真实配置注入/日志脱敏、W5 项目全量删除和 Mac CI 仍待完成。
+
+### W1.14 — core MinGit 原生 schema、固定路径及真实准备产物核验
+
+managed_git/layout 选择固定 Windows JSON、win32/x64、cmd/git.exe 与 UCRT64 libexec/templates；Windows 使用独立 distribution/license/layout schema，不补造 Mac build/signature 字段。Mac 原 source/build/signature schema、JSON 和原 7 项测试正文保持。共用 verifier 继续按原文件/树预算、普通无链接文件、实际完整身份与变化、精确 metadata 字节、目录存在及全树摘要验证；Git 环境两处纯诊断/debug 路径改为同一适配 API，没有开启 Git 进程或仓库操作。
+
+root 真实 core 专项 **9/9**（原 Windows 文件事实 4 + 新 payload/layout 5），作者独立严格 Clippy 和 Mac ARM64 交叉 Clippy 通过，后者仅类型检查。临时合成字节从未执行，覆盖原生 schema/外来伪签名拒绝、搬迁、只读、改/缺/多/metadata/空目录及必要辅助目录。另对正常 Windows prepare 实际新产物，以临时 inspector 调用生产 `managed_git::verify`，完整 **375 文件、96,237,338 字节** 与固定锚点匹配，路径/版本正确；生产 `managed_toolchain::verify` 也核验该准备产物的 **1,928 文件** 与固定 Node/npm 锚点匹配。此处只读核验没有再次执行工具、访问仓库或项目。
+
+W1.13 后 root 另重跑原桌面生命周期失败用例：已实际越过配置/注册权限，现到第 73 行 submit_deletion 时明确报 NODE_DELETION_PLATFORM_UNSUPPORTED（W5 的 journal 创建尚未实现）。保留该失败，没有将单个前置后端通过记为完整桌面绿色。顺便移除 Unix 适配文件末尾的一行多余空白，不改任何 Mac 函数正文。正常 Tauri 部署、主界面与两端 CI 仍待验证。

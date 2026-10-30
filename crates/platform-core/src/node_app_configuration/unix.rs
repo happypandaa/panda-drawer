@@ -356,4 +356,3 @@ impl SecretVault for LocalFileVault {
         self.open_entry(instance, entry).map(|file| file.is_some())
     }
 }
-
