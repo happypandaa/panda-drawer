@@ -2397,15 +2397,7 @@ pub fn checked_relative(
     check_no_symlinks(&result, allow_missing)?;
     Ok(result)
 }
-pub fn check_no_symlinks(path: &Path, allow_missing: bool) -> Result<(), ApiError> {
-    if platform_native::filesystem::find_reparse_component(path, allow_missing)?.is_some() {
-        return Err(ApiError::new(
-            "UNSAFE_PATH",
-            "Symbolic links are not permitted in project-controlled paths",
-        ));
-    }
-    Ok(())
-}
+pub use crate::path_checks::check_no_symlinks;
 fn ensure_dir(path: &Path) -> Result<(), ApiError> {
     check_no_symlinks(path, true)?;
     fs::create_dir_all(path)?;

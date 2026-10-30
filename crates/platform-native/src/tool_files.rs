@@ -39,6 +39,20 @@ impl Facts {
             links: u64::from(crate::windows::files::identity(file)?.links),
         })
     }
+    /// Explicit selections follow package-manager links, unlike no-follow
+    /// bundled/control files. Preserve that existing policy boundary.
+    pub fn capture_following(path: &Path) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                metadata: std::fs::metadata(path)?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Self::from_file(&crate::windows::files::following_metadata_file(path)?)
+        }
+    }
     pub fn is_file(&self) -> bool {
         self.metadata.is_file()
     }
@@ -128,6 +142,23 @@ pub fn open_read(path: &Path) -> io::Result<File> {
     #[cfg(windows)]
     {
         crate::windows::files::open_read_file(path)
+    }
+}
+
+/// Windows has no Unix executable/set-ID bits. The actual owned version probe
+/// decides whether an ordinary selected file is executable on that host.
+pub fn executable_flags_allowed(facts: &Facts) -> bool {
+    if !facts.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        facts.metadata.mode() & 0o111 != 0 && facts.metadata.mode() & 0o6000 == 0
+    }
+    #[cfg(windows)]
+    {
+        true
     }
 }
 

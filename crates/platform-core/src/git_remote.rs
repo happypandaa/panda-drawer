@@ -296,8 +296,8 @@ fn isolated_command(toolchain: &GitToolchain, cwd: &Path) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    crate::owned_process::prepare_command(&mut command);
     if let Some(exec_path) = &toolchain.exec_path {
         command.env("GIT_EXEC_PATH", exec_path);
     }

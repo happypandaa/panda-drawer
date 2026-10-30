@@ -261,6 +261,16 @@ fn component(label: &str) -> String {
     format!("process/{label}")
 }
 
+/// Configure a request, without spawning or granting any ownership receipt.
+/// Unix commands request their separate group here. Windows ownership must be
+/// assigned by the suspended-spawn/Job backend; it has no process-group setting.
+pub(crate) fn prepare_command(command: &mut Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
 #[cfg(unix)]
 type OsPipe = tokio::net::UnixStream;
 #[cfg(not(unix))]
@@ -378,8 +388,7 @@ impl OwnedProcessRegistry {
             release.recv().expect("fixture releases admission");
         }
         let (stdin, stdout, stderr) = prepare_stdio(&mut command)?;
-        #[cfg(unix)]
-        command.process_group(0);
+        prepare_command(&mut command);
         let mut writer_guard = self
             .1
             .as_ref()
