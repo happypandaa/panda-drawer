@@ -10,6 +10,7 @@ pub mod build_artifacts;
 pub mod build_profile;
 mod build_source_io;
 pub mod builds;
+mod cleanup_file_io;
 mod control;
 mod data_restore_guard;
 mod database;

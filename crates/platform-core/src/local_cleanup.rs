@@ -6,13 +6,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
-    fs::{self, OpenOptions},
+    fs,
     io::Read,
-    os::{
-        fd::AsRawFd,
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    },
     path::{Component, Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -996,45 +991,9 @@ fn resolve_external(path: &Path) -> Result<PathBuf, ApiError> {
 
 fn remove_bound_file(target: &BoundPath) -> Result<(), ApiError> {
     target.verify()?;
-    let parent = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(target.path.parent().ok_or_else(changed)?)?;
-    let parent_identity = PersistedIdentity::from_file(&parent).map_err(|_| changed())?;
-    if !target
-        .parents
-        .first()
-        .is_some_and(|(_, expected)| expected.same_runtime_object(&parent_identity))
-    {
-        return Err(changed());
-    }
-    let name = CString::new(target.path.file_name().ok_or_else(changed)?.as_bytes())
-        .map_err(|_| changed())?;
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    if unsafe {
-        libc::fstatat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            &mut stat,
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    if stat.st_mode & libc::S_IFMT != libc::S_IFREG
-        || stat.st_dev as u64 != target.identity.device
-        || stat.st_ino != target.identity.inode
-    {
-        return Err(changed());
-    }
-    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    parent.sync_all()?;
-    Ok(())
+    crate::cleanup_file_io::remove_file(&target.path, &target.identity, &target.parents)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "local_cleanup_tests.rs"]
 mod tests;
