@@ -1,5 +1,6 @@
 use super::*;
 use crate::{CreateProjectInput, SqlCaller, SqlRequest};
+use std::os::unix::fs::symlink;
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
