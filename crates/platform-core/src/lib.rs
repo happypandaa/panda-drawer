@@ -55,6 +55,7 @@ pub mod project_cleanup;
 #[cfg(test)]
 mod project_cleanup_tests;
 mod project_directory_io;
+mod project_file_io;
 mod project_directory_name;
 pub mod project_git;
 pub mod project_review;

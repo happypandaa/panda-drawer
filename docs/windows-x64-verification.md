@@ -154,3 +154,11 @@ Windows core lib 再次检查仍失败，诊断 **714 个错误**，已没有 E0
 新增 2 项真实 Windows 临时目录测试：已有空目录拒绝且双方身份、候选内容不变，明确移除测试空目标后发布保留身份和字节；持有不共享删除的目录句柄时发布失败且候选保留，释放后可重试；目录联接被拒绝且目标字节不变。实际源码 harness 合计 **25/25 通过**，Windows 与 macOS ARM64 全目标严格 Clippy 通过；Mac 仅类型检查，未执行。未测试完整项目创建、SQLite 初始化、删除任务或崩溃 journal，不能据此认定 W2/W5 已完成。
 
 重新拉取后远程 main 仍为 `ac3b5d72`。完整 Windows core lib 仍失败，诊断 **707 个错误**；本步目录发布适配没有错误。最初 CI 基线的 macOS 和 Windows 任务仍排队，本机尚未发现运行器服务或服务安装成功状态。W0 尚未完成，未合入 main。
+
+### W0.15 — 项目登记私有文件操作收拢
+
+新增 `project_file_io.rs`，收拢 `projects.rs` 的目录创建、文件私有权限、新文件创建与实际链接数检查；原父目录同步调用委托给已有平台同步适配。Unix 分支保持原 create_dir 然后 chmod 0700、create_dir_all 然后只 chmod 最终目录、文件 0600、原 OpenOptions 及 metadata.nlink 规则；未将 Windows ACL 或新准入条件加入 Mac。Windows 新建目录的各缺失层使用私有 DACL，已有目录只调整最后一个已选目录；已创建文件的权限变更不改变属主、内容或父目录。
+
+新增 2 项实际源码测试验证临时登记目录各新层私有、既存父目录不变、新文件不覆盖、硬链接数真实变化，以及对已选文件设置私有 DACL 后身份与字节保留。测试文件明确是非 SQLite 占位字节，**不是 SQLite/WAL/SHM 权限或数据库流程验收**；W2 仍须处理 SQLite 实际创建过程。源码 harness **27/27 通过**，Windows 与 macOS ARM64 全目标严格 Clippy 通过，Mac 仅类型检查。原生 crate **22 通过、1 真实子进程夹具入口默认忽略**。
+
+完整 Windows core lib 仍失败，诊断 **702 个错误**，`projects.rs` 未再报告错误。完整测试目标、项目登记/删除和数据库初始化尚未通过；W0 未完成，未合入 main。

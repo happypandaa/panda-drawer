@@ -6,10 +6,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     collections::HashMap,
-    fs::{self, File, OpenOptions},
+    fs,
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
@@ -154,7 +153,7 @@ impl ProjectHandle {
                 "The project's registered database is missing; no empty replacement was created",
             ));
         }
-        if fs::metadata(&db)?.nlink() != 1 {
+        if crate::project_file_io::link_count(&db)? != 1 {
             return Err(ApiError::new(
                 "UNSAFE_DATABASE_PATH",
                 "Database hard links are not supported",
@@ -599,8 +598,7 @@ impl ProjectStore {
             .join("projects")
             .join(format!(".creating-{id}"));
         check_no_symlinks(&staging, true)?;
-        fs::create_dir(&staging)?;
-        fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
+        crate::project_file_io::create_private_directory(&staging)?;
         let manifest = ProjectManifest {
             manifest_version: 1,
             id: id.clone(),
@@ -641,13 +639,10 @@ impl ProjectStore {
                 resources.install(&staging, &manifest)?;
             }
             database::initialize_database(&staging.join("data/main.sqlite"))?;
-            fs::set_permissions(
-                staging.join("data/main.sqlite"),
-                fs::Permissions::from_mode(0o600),
-            )?;
+            crate::project_file_io::make_file_private(&staging.join("data/main.sqlite"))?;
             publish_directory_noreplace(&staging, &root)?;
             self.record_project_root_ownership(&id, &root)?;
-            File::open(root.parent().unwrap())?.sync_all()?;
+            platform_native::filesystem::sync_directory(root.parent().unwrap())?;
             let state = Registration {
                 schema_version: 1,
                 id: id.clone(),
@@ -790,7 +785,7 @@ impl ProjectStore {
                 "The registered database is missing; no empty replacement was created",
             ));
         }
-        if fs::metadata(&database)?.nlink() != 1 {
+        if crate::project_file_io::link_count(&database)? != 1 {
             return Err(ApiError::new(
                 "UNSAFE_DATABASE_PATH",
                 "Each project must own an independent database file; hard links are not supported",
@@ -1646,7 +1641,7 @@ impl ProjectStore {
             check_no_symlinks(&path, true)?;
             if path.try_exists()? {
                 fs::remove_file(&path)?;
-                File::open(path.parent().unwrap())?.sync_all()?;
+                platform_native::filesystem::sync_directory(path.parent().unwrap())?;
             }
         }
         self.controls.lock().unwrap().remove(id);
@@ -1657,7 +1652,7 @@ impl ProjectStore {
         let path = self.deletion_path(id);
         if path.try_exists()? {
             fs::remove_file(&path)?;
-            File::open(path.parent().unwrap())?.sync_all()?;
+            platform_native::filesystem::sync_directory(path.parent().unwrap())?;
         }
         Ok(())
     }
@@ -1982,7 +1977,7 @@ impl ProjectStore {
                 ));
             }
             fs::remove_file(&path)?;
-            File::open(path.parent().unwrap())?.sync_all()?;
+            platform_native::filesystem::sync_directory(path.parent().unwrap())?;
         }
         Ok(())
     }
@@ -2087,7 +2082,7 @@ impl ProjectStore {
         };
         let db_identity = match db.as_ref().filter(|p| p.is_file()) {
             Some(path) => {
-                if fs::metadata(path)?.nlink() != 1 {
+                if crate::project_file_io::link_count(path)? != 1 {
                     if allow_damaged {
                         FileIdentity::unavailable()
                     } else {
@@ -2387,10 +2382,7 @@ pub fn checked_relative(
 }
 pub use crate::path_checks::check_no_symlinks;
 fn ensure_dir(path: &Path) -> Result<(), ApiError> {
-    check_no_symlinks(path, true)?;
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    crate::project_file_io::ensure_directory(path)
 }
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ApiError> {
     check_no_symlinks(path, false)?;
@@ -2405,11 +2397,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ApiError>
 }
 fn write_new(path: &Path, content: &[u8]) -> Result<(), ApiError> {
     check_no_symlinks(path, true)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut file = crate::project_file_io::create_new_file(path)?;
     file.write_all(content)?;
     file.sync_all()?;
     Ok(())
@@ -2422,7 +2410,7 @@ fn publish_registration(path: &Path, state: &Registration) -> Result<(), ApiErro
         // An atomic create-if-absent publication never replaces an unexpected existing identity.
         fs::hard_link(&staging, path)?;
         fs::remove_file(&staging)?;
-        File::open(path.parent().unwrap())?.sync_all()?;
+        platform_native::filesystem::sync_directory(path.parent().unwrap())?;
         Ok::<(), ApiError>(())
     })();
     if publication.is_err() {
