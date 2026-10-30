@@ -1,6 +1,6 @@
 //! Handle-bound identity, no-reparse access and private creation. Parent ACLs
 //! are not audited or changed; protection is applied only to objects we create.
-use super::{checked, native_path, wide};
+use super::{checked, native_path, normalized_path, wide};
 use std::{
     ffi::{c_void, OsStr, OsString},
     fs::File,
@@ -141,7 +141,8 @@ pub struct CheckedPath {
     _ancestors: Vec<File>,
 }
 pub fn open_no_reparse(path: &Path) -> io::Result<CheckedPath> {
-    native_path(path)?;
+    let normalized = normalized_path(path)?;
+    let path = normalized.as_path();
     let mut ancestors = Vec::new();
     let mut chain: Vec<_> = path.ancestors().skip(1).collect();
     chain.reverse();
@@ -257,6 +258,8 @@ impl PrivateSecurity {
 }
 
 fn pin_parent(path: &Path) -> io::Result<(CheckedPath, File)> {
+    let normalized = normalized_path(path)?;
+    let path = normalized.as_path();
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Object has no parent"))?;
@@ -688,6 +691,10 @@ fn rename_directory_with_hook(
     destination: &Path,
     after_move: impl FnOnce(),
 ) -> io::Result<()> {
+    let source = normalized_path(source)?;
+    let destination = normalized_path(destination)?;
+    let source = source.as_path();
+    let destination = destination.as_path();
     let _source_parent = pin_parent(source)?;
     let _destination_parent = pin_parent(destination)?;
     let source_identity = open_no_reparse(source)?;
@@ -1129,6 +1136,15 @@ mod tests {
         );
         assert!(open_no_reparse(&link).is_err());
         assert!(open_no_reparse(&link.join("sample.txt")).is_err());
+        let mut raw = root.as_os_str().to_os_string();
+        raw.push("\\disposable-junction/sample.txt");
+        let mixed = PathBuf::from(raw);
+        assert!(open_no_reparse(&mixed).is_err());
+        assert!(open_read_file_allowing_hard_links(&mixed).is_err());
+        let mut raw = root.as_os_str().to_os_string();
+        raw.push("\\disposable-junction/not-created.txt");
+        assert!(create_private_file(&PathBuf::from(raw)).is_err());
+        assert!(!target.join("not-created.txt").exists());
         assert_eq!(
             crate::filesystem::find_reparse_component(&link, false).unwrap(),
             Some(link.clone())
