@@ -205,6 +205,28 @@ impl Facts {
                 && self.metadata.permissions().readonly() == other.metadata.permissions().readonly()
         }
     }
+    /// Migration metadata observes change time as well as modification time,
+    /// without introducing a separate permission comparison into that policy.
+    pub fn same_modified_and_changed(&self, other: &Self) -> bool {
+        if !self.same_modified_file(other) {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            self.metadata.ctime() == other.metadata.ctime()
+                && self.metadata.ctime_nsec() == other.metadata.ctime_nsec()
+        }
+        #[cfg(windows)]
+        {
+            let crate::directory::Change::Windows { changed_100ns, .. } = &self.stamp.change;
+            let crate::directory::Change::Windows {
+                changed_100ns: other_changed,
+                ..
+            } = &other.stamp.change;
+            changed_100ns == other_changed
+        }
+    }
     pub fn unchanged(&self, other: &Self) -> bool {
         #[cfg(unix)]
         {
