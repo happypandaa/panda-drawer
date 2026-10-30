@@ -29,8 +29,14 @@ pub(crate) fn filesystem(path: &Path) -> Result<Value> {
     }
     #[cfg(windows)]
     {
-        let _ = path;
-        Err(unavailable().into())
+        let info = platform_native::windows::volume::inspect(path)?;
+        Ok(serde_json::json!({
+            "type": info.filesystem,
+            "local": info.local(),
+            "availableBytes": info.available_bytes,
+            "totalBytes": info.total_bytes,
+            "driveType": info.drive_type,
+        }))
     }
 }
 pub(crate) fn require_unsynced(path: &Path) -> Result<()> {
@@ -116,8 +122,15 @@ mod tests {
         fs::write(source.join("retained.txt"), b"retained disposable source").unwrap();
         let before = crate::file_identity::PersistedIdentity::capture(&source).unwrap();
         let target = root.join("candidate");
+        let observed = filesystem(&source).unwrap();
+        assert!(observed["type"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty()));
+        assert!(observed["availableBytes"].as_u64().is_some());
+        assert!(observed["totalBytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0));
         for error in [
-            filesystem(&source).unwrap_err(),
             require_unsynced(&source).unwrap_err(),
             require_supported_filesystem(&Value::Null).unwrap_err(),
             collect(&source, &BTreeSet::new()).unwrap_err(),

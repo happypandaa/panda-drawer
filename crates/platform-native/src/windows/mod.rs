@@ -1,6 +1,7 @@
 //! Windows x64 primitives. Business code calls the platform facade, never Win32.
 pub mod files;
 pub mod process;
+pub mod volume;
 
 use std::{
     ffi::OsStr,
