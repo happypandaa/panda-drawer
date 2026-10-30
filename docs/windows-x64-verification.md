@@ -602,3 +602,11 @@ Mac 恢复函数正文机械搬到适配层逐字保留，初始检查 no-op、�
 只读复核当前 CI 明确选择的 JS 单测和默认完整 Rust 测试入口：core for_test/集成项目使用真实 TempDir，测试构建的默认工作区也固定在该临时 data-root 内；CLI 默认测试在非法参数校验前不调用 discover，集成只执行离线 build-info/version/help；桌面单元测试不执行 main。没有发现此集合会初始化或发现真实固定开发根，未为此删除、跳过或运行测试。新增 desktop-host 参数回归纳入两端 CI 的明确单测白名单，语法检查通过。
 
 重要边界：Windows dirs 的 Profile/LocalAppData 使用系统 KnownFolder，CI 的 HOME/USERPROFILE/LOCALAPPDATA 环境变量不能重定向 RuntimePaths。安全依据是已审测试集合与显式临时夹具，而非这些环境值本身。正常桌面/业务 CLI 以及 live/restart/compatibility 脚本会触及真实身份路径，不在普通 CI 白名单内，不应扩大为任意脚本通配。没有增加公开数据根覆盖或迁移命令；真实应用首启仍按固定身份单独验证并保留现有材料。
+
+### W1.19 — 构建启动恢复不重放未实现事务
+
+BuildManager 首条平台检查只观察工作区固定 `.platform/tasks` 与 `.platform/project-state/builds`，位于原 ensure 之前；任意其他目录/项目/状态 sibling 不作为准入条件。Windows 建目录后再次核实实际 Missing/Empty，才建立本实例真实空 registry，不进入 Mac 原任务中断写回、publication recovery 或 reconcile 循环。自动旧产物清理单独返回 build-artifact-startup-cleanup / not_started，沿用 best-effort 的“启动清理待处理”报告，保留材料而不伪造成功。
+
+真实完整 core 库二进制专项 **7/7**：两固定范围缺失/空、已有最终/非最终/未知/发布记录保留、检查间新增、真实 junction、原始混合分隔符，以及首次检查后出现实际 running task 时第二次检查拒绝、原状态和 error=None 均不变。观察器严格 Clippy 通过。Mac 原恢复语句收拢到适配层，除新函数引用参数所需的两处借用和格式调整外保持；小型 Mac ARM64 签名 harness 直接引用该适配源码与真实 TaskRecord，目标 Clippy 通过，仅类型检查，不是完整 core 或 Mac 运行证明。总运行门禁仍未改，完整 manager/service/GUI 尚未启动，真正 Windows 构建恢复/清理待 W2。
+
+2026-10-31（Asia/Shanghai）通过已登录浏览器只读核实原始 [CI run 41092968343](https://github.com/happypandaa/panda-drawer/actions/runs/41092968343)：页面明确 macos / windows 均 Queued，创建约 7 小时。没有执行结果，不能确认 Mac 绿色或列出基线失败；尚未超过 24 小时。Windows 运行器服务本机仍未发现，没有重新尝试之前被自动审批拒绝的用户态注册。
