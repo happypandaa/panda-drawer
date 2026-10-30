@@ -27,6 +27,7 @@ mod maintenance;
 mod managed_git;
 mod managed_toolchain;
 mod metadata;
+mod metadata_file_io;
 mod native_project_files;
 pub mod native_project_io;
 pub mod node_app_configuration;
@@ -44,6 +45,7 @@ mod node_runtime_log;
 pub mod node_runtime_trial;
 pub mod object_layout;
 #[allow(dead_code)] // Registry foundation; legacy helper ports are a separate step.
+mod operation_directory;
 mod owned_process;
 mod path_checks;
 mod paths;

@@ -1,6 +1,8 @@
 use super::*;
 use crate::{control::ControlState, CreateProjectInput, RuntimePaths};
-use std::{os::unix::fs::symlink, sync::atomic::Ordering};
+#[cfg(unix)]
+use std::os::unix::fs::{symlink, MetadataExt};
+use std::sync::atomic::Ordering;
 
 async fn fixture() -> (
     tempfile::TempDir,
@@ -184,10 +186,15 @@ async fn icon_import_is_independent_and_old_icons_survive_replacement_and_remova
         .as_str()
         .unwrap()
         .starts_with("data:image/png;base64,"));
+    #[cfg(unix)]
     assert_ne!(
         fs::metadata(&source).unwrap().ino(),
         fs::metadata(&first_path).unwrap().ino()
     );
+    #[cfg(windows)]
+    assert!(!platform_native::tool_files::Facts::capture(&source)
+        .unwrap()
+        .same_object(&platform_native::tool_files::Facts::capture(&first_path).unwrap()));
     let second = manager
         .import_icon(
             &id,
@@ -254,8 +261,25 @@ async fn invalid_icons_fall_back_and_explicit_bad_references_are_rejected() {
             .is_err());
     }
     fs::write(root.join("outside.png"), png_bytes(2, 2)).unwrap();
-    symlink(root.join("outside.png"), root.join("meta/link.png")).unwrap();
-    assert!(icon_path(&root, "meta/link.png").is_err());
+    #[cfg(unix)]
+    {
+        symlink(root.join("outside.png"), root.join("meta/link.png")).unwrap();
+        assert!(icon_path(&root, "meta/link.png").is_err());
+    }
+    #[cfg(windows)]
+    {
+        let junction = root.join("meta/linked-directory");
+        assert!(std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&root)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(icon_path(&root, "meta/linked-directory/outside.png").is_err());
+        fs::remove_dir(junction).unwrap();
+    }
     fs::hard_link(root.join("outside.png"), root.join("meta/hard.png")).unwrap();
     assert!(read_file(&root.join("meta/hard.png"), ICON_MAX).is_err());
 }

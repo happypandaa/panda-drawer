@@ -1,8 +1,7 @@
 //! Current-phase Node owners, never a separate process registry or backup.
 use crate::{owned_process::OwnedProcessRegistry, ApiError};
 use std::{
-    fs::{File, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -58,19 +57,7 @@ impl NodeProcessScope {
     /// Operation directories are durable evidence and have no deleting Drop.
     /// Keep their actual verified directory FD and the parent phase owner.
     pub fn with_operation(&self, path: &Path) -> Result<Self, ApiError> {
-        crate::projects::check_no_symlinks(path, false)?;
-        let before = std::fs::symlink_metadata(path)?;
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-            .open(path)?;
-        let after = directory.metadata()?;
-        if !before.is_dir() || before.dev() != after.dev() || before.ino() != after.ino() {
-            return Err(ApiError::new(
-                "NODE_PROCESS_OPERATION_CHANGED",
-                "候选操作目录身份已变化，现场保留。",
-            ));
-        }
+        let directory = crate::operation_directory::open(path)?;
         let mut child = self.clone();
         child.owner = Arc::new(OperationOwner {
             _parent: self.owner.clone(),
@@ -106,12 +93,7 @@ impl NodeProcessScope {
                 }
                 if let Some(path) = fault.writer {
                     use std::io::Write;
-                    let mut file = OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .mode(0o600)
-                        .custom_flags(libc::O_NOFOLLOW)
-                        .open(path)?;
+                    let mut file = crate::metadata_file_io::create_new(&path)?;
                     file.write_all(b"actual owned Node writer completed\n")?;
                     file.sync_all()?;
                 }
