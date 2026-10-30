@@ -512,3 +512,11 @@ Windows helper 使用实际私有文件、完整 FileId、父目录范围和 Job
 真实完整 core 库二进制重新构建后，新增 Windows verifier **3/3**、布局 **1/1** 通过。固定源控声明解析成功；临时合成字节从未执行，用于验证真实文件树、中文路径迁移、只读文件仍可读、篡改/缺失/未知成员/metadata 拒绝且不修复调用方材料。实际官方 Node/npm 可执行验证见 W1.6，不能把合成 verifier 测试称作再次运行发行二进制。
 
 Windows 完整 core 编译通过（测试目标仍有 63 项既有/阶段警告）。Mac adapter 单模块实际编译为 ARM64 metadata 通过；尝试整个 core Mac 交叉 check，先补取 Cargo.lock 已锁定的目标源码，随后在 libsqlite3-sys 找不到 Mac C 编译器 `cc` 处停止，尚未检查完整 core。这是 Windows 主机的交叉工具限制，不能当作 Mac 基线测试失败或通过；没有安装 Mac SDK、伪造原生库或减少 Mac 测试。正常桌面资源准备、受管 Job 业务调用及主界面启动仍未完成，运行总门禁保持关闭。
+
+### W1.8 — 启动范围描述符与真实实例协调状态
+
+核对 Mac 构造正文后，Windows WriterOwner 仅按原平台/Node/Web ID 与绝对路径组件规则保存真实范围描述符；此构造不查文件、不创建 marker、不授予写入权限。Windows 自然接受的两种分隔符在 UTF-16 层先统一后分析，避免原始 verbatim 名字将 `/../` 藏在 Normal 组件中；保留未配对 surrogate，不额外拒根/UNC，不引入 ACL 或存在性准入。begin、owner/all clear 和测试 marker 仍明确拒绝，WriterGuard 仍不可构造，不以 descriptor 冒充进程闭合。
+
+StorageManager / CleanupManager 与 Mac 相同，构造只保留实际 paths/store/tasks/maintenance/instance 上下文，创建本实例真实 stop、runner、reader、latest 与删除标记状态。latest_task 查询实例自己的实际 Option 和任务管理器，不再固定报错；None 仅表示该实例没有已提交任务，不证明磁盘没有旧 journal。shutdown/quiesce 真正 join 自己登记的 runner 并等待 reader；失败仍报告 SHUTDOWN_JOIN_FAILED、resource_closed=false。所有未完成扫描、清理、forget 和目录移除仍在接纳前拒绝；finish_deleted_project 只退役内存标记，不代替磁盘成功收据。没有对构造增加整个数据目录必须为空的条件。
+
+真实 core 重新编译后 WriterOwner **4/4**、Storage coordinator **2/2**、Cleanup **3/3** 通过；后者包含原临时目录删除拒绝测试。真实 Tokio worker/reader 未释放时 shutdown 确实等待，故意失败 worker 的错误被实际 join 捕获。Writer 临时现场确认未创建缺失根、保留原文件。独立 coordinator harness 严格 Clippy 通过；首轮真实接线曾因 Rust path 子模块定位错误失败，已改显式路径并经真实 core check/test 验证通过。原 Unix 实现及测试正文未改，没有启动服务、认领旧现场或开放总门禁；主界面和完整 core 回归仍待后续。

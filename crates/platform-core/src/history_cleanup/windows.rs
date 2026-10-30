@@ -1,9 +1,13 @@
-//! Closed until native snapshot/removal, occupancy retry and read-only handling
-//! are implemented. No cleanup plan, ownership receipt or deletion is fabricated.
+//! Instance coordination is real; native snapshot/removal, occupancy retry and
+//! read-only handling remain closed. No cleanup plan or deletion is fabricated.
 use crate::{
     builds::BuildManager, file_identity::PersistedIdentity, ApiError, ProjectStore, RuntimePaths,
     TaskRecord,
 };
+
+#[path = "windows/coordinator.rs"]
+mod coordinator;
+use coordinator::Coordinator;
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
@@ -20,17 +24,29 @@ fn unavailable() -> ApiError {
     .outcome("not_started")
 }
 
-// No instance can exist while construction is closed. In particular shutdown
-// cannot invent a successful receipt for a manager that accepted removal work.
-pub(crate) enum CleanupManager {}
+// Like the macOS constructor, this retains the actual caller's context without
+// scanning, replaying or claiming ownership of any persistent cleanup material.
+pub(crate) struct CleanupManager {
+    _paths: RuntimePaths,
+    _store: Arc<ProjectStore>,
+    tasks: Arc<BuildManager>,
+    _instance_id: String,
+    coordinator: Coordinator,
+}
 impl CleanupManager {
     pub(crate) fn new(
-        _: RuntimePaths,
-        _: Arc<ProjectStore>,
-        _: Arc<BuildManager>,
-        _: String,
+        paths: RuntimePaths,
+        store: Arc<ProjectStore>,
+        tasks: Arc<BuildManager>,
+        instance_id: String,
     ) -> Result<Arc<Self>, ApiError> {
-        Err(unavailable())
+        Ok(Arc::new(Self {
+            _paths: paths,
+            _store: store,
+            tasks,
+            _instance_id: instance_id,
+            coordinator: Coordinator::new(),
+        }))
     }
     pub(crate) fn preview(self: &Arc<Self>) -> Result<TaskRecord, ApiError> {
         Err(unavailable())
@@ -39,7 +55,15 @@ impl CleanupManager {
         Err(unavailable())
     }
     pub(crate) fn latest_task(&self) -> Result<Option<TaskRecord>, ApiError> {
-        Err(unavailable())
+        // This is the actual latest task of this manager instance, matching
+        // the macOS in-memory query. None is not proof of absent disk journals.
+        self.coordinator
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|id| self.tasks.task(id))
+            .transpose()
     }
     pub(crate) async fn forget_deleted_project(
         &self,
@@ -49,14 +73,16 @@ impl CleanupManager {
     ) -> Result<Vec<String>, ApiError> {
         Err(unavailable())
     }
-    pub(crate) fn finish_deleted_project(&self, _: &str) {
-        match *self {}
+    pub(crate) fn finish_deleted_project(&self, id: &str) {
+        // Only this instance's in-memory marker is retired. The still-closed
+        // forget/removal methods cannot supply a disk-cleanup success receipt.
+        self.coordinator.finish_deleted_project(id);
     }
     pub(crate) fn request_stop(&self) {
-        match *self {}
+        self.coordinator.request_stop();
     }
     pub async fn shutdown(&self) -> Vec<crate::shutdown::ShutdownIssue> {
-        match *self {}
+        self.coordinator.shutdown().await
     }
 }
 
