@@ -162,3 +162,11 @@ Windows core lib 再次检查仍失败，诊断 **714 个错误**，已没有 E0
 新增 2 项实际源码测试验证临时登记目录各新层私有、既存父目录不变、新文件不覆盖、硬链接数真实变化，以及对已选文件设置私有 DACL 后身份与字节保留。测试文件明确是非 SQLite 占位字节，**不是 SQLite/WAL/SHM 权限或数据库流程验收**；W2 仍须处理 SQLite 实际创建过程。源码 harness **27/27 通过**，Windows 与 macOS ARM64 全目标严格 Clippy 通过，Mac 仅类型检查。原生 crate **22 通过、1 真实子进程夹具入口默认忽略**。
 
 完整 Windows core lib 仍失败，诊断 **702 个错误**，`projects.rs` 未再报告错误。完整测试目标、项目登记/删除和数据库初始化尚未通过；W0 未完成，未合入 main。
+
+### W0.16 — 元数据修订号与操作目录身份
+
+元数据修订号通过原生文件事实编码：Unix 仍按原顺序使用 dev/ino，以及图标的 len/ino/mtime/mtime_nsec 小端字节；Windows 使用完整卷号/FileId 和原生属性、变化/修改时间，不以截断身份作修订依据。这些字节仅使旧编辑器失效，不授予文件操作权限。`metadata_file_io.rs` 收拢原读取 flags、单链接/大小界限、新文件 0600 与改名发布；Mac 的文件刷新、rename、committed 置位和父目录 fsync 顺序保留。Windows 发布后身份未知会保留关联材料并返回 unknown，不能走提交前清理分支。
+
+`node_process_scope.rs` 的操作目录读取交给 `operation_directory.rs`：Unix 保留原 symlink_metadata、打开 flags 和 dev/ino 检查，Windows 在前后核对完整身份并持有实际目录句柄。测试用延迟写入也经文件适配创建，没有将虚构的 Unix 权限值用于 Windows。元数据原有 Mac inode/符号链接断言保留，Windows 补充对应完整身份/目录联接断言；尚未执行该完整业务测试文件。
+
+新增 3 项真实临时对象测试，验证元数据读取大小界限及硬链接/联接拒绝、独占占用时旧字节和 stage 保留且 committed 为 false、释放重试成功且修订身份改变、持有操作目录时改名失败以及释放后拒绝同名联接。实际源码 harness **30/30 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；原生 crate 两个目标的全目标严格 Clippy 通过。Mac 只是目标类型检查，不是实际回归。完整 core lib 仍失败，诊断 **682 个错误**，本步业务/适配模块未报告错误；没有验证真实 GUI、图标导入全链或 Node 作业关闭，W0 未完成。

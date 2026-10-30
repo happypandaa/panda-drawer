@@ -1,4 +1,4 @@
-//! Read-only facts for bundled-tool verification. Unix permissions remain Unix
+//! Read-only file facts for tool verification and metadata revisions. Unix permissions remain Unix
 //! permissions; Windows uses real file IDs/attributes and ordinary read access.
 use std::{
     borrow::Cow,
@@ -89,6 +89,60 @@ impl Facts {
         #[cfg(windows)]
         {
             self.stamp.identity == other.stamp.identity
+        }
+    }
+    /// Existing Unix revision bytes, or the complete native Windows identity.
+    /// These bytes invalidate editors; they never authorize a file operation.
+    pub fn identity_revision_bytes(&self) -> Vec<u8> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            [
+                self.metadata.dev().to_le_bytes(),
+                self.metadata.ino().to_le_bytes(),
+            ]
+            .concat()
+        }
+        #[cfg(windows)]
+        {
+            let crate::directory::ObjectIdentity::Windows {
+                volume_serial,
+                file_id,
+            } = &self.stamp.identity
+            else {
+                unreachable!("Windows file facts always carry a Windows identity");
+            };
+            [volume_serial.to_le_bytes().as_slice(), file_id.as_slice()].concat()
+        }
+    }
+    pub fn content_revision_bytes(&self) -> Vec<u8> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            [
+                self.metadata.len().to_le_bytes(),
+                self.metadata.ino().to_le_bytes(),
+                self.metadata.mtime().to_le_bytes(),
+                self.metadata.mtime_nsec().to_le_bytes(),
+            ]
+            .concat()
+        }
+        #[cfg(windows)]
+        {
+            let crate::directory::Change::Windows {
+                length,
+                attributes,
+                modified_100ns,
+                changed_100ns,
+            } = &self.stamp.change;
+            [
+                self.identity_revision_bytes(),
+                length.to_le_bytes().to_vec(),
+                attributes.to_le_bytes().to_vec(),
+                modified_100ns.to_le_bytes().to_vec(),
+                changed_100ns.to_le_bytes().to_vec(),
+            ]
+            .concat()
         }
     }
     pub fn unchanged(&self, other: &Self) -> bool {

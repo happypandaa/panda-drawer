@@ -8,9 +8,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Cursor, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    fs,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -119,8 +118,9 @@ impl MetadataManager {
 
     fn snapshot(&self, id: &str) -> Result<Snapshot, ApiError> {
         let (root, _) = self.store.metadata_root(id)?;
-        let root_stat = fs::symlink_metadata(&root)?;
-        let workspace_stat = fs::symlink_metadata(self.store.workspace_root())?;
+        let root_stat = platform_native::tool_files::Facts::capture(&root)?;
+        let workspace_stat =
+            platform_native::tool_files::Facts::capture(self.store.workspace_root())?;
         let epoch = self.store.registered_epoch(id)?;
         let registration_path = self
             .store
@@ -159,10 +159,8 @@ impl MetadataManager {
         digest.update(self.instance_id.as_bytes());
         digest.update(id.as_bytes());
         digest.update(root.to_string_lossy().as_bytes());
-        digest.update(workspace_stat.dev().to_le_bytes());
-        digest.update(workspace_stat.ino().to_le_bytes());
-        digest.update(root_stat.dev().to_le_bytes());
-        digest.update(root_stat.ino().to_le_bytes());
+        digest.update(workspace_stat.identity_revision_bytes());
+        digest.update(root_stat.identity_revision_bytes());
         digest.update(epoch.as_deref().unwrap_or("unregistered").as_bytes());
         match &manifest_bytes {
             Ok(bytes) => digest.update(bytes),
@@ -182,11 +180,8 @@ impl MetadataManager {
                 .and_then(|path| {
                     // Include bounded invalid-content fingerprints and file metadata as well
                     // as validity, so an externally repaired icon invalidates old editors.
-                    if let Ok(meta) = fs::symlink_metadata(&path) {
-                        digest.update(meta.len().to_le_bytes());
-                        digest.update(meta.ino().to_le_bytes());
-                        digest.update(meta.mtime().to_le_bytes());
-                        digest.update(meta.mtime_nsec().to_le_bytes());
+                    if let Ok(meta) = platform_native::tool_files::Facts::capture(&path) {
+                        digest.update(meta.content_revision_bytes());
                     }
                     let bytes = read_file(&path, ICON_MAX)?;
                     digest.update(&bytes);
@@ -280,16 +275,11 @@ impl MetadataManager {
             let directory = path.parent().expect("icon parent");
             fs::create_dir_all(directory)?;
             check_no_symlinks(directory, false)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&path)?;
+            let mut file = crate::metadata_file_io::create_new(&path)?;
             let written = file
                 .write_all(&bytes)
                 .and_then(|()| file.sync_all())
-                .and_then(|()| File::open(directory)?.sync_all());
+                .and_then(|()| platform_native::filesystem::sync_directory(directory));
             if let Err(error) = written {
                 let _ = fs::remove_file(&path);
                 return Err(error.into());
@@ -394,28 +384,8 @@ fn icon_path(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
     }
     checked_relative(root, relative, false)
 }
-fn read_file(path: &Path, max: u64) -> Result<Vec<u8>, ApiError> {
-    check_no_symlinks(path, false)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.nlink() != 1 {
-        return Err(invalid("Only independent regular files are accepted"));
-    }
-    if metadata.len() > max {
-        return Err(invalid(format!(
-            "File exceeds internal size limit of {max} bytes"
-        )));
-    }
-    let mut bytes = Vec::new();
-    file.take(max + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max {
-        return Err(invalid("File grew beyond the size limit while reading"));
-    }
-    Ok(bytes)
-}
+use crate::metadata_file_io::read_file;
+
 fn decode_png(bytes: &[u8]) -> Result<(u32, u32), ApiError> {
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(invalid("Icon must be a decodable PNG"));
@@ -482,18 +452,11 @@ fn commit_manifest(path: &Path, value: &Value, committed: &mut bool) -> Result<(
         .ok_or_else(|| invalid("Manifest has no parent"))?;
     let temporary = parent.join(format!(".metadata-{}.tmp", Uuid::new_v4().simple()));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)?;
+        let mut file = crate::metadata_file_io::create_new(&temporary)?;
         file.write_all(&serde_json::to_vec_pretty(value)?)?;
         file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        *committed = true;
-        File::open(parent)?
-            .sync_all()
+        crate::metadata_file_io::publish_file(&temporary, path, committed)?;
+        platform_native::filesystem::sync_directory(parent)
             .map_err(|e| ApiError::from(e).outcome("committed"))?;
         Ok(())
     })();
