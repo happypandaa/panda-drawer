@@ -418,3 +418,17 @@ Windows `platform-cli` 生产目标检查通过，核心库测试目标最初有
 完整 core 测试中两项生成源码归属用例，在进入完整身份绑定之前被原 Unix components 白名单拒绝了 Windows 的 canonical VerbatimDisk 前缀。将纯词法判断委托 `platform-native::filesystem::is_explicit_non_root_absolute_path`：Mac 的绝对路径、非根目录和 RootDir/Normal 判断与原源码比较一致；Windows 仅额外接纳 Prefix。不引入存在性、UTF-8、ACL、canonicalize 相等或盘型准入；网络/内置 NTFS 限制仍属于工作区层，语法通过不等于获得目录归属或删除许可。
 
 新增原生 Windows 专项 **2/2 通过**，覆盖中文空格 canonical 缺失子路径、不创建材料、Disk/VerbatimDisk/UNC 表示，以及相对、盘根、ParentDir 拒绝。Windows / Mac ARM64 全目标严格 Clippy 通过，Mac 仅类型检查。随后在真实完整 core 二进制分别执行原 `generated_roots_are_explicit_and_identity_bound` 与 `missing_known_generated_material_on_another_volume_is_not_deleted`，均 **1/1 通过**；保留原测试体、对象替代拒绝及缺失身份拒绝断言，没有启用任何删除流程。其余 371 个库测试及 9 个集成测试分别过滤，尚未重跑完整 core，不能据此换算完整测试新通过数。W0 未完成，未合入 main。
+
+### W0.44 — 原生桌面派发与 Node 目录观察；桌面仍有 3 项失败
+
+`local_directory.rs` 的 Mac Finder 命令正文与错误政策保持。Windows 改为当前 SystemRoot 下的 explorer.exe 加独立路径参数，选择文件也保持一个 OsString 参数，不经 cmd、不做有损 UTF-8 转换。Explorer 会把请求转交已有 shell，退出码不可靠，因此只报告派发创建失败，不等待退出或 kill 用户的 Explorer。实际命令构造专项 **1/1 通过**，覆盖中文空格及 shell 字符、逗号和相对路径拒绝；尚未实测真实 Explorer 窗口定位、选中文件或长路径。
+
+`codex_handoff` 原 Mac 全文及 3 个测试同层保留，Unix 命令没有在 Windows 上尝试执行。Windows 安装验证/自动打开在完成前立即返回 PLATFORM_FEATURE_UNAVAILABLE / not_started，不创建应用或启动 fallback。真实桌面二进制的两项临时现场门禁测试 **2/2 通过**；这不是完成 Windows 自动打开编辑器，也不是永久不支持，手动复制接手说明继续由现有界面提供。
+
+`native_process` 的 finish/status/output 生产正文逐字不变，Mac 两个原命令与断言保留。Windows 固定系统 cmd 输出夹具实际写出准确字节；超时夹具精确启动当前测试 exe 的 ignored 子测试，等待临时 ready 文件后才调用真实 finish 的 kill 与 wait，验证 child 被回收。实际桌面专项 **2 通过、1 ignored 子进程夹具**；该 ignored 项实际由父测试运行，不是跳过待测行为。此证明仅涉及短本机派发子进程，不代表 Node Job 归属完成。
+
+进一步定位更正 W0.41 对 Node 生命周期失败的初步归因：最先发生的 os error 1 来自 ordinary_path 查询孤立的 Windows VerbatimDisk 前缀，尚未到目录 fsync。现在路径遍历委托已有原生适配，并在原 symlink 拒绝位置覆盖全部重解析点。9 处明确目录同步委托 sync_directory；Windows 仍打开并核对真实目录后才跳过无等价的目录刷新，Mac File::open(dir)?.sync_all() 原样，文件刷新、Mac 已开 HANDLE 刷新及 NotFound 政策均不变。
+
+新增真实 core 专项 **3/3 通过**：中文空格 canonical 路径与文件/目录/缺失区分，真实 JSON 与 start-intent 文件写入、不覆盖及缺失父目录不创建，真实目录联接自身/祖先拒绝且原目标完整身份/字节保留。只移除临时测试现场创建的 junction；没有运行真实项目删除。首轮并行审查时测试夹具曾误用旧类型名，编译失败后已改成真实 StartIntentOwnership，以上为修正后的实际测试结果。
+
+在新的隔离用户目录重新运行完整桌面测试，结果 **77 通过、3 失败、1 ignored 子进程夹具**。仍失败的是 Node 生命周期 1 项（现暴露正确的 NODE_DELETION_PLATFORM_UNSUPPORTED）及窗口尺寸缓存发布 2 项（WINDOW_CACHE_UNSUPPORTED）。没有跳过或删除这 3 项取得绿色，也没有把替换平台夹具的前后总数当作相同覆盖。完整 core 尚未重跑，Mac CI 仍待执行。未启动平台服务或生成安装包，W0 未完成，未合入 main。

@@ -854,9 +854,9 @@ impl NodeApps {
         let synced = (|| {
             // Sync the UUID slot plus both ancestors for new publication and
             // explicit recovery of an existing registration alike.
-            fs::File::open(self.root.join(id))?.sync_all()?;
-            fs::File::open(&self.root)?.sync_all()?;
-            fs::File::open(&self.data_root)?.sync_all()?;
+            platform_native::filesystem::sync_directory(&self.root.join(id))?;
+            platform_native::filesystem::sync_directory(&self.root)?;
+            platform_native::filesystem::sync_directory(&self.data_root)?;
             Ok::<(), ApiError>(())
         })();
         synced.map_err(|error| {
@@ -1727,10 +1727,8 @@ fn ordinary_path(path: &Path, directory: bool) -> Result<()> {
     {
         return Err(fail("应用路径必须为规范的绝对路径。"));
     }
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component);
-        if fs::symlink_metadata(&current)?.file_type().is_symlink() {
+    for current in platform_native::filesystem::path_components(path) {
+        if platform_native::filesystem::is_reparse(&fs::symlink_metadata(&current)?) {
             return Err(fail("应用路径不能经过符号链接。"));
         }
     }
@@ -1924,7 +1922,7 @@ impl StartIntentOwnership {
         let mut file = options.open(path)?;
         file.write_all(&contents)?;
         file.sync_all()?;
-        fs::File::open(path.parent().unwrap())?.sync_all()?;
+        platform_native::filesystem::sync_directory(path.parent().unwrap())?;
         Ok(Self { file, contents })
     }
 
@@ -1976,8 +1974,8 @@ impl StartIntentOwnership {
         // Persist the fail-closed gate before removing anything from active.
         // A crash or any subsequent error leaves this evidence for recovery.
         directory.create(&cleanup)?;
-        fs::File::open(&cleanup)?.sync_all()?;
-        fs::File::open(parent)?.sync_all()?;
+        platform_native::filesystem::sync_directory(&cleanup)?;
+        platform_native::filesystem::sync_directory(parent)?;
         let captured = cleanup.join("captured-intent");
         move_node_record_exclusive(path, &captured).map_err(|_| changed())?;
         observe(IntentCleanupPoint::Captured);
@@ -1999,14 +1997,14 @@ impl StartIntentOwnership {
         // Unlink only the verified object inside our exclusive private slot.
         // Never unlink the mutable public active path after a check.
         fs::remove_file(&captured)?;
-        fs::File::open(&cleanup)?.sync_all()?;
+        platform_native::filesystem::sync_directory(&cleanup)?;
         match fs::symlink_metadata(path) {
             Ok(_) => return Err(changed()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
         }
         fs::remove_dir(&cleanup)?;
-        fs::File::open(parent)?.sync_all()?;
+        platform_native::filesystem::sync_directory(parent)?;
         Ok(())
     }
 }
@@ -2084,8 +2082,95 @@ fn write_new_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let mut file = options.open(path)?;
     file.write_all(&serde_json::to_vec_pretty(value)?)?;
     file.sync_all()?;
-    fs::File::open(path.parent().unwrap())?.sync_all()?;
+    platform_native::filesystem::sync_directory(path.parent().unwrap())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod native_directory_io_tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_path_rejects_a_real_junction_and_its_children_without_changing_the_target() {
+        let temporary = tempfile::Builder::new()
+            .prefix("disposable-node-path-junction-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let target = root.join("disposable-target");
+        let link = root.join("disposable-junction");
+        fs::create_dir(&target).unwrap();
+        let payload = target.join("record.json");
+        fs::write(&payload, b"disposable retained bytes").unwrap();
+        let identity = crate::file_identity::PersistedIdentity::capture(&target).unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Could not create disposable junction"
+        );
+        assert!(ordinary_path(&link, true).is_err());
+        assert!(ordinary_path(&link.join("record.json"), false).is_err());
+        assert!(identity.matches_path(&target).unwrap());
+        assert_eq!(fs::read(&payload).unwrap(), b"disposable retained bytes");
+        fs::remove_dir(&link).unwrap();
+        ordinary_path(&target, true).unwrap();
+        assert_eq!(fs::read(&payload).unwrap(), b"disposable retained bytes");
+    }
+
+    #[test]
+    fn canonical_directory_observation_keeps_file_types_and_missing_paths_distinct() {
+        let temporary = tempfile::Builder::new()
+            .prefix("disposable-node-native-directory-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let file = root.join("record.json");
+        fs::write(&file, b"disposable original").unwrap();
+        ordinary_path(&root, true).unwrap();
+        ordinary_path(&file, false).unwrap();
+        assert!(ordinary_path(&root, false).is_err());
+        assert!(ordinary_path(&file, true).is_err());
+        let missing = root.join("missing");
+        assert!(ordinary_path(&missing, true).is_err());
+        assert!(!missing.exists());
+        assert_eq!(fs::read(&file).unwrap(), b"disposable original");
+    }
+
+    #[test]
+    fn json_and_start_intent_keep_file_writes_and_directory_observation() {
+        let temporary = tempfile::Builder::new()
+            .prefix("disposable-node-native-write-中文 space-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let record = root.join("record.json");
+        let value = json!({"disposable": "中文 persisted bytes"});
+        write_new_json(&record, &value).unwrap();
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+        assert!(write_new_json(&record, &json!({"replacement": true})).is_err());
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+
+        let intent = root.join("start-intent.json");
+        let guard = StartIntentOwnership::create(&intent, &value).unwrap();
+        assert_eq!(guard.contents, bytes);
+        assert_eq!(fs::read(&intent).unwrap(), bytes);
+        drop(guard);
+
+        let missing = root.join("missing").join("record.json");
+        assert!(write_new_json(&missing, &value).is_err());
+        assert!(!missing.parent().unwrap().exists());
+        let error =
+            platform_native::filesystem::sync_directory(missing.parent().unwrap()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!missing.parent().unwrap().exists());
+    }
 }
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
