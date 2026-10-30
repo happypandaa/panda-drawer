@@ -344,3 +344,14 @@ Git 导入的私有临时目录创建委托 `import_directory_io.rs`；Unix 保�
 新增共用格式专项，直接使用实际 FileEntry 验证原 JSON 字节形状、缺失默认值、null 拒绝，及数字模式/Windows 变体格式；这些只是格式检查，不证明完整归档。新增实际 Windows 私有文件只读往返专项，验证属性可设置/清除、完整身份和字节不变、私有 DACL 保留、旧数字只读模式可映射、缺失不创建。源码 harness **63/63 通过**，Windows / macOS ARM64 全目标严格 Clippy 通过；原生两目标全目标严格 Clippy 通过。Mac 仅类型检查，未执行完整归档、SQLite、ZIP 导入/导出或恢复。
 
 完整 Windows core lib 仍失败，诊断 **99 个错误、14 个警告**，归档与权限适配无错误。初始 CI 基线 macOS/Windows 仍排队，Mac 原始基线没有结果；不得据此声称绿色。生命周期外部导出发布仍关闭，W0 未完成，未合入 main。
+
+
+### W0.37 — 工作区原生卷与复制边界
+
+工作区原生卷信息、同步目录政策、清单收集、复制与阶段日志追加收拢到 `workspace_file_io.rs`，Mac 原实现保留在 `workspace_file_io/unix.rs`。collect/copy_entries/synced_path/filesystem 四个函数与上个提交逐项按可见性/空白规范化核对一致；原 APFS/local 的正式/测试准入条件和拒绝文案搬入同一适配层，阶段日志仍按原 create+append+0600 写入并刷新。原 Entry 声明保持原字段与 JSON，改为适配层内部共享数据，没有据此生成任何 Windows mode。原 workspace 测试保留并按 Unix 构建，将其 symlink 依赖改为测试本身显式导入。
+
+Windows 的实际 NTFS/内置磁盘与同步目录核对、迁移快照/复制/恢复和阶段日志原生处理尚未完成，入口明确返回 `workspace-native-migration` 的未完成错误，不返回虚构的本机卷类型、余量、复制收据或干净工作区。卷信息影响设置显示，必须在 W1 补齐；完整公开迁移与旧根清理必须在 W5 补齐，不是永久不支持迁移。
+
+新增真实 Windows 临时材料门禁专项：失败时源目录完整身份/字节保留，候选不创建，既有日志不追加、缺失日志不创建；入口拒绝发生在本模块 I/O 前，未运行真实迁移。实际源码 harness **64/64 通过**及 Windows 全目标严格 Clippy 通过；Mac ARM64 严格 Clippy 首次发现独立 include 缺少显式 Unix 模块路径，补齐后全部通过。Mac 包含搬移后原生函数的目标类型检查，但未运行原工作区业务测试。
+
+完整 Windows core lib 仍失败，诊断 **90 个错误、13 个警告**，工作区调用及新适配无错误。W0 未完成，未合入 main。

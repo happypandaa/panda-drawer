@@ -87,6 +87,7 @@ mod web_project_ownership;
 pub mod webview_storage;
 mod window_cache_io;
 mod workspace;
+mod workspace_file_io;
 mod workspace_migration_cleanup;
 pub use tasks::{TaskRecord, TaskStatus};
 
