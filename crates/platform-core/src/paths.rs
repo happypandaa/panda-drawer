@@ -183,8 +183,7 @@ impl RuntimePaths {
         }
         let mut paths = Self::at(root);
         paths.validate_marker()?;
-        ensure_directory_tree(&paths.runtime_dir())?;
-        ensure_directory_tree(&paths.migrations_dir())?;
+        paths.prepare_runtime_directories()?;
         let settings_path = paths.settings_path();
         if !settings_path.try_exists()? {
             if fs::read_dir(paths.migrations_dir())?.next().is_some() {
@@ -236,6 +235,13 @@ impl RuntimePaths {
         }
         paths.validate_existing()?;
         Ok(paths)
+    }
+
+    fn prepare_runtime_directories(&self) -> Result<()> {
+        crate::workspace::require_supported_startup_inventory(self.data_root())?;
+        ensure_directory_tree(&self.runtime_dir())?;
+        ensure_directory_tree(&self.migrations_dir())?;
+        Ok(())
     }
 
     pub fn data_root(&self) -> &Path {
@@ -984,3 +990,7 @@ mod tests {
         assert!(!is_home_workspace(&data, &data.join("workspace")));
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "paths/windows_startup_tests.rs"]
+mod windows_startup_tests;
