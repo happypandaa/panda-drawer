@@ -484,3 +484,13 @@ Windows 实现固定真实父目录 HANDLE、完整 FileId 与私有不可变 jo
 真实完整 core 测试二进制中相关专项 **13 通过、1 ignored 专用写入子进程夹具**；包括两个改名边界真实 kill+wait 写入进程后重开恢复、每个确定边界中断、连续 12 次发布、并发排除、外部替换/字节/身份冲突、私有读取与 journal 政策。另用真实桌面二进制重跑原两项窗口缓存业务测试，均 **2/2 通过**。专项源码 harness 双目标严格 Clippy 通过；Mac 只类型检查，尚无真实 CI/运行结果。没有做断电实测。
 
 完整桌面组在该后端初版完成时实测 **79 通过、1 失败、1 ignored 子进程夹具**，剩余失败为 Node 删除事务尚未实现；退役政策修正后的新增专项和原两项业务已再次通过，未把完整桌面组称为绿色。完整 core、正常资源打包、主界面启动与 W1 验收仍待后续，W0/W1 未正式完成。
+
+### W1.5 — 普通用户权限的卷设备拓扑观察
+
+在 W1.2 的真实卷事实基础上，新增只读内置性观察：从目录 HANDLE 取得卷 GUID，打开该实际卷并读取全部磁盘 extents；枚举当前 disk 接口，用实际 STORAGE_DEVICE_NUMBER 匹配 PnP devnode，读取 InLocalMachineContainer 的原生 BOOL。只有类型/长度/255 值正确且全部 backing disk 证据明确，才可能报告 true；false 与未知分开。保持卷/磁盘 HANDLE，前后复核设备号和完整 extent 映射，不缓存可能复用的盘号。
+
+fixed、NVMe、没有 hotplug 或没有查询错误均不作为内置证明。缺失/冲突/变化保留 null 与诊断；虚拟、文件后端、Storage Spaces、fabric/iSCSI 和未知拓扑未溯源时不升格为 true。普通文件系统/空间事实仍可返回。core 的诊断 JSON 已接入 internal、internalDiskNumbers、internalDiagnostic；没有因此开放迁移准入或宣称所有虚拟存储支持完成。
+
+原生专项 **9/9 通过**：extent 多盘/重复/截断/零值/超大值、BOOL 值与类型、聚合与未知 bus、GUID 路径，以及实际普通未提升用户的 C 盘临时目录 / D 盘仓库目录只读观察。两盘实际分别绑定 disk 0 / 1，NTFS、internal=true；测试只要求返回结构/身份保持，不要求所有测试机器都为内置。Windows 全目标严格 Clippy 与 Mac ARM64 交叉 Clippy 通过，后者仅类型检查。root 另执行真实 core 工作区边界专项 **1/1 通过**，迁移/复制/阶段日志仍拒绝且保留现场。
+
+没有修改系统 ACL、注册表或安装工具，没有读写真实项目内容。USB、Thunderbolt、网络/映射盘、物理拔盘尚未实测，不能作为第 7 节迁移验收通过。原生语义依据 [Microsoft volume extents](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-ioctl_volume_get_volume_disk_extents)、[storage device number](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-ioctl_storage_get_device_number) 和 [PnP property API](https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/nf-cfgmgr32-cm_get_devnode_propertyw)。同步根发现与实际工作区迁移仍待后续。
