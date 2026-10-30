@@ -548,3 +548,9 @@ native-packager 新 Git 模块复用实际私有新建、全部目录先固定�
 最终实际组合 JS **14/14、0 skip**（原 Windows Node 8 + MinGit 6）；native 全组 **45 通过、1 ignored 专用子进程夹具**，packager **8/8**；Win/Mac ARM64 交叉严格 Clippy 通过，Mac 仍仅类型检查。真实 Git 2.56.0.windows.4 在中文空格迁移目录完成版本、exec-path、临时仓库 init/add/commit/switch/本地 clone；另无 --template 的默认 init，生成的 description、info/exclude、hooks/pre-commit.sample 与已验证模板逐字节相同。损坏包、占用、junction/hardlink、尾部分隔符重叠及错流 partial 清理均实际通过。
 
 正式固定 URL 经 GitHub 官方 release-assets 重定向的联网下载/receiver/prepare 入口也通过；首次 TLS 建立前 ECONNRESET 没有生成缓存/输出，随后在全新目录重试成功。没有将本地 clone 冒充 GitHub/Gitee 远程导入，没有操作真实仓库或项目、旧 resources 或 runner。未改 Mac 三份原 release JSON/打包默认入口；尚未接正常 desktop prepare 或 core Git 锚点，不代表 W1/W4/W6 验收完成。
+
+### W1.12 — Windows 安装资源与复制后 sidecar 的定位
+
+`resource_info` 经 desktop_installation 适配层委托。Mac 原完整函数正文、错误与 debug fallback 逐字保留；Windows 仅使用 Tauri resource_dir/resources 和当前桌面 exe 旁的 local-projects-dev.exe，不选旧源码 resources、Mac 无扩展名或带 target triple 的打包源 sidecar。资源缺失时保留原布尔诊断/None，真正准入仍由 core 验证；不从路径存在性生成完整性证明，没有新增任意根覆盖或旧数据兼容入口。
+
+真实桌面二进制专项 **3/3**：中文路径与部署后固定文件名、缺失时不选择同目录旧名字/源目录、临时资源布尔报告与不可读文本，所有合成 sidecar 字节从未执行，调用方材料保留。构建使用资源排除诊断配置，尚未证明真实 Tauri dev/安装包的部署行为；正常 Windows fresh 资源准备仍在接入验证。未改 Mac 行为，CI 仍待实际执行。

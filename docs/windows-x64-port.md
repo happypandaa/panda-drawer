@@ -96,6 +96,7 @@
 | SDK 与起始模板打包的 npm | 原 `spawnSync('npm', args)` | 使用当前 Node 直接执行实际 `npm-cli.js`；参数保持数组，找不到入口时报错，不回退到 `.cmd` | `scripts/npm-command.mjs`，接入 `package-sdk.mjs`、`package-template.mjs`；Mac 原 npm 调用保持 |
 | 开发验证脚本的父路径组件 | 按 `/` 分割，仅拒绝 `..`，`.` 继续交给 normalize | 同时按 `/` 与 `\` 分割，只拒绝同样的 `..`；不改变 Mac 反斜杠普通文件名语义，不启用 Windows 更新 | `scripts/native-path.mjs`，接入 `update-artifact-verification.mjs`、`update-manifest.mjs` |
 | 内置 Git | 源码构建的 Mac arm64 Git | 官方固定 **MinGit 2.56.0.windows.4 64 位**，完整 ZIP/许可证/文件树摘要，保留 UCRT64 布局；校验后用真实 Job 探测 cmd/git.exe，再以绑定源 HANDLE 不覆盖发布 | Mac 原 release/源码构建入口保持；Windows：`development-git-release.windows-x64.json`、`package-development-git-windows.mjs`、`tools/native-packager/src/windows/git.rs`；core 受管锚点/路径接入仍待 W1 |
+| 安装资源与平台 CLI 定位 | Tauri 资源目录；debug 原源码资源/带 Mac triple sidecar fallback | 仅 Tauri resource_dir 下的 resources，以及桌面 exe 旁已复制的 local-projects-dev.exe；缺失如实报告，不回退旧源码资源或带 triple 的打包源文件名 | `apps/desktop/src-tauri/src/desktop_installation/{macos,windows}.rs`；main 委托，原 Mac 函数正文保持 |
 | Git 子进程环境 | Unix PATH、`/dev/null`、`/usr/bin/false`、冒号分隔 | Windows PATH（分号分隔）、`NUL`；临时路径含 `D:\` 不能被拒；保持现有的禁用凭据助手、提示、hooks、filters、全局配置的策略；加 `-c core.longpaths=true` | `git_environment.rs`、`git_remote.rs` |
 | 资源完整性锚点 | 编译时写入资源摘要（`signed_resources_unix.rs`） | 实现 Windows 对应版本，覆盖 Windows 资源树 | `crates/platform-core/build_support/` |
 | 运行门禁 | — | `platform_support.rs` 当前对 Windows 返回 `PLATFORM_STAGE_UNAVAILABLE`。在 W1 完成时改为开放，未完成的能力用第 2 节第 3 条的方式单独关闭 | `platform_support.rs` |
