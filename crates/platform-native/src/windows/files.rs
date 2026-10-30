@@ -542,6 +542,27 @@ pub fn open_private_file(path: &Path, create: bool, create_new: bool) -> io::Res
     Ok(file)
 }
 
+/// Attribute-only access that intentionally follows links, used solely where
+/// local-tool selection already permits package-manager indirection.
+pub fn following_metadata_file(path: &Path) -> io::Result<File> {
+    let name = native_path(path)?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_handle(raw) })
+}
+
 pub fn rename_file(source: &Path, destination: &Path, replace: bool) -> io::Result<()> {
     let _source_parent = pin_parent(source)?;
     let _destination_parent = pin_parent(destination)?;

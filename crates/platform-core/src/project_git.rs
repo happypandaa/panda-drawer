@@ -1860,8 +1860,8 @@ fn git_command(tools: &GitToolchain, private: &Path, project: Option<&ProjectHan
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    crate::owned_process::prepare_command(&mut command);
     if let Some(path) = &tools.exec_path {
         command.env("GIT_EXEC_PATH", path);
     }

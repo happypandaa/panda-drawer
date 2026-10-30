@@ -48,7 +48,7 @@
 
 | 能力 | Mac 现在的做法 | Windows 实现 | 现在位置（主要） |
 |---|---|---|---|
-| 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。停止时先发 stdout 协议的关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不要用 Ctrl+Break 代替 | Windows 原语：`crates/platform-native/src/windows/process.rs`；业务接入点：`owned_process*.rs`、`node_runtime_trial.rs`、`node_process_identity.rs`、`git_environment.rs`、`builds.rs` |
+| 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。停止时先发 stdout 协议的关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不要用 Ctrl+Break 代替 | 请求配置收拢到 `owned_process::prepare_command`；Windows 原语：`crates/platform-native/src/windows/process.rs`；实际 Registry/Node 业务接入仍待完成：`owned_process*.rs`、`node_runtime_trial.rs`、`builds.rs` |
 | 子进程管道 | `UnixStream::pair` | 匿名管道（tokio `process` 的 piped stdio 或 Win32 管道），协议内容不变 | `owned_process.rs` |
 | 退出状态 | `waitid`、信号 | `GetExitCodeProcess`；没有信号，界面显示退出码 | `node_runtime_trial.rs` |
 | 进程身份核对 | PID + 启动时间 + 进程组 | PID + `GetProcessTimes` 完整 100 纳秒创建时间 + `QueryFullProcessImageNameW` 路径。旧标记只观察，不取得 Job 终止权限 | 边界：`node_process_identity.rs`；Mac 原实现：`node_process_identity/unix.rs`；Windows：`node_process_identity/windows.rs` 与 `platform-native/src/windows/process.rs`；标记接入：`node_run_marker.rs` |
@@ -57,7 +57,7 @@
 | 私有文件和目录 | 目录 0700、文件 0600、校验属主 uid | 创建时设置受保护的 DACL：只授予当前用户 SID 完全控制，不继承父目录权限。校验属主为当前用户；初始化已选空数据根时只设置该目录自己的私有访问，不改变属主或系统父目录 ACL | 共享文件适配：`crates/platform-native/src/filesystem.rs`；启动根已接入 `paths.rs`；日志原生操作：`crates/platform-native/src/runtime_logs/`；Windows 原语：`crates/platform-native/src/windows/files.rs`；待接入：`durable_writer.rs`、`node_app_configuration.rs` |
 | 文件身份 | dev + ino、nlink | 卷序列号 + 完整 128 位 FileId（`GetFileInformationByHandleEx` / `FileIdInfo`）、链接数 | Windows 原语：`crates/platform-native/src/windows/files.rs`；业务接入点：`file_identity.rs`、`metadata.rs` |
 | 只读目录观察与变化核对 | fdopendir / readdir / fstatat；dev/ino + mode/mtime/ctime | 固定实际目录 HANDLE 的作用域，按名称有界枚举；完整 FileId + FileBasicInfo 的原生属性/写入及变化时间，不伪造 Unix 元数据 | `platform-native/src/directory.rs` 及 `directory/unix.rs`、`directory/windows.rs`；求助摘录通过 `project_review.rs` 接入 |
-| 符号链接 | `O_NOFOLLOW`，拒绝符号链接 | 以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，**拒绝所有重解析点**（符号链接、目录联接、挂载点），与 Mac 拒绝符号链接的位置一一对应 | 文件 API 边界：`files.rs` / `files/unix.rs` / `files/windows.rs`；原生句柄作用域：`platform-native/src/windows/files.rs`；其他接入：`file_identity.rs`、`native_project_files.rs`、`source_publication.rs` |
+| 符号链接 | `O_NOFOLLOW`，拒绝符号链接；明确选择本地工具时保留包管理器链接解析 | 以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开，**拒绝所有重解析点**（符号链接、目录联接、挂载点），与 Mac 拒绝符号链接的位置一一对应；明确工具选择按原策略解析链接 | 共用预检查：`path_checks.rs`；文件 API：`files.rs` / `files/unix.rs` / `files/windows.rs`；原生句柄：`platform-native/src/windows/files.rs`；Git 选择文件边界：`git_environment/files.rs`；其他接入：`file_identity.rs`、`native_project_files.rs`、`source_publication.rs` |
 | 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | 文件 API 已接入 `files/windows.rs`；原生交付的 Mac 实现在 `native_project_files/unix.rs`，Windows 入口在 journal 未实现前明确拒绝；其他待接入：`durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明 | `durable_writer.rs` |
 | 单实例锁 | 文件锁 | `LockFileEx` | `paths.rs` |

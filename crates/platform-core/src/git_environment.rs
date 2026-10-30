@@ -4,22 +4,21 @@
 use crate::{
     environment::ExecutableInfo,
     owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions},
-    projects::check_no_symlinks,
     ApiError,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, Metadata, OpenOptions},
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     sync::Arc,
     time::Duration,
 };
 use tokio::{io::AsyncReadExt, process::Command};
 
-const MAX_SETTINGS_BYTES: u64 = 16 * 1024;
+#[path = "git_environment/files.rs"]
+mod files;
+use files::{absolute_clean, ordinary_executable, read_settings_bytes, settings_error};
+
 const MAX_PROBE_BYTES: usize = 16 * 1024;
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -265,68 +264,6 @@ impl GitEnvironmentManager {
     }
 }
 
-fn settings_error(message: impl Into<String>) -> ApiError {
-    ApiError::new("GIT_TOOLCHAIN_SETTINGS_INVALID", message)
-}
-fn absolute_clean(path: &Path) -> bool {
-    path.is_absolute()
-        && path
-            .to_str()
-            .is_some_and(|value| !value.contains('\\') && !value.chars().any(char::is_control))
-        && !path
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-}
-fn unchanged(left: &Metadata, right: &Metadata) -> bool {
-    left.dev() == right.dev()
-        && left.ino() == right.ino()
-        && left.mode() == right.mode()
-        && left.nlink() == right.nlink()
-        && left.len() == right.len()
-        && left.mtime() == right.mtime()
-        && left.mtime_nsec() == right.mtime_nsec()
-        && left.ctime() == right.ctime()
-        && left.ctime_nsec() == right.ctime_nsec()
-}
-fn read_settings_bytes(path: &Path) -> Result<Option<Vec<u8>>, ApiError> {
-    if !absolute_clean(path) {
-        return Err(settings_error("Git 工具选择文件路径无效。"));
-    }
-    check_no_symlinks(path, true)
-        .map_err(|_| settings_error("Git 工具选择文件路径含链接或无法安全读取。"))?;
-    let before = match fs::symlink_metadata(path) {
-        Ok(info) => info,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(settings_error(format!("无法读取 Git 工具选择：{error}"))),
-    };
-    if !before.is_file() || before.nlink() != 1 || before.len() > MAX_SETTINGS_BYTES {
-        return Err(settings_error(
-            "Git 工具选择需要无链接且大小受限的普通文件。",
-        ));
-    }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| settings_error(format!("无法读取 Git 工具选择：{error}")))?;
-    if !unchanged(&before, &file.metadata()?) {
-        return Err(settings_error("Git 工具选择文件在打开时发生变化。"));
-    }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(MAX_SETTINGS_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != before.len()
-        || !unchanged(&before, &file.metadata()?)
-        || !unchanged(&before, &fs::symlink_metadata(path)?)
-    {
-        return Err(settings_error("Git 工具选择文件在读取时发生变化。"));
-    }
-    check_no_symlinks(path, false)
-        .map_err(|_| settings_error("Git 工具选择文件路径在读取时发生变化。"))?;
-    Ok(Some(bytes))
-}
-
 fn tool_path(executable: &Path) -> Result<String, ApiError> {
     std::env::join_paths([
         executable
@@ -358,8 +295,8 @@ fn isolated_command(executable: &Path, path: &str) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    crate::owned_process::prepare_command(&mut command);
     command
 }
 struct ProbeOutput {
@@ -459,29 +396,6 @@ fn git_version(bytes: &[u8]) -> Result<String, ApiError> {
         })?;
     // Preserve vendor suffixes. This is identification, not a feature support claim.
     Ok(value.to_owned())
-}
-fn ordinary_executable(candidate: &Path) -> Result<PathBuf, ApiError> {
-    if !absolute_clean(candidate) {
-        return Err(ApiError::new(
-            "INVALID_GIT_PATH",
-            "请选择不含越界或控制字符的 Git 绝对路径。",
-        ));
-    }
-    // Explicit local selection may intentionally use a package-manager symlink.
-    let path = fs::canonicalize(candidate).map_err(|_| {
-        ApiError::new(
-            "GIT_NOT_FOUND",
-            format!("未找到所选工具：{}", candidate.display()),
-        )
-    })?;
-    let info = fs::metadata(&path)?;
-    if !info.is_file() || info.mode() & 0o111 == 0 || info.mode() & 0o6000 != 0 {
-        return Err(ApiError::new(
-            "GIT_NOT_FOUND",
-            "所选工具不是可执行的普通文件。",
-        ));
-    }
-    Ok(path)
 }
 fn developer_git(output: &[u8]) -> Result<PathBuf, ApiError> {
     let developer = single_line(output)
@@ -630,9 +544,10 @@ async fn inspect_ssh(path: &Path, processes: &OwnedProcessRegistry) -> SshEnviro
     info
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
     use tempfile::{Builder, TempDir};
 
