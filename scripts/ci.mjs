@@ -27,6 +27,10 @@ const isolated = {
   XDG_DATA_HOME: 'data', XDG_CONFIG_HOME: 'config', XDG_CACHE_HOME: 'cache',
   TMP: 'tmp', TEMP: 'tmp', TMPDIR: 'tmp', npm_config_cache: 'npm-cache',
 };
+// Windows KnownFolder APIs do not follow these home/data environment values.
+// Isolation of platform data also depends on the explicit unit-test list below:
+// Rust fixtures use private temporary paths and no selected test launches the
+// normal desktop/runtime CLI. Never broaden this to live/restart scripts.
 for (const [name, relative] of Object.entries(isolated)) {
   environment[name] = path.join(sandbox, relative);
   await mkdir(environment[name], { recursive: true });
@@ -75,7 +79,7 @@ await npmRun('SDK regressions', ['run', 'test:sdk']);
 // Explicit unit-test entry points: *live-test and *restart-test intentionally do
 // not belong here. They launch a real platform and need a separate acceptance run.
 const scriptTests = (await readdir(path.join(source, 'scripts')))
-  .filter(name => /^(process|package-.+|local-directory-starter|desktop-package-output|production-macos-preflight|update-.+|m5-(browser-tools|media-panel))-test\.mjs$/.test(name))
+  .filter(name => /^(process|package-.+|local-directory-starter|desktop-(host|package-output)|production-macos-preflight|update-.+|m5-(browser-tools|media-panel))-test\.mjs$/.test(name))
   .sort().map(name => `scripts/${name}`);
 await run('Script unit tests', process.execPath, ['--test', ...scriptTests]);
 await npmRun('Platform support checks', ['run', 'test:platform-support']);

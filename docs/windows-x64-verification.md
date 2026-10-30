@@ -596,3 +596,9 @@ Windows 在 Paths 原 runtime/migrations 目录创建前，以及共享 recover_
 复审发现设置读取最初误用了单链接 reader，已改为允许原规则接受的硬链接；保留 RuntimePaths 原普通/no-reparse、private DACL 与 1 MiB 大小政策，没有增加系统父 ACL 或链接数准入。真实 core 观察器最终 **8/8**、Paths 检查与共享接线 **5/5**，包含私有 hardlink settings、中文混合 verbatim 路径、并发新增、junction/文件、未知记录、有效但未提交/epochs/退休材料，以及只在真实缺失时创建原目录。独立严格 Clippy 通过；所有现场均临时创建，没有读写真实工作区或迁移记录。
 
 Mac 恢复函数正文机械搬到适配层逐字保留，初始检查 no-op、原目录创建顺序保持；Mac 运行仍待 CI。没有调用完整 initialize、服务或 UI，没有改总运行门禁；Windows 真正迁移恢复与自动删除旧根待 W5。
+
+### W1.18 — 自托管测试入口隔离复核
+
+只读复核当前 CI 明确选择的 JS 单测和默认完整 Rust 测试入口：core for_test/集成项目使用真实 TempDir，测试构建的默认工作区也固定在该临时 data-root 内；CLI 默认测试在非法参数校验前不调用 discover，集成只执行离线 build-info/version/help；桌面单元测试不执行 main。没有发现此集合会初始化或发现真实固定开发根，未为此删除、跳过或运行测试。新增 desktop-host 参数回归纳入两端 CI 的明确单测白名单，语法检查通过。
+
+重要边界：Windows dirs 的 Profile/LocalAppData 使用系统 KnownFolder，CI 的 HOME/USERPROFILE/LOCALAPPDATA 环境变量不能重定向 RuntimePaths。安全依据是已审测试集合与显式临时夹具，而非这些环境值本身。正常桌面/业务 CLI 以及 live/restart/compatibility 脚本会触及真实身份路径，不在普通 CI 白名单内，不应扩大为任意脚本通配。没有增加公开数据根覆盖或迁移命令；真实应用首启仍按固定身份单独验证并保留现有材料。
