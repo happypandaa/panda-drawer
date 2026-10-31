@@ -45,7 +45,9 @@ mod copied_tree;
 #[path = "build_digest_path_io.rs"]
 mod digest_paths;
 #[path = "build_directory_exchange.rs"]
-mod directory_exchange;
+pub(crate) mod directory_exchange;
+#[path = "build_publication_io.rs"]
+mod publication_io;
 #[path = "builds/startup.rs"]
 mod startup;
 pub use build_result::BuildResultRecovery;
@@ -823,7 +825,7 @@ impl BuildManager {
                     }
                     fs::remove_dir_all(&path)?;
                 }
-                fs::File::open(path.parent().unwrap())?.sync_all()?;
+                platform_native::filesystem::sync_directory(path.parent().unwrap())?;
             }
             registry.records.remove(id);
             registry.legacy_build_times.remove(id);
@@ -1152,7 +1154,9 @@ impl BuildManager {
             )
             .await;
         if let Err(error) = &result {
-            if error.details["processResourceClosed"] == false {
+            if error.details["processResourceClosed"] == false
+                || !publication_io::may_rollback(error)
+            {
                 // A still-owned/unknown writer may touch the live output. Keep
                 // all evidence and never race it with the rollback transaction.
                 return result;
@@ -2096,35 +2100,7 @@ pub(crate) fn publish(
     provenance: &BuildProvenance,
     previous_digest: Option<String>,
 ) -> Result<(), ApiError> {
-    let generation = checked_relative(
-        &project.root,
-        &format!(".platform/artifacts/{}/dist", provenance.build_id),
-        true,
-    )?;
-    ensure_dir(generation.parent().unwrap())?;
-    sync_tree(staging)?;
-    fs::rename(staging, &generation)?;
-    File::open(generation.parent().unwrap())?.sync_all()?;
-    let publication = staging.parent().unwrap().join("publication");
-    copy_tree(&generation, &publication)?;
-    let journal = Journal {
-        project_id: project.manifest.id.clone(),
-        provenance: provenance.clone(),
-        previous_digest,
-    };
-    let journal_path = journal_path(paths.workspace_root(), &project.manifest.id);
-    atomic_json(&journal_path, &journal)?;
-    let output = checked_relative(&project.root, &project.manifest.output_dir, true)?;
-    replace_directory(&publication, &output)?;
-    atomic_json(
-        &provenance_path(paths.workspace_root(), &project.manifest.id),
-        provenance,
-    )?;
-    // Provenance is the commit point. Cleanup failure must not turn a committed build into failure.
-    let _ = fs::remove_file(&journal_path);
-    let _ = File::open(journal_path.parent().unwrap()).and_then(|file| file.sync_all());
-    // Previous files are retained as runtime resources, not exposed as user version history.
-    Ok(())
+    publication_io::publish(paths, project, staging, provenance, previous_digest)
 }
 fn replace_directory(staged: &Path, current: &Path) -> Result<(), ApiError> {
     directory_exchange::replace_directory(staged, current)
@@ -2153,6 +2129,7 @@ fn recover_publications(paths: &RuntimePaths, store: &ProjectStore) -> Result<()
                 "Interrupted build generation is damaged; publication was not guessed",
             ));
         }
+        publication_io::recover_exchange(&project, &journal)?;
         let output = checked_relative(&project.root, &project.manifest.output_dir, true)?;
         let actual = if output.exists() {
             Some(tree_digest(&output, false)?)
@@ -2168,7 +2145,7 @@ fn recover_publications(paths: &RuntimePaths, store: &ProjectStore) -> Result<()
             return Err(ApiError::new("BUILD_RECOVERY_REQUIRED","Interrupted publication matches neither previous nor new artifact; retained files require inspection"));
         }
         fs::remove_file(&path)?;
-        File::open(&state)?.sync_all()?;
+        platform_native::filesystem::sync_directory(&state)?;
     }
     Ok(())
 }
@@ -2218,7 +2195,7 @@ fn reconcile_recovered_tasks(
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::CreateProjectInput;
@@ -2248,12 +2225,15 @@ mod tests {
     mod candidate_pipeline {
         include!("build_pipeline_candidate_tests.rs");
     }
+    #[cfg(unix)]
     mod git_pipeline {
         include!("build_pipeline_git_tests.rs");
     }
+    #[cfg(unix)]
     mod result_recovery {
         include!("build_result_tests.rs");
     }
+    #[cfg(unix)]
     mod owned_process {
         include!("build_owned_process_tests.rs");
     }
@@ -2529,6 +2509,7 @@ mod tests {
             service.shutdown().await.unwrap();
         }
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn missing_registered_build_directories_are_not_unbuilt_and_symlinks_remain_rejected() {
         let (_temp, paths) = RuntimePaths::for_test();

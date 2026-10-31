@@ -814,3 +814,15 @@ Windows Registry 接通挂起创建、实际 Job/根/主线程 owner、创建前
 Windows 环境适配只找 node.exe、由 Win32 查询系统路径、用本机分隔符拼 PATH；managed 探测清空继承后显式注入 Windows 必需目录并禁用 compile cache/npm log 写入。实际 global npm 发现 Node 不接受 canonical verbatim npm-cli.js 参数（EISDIR/lstat C:），改经共用精确 conventional_path 适配 npm 脚本、prefix、cwd、outDir，文件身份/文件操作仍用原路径。Mac candidates/tool_path/managed Command 原正文移入 unix 适配；参数 facade 在 Mac 返回原 PathBuf，不加过滤。
 
 实际环境选集 **10 通过、0 失败、1 明确忽略**（6 项 environment 与 4 项同名过滤匹配的 Git 文件边界），node layout **2/2**。显式官方 managed/explicit 全 npm 模块树测试 **1/1**，30.56 秒：新 disposable 中文空格路径中 Node 24.22.0、npm 11.19.1，清空环境 managed 与显式 configure_node 都就绪，运行前后完整受管树核验一致。较早旧样本 metadata 超声明预算曾如实拒绝，保留原样，未放宽生产预算；后来从正常 dev 资源新建样本通过。非交互 libtest 子进程仅 fixture 移除 TERM，生产环境继承不变。真实项目运行/协议/日志/崩溃恢复仍归 W3；没有把这些专项称 W3 或 CI 完成。
+
+### W2.16 — 真实发布、启动恢复和 npm 构建流程
+
+Windows publisher 由原写 HANDLE 刷新过的私有副本形成 generation/publication，再接入 W2.12 的不可变交换 journal；provenance 保持原提交点。inner 交换 unknown 或 current provenance rename 已可能提交的 unknown 均阻止外层回滚，保留实际材料，避免重读旧/缺失名字后误认未提交。恢复只 resume_pending；无 inner journal 不重新 swap，原 task parent 真实缺失时重查项目原绑定，再让原 outer digest 对账。成功提交后 journal 退役仍 best effort。Mac publisher 全函数经去可见性机械比对保持，共享两处目录刷新改经 Unix 等值 facade。
+
+Windows 启动恢复采用实际固定 task scope/no-reparse HANDLE；沿用 Mac 的非目录/无 task.json/非 publication skip、既有硬链接读取及原 modified 时间标签，不增加 ACL/大小/ctime 限制。原非终态任务写 Interrupted，不自动重试命令；再恢复发布、对账任务及执行原 best-effort 回收。早期 8/11 的权限失败经 W2.14 真实 leaf 修复解决，夹具写回使用生产 atomic_json；保留单独 raw/hardlink final record，证明没有以 fixture 私有化掩盖新增准入。
+
+完整 core 实际 artifact 组 **15/15**（1.49 秒）、Windows startup **11/11**（0.63 秒）、共享 portable 构建组 **16/16**（10.56 秒）。包括三代发布仅 current、晚窗口租约资源、重启先恢复再回收、真实 npm 成功/失败/源码变化/越界 outDir、内部 workspaces 与嵌套本地依赖、原目录/依赖保持、关机取消与重复构建、失败初始项目数据库保持。原 Mac 测试未删除；Windows 注册原 portable 测试，真正 Unix symlink/进程测试保留原 cfg。首次误用 artifact 过滤得到 0 项未计入，后以实际 build_artifacts 注册名执行 15 项；更早失败 publish 的夹具曾双 panic，改为先让真实 guard drop 再 unwrap，不减弱断言。
+
+新增 publisher 回滚边界 **3/3**（0.17 秒）。其中 provenance 场景真实 flush 私有 stage→原生 rename 成功→新记录移名并置旧/缺失，按实际身份确认失败，经很窄 writer seam 返回 unknown；断言 outer journal、新产物/新记录/旧代均保留且禁止回滚。它验证 publisher 消费提交不确定回执的规则，不是 native 原 callback 的端到端故障或实际断电。独立复审发现并修复该缺口，其余恢复/skip/commit 顺序无新阻断。上述并非完整 GUI 新建/三次 Vite 构建或安装包验收，继续实际桌面验证；CI 按用户要求后置。
+
+完整 core --lib --tests 的额外 Clippy -Dclippy::all 本轮失败两处：已有 node_git_import/capability.rs 测试对字面 Err 调 unwrap_err、build_support/signed_resources.rs 测试模块后还有项；另有 65 项 Rust dead_code/unused 警告。没有报告静态检查全绿，也没有删除/跳过测试；后续做不改变断言/行为的代码整理再重跑。
