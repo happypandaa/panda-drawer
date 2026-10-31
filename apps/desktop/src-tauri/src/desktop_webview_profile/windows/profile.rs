@@ -33,6 +33,11 @@ impl ManagerProfile {
         let scope = native::pin_directory(&directory)?;
         native::verify_private(&scope.file)?;
         let identity = native::identity(&scope.file)?;
+        // A previously created private root can have a non-inheriting ACE.
+        // Prepare the same bound browser scope before the engine creates its
+        // descendants, as project profiles already do. Parent ACLs and
+        // explicitly protected descendants are outside this preparation.
+        native::enable_private_directory_inheritance(&directory, &identity)?;
         Ok(Self {
             directory,
             scope: Mutex::new(Some(scope)),
@@ -104,6 +109,10 @@ impl ManagerProfile {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "profile_inheritance_tests.rs"]
+mod inheritance_tests;
 
 #[cfg(test)]
 mod tests {
