@@ -5,6 +5,8 @@
 //! freezes business operations only while `prepare_snapshot` reads the live project.
 //! Compression, verification and publication exclusively read the prepared snapshot.
 pub use crate::archive_permissions::{ArchivePermissions, FileEntry};
+#[path = "backups_file_io.rs"]
+mod file_io;
 use crate::{
     builds::{self, BuildProvenance, StarterProvenance},
     projects::{check_no_symlinks, checked_relative, validate_manifest},
@@ -364,10 +366,7 @@ pub(crate) fn sqlite_snapshot_cancellable(
 ) -> Result<(), ApiError> {
     checkpoint()?;
     for suffix in ["-wal", "-shm", "-journal"] {
-        check_no_symlinks(
-            &PathBuf::from(format!("{}{suffix}", source.display())),
-            true,
-        )?;
+        check_no_symlinks(&file_io::sqlite_companion(source, suffix), true)?;
     }
     let source_file = safe_file(source)?;
     if platform_native::tool_files::Facts::from_file(&source_file)?.links() != 1 {
@@ -383,7 +382,7 @@ pub(crate) fn sqlite_snapshot_cancellable(
         .busy_timeout(Duration::from_secs(5))
         .map_err(db_error)?;
     let created = new_file(destination)?;
-    drop(created);
+    let snapshot_file = file_io::SnapshotFile::retain(created, destination)?;
     let mut destination_connection = Connection::open_with_flags(
         destination,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -422,7 +421,7 @@ pub(crate) fn sqlite_snapshot_cancellable(
     source_connection
         .close()
         .map_err(|(_, error)| db_error(error))?;
-    File::open(destination)?.sync_all()?;
+    snapshot_file.sync(destination)?;
     Ok(())
 }
 
@@ -1983,5 +1982,57 @@ mod tests {
         let parsed: BackupManifest = serde_json::from_value(manifest).unwrap();
         assert_eq!(parsed.snapshot_state, SnapshotState::Unknown);
         assert!(!parsed.pending_build.required);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn junction_source_is_rejected_but_excluded_dependency_junction_is_ignored() {
+        use std::os::windows::process::CommandExt;
+        let (temporary, store, project) = fixture().await;
+        let external = temporary.path().join("external disposable target");
+        fs::create_dir(&external).unwrap();
+        fs::write(
+            external.join("original.txt"),
+            b"external disposable original",
+        )
+        .unwrap();
+        let original = crate::file_identity::PersistedIdentity::capture(&external).unwrap();
+        let excluded = project.root.join("app/node_modules/outside");
+        mkdir(excluded.parent().unwrap()).unwrap();
+        let attachment = project.root.join("data/attachments/outside");
+        for link in [&excluded, &attachment] {
+            let status = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(link)
+                .arg(&external)
+                .creation_flags(0x0800_0000)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "{}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+            if link == &excluded {
+                backup(temporary.path(), &project);
+            }
+        }
+        let destination = temporary.path().join("unsafe-junction-snapshot");
+        assert!(prepare_snapshot(
+            &project.root,
+            &project.manifest,
+            &destination,
+            options(&project)
+        )
+        .is_err());
+        assert!(!destination.exists());
+        assert!(original.matches_path(&external).unwrap());
+        assert_eq!(
+            fs::read(external.join("original.txt")).unwrap(),
+            b"external disposable original"
+        );
+        fs::remove_dir(&excluded).unwrap();
+        fs::remove_dir(&attachment).unwrap();
+        store.shutdown().await;
     }
 }

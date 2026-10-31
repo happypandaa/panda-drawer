@@ -3034,6 +3034,7 @@ mod tests {
             "UNSAFE_DATABASE_PATH"
         );
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn final_identity_removal_requires_joined_writers_and_clears_every_current_identity_cache(
     ) {
@@ -3060,6 +3061,72 @@ mod tests {
             "PROJECT_BUSY"
         );
         store.close_database(&project.id).await.unwrap();
+        let active = store
+            .reserve_transient_operation(&project.id, "disposable actual writer owner")
+            .unwrap();
+        assert_eq!(
+            store
+                .complete_deleted_project_identity(&marker)
+                .unwrap_err()
+                .code,
+            "PROJECT_BUSY"
+        );
+        drop(active);
+        fs::remove_dir_all(moved).unwrap();
+        store.complete_deleted_project_identity(&marker).unwrap();
+        store.complete_deleted_project_identity(&marker).unwrap();
+        assert!(store.deleted_project_identity_absent(&project.id).unwrap());
+        assert!(store.registered_epoch(&project.id).unwrap().is_none());
+        assert!(!store.controls.lock().unwrap().contains_key(&project.id));
+        assert!(!store.gates.lock().unwrap().contains_key(&project.id));
+        assert!(!store.workers.lock().unwrap().contains_key(&project.id));
+        assert!(!store.active_tasks.lock().unwrap().contains_key(&project.id));
+        assert_eq!(retained_handle.check().unwrap_err().code, "PROJECT_REMOVED");
+        assert_eq!(
+            store.control(&project.id).err().unwrap().code,
+            "PROJECT_REMOVED"
+        );
+        for kind in ["", "reservations", "retired", "deleting"] {
+            assert!(!store
+                .workspace
+                .join(".platform/project-state")
+                .join(kind)
+                .join(format!("{}.json", project.id))
+                .exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_identity_finalization_waits_for_real_sqlite_close_before_namespace_move() {
+        let (temporary, store) = store();
+        let project = create(&store, "Disposable complete identity").await;
+        let retained_handle = store.project(&project.id).unwrap();
+        store.schema(&project.id, None).await.unwrap();
+        assert!(store.workers.lock().unwrap().contains_key(&project.id));
+        let marker = store
+            .begin_deletion(
+                &project.id,
+                "task_disposable_identity_delete",
+                &Uuid::new_v4().to_string(),
+                &identity(&project.project_root).unwrap(),
+            )
+            .unwrap();
+        let moved = temporary.path().join("disposable-owned-deletion-stage");
+        assert!(
+            fs::rename(&project.project_root, &moved).is_err(),
+            "a live SQLite HANDLE must prevent the Windows namespace move"
+        );
+        assert_eq!(
+            store
+                .complete_deleted_project_identity(&marker)
+                .unwrap_err()
+                .code,
+            "PROJECT_DELETE_INCOMPLETE"
+        );
+        assert!(store.workers.lock().unwrap().contains_key(&project.id));
+        store.close_database(&project.id).await.unwrap();
+        fs::rename(&project.project_root, &moved).unwrap();
         let active = store
             .reserve_transient_operation(&project.id, "disposable actual writer owner")
             .unwrap();

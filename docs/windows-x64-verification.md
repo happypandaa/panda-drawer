@@ -1026,3 +1026,11 @@ WebView2 Requested/Finished 已接原 writer、stage 与取消流程，原生取
 Windows 桌面启动从实际进程 exe、已选 CLI 与 resources 树构造进程内 typed InstallationScope；headless 不从 HTTP、环境变量或任意磁盘声明认领安装目录。父目录仅展示，计量三个精确成员，不统计整个 Cargo target 或相邻文件。实际完整身份、exe stamp、资源签名、双遍原生元数据与缓存绑定；替代物或扫描中变化保持部分/未知。外部下载、导出按同一成员范围及身份别名拒绝写入，普通相邻目录仍允许。Mac scope 为 None，原 `.app` 范围和处理正文保持。
 
 独立 scope **4/4**、0.03 秒；实际 Runtime 下载边界和 lifecycle 导出 **3/3**、0.59 秒；程序计量 **8/8**、0.14 秒。首次程序测试模块路径误指向既有 forget 测试，已显式指定 program/tests.rs 并核对实际注册名称后重编，未用错误过滤得到的通过数充数。完整 storage::windows 回归 **60/60**，17.87 秒，其中 19 项是既有网页存储回归，实际 Storage 41 项。core/native/desktop Clippy **-Dclippy::all 通过**。这些是开发资源范围及真实临时目录证明，尚非 NSIS 安装副本或正式版签名验收。
+
+### W5.8 — 全量回归暴露的快照、路径与 SQLite 句柄问题
+
+第一次完整 core 回归 **823 通过、28 失败、30 专用入口忽略**，90.89 秒，保留全部原断言继续修复。11 个归档失败源于 Windows 只读 HANDLE 不能 FlushFileBuffers：SQLite 快照改为保留最初实际新建读写 HANDLE，固定名字并在两连接关闭后刷新原对象，Unix 原顺序不改；原归档 15 项、新 junction 1 项、新原生刷新/WAL/名字绑定/UTF-16 4 项在随后完整回归全部通过。最初新增名字锁测试 19/20，属性查询 HANDLE 不参与所需共享约束，改为原已获 read 权限的真实读取 HANDLE 后通过，没有增加 DACL 或硬链接要求。
+
+目录报告 7 个原测试和服务整链的失败源于查询孤立 Windows Prefix，改委托已有 native 路径组件与 reparse 适配，**9/9** 通过；Node 交接日志用原生逐层 join，原 Mac 输出保持，**1/1**。原 identity 测试在 Windows 活 SQLite 句柄时不能先改名，保留完整 Mac 测试，新增对应 Windows 用例实测活句柄阻止改名、仍未删除时明确 incomplete、真实关闭后才移动，且保留原 writer/gate/cache/epoch/retained-handle 断言。M4 归档交付删除/迁移 **5/5**、退出协调 **21/21** 通过；其余退出问题由下一节真实 Git 管理器实现解决。
+
+最终组合快照完整 core **877 通过、0 失败、32 专用入口忽略**，97.33 秒；core Clippy **-Dclippy::all 通过**（61 Rust 警告保留）。该组合还包括以下独立小步记录的 Git 读取和登记恢复。测试全部使用新 TempDir/明确 disposable 项目，未据此称 macOS CI、Windows 10 或安装版已验收。
