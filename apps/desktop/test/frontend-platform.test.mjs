@@ -22,6 +22,13 @@ after(async () => {
 const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
 const windows = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
 
+test('Only Windows removes new workspace migration while neutral and Mac keep their existing presentation', () => {
+  assert.equal(windows.migrationAvailable, false);
+  assert.equal(mac.migrationAvailable, true);
+  assert.equal(frontendPlatformFromBootstrap({ build: { target: 'x86_64-apple-darwin' } }).migrationAvailable, true);
+  assert.equal(frontendPlatformFromBootstrap(null).migrationAvailable, true);
+});
+
 test('Unknown or malformed bootstrap metadata stays neutral without inferring a host from paths', () => {
   for (const value of [undefined, null, {}, { build: null }, { build: 4 }, { build: { target: 'unsupported' } }, { architecture: 'x86_64', executablePath: 'C:\\disposable\\panda.exe' }]) {
     const unknown = frontendPlatformFromBootstrap(value);

@@ -12,12 +12,12 @@
 |---|---|
 | 系统 | Windows 10 22H2 x64、Windows 11 x64。不支持 ARM64、32 位、LTSC 特殊版本 |
 | macOS | 不变：macOS 15+、Apple Silicon。Mac 现有行为和测试必须保持通过 |
-| 功能范围 | 与当前 main 上 Mac 的功能**完全一致**（见第 3 节）。不做 Mac 没有的功能 |
+| 功能范围 | 按当前 main 上 Mac 的功能实现（见第 3 节），已明确排除 Windows 自动更新；2026-10-31 用户另授权迁移继续困难时可移除，本轮据此关闭 Windows 新工作区迁移。Mac 功能不改，不做 Mac 没有的功能 |
 | 安装包 | Tauri NSIS，当前用户安装（不需要管理员权限） |
 | WebView2 | Evergreen；安装包内置在线引导安装（downloadBootstrapper） |
 | 签名 | 本轮不签名。SmartScreen 警告可接受，在验收记录里注明 |
 | 自动更新 | Windows 本轮不做。更新入口在 Windows 上隐藏或提示"请手动下载新版本"，后端门禁关闭 |
-| 工作区 | 默认 `%USERPROFILE%\PandaDrawer`（开发版 `PandaDrawer-Dev`），平台数据在 `%LOCALAPPDATA%` 下。只支持本机内置 NTFS 磁盘；迁移目标是外置盘、网络盘、映射盘或同步目录时，拒绝并说明原因 |
+| 工作区 | 默认 `%USERPROFILE%\PandaDrawer`（开发版 `PandaDrawer-Dev`），平台数据在 `%LOCALAPPDATA%` 下，只支持本机内置 NTFS。Windows 本轮不提供新工作区迁移，包括 C→D；已有记录的内部启动恢复和精确清理保留，不由此取得新迁移权限 |
 | 旧数据 | 不兼容任何旧 Windows 实验数据，不做迁移 |
 
 ## 2 总原则
@@ -38,7 +38,7 @@
 - 添加项目：本机文件夹（空文件夹生成起始项目 / 已有项目登记）、从 Git 添加（GitHub、Gitee 公开 HTTPS）、依赖安装（`npm ci --omit=dev --ignore-scripts`）
 - 停止并删除：持久删除任务、重启续删、重试、改名前放弃；完整删除（见 `docs/project-complete-deletion.md`）
 - 每个项目独立的网页存储，删除项目时一并删除
-- 工作区迁移（复制、核验、重开后自动删除旧目录）
+- 工作区位置显示和在资源管理器中打开；按 2026-10-31 用户范围调整，Windows 本轮关闭新迁移预览/提交入口，保留已有记录的内部恢复/清理。Mac 原工作区迁移不变
 - 复制给 AI 的交接与求助提示词（路径用 Windows 格式）
 - 平台 CLI（`platform-cli`）
 
@@ -77,7 +77,7 @@
 | 本机目录登记与可编辑源码发布 | 描述符绑定的只读检查、空目录初始化、候选复制与发布恢复 | 本机四入口用实际 HANDLE/完整 FileId 和 UTF-16 名称检查，已有外部目录只登记；对外响应回显已验证请求的原表示，内部 canonical/身份/revision 不变，保留明确 verbatim 命名空间。空目录先持久归属 UUID 再创建，失败只回滚原身份/字节。Git 发布固定父 HANDLE、原 payload 全身份与不可变计划，排他复制/不覆盖改名；已发布接受后改不二次复制，未知保留 reservation/只读核对。组件按 Windows UTF-16 自然限制，附件 API 不变 | `node_app_directory/windows.rs`、`source_publication/windows.rs`；Mac 原实现分别保留在各自 `unix.rs` 子模块 |
 | 外部 ZIP 导出发布 | 原子不覆盖改名、目录/文件身份复核、替代材料保留或独占归还 | 发布和中断恢复未完成时，在改名或验证回调前明确拒绝，保留已准备的临时材料；待后续补齐 | `lifecycle_file_io.rs`；原 Unix 发布实现在 `lifecycle_file_io/unix.rs`，生命周期目录类型预检查也经该边界 |
 | 受控 Git 源码获取 | 原生磁盘预算、文件树/摘要核对、非执行复制 | 同一 clone --no-checkout→分支证明→fsck→ls-tree→cat-file 排他物化→read-tree，不运行 checkout/filter/构建；原预算与实际 blocking writer/Job/I/O 闭合。完整 FileId/原 len/mtime/readonly，不加旧目录 ACL 准入；Windows 名称/真实 ordinal 碰撞和最终排他冲突返回需要修改，摘要执行位固定 0，Git index 保留 commit mode | `source_acquisition/windows{,_files,_policy}.rs`、`source_acquisition_process_windows.rs`；共用 types/url，Mac acquisition/process 原文件零修改 |
-| 网页构建的 Git 准入与恢复 inventory | 无仓库不选择 Git；有仓库实际核对索引；逐项目检查恢复记录 | 无仓库实际扫描前后 marker/完整目录身份，不读工具配置或 spawn；保持实际读许可到扫描返回。有仓库索引与任意保留恢复记录在完成原生事务前明确拒绝；真实 Missing/Empty 可通行，沿用 Mac 1000 项目目录预算 | `project_git/windows/{build_guard,data_inventory}.rs`；Mac 原 `unix.rs` / `project_git_data.rs` 保持；不是 Git 导入或恢复完成 |
+| 网页构建的 Git 准入与恢复 inventory | 无仓库不选择 Git；有仓库实际核对索引；逐项目检查恢复记录 | 无仓库实际扫描前后 marker/完整目录身份，不读工具配置或 spawn；有仓库使用实际私有索引和原 dirty/busy/conflict/recheck 规则，保持读许可到扫描返回。源码/数据取回仍按原 pending guard 阻止开发；旧数据保存 inventory 仅真实 Missing/Empty 通行，未知材料保留，沿用 Mac 1000 项目目录预算 | `project_git/windows/{build_guard,data_inventory}.rs`、`project_git/common.rs`；Mac 原业务/Unix I/O 保持；不以空 inventory 声称已恢复已有记录 |
 | Git 添加任务接纳与发布恢复 | 原任务去重/状态、接纳与中断清理顺序 | 保持实际源码错误与单 UUID；publishing 未收到路径时先只读对账原 receipt/payload/author 归属，确定发布才记录原路径，未知保留并列剩余路径，不因 registration_attempted=false 清现场。临时目录同步走平台 facade，恢复仍核实实际 writer/登记/归属 | `node_git_import/capability.rs`；共享业务只委托，Mac 新 hook no-op；实际 Git 整链和限制见验证记录 |
 | npm 准备的输入与私有临时文件 | 原 no-follow 读取，单链接/大小准入，dev/ino、len、mtime 与 mode 变化核对；0700/0600 创建 | 实际完整身份、大小、修改时间和只读权限变化；当前用户私有 DACL，独占新建且刷新；不合成执行位，不增加 ctime/链接数变化要求。真实 cleared Job，原 npm 参数与 --prefix 目标保持；超过 Win32 cwd 限制仅将启动目录换到系统目录。显式私有 home/temp 和 SystemRoot，不继承宿主 npm 配置 | `dependency_file_io.rs` / `platform-native::tool_files::Facts::same_modified_permissions`；`node_dependency_prepare/{unix,windows}.rs`，原共享预算/扫描/收尾保持 |
 | 构建输入文件复制 | 原前后 dev/ino、len、mtime 与 mode 核对；副本私有 0600，原可执行文件副本 0700 | 完整原生身份、大小、修改时间与只读属性核对；副本独立私有可写，不伪造执行位，不额外拒绝原来允许的源硬链接 | `build_source_io.rs`，由 `build_candidate.rs` 调用；完整构建运行与发布仍待 W2 |
@@ -88,14 +88,14 @@
 | 归档中的文件权限数据 | `mode` 保留原 0–0777 数字，缺失默认 0600；恢复原 chmod，ZIP 写原 Unix 权限 | `mode` 使用明确的 `{windowsReadOnly: bool}` 原生数据，不伪造 Unix 位；新副本先为私有 DACL，再通过属性写入句柄设置真实只读位。跨系统导入映射为目标系统的只读/可写私有文件 | `archive_permissions.rs`（FileEntry 及权限数据/应用），`backups.rs` 保留现有入口；实际句柄属性更新在 `platform-native/src/windows/files.rs`；完整归档/恢复仍待验证 |
 | 迁移证明只读输入 | 原已开文件的 dev/ino、len、mtime/ctime 前后核对和独立文件/大小界限；不按路径重新认领 | 同一实际句柄的完整身份、大小及原生写入/变化时间，沿用单链接和大小政策；不由读取产生清理权限 | `migration_metadata_io.rs` / `platform-native::tool_files::Facts::same_modified_and_changed`，接入 `workspace_migration_cleanup.rs` |
 | 卸载范围的已绑定文件名字 | 先核对完整范围，再持有父目录并 fstatat / unlinkat；没有单链接准入 | 固定实际父目录，核对完整父目录/文件身份，经 DELETE 句柄移除该名字；保留原来允许的硬链接政策，不删除其他名字 | `cleanup_file_io.rs`，由 `local_cleanup.rs` 在原范围复核后调用；Windows 原语 `remove_file_allowing_hard_links`；完整卸载流程仍待 W5 |
-| 工作区卷检查、清单与复制 | 原 APFS/local 与同步目录政策、statfs、Unix 权限/链接清单、复制与阶段日志 | 实际 HANDLE、卷及全部 disk extents/PnP 信息证明本机内置 NTFS；固定盘符/NVMe 不单独授权。Cloud Files 唯一 ERROR_INVALID_FUNCTION 单列为 QueryUnsupported，仍须完整系统注册根清单及每个实际 HANDLE/VolumeGUID 核对，其他未知不放行。复制绑定实际目录/文件，原写 HANDLE 刷新、摘要核验并保留原生 reparse 本体而不进入其目标 | `paths/workspace_admission.rs`、`platform-native/src/windows/{volume,workspace}.rs`、`volume/internal.rs`、`workspace_file_io/windows.rs`；Unix 原政策与正文保持，实际 GUI 迁移另验 |
-| 迁移启动恢复与初始化前检查 | 原遍历 journal、提交标记/epochs/任务/旧根退休处理 | 初始化前只读核实固定 migrations 和 settings；仅对原绑定的有效选择恢复，未知/坏引用保持且不清设置。真实重开前保留原根，重开收据持久化后按原清单精确清理，新增内容/替代物/占用保留并可重试；settings 原私有、大小及硬链接政策保持 | `workspace/startup.rs`、`startup/windows.rs`、`workspace_migration_cleanup/windows.rs`；Mac 原正文保持；真实 RuntimeService 迁移/重开专项通过，GUI 和安装版另验 |
-| 工作区迁移复制与启动恢复 | 原目录 mode/摘要清单、独立复制核验、固定 journal/选中恢复 | 只允许实际本机内置 NTFS 且不属于 OS 注册同步目录；Windows readOnly 清单、完整身份 pin、真实文件刷新/摘要核对，不覆盖目标。链接复制原 Microsoft reparse 数据，不进入目标；未知特殊 reparse 保留报错。固定 settings/journal 一致后复用原恢复正文，不重放复制 | `workspace_file_io/windows.rs`、`workspace/startup/windows.rs`；原语 `platform-native/src/windows/reparse_copy.rs`；Unix 原复制/恢复正文保持 |
-| 延后迁移原目录清理 | 原选中 journal 后提交任务，错误时保留 reopen failure；公开 retry 同一事务 | Windows 选中 journal 同样走实际提交/错误保留；只有真实运行环境重开及旧 reader/native 收尾收据后，以完整 FileId、复制清单和实际内容摘要授权清旧源。失败保留新业务与原物，同任务重试不重放已完成删除；无选中仍无工作 | `service_workspace_migration/cleanup_admission.rs`、`workspace_migration_cleanup.rs`；原 Unix schema/验证移入 `migration_metadata_io/unix.rs` 保持，Windows 用真实 readOnly，MAC 不变 |
+| 工作区卷检查、清单与复制 | 原 APFS/local 与同步目录政策、statfs、Unix 权限/链接清单、复制与阶段日志 | 已实现的实际 HANDLE/内置 NTFS/系统同步根核验及绑定复制原语保留；按用户范围调整，Windows 新迁移 preview/migrate 在启动任务或写入前明确拒绝，包括 C→D，不进入复制流程。内部原语测试不作为公开迁移通过证明 | `platform_support.rs`、`service.rs`、`paths/workspace_admission.rs`、`platform-native/src/windows/{volume,workspace}.rs`、`workspace_file_io/windows.rs`；Mac 原政策与迁移行为保持 |
+| 迁移启动恢复与初始化前检查 | 原遍历 journal、提交标记/epochs/任务/旧根退休处理 | 已有 Windows migrations/settings 仍按原绑定记录内部恢复；未知/坏引用保留且不清设置，重开前保留原根，重开收据后精确清理。关闭新迁移不跳过现有事务的实际收尾，也不收养未知材料 | `workspace/startup.rs`、`startup/windows.rs`、`workspace_migration_cleanup/windows.rs`；Mac 原正文保持；内部恢复专项通过不代表 Windows 新迁移开放 |
+| 工作区迁移复制与启动恢复 | 原目录 mode/摘要清单、独立复制核验、固定 journal/选中恢复 | Windows 新工作区迁移本轮按用户授权移除，界面不提供新迁移表单，preview/migrate API 明确拒绝；已有记录所需的 readOnly 清单、完整身份、实际复制/摘要及 reparse 本体核验代码保留供内部事务使用，不从关闭的入口发起新复制 | `WorkspaceLocation.tsx`、`frontend-platform.tsx`、`platform_support.rs`、`service.rs`、`workspace_file_io/windows.rs`、`workspace/startup/windows.rs`；Unix 原复制/恢复正文和 Mac 公开功能保持 |
+| 延后迁移原目录清理 | 原选中 journal 后提交任务，错误时保留 reopen failure；公开 retry 同一事务 | 已有 Windows 选中 journal 的内部提交和同事务清理重试保留；仍须真实重开及旧 reader/native 收尾收据，再按完整 FileId/清单/摘要清旧源。失败保留新业务与原物，无选中仍无工作；不能借此发起新迁移 | `service_workspace_migration/cleanup_admission.rs`、`workspace_migration_cleanup.rs`；原 Unix schema/验证移入 `migration_metadata_io/unix.rs` 保持，Windows 用真实 readOnly，Mac 不变 |
 | 构建任务与发布的启动恢复 | 原任务中断写回、发布恢复、任务核对和 best-effort 旧产物清理 | 固定实际 task scopes，以 no-reparse HANDLE 读取原记录，保留 Mac skip/硬链接/mtime 标签政策；非终态变 Interrupted、不自动执行；先恢复 inner/outer 发布及任务对账，再按原租约/恢复核验清理旧代和完成的中间材料 | `builds/startup.rs` / `windows_startup.rs` 与 11 项真实启动测试；`builds.rs` 只委托，共享 publication recovery 调用平台 exchange 恢复，Mac 原恢复语句保持 |
-| 本机 Git 版本、构建 Git 准入与源码/数据恢复 | 原私有索引副本、仓库/文件观察、描述符交换与可恢复事务 | 本机 status/versions、既有数据版本清单读取及实际私有索引 BuildGitGuard 已接 MinGit；原环境隔离、dirty/busy/conflict/recheck 规则保持。源码和数据恢复写事务仍在后续实现，不以读取能力生成恢复/关闭收据 | `project_git/{common,unix_io}.rs`、`project_git/windows/{io,read_data,build_guard}.rs`；Mac 原 manager/free-function 正文机械保留；Windows 未接通写 API 在 write_unavailable 明确拒绝 |
+| 本机 Git 版本、构建 Git 准入与源码/数据恢复 | 原私有索引副本、仓库/文件观察、描述符交换与可恢复事务 | 本机 status/versions、既有数据版本、BuildGitGuard 及显式源码/数据取回已接 MinGit，保留原隔离环境和准入。源码用固定宽度 pending 控制块、任务根 FullId 与三次不覆盖改名，纯状态分类不移动；原 permit/lease/gate 内稳定，单项提交后先向前完成，再保留用户继续/撤回选择。数据沿原五 slot、不可变 plan、登记提交点及 completion/terminal；正常可写整链已实测，实际权限导致原件无法刷新时按原 I/O 失败保持 pending/原物，不新增 owner、DACL 或只读位准入规则 | `project_git/{common,unix_io,source_restore_common}.rs`、`project_git/source_restore/{unix,windows}.rs`、`project_git_data_{preview,objects,restore,restore_transaction}.rs`、`project_git_data_restore/`；Mac 原 schema、正文及封存可见提交点保持；已退休 init/save/create-branch/data-save 不重开，旧保存恢复未知格式仍明确保留 |
 | 数据恢复登记的不可变证明捕获 | 原已开文件的完整 Unix metadata tuple、摘要、稳定身份及 mode；原业务错误政策 | 完整 128 位 FileId、原生 readOnly、LastWrite/ChangeTime 前后稳定观察及原摘要、单链接规则；不伪造 Unix mode 或用 CreationTime 替代变化时间，不增加 DACL 准入 | `data_restore_proof_io/{unix_proof,windows_proof,windows}.rs`；`project_data_restore_registration.rs` 仅委托，Mac 原证明和错误政策保持 |
-| 数据恢复登记的可恢复交换 | 原 RENAME_SWAP、原 recovery permit、业务 freeze 与独占 gate | 精确父/任务/两文件完整身份与私有不可变 journal，三次不覆盖改名；可见前恢复原登记，可见后只向前完成。只读状态不移动，只有原 permit/freeze/write gate 内稳定；额外元数据按精确名字和实际字节计入原预算，不放宽名称前缀 | `data_restore_registration_io/`、`data_restore_guard_io.rs`；Mac 原 swap/move 正文保持；整体 data apply 事务仍须后续接通 |
+| 数据恢复登记的可恢复交换 | 原 RENAME_SWAP、原 recovery permit、业务 freeze 与独占 gate | 精确父/任务/两文件完整身份与私有不可变 journal，三次不覆盖改名；可见前恢复原登记，可见后只向前完成。只读状态不移动，只有原 permit/freeze/write gate 内稳定；额外元数据按精确名字和实际字节计入原预算，不放宽名称前缀。已接五 slot 数据事务；prepared journal 用原身份绑定的实际可写 HANDLE 刷新，不以只读观察冒充 flush | `data_restore_registration_io/`、`data_restore_guard_io.rs`、`project_git_data_restore/transaction_{unix,windows}.rs`；Mac 原 swap/move、Unix descriptor 生命周期及封存释放点保持；真实刷新失败沿用原 I/O 错误/保留语义，无新增政策门槛，见 W5.15 |
 | SQLite 归档快照刷新 | 创建目标后关闭初始 File，SQLite Backup 两连接关闭后以只读 File 调用 sync_all | 保留最初实际新建的读写 HANDLE，固定 SQLite 路径名字；两连接真实关闭后刷新该 HANDLE。只读观察句柄不新增 ACL/硬链接准入，伴随文件路径用原生 UTF-16 追加后缀 | `backups_file_io.rs`；`backups.rs` 仅委托。Unix 保持原 drop(created) 与 File::open/sync_all 顺序 |
 | 旧卷身份离线修复 | 已确认旧 Mac 迁移材料的卷 UUID 绑定 | 本轮不兼容旧 Windows 实验数据，不能用 Mac 卷身份修复取得 Windows 归属；直接明确拒绝 | `identity_upgrade.rs`；Mac 原实现与测试：`identity_upgrade/unix.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明。控制 JSON 在发布后观察失败时保留 unknown，不走提交前清理 | `atomic_control_file.rs`（`builds::atomic_json` 保留原入口）、`platform-native/src/filesystem.rs`；持久进程写入者仍在 `durable_writer.rs` 的未完成边界内 |
@@ -109,13 +109,14 @@
 | 项目浏览器目录的持久身份绑定 | 原 StoreLedger 记录、项目标识与目录身份 | 既有记录绑定独立目录及完整身份；Env7 实读后才导航。reserve 前刷新私有不可变 active-browser 标记，含 root/file FullId 和真实 boot 观察；Drop 不清。只有原生退出、Destroyed 与后续主队列收尾才退休标记及 profile/产物租约；旧 marker 通过真实清理引擎续退，不靠 PID 或 boot 差假造闭合 | `webview_storage/windows/{session,ledger}.rs`、`project_webview_profile/windows/{binding,owner,purge}.rs`；清除回执可独立重启续退，实际缺失后才成功 |
 | 卸载前管理器网页数据清除与结果 | 原活 manager store 清数据后显示结果 | 封导航并销毁原 manager，等 Env5/Destroyed 后释放其原目录 pin；只清原 UDF 子项，保持用户预览的根 FullId，由原磁盘计划最终删除该根。结果和实际剩余路径留在 RAM，用原生对话框显示；关闭结果后先 join 原清理 worker，再沿 ReadyForNativeExit 退出，不创建替代数据根 | `desktop_webview_profile/windows/{exit,purge}.rs`、`local_data_cleanup.rs` 的 Windows 委托；Mac 活窗口/原回调流程保持 |
 | 引擎所选私有目录的子项权限 | 同用户在私有目录中创建引擎子项 | 在原持久身份及 pins 授权的 selected profile root 上，为唯一当前用户 FA 添加 OI/CI；已具备时不写，保持 protected，不修改 owner/SACL/祖先或修复普通未知目录 | `platform-native/src/windows/files/private_inheritance.rs`；不改变一般文件/凭据私有策略，不放宽 sandbox；真实 WebView2 子项及 Cookie 持久化已验证 |
-| 网页归属索引目录的私有创建 | 对已选 ownership 根及项目 leaf 创建后 chmod 0700，既有 leaf 同样修权限 | 两个已选目录用原生私有 DACL 创建；既有普通已选目录只修自身权限，拒绝 reparse，不递归创建数据根或修改系统父 ACL | `web_project_ownership_io.rs`；`WebProjectOwnership::update` 仅委托原目录循环，索引写入仍用原 atomic_json |
+| 网页/Node 归属索引目录的私有创建 | 对已选 ownership 根及项目 leaf 创建后 chmod 0700，既有 leaf 同样修权限 | 两个已选目录用原生私有 DACL 创建；既有普通已选目录只修自身权限，拒绝 reparse，不递归创建数据根或修改系统父 ACL。Node 同样委托该边界，避免普通 create_dir 使后续真实 writer inventory 无法核实私有根；更新归属不代替关闭原 writer | `web_project_ownership_io.rs`、`node_project_ownership.rs`；原目录循环和索引 atomic_json 保持；真实父/子项身份、SD 与字节保持测试见验证记录 |
 | 网页下载与外部保存 | 原 WKWebView stage、写入归属、Finished 与用户所选位置发布 | WebView2 Requested 先登记原私有 stage 与实际 writer，Finished 核验同一请求后才进入原生保存；未受理或取消不构成交付。外部新建及用户明确覆盖采用完整身份、不可变 intent/decision 和不覆盖改名事务，提交前恢复原文件、提交后释放最终交付归属；项目删除保留完成交付和用户原件 | `browser_download/windows/{stage,tests,fixture}.rs`、`native_project_files/windows.rs`、`web_project_ownership/windows_delivery/`；Mac 原 Unix 正文与测试保持；原生保存完整 GUI 整链另验 |
 | 编辑器确认的目录身份 | 求助摘录前后核对路径与 dev/ino，不按目录内容变化撤销确认 | 核对卷序列号与完整 128 位 FileId；不新增时间、权限或内容变化比较 | `desktop_path_io.rs`，由 `project_onboarding.rs` 调用；原生观察复用 `platform-native::tool_files::Facts` |
 | 管理器关闭与应用事件 | 关闭管理器隐藏窗口，Dock Reopen 显示；退出先等待受管服务排空 | 保留已有非 Mac 关闭后退出政策，退出同样等待排空；没有 Cocoa Reopen 事件 | `desktop_app_events.rs`；`main.rs` 仅注册两个事件处理入口 |
 | 界面平台文案与路径提示 | 原 Finder、Dock/Cmd+Q、Mac 路径示例及 `/` 开头提示 | 依据实际编译 target 集中选择资源管理器、关闭退出、Windows 路径与平台 AI 说明；删除、清理、导入和求助统一使用适配层的绝对路径判断，Node 删除按实际盘符/UNC/扩展路径分组。生成目录随删、外部原始目录保留；实际归属仍由原生核验 | `apps/desktop/src/frontend-platform.tsx`；统一 provider 供设置、Node/Git 工具、WorkspaceLocation、LocalDirectoryPanel 和删除/清理/导入/求助使用；Mac 原文案、词法规则、平台说明及分组正文保持 |
 | 桌面平台图标 | 现有熊猫 PNG / ICNS | 从同一已跟踪 PNG 通过仓库已安装 Tauri CLI 转换 ICO，保留原 Mac 素材 | `apps/desktop/src-tauri/icons/icon.ico`；图标不是应用或安装包产物 |
-| 在文件管理器中打开 | `/usr/bin/open -a Finder` | SystemRoot 下的 `explorer.exe <路径>`；选文件为独立 `/select,<路径>` 参数。只确认创建派发进程，不等待不可靠的退出码或终止用户的 Explorer；真实窗口定位待验收 | `apps/desktop/src-tauri/src/local_directory.rs` |
+| 在文件管理器中打开 | `/usr/bin/open -a Finder`；原项目文件夹/README 派发 | 实际 SystemPaths 查询 Windows 目录后执行 explorer.exe；原生 conventional path 作为一个 literal 参数，文件使用独立 `/select,<路径>`。保留原项目位置核验，只确认派发创建，不等待不可靠的 Explorer 退出码或终止用户进程 | `apps/desktop/src-tauri/src/desktop_shell/{macos,windows}.rs`；`main.rs`、`local_directory.rs` 仅委托，Mac 原派发正文机械保持 |
+| 默认浏览器外链与 Node 求助 | 原 `/usr/bin/open`，调用方各自 URL 准入 | 保持原 HTTPS/公开链接政策，在独立 STA 内 ShellExecuteExW；单个 UTF-16 URL 置于 lpFile，无额外命令参数或环境扩展，等待派发线程 join，不取得或等待用户浏览器进程 | `apps/desktop/src-tauri/src/desktop_shell.rs`、`desktop_shell/{macos,windows}.rs`；Mac 三处原函数体机械保持，真实浏览器派发尚未验收 |
 | 自动打开已安装编辑器 | 原 Mac bundle ID、Apple 签名验证及 workspace URL 派发 | 当前用户 PackageManager 验证官方 Codex Store 包固定 family/publisher、签名来源、状态和内容完整性；重新核对实际安装目录身份后显式 AUMID 激活，使用其已安装 Explorer verb 对应 --open-project 原生转义参数，不走可被其它程序接管的环境协议 | `codex_handoff/windows.rs`；Mac 原全文/测试在 macos.rs 同层保持；真实激活尚未验收，不据只读安装检查声称已打开项目 |
 | Node 普通路径观察与目录同步 | 原逐组件 symlink_metadata；明确目录 File::open / sync_all，文件刷新另保留 | 跳过孤立盘符，观察实际路径并拒绝所有重解析点；真实观察目录后跳过无等价的目录 fsync，文件仍真实刷新。Node 删除 journal 已实现持久 CAS intent、完整身份 staging/移除/重开恢复/改名前放弃；原同卷及替代物保留政策不变 | `node_apps.rs` 委托 `platform-native::filesystem::{path_components,is_reparse,sync_directory}`；`node_deletion_journal/windows/{backend,control,paths}.rs`；完整产品停止并删除与 GUI 续删另验 |
 | 默认路径 | `~/PandaDrawer`、`~/Library/Application Support` | `%USERPROFILE%\PandaDrawer`、`%LOCALAPPDATA%`（`dirs` crate 已能返回） | `paths.rs` |
@@ -130,7 +131,7 @@
 | 正常桌面资源准备与 Tauri 调用 | 原固定 Mac resources / sidecar 与标准 Mac 输出流程 | 每次新建 Windows 准备目录和独立 Cargo target，准备固定 Node/MinGit、SDK/模板和实际 CLI；以当前 Node 调用 Tauri JS，最后合并资源 reset/map，避免旧成员混入。Windows 平台配置选择 currentUser NSIS / downloadBootstrapper | `scripts/prepare-desktop-windows.mjs`、`desktop-host.mjs`；共享入口仅委托，Mac 原流程保持；`tauri.windows.conf.json`，尚未做安装验收 |
 | Git 子进程环境 | Unix PATH、`/dev/null`、`/usr/bin/false`、冒号分隔 | Windows PATH（分号分隔）、`NUL`；临时路径含 `D:\` 不能被拒；保持现有的禁用凭据助手、提示、hooks、filters、全局配置的策略；加 `-c core.longpaths=true` | `git_environment.rs`、`git_remote.rs` |
 | 资源完整性锚点 | 编译时写入资源摘要（`signed_resources_unix.rs`） | 实现 Windows 对应版本，覆盖 Windows 资源树 | `crates/platform-core/build_support/` |
-| 运行门禁 | — | Windows x64 开发版运行入口已开放；迁移/构建历史恢复、Git 添加恢复等未实现能力在自己的适配入口明确拒绝。非 x64 Windows 仍不接纳，正式版签名/资源证明门禁保持原规则；策略开放不代表 GUI 或完整产品验收 | `platform_support.rs`；真实编译 policy 检查由 `scripts/platform-support-test.mjs` 委托 core 单测 |
+| 运行门禁 | — | Windows x64 开发版运行入口已开放；新工作区迁移按用户本轮范围调整关闭，其 preview/migrate API 在写入和任务创建前拒绝，已有记录内部恢复/清理不受此新入口门禁阻断。其它未完成能力仍在各自适配入口明确拒绝。非 x64 Windows 仍不接纳，正式版签名/资源证明门禁保持原规则；策略开放不代表 GUI 或完整产品验收 | `platform_support.rs`、`service.rs`、`WorkspaceLocation.tsx`；真实编译 policy 检查由 `scripts/platform-support-test.mjs` 委托 core 单测 |
 | 更新 | `platform-update-handoff`、`platform-update-witness` 为 macOS 实现 | 本轮不实现，保证在 Windows 上能编译（用 `cfg` 隔离），门禁关闭 | `crates/platform-update-*` |
 
 2026-10-31 实施状态：新增的 `platform-native` 提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；core 的 `file_identity.rs` 已接入完整 Windows 身份，`paths.rs` 的私有创建、逐级路径检查和元数据替换通过 `platform-native/src/filesystem.rs` 适配，Unix 分支保留原有 mode、no-follow、rename 和目录 fsync。其他业务仍待逐项接入，Mac 代码尚未全部收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
@@ -155,6 +156,8 @@
 **全程无人值守。** 用户不会盯着进度，也不会在里程碑之间做验收：
 
 2026-10-31 用户执行补充：CI 和运行器注册后置，先完成其余 Windows 功能、安装包与真机验收。继续按未验收栈分支推进，已完成的小步检查后提交并推送；未运行 CI 不记绿色，也不提前合入 main。Mac 行为保持要求不变。
+
+2026-10-31 用户范围补充：工作区迁移继续困难时可以移除，不因此阻塞 Windows 交付。本轮据此关闭 Windows **新工作区迁移**（包括 C→D），保留原默认位置、打开目录及已有记录的内部恢复/清理；Mac 原迁移功能保持。以下 W5 与验收条目按此范围执行，不将移除入口或内部恢复测试记作迁移成功。
 - 推送后用 `gh run watch` / `gh run view` 查看 CI 结果。失败就自己修复、重新推送，直到通过。
 - macOS 运行器离线（用户的 Mac 关机或睡眠）导致检查排队时，**不要干等**：在当前分支的基础上开下一个里程碑的分支继续工作，等检查通过后按顺序依次合并。排队超过 24 小时，在验证记录里注明，并在下次汇报时提醒用户。
 - 每个里程碑合并后，只用几句话汇报结果，然后直接继续，不等待回复。
@@ -190,11 +193,11 @@
 - 从 Git 添加：MinGit、`npm ci`、提交点前回滚 / 提交点后保留、取消与中断处理。
 - 完成标准：从 GitHub 导入一个公开 Node 仓库并运行；导入中途取消，不留任何残留。
 
-**W5：停止并删除、存储与迁移**
+**W5：停止并删除、存储与已有事务收尾**
 - 停止并删除完整流程（持久任务、续删、重试、放弃），加上第 5 节的文件占用、只读文件、长路径处理。
 - 删除网页存储时等待 WebView2 浏览器进程退出。
-- 存储与清理页、卸载前清除、工作区迁移（只允许本机 NTFS 内置磁盘）。
-- 完成标准：第 7 节中删除和迁移相关项全部通过。
+- 存储与清理页、卸载前清除；Windows 新工作区迁移按用户范围调整关闭，已有记录的内部恢复/清理保留，Mac 不改。
+- 完成标准：第 7 节中删除、清理及第 13 项的新入口关闭/已有记录保留检查通过；不要求或宣称 Windows 本轮完成新迁移。
 
 **W6：安装包**
 - `tauri.conf.json` 增加 Windows NSIS 目标（当前用户安装、WebView2 在线引导）。Mac 的 `app`、`dmg` 目标不变（可用平台专属配置文件区分）。
@@ -217,7 +220,7 @@
 10. 删除过程中在任务管理器里结束平台进程，重新打开：显示删除未完成，能继续完成。
 11. 外部本地项目删除后，用户文件夹完好无损。
 12. 在任务管理器结束平台进程：所有应用进程随之结束；重启平台后没有残留的"运行中"状态。
-13. 工作区迁移到另一块本机 NTFS 磁盘：迁移成功，重开后旧目录被自动删除；选择网络盘或 U 盘时被拒绝并说明原因。
+13. Windows 本轮不提供新工作区迁移：设置不显示“更换位置”表单，直接调用 preview/migrate 明确拒绝且不创建任务、改写 settings 或复制/移动项目；现有记录的内部恢复与精确清理仍按原许可工作。不将 C→D 迁移记为已通过；Mac 原迁移验收不变。
 14. 卸载前清除：平台管理的数据和代码全部清除，外部原始文件夹保留。
 15. 卸载后重新安装，平台能正常启动。
 

@@ -8,6 +8,7 @@ mod desktop_installation;
 mod desktop_monitor;
 mod desktop_partial_startup;
 mod desktop_path_io;
+mod desktop_shell;
 mod desktop_shutdown;
 mod desktop_shutdown_native;
 mod desktop_webview_profile;
@@ -31,10 +32,7 @@ use platform_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    path::PathBuf,
-    process::{Command, Stdio},
-};
+use std::path::PathBuf;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
@@ -550,19 +548,7 @@ async fn project_reveal(
         .run(async move {
             let state = io_app.state::<AppState>();
             let location = state.handle.project_location(&project_id, &target).await?;
-            let mut command = Command::new("/usr/bin/open");
-            if target == "readme" {
-                command.arg("-R");
-            }
-            command.arg(location);
-            let status = command
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()?;
-            if !status.success() {
-                return Err(ApiError::new("REVEAL_FAILED", "无法打开项目位置"));
-            }
-            Ok(())
+            desktop_shell::reveal(location, target == "readme")
         })
         .await?
 }
@@ -655,11 +641,7 @@ fn request_external_link(app: &tauri::AppHandle, url: Url) {
                 return;
             };
             let work = lease.hold(move || {
-                let _ = Command::new("/usr/bin/open")
-                    .arg(url.as_str())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                desktop_shell::external_link(&url);
             });
             tauri::async_runtime::spawn_blocking(move || work.run_blocking());
         });
@@ -1901,19 +1883,7 @@ async fn node_app_status(
         .await?
 }
 fn open_node_url(url: String) -> Result<(), ApiError> {
-    Command::new("/usr/bin/open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|_| ())
-        .map_err(|_| {
-            ApiError::new(
-                "BROWSER_OPEN_FAILED",
-                "无法打开浏览器，请检查系统默认浏览器设置。",
-            )
-        })
+    desktop_shell::node_help(url)
 }
 #[tauri::command]
 async fn node_app_open(
@@ -2237,13 +2207,8 @@ fn install_project_cleanup_hook(app: &tauri::AppHandle) {
                         project_window_cleanup::purge(&app, &notice).await?;
                         let ledger = state.handle.webview_stores();
                         if ledger.contains(notice.kind, &notice.id)? {
-                            native_stores::purge_project(
-                                &app,
-                                &ledger,
-                                notice.kind,
-                                &notice.id,
-                            )
-                            .await?;
+                            native_stores::purge_project(&app, &ledger, notice.kind, &notice.id)
+                                .await?;
                         }
                         Ok(())
                     }

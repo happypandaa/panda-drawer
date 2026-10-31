@@ -116,7 +116,7 @@ async function change(element, value) {
   });
 }
 
-test('Windows shell uses native copy and preserves absolute Node/Git arguments through save', async () => {
+test('Windows shell preserves native tool arguments and current-folder controls without new migration', async () => {
   const windowsBootstrap = { ...bootstrap, workspaceRoot: String.raw`D:\可丢弃 工作区`, platform: { build: { target: 'x86_64-pc-windows-msvc' } } };
   const nodePath = String.raw`C:\Program Files\nodejs\node.exe`;
   const gitPath = String.raw`\\server\share\工具\git.exe`;
@@ -152,16 +152,19 @@ test('Windows shell uses native copy and preserves absolute Node/Git arguments t
   await click(document.querySelector('#settings-storage-tab'));
   const location = document.querySelector('.workspace-location-card');
   await click(byText('在资源管理器中打开', location));
-  await click(byText('更换位置', location));
-  assert.match(location.querySelector('.settings-migration-notes').textContent, /NTFS.*本机内置/);
-  assert.doesNotMatch(location.querySelector('.settings-migration-notes').textContent, /APFS/);
-  const destination = location.querySelector('.path-input input');
-  await change(destination, String.raw`E:\中文 新工作区`);
-  const next = [...location.querySelectorAll('button')].find(button => button.textContent.startsWith('下一步：核对'));
-  assert.equal(next.disabled, false);
-  await click(next);
-  assert.match(location.querySelector('.workspace-migration-confirmation').textContent, /E:\\中文 新工作区/);
-  assert.equal(calls.some(([command]) => command === 'workspace_migrate'), false);
+  assert.deepEqual(calls.filter(([command]) => command === 'open_project_folder'), [
+    ['open_project_folder', { path: windowsBootstrap.workspaceRoot }],
+    ['open_project_folder', { path: windowsBootstrap.workspaceRoot }],
+  ]);
+  assert.equal(byText('更换位置', location), undefined);
+  assert.equal(location.querySelector('.settings-migration'), null);
+  assert.equal(location.querySelector('.path-input input'), null);
+  assert.match(location.textContent, /可丢弃 工作区/);
+  const readsBefore = calls.filter(([command]) => command === 'workspace_info').length;
+  await click(byText('刷新状态', location));
+  assert.equal(calls.filter(([command]) => command === 'workspace_info').length, readsBefore + 1);
+  assert.match(document.querySelector('.workspace-location-card').textContent, /可丢弃 工作区/);
+  assert.equal(calls.some(([command]) => command === 'workspace_migrate' || command === 'choose_path'), false);
 });
 
 test('Missing bootstrap stays neutral and switches only after the real compiled target arrives', async () => {

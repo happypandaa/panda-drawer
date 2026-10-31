@@ -709,7 +709,7 @@ async fn source_restore_guard_migration_rejects_before_pausing_live_project() {
     fs::create_dir(&destination).unwrap();
     let handle = service.handle();
     let task = handle
-        .workspace_migrate(json!({"destinationPath":destination}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":destination}))
         .await
         .unwrap();
     let record = tokio::time::timeout(Duration::from_secs(10), async {

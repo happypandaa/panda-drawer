@@ -185,7 +185,7 @@ async fn migration_rotates_runtime_credentials_preserves_data_and_rejects_old_co
     let destination = temp.path().canonicalize().unwrap().join("migration-target");
     std::fs::create_dir(&destination).unwrap();
     let task = handle
-        .workspace_migrate(json!({"destinationPath":destination}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":destination}))
         .await
         .unwrap();
     let task = wait(&handle, task).await;
@@ -274,7 +274,7 @@ async fn target_disappearing_before_commit_resumes_only_source_without_invalidat
     let destination = temp.path().canonicalize().unwrap().join("offline-target");
     std::fs::create_dir(&destination).unwrap();
     let task = handle
-        .workspace_migrate(json!({"destinationPath":destination}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":destination}))
         .await
         .unwrap();
     std::fs::remove_dir(&destination).unwrap();

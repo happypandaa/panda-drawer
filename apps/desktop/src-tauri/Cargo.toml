@@ -46,5 +46,5 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39.1"
-windows = { version = "0.62.2", features = ["ApplicationModel", "Management_Deployment", "Win32_System_Com", "Win32_System_WinRT", "Win32_UI_Shell"] }
+windows = { version = "0.62.2", features = ["ApplicationModel", "Management_Deployment", "Win32_System_Com", "Win32_System_Registry", "Win32_System_WinRT", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 

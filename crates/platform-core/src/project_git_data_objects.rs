@@ -120,7 +120,7 @@ fn parse_tree(bytes: &[u8], limits: version_data::SnapshotLimits) -> Result<Data
 /// Each result file is created exclusively relative to an already opened,
 /// private candidate root. Both protocol framing and the tree-declared object
 /// identity/length are checked before accepting the stream.
-pub(super) async fn materialize(
+pub(crate) async fn materialize(
     project: &ProjectHandle,
     tools: &GitToolchain,
     context: &mut Context,
@@ -240,6 +240,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_retains_real_blocking_writer_lease_gate_and_candidate_until_join() {
         let (_temporary, paths) = RuntimePaths::for_test();

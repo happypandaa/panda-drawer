@@ -1076,3 +1076,37 @@ Windows 登记交换在原 recovery permit、freeze 与独占 gate 中使用实�
 正常 GUI 将 C 盘当前 disposable 工作区迁移到 D 盘新建中文空格空目录时，实际在启动迁移前报 Cloud Filter HRESULT 0x80070001；原根和数据未改，目标仍空。实际新 TempDir 对照：C 卷 DOS/verbatim 和 ByPath/ByHandle 四种均返回不在同步根内，D 卷四种均 ERROR_INVALID_FUNCTION，已排除路径表示；完整 WinRT 注册根枚举实际有 1 项且逐项取得 Path/实际 HANDLE。没有在 D 卷注册 provider、加载驱动或修环境以掩盖问题。
 
 仅该 capability 错误归类为独立 QueryUnsupported；仍必须完成系统注册根全清单及原 HANDLE/VolumeGUID 范围比较，清单、任一根解析失败或其它 Cloud Files 错误仍拒绝。当前卷真实新 TempDir、原哨兵/完整身份保持、匹配根拒绝和清单未知保留等 native workspace **8/8**，0.07 秒，包含既有 C 卷真实临时 sync registration/注销及 STA 调用回归。注入范围政策测试不冒充 D 卷真实 provider 登记证据。native Clippy **-Dclippy::all 通过**、无警告，0.64 秒；Mac 文件/政策未改，正常 GUI 重编后的跨盘整链继续验证。
+
+### W5.15 — 显式 Git 源码取回与正常可写数据取回事务
+
+源码取回沿用原预览、确认、任务许可和独占 gate；Windows 原生 stamp 使用完整 FileId、readOnly 和原摘要。三次不覆盖改名的 pending 状态留在本任务 journal 内，控制块 kind 和五位 entry 固定宽度，任务根身份不变；各 phase 的最大 journal 字节仍按原规则精确计量。纯 status/classify 不改目录名，实际继续/撤回才在原许可内稳定：可见前恢复本次移动的原侧，可见后先完成该项，再保留用户对整个源码取回事务的继续或撤回选择。固定 capture、foreign live、无关源码变化和替代任务根均保持，不自动收养或删除。
+
+源码默认 **6/6**，8.52 秒，涵盖真实三次移动各中断点、新 owner 双方向、原完整身份和只读位、实际 reader 占用释放、未知 capture/替代根，以及固定宽度预算。固定官方 MinGit 2.56.0.windows.4 的公有管理器专项 **2/2**，111.36 秒，实际完成 preview/apply 和真实移动中断后新 manager 的两个恢复方向，并核对 Git、业务数据和输出保持。日志为本机 `.test-artifacts/w5-source-restore-{default,official}-tests.log`；临时项目和日志没有提交到仓库。
+
+数据取回接入原 SQLite/附件一致快照、独立 stage、五 slot、不可变 plan、registration epoch 提交、completion/terminal 和实际 join 的 task runner。Windows DirectoryProof/FileProof 保留完整身份、真实 readOnly 及原生稳定观察，不伪造 Unix mode；登记交换中间材料只按原计划验证后的精确名字和实际字节计入预算。Mac slot 文件实现、metadata publish/seal 原函数体机械保持，原 schema、错误政策和已可见 sealed terminal 的释放点不改；已退休的保存/初始化/建分支接口没有重新开放。旧数据保存库存只有真实 Missing/Empty 才报告 clear，未知记录保持 blocked，不把它记为已恢复。
+
+首轮暴露两个实际接线错误（模块 import 歧义、测试所需的内部可见性）及 prepared journal 的只读 HANDLE 刷新错误；均修复后重新编译。prepared journal 已存在时改由原 read HANDLE 和原完整身份约束真正同对象的可写 HANDLE，再实际 flush，不跳过刷新。测试夹具最初把快照直接放入 version-data，违反原独立准备目录规则，已改为新 TempDir 准备后真实不覆盖改名，再由夹具外部 Git 正常提交；没有通过旧保存 API 绕过约束。
+
+最终组合快照完整 core **893 通过、0 失败、37 专用入口忽略**，370.69 秒（`.test-artifacts/w5-final-source-data-core-default-tests.log`），其中数据默认 **9/9**：真实五 slot/epoch/terminal、A/B 隔离、新 manager 撤回、原 reader 占用与重试、foreign slot 保留、完整身份/readOnly/硬链接准入、128 候选和原大小预算、逐实际移动/metadata/封存中断及 reserve 前缀续写。普通完整故障矩阵曾单独实际通过；旧 reserve 笛卡尔重复运行因成本过高按授权核对唯一测试进程后中断，保留 TempDir，**不计通过**。随后 reserve 夹具按原 Mac 范围先进入 epoch 已提交的 metadata 阶段，再补满 128 个候选并逐 reserve partial-write/publication/seal 边界恢复；全部独有断言保留，最终完整回归通过。
+
+官方 MinGit 公有管理器 preview/apply、epoch 重开及失败后 status→新 manager Undo 两项实际通过；这轮三项组为 **2 通过、1 夹具失败，33.32 秒**。失败的 raw writer 夹具误将 9 MiB stdin 送入原 8 MiB Context 收集预算，改为真实文件经 hash-object --no-filters 准备对象后，9 MiB cat-file 流式专项单独 **1/1**，7.90 秒（`.test-artifacts/w5-data-restore-raw-writer-final.log`）。实际取消时仍持有原 lease/gate/candidate，报告 cleanup pending；释放阻塞 writer 后，所有原生泵/worker 真正 join、resourceClosed，才释放材料。reader 重试夹具曾在 pending 中用 RW SQLite SELECT 自行产生 WAL/SHM，已改为原完整身份和全部字节不变核验，关闭占用后再实际读取恢复结果，精确复验 **1/1**，5.22 秒。上述官方三项均有实际通过记录，没有把仅 Unix Python 夹具当作 Windows 管道证明。
+
+**只读刷新实际限制：** 实际新 TempDir 对照中，普通、只读位、当前用户只读 DACL 及两者组合的只读 HANDLE，FlushFileBuffers 返回 OS 5，NtFlushBuffersFile/NtFlushBuffersFileEx 各测试 flag 均拒绝访问；原先仍持有的 WRITE HANDLE 是成功正控。来自 live 的旧 DB/附件不能仅凭完整身份和摘要推断曾被本事务刷新。实现没有新增 owner、DACL 或只读位预检查，不修 DACL、不临时清只读位，也不跳过原件 flush；真实原生刷新因权限失败时，沿用原 I/O 错误处理保持 pending/原材料，绝不报完成。这是第 2 节的同一保证与真实操作系统错误语义，不是另加 Windows 安全准入；此前把它列为第 9 节第 2 项待用户批准的问题已撤回，无需另批。正常可写测试通过不代表这些只读刷新操作成功，也不承诺 Windows 目录 fsync 或断电耐久等价。
+
+这里的继续/撤回是用户确认的 Git 版本取回及中断事务续作，**不是项目永久删除后的找回**；完整删除的原合同不变，不保留删除成功的恢复副本。结果只覆盖本次冻结快照及明确 disposable 项目，不代表正常 GUI Git 取回、安装版、Windows 10 或 Mac CI 已验收。上述 893 项快照早于后续 Node root 两文件与 Windows 迁移入口移除十一文件；这些后续变化不计入该次结果，其验证分别记录。
+
+### W5.16 — 按用户范围调整关闭 Windows 新工作区迁移
+
+用户最新明确授权迁移继续困难时可以移除，本轮据此关闭 Windows 新工作区迁移，包括 C→D。Mac 原行为不改；Windows 保留当前工作区位置和在资源管理器中打开，隐藏“更换位置”表单，公共 preview/migrate 在任务创建、settings 写入和复制前明确拒绝。已有记录的内部启动恢复、真实重开和精确旧源清理继续按原绑定工作，未知材料不删除，不通过内部入口发起新的公开迁移。W5.14 的卷/同步根原语证明不构成 C→D 完整 GUI 迁移成功，本轮也不再以迁移成功作为 Windows 交付要求。
+
+已实际通过的范围：迁移相关 UI 分组 **86/86**；平台门禁 **6/6**，新公共 API 无任务/目录/journal 写入专项 **1/1**、0.37 秒；既有内部迁移/重开/清理 **9/9**、5.38 秒，source restore guard 回归 **12/12**、1.93 秒。均使用实际编译目标和新 disposable 临时目录；内部事务回归通过不表示公开迁移已重新开放。日志为本机 `w5-windows-migration-removal-ui-tests.log` 及 `w5-removed-migration-*-tests.log`，没有提交测试证据。
+
+同轮完整 UI 首次有一项 radio 测试仍点击已撤回的 Windows 迁移按钮；改为 Windows 不提供该按钮的负断言，Mac 原测试行为保持，radio 分组 **34/34** 后，完整 UI **494/494、0 跳过**，13.93 秒。不是通过删除断言或把专项结果冒充全量解决。此范围变更与项目永久删除、数据取回的 I/O 错误保留规则无关，不改变完整删除合同。
+
+### W5.17 — Node 归属根私有创建、原生桌面派发与收尾回归
+
+Node 归属更新原先使用普通 create_dir，私有权限设置只在 Unix 执行；Windows ownership 根/leaf 可能不具备原 writer inventory 所要求的私有 DACL，导致 PROJECT_WRITER_UNCONFIRMED。现在两个已选目录委托已有 web_project_ownership_io：新目录原生私有创建，既有目录按 Mac 原 chmod 范围只修所选 leaf；不修改系统父 ACL、不传播至原子项、不重认领未知目录。实际 NodeOwnership **2/2**，1.98 秒，验证完整身份、parent/child/sibling 原 SD 和字节保持，以及真实 writer 未闭合时更新 ownership 不能将它清掉。
+
+后续 project cleanup **3/3**，3.43 秒，M4 回归 **5/5**，2.02 秒。此前七个独立测试进程同时运行时有一项 PROJECT_BUSY；原失败项精确复验 **1/1** 后，正常 M4 整组 **5/5**，没有据此删测试、改原断言或记作已修复的产品故障。core Clippy **-Dclippy::all 通过**，9.77 秒（38 个 Rust 警告保留）；desktop Clippy 同样通过，9.96 秒（bin 7、test 5 个 Rust 警告保留）。这些是后续明确分组和 lint 结果，不改写 W5.15 那次 893 项快照的范围。
+
+桌面项目文件夹、README、普通外链和 Node 求助的系统派发统一委托 desktop_shell 适配。Windows 文件管理器通过实际 SystemPaths 获取 explorer.exe，原位置作为单个 literal 路径；浏览器通过独立 STA 的 ShellExecuteExW 派发单个 URL，无额外参数和环境扩展，实际 join 派发线程，不等待或终止用户进程。Mac 三处原正文机械保持。该实现的实际桌面默认测试 **105 通过、0 失败、13 专用入口忽略**，1.18 秒；覆盖原生参数和派发边界，**尚未执行真实浏览器派发**，不将它记作浏览器窗口已经打开。正在准备的正常 GUI 清理验证尚无成功回执，不计入本节。

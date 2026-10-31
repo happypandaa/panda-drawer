@@ -59,6 +59,7 @@ const { Modal } = await component('Modal.tsx');
 const { ProjectOverview } = await component('ProjectOverview.tsx');
 const { WorkspaceStoragePanel } = await component('WorkspaceStoragePanel.tsx');
 const { WorkspaceLocation } = await component('WorkspaceLocation.tsx');
+const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await component('frontend-platform.tsx');
 const { resetHistoryScanForTests } = await component('history-scan-store.ts');
 const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
 const { default: App } = await component('App.tsx');
@@ -979,6 +980,49 @@ const migrationCleanupWorkspace = (extra = {}) => ({
 });
 const migrationCleanupProps = (workspace, extra = {}) => ({ workspace, dataRoot: '/disposable/development', enabled: true, active: true, migrating: false, onTask() {}, onRefresh: async () => {}, ...extra });
 const migrationCleanupTask = (extra = {}) => ({ taskId: 'task_disposable_migration_cleanup', projectId: null, type: 'workspaceMigrationCleanup', status: 'running', final: false, phase: 'cleaning-old-workspace', result: null, error: null, ...extra });
+
+test('Windows removes only new migration and preserves current location, refresh and retained-record cleanup', async () => {
+  await setup(); const calls = []; const tracked = []; let refreshes = 0;
+  const current = String.raw`C:\Disposable current workspace`;
+  const workspace = migrationCleanupWorkspace({ workspaceRoot: current });
+  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'open_project_folder') return null;
+    assert.equal(command, 'workspace_migration_cleanup');
+    return migrationCleanupTask({ final: true, status: 'succeeded', phase: 'completed', result: { completed: true, cleanupPending: false } });
+  };
+  const props = migrationCleanupProps(workspace, { onTask: value => tracked.push(value), onRefresh: async () => { refreshes++; } });
+  const platform = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
+  await render(h(FrontendPlatformProvider, { value: platform }, h(WorkspaceLocation, props)));
+  assert.equal(buttonNamed('更换位置'), undefined);
+  assert.equal(document.querySelector('.settings-migration'), null);
+  assert.match(document.querySelector('.workspace-location-card').textContent, /Disposable current workspace/);
+  await click(buttonNamed('在资源管理器中打开'));
+  await click(buttonNamed('刷新状态'));
+  assert.deepEqual(calls, [{ command: 'open_project_folder', args: { path: current } }]);
+  assert.equal(refreshes, 1);
+  await click(buttonNamed('重试删除'));
+  assert.deepEqual(calls.at(-1), { command: 'workspace_migration_cleanup', args: { migrationId: 'task_disposable_migration' } });
+  assert.equal(tracked.at(-1).final, true);
+  assert.equal(refreshes, 2);
+  assert.equal(calls.some(value => value.command === 'workspace_migrate' || value.command === 'choose_path'), false);
+});
+
+test('Windows bootstrap arrival hides an open migration form and discards an earlier path-dialog reply', async () => {
+  await setup(); const chosen = deferred(); const calls = [];
+  globalThis.__UI_TEST_INVOKE__ = async command => { calls.push(command); assert.equal(command, 'choose_path'); return chosen.promise; };
+  const props = migrationCleanupProps(migrationCleanupWorkspace({ retainedRoots: [] }));
+  await render(h(FrontendPlatformProvider, { value: frontendPlatformFromBootstrap(null) }, h(WorkspaceLocation, props)));
+  await click(buttonNamed('更换位置'));
+  await click(buttonNamed('选择…'));
+  const platform = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
+  await render(h(FrontendPlatformProvider, { value: platform }, h(WorkspaceLocation, props)));
+  await act(async () => chosen.resolve(String.raw`D:\Disposable new location`));
+  assert.equal(buttonNamed('更换位置'), undefined);
+  assert.equal(document.querySelector('.settings-migration'), null);
+  assert.equal(buttonNamed('确认开始迁移'), undefined);
+  assert.deepEqual(calls, ['choose_path']);
+});
 
 test('Migration explains automatic deletion only after the new location reopens', async () => {
   await setup(); const calls = [];

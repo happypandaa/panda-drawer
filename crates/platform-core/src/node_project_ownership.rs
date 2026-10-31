@@ -147,15 +147,7 @@ impl NodeProjectOwnership {
         };
         change(&mut record)?;
         for directory in [self.root(), self.directory(id)?] {
-            check_no_symlinks(&directory, true)?;
-            if !directory.exists() {
-                fs::create_dir(&directory)?;
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-            }
+            crate::web_project_ownership_io::prepare_directory(&directory)?;
         }
         atomic_json(&path, &record)
     }
@@ -927,6 +919,10 @@ fn validate_generated_path(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(all(test, windows))]
+#[path = "node_project_ownership_windows_tests.rs"]
+mod windows_tests;
 
 #[cfg(test)]
 mod tests {

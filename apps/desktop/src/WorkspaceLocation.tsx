@@ -85,16 +85,17 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
   const blocked = retryBlocked || pendingRecords.length > 0;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
   useEffect(() => { if (!active) { generation.current++; setChoosing(false); setConfirmedPath(null); setAcknowledged(false); } }, [active]);
+  useEffect(() => { if (!frontendPlatform.migrationAvailable) { generation.current++; setExpanded(false); setChoosing(false); setConfirmedPath(null); setAcknowledged(false); } }, [frontendPlatform.migrationAvailable]);
   function editDestination(value: string) { setDestination(value); setConfirmedPath(null); setAcknowledged(false); }
   async function choose() {
-    if (blocked || operation.current) return;
+    if (!frontendPlatform.migrationAvailable || blocked || operation.current) return;
     const sequence = ++generation.current; setChoosing(true); setError('');
     try { const value = await invoke<string | null>('choose_path', { kind: 'workspace' }); if (sequence === generation.current && value) editDestination(value); }
     catch (cause) { if (sequence === generation.current) setError(`路径选择失败，可直接填写绝对路径：${messageFrom(cause)}`); }
     finally { if (sequence === generation.current) setChoosing(false); }
   }
   async function migrate() {
-    if (blocked || operation.current || !acknowledged || confirmedPath !== destination.trim() || !frontendPlatform.isAbsolutePath(confirmedPath ?? '')) return;
+    if (!frontendPlatform.migrationAvailable || blocked || operation.current || !acknowledged || confirmedPath !== destination.trim() || !frontendPlatform.isAbsolutePath(confirmedPath ?? '')) return;
     operation.current = true; setPending(true); setError('');
     try { const task = await invoke<TaskRecord>('workspace_migrate', { input: { destinationPath: confirmedPath } }); if (mounted.current) tracker.track(task); else onTask(task); }
     catch (cause) { if (mounted.current) setError(messageFrom(cause)); }
@@ -119,8 +120,8 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
   const step = tracker.running || pending ? 3 : confirmedPath ? 2 : 1;
   return <section className="lifecycle-card workspace-location-card" aria-labelledby="workspace-location-title">
     <div className="section-heading"><div><h2 id="workspace-location-title">项目文件夹</h2><p>新建和从 Git 添加的应用保存在这里。</p></div><button className="refresh-button" disabled={!enabled || refreshing || pending} onClick={() => void refresh()}><RefreshCw size={14} />{refreshing ? '刷新中…' : '刷新状态'}</button></div>
-    <div className="settings-location-row"><div><code>{workspace?.workspaceRoot ?? '尚未读取'}</code>{workspace?.filesystem && <small>文件系统 {workspace.filesystem}</small>}</div><button className="refresh-button" disabled={!workspace || !enabled || migrating} onClick={() => { if (workspace?.workspaceRoot) void invoke('open_project_folder', { path: workspace.workspaceRoot }).catch(cause => setError(messageFrom(cause))); }}><FolderOpen size={14} />{frontendPlatform.openFolderLabel}</button><button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起' : '更换位置'}</button></div>
-    {expanded && <div className="settings-migration">
+    <div className="settings-location-row"><div><code>{workspace?.workspaceRoot ?? '尚未读取'}</code>{workspace?.filesystem && <small>文件系统 {workspace.filesystem}</small>}</div><button className="refresh-button" disabled={!workspace || !enabled || migrating} onClick={() => { if (workspace?.workspaceRoot) void invoke('open_project_folder', { path: workspace.workspaceRoot }).catch(cause => setError(messageFrom(cause))); }}><FolderOpen size={14} />{frontendPlatform.openFolderLabel}</button>{frontendPlatform.migrationAvailable && <button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起' : '更换位置'}</button>}</div>
+    {frontendPlatform.migrationAvailable && expanded && <div className="settings-migration">
       <div className="settings-migration-heading"><div><h3>迁移工作区</h3><p>{frontendPlatform.workspaceMigrationDescription}</p></div></div>
       <div className="workspace-migration-form" id={`${inputId}-migration`}>
         <ol className="settings-steps" aria-label="迁移步骤">{['选择位置', '核对', '迁移中'].map((label, index) => <li key={label} aria-current={step === index + 1 ? 'step' : undefined}>{index + 1} {label}</li>)}</ol>

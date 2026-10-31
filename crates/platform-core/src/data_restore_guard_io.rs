@@ -5,6 +5,50 @@ use crate::{file_identity::PersistedIdentity, ApiError};
 use std::os::unix::fs::MetadataExt;
 use std::{fs::File, path::Path};
 
+pub(super) fn sync_prepared_journal(
+    file: File,
+    path: &Path,
+    expected: &PersistedIdentity,
+) -> Result<(), ApiError> {
+    #[cfg(unix)]
+    {
+        let _ = (path, expected);
+        file.sync_all().map_err(|_| invalid())?;
+    }
+    #[cfg(windows)]
+    {
+        use platform_native::windows::files as native;
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+        let _parent = native::pin_directory(path.parent().ok_or_else(invalid)?)?;
+        if !expected
+            .matches_open_runtime(&file)
+            .map_err(|_| invalid())?
+        {
+            return Err(changed());
+        }
+        let writable = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(7)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        let metadata = writable.metadata()?;
+        if !metadata.is_file()
+            || platform_native::filesystem::is_reparse(&metadata)
+            || native::identity(&writable)?.links != 1
+            || !expected
+                .matches_open_runtime(&writable)
+                .map_err(|_| invalid())?
+        {
+            return Err(changed());
+        }
+        // The application-created control is flushed through actual write
+        // access. The ordinary payload/read-only admission is unchanged.
+        writable.sync_all().map_err(|_| invalid())?;
+    }
+    Ok(())
+}
+
 pub(super) fn prepare_staging(staging_fd: File) -> Result<Option<File>, ApiError> {
     #[cfg(unix)]
     {

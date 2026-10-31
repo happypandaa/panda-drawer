@@ -1173,6 +1173,14 @@ impl RuntimeHandle {
             .map(|task| json!(task))
     }
     pub async fn workspace_migrate(&self, input: Value) -> std::result::Result<Value, ApiError> {
+        crate::platform_support::require_workspace_migration()?;
+        self.workspace_migrate_after_platform_admission(input).await
+    }
+    // The original admission/order is shared unchanged with recovery fixtures.
+    async fn workspace_migrate_after_platform_admission(
+        &self,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
         self.check_native_ready()?;
         let state = self.current();
         if !Arc::ptr_eq(&state, &self.shared.snapshot()) {
@@ -1184,6 +1192,22 @@ impl RuntimeHandle {
         submit_migration(self.shared.clone(), state, serde_json::from_value(input)?)
             .await
             .map(|task| json!(task))
+    }
+    #[cfg(test)]
+    pub(crate) async fn workspace_migrate_backend_fixture(
+        &self,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
+        // Keep the existing lifecycle/recovery tests on the real engine. This
+        // is compiled only into tests, never a runtime capability override.
+        // Mac still takes its original public API path and all its checks.
+        if crate::platform_support::HostPlatform::current()
+            == crate::platform_support::HostPlatform::Windows
+        {
+            self.workspace_migrate_after_platform_admission(input).await
+        } else {
+            self.workspace_migrate(input).await
+        }
     }
 }
 #[path = "service_workspace_migration.rs"]
@@ -4367,6 +4391,10 @@ mod io_lifetime_tests;
 #[cfg(test)]
 #[path = "service_workspace_migration_tests.rs"]
 mod workspace_migration_tests;
+
+#[cfg(all(test, windows))]
+#[path = "service_workspace_migration_windows_tests.rs"]
+mod workspace_migration_windows_tests;
 
 #[cfg(all(test, windows))]
 #[path = "installation_scope/windows/runtime_tests.rs"]

@@ -372,7 +372,7 @@ async fn public_workspace_migration_keeps_the_coordinator_hook_and_window_store(
         .join("disposable-public-migration");
     fs::create_dir(&destination).unwrap();
     let task = handle
-        .workspace_migrate(json!({"destinationPath":destination}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":destination}))
         .await
         .unwrap();
     let migrated = tokio::time::timeout(Duration::from_secs(20), async {

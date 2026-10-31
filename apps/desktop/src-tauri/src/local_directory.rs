@@ -2,8 +2,8 @@
 use super::{require_manager, AppState};
 use platform_core::ApiError;
 #[cfg(target_os = "macos")]
-use std::time::Duration;
-use std::{path::Path, process::Stdio};
+use std::{process::Stdio, time::Duration};
+use std::path::Path;
 use tokio::process::Command;
 
 #[tauri::command]
@@ -62,26 +62,10 @@ fn finder_command(location: &Path, select_file: bool) -> Result<Command, ApiErro
 
 #[cfg(windows)]
 fn explorer_command(location: &Path, select_file: bool) -> Result<Command, ApiError> {
-    if !location.is_absolute() {
-        return Err(ApiError::new("REVEAL_FAILED", "本地目录位置无效"));
-    }
-    let system_root = std::env::var_os("SystemRoot")
-        .map(std::path::PathBuf::from)
-        .filter(|root| root.is_absolute())
-        .ok_or_else(|| ApiError::new("REVEAL_FAILED", "无法找到系统文件管理器"))?;
-    let mut command = Command::new(system_root.join("explorer.exe"));
-    if select_file {
-        let mut argument = std::ffi::OsString::from("/select,");
-        argument.push(location);
-        command.arg(argument);
-    } else {
-        command.arg(location);
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Ok(command)
+    Ok(Command::from(super::desktop_shell::explorer_command(
+        location,
+        select_file,
+    )?))
 }
 
 pub(super) async fn open(location: &Path, select_file: bool) -> Result<(), ApiError> {
