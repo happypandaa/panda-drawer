@@ -17,7 +17,7 @@ impl HostPlatform {
     pub const fn current() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
-        } else if cfg!(target_os = "windows") {
+        } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
             Self::Windows
         } else {
             Self::Unsupported
@@ -70,9 +70,9 @@ pub const fn support_for(platform: HostPlatform) -> RuntimeSupport {
         },
         HostPlatform::Windows => RuntimeSupport {
             platform,
-            runtime_available: false,
-            error_code: Some("PLATFORM_STAGE_UNAVAILABLE"),
-            message: "此 Windows 阶段尚未开放：安全文件访问与已有维护、迁移、恢复和清理现场的只读识别检查尚待完成，暂不允许启动平台运行时。此判断未读取或检查任何工作区现场。",
+            runtime_available: true,
+            error_code: None,
+            message: "Windows x64 已开放开发版运行入口；具体功能由各自的平台能力检查准入，此策略不代表主界面或完整产品验收已经通过。",
         },
         HostPlatform::Unsupported => RuntimeSupport {
             platform,
@@ -135,21 +135,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_refuses_runtime_with_an_actionable_unverified_stage_error() {
-        let error = require_for(HostPlatform::Windows).unwrap_err();
-        assert_eq!(error.code, "PLATFORM_STAGE_UNAVAILABLE");
-        assert_eq!(error.platform, HostPlatform::Windows);
-        for expected in [
-            "此 Windows 阶段尚未开放",
-            "安全文件访问",
-            "只读识别检查尚待完成",
-            "未读取或检查任何工作区现场",
-        ] {
-            assert!(error.message.contains(expected), "{expected}");
-        }
-        assert!(error
-            .to_string()
-            .starts_with("PLATFORM_STAGE_UNAVAILABLE: "));
+    fn windows_admits_startup_without_claiming_individual_features_or_acceptance() {
+        assert_eq!(require_for(HostPlatform::Windows), Ok(()));
+        let support = support_for(HostPlatform::Windows);
+        assert!(support.runtime_available);
+        assert_eq!(support.error_code, None);
+        assert!(support.message.contains("各自的平台能力检查"));
+        assert!(support.message.contains("不代表主界面或完整产品验收"));
     }
 
     #[test]
@@ -189,7 +181,7 @@ mod tests {
 
     #[test]
     fn running_target_uses_its_compile_time_policy_without_an_override() {
-        let expected = if cfg!(target_os = "windows") {
+        let expected = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
             HostPlatform::Windows
         } else if cfg!(target_os = "macos") {
             HostPlatform::MacOs
@@ -207,10 +199,11 @@ mod tests {
             assert_eq!(runtime_support(), support_for(expected));
             assert_eq!(require_runtime(), require_for(expected));
         }
-        #[cfg(all(target_os = "windows", not(feature = "production-profile")))]
-        assert_eq!(
-            require_runtime().unwrap_err().code,
-            "PLATFORM_STAGE_UNAVAILABLE"
-        );
+        #[cfg(all(
+            target_os = "windows",
+            target_arch = "x86_64",
+            not(feature = "production-profile")
+        ))]
+        assert_eq!(require_runtime(), Ok(()));
     }
 }

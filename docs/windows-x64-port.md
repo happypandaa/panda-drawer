@@ -105,7 +105,7 @@
 | 正常桌面资源准备与 Tauri 调用 | 原固定 Mac resources / sidecar 与标准 Mac 输出流程 | 每次新建 Windows 准备目录和独立 Cargo target，准备固定 Node/MinGit、SDK/模板和实际 CLI；以当前 Node 调用 Tauri JS，最后合并资源 reset/map，避免旧成员混入。Windows 平台配置选择 currentUser NSIS / downloadBootstrapper | `scripts/prepare-desktop-windows.mjs`、`desktop-host.mjs`；共享入口仅委托，Mac 原流程保持；`tauri.windows.conf.json`，尚未做安装验收 |
 | Git 子进程环境 | Unix PATH、`/dev/null`、`/usr/bin/false`、冒号分隔 | Windows PATH（分号分隔）、`NUL`；临时路径含 `D:\` 不能被拒；保持现有的禁用凭据助手、提示、hooks、filters、全局配置的策略；加 `-c core.longpaths=true` | `git_environment.rs`、`git_remote.rs` |
 | 资源完整性锚点 | 编译时写入资源摘要（`signed_resources_unix.rs`） | 实现 Windows 对应版本，覆盖 Windows 资源树 | `crates/platform-core/build_support/` |
-| 运行门禁 | — | `platform_support.rs` 当前对 Windows 返回 `PLATFORM_STAGE_UNAVAILABLE`。在 W1 完成时改为开放，未完成的能力用第 2 节第 3 条的方式单独关闭 | `platform_support.rs` |
+| 运行门禁 | — | Windows x64 开发版运行入口已开放；迁移/构建历史恢复、Git 添加恢复等未实现能力在自己的适配入口明确拒绝。非 x64 Windows 仍不接纳，正式版签名/资源证明门禁保持原规则；策略开放不代表 GUI 或完整产品验收 | `platform_support.rs`；真实编译 policy 检查由 `scripts/platform-support-test.mjs` 委托 core 单测 |
 | 更新 | `platform-update-handoff`、`platform-update-witness` 为 macOS 实现 | 本轮不实现，保证在 Windows 上能编译（用 `cfg` 隔离），门禁关闭 | `crates/platform-update-*` |
 
 2026-10-31 实施状态：新增的 `platform-native` 提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；core 的 `file_identity.rs` 已接入完整 Windows 身份，`paths.rs` 的私有创建、逐级路径检查和元数据替换通过 `platform-native/src/filesystem.rs` 适配，Unix 分支保留原有 mode、no-follow、rename 和目录 fsync。其他业务仍待逐项接入，Mac 代码尚未全部收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
