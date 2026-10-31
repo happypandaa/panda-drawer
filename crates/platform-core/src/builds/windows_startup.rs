@@ -1,16 +1,24 @@
-//! Temporary, read-only admission for unfinished Windows task/publication
-//! recovery. No retained task, provenance or publication is adopted or changed.
-use crate::ApiError;
+//! Windows startup uses the existing task/publication recovery policy while
+//! holding the actual native directory scopes used to read and rewrite tasks.
+use super::{ProjectStore, RuntimePaths, StartupRecords, TaskRecord};
+use crate::{
+    builds::{
+        atomic_json, build_result, reconcile_recovered_tasks, recover_publications, valid_task_id,
+    },
+    tasks::TaskStatus,
+    ApiError,
+};
 use platform_native::windows::files::{self as native, PinnedDirectory};
 use std::{
+    collections::HashMap,
     fs,
-    os::windows::fs::MetadataExt,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 type Result<T> = std::result::Result<T, ApiError>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum Scope {
     Tasks,
     Publications,
@@ -30,20 +38,15 @@ impl Scope {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Observation {
-    Missing,
-    Empty,
+struct BoundScope {
+    path: PathBuf,
+    _directories: Vec<PinnedDirectory>,
 }
 
-struct Bound {
-    path: PathBuf,
-    directory: PinnedDirectory,
-}
 fn unknown(scope: Scope, path: &Path, cause: impl std::fmt::Display) -> ApiError {
     ApiError::new(
         "BUILD_STARTUP_INVENTORY_UNCONFIRMED",
-        "Windows 启动恢复目录尚未核实，现有材料已保留。",
+        "Windows 启动恢复目录无法核实，现有材料已保留。",
     )
     .detail("platform", "windows")
     .detail("capability", scope.capability())
@@ -52,244 +55,105 @@ fn unknown(scope: Scope, path: &Path, cause: impl std::fmt::Display) -> ApiError
     .detail("cause", cause.to_string())
     .outcome("unknown")
 }
-fn retained(scope: Scope, path: &Path) -> ApiError {
-    ApiError::new(
-        "PLATFORM_FEATURE_UNAVAILABLE",
-        "Windows 任务和构建发布的启动恢复尚未完成，现有材料已保留。",
-    )
-    .detail("platform", "windows")
-    .detail("capability", scope.capability())
-    .detail("inventory", "retained")
-    .detail("path", path.to_string_lossy().into_owned())
-    .outcome("not_started")
-}
-fn verify_bound(scope: Scope, bound: &[Bound]) -> Result<()> {
-    for current in bound {
-        let expected = native::identity(&current.directory.file)
-            .map_err(|error| unknown(scope, &current.path, error))?;
-        let actual = native::open_no_reparse(&current.path)
-            .map_err(|error| unknown(scope, &current.path, error))?;
-        if !expected.directory || !expected.same_object(&actual.identity) {
-            return Err(unknown(scope, &current.path, "目录身份已变化。"));
-        }
-    }
-    Ok(())
-}
-fn require_empty(scope: Scope, path: &Path) -> Result<()> {
-    match fs::read_dir(path)
-        .map_err(|error| unknown(scope, path, error))?
-        .next()
-    {
-        None => Ok(()),
-        Some(Ok(_)) => Err(retained(scope, path)),
-        Some(Err(error)) => Err(unknown(scope, path, error)),
-    }
-}
 
-fn inspect_with(
-    workspace: &Path,
-    scope: Scope,
-    mut observe: impl FnMut(Observation, &Path) -> Result<()>,
-) -> Result<Observation> {
+/// Only fixed startup ancestors are inspected here. Existing records are read
+/// by recovery, with the same skip and parse/error policy as the Mac loop.
+fn bind_scope(workspace: &Path, scope: Scope) -> Result<Option<BoundScope>> {
     let selected =
         native::pin_directory(workspace).map_err(|error| unknown(scope, workspace, error))?;
-    let (path, directory) = native::directory_scope(&selected.file)
+    let (mut path, directory) = native::directory_scope(&selected.file)
         .map_err(|error| unknown(scope, workspace, error))?;
-    let mut bound = vec![Bound { path, directory }];
+    let mut directories = vec![directory];
     for name in scope.components() {
-        let path = bound.last().unwrap().path.join(name);
+        path.push(name);
         let directory = match native::pin_directory(&path) {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                observe(Observation::Missing, &path)?;
-                // All existing ancestors remain held; absence names only the
-                // first missing fixed component, never an arbitrary I/O error.
-                match fs::symlink_metadata(&path) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        verify_bound(scope, &bound)?;
-                        return Ok(Observation::Missing);
-                    }
-                    Err(error) => return Err(unknown(scope, &path, error)),
-                    Ok(_) => return Err(unknown(scope, &path, "目录在检查期间出现。")),
-                }
+                // Distinguish actual absence from reparse points or other I/O
+                // errors. Existing ancestors remain pinned until this returns.
+                return match fs::symlink_metadata(&path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(error) => Err(unknown(scope, &path, error)),
+                    Ok(_) => Err(unknown(scope, &path, "目录在检查期间出现。")),
+                };
             }
             Err(error) => return Err(unknown(scope, &path, error)),
         };
-        bound.push(Bound { path, directory });
+        directories.push(directory);
     }
-    let leaf = bound.last().unwrap();
-    let before = leaf
-        .directory
-        .file
-        .metadata()
-        .map_err(|error| unknown(scope, &leaf.path, error))?
-        .last_write_time();
-    require_empty(scope, &leaf.path)?;
-    observe(Observation::Empty, &leaf.path)?;
-    require_empty(scope, &leaf.path)?;
-    let after = leaf
-        .directory
-        .file
-        .metadata()
-        .map_err(|error| unknown(scope, &leaf.path, error))?
-        .last_write_time();
-    verify_bound(scope, &bound)?;
-    if before != after {
-        return Err(unknown(scope, &leaf.path, "目录在检查期间变化。"));
-    }
-    Ok(Observation::Empty)
+    Ok(Some(BoundScope {
+        path,
+        _directories: directories,
+    }))
 }
 
 pub(super) fn require_supported_inventory(workspace: &Path) -> Result<()> {
     for scope in [Scope::Tasks, Scope::Publications] {
-        inspect_with(workspace, scope, |_, _| Ok(()))?;
+        bind_scope(workspace, scope)?;
     }
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn fixture() -> (tempfile::TempDir, PathBuf) {
-        let temporary = tempfile::Builder::new()
-            .prefix("panda-disposable-build-startup-inventory-中文 space-")
-            .tempdir()
-            .unwrap();
-        let root = temporary.path().canonicalize().unwrap();
-        (temporary, root)
-    }
-    fn leaf(root: &Path, scope: Scope) -> PathBuf {
-        scope
-            .components()
-            .iter()
-            .fold(root.to_path_buf(), |path, part| path.join(part))
-    }
-    #[test]
-    fn genuinely_missing_or_empty_fixed_scopes_preserve_unrelated_siblings() {
-        let (_temporary, root) = fixture();
-        fs::write(root.join("retained"), b"disposable unrelated bytes").unwrap();
-        require_supported_inventory(&root).unwrap();
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
-        for scope in [Scope::Tasks, Scope::Publications] {
-            let path = leaf(&root, scope);
-            fs::create_dir_all(&path).unwrap();
-            assert_eq!(
-                inspect_with(&root, scope, |_, _| Ok(())).unwrap(),
-                Observation::Empty
-            );
+pub(super) fn recover_startup(
+    paths: &RuntimePaths,
+    store: &ProjectStore,
+    base_url: &str,
+) -> Result<StartupRecords> {
+    let required_scope = |scope| {
+        bind_scope(paths.workspace_root(), scope)?
+            .ok_or_else(|| unknown(scope, paths.workspace_root(), "已准备的启动恢复目录缺失。"))
+    };
+    let tasks = required_scope(Scope::Tasks)?;
+    let _publications = required_scope(Scope::Publications)?;
+    let mut records = HashMap::new();
+    let mut legacy_build_times = HashMap::new();
+    for entry in fs::read_dir(&tasks.path)? {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
         }
-        fs::write(
-            root.join(".platform/project-state/retained-sibling.json"),
-            b"unrelated state",
-        )
-        .unwrap();
-        require_supported_inventory(&root).unwrap();
-        assert_eq!(
-            fs::read(root.join("retained")).unwrap(),
-            b"disposable unrelated bytes"
-        );
-        assert_eq!(
-            fs::read(root.join(".platform/project-state/retained-sibling.json")).unwrap(),
-            b"unrelated state"
-        );
-    }
-    #[test]
-    fn retained_final_nonfinal_unknown_and_publication_material_all_stay_untouched() {
-        for scope in [Scope::Tasks, Scope::Publications] {
-            for name in [
-                "task_final",
-                "task_nonfinal",
-                "unknown",
-                "prj_disposable.publication.json",
-            ] {
-                let (_temporary, root) = fixture();
-                let path = leaf(&root, scope);
-                fs::create_dir_all(&path).unwrap();
-                let candidate = path.join(name);
-                fs::write(&candidate, b"disposable retained startup evidence").unwrap();
-                let error = inspect_with(&root, scope, |_, _| Ok(())).unwrap_err();
-                assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-                assert_eq!(error.details["operationOutcome"], "not_started");
-                assert_eq!(error.details["capability"], scope.capability());
-                assert_eq!(
-                    fs::read(&candidate).unwrap(),
-                    b"disposable retained startup evidence"
-                );
-                assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
-            }
+        let _task =
+            native::pin_directory(&path).map_err(|error| unknown(Scope::Tasks, &path, error))?;
+        let record_path = path.join("task.json");
+        if !record_path.is_file() {
+            continue;
         }
-    }
-    #[test]
-    fn newly_appearing_roots_or_children_cannot_be_reported_missing_or_empty() {
-        for observation in [Observation::Missing, Observation::Empty] {
-            let (_temporary, root) = fixture();
-            if observation == Observation::Empty {
-                fs::create_dir_all(leaf(&root, Scope::Tasks)).unwrap();
-            }
-            let mut retained_path = None;
-            let error = inspect_with(&root, Scope::Tasks, |actual, path| {
-                assert_eq!(actual, observation);
-                if observation == Observation::Missing {
-                    fs::create_dir(path).unwrap();
-                }
-                let retained = path.join("appeared");
-                fs::write(&retained, b"disposable new evidence").unwrap();
-                retained_path = Some(retained);
-                Ok(())
-            })
-            .unwrap_err();
-            assert!(matches!(
-                error.code.as_str(),
-                "BUILD_STARTUP_INVENTORY_UNCONFIRMED" | "PLATFORM_FEATURE_UNAVAILABLE"
+        // Mac does not impose an ACL, single-link, byte-budget or modification
+        // stamp admission here. Preserve that policy while reading the actual
+        // no-reparse file HANDLE and retaining its native parent binding.
+        let mut file = native::open_read_file_allowing_hard_links(&record_path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let mut record: TaskRecord = serde_json::from_slice(&bytes)?;
+        drop(file);
+        if !valid_task_id(&record.task_id)
+            || path.file_name().and_then(|x| x.to_str()) != Some(record.task_id.as_str())
+        {
+            return Err(ApiError::new(
+                "TASK_RECORD_INVALID",
+                "Task record identity does not match its directory",
             ));
-            assert_eq!(
-                fs::read(retained_path.unwrap()).unwrap(),
-                b"disposable new evidence"
-            );
         }
+        if record.task_type == "build" {
+            // Capture only the original labelled fallback, before rewriting;
+            // it neither establishes submission order nor admits the record.
+            legacy_build_times.insert(record.task_id.clone(), build_result::modified(&record_path));
+        }
+        if !record.status.is_final() {
+            record.status = TaskStatus::Interrupted;
+            record.error = Some(ApiError::new(
+                "TASK_INTERRUPTED",
+                "Platform exited before the task finished; no automatic retry was performed",
+            ));
+            atomic_json(&record_path, &record)?;
+        }
+        records.insert(record.task_id.clone(), record);
     }
-    #[test]
-    fn a_real_parent_junction_is_rejected_without_inspecting_or_changing_its_target() {
-        let (_temporary, root) = fixture();
-        let target = root.join("disposable-foreign-platform");
-        fs::create_dir(&target).unwrap();
-        fs::write(target.join("retained"), b"disposable junction bytes").unwrap();
-        let link = root.join(".platform");
-        let status = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
-            .arg(&link)
-            .arg(&target)
-            .output()
-            .unwrap();
-        assert!(status.status.success());
-        assert_eq!(
-            require_supported_inventory(&root).unwrap_err().code,
-            "BUILD_STARTUP_INVENTORY_UNCONFIRMED"
-        );
-        assert_eq!(
-            fs::read(target.join("retained")).unwrap(),
-            b"disposable junction bytes"
-        );
-        assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
-        fs::remove_dir(link).unwrap();
-    }
-    #[test]
-    fn raw_mixed_separators_resolve_to_actual_retained_task_material() {
-        let (_temporary, root) = fixture();
-        let actual = root.join("nested/workspace");
-        fs::create_dir_all(leaf(&actual, Scope::Tasks)).unwrap();
-        fs::write(
-            leaf(&actual, Scope::Tasks).join("retained"),
-            b"actual retained task",
-        )
-        .unwrap();
-        let mut raw = root.as_os_str().to_os_string();
-        raw.push(r"\nested/workspace");
-        let error = require_supported_inventory(&PathBuf::from(raw)).unwrap_err();
-        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-        assert_eq!(
-            fs::read(leaf(&actual, Scope::Tasks).join("retained")).unwrap(),
-            b"actual retained task"
-        );
-    }
+    recover_publications(paths, store)?;
+    reconcile_recovered_tasks(paths, store, base_url, &mut records)?;
+    Ok((records, legacy_build_times))
 }
+
+#[cfg(test)]
+#[path = "windows_startup_tests.rs"]
+mod tests;

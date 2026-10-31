@@ -79,7 +79,7 @@ impl Fixture {
     }
     fn publish(&self, text: &str) -> String {
         let (id, staging, record) = self.prepare(text);
-        {
+        let publication_result = {
             let _publication = self.access.publication().unwrap();
             builds::publish(
                 &self.paths,
@@ -88,8 +88,8 @@ impl Fixture {
                 &record,
                 Some(builds::tree_digest(&self.project.root.join("dist"), false).unwrap()),
             )
-            .unwrap();
-        }
+        };
+        publication_result.unwrap();
         let report = self
             .access
             .cleanup(&self.project, std::slice::from_ref(&id));

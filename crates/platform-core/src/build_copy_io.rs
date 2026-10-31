@@ -22,7 +22,6 @@ pub(super) fn finish(root: &Path) -> Result<(), ApiError> {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::*;
     use platform_native::windows::files as native;
     use std::fs;
 

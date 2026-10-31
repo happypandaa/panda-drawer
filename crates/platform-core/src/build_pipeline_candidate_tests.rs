@@ -23,7 +23,7 @@ async fn successful_build_and_failed_install_never_modify_existing_dependencies_
             r#"
 const assert=require('assert');
 assert(!require('fs').existsSync('.git'));
-assert(process.cwd().includes('/candidate-v1-'));
+assert(process.cwd().includes(require('path').sep+'candidate-v1-'));
 assert.equal(require('tiny'), 'candidate local package');
 require('fs').writeFileSync('node_modules/new-build-file', 'only the candidate');
 {BUILD}
