@@ -491,6 +491,7 @@ async fn retired_panicked_sqlite_worker_cannot_disappear_from_shutdown_report() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn migration_registration_and_shutdown_share_the_same_submission_lock() {
+    const REGISTRATION_WAIT: Duration = Duration::from_secs(30);
     let (_temporary, paths, service, _client) = super::super::tests::start().await;
     let destination = paths
         .data_root()
@@ -514,9 +515,27 @@ async fn migration_registration_and_shutdown_share_the_same_submission_lock() {
             },
         ))
     });
-    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
-        .await
-        .unwrap();
+    let registration_signal =
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(REGISTRATION_WAIT))
+            .await
+            .expect("The disposable migration-registration observer must join");
+    if let Err(error) = registration_signal {
+        // A late submitter must not remain blocked on this fixture's release
+        // channel while the failed test's runtime waits for blocking workers.
+        drop(release);
+        let outcome = if submit.is_finished() {
+            match submit.await {
+                Ok(Err(error)) => format!("submission refused before registration: {error:?}"),
+                Ok(Ok(_)) => "submission completed without the expected registration signal".into(),
+                Err(error) => format!("submission worker failed: {error}"),
+            }
+        } else {
+            "submission has not reached its registration checkpoint".into()
+        };
+        panic!(
+            "Expected the migration-registration pause within {REGISTRATION_WAIT:?} ({error}); {outcome}"
+        );
+    }
     let mut closing = {
         let service = service.clone();
         tokio::spawn(async move { service.quiesce().await })
