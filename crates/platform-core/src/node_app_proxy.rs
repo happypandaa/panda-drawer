@@ -1,6 +1,12 @@
 //! Private per-application loopback web adapter. It exposes no platform management
 //! API, never forwards the browser cookie, and keeps the backend bearer in Rust.
 use crate::{io_lifetime::IoLease, ApiError};
+#[cfg(unix)]
+#[path = "node_app_proxy/unix_files.rs"]
+mod file_io;
+#[cfg(windows)]
+#[path = "node_app_proxy/windows_files.rs"]
+mod file_io;
 #[path = "node_app_proxy_shutdown.rs"]
 mod shutdown;
 use axum::{
@@ -10,12 +16,11 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
+use file_io::{open_file, open_root};
 use futures_util::{stream, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
 use shutdown::ProxyShutdown;
-#[cfg(unix)]
-use std::{ffi::CString, path::Component};
 use std::{
     fs::File,
     io,
@@ -755,75 +760,7 @@ fn safe_path(path: &str) -> Option<Vec<String>> {
     Some(parts)
 }
 
-#[cfg(unix)]
-fn open_at(directory: &File, name: &str, directory_only: bool) -> io::Result<File> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    let name = CString::new(name).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let flags = libc::O_RDONLY
-        | libc::O_CLOEXEC
-        | libc::O_NOFOLLOW
-        | libc::O_NONBLOCK
-        | if directory_only { libc::O_DIRECTORY } else { 0 };
-    // Both descriptors and the component name remain alive throughout openat;
-    // O_NOFOLLOW applies to each individual component, never just the final path.
-    let descriptor = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-    if descriptor < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // A successful openat returns a fresh descriptor with sole ownership.
-    let file = unsafe { File::from_raw_fd(descriptor) };
-    let metadata = file.metadata()?;
-    if (directory_only && !metadata.is_dir()) || (!directory_only && !metadata.is_file()) {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    if !directory_only {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-    }
-    Ok(file)
-}
-#[cfg(unix)]
-fn open_root(path: &Path) -> io::Result<File> {
-    if !path.is_absolute() {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    let mut directory = File::open("/")?;
-    for component in path.components() {
-        match component {
-            Component::RootDir => (),
-            Component::Normal(name) => {
-                let name = name.to_str().ok_or(io::ErrorKind::InvalidInput)?;
-                directory = open_at(&directory, name, true)?;
-            }
-            _ => return Err(io::ErrorKind::InvalidInput.into()),
-        }
-    }
-    Ok(directory)
-}
-#[cfg(unix)]
-fn open_file(root: &File, parts: &[String]) -> io::Result<File> {
-    let (last, parents) = parts.split_last().ok_or(io::ErrorKind::InvalidInput)?;
-    let mut directory = root.try_clone()?;
-    for component in parents {
-        directory = open_at(&directory, component, true)?;
-    }
-    open_at(&directory, last, false)
-}
-#[cfg(not(unix))]
-fn open_root(_path: &Path) -> io::Result<File> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Node browser adapter is not yet verified on this platform",
-    ))
-}
-#[cfg(not(unix))]
-fn open_file(_root: &File, _parts: &[String]) -> io::Result<File> {
-    Err(io::ErrorKind::Unsupported.into())
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::{routing::any, Json};
@@ -1177,6 +1114,7 @@ mod tests {
         f.proxy.stop().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn static_pages_have_local_script_policy_and_do_not_serve_links() {
         use std::os::unix::fs::symlink;
@@ -1272,6 +1210,7 @@ mod tests {
         f.proxy.stop().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn anchored_web_root_does_not_follow_replacement_parent_directory() {
         use std::os::unix::fs::symlink;
@@ -1289,6 +1228,6 @@ mod tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "node_app_proxy_shutdown_tests.rs"]
 mod shutdown_tests;
