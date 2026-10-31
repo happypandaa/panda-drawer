@@ -4,6 +4,38 @@ use crate::{path_checks::check_no_symlinks, ApiError};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
+#[cfg(windows)]
+#[path = "project_directory_io/windows_claims.rs"]
+mod windows_claims;
+
+/// Lexical allocation claims only. This never opens, resolves or grants access
+/// to the retained absolute directory; actual project bindings stay separate.
+pub(crate) fn retained_directory_leaf(root: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        windows_claims::retained_directory_leaf(root)
+    }
+    #[cfg(not(windows))]
+    {
+        let text = root.to_str()?;
+        if !root.is_absolute()
+            || text.contains('\\')
+            || text.chars().any(char::is_control)
+            || text[1..]
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || root
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                != Some("projects")
+        {
+            return None;
+        }
+        root.file_name()?.to_str().map(str::to_owned)
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
