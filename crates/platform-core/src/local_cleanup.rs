@@ -13,6 +13,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "local_cleanup_io.rs"]
+mod io;
+
 const TTL: Duration = Duration::from_secs(10 * 60);
 const CONFIRMATION: &str = "删除全部本机数据";
 const RETAINED: [&str; 2] = [".environment.json", "instance.lock"];
@@ -301,7 +304,7 @@ impl LocalCleanupPlan {
                 let _ = fs2::FileExt::unlock(&lock);
                 return Err(fail("平台实例锁不再由运行实例持有，未开始清理。"));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) if io::lock_is_contended(&error) => {}
             Err(error) => return Err(error.into()),
         }
         Ok(())
@@ -997,3 +1000,7 @@ fn remove_bound_file(target: &BoundPath) -> Result<(), ApiError> {
 #[cfg(all(test, unix))]
 #[path = "local_cleanup_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "local_cleanup_windows_tests.rs"]
+mod windows_tests;

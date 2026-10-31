@@ -8,6 +8,7 @@ import { packageNodeRuntimeWindows } from './package-node-runtime-windows.mjs';
 import { prepareDevelopmentNodeWindows } from './package-development-node-windows.mjs';
 import { prepareDevelopmentGitWindows } from './package-development-git-windows.mjs';
 import { packageTemplate } from './package-template.mjs';
+import { windowsCliBuildEnvironment } from './windows-cli-build.mjs';
 
 export function windowsResourceConfiguration(preparationRoot) {
   return {
@@ -59,7 +60,7 @@ export async function prepareDesktopWindows({ release = false, offline = false }
   await packageTemplate(path.join(resources, 'template'));
   await cp(path.join(root, 'docs/development.md'), path.join(resources, 'README.md'));
   await run('cargo', ['build', '--locked', '-p', 'platform-cli', ...(release ? ['--release'] : [])], {
-    env: environment, windowsHide: true,
+    env: windowsCliBuildEnvironment(environment), windowsHide: true,
   });
   await cp(path.join(targetDirectory, target, release ? 'release' : 'debug', 'local-projects-dev.exe'),
     path.join(binaries, `local-projects-dev-${target}.exe`), { errorOnExist: true, force: false });
