@@ -1,6 +1,9 @@
 use platform_core::ApiError;
 use platform_native::windows::files as native;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 pub(super) fn not_initialized() -> ApiError {
     ApiError::new(
@@ -12,7 +15,7 @@ pub(super) fn not_initialized() -> ApiError {
 
 pub(super) struct ManagerProfile {
     directory: PathBuf,
-    scope: native::PinnedDirectory,
+    scope: Mutex<Option<native::PinnedDirectory>>,
     identity: native::FileIdentity,
 }
 
@@ -32,7 +35,7 @@ impl ManagerProfile {
         let identity = native::identity(&scope.file)?;
         Ok(Self {
             directory,
-            scope,
+            scope: Mutex::new(Some(scope)),
             identity,
         })
     }
@@ -42,10 +45,15 @@ impl ManagerProfile {
     }
 
     pub(super) fn verify(&self) -> Result<(), ApiError> {
+        let scope = self.scope.lock().unwrap_or_else(|p| p.into_inner());
+        let scope = scope.as_ref().ok_or_else(|| {
+            ApiError::new(
+                "MANAGER_PROFILE_RETIRED",
+                "管理器浏览器已经为本次完整清理关闭，未重新创建存储。",
+            )
+        })?;
         let actual = native::open_no_reparse(&self.directory)?;
-        if !self
-            .identity
-            .same_object(&native::identity(&self.scope.file)?)
+        if !self.identity.same_object(&native::identity(&scope.file)?)
             || !self.identity.same_object(&actual.identity)
             || !actual.identity.directory
         {
@@ -56,6 +64,25 @@ impl ManagerProfile {
             .outcome("not_started"));
         }
         Ok(())
+    }
+
+    pub(super) fn release_after_native_close(&self) -> Result<native::FileIdentity, ApiError> {
+        if self.is_released() {
+            return Ok(self.identity.clone());
+        }
+        self.verify()?;
+        let scope = self.scope.lock().unwrap_or_else(|p| p.into_inner()).take();
+        drop(scope);
+        Ok(self.identity.clone())
+    }
+    pub(super) fn is_released(&self) -> bool {
+        self.scope
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none()
+    }
+    pub(super) fn original_identity(&self) -> &native::FileIdentity {
+        &self.identity
     }
 
     pub(super) fn verify_actual_directory(&self, directory: &Path) -> Result<(), ApiError> {

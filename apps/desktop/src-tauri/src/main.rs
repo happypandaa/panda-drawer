@@ -2237,12 +2237,13 @@ fn install_project_cleanup_hook(app: &tauri::AppHandle) {
                         project_window_cleanup::purge(&app, &notice).await?;
                         let ledger = state.handle.webview_stores();
                         if ledger.contains(notice.kind, &notice.id)? {
-                            let identifier = platform_core::webview_storage::project_identifier(
+                            native_stores::purge_project(
+                                &app,
+                                &ledger,
                                 notice.kind,
                                 &notice.id,
-                            )?;
-                            native_stores::purge_identifier(&app, identifier).await?;
-                            ledger.forget_confirmed(notice.kind, &notice.id)?;
+                            )
+                            .await?;
                         }
                         Ok(())
                     }

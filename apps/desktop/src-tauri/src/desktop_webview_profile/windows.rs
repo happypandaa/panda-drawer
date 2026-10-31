@@ -11,10 +11,40 @@ pub(super) fn manager_from_config<'a>(
 ) -> Result<ManagerBuilder<'a>, ApiError> {
     actual::builder_from_config(app, config)
 }
+#[path = "windows/exit.rs"]
+mod exit;
 #[path = "windows/profile.rs"]
 mod profile;
+#[path = "windows/purge.rs"]
+mod purge;
 #[path = "windows/runtime.rs"]
 mod runtime;
+
+pub(super) async fn close_and_clear_manager(app: &AppHandle) -> Result<(), ApiError> {
+    exit::close(app).await?;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = app
+            .try_state::<profile::ManagerProfile>()
+            .ok_or_else(profile::not_initialized)?;
+        purge::clear_contents(profile.directory(), profile.original_identity())
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "MANAGER_PROFILE_CLEANUP_UNCONFIRMED",
+            "管理器浏览器目录清理工作未确认。",
+        )
+    })?
+}
+pub(super) fn manager_closed_for_cleanup(app: &AppHandle) -> bool {
+    // Once native cleanup seals this manager, even an incomplete browser exit
+    // is reported by a native dialog. Rebuilding it would reopen the same UDF.
+    exit::cleanup_started(app)
+        || app
+            .try_state::<profile::ManagerProfile>()
+            .is_some_and(|profile| profile.is_released())
+}
 
 pub(super) fn runtime_available(app: &AppHandle) -> bool {
     if let Err(error) = runtime::checked_version(tauri::webview_version()) {
@@ -60,6 +90,9 @@ pub(super) fn manager_builder<'a>(
     app: &AppHandle,
     builder: ManagerBuilder<'a>,
 ) -> Result<ManagerBuilder<'a>, ApiError> {
+    // The original scope can still be pinned while Env5 exit is pending.
+    // Scope validity is not permission to reopen a sealed cleanup generation.
+    exit::require_open(app)?;
     let profile = app
         .try_state::<profile::ManagerProfile>()
         .ok_or_else(profile::not_initialized)?;

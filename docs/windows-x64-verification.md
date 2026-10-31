@@ -988,3 +988,21 @@ Windows 工作区 IO 已接本机内置 NTFS / 原生同步根核验，目录范
 完成原目录清理适配后开放该能力派发，不把派发当删除授权；保留无选中无工作与原失败传播。真正 RuntimeService 公有迁移/IO lease/丢失waiter、附件reader实际排空、提交后native重开失败/retry、新业务保持、旧版本不增删除权等原专项在本机 **9/9**，2.97 秒，另派发 **3/3**，0.02 秒。完成冻结 core --lib --tests --no-deps Clippy **-Dclippy::all通过**（53既有Rust警告）。这些是真实临时运行环境与文件行为，尚未声称GUI迁移到第二块内置盘或安装版验收。
 
 真实GUI第二轮保存普通配置成功返回“已保存，重启后生效”，点“立即重启”后新起始页面实际后端显示“GUI 第二轮配置 · 第1次启动”；原W4 binary未换，因此初次长时间pending不能归因于新RAII修复，尚未重现。该次disposable后端实际写出root/child/grand PID并输出96行各超1KiB stderr，未因大输出终止。TaskMgr已实际打开但其高权限进程不接受本工具输入，精确TaskMgr交互验收未通过；改用核对原image/启动时间的Stop-Process强制结束平台，实际原root25256/child3012/grand13648全部不存在，证明该次Job kill-on-close，并不等同TaskMgrGUI或安装版通过。项目和数据继续保留给W5删除验收。
+
+### W5.3 — 实际 WebView2 退出、崩溃恢复与精确磁盘清理
+
+Windows项目profile先持久记录私有active-browser会话（完整root/file FileId、原生boot和随机token），只有实际Env5 browser family退出、Destroyed、owner/reader退休与pin释放后才退休会话。重开无RAM owner时用同一原UDF的不可见about:blank真实引擎核验Env7并观察Env5退出；不导航业务、不运行Node，不靠PID消失或空内存表冒充闭合。随后沿原StoreLedger持久clear receipt删除精确原目录，实际缺失再退休receipt/owner；delete-pending、替换/外来物和未释放pin均保留可重试。Mac原native store函数和模块逐字比对不变。
+
+core StoreLedger/binding/session实际临时文件专项 **23/23**，2.41秒；native removal组 **7/7**，0.02秒，含只读DELETE访问probe，没有Disposition或新增ACL/links门禁。首次session编译4错来自Uuid未启用serde，改已有协议风格的canonical字符串后通过，没有新增依赖feature。完整core Clippy **-Dclippy::all通过**。
+
+冻结桌面完整编译成功，默认 **99通过、10专用/引擎入口忽略**，0.40秒。显式实际WebView2精确profile purge **1/1**，17.00秒，覆盖Web/Node两kind的普通与held-root-pin四轮：真实Cookie/localStorage/IndexedDB互隔离、关闭A不阻断B，A重开数据保留；实际三代browser退出/退休后只删对应profile，peer保持。真实same-boot宿主Child HANDLE强制结束→新宿主blank核验/实际Env5退出恢复删除 **1/1**，3.73秒，Web和Node各一轮，旧浏览器100ns创建身份逐一确认不再活，原UDF实际不存在。这是实际引擎与进程测试，不是synthetic回调。
+
+管理器卸载前清除改Windows自然流程：封门/Destroyed/Env5实际退出→释放pin→清原UDF子项但保留原空root完整身份给原LocalCleanupPlan最终删除；结果用无UDF的原生对话框，真实worker已join且原退出条件齐备才退出。修复terminal报告已发布但menu Quit绕过worker join的竞态，新增真实worker持root pin等待测试；另在cleanup seal后禁止tray/普通builder重开管理器，真实fixture在原pin仍有效时断言拒绝重开。最终实际manager清理专项 **1/1**，1.20秒：原root直到最终删除前保持原FileId，browser真实退出、root实际缺失，核验前导航请求0。上述不等于整个卸载前清除GUI或安装版完成；后者继续验收。
+
+### W5.4 — 公有 Node 删除整链与外部导出发布
+
+固定官方Node24.22.0的公有后端删除父专项 **4/4**，10.98秒，另真实宿主捕获后Child HANDLE强制结束、新manager同任务续删 **1/1**，12.87秒。覆盖真实生成/再登记/人工配置保存/HTTP运行/日志、WriterGuard原文件同步关句柄后才捕获、readonly Git内容随完整删除、外部原目录全树完整FileId/原字节保持、实际文件占用失败列remaining、释放后同task恢复和改名前放弃不自动重启。首轮两项取得旧failed结果过早，修新夹具为resume后先有界等待真实workers join，再读最终结果，全部断言保持；产品/Mac目录同步与返回语义未改。此组没有创建浏览器，ledger确实Absent，不伪造native purge；本机生成没有源码获取publication，Node也无外部partial登记API，未伪造这两类材料来称覆盖。
+
+Windows lifecycle外部导出新增同父目录、完整源/父HANDLE身份与不覆盖改名；普通硬链接按Mac允许，替代文件不发布/不归属，提交后不确定明确unknown并保留。Mac原Unix publisher不改。真实TempDir专项 **5/5**，0.01秒，含其它硬链接原件保持、目标碰撞、高半身份错、改名前源替换、改名后目标替换与实际父pin。冻结core --lib --tests --no-deps Clippy **-Dclippy::all通过**（51 Rust警告）。浏览器下载包含用户明确覆盖的交付事务是另一接口，仍在独立实现，不以此不覆盖publisher替代。
+
+本组最终完整桌面 --bin local-projects-desktop-dev --tests --no-deps Clippy **-Dclippy::all通过**（4 Rust警告保留），包含最后的manager重开封门；该封门的真实manager专项重编后再次1/1通过。

@@ -2,9 +2,19 @@ mod binding;
 #[cfg(test)]
 mod fixture;
 mod owner;
+mod purge;
 pub(super) use binding::{before_destroy, wait_closed, window_destroyed, Binding};
 use platform_core::ApiError;
 use tauri::AppHandle;
+
+pub(super) async fn confirm_purge_closed(
+    app: &AppHandle,
+    ledger: &platform_core::webview_storage::StoreLedger,
+    kind: platform_core::project_cleanup::ProjectKind,
+    id: &str,
+) -> Result<(), ApiError> {
+    purge::confirm_closed(app, ledger, kind, id).await
+}
 
 pub(super) async fn drain_shutdown(app: &AppHandle) -> Result<(), ApiError> {
     let mut workers = Vec::new();

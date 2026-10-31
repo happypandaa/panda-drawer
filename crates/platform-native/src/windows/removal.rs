@@ -31,6 +31,20 @@ pub fn inspect(path: &Path) -> io::Result<Entry> {
     open(path, false)
 }
 
+/// Probe DELETE sharing for one already-owned object without changing it.
+/// This catches a retained root pin before a caller removes any children.
+/// It is neither a process-closure receipt nor a recursive admission check.
+pub fn verify_removal_access(path: &Path, expected: &files::FileIdentity) -> io::Result<()> {
+    let entry = open(path, true)?;
+    if !expected.same_object(&entry.identity) || expected.directory != entry.identity.directory {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Removal access target changed",
+        ));
+    }
+    Ok(())
+}
+
 fn open(path: &Path, deleting: bool) -> io::Result<Entry> {
     let parent = files::pin_directory(path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "Removal entry has no parent")
@@ -102,6 +116,38 @@ mod tests {
         fs,
         os::windows::fs::{MetadataExt, OpenOptionsExt},
     };
+
+    #[test]
+    fn owned_root_delete_access_probe_preserves_readonly_content_and_observes_a_real_pin() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-native-removal-probe-")
+            .tempdir()
+            .unwrap();
+        let root = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("owned-profile");
+        files::create_private_directory(&root).unwrap();
+        let payload = root.join("retained-engine-data");
+        fs::write(&payload, b"unchanged by access probe").unwrap();
+        files::set_read_only(&payload, true).unwrap();
+        files::set_read_only(&root, true).unwrap();
+        let identity = inspect(&root).unwrap().identity;
+        let pin = files::pin_directory(&root).unwrap();
+        assert!(verify_removal_access(&root, &identity).is_err());
+        assert_eq!(fs::read(&payload).unwrap(), b"unchanged by access probe");
+        drop(pin);
+        verify_removal_access(&root, &identity).unwrap();
+        assert!(identity.same_object(&inspect(&root).unwrap().identity));
+        assert!(fs::metadata(&payload).unwrap().permissions().readonly());
+        let mut wrong = identity;
+        wrong.file_id[15] ^= 1;
+        assert!(verify_removal_access(&root, &wrong).is_err());
+        assert_eq!(fs::read(&payload).unwrap(), b"unchanged by access probe");
+        files::set_read_only(&payload, false).unwrap();
+        files::set_read_only(&root, false).unwrap();
+    }
 
     #[test]
     fn ordinary_read_only_names_and_empty_directories_are_actually_removed() {

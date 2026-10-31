@@ -77,6 +77,31 @@ struct Inner {
     report: Report,
     quit_requested: bool,
     worker: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(windows)]
+    worker_joining: bool,
+    #[cfg(windows)]
+    worker_join_failed: bool,
+    #[cfg(windows)]
+    native_result_pending: bool,
+}
+#[cfg(windows)]
+enum NativeExitWork {
+    Pending,
+    Join(tokio::task::JoinHandle<()>),
+    Ready,
+}
+#[cfg(windows)]
+fn native_exit_work(inner: &mut Inner) -> NativeExitWork {
+    if inner.worker_joining || inner.worker_join_failed || inner.native_result_pending {
+        return NativeExitWork::Pending;
+    }
+    match inner.worker.take() {
+        Some(worker) => {
+            inner.worker_joining = true;
+            NativeExitWork::Join(worker)
+        }
+        None => NativeExitWork::Ready,
+    }
 }
 #[derive(Default)]
 pub(super) struct LocalDataCleanup(Mutex<Inner>);
@@ -113,8 +138,22 @@ impl LocalDataCleanup {
         }
         if !inner.report.status.can_quit() {
             drop(inner);
+            #[cfg(windows)]
+            if super::desktop_webview_profile::manager_closed_for_cleanup(app) {
+                return true;
+            }
             super::show_manager(app);
             return true;
+        }
+        #[cfg(windows)]
+        match native_exit_work(&mut inner) {
+            NativeExitWork::Pending => return true,
+            NativeExitWork::Join(worker) => {
+                drop(inner);
+                join_cleanup_worker_then_quit(app.clone(), worker);
+                return true;
+            }
+            NativeExitWork::Ready => (),
         }
         inner.quit_requested = true;
         inner.plan = None;
@@ -245,6 +284,10 @@ impl LocalDataCleanup {
                 .unwrap_or_else(|p| p.into_inner())
                 .report
                 .finish(result);
+            #[cfg(windows)]
+            if super::desktop_webview_profile::manager_closed_for_cleanup(&app) {
+                show_native_cleanup_result(&app);
+            }
         }));
         true
     }
@@ -274,8 +317,13 @@ async fn execute_native_then_disk(
     let native_result = async {
         for record in ledger.records()? {
             native_started = true;
-            super::native_stores::purge_identifier(app, record.identifier).await?;
-            ledger.forget_confirmed(record.kind, &record.id)?;
+            #[cfg(windows)]
+            super::native_stores::purge_project(app, &ledger, record.kind, &record.id).await?;
+            #[cfg(not(windows))]
+            {
+                super::native_stores::purge_identifier(app, record.identifier).await?;
+                ledger.forget_confirmed(record.kind, &record.id)?;
+            }
         }
         native_started = true;
         super::native_stores::clear_identifier_and_verify(
@@ -303,6 +351,86 @@ async fn execute_native_then_disk(
             .outcome("unknown")
         })?
         .map_err(|error| error.outcome("delete_incomplete"))
+}
+
+#[cfg(windows)]
+fn show_native_cleanup_result(app: &tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let report = {
+        let state = app.state::<AppState>();
+        let mut inner = state
+            .local_data_cleanup
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        inner.native_result_pending = true;
+        inner.report.clone()
+    };
+    let mut message = report.message;
+    if !report.remaining_paths.is_empty() {
+        message.push_str("\n\n尚未清理的路径：\n");
+        message.push_str(&report.remaining_paths.join("\n"));
+    }
+    if let Some(error) = report.error {
+        message.push_str("\n\n");
+        message.push_str(&error);
+    }
+    message.push_str("\n\n关闭此结果窗口后退出软件。");
+    let kind = if report.status == Status::Completed {
+        MessageDialogKind::Info
+    } else {
+        MessageDialogKind::Error
+    };
+    let owner = app.clone();
+    app.dialog()
+        .message(message)
+        .title("熊猫小抽屉 · 本机数据清理结果")
+        .kind(kind)
+        .show(move |_| {
+            let app = owner.clone();
+            app.state::<AppState>()
+                .local_data_cleanup
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .native_result_pending = false;
+            let dispatch = app.clone();
+            let _ = dispatch.run_on_main_thread(move || {
+                app.state::<AppState>()
+                    .local_data_cleanup
+                    .intercept_quit(&app);
+            });
+        });
+}
+
+#[cfg(windows)]
+fn join_cleanup_worker_then_quit(app: tauri::AppHandle, worker: tokio::task::JoinHandle<()>) {
+    tauri::async_runtime::spawn(async move {
+        let joined = worker.await;
+        {
+            let state = app.state::<AppState>();
+            let mut inner = state
+                .local_data_cleanup
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            inner.worker_joining = false;
+            if joined.is_err() {
+                inner.worker_join_failed = true;
+                inner.report.status = Status::Blocked;
+                inner.report.error = Some("LOCAL_CLEANUP_WORKER_JOIN_FAILED".into());
+                inner.report.message =
+                    "清理工作未正常结束，尚未授予退出许可；请保留剩余现场。".into();
+                return;
+            }
+        }
+        let dispatch = app.clone();
+        let _ = dispatch.run_on_main_thread(move || {
+            app.state::<AppState>()
+                .local_data_cleanup
+                .intercept_quit(&app);
+        });
+    });
 }
 
 #[tauri::command]
@@ -439,5 +567,57 @@ mod tests {
             .unwrap()
             .get("receiptPath")
             .is_none());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_exit_tests {
+    use super::*;
+    use platform_native::windows::{files as native, removal};
+
+    #[tokio::test]
+    async fn terminal_quit_waits_for_the_actual_original_worker_and_native_result() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-cleanup-exit-join-")
+            .tempdir()
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let pin = native::pin_directory(&root).unwrap();
+        let identity = native::identity(&pin.file).unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            receive.await.unwrap();
+            drop(pin);
+        });
+        let mut inner = Inner {
+            report: Report {
+                status: Status::Completed,
+                ..Default::default()
+            },
+            worker: Some(worker),
+            ..Default::default()
+        };
+        let NativeExitWork::Join(worker) = native_exit_work(&mut inner) else {
+            panic!("Original worker was not taken for join");
+        };
+        assert!(matches!(
+            native_exit_work(&mut inner),
+            NativeExitWork::Pending
+        ));
+        assert!(removal::verify_removal_access(&root, &identity).is_err());
+        send.send(()).unwrap();
+        worker.await.unwrap();
+        inner.worker_joining = false;
+        inner.native_result_pending = true;
+        assert!(matches!(
+            native_exit_work(&mut inner),
+            NativeExitWork::Pending
+        ));
+        inner.native_result_pending = false;
+        assert!(matches!(
+            native_exit_work(&mut inner),
+            NativeExitWork::Ready
+        ));
+        removal::verify_removal_access(&root, &identity).unwrap();
     }
 }

@@ -8,6 +8,16 @@ mod windows;
 type ProjectBuilder<'a> = WebviewWindowBuilder<'a, Wry, AppHandle>;
 
 #[cfg(windows)]
+pub(super) async fn confirm_purge_closed(
+    app: &AppHandle,
+    ledger: &StoreLedger,
+    kind: ProjectKind,
+    id: &str,
+) -> Result<(), ApiError> {
+    windows::confirm_purge_closed(app, ledger, kind, id).await
+}
+
+#[cfg(windows)]
 fn profile_kind(label: &str) -> Option<ProjectKind> {
     for (prefix, kind) in [
         ("project-", ProjectKind::Web),
