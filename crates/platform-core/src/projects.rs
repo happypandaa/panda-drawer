@@ -288,28 +288,11 @@ fn retain_directory_claims(
         names.insert(checked_directory_name(name)?.to_owned());
     }
     if let Some(root) = project_root {
-        let text = root.to_str().ok_or_else(directory_mapping_error)?;
-        if !root.is_absolute()
-            || text.contains('\\')
-            || text.chars().any(char::is_control)
-            || text[1..]
-                .split('/')
-                .any(|part| part.is_empty() || part == "." || part == "..")
-            || root
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                != Some("projects")
-        {
-            return Err(directory_mapping_error());
-        }
-        let name = root
-            .file_name()
-            .and_then(|name| name.to_str())
+        let name = crate::project_directory_io::retained_directory_leaf(root)
             .ok_or_else(directory_mapping_error)?;
         // Conflicting but safe declarations reserve both names. Neither becomes
         // a valid binding, and no path is opened, repaired, or adopted here.
-        names.insert(checked_directory_name(name)?.to_owned());
+        names.insert(checked_directory_name(&name)?.to_owned());
     }
     Ok(())
 }
@@ -2430,6 +2413,10 @@ pub(crate) fn publish_directory_noreplace(from: &Path, to: &Path) -> Result<(), 
 #[cfg(all(test, unix))]
 #[path = "project_directory_mapping_tests.rs"]
 mod project_directory_mapping_tests;
+
+#[cfg(all(test, windows))]
+#[path = "project_directory_mapping_windows_tests.rs"]
+mod project_directory_mapping_windows_tests;
 
 #[cfg(test)]
 mod tests {

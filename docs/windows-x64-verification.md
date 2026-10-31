@@ -690,3 +690,13 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 再次点击底部“在资源管理器中打开”，真实 Explorer 地址为 `此电脑 > 系统(C:) > 用户 > g > PandaDrawer-Dev`，包含本次原有 projects 和 .platform；只关闭这次新标签，用户原有 release 窗口保留。此次通过 Windows 标题栏关闭按钮退出，真实 ReadyForNativeExit、外层 npm 命令 exit=0，后续窗口清单确认管理器和本次 Explorer 均消失。真实固定开发数据全部保留。
 
 退出日志仍有 WebView2 Chrome_WidgetWin_0 注销 Error 1412；Tauri 结束 beforeDevCommand 时 Vite 的 npm 子进程另报 4294967295。外层正常结束不等于这些原生/工具日志已修复，也不是浏览器进程族或安装包清理验收。W1 本机正常启动/页面检查现已有实际证据；W0/W1 的双端 CI 仍无绿色结果，分支没有合并。按无人值守规则继续在此基础上开 W2 栈分支，保留后续修复和最终验收。
+
+### W2.1 — Windows 项目占名与真实多项目数据库
+
+开始前再次 fetch --all --prune，origin/main 仍为 ac3b5d7；在尚待 CI 的 W1 基础上建立 win/w2-web，未合并 main。修复实际创建第二个项目时 PROJECT_DIRECTORY_MAPPING_INVALID 的已定位原因：占名函数此前无条件拒绝反斜杠。原 Mac 词法规则搬到项目目录适配层保持，Windows 解析原生前缀、盘符/UNC/扩展命名空间与两种分隔符；原始空/点/父组件仍在归一化前拒绝。只提取保留名字，不打开、重绑或修复既有绝对目标，真实项目定位的精确登记核验不放宽。
+
+真实完整 core 编译后的专项：Windows 词法 **2/2**、实际临时登记/新预留 **2/2**。后者验证过期但安全的原生目标只占名，新目标取 -2 且未创建实体，旧登记及 sentinel 字节不变、旧绑定仍拒绝；带原始父组件的坏记录在新预留写入前拒绝。第一轮该坏记录夹具错误使用 verbatim PathBuf.join，Rust 已提前消掉父组件，实际失败；修正为原样构造序列化路径后通过，没有改产品准入来迎合测试。
+
+原有多项目测试实际 **1/1**：创建两个网页项目，各建独立 SQLite 表，只向 A 写入后 B 仍为空；关闭 store、重开后 A 数据与 document epoch 保留。这里只执行完整 core 测试二进制和明确新临时根，不涉及真实开发工作区，也不是前端或 WebView 浏览器存储隔离证明。
+
+首次较宽 directory_ 选集实际 **36 通过、5 失败**；除上述已纠正夹具外，剩余为 backups ZIP64、Node object-layout 和两项 WebView 删除/收尾未完成测试，均未删除或跳过。最终只重跑所列精确专项，不将其换算成新的全组通过数；core 仍有 63 项既有/阶段警告，Mac CI 仍待运行。
