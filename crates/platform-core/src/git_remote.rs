@@ -17,6 +17,13 @@ use tokio::{
     time::Instant,
 };
 
+#[cfg(unix)]
+#[path = "git_remote/unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "git_remote/windows.rs"]
+mod platform;
+
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const OUTPUT_LIMIT: usize = 64 * 1024;
 
@@ -95,11 +102,7 @@ impl GitRemoteChecker {
             .path()
             .canonicalize()
             .map_err(|_| temporary_error())?;
-        // The ceiling variable is a colon-delimited path list. Reject ambiguous paths.
-        if cwd
-            .to_str()
-            .is_none_or(|path| path.contains(':') || path.chars().any(char::is_control))
-        {
+        if !platform::valid_cwd(&cwd) {
             return Err(temporary_error());
         }
         let scope = Arc::new(RemoteCheckScope {
@@ -135,7 +138,7 @@ impl GitRemoteChecker {
             ));
         }
         checkpoint(&stop, deadline)?;
-        let command = command_for(&toolchain, &remote.url, &cwd);
+        let command = command_for(&toolchain, &remote.url, &cwd)?;
         let output = execute(command, &self.processes, scope, &mut stop, deadline).await?;
         if output.exit_code == 2 && !output.stdout.is_empty() {
             return Err(invalid_output());
@@ -207,15 +210,7 @@ fn safe_segment(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 fn supported_version(version: &str) -> bool {
-    ["2.54.0", "2.56.0"].iter().any(|base| {
-        version == *base
-            || version
-                .strip_prefix(base)
-                .and_then(|suffix| suffix.strip_prefix(" (Apple Git-")?.strip_suffix(')'))
-                .is_some_and(|vendor| {
-                    !vendor.is_empty() && vendor.bytes().all(|byte| byte.is_ascii_digit())
-                })
-    })
+    platform::supported_version(version)
 }
 fn cancelled() -> ApiError {
     ApiError::new(
@@ -269,65 +264,13 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
         }
     }
 }
-fn isolated_command(toolchain: &GitToolchain, cwd: &Path) -> Command {
-    let mut command = Command::new(&toolchain.git.path);
-    command
-        .env_clear()
-        .current_dir(cwd)
-        .env("PATH", &toolchain.path)
-        .env("LC_ALL", "C")
-        .env("HOME", cwd)
-        .env("XDG_CONFIG_HOME", cwd)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_COUNT", "0")
-        .env("GIT_CEILING_DIRECTORIES", cwd.parent().unwrap_or(cwd))
-        .env("GIT_DISCOVERY_ACROSS_FILESYSTEM", "0")
-        .env("GIT_ALLOW_PROTOCOL", "https")
-        .env("GIT_PROTOCOL_FROM_USER", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "/usr/bin/false")
-        .env("GIT_SSH", "/usr/bin/false")
-        .env("GIT_SSH_COMMAND", "/usr/bin/false")
-        .env("SSH_ASKPASS", "/usr/bin/false")
-        .env("SSH_ASKPASS_REQUIRE", "never")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    crate::owned_process::prepare_command(&mut command);
-    if let Some(exec_path) = &toolchain.exec_path {
-        command.env("GIT_EXEC_PATH", exec_path);
-    }
-    if let Some(template_path) = &toolchain.template_path {
-        command.env("GIT_TEMPLATE_DIR", template_path);
-    }
-    for setting in [
-        "credential.helper=",
-        "credential.interactive=false",
-        "core.askPass=/usr/bin/false",
-        "protocol.allow=never",
-        "protocol.https.allow=always",
-        "http.followRedirects=false",
-        "http.emptyAuth=false",
-        "http.proactiveAuth=none",
-        "http.delegation=none",
-        "http.extraHeader=",
-        "http.proxy=",
-        "http.sslVerify=true",
-        "http.saveCookies=false",
-    ] {
-        command.arg("-c").arg(setting);
-    }
-    // No cookieFile is configured: even an empty value enables libcurl's cookie engine.
-    command
+fn isolated_command(toolchain: &GitToolchain, cwd: &Path) -> Result<Command, ApiError> {
+    platform::command(toolchain, cwd)
 }
-fn command_for(toolchain: &GitToolchain, url: &str, cwd: &Path) -> Command {
-    let mut command = isolated_command(toolchain, cwd);
+fn command_for(toolchain: &GitToolchain, url: &str, cwd: &Path) -> Result<Command, ApiError> {
+    let mut command = isolated_command(toolchain, cwd)?;
     command.args(["ls-remote", "--symref", "--exit-code", "--", url, "HEAD"]);
-    command
+    Ok(command)
 }
 // The registry owns the real directory and remote-check admission through every
 // child and reader join, including the earlier executable-resolution probe.
@@ -372,7 +315,7 @@ async fn execute<G: Send + 'static>(
 ) -> Result<Output, ApiError> {
     checkpoint(stop, deadline)?;
     let mut run = processes.start(
-        command,
+        crate::owned_process::OwnedCommand::cleared(command),
         ProcessOptions::new(
             "git-remote",
             deadline.saturating_duration_since(Instant::now()),

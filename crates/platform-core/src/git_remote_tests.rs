@@ -469,7 +469,7 @@ mod processes {
         let processes = OwnedProcessRegistry::default();
         let keep_alive = Arc::new(sample._temp);
         // A control command proves this disposable fixture really is discoverable.
-        let mut control = isolated_command(&toolchain, &cwd);
+        let mut control = isolated_command(&toolchain, &cwd).unwrap();
         control.env_remove("GIT_CEILING_DIRECTORIES").args([
             "config",
             "--local",
@@ -490,7 +490,7 @@ mod processes {
             b"synthetic-parent-config-should-not-be-read\n"
         );
         // Reuse the production environment unchanged, with only a non-network Git command.
-        let mut isolated = isolated_command(&toolchain, &cwd);
+        let mut isolated = isolated_command(&toolchain, &cwd).unwrap();
         isolated.args(["config", "--local", "--get", "remotecheck.isolation"]);
         assert_eq!(
             execute(

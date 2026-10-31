@@ -904,3 +904,11 @@ Git 工具路径、离线 Command、系统 SSH 位置和 Apple 开发工具选�
 独立完整 core 快照默认 Git 环境专项 **3 通过、0 失败、1 官方 MinGit opt-in 忽略**；显式官方测试 **1/1**，16.10 秒。在新 disposable 中文空格目录复制正常 dev 准备的固定 MinGit，先完整树核验，再实际 managed doctor/resolve 和 explicit configure_git，均 ready，实际 Git 2.56.0.windows.4，exec/template 路径一致。前后完整树和 manifest 字节一致、未产生隐式 settings，全部真实进程关闭。测试最初将接口 selection 文字误写 configured，按原公有接口修为 explicit 后重编执行通过，没有改产品接口。
 
 实际工作区完整 core Clippy **-Dclippy::all 通过**（与 W4.1 同一次已包含四份 Git 源码）；GitHub/Gitee HTTPS、clone、依赖安装与导入提交/中断仍在接线，不以离线 doctor 当作 W4 导入验收。
+
+### W4.3 — 实际匿名 GitHub HTTPS HEAD 和 Job 关闭
+
+将 remote Command/version 与临时 cwd 词法适配分离：Unix 原隔离 Command、支持版本规则原样机械移动；共享两个 Mac 测试调用只展开永远成功的 Result。Windows 接受本机盘符 cwd 和原基线对应 .windows.N 数字 vendor 后缀，显式原生系统/临时目录、NUL 配置与禁提示，core.longpaths=true；仍只允许原 GitHub/Gitee 公开 HTTPS 和原 20 秒/64 KiB 预算。进程交给 cleared sidecar，Mac Command 的原 env_clear 政策不变。
+
+独立完整 core 默认 remote 专项 **6 通过、0 失败、1 网络 opt-in 忽略**，包括原四个 URL/HEAD/版本测试与两个 Windows 实际请求构造检查。显式官方 MinGit 2.56.0.windows.4 通过生产 GitRemoteChecker 对公开 demo 仓库真实 **ls-remote HTTPS，1/1**，8.80 秒；HEAD 指向 refs/heads/codex/manual-demo、返回有效对象名，全部实际 Job/reader/driver 关闭、完整 Git 树再次核验一致、无工具设置文件产生。没有继承代理、降低 TLS 校验或修改用户 Git 设置。
+
+完整冻结快照 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（65 Rust 警告保留）。未执行 Gitee 网络、clone/取消/注册或实际依赖安装，不把 HEAD 检查当作完整导入验收。
