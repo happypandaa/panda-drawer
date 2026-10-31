@@ -644,3 +644,17 @@ Windows Paths 经适配层在新候选创建前检查最近实际既有普通父
 本机实际 `node scripts/platform-support-test.mjs` **5/5**；完整 core Paths 组 **16/16**，覆盖临时根的真实初始化、私有凭据、单实例 LockFileEx 拒绝第二实例及释放复用、设置/marker 选择、目录保留，以及新卷/迁移检查。实际原基础服务测试 **1/1**：使用 RuntimePaths 临时夹具启动真实 loopback HTTP 服务，native readiness 前阻断、显式失败保持、完成后 health 成功，真实 shutdown 返回；该测试通过调用 readiness API，不创建真实 WebView，不能据此证明 WebView2 隔离或 GUI。
 
 没有增加任意数据根覆盖，没有让普通 CI 启动真实应用。core 测试目标仍有 63 项既有/阶段警告；完整 Rust 回归尚未在新门禁后重跑。下一步正常 `npm run dev` 实际固定身份首次启动和设置检查；W1、双端 CI及第 7 节仍未完成。
+
+### W1.24 — 第一次真实 Windows 管理器与当前 core 回归
+
+Windows 11 25H2 / build 26200.9711 上，实际执行 `node scripts/desktop.mjs dev`（npm dev 的同一正常入口），未传诊断资源配置或任意数据根。新准备目录完整生成资源/CLI，真实 Tauri dev 编译通过并运行，固定身份 `dev.happypandaa.pandadrawer`；主界面显示 0 应用，工作区为 `C:\Users\g\PandaDrawer-Dev`，真实 loopback 服务启动。使用 computer-use 直接观察并点击通用、存储与清理、运行环境、给 AI 的平台说明、关于与更新、卸载前清理六个分区，均实际显示。
+
+存储页准确显示 NTFS，并明确报告 Windows 存储扫描/清理尚未完成；运行环境页可显示固定 Windows 资源位置，但 Node/npm 进程探测仍未完成，不能据打包执行成功声称平台内构建工具已可用。初次打开设置时隐藏的 Node/Git pane 也会做完整诊断，tabs/完成曾被现有 pending 规则阻断，随后实际恢复，未量测等待时长。关于页版本、x86_64、开发身份和实际 exe 路径可读，当前开发版自动更新入口禁用；尚未验证安装包身份/体积统计。没有点击卸载清理按钮、创建项目或执行任何删除。
+
+点击底部文件管理器入口，真实 Windows Explorer 打开 `此电脑 > 系统(C:) > 用户 > g > PandaDrawer-Dev`，可见本次初始化的 projects / .platform；验证后只关闭本次新标签。通过原生菜单“退出开发版 Ctrl+Q”正常退出，实际日志 ReadyForNativeExit、dev 命令 exit=0，管理器及本次 Explorer 窗口均确认消失。保留全部真实固定身份数据，没有重置或清理根目录。
+
+仍有 W1 收尾：界面残留“访达”/Mac 关闭说明及仅接受 `/` 的工具路径控件，需要前端适配；WebView2 必须从真实 Environment7.UserDataFolder 读回并核对预期完整身份，不能只以 builder.data_directory 输入证明实际生效。系统 environment/policy 可能覆盖该值，读回验证前应保持管理器导航和 native readiness 关闭。第一轮只证明实际窗口/六分区和 Explorer，不提前认定隔离验收完成。
+
+同时在独立 TempDir 夹具运行当前完整 core `--lib`，注册 **443 项：345 通过、94 失败、3 忽略、1 超时**，总计 196.105 秒；没有正常 libtest 汇总，不能记为全组通过。唯一超时 `service::shutdown_coordinator::tests::migration_registration_and_shutdown_share_the_same_submission_lock` 在 entered_rx.recv 无界等待，记录精确身份后只终止该次测试进程，夹具将改为有界失败，不删/跳测试。94 失败分布：service 32、build_artifacts 13、backups 11、metadata 9、object_layout 7、source_restore_guard 4、web_project_ownership 4、webview_storage 4、node_apps 3、project_cleanup_tests 3、projects 2、environment 1、resources 1。
+
+有界精确复现确认当前 W2 多项目创建先报 PROJECT_DIRECTORY_MAPPING_INVALID，附带 owned-directory-cleanup 错误只是回退诊断；网页 SQL/附件端到端尚未到达。原生附件 CRUD、数据库队列/结果限制、基础 HTTP health 已实际通过，旧 W0 的门禁失败不能继续用作当前缺陷结论。未改/跳过原 Mac 测试，没有 Mac 运行结果；W0/W1 尚未正式完成，不合入 main。
