@@ -9,7 +9,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File},
+    fs,
     path::Path,
     sync::{atomic::Ordering, Arc},
 };
@@ -22,7 +22,7 @@ pub(crate) struct OperationInput {
     pub maintenance_id: Option<String>,
 }
 fn sync_parent(path: &Path) -> Result<(), ApiError> {
-    File::open(path.parent().unwrap())?.sync_all()?;
+    platform_native::filesystem::sync_directory(path.parent().unwrap())?;
     Ok(())
 }
 pub(crate) struct MaintenanceManager {

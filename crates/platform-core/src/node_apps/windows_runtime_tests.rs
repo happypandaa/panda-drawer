@@ -10,6 +10,10 @@ use std::{
     time::Duration,
 };
 
+mod configuration_concurrency {
+    include!("windows_configuration_concurrency_tests.rs");
+}
+
 const HOST: &str = "node_apps::windows_runtime_tests::disposable_nodeapps_host";
 const HOST_ROOT: &str = "PANDA_DISPOSABLE_W3_NODEAPPS_HOST_ROOT";
 const FIRST_SECRET: &str = "artificial-nodeapps-secret-first";

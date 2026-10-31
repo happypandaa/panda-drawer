@@ -3,6 +3,9 @@
 #[path = "files/private_inheritance.rs"]
 mod private_inheritance;
 pub use private_inheritance::enable_private_directory_inheritance;
+#[path = "files/hardlink_rename.rs"]
+mod hardlink_rename;
+pub use hardlink_rename::rename_file_noreplace_expected_allowing_hard_links;
 #[cfg(test)]
 #[path = "files/private_creation_tests.rs"]
 mod private_creation_tests;

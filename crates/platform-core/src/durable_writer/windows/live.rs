@@ -1,30 +1,20 @@
-//! Live closure only. This Windows marker has no invented boot/session proof;
-//! startup inventory never treats it as authority to retire a crashed writer.
+//! Live closure and explicit current-process boot evidence for later recovery.
 use super::{
     io::{self, blocked, Directory, Result, MAX_MARKER},
-    Kind, WriterOwner,
+    schema::{BootEvidence, Marker},
+    WriterOwner,
 };
 use crate::file_identity::PersistedIdentity;
-use platform_native::windows::files::{self as native, FileIdentity};
-use serde::Serialize;
+use platform_native::windows::{
+    boot_session,
+    files::{self as native, FileIdentity},
+};
 use std::{
     fs::File,
     io::{Read, Write},
     path::PathBuf,
 };
 use uuid::Uuid;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Marker<'a> {
-    version: u32,
-    platform: &'static str,
-    kind: &'static str,
-    owner_id: &'a str,
-    token: String,
-    component: &'a str,
-    file_identity: PersistedIdentity,
-}
 
 /// No deleting Drop. Only the caller's actual no-child or joined Job/I/O
 /// closure branch may call finish; a task status is never a closure receipt.
@@ -51,6 +41,7 @@ fn begin_with(
     if component.is_empty() || component.len() > 256 || component.chars().any(char::is_control) {
         return Err(super::invalid_owner());
     }
+    let boot_id = boot_session::current_boot_id().map_err(|error| blocked(&owner._data, error))?;
     let selected = io::admitted_owner(owner)?;
     let directory = Directory::private(&selected.path.join("writers"), true)?;
     let token = Uuid::new_v4().to_string();
@@ -62,16 +53,16 @@ fn begin_with(
         .map_err(|error| blocked(&preparing, error))?;
     let identity = native::identity(&file).map_err(|error| blocked(&preparing, error))?;
     let marker = Marker {
-        version: 1,
-        platform: "windows",
-        kind: match owner._kind {
-            Kind::Node => "node",
-            Kind::Web => "web",
-            Kind::Platform => "platform",
-        },
-        owner_id: &owner._id,
+        version: 2,
+        platform: "windows".into(),
+        kind: super::schema::kind(owner).into(),
+        owner_id: owner._id.clone(),
         token,
-        component,
+        component: component.into(),
+        boot_evidence: BootEvidence {
+            source: boot_session::SOURCE.into(),
+            boot_id,
+        },
         file_identity: PersistedIdentity::from_file(&file)
             .map_err(|error| blocked(&preparing, error))?,
     };
