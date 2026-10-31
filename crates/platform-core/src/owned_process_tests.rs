@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use super::group::ProcessGroup;
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncReadExt;

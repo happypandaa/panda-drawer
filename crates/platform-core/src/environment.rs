@@ -2,19 +2,25 @@
 //! Installed resources default to verified private Node/npm; an explicit local choice
 //! is preserved. Resource-free development/test managers retain system discovery.
 use crate::{
-    owned_process::{IoPlan, OwnedProcessRegistry, ProcessOptions, ProcessPipes},
+    owned_process::{IoPlan, OwnedCommand, OwnedProcessRegistry, ProcessOptions, ProcessPipes},
     projects::check_no_symlinks,
     ApiError,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+
+#[cfg(not(windows))]
+#[path = "environment/unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "environment/windows.rs"]
+mod platform;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,7 +154,10 @@ impl EnvironmentManager {
             npm: None,
             selection: "detected".into(),
             configured_node_path: None,
-            managed_node_path: self.managed_root.as_deref().map(crate::node_tool_layout::node),
+            managed_node_path: self
+                .managed_root
+                .as_deref()
+                .map(crate::node_tool_layout::node),
             supported_node_range: "^22.12.0 || ^24.0.0".into(),
             recommended_node: "24 LTS".into(),
             download_url: "https://nodejs.org/en/download".into(),
@@ -224,45 +233,7 @@ impl EnvironmentManager {
     }
 }
 fn candidates() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    // nvm installs are discoverable even when Finder supplies /usr/bin:/bin only.
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(versions) = fs::read_dir(home.join(".nvm/versions/node")) {
-            let mut found: Vec<_> = versions
-                .filter_map(Result::ok)
-                .map(|entry| entry.path().join("bin/node"))
-                .collect();
-            found.sort_by_key(|path| {
-                std::cmp::Reverse(
-                    version_tuple(
-                        path.parent()
-                            .and_then(Path::parent)
-                            .and_then(Path::file_name)
-                            .and_then(|x| x.to_str())
-                            .unwrap_or_default(),
-                    )
-                    .unwrap_or((0, 0, 0)),
-                )
-            });
-            paths.extend(found);
-        }
-        paths.extend([home.join(".volta/bin/node"), home.join(".local/bin/node")]);
-    }
-    for base in [
-        "/opt/homebrew/opt/node@24/bin",
-        "/opt/homebrew/opt/node@22/bin",
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ] {
-        paths.push(Path::new(base).join("node"));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&path).map(|path| path.join("node")));
-    }
-    let mut seen = HashSet::new();
-    paths.retain(|path| path.is_file() && seen.insert(path.clone()));
-    paths
+    platform::candidates()
 }
 fn version_tuple(version: &str) -> Option<(u64, u64, u64)> {
     let version = version.trim().trim_start_matches('v');
@@ -279,14 +250,11 @@ pub fn supported_node(version: &str) -> bool {
     matches!(version_tuple(version),Some((22,minor,_)) if minor>=12)
         || matches!(version_tuple(version), Some((24, _, _)))
 }
-fn tool_path(node: &Path) -> String {
-    format!(
-        "{}:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
-        node.parent().unwrap_or(Path::new("/usr/bin")).display()
-    )
+fn tool_path(node: &Path) -> Result<String, ApiError> {
+    platform::tool_path(node)
 }
 async fn output<G: Send + 'static>(
-    command: Command,
+    command: impl Into<OwnedCommand>,
     processes: &OwnedProcessRegistry,
     keep_alive: G,
 ) -> Result<String, ApiError> {
@@ -378,7 +346,12 @@ async fn probe_with_boundary<G: Clone + Send + 'static>(
     let node_path = fs::canonicalize(candidate)?;
     let mut command = Command::new(&node_path);
     command.arg("--version");
-    let version = output(command, processes, keep_alive.clone()).await?;
+    let version = output(
+        OwnedCommand::inherited(command),
+        processes,
+        keep_alive.clone(),
+    )
+    .await?;
     if !supported_node(&version) {
         return Err(ApiError::new(
             "NODE_VERSION_UNSUPPORTED",
@@ -401,10 +374,13 @@ async fn probe_with_boundary<G: Clone + Send + 'static>(
         boundary.require_dependency_path(&npm_entry)?;
         boundary.require_path(&npm)?;
     }
-    let path = tool_path(&node_path);
+    let path = tool_path(&node_path)?;
     let mut command = Command::new(&node_path);
-    command.arg(&npm).arg("--version").env("PATH", &path);
-    let npm_version = output(command, processes, keep_alive)
+    command
+        .arg(crate::node_tool_layout::command_argument(&npm)?)
+        .arg("--version")
+        .env("PATH", &path);
+    let npm_version = output(OwnedCommand::inherited(command), processes, keep_alive)
         .await
         .map_err(|mut error| {
             if !error.code.starts_with("PROCESS_") {
@@ -433,54 +409,23 @@ async fn probe_managed<G: Clone + Send + 'static>(
     processes: &OwnedProcessRegistry,
     keep_alive: G,
 ) -> Result<Toolchain, ApiError> {
-    let path = std::env::join_paths([
-        verified.root.join("bin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-        PathBuf::from("/usr/sbin"),
-        PathBuf::from("/sbin"),
-    ])
-    .map_err(|_| {
-        ApiError::new(
-            "MANAGED_NODE_INVALID",
-            "受管开发工具路径不能用于隔离的 PATH。",
-        )
-    })?
-    .into_string()
-    .map_err(|_| ApiError::new("MANAGED_NODE_INVALID", "受管开发工具路径不是有效文本。"))?;
-    let command = || {
-        let mut command = Command::new(&verified.node);
-        command
-            .env_clear()
-            .current_dir(&verified.root)
-            .env("PATH", &path)
-            .env("LC_ALL", "C")
-            .env("HOME", &verified.root)
-            .env(
-                "NPM_CONFIG_USERCONFIG",
-                verified.root.join(".unused-user-npmrc"),
-            )
-            .env(
-                "NPM_CONFIG_GLOBALCONFIG",
-                verified.root.join(".unused-global-npmrc"),
-            );
-        command
-    };
-    let mut node = command();
+    let path = platform::managed_path(&verified)?;
+    let command = || platform::managed_command(&verified, &path);
+    let mut node = command()?;
     node.arg("--version");
-    let version = output(node, processes, keep_alive.clone()).await?;
+    let version = output(OwnedCommand::cleared(node), processes, keep_alive.clone()).await?;
     if version != format!("v{}", verified.node_version) {
         return Err(ApiError::new(
             "MANAGED_NODE_VERSION_MISMATCH",
             "受管开发 Node 的实际版本不符合固定发行声明。",
         ));
     }
-    let mut npm = command();
-    npm.arg(&verified.npm)
+    let mut npm = command()?;
+    npm.arg(crate::node_tool_layout::command_argument(&verified.npm)?)
         .arg("--prefix")
-        .arg(&verified.root)
+        .arg(crate::node_tool_layout::command_argument(&verified.root)?)
         .arg("--version");
-    let npm_version = output(npm, processes, keep_alive).await?;
+    let npm_version = output(OwnedCommand::cleared(npm), processes, keep_alive).await?;
     if npm_version != verified.npm_version {
         return Err(ApiError::new(
             "MANAGED_NODE_VERSION_MISMATCH",
@@ -630,7 +575,10 @@ mod tests {
         assert!(report.ready, "{:?}", report.issues);
         assert_eq!(report.selection, "explicit");
         assert_eq!(report.configured_node_path, Some(node.clone()));
-        assert_eq!(report.managed_node_path, Some(managed.join("bin/node")));
+        assert_eq!(
+            report.managed_node_path,
+            Some(crate::node_tool_layout::node(&managed))
+        );
         assert_eq!(manager.resolve().await.unwrap().node.path, node);
         assert_eq!(fs::read(data.join("toolchain.json")).unwrap(), before);
     }
@@ -658,7 +606,10 @@ mod tests {
         let report = manager.doctor().await;
         assert!(!report.ready);
         assert_eq!(report.selection, "managed");
-        assert_eq!(report.managed_node_path, Some(managed.join("bin/node")));
+        assert_eq!(
+            report.managed_node_path,
+            Some(crate::node_tool_layout::node(&managed))
+        );
         assert!(report.issues[0].code.starts_with("MANAGED_NODE_"));
         assert!(manager.resolve().await.is_err());
         assert!(!data.exists());
@@ -717,13 +668,11 @@ mod tests {
         let manager =
             EnvironmentManager::with_managed_node(data.path().to_path_buf(), sample.clone());
         let tools = manager.resolve().await.unwrap();
-        assert_eq!(tools.node.path, sample.join("bin/node"));
+        assert_eq!(tools.node.path, crate::node_tool_layout::node(&sample));
         assert_eq!(tools.node.version, "v24.22.0");
         assert_eq!(tools.npm.version, "11.19.1");
-        assert_eq!(
-            tools.npm.path,
-            sample.join("lib/node_modules/npm/bin/npm-cli.js")
-        );
+        assert_eq!(tools.npm.path, crate::node_tool_layout::npm(&sample));
+        #[cfg(not(windows))]
         assert_eq!(
             tools.path,
             format!(
@@ -731,7 +680,29 @@ mod tests {
                 sample.join("bin").display()
             )
         );
+        #[cfg(windows)]
+        {
+            let system = platform_native::windows::system_paths::SystemPaths::current().unwrap();
+            assert_eq!(
+                std::env::split_paths(&tools.path).collect::<Vec<_>>(),
+                vec![sample.clone(), system.system, system.windows]
+            );
+        }
         assert!(!data.path().join("toolchain.json").exists());
+        #[cfg(windows)]
+        {
+            // A real explicit installation takes the canonical-path route,
+            // unlike the managed probe. Exercise the complete npm tree too:
+            // a tiny JS wrapper cannot expose Node's module-loader path rules.
+            let explicit = EnvironmentManager::new(data.path().join("full-explicit-settings"));
+            let report = explicit
+                .configure_node(Some(tools.node.path.clone()))
+                .await
+                .unwrap();
+            assert!(report.ready, "{:?}", report.issues);
+            assert_eq!(report.selection, "explicit");
+            assert_eq!(report.npm.unwrap().version, "11.19.1");
+        }
         // A fresh check after the real version probes also detects any cache/log
         // or other unexpected package mutation performed by those probes.
         crate::managed_toolchain::verify(sample).await.unwrap();
@@ -740,14 +711,12 @@ mod tests {
         // This copy lives only in the disposable test data, never in the package.
         let local_bin = data.path().join("explicit/bin");
         fs::create_dir_all(&local_bin).unwrap();
-        fs::copy(&tools.node.path, local_bin.join("node")).unwrap();
-        fs::write(
-            local_bin.join("npm"),
-            "#!/usr/bin/env node\nconsole.log('11.19.1')\n",
-        )
-        .unwrap();
-        let local = probe(&local_bin.join("node")).await.unwrap();
-        assert_eq!(local.npm.path, local_bin.join("npm"));
+        let local_node = local_bin.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let local_npm = local_bin.join(if cfg!(windows) { "npm-cli.js" } else { "npm" });
+        fs::copy(&tools.node.path, &local_node).unwrap();
+        fs::write(&local_npm, "#!/usr/bin/env node\nconsole.log('11.19.1')\n").unwrap();
+        let local = probe(&local_node).await.unwrap();
+        assert_eq!(local.npm.path, local_npm);
         assert_eq!(local.npm.version, "11.19.1");
     }
 }

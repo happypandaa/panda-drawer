@@ -7,7 +7,7 @@ use std::{
     io,
     mem::{size_of, zeroed},
     os::windows::{
-        ffi::{OsStrExt, OsStringExt},
+        ffi::OsStringExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
@@ -40,6 +40,17 @@ use windows_sys::Win32::{
         },
     },
 };
+
+mod environment;
+
+/// Resolve only the caller's explicitly declared inheritance policy and
+/// overrides. This never changes the platform process's own environment.
+pub fn resolve_environment(
+    inherit: bool,
+    changes: &[(OsString, Option<OsString>)],
+) -> io::Result<Vec<(OsString, OsString)>> {
+    environment::resolve(inherit, changes)
+}
 
 fn owned(raw: HANDLE) -> io::Result<OwnedHandle> {
     if raw.is_null() {
@@ -167,34 +178,6 @@ fn command_line(program: &Path, arguments: &[OsString]) -> io::Result<Vec<u16>> 
     result.push(0);
     Ok(result)
 }
-fn environment_block(values: &[(OsString, OsString)]) -> io::Result<Vec<u16>> {
-    let mut sorted: Vec<_> = values.iter().collect();
-    sorted.sort_by_key(|(name, _)| name.to_string_lossy().to_uppercase());
-    let mut result = Vec::new();
-    let mut previous: Option<String> = None;
-    for (name, value) in sorted {
-        let key = name.to_string_lossy().to_uppercase();
-        if name.is_empty()
-            || name.encode_wide().any(|c| c == 61 || c == 0)
-            || previous.as_ref() == Some(&key)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Invalid or duplicate environment key",
-            ));
-        }
-        result.extend(wide(name)?.into_iter().take_while(|c| *c != 0));
-        result.push(61);
-        result.extend(wide(value)?);
-        previous = Some(key);
-    }
-    if result.is_empty() {
-        result.push(0);
-    }
-    result.push(0);
-    Ok(result)
-}
-
 pub struct Spawn {
     pub program: PathBuf,
     pub arguments: Vec<OsString>,
@@ -288,9 +271,14 @@ impl OwnedProcess {
     /// assign the Job, register its actual owner/pumps, then resume explicitly.
     pub fn create_suspended(request: Spawn) -> io::Result<Self> {
         let program = native_path(&request.program)?;
-        let directory = native_path(&request.current_directory)?;
+        // A filesystem verbatim prefix changes root-relative paths inside a
+        // child (for example /etc becomes a UNC path). Match std's cwd rule;
+        // the executable still uses the file-operation path representation.
+        let directory = super::normalized_path(&request.current_directory)?;
+        let directory = super::api_paths::conventional_path(&directory)?;
+        let directory = wide(directory.as_os_str())?;
         let mut arguments = command_line(&request.program, &request.arguments)?;
-        let environment = environment_block(&request.environment)?;
+        let environment = environment::block(&request.environment)?;
         let input = pipe(true)?;
         let output = pipe(false)?;
         let errors = pipe(false)?;
@@ -576,20 +564,62 @@ pub fn boot_time() -> io::Result<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        os::windows::ffi::OsStrExt,
+    };
+    fn fixture_arguments() -> [&'static str; 4] {
+        [
+            "--ignored",
+            "--exact",
+            "windows::process::tests::child_fixture",
+            "--nocapture",
+        ]
+    }
+    fn fixture_command() -> std::process::Command {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        // Piped libtest fixtures have no terminal. Do not search host terminfo
+        // locations before entering the fixture. Product inheritance is intact.
+        command.args(fixture_arguments()).env_remove("TERM");
+        command
+    }
+    fn raw_directory_observations() -> (Vec<u16>, Vec<u16>) {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentDirectoryW(length: u32, buffer: *mut u16) -> u32;
+        }
+        let mut current = vec![0; 32768];
+        let count = unsafe { GetCurrentDirectoryW(current.len() as u32, current.as_mut_ptr()) };
+        assert!(count != 0 && (count as usize) < current.len());
+        current.truncate(count as usize);
+        let input = wide(OsStr::new("/panda-disposable-root-relative")).unwrap();
+        let mut absolute = vec![0; 32768];
+        let count = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetFullPathNameW(
+                input.as_ptr(),
+                absolute.len() as u32,
+                absolute.as_mut_ptr(),
+                null_mut(),
+            )
+        };
+        assert!(count != 0 && (count as usize) < absolute.len());
+        absolute.truncate(count as usize);
+        (current, absolute)
+    }
     fn request(mode: &str, directory: &Path) -> Spawn {
         let mut environment: Vec<_> = std::env::vars_os()
-            .filter(|(name, _)| name != "PANDA_NATIVE_FIXTURE")
+            .filter(|(name, _)| {
+                name != "PANDA_NATIVE_FIXTURE"
+                    && !name.to_string_lossy().eq_ignore_ascii_case("TERM")
+            })
             .collect();
         environment.push(("PANDA_NATIVE_FIXTURE".into(), mode.into()));
         Spawn {
             program: std::env::current_exe().unwrap(),
-            arguments: vec![
-                "--ignored".into(),
-                "--exact".into(),
-                "windows::process::tests::child_fixture".into(),
-                "--nocapture".into(),
-            ],
+            arguments: fixture_arguments()
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
             current_directory: directory.into(),
             environment,
         }
@@ -608,13 +638,7 @@ mod tests {
                 println!("ECHO:{}", line.trim());
             }
             "family" => {
-                let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                    .args([
-                        "--ignored",
-                        "--exact",
-                        "windows::process::tests::child_fixture",
-                        "--nocapture",
-                    ])
+                let mut child = fixture_command()
                     .env("PANDA_NATIVE_FIXTURE", "sleep")
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
@@ -648,11 +672,173 @@ mod tests {
                 std::thread::sleep(Duration::from_secs(60));
             },
             "exit259" => std::process::exit(259),
+            "raw-cwd" => {
+                let (directory, absolute) = raw_directory_observations();
+                println!("PANDA_RAW_CWD:{directory:?}");
+                println!("PANDA_RAW_ROOT_RELATIVE:{absolute:?}");
+                std::process::exit(0);
+            }
+            "raw-env" => {
+                let keys = environment::non_ascii_fixture_values();
+                // Only synthetic fixture keys are emitted, even if this entry
+                // point is accidentally invoked outside the cleared test plan.
+                for (key, value) in std::env::vars_os()
+                    .filter(|(key, _)| keys.iter().any(|(expected, _)| expected == key))
+                {
+                    println!(
+                        "PANDA_ENV:{:?}={:?}",
+                        key.encode_wide().collect::<Vec<_>>(),
+                        value.encode_wide().collect::<Vec<_>>()
+                    );
+                }
+                std::process::exit(0);
+            }
             "marker" => {
                 std::fs::write(std::env::var_os("PANDA_NATIVE_MARKER").unwrap(), b"ran").unwrap();
             }
             _ => panic!("Unknown disposable fixture mode"),
         }
+    }
+
+    #[test]
+    fn native_child_cwd_matches_std_raw_resolution_and_long_path_outcomes() {
+        let root = tempfile::Builder::new()
+            .prefix("panda-cwd-中文 space-")
+            .tempdir()
+            .unwrap();
+        let mut directory = root.path().to_path_buf();
+        for _ in 0..5 {
+            directory.push("中文 child directory with spaces and a sufficiently long name");
+        }
+        std::fs::create_dir_all(&directory).unwrap();
+        assert!(directory.as_os_str().encode_wide().count() > 260);
+        let mut successful_short_directories = 0;
+        for selected in [
+            root.path().to_path_buf(),
+            root.path().canonicalize().unwrap(),
+            directory.clone(),
+            directory.canonicalize().unwrap(),
+        ] {
+            let expected = fixture_command()
+                .env("PANDA_NATIVE_FIXTURE", "raw-cwd")
+                .current_dir(&selected)
+                .output();
+            let actual = OwnedProcess::create_suspended(request("raw-cwd", &selected));
+            let mut created = match (expected, actual) {
+                (Err(expected), Err(actual)) => {
+                    // Some Windows hosts reject long cwd values even though
+                    // ordinary file operations support the same directory.
+                    // Prove the same pre-create OS outcome; do not add a limit
+                    // or call this a successful long-directory process test.
+                    assert!(selected.as_os_str().encode_wide().count() > 260);
+                    assert!(matches!(expected.raw_os_error(), Some(206 | 267)));
+                    assert_eq!(actual.raw_os_error(), expected.raw_os_error());
+                    eprintln!("actual long cwd unsupported equally by std/native: {actual}");
+                    continue;
+                }
+                (Ok(expected), Ok(mut process)) => {
+                    assert!(expected.status.success(), "{expected:?}");
+                    process.assign_job().unwrap();
+                    process.resume().unwrap();
+                    (expected, process)
+                }
+                (expected, Err(actual)) => {
+                    panic!("std/native cwd creation differed: std={expected:?}, native={actual}")
+                }
+                (Err(expected), Ok(process)) => {
+                    // Even an unexpected success retains the real suspended
+                    // owner through actual termination and Job/root receipts.
+                    process.terminate(137).unwrap();
+                    assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(137));
+                    assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+                    panic!("std rejected cwd but native created a child: {expected}")
+                }
+            };
+            let (expected, ref mut process) = created;
+            drop(process.stdin.take());
+            let mut stdout = process.stdout.take().unwrap();
+            let output = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes).unwrap();
+                bytes
+            });
+            let mut stderr = process.stderr.take().unwrap();
+            let errors = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).unwrap();
+                bytes
+            });
+            assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(0));
+            assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+            assert!(errors.join().unwrap().is_empty());
+            let actual = String::from_utf8(output.join().unwrap()).unwrap();
+            let expected = String::from_utf8(expected.stdout).unwrap();
+            for marker in ["PANDA_RAW_CWD:", "PANDA_RAW_ROOT_RELATIVE:"] {
+                let observation = |value: &str| {
+                    value
+                        .lines()
+                        .find_map(|line| line.find(marker).map(|start| line[start..].to_owned()))
+                        .expect("child returned the actual Win32 path observation")
+                };
+                assert_eq!(observation(&actual), observation(&expected), "{selected:?}");
+            }
+            if selected.as_os_str().encode_wide().count() <= 260 {
+                successful_short_directories += 1;
+            }
+        }
+        assert_eq!(successful_short_directories, 2);
+    }
+
+    #[test]
+    fn native_child_environment_matches_std_for_hidden_and_non_ascii_utf16_entries() {
+        let directory = tempfile::Builder::new()
+            .prefix("panda-disposable-env-中文 space-")
+            .tempdir()
+            .unwrap();
+        let values = environment::non_ascii_fixture_values();
+        let expected = fixture_command()
+            .env_clear()
+            .envs(values.iter().map(|(key, value)| (key, value)))
+            .env("PANDA_NATIVE_FIXTURE", "raw-env")
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        assert!(expected.status.success(), "{expected:?}");
+        let mut plan = request("raw-env", directory.path());
+        plan.environment = values.clone();
+        plan.environment
+            .push(("PANDA_NATIVE_FIXTURE".into(), "raw-env".into()));
+        let mut process = OwnedProcess::spawn(plan).unwrap();
+        drop(process.stdin.take());
+        let mut stdout = process.stdout.take().unwrap();
+        let output = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        let mut stderr = process.stderr.take().unwrap();
+        let errors = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(0));
+        assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+        assert!(errors.join().unwrap().is_empty());
+        let observations = |bytes| {
+            String::from_utf8(bytes)
+                .unwrap()
+                .lines()
+                .filter_map(|line| {
+                    line.find("PANDA_ENV:")
+                        .map(|start| line[start..].to_owned())
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = observations(expected.stdout);
+        let actual = observations(output.join().unwrap());
+        assert_eq!(expected.len(), values.len());
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -891,7 +1077,7 @@ mod tests {
     fn abrupt_host_termination_closes_its_job_and_ends_the_entire_family() {
         use std::{
             os::windows::process::CommandExt,
-            process::{Child, Command, Stdio},
+            process::{Child, Stdio},
         };
         struct Host(Child);
         impl Drop for Host {
@@ -905,13 +1091,7 @@ mod tests {
             .tempdir()
             .unwrap();
         let mut host = Host(
-            Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--ignored",
-                    "--exact",
-                    "windows::process::tests::child_fixture",
-                    "--nocapture",
-                ])
+            fixture_command()
                 .env("PANDA_NATIVE_FIXTURE", "host")
                 .current_dir(temp.path())
                 .creation_flags(CREATE_NO_WINDOW)
@@ -964,7 +1144,8 @@ mod tests {
         );
         assert!(quoted(OsStr::new("bad\0argument")).is_err());
         assert!(
-            environment_block(&[("Path".into(), "a".into()), ("PATH".into(), "b".into())]).is_err()
+            environment::block(&[("Path".into(), "a".into()), ("PATH".into(), "b".into())])
+                .is_err()
         );
     }
 }

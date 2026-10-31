@@ -2,6 +2,19 @@
 //! This selects installation facts; it never executes a tool or grants write access.
 use std::path::{Path, PathBuf};
 
+/// Paths interpreted by Node's module loader or used as a tool cwd/prefix are
+/// SDK arguments, rather than raw filesystem HANDLE-operation names.
+pub(crate) fn command_argument(path: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        platform_native::windows::api_paths::conventional_path(path)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(path.to_path_buf())
+    }
+}
+
 #[cfg(windows)]
 pub(crate) const RUNTIME_RELEASE: &str =
     include_str!("../../../scripts/node-runtime-release.windows-x64.json");
@@ -90,6 +103,23 @@ pub(crate) fn npm_entry_candidates(candidate: &Path, node_path: &Path) -> [PathB
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_script_and_prefix_arguments_use_equivalent_conventional_windows_paths() {
+        for (input, expected) in [
+            (
+                r"\\?\C:\工具 中文 space\npm-cli.js",
+                r"C:\工具 中文 space\npm-cli.js",
+            ),
+            (r"\\?\UNC\server\share\app", r"\\server\share\app"),
+            (r"C:\ordinary\app", r"C:\ordinary\app"),
+        ] {
+            assert_eq!(
+                command_argument(Path::new(input)).unwrap(),
+                Path::new(expected)
+            );
+        }
+    }
 
     #[test]
     fn windows_layout_selects_the_independent_fixed_payloads() {

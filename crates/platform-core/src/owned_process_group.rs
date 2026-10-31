@@ -5,9 +5,9 @@ use crate::ApiError;
 pub(super) const TERMINATE: i32 = libc::SIGTERM;
 #[cfg(unix)]
 pub(super) const KILL: i32 = libc::SIGKILL;
-#[cfg(not(unix))]
+#[cfg(all(not(unix), test))]
 pub(super) const TERMINATE: i32 = 15;
-#[cfg(not(unix))]
+#[cfg(all(not(unix), test))]
 pub(super) const KILL: i32 = 9;
 
 #[derive(Clone, Copy, Debug)]
@@ -15,11 +15,13 @@ pub(super) struct ExitObservation {
     pub code: Option<i32>,
 }
 
+#[cfg(any(not(windows), test))]
 pub(super) struct ProcessGroup {
     pid: u32,
     armed: bool,
 }
 
+#[cfg(any(not(windows), test))]
 impl ProcessGroup {
     pub fn new(pid: u32) -> Self {
         Self { pid, armed: true }
@@ -65,6 +67,16 @@ impl ProcessGroup {
         Ok(())
     }
 
+    #[cfg(not(windows))]
+    pub fn request_stop(&mut self) -> Result<(), ApiError> {
+        self.signal(TERMINATE)
+    }
+
+    #[cfg(not(windows))]
+    pub fn force_stop(&mut self) -> Result<(), ApiError> {
+        self.signal(KILL)
+    }
+
     pub fn has_descendants(&mut self) -> Result<bool, ApiError> {
         self.observe()?;
         members(self.pid)
@@ -79,6 +91,7 @@ fn problem(code: &str, message: &str) -> ApiError {
     ApiError::new(code, message).outcome("unknown")
 }
 
+#[cfg(any(not(windows), test))]
 fn observe(pid: u32) -> Result<Option<ExitObservation>, ApiError> {
     #[cfg(target_os = "macos")]
     loop {
