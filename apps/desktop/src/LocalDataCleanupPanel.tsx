@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Trash2, TriangleAlert } from 'lucide-react';
 import { Modal } from './Modal';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 const confirmationPhrase = '删除全部本机数据';
 interface CleanupPlan {
@@ -57,6 +58,7 @@ const stateLabels: Record<CleanupStatus, string> = {
 };
 
 export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCount = 0, instanceId, scopeIdentity, disabled, onPendingChange, onTerminalLock }: Props) {
+  const platform = useFrontendPlatform();
   const id = useId();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
@@ -149,9 +151,9 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
         <p className="local-data-cleanup-warning">通常在卸载软件前才需要执行。将永久删除下方范围内的全部代码和本机数据，不进入回收站，无法撤销。</p>
         <p>包括项目源码、已安装应用及其依赖、数据库、附件、配置和保存的 Key、所有工作区、旧备份、旧回收项与恢复现场。请先把需要保留的内容导出到本次范围以外，并停止外部编辑器、AI 和其他工具访问这些目录。</p>
         {previewing && <p role="status">正在核对清理范围，尚未删除文件…</p>}
-        {plan && <>{managedProjects.length > 0 && <div className="local-data-cleanup-paths"><h4>将删除的托管项目</h4><ul>{managedProjects.map(project => <li key={project.path}><strong>{project.name}</strong><code>{project.path}</code></li>)}</ul></div>}<p>外部项目的文件夹不会被删除：{externalProjectCount} 个。平台内的应用数据和设置会删除。</p><div className="local-data-cleanup-paths"><h4>将永久删除</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{item.label}</strong><code>{item.path}</code></li>)}</ul></div>
+        {plan && <>{managedProjects.length > 0 && <div className="local-data-cleanup-paths"><h4>将删除的托管项目</h4><ul>{managedProjects.map(project => <li key={project.path}><strong>{project.name}</strong><code>{project.path}</code></li>)}</ul></div>}<p>{platform.localCleanupExternalSummary(externalProjectCount)}</p><div className="local-data-cleanup-paths"><h4>将永久删除</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{platform.localCleanupPathLabel(item.label)}</strong><code>{item.path}</code></li>)}</ul></div>
           <div className="local-data-cleanup-paths"><h4>网页数据</h4><p>项目网页存储会等待系统确认删除，管理器网页偏好也会清空。</p><h4>继续保留</h4><p>软件程序本身保留，可在清理完成并退出后卸载。为阻止并发运行，可能保留必要的实例锁与环境身份文件。</p><p>系统级应用缓存及偏好文件仍可能保留。</p>{plan.preservedPaths.length > 0 && <ul>{plan.preservedPaths.map((path, index) => <li key={index}>{path}</li>)}</ul>}</div>
-          {plan.warnings.length > 0 && <ul className="local-data-cleanup-warnings">{plan.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
+          {plan.warnings.length > 0 && <ul className="local-data-cleanup-warnings">{plan.warnings.map((warning, index) => <li key={index}>{platform.localCleanupWarning(warning)}</li>)}</ul>}
           {expired && <p role="status">清理范围已过期，请重新核对后完成两次确认。</p>}
           {disabled && <p role="status">有其他操作进行中或工作区不可用，请等待处理完成后重新核对。</p>}
           {step === 1 ? <><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={!planCurrent || disabled} onChange={event => setAcknowledged(event.target.checked)} />我已核对所有目录，理解其中全部本机代码、数据和历史资料将永久删除</label><div className="confirmation-actions"><button className="refresh-button" onClick={close}>取消，保留全部内容</button><button className="danger-button" disabled={!planCurrent || disabled || !acknowledged} onClick={() => { if (planCurrent && !disabled && acknowledged) { setStep(2); setTyped(''); } }}>已了解，继续第二次确认</button></div></> : <><p className="local-data-cleanup-warning">最后确认：这些代码、数据库、附件、Key 和历史资料会永久删除。清理完成后软件将停止项目管理，通常请退出并卸载软件。</p><label className="local-data-cleanup-phrase" htmlFor={`${id}-phrase`}>请输入“{confirmationPhrase}”完成第二次确认<input id={`${id}-phrase`} autoComplete="off" spellCheck={false} value={typed} disabled={!planCurrent || disabled} onChange={event => setTyped(event.target.value)} /></label><div className="confirmation-actions"><button className="refresh-button" onClick={close}>取消，保留全部内容</button><button className="danger-button" disabled={!planCurrent || disabled || typed !== confirmationPhrase} onClick={() => void start()}>永久清理所有本机数据</button></div></>}

@@ -1148,3 +1148,19 @@ manager release 实际构建 **6 分 59 秒**，首个 NSIS 包成功生成，**
 运行时 `runtime.platform.exe` 指向实际安装程序；typed scope 的主 exe、CLI、resources 三个成员均实际 bound，wholeDirectory 为 false，resources 指向安装资源，canonical 路径呈系统 PackageLocalCache 表示，未回退源码资源或把整个安装父目录当作程序范围。native-packager 对 runtime Node、development Node 和 Git 的实际验证 **3/3**；环境 doctor 实测 Node **24.22.0**、npm **11.19.1** 且 managed ready=true，Git **2.56.0.windows.4** 且 managed ready=true。独立 system SSH 诊断失败如实保留；这些结果不验证认证、远端访问或 SSH 可用性。
 
 **此第一包仍包含旧清理 guard，不能作为最终卸载前清除版本；包含 W5.19 修复的正常重建与 GUI 清除仍待执行。** 本机已经安装 WebView2，尚未测试缺失时引导；SmartScreen、干净 Windows 10/11、卸载重装也未测试。未由首包生成、静默安装和本机启动推出 W6 完成，安装包及证据均不提交。
+
+### W6.3 — 第一安装版 CLI/公开 HTTP 的临时网页项目验证
+
+第一安装版实际 CLI/公开 HTTP 验证临时网页项目（UUID 前缀 `prj_f43`）：SQLite CRUD、中文空格人工附件上传/下载及同名 409 不覆盖均通过；实际提交的 **3 个 build 任务均 succeeded**，provenance 指向当前产物，磁盘只保留 **1 个 generation**。重新取得 ticket/session 后，实际查询仍有 1 行，附件 SHA256 保持。来源为仓库忽略的 `.test-artifacts/w6-first-installed-web-check.log`；这是实际安装版接口和文件证明，**不是网页原生 GUI、管理器重启或断电恢复证明**。
+
+安装 GUI 的 footer 实际打开 Explorer，窗口确认 `C:\Users\g\PandaDrawer-Dev` 及 `.platform/projects`，随后正常关闭本次 Explorer。这项真实 GUI 系统派发与上述 CLI/HTTP 检查分别记录，不由接口成功推断原生项目窗口已验证。
+
+期间 UI 一度显示 **TASK_NOT_FOUND**。对照原 main `ac3b5d7`，`submit_with_maintenance` 正文与当前规范化 LF 后完全相同：先 reserve ID，再 await environment.resolve，之后才插入 registry；App 又将 task_get 失败统称 maintenance failed。未捕获 banner 当时的任务 ID，因此只能记为**与已有竞态一致的非阻塞已知 UI 问题，未确认该次提示的具体因果，也未修复**。事后三个任务均可正常 scoped 查询，maintenance 为 ready、activeTask 为 null，没有丢失记录的证据；Mac 共用流程未改。
+
+### W6.4 — Windows 全局清除预览按实际归属说明
+
+实际预览原先把 Node 生成源码标成迁移工作区，并将两个 Node 均称为外部目录，而实际计划只保留其中 **1 个外部原目录**。Windows 文案集中委托 frontend-platform：准确说明原始目录保留、生成源码随删，受管范围使用精确标签“平台管理的项目内容”，Windows 术语为 WebView2/回收站。仅改变预览文字；paths、后端权限、删除计划和确认状态不变，Mac 原计数整句、labels 和 warnings 保持。
+
+scope 界面分组 **21/21**，2.26 秒；完整 UI **496/496、0 跳过**，14.70 秒；TypeScript/Vite build 通过，保留原 chunk 大小警告。测试核对 Windows 文案与 Mac 原文，不把文字修正作为实际清除范围或原生闭合证明。
+
+正在构建的第二个正常 fresh 包（stage 后缀 `1HCHrQ`，CLI 已实际构建 **3 分 12 秒**）早于本次 UI 文案修改，不能作为最终 UI 版本；后续需使用本轮 fresh 资源、实际逐项验证后重新生成 NSIS。**全局 GUI 清除尚未执行，不记成功；W6 仍未完成。**

@@ -40,6 +40,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { LocalDataCleanupPanel } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/LocalDataCleanupPanel.tsx'))).href);
+const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
 const { default: App } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/App.tsx'))).href);
 const originalSetInterval = window.setInterval.bind(window);
 const originalClearInterval = window.clearInterval.bind(window);
@@ -63,7 +64,7 @@ async function type(value) {
   await act(async () => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new window.Event('input', { bubbles: true })); });
 }
 async function key(value) { await act(async () => activeDialog().dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }))); }
-async function render(props = {}, overrides = {}) {
+async function render(props = {}, overrides = {}, target) {
   const calls = []; const locks = []; const pending = [];
   globalThis.__CLEANUP_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
@@ -77,8 +78,9 @@ async function render(props = {}, overrides = {}) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
   const values = { instanceId: 'disposable-instance', scopeIdentity: '/disposable/data:/disposable/workspace', disabled: false, onPendingChange: value => pending.push(value), onTerminalLock: () => locks.push(true), ...props };
-  await act(async () => root.render(h(LocalDataCleanupPanel, values)));
-  return { calls, locks, pending, values, rerender: props => act(async () => root.render(h(LocalDataCleanupPanel, { ...values, ...props }))) };
+  const panel = props => h(FrontendPlatformProvider, { value: frontendPlatformFromBootstrap(target ? { build: { target } } : null) }, h(LocalDataCleanupPanel, props));
+  await act(async () => root.render(panel(values)));
+  return { calls, locks, pending, values, rerender: props => act(async () => root.render(panel({ ...values, ...props }))) };
 }
 async function firstConfirmation() {
   await click(button('清理所有本机项目内容'));
@@ -105,6 +107,47 @@ test('Opening, checking the first warning and cancelling never submits cleanup',
   assert.equal(writeCalls(calls).length, 0); assert.deepEqual(locks, []);
   await click(button('清理所有本机项目内容'));
   assert.equal(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]').checked, false);
+});
+
+const platformCopyPlan = () => plan({
+  deletePaths: [
+    { path: String.raw`C:\disposable\AppData\platform`, label: '本机应用数据与项目资料' },
+    { path: String.raw`D:\disposable\平台生成的源码`, label: '已登记的迁移工作区' },
+    { path: String.raw`D:\disposable\自定义内容`, label: '其他原始标签' },
+  ],
+  preservedPaths: [String.raw`D:\disposable\外部原始目录`],
+  warnings: ['永久删除，不进入废纸篓，无法撤销。', '项目 WebKit 网页存储会等待系统确认删除。', '人工警告：原目录被占用，保留现场。'],
+});
+
+test('Windows cleanup copy distinguishes generated source from preserved originals without changing the backend plan', async () => {
+  const preview = platformCopyPlan();
+  const original = structuredClone(preview);
+  const { calls } = await render({ externalProjectCount: 2 }, { local_data_cleanup_preview: () => preview }, 'x86_64-pc-windows-msvc');
+  await click(button('清理所有本机项目内容'));
+  const text = activeDialog().textContent;
+  assert.match(text, /你选择的已有原始文件夹会保留；平台生成的项目源码、应用数据和设置会删除。具体范围以下方清单为准。/);
+  assert.doesNotMatch(text, /外部项目的文件夹不会被删除：2 个/);
+  assert.doesNotMatch(text, /已登记的迁移工作区|WebKit|废纸篓/);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), ['本机应用数据与项目资料', '平台管理的项目内容', '其他原始标签']);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-warnings li')].map(element => element.textContent), ['永久删除，不进入回收站，无法撤销。', '项目 WebView2 网页存储会等待系统确认删除。', '人工警告：原目录被占用，保留现场。']);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths code')].map(element => element.textContent), preview.deletePaths.map(item => item.path));
+  assert.match(text, /D:\\disposable\\外部原始目录/);
+  assert.deepEqual(preview, original);
+  await click(button('取消，保留全部内容'));
+  assert.equal(writeCalls(calls).length, 0);
+});
+
+test('Mac cleanup retains the exact external count, backend labels and warning terminology', async () => {
+  const preview = platformCopyPlan();
+  const { calls } = await render({ externalProjectCount: 2 }, { local_data_cleanup_preview: () => preview }, 'aarch64-apple-darwin');
+  await click(button('清理所有本机项目内容'));
+  assert.match(activeDialog().textContent, /外部项目的文件夹不会被删除：2 个。平台内的应用数据和设置会删除。/);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), preview.deletePaths.map(item => item.label));
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-warnings li')].map(element => element.textContent), preview.warnings);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths code')].map(element => element.textContent), preview.deletePaths.map(item => item.path));
+  assert.doesNotMatch(activeDialog().textContent, /平台管理的项目内容|WebView2/);
+  await click(button('取消，保留全部内容'));
+  assert.equal(writeCalls(calls).length, 0);
 });
 
 test('Two explicit confirmations and the exact phrase are required before one bound request', async () => {
