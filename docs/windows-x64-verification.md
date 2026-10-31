@@ -784,3 +784,11 @@ native 全目标严格 Clippy -Dwarnings 及桌面 --tests --no-deps -Dclippy::a
 实际 native 移除专项现 **6/6**，含真实只读/非空目录失败、持续共享 HANDLE 的原生拒绝、原/替代对象、晚于初始 links=1 观察新建的硬链接、真实 junction 本体移除。删除句柄/所选名字/外部句柄观察证实原只读位未变化、完整身份及外部内容保持。本轮完整 native **71/0/2**（通过/失败/明确忽略）与严格 Clippy 通过，数量已含这些专项。
 
 实际完整 core history_cleanup::windows 组 **9/9**（其中新增目录移除 6 项），包括中文空格超 260 文件树、真实只读硬链接外部原件、junction 目标、替换 root/leaf、新增未计划文件、占用后部分失败及释放后重试清完；2 个既有 coordinator 及 1 个未实现内容快照门禁仍通过。后者在任何 verify 回调/删除前拒绝，未伪造迁移快照。原 Mac 文件零改并独立只读复审；完整项目删除任务、重启续删、历史计划/迁移仍待 W5，不据此称完整删除完成。
+
+### W2.12 — 构建目录交换的实际 journal 与确定状态恢复
+
+将 replace_directory 搬到平台适配，原 Mac/Unix 全函数去新增可见性后逐字机械相同。Windows 在 staged.parent 自有任务范围内先私有发布不可变 journal，记录源/旧目标、两父完整身份、原生 UTF-16 leaf 名和预定 held 名；固定两父，依次旧 current→held、staged→current、held→staged，不覆盖任何名字。每步重验原 journal 身份/字节，按四种互斥完整身份组合继续，不以路径存在或摘要认领替代对象；fresh 目标同样持 journal，源与目标为同一对象时沿用原 rename 语义。
+
+实际完整 core 新专项 **14/14**，0 失败/忽略，0.98 秒。真实 TempDir/HANDLE/rename 覆盖每个实际移动后中断、fresh 两断点、反复 resume 无额外交换、高位 FileId 改变、双 parent 替换、空目录占位、未配对 UTF-16 名字、实际发布后外部替换、journal 并发锁与最终退役时替换。中断由实际 move 后注入错误，不是实际断电或 kill 进程；没有第二物理卷、Windows 10 或并发 reader 可见性矩阵证据。原语目录发布后 unknown 另沿用 native 已有专项，未将它算进本组。
+
+独立只读复审未发现新阻塞。所有 active-journal 后失败明确 artifactExchangePending=true / outcome=unknown；外层必须先停止回滚再按原 publication/provenance 对账。resume_pending=false 仅为当次无 active journal，不能当作“从未交换”，也不能再次调用 replace 交换回旧版本。外层发布、提交与启动接线尚在实现；不据原语 14 项称三次网页构建或旧产物回收已完成。CI 按用户要求后置，本步未合入 main。
