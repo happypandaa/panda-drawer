@@ -8,14 +8,15 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
+
+#[path = "data_restore_guard_io.rs"]
+mod file_io;
 
 const ROOT: &str = ".platform/project-state/data-restore";
 // Internal metadata inspection budgets, not product storage quotas.
@@ -133,9 +134,9 @@ pub(crate) fn publish_prepared<T: Serialize>(
         file.write_all(&bytes).map_err(|_| invalid())?;
         file.sync_all().map_err(|_| invalid())?;
     }
-    staging_fd.sync_all().map_err(|_| invalid())?;
+    let _staging_fd = file_io::prepare_staging(staging_fd)?;
     let publication = (|| {
-        move_directory_exclusive(staging, &root)?;
+        file_io::move_prepared_directory(staging, &root, &header.operation_identity)?;
         if !header
             .operation_identity
             .matches_path(&root)
@@ -161,7 +162,7 @@ pub(crate) fn publish_prepared<T: Serialize>(
         }
         let mut parent = root.parent();
         while let Some(path) = parent.filter(|path| path.starts_with(workspace)) {
-            crate::files::root(path)?.sync_all()?;
+            file_io::sync_parent(path)?;
             parent = path.parent();
         }
         Ok(root.clone())
@@ -176,46 +177,6 @@ pub(crate) fn publish_prepared<T: Serialize>(
             error
         }
     })
-}
-
-#[cfg(target_os = "macos")]
-fn move_directory_exclusive(from: &Path, to: &Path) -> Result<(), ApiError> {
-    use std::{
-        ffi::CString,
-        os::{fd::AsRawFd, unix::ffi::OsStrExt},
-    };
-    let left = crate::files::root(from.parent().ok_or_else(invalid)?)?;
-    let right = crate::files::root(to.parent().ok_or_else(invalid)?)?;
-    if left.metadata().map_err(|_| invalid())?.dev()
-        != right.metadata().map_err(|_| invalid())?.dev()
-    {
-        return Err(invalid());
-    }
-    let a =
-        CString::new(from.file_name().ok_or_else(invalid)?.as_bytes()).map_err(|_| invalid())?;
-    let b = CString::new(to.file_name().ok_or_else(invalid)?.as_bytes()).map_err(|_| invalid())?;
-    if unsafe {
-        libc::renameatx_np(
-            left.as_raw_fd(),
-            a.as_ptr(),
-            right.as_raw_fd(),
-            b.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    } != 0
-    {
-        return Err(changed());
-    }
-    left.sync_all().map_err(|_| invalid())?;
-    right.sync_all().map_err(|_| invalid())?;
-    Ok(())
-}
-#[cfg(not(target_os = "macos"))]
-fn move_directory_exclusive(_from: &Path, _to: &Path) -> Result<(), ApiError> {
-    Err(ApiError::new(
-        "UNSUPPORTED_PLATFORM",
-        "数据取回现场发布目前仅验证macOS。",
-    ))
 }
 
 #[derive(Clone, Copy)]
@@ -348,6 +309,7 @@ fn check_publication_capacity(
                 let header = journal_header(&bytes, &id, &task)?;
                 let before_material = budget.remaining_bytes;
                 let released = inspect_transaction_material(
+                    workspace,
                     &entry.path(),
                     &header,
                     &mut budget,
@@ -693,6 +655,7 @@ fn inspect_project(
             let bytes = read_journal(&entry.path().join("journal.json"), budget, remaining)?;
             let header = journal_header(&bytes, project_id, &task_id)?;
             let released = inspect_transaction_material(
+                workspace,
                 &entry.path(),
                 &header,
                 budget,
@@ -749,11 +712,28 @@ fn inspect_project(
 }
 
 fn inspect_transaction_material(
+    workspace: &Path,
     root: &Path,
     header: &DataRestoreJournalHeader,
     budget: &mut ReadBudget,
     project_remaining: u64,
 ) -> Result<bool, ApiError> {
+    let exchange = header.registration_plan.exchange_metadata(
+        workspace,
+        &header.project_id,
+        root,
+        &header.operation_identity,
+    )?;
+    let mut exchange_bytes = 0u64;
+    for (_, bytes) in &exchange {
+        budget.entry()?;
+        exchange_bytes = exchange_bytes.checked_add(*bytes).ok_or_else(limit)?;
+    }
+    if exchange_bytes > project_remaining {
+        return Err(limit());
+    }
+    budget.bytes(exchange_bytes)?;
+    let project_remaining = project_remaining - exchange_bytes;
     let Some(proof) = &header.transaction_plan else {
         return Ok(false);
     };
@@ -796,6 +776,67 @@ fn inspect_transaction_material(
         proof.verify(&root.join("plan.json"), MAX_JOURNAL)?;
     }
     Ok(released)
+}
+
+/// Reserve only additional native exchange metadata in an already admitted
+/// operation. This is no write permit: the registration caller retains its
+/// original recovery permit, freeze and exclusive project gate throughout.
+#[cfg(windows)]
+pub(crate) fn reserve_registration_exchange(
+    workspace: &Path,
+    project_id: &str,
+    operation: &Path,
+    bytes: u64,
+    entries: usize,
+) -> Result<DataRestorePublicationPermit, ApiError> {
+    if !valid_id(project_id) || bytes > MAX_PROJECT_BYTES || entries > MAX_TASKS {
+        return Err(capacity());
+    }
+    let task = operation
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(invalid)?;
+    if !valid_task(task) || operation != workspace.join(ROOT).join(project_id).join(task) {
+        return Err(invalid());
+    }
+    let publication_lock = PUBLICATION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut project_budget = ReadBudget {
+        remaining_bytes: MAX_PROJECT_BYTES - bytes,
+        remaining_entries: MAX_TASKS - entries,
+    };
+    let selected = inspect_with_budget(workspace, project_id, &mut project_budget);
+    if let Some(issue) = selected.issues.first() {
+        return Err(issue.clone());
+    }
+    if selected.pending.len() != 1 || selected.pending[0].task_id != task {
+        return Err(changed());
+    }
+    let mut workspace_budget = ReadBudget {
+        remaining_bytes: MAX_WORKSPACE_BYTES
+            .checked_sub(bytes)
+            .ok_or_else(capacity)?,
+        remaining_entries: MAX_WORKSPACE_ENTRIES
+            .checked_sub(entries)
+            .ok_or_else(capacity)?,
+    };
+    let root = workspace.join(ROOT);
+    for project in fs::read_dir(&root).map_err(|_| invalid())? {
+        workspace_budget.entry()?;
+        let project = project.map_err(|_| invalid())?;
+        let id = project.file_name().into_string().map_err(|_| invalid())?;
+        if !valid_id(&id) || !directory_present(&project.path())? {
+            return Err(invalid());
+        }
+        let state = inspect_with_budget(workspace, &id, &mut workspace_budget);
+        if let Some(issue) = state.issues.first() {
+            return Err(issue.clone());
+        }
+    }
+    Ok(DataRestorePublicationPermit {
+        _publication_lock: publication_lock,
+    })
 }
 
 fn journal_header(

@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{watch, OwnedRwLockWriteGuard};
 use unicode_normalization::UnicodeNormalization;
 
+#[path = "data_restore_registration_io.rs"]
+mod file_io;
+
 const MAX_RECORD: u64 = 8 * 1024 * 1024;
 const MAX_DATABASE: u64 = 256_000_000;
 const APPLY_SLOT: &str = "registration-apply.json";
@@ -63,15 +66,7 @@ pub(crate) fn validate_data_restore_layout(manifest: &ProjectManifest) -> Result
     Ok(())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct FileProof {
-    #[serde(deserialize_with = "strict_identity::deserialize")]
-    pub(crate) identity: FileIdentity,
-    pub(crate) sha256: String,
-    pub(crate) bytes: u64,
-    pub(crate) mode: u32,
-}
+pub(crate) use crate::data_restore_proof_io::FileProof;
 
 /// New restore evidence accepts only the exact stable identity object. The
 /// global identity reader intentionally still supports older project records.
@@ -110,12 +105,6 @@ pub(crate) mod strict_identity {
     }
 }
 impl FileProof {
-    pub(crate) fn matches(&self, observed: &Self) -> bool {
-        self.identity.matches_captured(&observed.identity)
-            && self.sha256 == observed.sha256
-            && self.bytes == observed.bytes
-            && self.mode == observed.mode
-    }
     pub(crate) fn verify(&self, path: &Path, maximum: u64) -> Result<(), ApiError> {
         if self.matches(&read_proof(path, maximum, false)?.0) {
             Ok(())
@@ -179,6 +168,30 @@ pub(crate) struct DataRestoreEpochCommit {
 }
 
 impl DataRestoreRegistrationPlan {
+    /// Windows-only exchange material is counted and recognized by exact plan
+    /// binding. Unix has no extra namespace between its atomic swap states.
+    pub(crate) fn exchange_metadata(
+        &self,
+        workspace: &Path,
+        id: &str,
+        operation: &Path,
+        operation_identity: &FileIdentity,
+    ) -> Result<Vec<(String, u64)>, ApiError> {
+        Ok(file_io::exchange_metadata(self, workspace, id, operation, operation_identity)?.entries)
+    }
+    #[cfg(windows)]
+    pub(crate) fn visible_state_at(
+        &self,
+        workspace: &Path,
+        id: &str,
+        operation: &Path,
+    ) -> Result<DataRestoreEpochState, ApiError> {
+        self.verify_root(workspace, id)?;
+        if let Some(state) = file_io::pending_state(self, workspace, id, operation)? {
+            return Ok(state);
+        }
+        self.visible_state(workspace, id)
+    }
     pub(crate) fn epoch(&self, direction: DataRestoreDirection) -> Result<String, ApiError> {
         Ok(if direction == DataRestoreDirection::Continue {
             self.apply.registration()?
@@ -288,6 +301,10 @@ impl DataRestoreRegistrationPlan {
         operation: &Path,
     ) -> Result<DataRestoreEpochState, ApiError> {
         self.verify_root(workspace, id)?;
+        #[cfg(windows)]
+        if let Some(state) = file_io::pending_state(self, workspace, id, operation)? {
+            return Ok(state);
+        }
         let live = read_proof(&registration_path(workspace, id), MAX_RECORD, false)?.0;
         let apply = read_proof(&operation.join(APPLY_SLOT), MAX_RECORD, false)?.0;
         let undo = read_proof(&operation.join(UNDO_SLOT), MAX_RECORD, false)?.0;
@@ -317,6 +334,8 @@ pub(crate) struct DataRestoreRecoveryAccess {
     id: String,
     root: PathBuf,
     operation: PathBuf,
+    #[cfg(windows)]
+    operation_identity: FileIdentity,
     plan: DataRestoreRegistrationPlan,
     permit: DataRestoreRecoveryPermit,
     gate: Arc<RwLock<()>>,
@@ -338,6 +357,11 @@ impl DataRestoreRecoveryAccess {
             return Err(invalid());
         }
         self.verify()?;
+        #[cfg(windows)]
+        {
+            file_io::stabilize(&self)?;
+            self.verify()?;
+        }
         Ok(DataRestoreExclusiveAccess {
             access: self,
             _gate: gate,
@@ -376,6 +400,11 @@ impl DataRestoreRecoveryAccess {
             gate = self.gate.clone().write_owned() => gate,
         };
         self.verify()?;
+        #[cfg(windows)]
+        {
+            file_io::stabilize(&self)?;
+            self.verify()?;
+        }
         Ok(DataRestoreExclusiveAccess {
             access: self,
             _gate: gate,
@@ -441,7 +470,7 @@ impl ProjectStore {
         )?
         .0;
         let target_database = read_proof(candidate_database, MAX_DATABASE, false)?.0;
-        if source_database.identity.volume_uuid != target_database.identity.volume_uuid {
+        if !file_io::same_volume(&source_database.identity, &target_database.identity) {
             return Err(invalid());
         }
         let mut next = source.clone();
@@ -464,7 +493,7 @@ impl ProjectStore {
         plan.validate_shape(id)?;
         plan.before.proof.verify(&record, MAX_RECORD)?;
         project.check()?;
-        File::open(staging)?.sync_all()?;
+        file_io::sync_directory(staging)?;
         Ok(plan)
     }
     fn verify_data_restore_lease(
@@ -505,15 +534,24 @@ impl ProjectStore {
         header
             .registration_plan
             .epoch_state(&self.workspace, id, &operation)?;
+        let control = file_io::recovery_control(
+            self,
+            id,
+            &operation,
+            &header.operation_identity,
+            &header.registration_plan,
+        )?;
         Ok(DataRestoreRecoveryAccess {
             workspace: self.workspace.clone(),
             id: id.into(),
             root,
             operation,
+            #[cfg(windows)]
+            operation_identity: header.operation_identity,
             plan: header.registration_plan,
             permit,
             gate: self.gate(id),
-            control: self.control(id)?,
+            control,
             _lease: lease,
         })
     }
@@ -548,6 +586,11 @@ impl DataRestoreExclusiveAccess {
         after_swap: impl FnOnce() -> Result<(), ApiError>,
     ) -> Result<DataRestoreEpochCommit, ApiError> {
         self.access.verify()?;
+        #[cfg(windows)]
+        {
+            file_io::stabilize(&self.access)?;
+            self.access.verify()?;
+        }
         let plan = &self.access.plan;
         let wanted = if direction == DataRestoreDirection::Continue {
             DataRestoreEpochState::Applied
@@ -573,6 +616,7 @@ impl DataRestoreExclusiveAccess {
                 return Err(changed());
             }
             let record = registration_path(&self.access.workspace, &self.access.id);
+            #[cfg(not(windows))]
             let slot = self
                 .access
                 .operation
@@ -583,7 +627,10 @@ impl DataRestoreExclusiveAccess {
                 });
             if !already_committed {
                 before_swap()?;
+                #[cfg(not(windows))]
                 swap_preserving(&record, &slot)?;
+                #[cfg(windows)]
+                file_io::exchange(&self.access, direction)?;
                 after_swap()?;
             }
             if plan.epoch_state(
@@ -594,8 +641,8 @@ impl DataRestoreExclusiveAccess {
             {
                 return Err(changed());
             }
-            File::open(record.parent().unwrap())?.sync_all()?;
-            File::open(&self.access.operation)?.sync_all()?;
+            file_io::sync_directory(record.parent().unwrap())?;
+            file_io::sync_directory(&self.access.operation)?;
             let registration = if wanted == DataRestoreEpochState::Applied {
                 plan.apply.registration()?
             } else {
@@ -667,7 +714,7 @@ fn read_registration(bytes: &[u8]) -> Result<Registration, ApiError> {
             .ok_or_else(invalid)?;
         if identity
             .keys()
-            .any(|key| !["device", "inode", "volumeUuid"].contains(&key.as_str()))
+            .any(|key| !file_io::identity_key_allowed(key))
         {
             return Err(invalid());
         }
@@ -713,7 +760,7 @@ fn swap_preserving(from: &Path, to: &Path) -> Result<(), ApiError> {
     }
     Ok(())
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn swap_preserving(_from: &Path, _to: &Path) -> Result<(), ApiError> {
     Err(ApiError::new(
         "UNSUPPORTED_PLATFORM",

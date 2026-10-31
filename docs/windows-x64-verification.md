@@ -1042,3 +1042,11 @@ ProjectGitManager 在 Windows 接真实 manager、只读 status/versions 和私�
 默认 Git 分组 **29 通过、2 官方入口忽略**，1.27 秒；首次真实官方进程 0/2 暴露缺失 OwnedCommand::cleared 声明，补原 Command 的环境来源标记后，官方 MinGit 2.56.0.windows.4 **2/2**，32.29 秒。实际验证 status/versions、100755 不产生虚假 dirty、dirty 源码允许构建、config 改动 recheck 拒绝、busy/unmerged 拒绝，原 index/config/HEAD 完整身份及字节不变，真实 registry driver 已 join。新只读数据专项 7 项也在默认分组和完整回归通过。
 
 完整 core 回归和 Clippy 结果见 W5.8。此小步仍关闭 source/data restore 写 API，不复活 Mac 已退休的 init/save/create-branch/data-save 功能；源码恢复和数据恢复整链必须继续实现后才能声称完整功能一致。
+
+### W5.10 — 数据恢复证明与真实登记交换
+
+FileProof 捕获、匹配与稳定观察移入平台适配，Mac 原 tuple/mode/schema/strict-identity/错误政策保持；Windows 用完整 FileId、readOnly、原生 LastWrite/ChangeTime 和原文件摘要、单链接规则，不增加 DACL 限制。独立真实证明专项 **9/9**，0.04 秒。
+
+Windows 登记交换在原 recovery permit、freeze 与独占 gate 中使用实际三次不覆盖改名、精确不可变 journal 与 FullId；可见前恢复原物，可见后仅向前，重启后不重复交换。只读状态/容量扫描不移动文件，额外元数据仅按实际精确名称和字节纳入原预算。Mac 原 swap_preserving/move_directory_exclusive 函数体机械保持，Windows 目录同步与移动进入专用 I/O 适配层，Unix 原 staging HANDLE 生命周期保持。
+
+首轮 **10/11**，真实 OldHeld 暂缺 live 登记使普通 control 检查返回 PROJECT_REMOVED；没有绕开普通项目门禁。修为仅在原 permit、根、epoch、任务身份均核验且精确 pending=OldHeld 时提供恢复 control。新增 fresh manager 用例确认普通 control/project 仍拒绝，只有原许可+lock 能复位，最终专项 **12/12**，4.40 秒；包含每个移动/退休中断、占用释放重试、外物/父替换、完整高半身份、readonly/hardlink、实际 header→permit→gate 和预算。完整 core **877/877** 及 Clippy 通过；Clippy 唯一新测试多余借用已最小修正，不改变断言。整体数据 apply 仍关闭，不能把这一登记子事务称为完整项目数据恢复。
