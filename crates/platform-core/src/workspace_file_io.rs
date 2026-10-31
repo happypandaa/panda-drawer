@@ -1,5 +1,4 @@
-//! Workspace filesystem policy at the native boundary. No Windows migration
-//! is admitted until volume checks, copies and recovery have been implemented.
+//! Workspace filesystem policy, copy inventory and native publication boundary.
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,12 +14,18 @@ pub(crate) struct Entry {
     pub(crate) bytes: u64,
     pub(crate) digest: Option<String>,
     pub(crate) target: Option<PathBuf>,
+    #[cfg(unix)]
     pub(crate) mode: u32,
+    #[cfg(windows)]
+    pub(crate) read_only: bool,
 }
 
 #[cfg(unix)]
 #[path = "workspace_file_io/unix.rs"]
 mod unix;
+#[cfg(windows)]
+#[path = "workspace_file_io/windows.rs"]
+mod windows;
 
 pub(crate) fn filesystem(path: &Path) -> Result<Value> {
     #[cfg(unix)]
@@ -49,8 +54,7 @@ pub(crate) fn require_unsynced(path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = path;
-        Err(unavailable().into())
+        platform_native::windows::workspace::require_unsynced(path).map_err(Into::into)
     }
 }
 pub(crate) fn require_supported_filesystem(info: &Value) -> Result<()> {
@@ -60,8 +64,7 @@ pub(crate) fn require_supported_filesystem(info: &Value) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = info;
-        Err(unavailable().into())
+        windows::require_supported_filesystem(info)
     }
 }
 pub(crate) fn collect(root: &Path, excluded: &BTreeSet<PathBuf>) -> Result<Vec<Entry>> {
@@ -71,8 +74,7 @@ pub(crate) fn collect(root: &Path, excluded: &BTreeSet<PathBuf>) -> Result<Vec<E
     }
     #[cfg(windows)]
     {
-        let _ = (root, excluded);
-        Err(unavailable().into())
+        windows::collect(root, excluded)
     }
 }
 pub(crate) fn copy_entries(source: &Path, target: &Path, entries: &[Entry]) -> Result<()> {
@@ -82,8 +84,7 @@ pub(crate) fn copy_entries(source: &Path, target: &Path, entries: &[Entry]) -> R
     }
     #[cfg(windows)]
     {
-        let _ = (source, target, entries);
-        Err(unavailable().into())
+        windows::copy_entries(source, target, entries)
     }
 }
 pub(crate) fn append_phase_log(path: &Path, phase: &str) -> Result<(), crate::ApiError> {
@@ -93,70 +94,9 @@ pub(crate) fn append_phase_log(path: &Path, phase: &str) -> Result<(), crate::Ap
     }
     #[cfg(windows)]
     {
-        let _ = (path, phase);
-        Err(unavailable())
+        windows::append_phase_log(path, phase)
     }
 }
-#[cfg(windows)]
-fn unavailable() -> crate::ApiError {
-    crate::ApiError::new(
-        "PLATFORM_FEATURE_UNAVAILABLE",
-        "Windows 暂不支持此功能：工作区原生卷核对、迁移复制与恢复尚未完成。",
-    )
-    .detail("platform", "windows")
-    .detail("capability", "workspace-native-migration")
-    .outcome("not_started")
-}
-
 #[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    fn unfinished_workspace_io_does_not_copy_create_or_append_to_disposable_material() {
-        let temporary = tempfile::Builder::new()
-            .prefix("panda-disposable-closed-workspace-中文 space-")
-            .tempdir()
-            .unwrap();
-        let root = temporary.path().canonicalize().unwrap();
-        let source = root.join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("retained.txt"), b"retained disposable source").unwrap();
-        let before = crate::file_identity::PersistedIdentity::capture(&source).unwrap();
-        let target = root.join("candidate");
-        let observed = filesystem(&source).unwrap();
-        assert!(observed["type"]
-            .as_str()
-            .is_some_and(|name| !name.is_empty()));
-        assert!(observed["availableBytes"].as_u64().is_some());
-        assert!(observed["totalBytes"]
-            .as_u64()
-            .is_some_and(|bytes| bytes > 0));
-        assert!(observed["internal"].is_boolean() || observed["internal"].is_null());
-        assert!(observed["internalDiskNumbers"].is_array());
-        for error in [
-            require_unsynced(&source).unwrap_err(),
-            require_supported_filesystem(&Value::Null).unwrap_err(),
-            collect(&source, &BTreeSet::new()).unwrap_err(),
-            copy_entries(&source, &target, &[]).unwrap_err(),
-        ] {
-            let error = error.downcast_ref::<crate::ApiError>().unwrap();
-            assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-            assert_eq!(error.details["operationOutcome"], "not_started");
-        }
-        assert!(!target.exists());
-        assert!(before.matches_path(&source).unwrap());
-        assert_eq!(
-            fs::read(source.join("retained.txt")).unwrap(),
-            b"retained disposable source"
-        );
-        let log = root.join("log.txt");
-        fs::write(&log, b"retained disposable phase log").unwrap();
-        assert!(append_phase_log(&log, "must not append").is_err());
-        assert_eq!(fs::read(&log).unwrap(), b"retained disposable phase log");
-        let missing = root.join("missing-log.txt");
-        assert!(append_phase_log(&missing, "must not create").is_err());
-        assert!(!missing.exists());
-    }
-}
+#[path = "workspace_file_io/windows_tests.rs"]
+mod tests;

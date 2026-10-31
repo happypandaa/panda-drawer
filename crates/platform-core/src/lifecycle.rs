@@ -151,11 +151,10 @@ fn root_directory_name(root: &Path) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::new("INVALID_PROJECT_PATH", "Project directory name is invalid"))
 }
 fn sync_parent(path: &Path) -> Result<(), ApiError> {
-    File::open(
+    platform_native::filesystem::sync_directory(
         path.parent()
             .ok_or_else(|| ApiError::new("UNSAFE_PATH", "Path has no parent"))?,
-    )?
-    .sync_all()?;
+    )?;
     Ok(())
 }
 fn move_directory(from: &Path, to: &Path) -> Result<(), ApiError> {
@@ -1355,7 +1354,7 @@ impl LifecycleManager {
                 "Project files remain; deletion is incomplete.",
             ));
         }
-        File::open(root.parent().unwrap())?.sync_all()?;
+        platform_native::filesystem::sync_directory(root.parent().unwrap())?;
         operation.committed = true;
         operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false});
         self.remember(operation)?;

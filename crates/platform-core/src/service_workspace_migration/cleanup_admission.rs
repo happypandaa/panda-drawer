@@ -3,21 +3,9 @@
 use crate::ApiError;
 
 pub(super) fn require_cleanup() -> Result<(), ApiError> {
-    #[cfg(windows)]
-    {
-        Err(ApiError::new(
-            "PLATFORM_FEATURE_UNAVAILABLE",
-            "Windows 工作区迁移原目录的自动收尾与重试尚未完成，现有材料已保留。",
-        )
-        .detail("platform", "windows")
-        .detail("capability", "workspace-migration-cleanup")
-        .detail("accepted", false)
-        .outcome("not_started"))
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(())
-    }
+    // Both native engines verify the saved copy and reopened-runtime receipt
+    // before any removal. Dispatch itself grants no path or deletion authority.
+    Ok(())
 }
 
 pub(super) fn with_selected<T>(
@@ -41,12 +29,8 @@ mod windows_tests {
     use std::{cell::Cell, fs};
 
     #[test]
-    fn retry_is_rejected_before_accepting_or_scheduling_a_cleanup_task() {
-        let error = require_cleanup().unwrap_err();
-        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-        assert_eq!(error.details["capability"], "workspace-migration-cleanup");
-        assert_eq!(error.details["accepted"], false);
-        assert_eq!(error.details["operationOutcome"], "not_started");
+    fn native_cleanup_dispatch_is_admitted_without_claiming_an_owned_path() {
+        require_cleanup().unwrap();
     }
 
     #[test]
@@ -58,7 +42,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn a_real_pending_journal_never_reaches_submission_or_reopen_failure_recording() {
+    fn a_real_pending_journal_dispatches_once_and_preserves_submission_failures() {
         let temporary = tempfile::Builder::new()
             .prefix("panda-disposable-migration-cleanup-admission-中文 space-")
             .tempdir()
@@ -106,14 +90,11 @@ mod windows_tests {
             // This is the actual dispatch boundary used by the automatic path,
             // not a fabricated runtime/store. Reaching its callback would also
             // reach the caller's old failure-recording branch.
-            fs::write(&journal_path, b"must not record a reopen failure").unwrap();
-            fs::write(&task_path, b"must not accept a cleanup task").unwrap();
             Err(ApiError::new("DISPOSABLE_SUBMISSION_FAILURE", "fixture"))
         })
         .unwrap_err();
-        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-        assert_eq!(error.details["operationOutcome"], "not_started");
-        assert!(!entered.get());
+        assert_eq!(error.code, "DISPOSABLE_SUBMISSION_FAILURE");
+        assert!(entered.get());
         assert_eq!(fs::read(&journal_path).unwrap(), before);
         assert_eq!(
             fs::read(&task_path).unwrap(),

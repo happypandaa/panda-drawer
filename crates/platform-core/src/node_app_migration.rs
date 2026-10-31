@@ -3,6 +3,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[path = "node_app_migration/path_io.rs"]
+mod path_io;
+
 /// Retain this receipt until the new runtime has reopened or the migration has
 /// aborted. Dropping it only releases admission; it never restarts applications
 /// or performs filesystem work, and cannot undo permanent shutdown flags.
@@ -115,11 +118,7 @@ impl NodeApps {
     /// exempt only exact live runs retained by this manager in the current root.
     /// Unknown old markers and independent durable writers still fail closed.
     pub async fn verify_previous_workspace_drained(&self, source: &Path) -> Result<()> {
-        if !source.is_absolute()
-            || source
-                .components()
-                .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
-        {
+        if path_io::invalid_absolute(source) {
             return Err(fail("旧工作区路径无效，未取得停止收据。"));
         }
         let gate = self.operations.pause_for_migration()?;
