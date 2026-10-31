@@ -647,31 +647,6 @@ fn input_text_allowed(value: &str, windows: bool) -> bool {
     (windows || !value.contains('\\')) && !value.chars().any(char::is_control)
 }
 
-#[cfg(test)]
-mod portable_path_tests {
-    use super::*;
-
-    #[test]
-    fn native_windows_separators_are_not_confused_with_cargo_control_characters() {
-        let path = r"C:\Users\example\development project";
-        assert!(input_text_allowed(path, true));
-        assert!(!input_text_allowed(path, false));
-        for text in [
-            "C:\\repo\nCargo:override",
-            "C:\\repo\rnext",
-            "C:\\repo\0next",
-        ] {
-            assert!(!input_text_allowed(text, true));
-        }
-    }
-
-    #[test]
-    fn actual_native_manifest_directory_passes_portable_checks() {
-        assert!(validate_input_path(Path::new(env!("CARGO_MANIFEST_DIR"))).is_ok());
-        assert!(validate_input_path(Path::new("relative/path")).is_err());
-    }
-}
-
 #[cfg(unix)]
 #[path = "signed_resources_unix.rs"]
 mod unix_io;
@@ -720,4 +695,29 @@ pub fn runtime_node_digest(manifest: &Manifest) -> Result<&str, String> {
             _ => None,
         })
         .ok_or_else(|| "Runtime Node digest missing".into())
+}
+
+#[cfg(test)]
+mod portable_path_tests {
+    use super::*;
+
+    #[test]
+    fn native_windows_separators_are_not_confused_with_cargo_control_characters() {
+        let path = r"C:\Users\example\development project";
+        assert!(input_text_allowed(path, true));
+        assert!(!input_text_allowed(path, false));
+        for text in [
+            "C:\\repo\nCargo:override",
+            "C:\\repo\rnext",
+            "C:\\repo\0next",
+        ] {
+            assert!(!input_text_allowed(text, true));
+        }
+    }
+
+    #[test]
+    fn actual_native_manifest_directory_passes_portable_checks() {
+        assert!(validate_input_path(Path::new(env!("CARGO_MANIFEST_DIR"))).is_ok());
+        assert!(validate_input_path(Path::new("relative/path")).is_err());
+    }
 }

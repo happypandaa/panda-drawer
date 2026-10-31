@@ -55,10 +55,10 @@ mod windows_tests {
             serde_json::to_value(require_start(&sources).unwrap_err()).unwrap(),
             expected
         );
-        assert_eq!(
-            serde_json::to_value(sources.unwrap_err()).unwrap(),
-            expected
-        );
+        let Err(retained) = sources else {
+            panic!("The original source failure must remain retained");
+        };
+        assert_eq!(serde_json::to_value(retained).unwrap(), expected);
     }
 
     #[test]
