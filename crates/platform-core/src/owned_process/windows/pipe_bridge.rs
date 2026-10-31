@@ -157,8 +157,24 @@ fn pump_input(runtime: &Handle, mut producer: DuplexStream, mut file: File) -> i
         if count == 0 {
             return Ok(()); // Dropping the actual File sends real stdin EOF.
         }
-        file.write_all(&bytes[..count])?;
+        match file.write_all(&bytes[..count]) {
+            Ok(()) => (),
+            // The peer may exit or close stdin while bytes are queued. This
+            // closes only this actual pipe worker; process/Job/other readers
+            // still require their separate observations and real joins.
+            Err(error) if input_disconnected(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        }
     }
+}
+
+fn input_disconnected(error: &io::Error) -> bool {
+    // WriteFile documents ERROR_BROKEN_PIPE for a closed anonymous-pipe read
+    // handle. WinError also defines 232 as a closing pipe and 233 as no peer:
+    // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-writefile
+    // https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-
+    error.kind() == io::ErrorKind::BrokenPipe
+        || matches!(error.raw_os_error(), Some(109 | 232 | 233))
 }
 
 fn pump_output(runtime: &Handle, mut file: File, mut consumer: DuplexStream) -> io::Result<()> {
@@ -175,6 +191,31 @@ fn pump_output(runtime: &Handle, mut file: File, mut consumer: DuplexStream) -> 
                 .is_err()
         {
             consuming = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_stdin_peer_disconnect_is_an_expected_write_termination() {
+        for code in [109, 232, 233] {
+            assert!(input_disconnected(&io::Error::from_raw_os_error(code)));
+        }
+        assert!(input_disconnected(&io::Error::from(
+            io::ErrorKind::BrokenPipe
+        )));
+        for code in [5, 6, 13, 29, 87, 995] {
+            assert!(!input_disconnected(&io::Error::from_raw_os_error(code)));
+        }
+        for kind in [
+            io::ErrorKind::WriteZero,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::Other,
+        ] {
+            assert!(!input_disconnected(&io::Error::from(kind)));
         }
     }
 }

@@ -1,5 +1,4 @@
-//! Admission for unfinished native import work. Existing request/status records
-//! remain readable; these checks never recover, accept or mutate material.
+//! Platform admission and publication reconciliation for the shared import.
 use crate::ApiError;
 
 pub(super) fn require_start<T>(sources: &Result<T, ApiError>) -> Result<(), ApiError> {
@@ -17,21 +16,61 @@ pub(super) fn require_start<T>(sources: &Result<T, ApiError>) -> Result<(), ApiE
 }
 
 pub(super) fn require_recovery() -> Result<(), ApiError> {
+    Ok(())
+}
+
+pub(super) fn reconcile_source_publication(
+    manager: &super::NodeGitImportManager,
+    journal: &mut super::Journal,
+) -> Result<(), ApiError> {
     #[cfg(windows)]
+    if !journal.registration_attempted
+        && journal.phase == "publishing"
+        && journal.source_path.is_none()
     {
-        Err(ApiError::new(
-            "PLATFORM_FEATURE_UNAVAILABLE",
-            "Windows 暂不支持此功能：Git 添加的中断恢复与清理尚未完成，现有记录和材料已保留。",
-        )
-        .detail("platform", "windows")
-        .detail("capability", "node-git-import-recovery")
-        .detail("accepted", false)
-        .outcome("not_started"))
+        let result = manager
+            .sources
+            .as_ref()
+            .map_err(Clone::clone)?
+            .reconcile_author_publication(&journal.source_id, &journal.app_id, &journal.task_id);
+        match result {
+            Ok(Some(root)) => {
+                journal.source_identity = Some(super::capture(&root)?);
+                journal.source_path = Some(root);
+                manager.save(journal)?;
+            }
+            Ok(None) => (),
+            Err(issue) => {
+                journal.commit_state = super::CommitState::Unknown;
+                if let Some(paths) = issue
+                    .details
+                    .get("remainingPaths")
+                    .and_then(|v| v.as_array())
+                {
+                    journal
+                        .remaining_paths
+                        .extend(paths.iter().filter_map(|value| {
+                            serde_json::from_value::<std::path::PathBuf>(value.clone()).ok()
+                        }));
+                }
+                return Err(issue.detail("sourcePublicationPending", true));
+            }
+        }
     }
     #[cfg(not(windows))]
-    {
-        Ok(())
+    let _ = (manager, journal);
+    Ok(())
+}
+
+pub(super) fn retain_pending_paths(journal: &super::Journal, paths: &mut Vec<std::path::PathBuf>) {
+    #[cfg(windows)]
+    if journal.commit_state == super::CommitState::Unknown && journal.phase == "publishing" {
+        // These are display/retry diagnostics only. Deletion always derives
+        // its authority independently from the original ownership identities.
+        paths.extend(journal.remaining_paths.iter().cloned());
     }
+    #[cfg(not(windows))]
+    let _ = (journal, paths);
 }
 
 #[cfg(all(test, windows))]
@@ -62,15 +101,8 @@ mod windows_tests {
     }
 
     #[test]
-    fn recovery_is_explicitly_unavailable_without_claiming_an_empty_recovered_list() {
-        let issue = require_recovery().unwrap_err();
-        assert_eq!(issue.code, "PLATFORM_FEATURE_UNAVAILABLE");
-        assert_eq!(issue.details["platform"], "windows");
-        assert_eq!(issue.details["capability"], "node-git-import-recovery");
-        assert_eq!(issue.details["operationOutcome"], "not_started");
-        assert_eq!(issue.details["accepted"], false);
-        assert!(issue.message.contains("现有记录和材料已保留"));
-        assert!(issue.details.get("recovered").is_none());
+    fn recovery_admission_defers_actual_record_and_resource_checks_to_the_manager() {
+        require_recovery().unwrap();
     }
 }
 
