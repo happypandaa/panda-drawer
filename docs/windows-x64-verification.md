@@ -680,3 +680,13 @@ Windows 管理器现在从真实 [Environment7.UserDataFolder](https://learn.mic
 最终默认管理器专项 **8 通过、2 个新增原生夹具 opt-in**；两个 opt-in 分别是需要交互桌面和空闲 1420 端口的真实引擎 parent，以及其 exact child。未删除或跳过任何原 Mac/业务测试，不将交互桌面结果当作服务 Session 0 证明。显式执行真实 parent，分别在两个新 disposable root 启动子进程：正常实际目录为 webview-manager、页面确实 loaded；WEBVIEW2_USER_DATA_FOLDER 指向另一个新 disposable 目录时返回 MANAGER_PROFILE_ACTUAL_MISMATCH、页面没有 loaded。两者核验前实际请求均为 0，均收到匹配浏览器 PID 的 [BrowserProcessExited](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2environment5) NORMAL 回执后退出。
 
 所有这几轮临时引擎目录、覆盖目录及 sentinel 均保留为未提交本地证据。WebView2 在实际目录读回前可能已经写入引擎元数据，因此只证明管理页面未提前加载，不声称覆盖目录零写入。没有读取真实项目、使用 RuntimePaths 或新增产品根目录覆盖。桌面编译和 --no-deps Clippy（-Dclippy::all）通过，既有 dead-code 等 Rust 警告保留，不能称全工作区 -Dwarnings 绿色。下一步正常 npm run dev 检查仍在执行；Mac 真实 CI 和 W1 正式完成仍待核实。
+
+### W1.28 — 正常 npm run dev 再次启动与关闭
+
+在同一 Windows 11 25H2 真机字面执行 `npm run dev`，正常全新准备资源和 CLI，随后 Tauri dev 编译 **1 分 48 秒**并打开固定身份管理器。没有诊断 TAURI_CONFIG、任意数据根覆盖或复用旧生成 target。真实服务 ready，更新后的管理器确实加载；该生产路径只有通过实际 UDF 核验才可导航。使用 computer-use 再次逐个查看全部六个设置分区：通用已为 Windows 关闭退出说明；存储显示 NTFS 与资源管理器文案，展开迁移看到本机内置 NTFS 要求和 D: 路径示例；运行环境实际看到 Node 与 Git 的 C:\Program Files 示例；AI、关于、卸载前清除均显示，没有点击清除或提交任何配置。
+
+Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位置读取正常；存储扫描仍明确未实现。关于中的安装体积和构建标识尚未取得，开发版自动更新禁用。这些依赖分别留待 W2/W3、W5、W6，不能据页面可见称功能已完成。主界面仍为 0 应用，未创建/删除真实项目。
+
+再次点击底部“在资源管理器中打开”，真实 Explorer 地址为 `此电脑 > 系统(C:) > 用户 > g > PandaDrawer-Dev`，包含本次原有 projects 和 .platform；只关闭这次新标签，用户原有 release 窗口保留。此次通过 Windows 标题栏关闭按钮退出，真实 ReadyForNativeExit、外层 npm 命令 exit=0，后续窗口清单确认管理器和本次 Explorer 均消失。真实固定开发数据全部保留。
+
+退出日志仍有 WebView2 Chrome_WidgetWin_0 注销 Error 1412；Tauri 结束 beforeDevCommand 时 Vite 的 npm 子进程另报 4294967295。外层正常结束不等于这些原生/工具日志已修复，也不是浏览器进程族或安装包清理验收。W1 本机正常启动/页面检查现已有实际证据；W0/W1 的双端 CI 仍无绿色结果，分支没有合并。按无人值守规则继续在此基础上开 W2 栈分支，保留后续修复和最终验收。
