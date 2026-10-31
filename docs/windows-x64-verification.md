@@ -2,6 +2,8 @@
 
 执行标准：[windows-x64-port.md](windows-x64-port.md)。开始日期：2026-10-31（Asia/Shanghai）。未完成、排队和未执行均不算通过。
 
+当前执行补充（用户 2026-10-31）：**CI 和运行器注册延后处理，先完成其余 Windows 功能、安装包与真机验收。** 不等待/重试注册，不把未跑检查记为绿色；短分支继续叠放，CI 补齐后再按序合入 main。用户执行的服务安装脚本已实际校验官方 runner，但 GitHub 认证返回 NotFound、status.success=false，本机未发现注册文件或 actions.runner 服务；不记为安装成功。令牌及原始注册诊断不提交。
+
 ## 起点与环境
 
 - 原始 main：`ac3b5d72ab79e132fcedd149c73e1201a2896576`，开始前已 fetch 并快进同步。旧 Windows 分支不合并、不沿用旧受限架构。
@@ -772,3 +774,13 @@ Windows writer 在既有私有 Node/Web owner（或显式平台 owner）内独�
 最终 native helper **2/2**；桌面默认 owner 专项 **4 通过、2 个新增交互 opt-in**。显式真实 parent **1/1**（Windows 11 25H2，4.28 秒），分别在两个新 disposable root 使用普通 DOS 和 verbatim 输入：每轮同一 origin 的 A/B localStorage、IndexedDB、Cookie 不互见，A 关闭/真实退出后重开仍保留 A1，仍开着的 B 可继续写 B2，A2 更新不影响 B；各三代真实 Env5 NORMAL、lease 全部退役，核验前请求数均 [0,0,0]。每轮 A/B 各有实际 20480-byte Cookies DB，只读确认后保留全部现场。没有通过 sleep、清 Cookie 或减弱断言放行。
 
 native 全目标严格 Clippy -Dwarnings 及桌面 --tests --no-deps -Dclippy::all 通过；桌面既有 dead_code Rust 警告保留。这里是复用生产适配的真实 Tauri/WebView2 夹具，不是完整管理器新建/三次构建 GUI 或安装包验收；没有磁盘 purge/物理媒体/长 UDF 路径证明，不宣称 W2 或完整删除完成。失败与成功临时证据均未提交，真实开发数据未读取/删除。
+
+### W2.11 — 已归属目录的实际 inventory、有限重试与缺失回执
+
+普通 remove_owned_directory 接入 Windows 原生删除，原记录完整身份先绑定 root/祖先，沿用 Mac 普通删除的身份、类型、大小、权限和重解析 leaf 规则及 256 深度/500000 条目预算。逐层保持已登记父目录身份，每次移除前重查；未计划内容与同名替换保留。父 scope 从原生请求前一直持有到实际名字缺失回执，包括最后 root 移除，不能在另一同名父目录里证明缺失。占用错误 5/32/33 总约 2.3 秒有限重试，失败报告剩余路径和部分计数，可释放真实占用后重试；请求成功后只观察，不再删除同名替代对象。
+
+独立复审发现 W2.6 临时清只读位存在硬链接竞态及提交后恢复失败被当作占用重试的风险。本步取代该策略，使用 [Windows SDK 的 IGNORE_READONLY_ATTRIBUTE](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/WinBase.h) 直接对原 DELETE HANDLE 请求移除，不设置 POSIX/ON_CLOSE，不读改共享对象只读位，也不申请 FILE_WRITE_ATTRIBUTES。避免 [属性变化传播到其它硬链接](https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions)；不支持该系统请求时明确失败保留，不回退到修改外部原件属性。SDK 版本范围不能代替目标 Windows 10 实机验收。
+
+实际 native 移除专项现 **6/6**，含真实只读/非空目录失败、持续共享 HANDLE 的原生拒绝、原/替代对象、晚于初始 links=1 观察新建的硬链接、真实 junction 本体移除。删除句柄/所选名字/外部句柄观察证实原只读位未变化、完整身份及外部内容保持。本轮完整 native **71/0/2**（通过/失败/明确忽略）与严格 Clippy 通过，数量已含这些专项。
+
+实际完整 core history_cleanup::windows 组 **9/9**（其中新增目录移除 6 项），包括中文空格超 260 文件树、真实只读硬链接外部原件、junction 目标、替换 root/leaf、新增未计划文件、占用后部分失败及释放后重试清完；2 个既有 coordinator 及 1 个未实现内容快照门禁仍通过。后者在任何 verify 回调/删除前拒绝，未伪造迁移快照。原 Mac 文件零改并独立只读复审；完整项目删除任务、重启续删、历史计划/迁移仍待 W5，不据此称完整删除完成。

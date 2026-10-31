@@ -1,5 +1,5 @@
-//! Instance coordination is real; native snapshot/removal, occupancy retry and
-//! read-only handling remain closed. No cleanup plan or deletion is fabricated.
+//! Instance coordination and owned-directory removal are real. Cleanup plans
+//! and migration content-snapshot validation remain explicitly unavailable.
 use crate::{
     builds::BuildManager, file_identity::PersistedIdentity, ApiError, ProjectStore, RuntimePaths,
     TaskRecord,
@@ -7,6 +7,8 @@ use crate::{
 
 #[path = "windows/coordinator.rs"]
 mod coordinator;
+#[path = "windows/removal.rs"]
+mod removal;
 use coordinator::Coordinator;
 use serde_json::Value;
 use std::{
@@ -86,8 +88,11 @@ impl CleanupManager {
     }
 }
 
-pub(crate) fn remove_owned_directory(_: &Path, _: &PersistedIdentity) -> Result<Value, ApiError> {
-    Err(unavailable())
+pub(crate) fn remove_owned_directory(
+    path: &Path,
+    expected: &PersistedIdentity,
+) -> Result<Value, ApiError> {
+    removal::remove(path, expected)
 }
 pub(crate) fn remove_owned_directory_checked(
     _: &Path,
@@ -114,16 +119,12 @@ mod tests {
         std::fs::create_dir(&candidate).unwrap();
         std::fs::write(candidate.join("payload"), b"disposable retained bytes").unwrap();
         let expected = PersistedIdentity::capture(&candidate).unwrap();
-        for error in [
-            remove_owned_directory(&candidate, &expected).unwrap_err(),
-            remove_owned_directory_checked(&candidate, &expected, |_| {
-                panic!("closed cleanup cannot invoke verification")
-            })
-            .unwrap_err(),
-        ] {
-            assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-            assert_eq!(error.details["operationOutcome"], "not_started");
-        }
+        let error = remove_owned_directory_checked(&candidate, &expected, |_| {
+            panic!("closed cleanup cannot invoke verification")
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
+        assert_eq!(error.details["operationOutcome"], "not_started");
         assert!(expected.matches_path(&candidate).unwrap());
         assert_eq!(
             std::fs::read(candidate.join("payload")).unwrap(),
