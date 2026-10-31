@@ -2244,15 +2244,12 @@ fn build_manager_window(app: &tauri::AppHandle) -> Result<(), ApiError> {
         .iter()
         .find(|window| window.label == "manager")
         .ok_or_else(|| ApiError::new("MANAGER_WINDOW_CONFIG_MISSING", "管理窗口配置缺失。"))?;
-    let builder = tauri::WebviewWindowBuilder::from_config(app, config)
-        .map_err(|e| ApiError::new("MANAGER_WINDOW_OPEN_FAILED", e.to_string()))?;
-    desktop_webview_profile::manager_builder(app, builder)?
+    let builder = desktop_webview_profile::manager_from_config(app, config)?;
+    let builder = desktop_webview_profile::manager_builder(app, builder)?
         .on_navigation(|url| is_manager_url(url, cfg!(debug_assertions)))
         .on_download(|_, _| false)
-        .on_new_window(|_, _| NewWindowResponse::Deny)
-        .build()
-        .map_err(|e| ApiError::new("MANAGER_WINDOW_OPEN_FAILED", e.to_string()))?;
-    Ok(())
+        .on_new_window(|_, _| NewWindowResponse::Deny);
+    desktop_webview_profile::build_manager(app, builder)
 }
 async fn initialize_native_storage(app: tauri::AppHandle) {
     let handle = app.state::<AppState>().handle.clone();
@@ -2263,24 +2260,11 @@ async fn initialize_native_storage(app: tauri::AppHandle) {
         .run(async move {
             // Setup has returned to the native event loop. WK callbacks must never
             // be awaited by setup's main-thread block_on.
-            match desktop_webview_profile::initialize_storage(&app).await {
-                Ok(()) => {
-                    if let Err(error) = app.state::<AppState>().node_apps.resume_deletions().await {
-                        handle.fail_native_startup(error);
-                    } else {
-                        handle.complete_native_startup();
-                    }
-                }
-                Err(error) => handle.fail_native_startup(error),
-            }
-            let owner = app.clone();
-            if let Err(error) = app.run_on_main_thread(move || {
-                if let Err(error) = build_manager_window(&owner) {
-                    eprintln!("Manager window: {}", error.code);
-                }
-            }) {
-                eprintln!("Manager UI dispatch: {error}");
-            }
+            let result = match desktop_webview_profile::initialize_storage(&app).await {
+                Ok(()) => app.state::<AppState>().node_apps.resume_deletions().await,
+                Err(error) => Err(error),
+            };
+            desktop_webview_profile::finish_startup(app, result).await;
         })
         .await;
 }

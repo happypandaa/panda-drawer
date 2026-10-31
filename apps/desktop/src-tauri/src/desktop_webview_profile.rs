@@ -8,6 +8,21 @@ mod windows;
 
 type ManagerBuilder<'a> = WebviewWindowBuilder<'a, Wry, AppHandle>;
 
+pub(super) fn manager_from_config<'a>(
+    app: &'a AppHandle,
+    config: &tauri::utils::config::WindowConfig,
+) -> Result<ManagerBuilder<'a>, ApiError> {
+    #[cfg(windows)]
+    {
+        windows::manager_from_config(app, config)
+    }
+    #[cfg(not(windows))]
+    {
+        WebviewWindowBuilder::from_config(app, config)
+            .map_err(|e| ApiError::new("MANAGER_WINDOW_OPEN_FAILED", e.to_string()))
+    }
+}
+
 pub(super) fn runtime_available(app: &AppHandle) -> bool {
     #[cfg(windows)]
     {
@@ -47,6 +62,45 @@ pub(super) fn manager_builder<'a>(
     }
 }
 
+pub(super) fn build_manager(app: &AppHandle, builder: ManagerBuilder<'_>) -> Result<(), ApiError> {
+    #[cfg(windows)]
+    {
+        windows::build_manager(app, builder)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        builder
+            .build()
+            .map_err(|e| ApiError::new("MANAGER_WINDOW_OPEN_FAILED", e.to_string()))?;
+        Ok(())
+    }
+}
+
+pub(super) async fn finish_startup(app: AppHandle, result: Result<(), ApiError>) {
+    #[cfg(windows)]
+    {
+        windows::finish_startup(app, result);
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri::Manager;
+        let handle = app.state::<super::AppState>().handle.clone();
+        match result {
+            Ok(()) => handle.complete_native_startup(),
+            Err(error) => handle.fail_native_startup(error),
+        }
+        let owner = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if let Err(error) = super::build_manager_window(&owner) {
+                eprintln!("Manager window: {}", error.code);
+            }
+        }) {
+            eprintln!("Manager UI dispatch: {error}");
+        }
+    }
+}
+
 /// macOS still clears and verifies its shared default store. Windows has no
 /// such WebKit store: readiness means the explicit manager profile is bound.
 pub(super) async fn initialize_storage(app: &AppHandle) -> Result<(), ApiError> {
@@ -61,13 +115,12 @@ pub(super) async fn initialize_storage(app: &AppHandle) -> Result<(), ApiError> 
 }
 
 pub(super) fn build_failure_manager(app: &AppHandle) -> Result<(), ApiError> {
-    match super::build_manager_window(app) {
-        // No initialized data root means Windows must not construct a default
-        // profile as a fallback. The existing native startup dialog still runs.
-        #[cfg(windows)]
-        Err(error) if error.code == "MANAGER_PROFILE_NOT_INITIALIZED" => Ok(()),
-        result => result,
+    #[cfg(windows)]
+    {
+        windows::build_failure_manager(app)
     }
+    #[cfg(not(windows))]
+    super::build_manager_window(app)
 }
 
 pub(super) fn is_manager_url(url: &Url, development: bool) -> bool {

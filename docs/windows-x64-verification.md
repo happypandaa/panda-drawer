@@ -670,3 +670,13 @@ Windows 11 25H2 / build 26200.9711 上，实际执行 `node scripts/desktop.mjs 
 将平台相关展示集中到 frontend-platform 适配，以 bootstrap.platform.build.target 的真实 Rust 编译目标选择文案，不依赖 UA、路径猜测或默认 Mac。Windows 显示资源管理器、本机内置 NTFS 迁移要求、关闭主窗口退出说明，以及 Node/Git/工作区的 Windows 路径示例。Node/Git 和迁移表单接受盘符、UNC、混合分隔符与扩展路径，拒绝相对/盘符相对路径；这是词法提示，提交原始修剪后的字符串，后端保留全部权限、身份和卷核验，未开放尚未实现的迁移。
 
 Mac 原文案及 `/` 开头规则逐字保留；metadata 尚未返回或不认识时使用中性文案。统一 React provider 让异步 bootstrap 到达后设置与工作区组件同时切换，不改诊断加载、pending 或繁忙状态规则。真实 tsc + Vite 构建通过；相关测试 **58/58**、完整 UI **486/486**，均无失败或跳过，包含实际 DOM 的延迟 metadata、Windows 表单提交和原 Mac Finder/草稿/忙碌回归。这里是前端测试；更新后的真实 Windows 主界面仍待下一次正常 dev 启动观察，Mac 实际运行仍待自托管 CI。
+
+### W1.27 — 引擎实际目录核验与首文档封闭
+
+Windows 管理器现在从真实 [Environment7.UserDataFolder](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2environment7) 读回 UTF-16 路径，返回内存由 CoTaskMemPWSTR 按原生契约释放，包括失败 HRESULT 携带指针的路径。实际目录须为普通 no-reparse 目录，并与一直持有的私有目录完整卷序列号和 128 位 FileId 相同；builder 输入不能代替此证据。核验失败关闭本次 controller/window，保持 readiness 关闭并显示原生错误，不收养、修复或删除实际覆盖目录。
+
+第一轮真实测试发现仅添加 on_navigation 并不能拦住创建期间的首文档：测试服务器收到 3 次提前请求，测试按实际失败保留现场。修复为创建不可见 about:blank，再在真实核验通过后开放原始目标导航和显示；按锁定 Tauri 桌面 URL 解析保留 dev/bundle 目标。原 native-storage/Node 删除续跑结果仍先处理；Mac 的默认存储清理、complete/fail 与 UI 派发顺序保持，独立只读复审通过。直接引用的两项 Windows COM crate 已存在于锁文件，无新版本或二进制来源。
+
+最终默认管理器专项 **8 通过、2 个新增原生夹具 opt-in**；两个 opt-in 分别是需要交互桌面和空闲 1420 端口的真实引擎 parent，以及其 exact child。未删除或跳过任何原 Mac/业务测试，不将交互桌面结果当作服务 Session 0 证明。显式执行真实 parent，分别在两个新 disposable root 启动子进程：正常实际目录为 webview-manager、页面确实 loaded；WEBVIEW2_USER_DATA_FOLDER 指向另一个新 disposable 目录时返回 MANAGER_PROFILE_ACTUAL_MISMATCH、页面没有 loaded。两者核验前实际请求均为 0，均收到匹配浏览器 PID 的 [BrowserProcessExited](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2environment5) NORMAL 回执后退出。
+
+所有这几轮临时引擎目录、覆盖目录及 sentinel 均保留为未提交本地证据。WebView2 在实际目录读回前可能已经写入引擎元数据，因此只证明管理页面未提前加载，不声称覆盖目录零写入。没有读取真实项目、使用 RuntimePaths 或新增产品根目录覆盖。桌面编译和 --no-deps Clippy（-Dclippy::all）通过，既有 dead-code 等 Rust 警告保留，不能称全工作区 -Dwarnings 绿色。下一步正常 npm run dev 检查仍在执行；Mac 真实 CI 和 W1 正式完成仍待核实。
