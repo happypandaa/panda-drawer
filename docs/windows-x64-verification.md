@@ -1070,3 +1070,9 @@ Windows 登记交换在原 recovery permit、freeze 与独占 gate 中使用实�
 ### W5.13 — 平台 AI 说明按实际编译目标显示
 
 主界面和设置共用的“给 AI 的平台说明”不再在 Windows 固定写 macOS；显示名称集中到 frontend-platform，以 bootstrap 的实际 target 选择 Windows x64，Mac 原整句和纯说明构建默认值保持，缺失目标使用中性说明。复制和全文预览共用同一来源，不增加项目路径、诊断或密钥。TypeScript/Vite build 通过，完整界面 **491/491**、0 跳过，15.88 秒；新增真实组件 DOM/人工 clipboard 测试确认 Windows 说明及原版本号、完整接入契约正确，原 Mac 说明断言保留。该测试没有向任何外部 AI 发送内容，不作为物理系统剪贴板证明。
+
+### W5.14 — 普通 D 卷的同步目录查询适配
+
+正常 GUI 将 C 盘当前 disposable 工作区迁移到 D 盘新建中文空格空目录时，实际在启动迁移前报 Cloud Filter HRESULT 0x80070001；原根和数据未改，目标仍空。实际新 TempDir 对照：C 卷 DOS/verbatim 和 ByPath/ByHandle 四种均返回不在同步根内，D 卷四种均 ERROR_INVALID_FUNCTION，已排除路径表示；完整 WinRT 注册根枚举实际有 1 项且逐项取得 Path/实际 HANDLE。没有在 D 卷注册 provider、加载驱动或修环境以掩盖问题。
+
+仅该 capability 错误归类为独立 QueryUnsupported；仍必须完成系统注册根全清单及原 HANDLE/VolumeGUID 范围比较，清单、任一根解析失败或其它 Cloud Files 错误仍拒绝。当前卷真实新 TempDir、原哨兵/完整身份保持、匹配根拒绝和清单未知保留等 native workspace **8/8**，0.07 秒，包含既有 C 卷真实临时 sync registration/注销及 STA 调用回归。注入范围政策测试不冒充 D 卷真实 provider 登记证据。native Clippy **-Dclippy::all 通过**、无警告，0.64 秒；Mac 文件/政策未改，正常 GUI 重编后的跨盘整链继续验证。
