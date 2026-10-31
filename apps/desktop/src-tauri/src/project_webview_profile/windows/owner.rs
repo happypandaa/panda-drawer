@@ -47,6 +47,7 @@ impl BrowserOwner {
         generation: u64,
         profile: Arc<BoundProfile>,
     ) -> Result<Arc<Self>, ApiError> {
+        super::super::require_profile_label(profile.kind(), profile.id(), &label)?;
         // This capture is inside the scope already bound to the persisted ID;
         // it cannot turn an unregistered same-name directory into authority.
         profile.verify()?;

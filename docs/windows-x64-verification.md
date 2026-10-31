@@ -874,3 +874,15 @@ Node 校验探测显式保留 cleared policy。Windows preflight 只核对原 Ma
 另外明确执行官方 Node 24.22.0 的 **2 个 NodeApps 公有整链 opt-in，2/2**：14.66 秒验证 register→必填配置门禁→save 密钥→start/open_url 的真实代理页面/API→大 stderr/私有脱敏日志→save 保持旧快照→restart 同 UUID/data 计数 2→stop→全新 manager 读持久密钥/数据再 start 计数 3→stop_all；16.97 秒用专用 Rust fixture host 持实际 Node 根/子/孙，父亲保留原 host Child HANDLE 并实际 kill/wait，逐个原完整身份均证明 Stopped，新 manager 还实测占用后 stop 失败、释放 reader 后持久续退。Node SHA 按独立固定 release JSON 核验，未 override digest 或借 PATH/模拟解释器证明 Node。
 
 真实工作区完整 core 编译通过，--lib --tests --no-deps Clippy **-Dclippy::all 通过**（63 Rust 警告保留）。上述使用明确 disposable 源码/数据；旧 register API 仅为核心集成夹具，未替代 W4 的本机目录确认流程。fixture host 退出证明实际 Job/恢复链，仍不等于在任务管理器结束正常产品 GUI 或安装包验收；继续 Node 桌面 profile 接线与后续整机验收。
+
+### W3.4 — Node 桌面窗口复用实际独立 profile 和浏览器退出回执
+
+审查发现原 Node builder 只传 data_store_identifier，Windows 上不会据此生成独立 UDF。将 Node 创建/导航/关闭接到 W2 的同一 Profile facade：Node kind、原 UUID、node-app label 精确核对，Windows 先 blank/隐藏创建、真实目录核验与 browser observer 注册，再导航显示。普通关窗、启动失败及 monitor 关闭都在主线程先封 generation 再 destroy；同步 Destroyed 之后仍等匹配的实际 BrowserProcessExited/COM 退役才完成 session 释放。共享总 shutdown 同样识别精确 Web/Node labels，未知 label 不放开。Mac 继续原 data_store_identifier、导航判定、即时 Destroyed 回调和直接 destroy 路径，实际 Mac CI 尚未运行。
+
+独立冻结源码快照完整桌面编译通过；默认 profile 专项 **6 通过、0 失败、3 明确交互 opt-in 忽略**，包含新增精确 kind/label 拒绝和真实 TempDir Node profile 绑定/高位身份/pin 保持测试。后者的退出回执部分是合成单元输入，不据它宣称真实引擎关闭。
+
+明确交互桌面执行新增 Node-kind parent **1/1**，5.19 秒，实际 Windows 11/WebView2：普通 DOS 与 verbatim 两次新 disposable roots、同 origin 的两个 Node-kind profile，A/B localStorage/IndexedDB/持久 Cookie 初始互不可见，A 关后 B 保持并可写 B2；A 重开读回 A1，再写 A2 不影响 B。每次 Env7 原目录与完整 FileId 实际核对，导航前请求均 [0,0,0]，三代匹配 Env5 exit/lease 退役，释放后可原生 rename 证明 pin 已释放，未 sleep 绕过核验。原 Web-kind parent 回归另 **1/1**，3.82 秒，原断言保留。
+
+桌面 --tests --no-deps Clippy **-Dclippy::all 通过**，3 项既有 Rust 警告保留。仅提交源码与验证文字，实际引擎 JSON/数据目录/生成应用均保留在本机未提交。该 parent 是生产 Profile 适配的 Node-kind 真引擎测试，不是正常产品 NodeApps backend 的端到端 GUI、物理设备或安装包验收。
+
+W3 本机引擎/公有管理器/持久标记和独立浏览器专项已通过，正常管理器添加起始 Node 应用的入口还受 W4 本机目录四入口门禁影响，随 W4 补完后做正常 GUI 与任务管理器验收。CI/合入 main 仍按用户要求后置，继续从最新 main 信息上堆叠 W4，不把上述夹具结果算作第 7 节两种系统的安装版验收。

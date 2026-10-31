@@ -41,6 +41,7 @@ impl Binding {
         id: &str,
         label: &str,
     ) -> Result<Self, ApiError> {
+        super::super::require_profile_label(kind, id, label)?;
         owner::require_available(app, label)?;
         let profile = Arc::new(ledger.bind_profile(kind, id)?);
         // The original record's full identity and pins already authorize this
