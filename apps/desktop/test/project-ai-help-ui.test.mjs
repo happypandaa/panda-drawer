@@ -40,6 +40,7 @@ const { createElement: h, act, StrictMode } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { AiProjectHelp } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/AiProjectHelp.tsx'))).href);
 const { PlatformAiIntroButton } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/PlatformAiIntroButton.tsx'))).href);
+const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
 const { buildProjectAiPrompt, checkedProjectReviewExcerpt, MAX_REVIEW_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-help.ts'))).href);
 const { PROJECT_AI_REQUIREMENTS, PROJECT_AI_NODE_PROTOCOL } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
@@ -242,6 +243,20 @@ test('The platform introduction carries no project and reuses the maintained req
   const intro = prompt.slice(0, prompt.length - PROJECT_AI_REQUIREMENTS.length);
   assert.doesNotMatch(intro, /普通话|继续开发|sourcePath|"request"|项目 ID|\/disposable\//);
   assert.match(buildPlatformAiIntroPrompt(), /当前版本：未读取/);
+  assert.match(prompt, /macOS 上的本地小应用平台/);
+});
+
+test('The actual Windows introduction button copies the native target description', async () => {
+  const copies = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copies.push(text) } });
+  document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
+  const platform = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
+  await act(async () => root.render(h(FrontendPlatformProvider, { value: platform }, h(PlatformAiIntroButton, { platformVersion: 'disposable-version' }))));
+  await click(button('复制平台说明给 AI'));
+  assert.equal(copies.length, 1);
+  assert.match(copies[0], /Windows x64 上的本地小应用平台（当前版本：disposable-version）/);
+  assert.doesNotMatch(copies[0], /macOS 上的本地小应用平台/);
+  assert.ok(copies[0].endsWith(PROJECT_AI_REQUIREMENTS));
 });
 
 async function setupStrictPlatformIntro(writeText) {

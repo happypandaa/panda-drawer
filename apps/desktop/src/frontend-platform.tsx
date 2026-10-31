@@ -16,6 +16,7 @@ function windowsAbsolutePath(value: string): boolean {
 }
 
 const macAbsolutePath = (value: string) => value.startsWith('/');
+export const defaultPlatformAiDescription = 'macOS 上的本地小应用平台';
 function macTrimSlash(path: string): string { return path.length > 1 ? path.replace(/\/+$/, '') : path; }
 function macParent(path: string): string { const value = macTrimSlash(path); const index = value.lastIndexOf('/'); return index <= 0 ? '/' : value.slice(0, index); }
 function macBaseName(path: string): string { const value = macTrimSlash(path); return value.slice(value.lastIndexOf('/') + 1) || value; }
@@ -50,6 +51,7 @@ function windowsRelativeDirectory(dir: string, base: string): string {
   return root && path.toLowerCase().startsWith(prefix.toLowerCase()) ? `${path.slice(prefix.length)}\\` : `${path}\\`;
 }
 const common = {
+  aiPlatformDescription: '本地小应用平台',
   openFolderLabel: '在文件管理器中打开',
   nodePathPlaceholder: '选择本机 Node 可执行文件的绝对路径',
   gitPathPlaceholder: '选择本机 Git 可执行文件的绝对路径',
@@ -69,6 +71,7 @@ const common = {
 };
 const mac = {
   ...common,
+  aiPlatformDescription: defaultPlatformAiDescription,
   openFolderLabel: '在访达中打开',
   nodePathPlaceholder: '例如 /opt/homebrew/bin/node',
   gitPathPlaceholder: '例如 /usr/bin/git',
@@ -80,6 +83,7 @@ const mac = {
 };
 const windows = {
   ...common,
+  aiPlatformDescription: 'Windows x64 上的本地小应用平台',
   openFolderLabel: '在资源管理器中打开',
   nodePathPlaceholder: '例如 C:\\Program Files\\nodejs\\node.exe',
   gitPathPlaceholder: '例如 C:\\Program Files\\Git\\cmd\\git.exe',

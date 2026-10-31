@@ -1066,3 +1066,7 @@ Windows 登记交换在原 recovery permit、freeze 与独占 gate 中使用实�
 正常退出旧管理器，在原已核验 rZS2kg 资源/CLI 配置下重编最新冻结开发版，32.12 秒，真实独立启动；本轮复用原准备资源，没有称为 fresh npm run dev 或 NSIS 安装。实际 native folder picker 选新建的中文空格空目录“临时 W5 完整删除 Node 74e184d8”，生成并登记 UUID 015f4961-df19-44b4-a778-46baef078cf7，ownership.generatedSource 绑定真实 FullId。正常打开独立窗口，点击连接检查显示“你的本地应用已经连通。”，管理器 3 项/1 运行。
 
 保持应用窗口和后端运行，从管理器右键菜单进入完整删除。预览明确展示 C 盘实例、源码 owner、D 盘生成源码、ownership，跨盘标签正确；核对后按原复选框和最终按钮提交。任务成功返回主界面 2 项/0 运行，独立 Node 窗口实际消失，原服务监听端口不再存在；逐一物理核对上述四个项目路径及 node-UUID WebView2 目录均不存在。原网页 B、旧 Node 测试项目仍保留。该成功仅适用于这一个明确 disposable 项目，不推论其它项目残留、安装版、Task Manager 中断或全局卸载前清除已通过。
+
+### W5.13 — 平台 AI 说明按实际编译目标显示
+
+主界面和设置共用的“给 AI 的平台说明”不再在 Windows 固定写 macOS；显示名称集中到 frontend-platform，以 bootstrap 的实际 target 选择 Windows x64，Mac 原整句和纯说明构建默认值保持，缺失目标使用中性说明。复制和全文预览共用同一来源，不增加项目路径、诊断或密钥。TypeScript/Vite build 通过，完整界面 **491/491**、0 跳过，15.88 秒；新增真实组件 DOM/人工 clipboard 测试确认 Windows 说明及原版本号、完整接入契约正确，原 Mac 说明断言保留。该测试没有向任何外部 AI 发送内容，不作为物理系统剪贴板证明。
