@@ -40,6 +40,8 @@ const DIGEST_RULE: u32 = 1;
 mod build_result;
 #[path = "build_candidate.rs"]
 mod candidate;
+#[path = "build_copy_io.rs"]
+mod copied_tree;
 #[path = "build_digest_path_io.rs"]
 mod digest_paths;
 #[path = "build_directory_exchange.rs"]
@@ -1676,7 +1678,7 @@ pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<(), ApiError> {
         std::io::copy(&mut input, &mut output)?;
         output.sync_all()?;
     }
-    sync_tree(target)?;
+    copied_tree::finish(target)?;
     Ok(())
 }
 fn sync_tree(root: &Path) -> Result<(), ApiError> {

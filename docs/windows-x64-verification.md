@@ -792,3 +792,9 @@ native 全目标严格 Clippy -Dwarnings 及桌面 --tests --no-deps -Dclippy::a
 实际完整 core 新专项 **14/14**，0 失败/忽略，0.98 秒。真实 TempDir/HANDLE/rename 覆盖每个实际移动后中断、fresh 两断点、反复 resume 无额外交换、高位 FileId 改变、双 parent 替换、空目录占位、未配对 UTF-16 名字、实际发布后外部替换、journal 并发锁与最终退役时替换。中断由实际 move 后注入错误，不是实际断电或 kill 进程；没有第二物理卷、Windows 10 或并发 reader 可见性矩阵证据。原语目录发布后 unknown 另沿用 native 已有专项，未将它算进本组。
 
 独立只读复审未发现新阻塞。所有 active-journal 后失败明确 artifactExchangePending=true / outcome=unknown；外层必须先停止回滚再按原 publication/provenance 对账。resume_pending=false 仅为当次无 active journal，不能当作“从未交换”，也不能再次调用 replace 交换回旧版本。外层发布、提交与启动接线尚在实现；不据原语 14 项称三次网页构建或旧产物回收已完成。CI 按用户要求后置，本步未合入 main。
+
+### W2.13 — 复制产物以原写入 HANDLE 完成真实刷新
+
+定位 Windows artifact 失败之一为 copy_tree 已通过每个新输出 HANDLE sync_all 后，又调用 sync_tree 从只读 File::open HANDLE 重复刷新；Windows FlushFileBuffers 需要写权限，实际返回 OS 5。将复制完成处理集中到适配：Windows 保留所有原写入 HANDLE 的实际刷新，只对目录经既有 facade 观察（无目录 fsync 等价）；Mac 仍调用原 sync_tree，原逐文件二次刷新和目录顺序保持。没有清源只读位、提高源硬链接准入或省掉输出文件刷新。
+
+实际完整 core 新复制专项 **2/2**：中文空格及 Unicode 文件、真实只读外部硬链接源复制为独立私有可写副本，内容一致，原件完整身份及只读位不变；空树产生真实私有目标且父身份保持。未执行原始 staging 的最终发布/恢复验收；旧 artifact 选集此前 **2 通过、13 失败**，不能将复制两项转换成全组选集通过，下一步继续完整发布、启动恢复和真实三次构建。
