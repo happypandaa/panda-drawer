@@ -850,3 +850,15 @@ Windows 代理以原根 HANDLE 解析实际名字并核对原身份，固定各�
 为与并行 runtime 源码隔离，使用新 disposable detached checkout 复制这六份实际源文件、其余为 W2 HEAD，实际编译完整 core（不是替身模块）。Node proxy **25/25**，2.19 秒，覆盖真实本机 HTTP/CSP、独立 cookie/host/origin、只转发 backend bearer、请求预算、重定向/流、慢文件/真实上游 socket/driver join、丢 stop/start waiter、中文空格超 260 文件树、junction/硬链接不泄露和外部原件保持。manifest **14/14**，0.03 秒，其中两个新增实际文件/链接专项。Windows pin 对原根 rename 返回真实 OS 占用错误并保持内容，未把这当成 Mac 也会拒绝改名。不是 Node 应用进程启动或完整产品开窗验收，runtime/StartIntent/崩溃恢复继续实现。
 
 该独立完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（64 项原有 Rust 警告保留），git diff --check 通过；实际 macOS 和 Windows 自托管 CI 仍按用户要求后置。
+
+### W3.2 — 长驻 Node 的实际 Job、协议、日志与停止
+
+NodeRuntimeTrial 的平台资源收拢到 facade，Mac 原 ProcessOwnership、path/storage、Drop 正文经去新增可见性/格式、Drop 的 self→runtime 参数名映射后机械比对保持；Mac 原测试注册不删。Windows 与 Registry 共用原匿名管道桥，两个实际 pump 正文机械相同。实际挂起根、主线程、Job 和三条原生 worker 在 resume 前登记，原两个协议 reader 与 Trial Self 也先就位；assign/resume 创建后错误返回保留的 owner 进入原停止/pending，不冒充未创建。只依据实际 HANDLE/Job/线程 join 闭合；Windows 不向数值 PID/进程组发信号，协议宽限后用原 Job 强停。已退出 root 的子孙仍保留在 Job，Drop/失联消费者不以关闭 facade 伪造实际 EOF。
+
+Node 校验探测显式保留 cleared policy。Windows preflight 只核对原 Mac 要求的当前用户 owner，用只读 helper，不要求/修复普通 data/cache 私有 DACL；新 run/tmp 私有创建，传给引擎的 entry/cwd/APP 路径经现有精确 SDK 参数 facade。最初官方 Node **0/2**，真实 current.log/独立 Node -e 对照定位为 cleared 环境缺 SystemRoot：--version 仍能过，正常 JS 在 CSPRNG 初始化断言 exit 134。只在 Windows adapter 从 Win32 查询实际系统目录注入 SystemRoot，并显式本次 TEMP/TMP，不继承平台环境或修改 Mac 环境；SYSTEMROOT 已在原共享业务变量保留列表内，未另加限制。
+
+最终真实完整 workspace 默认 Runtime 专项 **5 通过、0 失败、3 明确忽略**（1 子进程入口、2 需官方 Node 的 opt-in），含实际 suspended 未执行、实际终止主线程后的 resume 失败保留、root 先退/子孙仍在 Job、普通当前用户目录无 DACL 加严、清空环境准确项。显式官方 Node 24.22.0 **2/2**，8.82 秒，证明 initialize/ready/ping/health/真实 HTTP、stderr 超 64 KiB 不被终止、配置值注入且宿主测试值缺失、当前日志私有且密钥已替换、重开同 data 计数 1→2/run 新鲜/日志轮转，以及协议超时实际 Job 强停、所有 pump/reader 已 join。原 Registry 抽桥后 **28/28**（另 2 ignored），含真实 4 MiB 排空与丢 waiter/driver 回执，未将其重复相加为 Node 项目数。
+
+完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（63 项既有 Rust 警告保留），native 全目标 **-Dwarnings 通过**。修复两个 drain/collect 为 mem::take；子孙 fixture 显式进程 exit 保持“根先退出、子孙待实际 Job 清理”条件，不用 wait 消除被测条件或加 lint allow。并行验证使用 source snapshot 时发现 Windows 复制保留旧写入时间可使 Cargo 误判 fresh，0-test 结果未计入，显式使快照入口重编后确认实际注册/执行；随后真实工作区全编译及上述同组复验通过。
+
+本组是真实 Node 引擎与原生产 Runtime facade 的 TempDir 回归，尚不是 NodeApps 公有配置/管理器、任务管理器终止平台、安装版或 Windows 10 验收。StartIntent 持久退役、Node 专属桌面 UDF 和公有管理器整链继续完成；不据此称 W3 全部完成或两套 CI 绿色。

@@ -988,6 +988,37 @@ fn publication_unknown(cause: io::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, UnconfirmedPublication(cause))
 }
 
+/// Read-only counterpart of Unix uid ownership checks. This does not require
+/// or repair a DACL, inheritance policy, link count, or any system ancestor.
+pub fn verify_current_user_owner(file: &File) -> io::Result<()> {
+    let current = CurrentUser::load()?;
+    let mut owner = null_mut();
+    let mut descriptor = null_mut();
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    let _allocation = LocalAllocation(descriptor);
+    if owner.is_null() || unsafe { EqualSid(owner, current.sid()) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Object does not belong to the current user",
+        ));
+    }
+    Ok(())
+}
+
 pub fn verify_private(file: &File) -> io::Result<()> {
     let current = CurrentUser::load()?;
     let mut owner = null_mut();
