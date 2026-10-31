@@ -5,6 +5,7 @@ import { Modal } from './Modal';
 import { buildProjectAiPrompt, checkedProjectReviewExcerpt } from './project-ai-help';
 import type { ProjectAiHelpContext, ProjectReviewExcerpt } from './project-ai-help';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 export type { ProjectAiHelpContext } from './project-ai-help';
 
@@ -17,6 +18,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   className?: string;
   allowCodex?: boolean;
 }) {
+  const platform = useFrontendPlatform();
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(context.sourcePath ?? context.url ?? '');
   const [aiKind, setAiKind] = useState<'local' | 'web'>('local');
@@ -39,7 +41,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   const signature = JSON.stringify(context);
   const latest = useRef({ signature, disabled }); latest.current = { signature, disabled };
   const evaluation = context.mode === 'evaluation';
-  const sourcePath = evaluation ? (target.trim().startsWith('/') ? target.trim() : '') : context.sourcePath ?? '';
+  const sourcePath = evaluation ? (platform.isAbsolutePath(target.trim()) ? target.trim() : '') : context.sourcePath ?? '';
   const effectiveContext: ProjectAiHelpContext = evaluation ? {
     ...context,
     sourcePath: sourcePath || undefined,

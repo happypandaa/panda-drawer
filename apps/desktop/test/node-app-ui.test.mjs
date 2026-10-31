@@ -48,6 +48,7 @@ const { createRoot } = await import('react-dom/client');
 const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel.tsx');
 const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
 const { default: App } = await component('App.tsx');
+const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await component('frontend-platform.tsx');
 const { acceptProjectDeletion, observeDeletionRuntime, resetProjectDeletionsForTests } = await component('project-deletion.ts');
 const { readRecentProjectFolders, saveRecentProjectFolder, resetRecentProjectFoldersForTests } = await component('local-directory-review.ts');
 let root;
@@ -67,7 +68,7 @@ function app(extra = {}) { return { id: 'node_fixture', name: 'Disposable Node f
 async function setup(mock, props = {}, Component = NodeAppsPanel) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
-  const { deletionTasksMock, workspaceStorageMock, ...componentProps } = props;
+  const { deletionTasksMock, workspaceStorageMock, frontendPlatform, ...componentProps } = props;
   const previews = new Map();
   globalThis.__NODE_FORM_INVOKE__ = async (command, args) => {
     if (command === 'workspace_storage') return workspaceStorageMock ? workspaceStorageMock(args) : { workspace: {}, nodeApps: [], otherLocalLocations: [] };
@@ -80,7 +81,8 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
     }
     return value;
   };
-  await act(async () => root.render(h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...componentProps })));
+  const rendered = h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...componentProps });
+  await act(async () => root.render(frontendPlatform ? h(FrontendPlatformProvider, { value: frontendPlatform }, rendered) : rendered));
   if (Component === NodeAppsPanel && props.request !== null && !['delete', 'delete-task'].includes(props.request?.intent) && document.querySelector('[role=dialog]') && byText('修改')) await click(byText('修改'));
 }
 function byText(text, selector = 'button') { return [...document.querySelectorAll(selector)].find((element) => element.textContent === text); }
@@ -2317,4 +2319,32 @@ test('Node details use their matched storage measurement and copy both bounded r
   await click(byText('复制路径'));
   assert.deepEqual(copied, ['/disposable/control/logs/current.log\n/disposable/control/logs/previous.log']);
   assert.equal(document.querySelector('[role=tablist]'), null);
+});
+
+
+test("Windows deletion review accepts exact native paths and keeps the original project acknowledgement", async () => {
+  const value = app({ sourcePath: "D:\\临时 external\\source" });
+  const preview = { appId: value.id, name: value.name, ownership: "external", expectedRevision: "disposable-native-revision", platformRoot: "C:\\临时 data\\instance", sourcePath: value.sourcePath,
+    deletePaths: ["C:\\临时 data\\instance", "C:\\临时 data\\owner"], preservedPaths: [value.sourcePath] };
+  const calls = [];
+  await setup(async (command) => { calls.push(command); assert.equal(command, "node_app_delete_preview"); return preview; }, {
+    frontendPlatform: frontendPlatformFromBootstrap({ build: { target: "x86_64-pc-windows-msvc" } }), instanceId: "windows-fixture",
+    request: { app: value, intent: "delete", token: 1 },
+  });
+  assert.doesNotMatch(deleteDialog().textContent, /删除范围不完整或项目身份不符/);
+  assert.equal(deleteDialog().querySelector("input[type=checkbox]").disabled, false);
+  assert.equal(byText("确认永久删除项目").disabled, true);
+  assert.match(deleteDialog().querySelector(".node-delete-base").textContent, /C:\\临时 data\\/);
+  assert.deepEqual([...deleteDialog().querySelectorAll(".node-delete-names code")].map(el => el.textContent), ["instance", "owner"]);
+  assert.deepEqual(calls, ["node_app_delete_preview"]);
+});
+
+test("Windows native review still refuses drive-relative paths before acknowledgement or deletion", async () => {
+  const value = app({ sourcePath: "D:\\disposable-source" });
+  await setup(async command => { assert.equal(command, "node_app_delete_preview"); return { appId: value.id, name: value.name, ownership: "external", expectedRevision: "disposable-native-revision", platformRoot: "C:relative-data", sourcePath: value.sourcePath, deletePaths: ["C:relative-data"], preservedPaths: [value.sourcePath] }; }, {
+    frontendPlatform: frontendPlatformFromBootstrap({ build: { target: "x86_64-pc-windows-msvc" } }), instanceId: "windows-fixture",
+    request: { app: value, intent: "delete", token: 1 },
+  });
+  assert.match(deleteDialog().textContent, /删除范围不完整或项目身份不符/);
+  assert.equal(byText("确认永久删除项目")?.disabled ?? true, true);
 });

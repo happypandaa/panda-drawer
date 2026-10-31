@@ -62,3 +62,25 @@ test('Windows rejects drive-relative, root-relative and incomplete UNC paths', (
     assert.equal(windows.isAbsolutePath(value), false, JSON.stringify(value));
   }
 });
+
+test('Mac deletion path grouping preserves the original slash presentation', () => {
+  assert.equal(mac.parentPath('/data/apps/one/'), '/data/apps');
+  assert.equal(mac.pathBaseName('/data/apps/one/'), 'one');
+  assert.equal(mac.commonDirectory(['/data/apps/one', '/data/cache/two']), '/data');
+  assert.equal(mac.commonDirectory(['/one', '/two']), '/');
+  assert.equal(mac.relativeDirectory('/data/cache', '/data'), 'cache/');
+  assert.equal(mac.directoryLabel('/'), '/');
+});
+
+test('Windows deletion path grouping keeps drive and verbatim namespaces and labels different disks', () => {
+  assert.equal(windows.parentPath(String.raw`C:\中文 项目\app`), String.raw`C:\中文 项目`);
+  assert.equal(windows.pathBaseName(String.raw`C:\中文 项目\app`), 'app');
+  assert.equal(windows.parentPath(String.raw`C:\app`), 'C:\\');
+  assert.equal(windows.commonDirectory([String.raw`C:\data\a`, String.raw`C:\data\b`]), String.raw`C:\data`);
+  assert.equal(windows.commonDirectory([String.raw`C:\data\a`, String.raw`D:\data\b`]), '');
+  assert.equal(windows.directoryLabel(''), '多个磁盘位置');
+  assert.equal(windows.directoryLabel('C:\\'), 'C:\\');
+  assert.equal(windows.commonDirectory([String.raw`\\?\D:\data\one\a`, String.raw`\\?\D:\data\two\b`]), String.raw`\\?\D:\data`);
+  assert.equal(windows.parentPath(String.raw`\\server\share\file`), '\\\\server\\share\\');
+  assert.equal(windows.relativeDirectory(String.raw`C:\data\cache`, String.raw`C:\data`), 'cache\\');
+});

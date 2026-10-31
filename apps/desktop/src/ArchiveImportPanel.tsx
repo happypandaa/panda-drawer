@@ -6,6 +6,7 @@ import { Modal } from './Modal';
 import { ProjectTask } from './ProjectTask';
 import type { ProjectInfo, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 type Props = {
   onTask: (task: TaskRecord) => void; onClose: () => void; disabled: boolean; instanceId?: string;
@@ -31,6 +32,7 @@ export function ImportPanel(props: Props) {
 function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disabled, path, setPath, name, setName }: Props & {
   path: string; setPath: (value: string) => void; name: string; setName: (value: string) => void;
 }) {
+  const platform = useFrontendPlatform();
   const [view, setView] = useState<View>('form'); const [busy, setBusy] = useState(false); const [choosing, setChoosing] = useState(false);
   const [task, setTask] = useState<TaskRecord | null>(null); const [step, setStep] = useState(0); const [error, setError] = useState(''); const [pollError, setPollError] = useState('');
   const [failedStep, setFailedStep] = useState<number | null>(null); const observedStep = useRef(0);
@@ -112,7 +114,7 @@ function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disab
     return true;
   }
   async function submit() {
-    if (active || disabled || pending.current || !path.trim().startsWith('/')) return;
+    if (active || disabled || pending.current || !platform.isAbsolutePath(path.trim())) return;
     const started = generation.current; let submitting = false; pending.current = true; setBusy(true); setError(''); setPollError('');
     try {
       if (selectedTask.current && !cleaned && !await cleanup()) return;
@@ -175,7 +177,7 @@ function ArchiveImportWorkflow({ onTask, onClose, onCompleted, onImported, disab
       <p className="project-help">每次导入都生成新 ID，重复导入可以并存；数据库、附件和源码各自独立。</p>
       <label>项目名称（选填）<input value={name} onChange={event => setName(event.target.value)} disabled={active || disabled} /></label>
       <p className="project-help">导入不会运行项目脚本；维护中的快照继续保持维护。完成后清理临时副本，保留原 ZIP 文件。</p>
-      <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={active || disabled || !path.trim().startsWith('/')}><Upload size={14} />校验并导入</button></div>
+      <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={active || disabled || !platform.isAbsolutePath(path.trim())}><Upload size={14} />校验并导入</button></div>
     </form>}
     {view !== 'form' && <><ImportProgress steps={steps} currentStep={step} completedSteps={step === 3 && failedStep !== null ? steps.map((_, index) => index).filter(index => index < failedStep) : undefined} state={view === 'success' ? 'succeeded' : view === 'cleanup-warning' ? 'warning' : view === 'failed' || view === 'recovery' ? 'failed' : 'running'} /><section className="import-result" aria-busy={active}>
       <h3 ref={heading} tabIndex={-1}>{view === 'success' ? '导入成功' : view === 'cleanup-warning' ? '项目已导入，临时文件待清理' : view === 'failed' ? '导入未完成' : view === 'recovery' ? '导入结果需要核对' : steps[step]}</h3>

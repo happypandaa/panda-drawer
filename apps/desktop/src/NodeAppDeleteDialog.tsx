@@ -6,36 +6,26 @@ import { Modal } from './Modal';
 import type { NodeAppDeletePreview, NodeAppDeleteResult, NodeDeletionTaskSnapshot } from './node-app-types';
 import { nodeDeletionActive, nodeDeletionLabel, validNodeDeletionTask } from './node-deletion-task-state';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
-function validPreview(value: NodeAppDeletePreview, appId: string): boolean {
+function validPreview(value: NodeAppDeletePreview, appId: string, isAbsolutePath: (path: string) => boolean): boolean {
   return Boolean(value && value.appId === appId && typeof value.name === 'string' && value.name
     && ['managed', 'external'].includes(value.ownership) && typeof value.expectedRevision === 'string' && value.expectedRevision
-    && typeof value.platformRoot === 'string' && value.platformRoot.startsWith('/') && typeof value.sourcePath === 'string' && value.sourcePath.startsWith('/')
-    && Array.isArray(value.deletePaths) && value.deletePaths.length > 0 && value.deletePaths.every(path => typeof path === 'string' && path.startsWith('/'))
-    && Array.isArray(value.preservedPaths) && value.preservedPaths.every(path => typeof path === 'string' && path.startsWith('/'))
+    && typeof value.platformRoot === 'string' && isAbsolutePath(value.platformRoot) && typeof value.sourcePath === 'string' && isAbsolutePath(value.sourcePath)
+    && Array.isArray(value.deletePaths) && value.deletePaths.length > 0 && value.deletePaths.every(path => typeof path === 'string' && isAbsolutePath(path))
+    && Array.isArray(value.preservedPaths) && value.preservedPaths.every(path => typeof path === 'string' && isAbsolutePath(path))
     && (value.blocker == null || typeof value.blocker.code === 'string' && Boolean(value.blocker.code) && typeof value.blocker.message === 'string' && Boolean(value.blocker.message)));
-}
-
-function trimSlash(path: string): string { return path.length > 1 ? path.replace(/\/+$/, '') : path; }
-function parentOf(path: string): string { const value = trimSlash(path); const index = value.lastIndexOf('/'); return index <= 0 ? '/' : value.slice(0, index); }
-function baseName(path: string): string { const value = trimSlash(path); return value.slice(value.lastIndexOf('/') + 1) || value; }
-
-function commonDir(paths: string[]): string {
-  const parts = paths.map(path => parentOf(path).split('/').filter(Boolean));
-  if (!parts.length) return '/';
-  let length = 0;
-  while (parts.every(segments => segments.length > length && segments[length] === parts[0][length])) length++;
-  return `/${parts[0].slice(0, length).join('/')}`;
 }
 
 /** Lists full paths grouped by parent directory, relative to a base directory shown once above the list. */
 function PathGroups({ paths, base }: { paths: string[]; base: string }) {
+  const platform = useFrontendPlatform();
   const groups = new Map<string, string[]>();
-  for (const path of new Set(paths)) { const dir = parentOf(path); groups.set(dir, [...(groups.get(dir) ?? []), path]); }
-  const relative = (dir: string) => dir === base ? '' : dir.startsWith(base === '/' ? '/' : `${base}/`) ? `${dir.slice(base === '/' ? 1 : base.length + 1)}/` : `${dir}/`;
+  for (const path of new Set(paths)) { const dir = platform.parentPath(path); groups.set(dir, [...(groups.get(dir) ?? []), path]); }
+  const relative = (dir: string) => platform.relativeDirectory(dir, base);
   return <ul className="node-delete-groups">{[...groups].map(([dir, items]) => <li key={dir}>
     {relative(dir) && <code className="node-delete-dir" title={dir}>{relative(dir)}</code>}
-    <ul className="node-delete-names">{items.map(path => <li key={path} data-path={path} title={path}><code>{baseName(path)}</code></li>)}</ul>
+    <ul className="node-delete-names">{items.map(path => <li key={path} data-path={path} title={path}><code>{platform.pathBaseName(path)}</code></li>)}</ul>
   </li>)}</ul>;
 }
 
@@ -50,6 +40,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
   onTaskChanged?: (task: NodeDeletionTaskSnapshot) => void;
   onAbandoned?: (task: NodeDeletionTaskSnapshot) => void;
 }) {
+  const platform = useFrontendPlatform();
   const [preview, setPreview] = useState<NodeAppDeletePreview | null>(null);
   const [task, setTask] = useState<NodeDeletionTaskSnapshot | null>(null);
   const [verified, setVerified] = useState(false);
@@ -108,7 +99,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
     try {
       const value = await invoke<NodeAppDeletePreview>('node_app_delete_preview', { appId: origin.appId });
       if (!isCurrent(origin, generation) || !context.current.enabled) return;
-      if (!validPreview(value, origin.appId)) throw new Error('删除范围不完整或项目身份不符，请重新核对。');
+      if (!validPreview(value, origin.appId, platform.isAbsolutePath)) throw new Error('删除范围不完整或项目身份不符，请重新核对。');
       setPreview(value);
       if (value.blocker) { setErrorTitle('暂时无法删除'); setError(messageFrom(value.blocker)); return; }
       approval.current = { appId: origin.appId, instanceId: origin.instanceId, revision: value.expectedRevision, sequence: generation };
@@ -174,7 +165,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
   const preserved = preview ? [...new Set(preview.preservedPaths)] : [];
   const source = preview && preserved.includes(preview.sourcePath) ? preview.sourcePath : null;
   const otherPreserved = preserved.filter(path => path !== source);
-  const base = preview ? commonDir([...preview.deletePaths, ...otherPreserved]) : '/';
+  const base = preview ? platform.commonDirectory([...preview.deletePaths, ...otherPreserved]) : '/';
   const recheck = <button type="button" className="text-button node-delete-recheck" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>;
   const failure = error || (task?.phase === 'failed' ? messageFrom(task.error ?? { message: '删除未完成，请核对剩余内容后重试。' }) : '');
 
@@ -187,7 +178,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
         {preview && <>
           <p>{preview.ownership === 'managed' ? '将永久删除本项目的全部平台管理内容：可编辑源码（包括 Git 和未提交修改）、程序、业务数据、配置与密钥，以及下载、安装、构建和任务材料。' : '这是外部目录应用：将删除本实例的平台目录、数据、配置与密钥，以及关联的下载、安装、构建和任务材料。原始应用目录中的源码、Git 版本及用户文件保持原样；平台写入其中的恢复材料会一并删除。'}</p>
           <div className="node-delete-scope">
-            <p className="node-delete-base">平台目录 <code title={base}>{base === '/' ? '/' : `${base}/`}</code></p>
+            <p className="node-delete-base">平台目录 <code title={base}>{platform.directoryLabel(base)}</code></p>
             <section className="node-delete-removed"><div className="node-delete-scope-heading"><h4>将删除</h4>{verified && recheck}</div><PathGroups paths={preview.deletePaths} base={base} /></section>
             <section className="node-delete-kept"><div className="node-delete-scope-heading"><h4>继续保留</h4></div>
               {source && <p className="node-delete-source"><span>原始应用目录</span><code data-path={source} title={source}>{source}</code></p>}
@@ -202,7 +193,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
       {task && <section className="node-delete-task" aria-label="删除任务实际范围">
         <p className="node-delete-id">任务 ID：<code>{task.taskId}</code></p>
         {task.remaining.length > 0 && <><h4>尚未完成</h4>{task.remaining.map(item => <p key={item.path}><code>{item.path}</code>{item.stagedPath && item.state !== 'planned' && <code>待清理位置：{item.stagedPath}</code>}{item.reason && <span>{item.reason}</span>}</p>)}</>}
-        {task.preservedPaths.length > 0 && <><h4>继续保留</h4><PathGroups paths={task.preservedPaths} base={commonDir(task.preservedPaths)} /></>}
+        {task.preservedPaths.length > 0 && <><h4>继续保留</h4><PathGroups paths={task.preservedPaths} base={platform.commonDirectory(task.preservedPaths)} /></>}
       </section>}
       {observationError && <p className="task-error" role="status">{observationError}</p>}
       <div className="node-delete-footer" hidden={!task && pending === 'delete'}>
