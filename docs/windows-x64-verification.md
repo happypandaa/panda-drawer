@@ -708,3 +708,13 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 实际完整 core 二进制专项 **6/6**，包括两个独立真实私有目录与持续 pin、完整 FileId 高字节篡改、替换根、未知根、实际 junction、record 硬链接，以及 pending/坏收据的原字节保留。实际目录接口核对接受本根、拒绝另一项目根与缺失根，但此步没有创建 WebView2，不能称 localStorage/IndexedDB 已隔离。只读独立复审通过；Mac 原 StoreLedger 正文和测试零改。首轮编译遇到并行 Git 模块尚未落齐而失败，未运行测试；跨模块稳定后重编才得到上述真实结果。
 
 下一步桌面窗口会先用空白文档、读回实际引擎目录，再加载项目页，并持有浏览器退出 owner 及原产物租约到真实进程族退出。当前公开 API 仅完成绑定，尚未接到真实产品窗口；Windows 磁盘 purge/forget 收尾仍待后续实现，没有伪造删除成功或提前退役 ledger。
+
+### W2.3 — 创建后失败仍保留原生进程归属
+
+将 Windows 原语拆成 create_suspended、assign_job、resume：create_suspended 返回 Err 只表示尚未成功创建；成功后完整持有根进程、主线程、Job 与匿名管道，后续设置失败始终借用该 owner。兼容 spawn 的创建后错误携带可取回的 SpawnSetupFailure，明确 resource closure outcome is unknown，移除旧失败路径忽略 5 秒 Wait 结果后丢失归属的做法。未加入 Job 的根始终未恢复，只能按原创建 HANDLE 请求终止；Drop 仅为 best-effort 请求，不是退出或 I/O 完成证明。
+
+复审同时修复 packager 的保留缺口：旧 Node 外层、MinGit probe scratch 与外层只识别旧 Probe unknown 文案，创建后新 unknown 可能误入 stage 清理。共享适配在任何原成功/失败清理分支前识别两种已有未确认结果，保留原始原因和每层现场；普通错误仍走原自有材料清理。对应真实 TempDir/Created/完整身份回归 **5/5**。错误注入使用受控文本验证清理分派，不冒充真实 OS AssignJob/Resume 失败。
+
+实际完整 native all-targets **54 通过、0 失败、2 明确忽略**（精确 child 夹具和官方 Node opt-in）；另显式官方已核验 Windows Node **1/1**，在中文空格临时目录实际运行、200 KB stderr 完整排空。native 全目标严格 Clippy -Dwarnings 通过。新增默认测试实际验证挂起期间未执行、加入 Job 后恢复、真实已创建挂起根的 resume-before-assignment 本地验证失败仍可取回 owner 并取得退出/EOF，以及退出码 259 不冒充仍运行；后两类 OS 原生设置失败尚未故障注入。
+
+既有真实父/子孙 Job、丢 Job 与异常终止专用 host 的测试在上述完整组继续通过。这里仍是原生 API 与打包边界；尚未接到产品 OwnedProcessRegistry、持久 writer 和 Node 应用，不是 W3 产品运行或任务管理器验收，也未取得 Mac CI 结果。

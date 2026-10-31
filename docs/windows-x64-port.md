@@ -48,7 +48,7 @@
 
 | 能力 | Mac 现在的做法 | Windows 实现 | 现在位置（主要） |
 |---|---|---|---|
-| 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。停止时先发 stdout 协议的关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不要用 Ctrl+Break 代替 | 请求配置收拢到 `owned_process::prepare_command`；Windows 原语：`crates/platform-native/src/windows/process.rs`；实际 Registry/Node 业务接入仍待完成：`owned_process*.rs`、`node_runtime_trial.rs`、`builds.rs` |
+| 子进程归属与停止 | setsid / 独立进程组；TERM → 等待 → KILL 整组 | **Job Object**：以挂起方式创建进程 → 加入 Job → 登记实际 owner/管道 → 恢复；设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。创建后设置失败保留实际进程/主线程/Job，错误不冒充未创建；未加入 Job 的挂起根只按原创建 HANDLE 请求终止。停止先发 stdout 协议关闭消息，等待超时后 `TerminateJobObject`。Windows 没有 TERM，不用 Ctrl+Break | 请求配置：`owned_process::prepare_command`；原语与 staged API：`platform-native/src/windows/process.rs`；packager 未确认结果保留：`tools/native-packager/src/windows/{payload,git}.rs`。实际 Registry/Node 业务接入仍待完成：`owned_process*.rs`、`node_runtime_trial.rs`、`builds.rs` |
 | 子进程管道 | `UnixStream::pair` | 匿名管道（tokio `process` 的 piped stdio 或 Win32 管道），协议内容不变 | `owned_process.rs` |
 | 退出状态 | `waitid`、信号 | `GetExitCodeProcess`；没有 Unix 信号，界面显示退出码 | 原生 Job 查询：`platform-native/src/windows/process.rs`；退出信号观察：`platform-native/src/process_status.rs`，接入 `node_runtime_trial.rs`、`process_diagnostics.rs` |
 | 进程身份核对 | PID + 启动时间 + 进程组 | PID + `GetProcessTimes` 完整 100 纳秒创建时间 + `QueryFullProcessImageNameW` 路径。旧标记只观察，不取得 Job 终止权限 | 边界：`node_process_identity.rs`；Mac 原实现：`node_process_identity/unix.rs`；Windows：`node_process_identity/windows.rs` 与 `platform-native/src/windows/process.rs`；标记接入：`node_run_marker.rs` |

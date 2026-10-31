@@ -295,23 +295,15 @@ fn probe_release(root: &Path) -> Result<()> {
         }
         Ok(())
     })();
-    if result
-        .as_ref()
-        .is_err_and(|error| error.to_string().contains("Probe outcome is unknown"))
-    {
-        return Err(invalid(format!(
-            "{}; retained {}",
-            result.unwrap_err(),
-            scratch.display()
-        )));
-    }
-    created.cleanup().map_err(|error| {
-        invalid(format!(
-            "MinGit probe scope retained at {}: {error}",
-            scratch.display()
-        ))
-    })?;
-    result
+    payload::preserve_unknown_probe(result, &scratch, |result| {
+        created.cleanup().map_err(|error| {
+            invalid(format!(
+                "MinGit probe scope retained at {}: {error}",
+                scratch.display()
+            ))
+        })?;
+        result
+    })
 }
 
 pub(super) fn prepare(
@@ -354,11 +346,8 @@ pub(super) fn prepare(
         moved = true;
         verify(output)
     })();
-    match result {
+    payload::preserve_unknown_probe(result, &stage, |result| match result {
         Ok(value) => Ok(value),
-        Err(error) if error.to_string().contains("Probe outcome is unknown") => {
-            Err(invalid(format!("{error}; retained {}", stage.display())))
-        }
         Err(error) if moved || error.to_string().contains("Publication outcome is unknown") => {
             Err(invalid(format!(
                 "Publication outcome is unknown after the move: {error}; retained {}",
@@ -372,7 +361,7 @@ pub(super) fn prepare(
                 stage.display()
             ))),
         },
-    }
+    })
 }
 
 pub(super) fn receive(cache: &Path) -> Result<Value> {
