@@ -30,13 +30,12 @@ fn inspect_path(path: &Path, directory: bool) -> Result<Presence, String> {
     {
         return Err(format!("路径不是安全的绝对路径：{}", path.display()));
     }
-    let mut current = PathBuf::new();
-    let mut parts = path.components().peekable();
-    while let Some(part) = parts.next() {
-        current.push(part.as_os_str());
-        match fs::symlink_metadata(&current) {
+    let components = platform_native::filesystem::path_components(path);
+    let mut parts = components.iter().peekable();
+    while let Some(current) = parts.next() {
+        match fs::symlink_metadata(current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
+                if platform_native::filesystem::is_reparse(&metadata) {
                     return Err(format!("未跟随符号链接：{}", current.display()));
                 }
                 let needs_directory = parts.peek().is_some() || directory;
@@ -107,7 +106,7 @@ fn inspect_git_marker(
     let marker = directory.join(".git");
     match fs::symlink_metadata(&marker) {
         Ok(metadata) => {
-            let kind = if metadata.file_type().is_symlink() {
+            let kind = if platform_native::filesystem::is_reparse(&metadata) {
                 "unsafe"
             } else if metadata.is_dir() {
                 "directory"
