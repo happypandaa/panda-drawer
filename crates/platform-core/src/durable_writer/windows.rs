@@ -1,7 +1,6 @@
-//! Owner descriptors only validate syntax; they do not admit any writer.
-//! Writing and closure checks stay closed until durable markers are connected
-//! to actual Windows Job/I/O ownership. A guessed boot UUID or elapsed delay
-//! cannot prove writer closure.
+//! Live Windows writer admission. Durable markers outlive a dropped caller;
+//! only actual no-child or joined Job/I/O closure can finish a live guard.
+//! Crash-surviving markers stay unknown until real recovery is implemented.
 use crate::ApiError;
 use std::{
     ffi::OsString,
@@ -9,6 +8,14 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
+
+#[path = "windows/inventory.rs"]
+mod inventory;
+#[path = "windows/io.rs"]
+mod io;
+#[path = "windows/live.rs"]
+mod live;
+pub(crate) use live::WriterGuard;
 
 fn lexical_path(data: &Path) -> PathBuf {
     // Rust treats '/' inside a verbatim path as part of a normal component.
@@ -31,19 +38,9 @@ fn lexical_path(data: &Path) -> PathBuf {
 fn invalid_owner() -> ApiError {
     ApiError::new(
         "PROJECT_WRITER_UNCONFIRMED",
-        "尚不能确认项目写入进程已结束，暂不能继续。若平台曾异常退出，请重新启动电脑后重试；仅重启平台不能证明旧进程已结束。",
+        "尚不能确认项目写入进程及 I/O 已结束，暂不能继续；已保留本次现场。",
     )
     .outcome("unknown")
-}
-
-fn unavailable() -> ApiError {
-    ApiError::new(
-        "PLATFORM_FEATURE_UNAVAILABLE",
-        "Windows 暂不支持此功能：持久写入进程归属核对尚未完成。",
-    )
-    .detail("platform", "windows")
-    .detail("capability", "durable-process-writer")
-    .outcome("not_started")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,16 +50,14 @@ enum Kind {
     Platform,
 }
 
-/// A validated description of the caller's scope, without a marker, process,
-/// filesystem claim or successful closure receipt. The fields remain unused
-/// by admission until the corresponding Windows ownership backend exists.
+/// A validated description, without a filesystem claim. begin checks the
+/// existing selected owner before it publishes any process-writer material.
 #[derive(Clone)]
 pub(crate) struct WriterOwner {
     _data: PathBuf,
     _kind: Kind,
     _id: String,
 }
-pub(crate) enum WriterGuard {}
 impl WriterOwner {
     pub(crate) fn node(data: &Path, id: &str) -> Result<Self, ApiError> {
         Self::new(data, Kind::Node, id)
@@ -100,24 +95,22 @@ impl WriterOwner {
             _id: id.into(),
         })
     }
-    pub(crate) fn begin(&self, _: &str) -> Result<WriterGuard, ApiError> {
-        Err(unavailable())
+    pub(crate) fn begin(&self, component: &str) -> Result<WriterGuard, ApiError> {
+        live::begin(self, component)
     }
     #[cfg(test)]
     pub(crate) fn fixture_mark_unconfirmed(&self) -> Result<PathBuf, ApiError> {
-        Err(unavailable())
+        let guard = self.begin("disposable-unconfirmed-writer")?;
+        let path = guard.retained_path();
+        drop(guard);
+        Ok(path)
     }
 }
-impl WriterGuard {
-    pub(crate) fn finish(&mut self) -> Result<(), ApiError> {
-        match *self {}
-    }
+pub(crate) fn require_owner_clear(owner: &WriterOwner) -> Result<(), ApiError> {
+    inventory::require_owner_clear(owner)
 }
-pub(crate) fn require_owner_clear(_: &WriterOwner) -> Result<(), ApiError> {
-    Err(unavailable())
-}
-pub(crate) fn require_all_clear(_: &Path) -> Result<(), ApiError> {
-    Err(unavailable())
+pub(crate) fn require_all_clear(data: &Path) -> Result<(), ApiError> {
+    inventory::require_all_clear(data)
 }
 
 #[cfg(test)]
@@ -235,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn construction_and_closed_operations_preserve_disposable_material() {
+    fn construction_and_missing_owner_observation_preserve_disposable_material() {
         let temporary = tempfile::Builder::new()
             .prefix("panda-disposable-writer-descriptor-")
             .tempdir()
@@ -245,25 +238,21 @@ mod tests {
         std::fs::write(&retained, b"disposable retained evidence").unwrap();
         let missing = root.join("missing-owner-root");
         let owners = [
-            WriterOwner::platform(&root).unwrap(),
             WriterOwner::web(&missing, "prj_disposablewriter").unwrap(),
             WriterOwner::node(&missing, "50bfcf0c-5102-4a27-8446-b3c7312e2bc1").unwrap(),
         ];
         for owner in owners {
+            require_owner_clear(&owner).unwrap();
             for error in [
                 owner.begin("disposable-writer").err().unwrap(),
-                require_owner_clear(&owner).unwrap_err(),
                 owner.fixture_mark_unconfirmed().unwrap_err(),
             ] {
-                assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
+                assert_eq!(error.code, "PROJECT_WRITER_UNCONFIRMED");
                 assert_eq!(error.details["capability"], "durable-process-writer");
-                assert_eq!(error.details["operationOutcome"], "not_started");
+                assert_eq!(error.details["operationOutcome"], "unknown");
             }
         }
-        assert_eq!(
-            require_all_clear(&root).unwrap_err().code,
-            "PLATFORM_FEATURE_UNAVAILABLE"
-        );
+        require_all_clear(&root).unwrap();
         assert_eq!(
             std::fs::read(&retained).unwrap(),
             b"disposable retained evidence"
