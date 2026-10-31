@@ -724,3 +724,9 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 发现 WebProjectOwnership 原目录创建仍只在 Unix chmod，Windows 普通 create_dir 不能作为原私有 DACL 的证明。将原 check_no_symlinks、缺失时单层创建、已选目录权限修复收拢到适配层；Mac 语句和顺序保持，Windows 原生私有创建或仅修已选 leaf，不递归补数据根、不改系统或工作区父 ACL，不改变 ownership 索引提交顺序。
 
 实际完整 core 二进制专项 **2/2**：新的两级 scope 及既有普通 leaf 修复后保持完整身份和 sentinel；原临时父目录身份和非私有状态保持；父目录缺失不创建额外根；实际 junction 拒绝且外部目标身份、内容和原访问状态保持。全部仅新 disposable TempDir，没有访问真实开发目录。此步补齐持久 writer 所需的原私有 owner 基础，不证明构建、删除或迁移已完整接通；Mac 实际运行仍待 CI。
+
+### W2.5 — 模板树摘要的原生分隔符适配
+
+将 hash_tree 的路径标签转换集中到适配层。Mac 原 to_str 字节不变，包括文件名中合法的反斜杠；Windows 逐组件连接 `/`，与既有 package-template 的跨平台摘要规则相同。遍历、文件内容、长度编码、摘要 v1 格式和源码准入保持，不做旧 Windows 数据兼容。
+
+实际完整 core 二进制默认专项 **2 通过、1 个新增资源 opt-in**：原生相对路径与中文空格 TempDir 的真实文件树通过独立 Node crypto 黄金向量。随后显式 opt-in **1/1**，只读本轮正常 Windows 桌面准备的 template/app 和 template/starter，两棵真实树分别与 starter.json 的 sourceDigest、artifactDigest 相同。没有写入准备资源或真实应用数据。Unix 反斜杠文件名专项已保留，尚未在 Mac 实际执行；此处不证明完整 npm 构建、产物发布或三次构建清理已完成，CI 仍待运行。
