@@ -6,6 +6,9 @@ pub use private_inheritance::enable_private_directory_inheritance;
 #[path = "files/hardlink_rename.rs"]
 mod hardlink_rename;
 pub use hardlink_rename::rename_file_noreplace_expected_allowing_hard_links;
+#[path = "files/private_hardlink.rs"]
+mod private_hardlink;
+pub use private_hardlink::open_owned_file_private_allowing_hard_links;
 #[cfg(test)]
 #[path = "files/private_creation_tests.rs"]
 mod private_creation_tests;

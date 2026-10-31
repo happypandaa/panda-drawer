@@ -1,5 +1,5 @@
 //! Platform-specific browser download admission, staging, and publication.
-//! Windows stays closed until native writer ownership and delivery are ready.
+//! Each engine keeps its real writer receipt through the native save stage.
 
 // Keep the original Unix implementation and tests at their existing module level.
 #[cfg(unix)]

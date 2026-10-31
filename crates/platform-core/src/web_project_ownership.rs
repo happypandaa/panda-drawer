@@ -15,6 +15,9 @@ use std::{
 
 type Result<T> = std::result::Result<T, ApiError>;
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+#[cfg(windows)]
+#[path = "web_project_ownership/windows_delivery.rs"]
+pub(crate) mod windows_delivery;
 #[derive(Clone)]
 pub(crate) struct WebProjectOwnership {
     data: PathBuf,
@@ -40,6 +43,9 @@ struct Ownership {
     export_stages: BTreeMap<String, ExportStage>,
     file_deletions: BTreeMap<PathBuf, crate::web_file_deletion::FileDeletionPlan>,
     removed_materials: BTreeMap<PathBuf, PersistedIdentity>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    native_deliveries: BTreeMap<String, windows_delivery::Binding>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -173,6 +179,10 @@ impl WebProjectOwnership {
                 return Err(invalid("文件删除计划不属于项目精确材料。"));
             }
         }
+        #[cfg(windows)]
+        for (task, binding) in &record.native_deliveries {
+            windows_delivery::validate_binding(task, binding)?;
+        }
         Ok(record)
     }
     fn update(
@@ -202,6 +212,8 @@ impl WebProjectOwnership {
                     export_stages: BTreeMap::new(),
                     file_deletions: BTreeMap::new(),
                     removed_materials: BTreeMap::new(),
+                    #[cfg(windows)]
+                    native_deliveries: BTreeMap::new(),
                 }
             }
             Err(error) => return Err(error),
@@ -561,6 +573,8 @@ impl WebProjectOwnership {
         })
     }
     pub(crate) fn material_paths(&self, id: &str) -> Result<Vec<PathBuf>> {
+        #[cfg(windows)]
+        windows_delivery::recover_project(self, id)?;
         let record = self.read(id)?;
         if record.workspace_root != self.workspace {
             return Err(invalid("网页项目工作区归属已变化。"));
@@ -1001,6 +1015,8 @@ impl WebProjectOwnership {
             return Ok(());
         }
         if self.path(id)?.exists() {
+            #[cfg(windows)]
+            windows_delivery::recover_project(self, id)?;
             let record = self.read(id)?;
             if !record.file_deletions.is_empty() {
                 return Err(invalid("仍有未完成的文件删除计划。"));
