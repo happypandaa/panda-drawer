@@ -74,6 +74,7 @@ const bootstrap = {
   displayName: 'Disposable Panda Drawer fixture', identifier: 'dev.fixture.radio-shell', environment: 'development', apiVersion: 1,
   instanceId: 'instance_radio_shell_fixture', baseUrl: 'http://127.0.0.1:1', workspaceRoot: '/disposable/radio-shell/workspace', dataRoot: '/disposable/radio-shell/data', sqliteVersion: 'fixture', version: '0.0.0-fixture',
   resources: { sdk: true, template: true, readme: true, cli: true }, cliPath: '/disposable/radio-shell/cli',
+  platform: { build: { target: 'aarch64-apple-darwin' } },
 };
 const environment = { ready: true, node: { path: '/disposable/node', version: 'v24.0.0' }, npm: { path: '/disposable/npm', version: '11.0.0' }, selection: 'detected', configuredNodePath: null, supportedNodeRange: 'fixture', recommendedNode: 'fixture', downloadUrl: 'https://example.invalid/node', issues: [] };
 const gitEnvironment = { ready: true, git: { path: '/disposable/platform/git/bin/git', version: '2.56.0' }, selection: 'managed', configuredGitPath: null, managedGitPath: '/disposable/platform/git/bin/git', ssh: { ready: true, selection: 'system', executable: { path: '/usr/bin/ssh', version: 'OpenSSH fixture' }, issues: [] }, authentication: { state: 'not-checked', reason: '只检测工具，不访问仓库。' }, issues: [] };
@@ -114,6 +115,67 @@ async function change(element, value) {
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
   });
 }
+
+test('Windows shell uses native copy and preserves absolute Node/Git arguments through save', async () => {
+  const windowsBootstrap = { ...bootstrap, workspaceRoot: String.raw`D:\可丢弃 工作区`, platform: { build: { target: 'x86_64-pc-windows-msvc' } } };
+  const nodePath = String.raw`C:\Program Files\nodejs\node.exe`;
+  const gitPath = String.raw`\\server\share\工具\git.exe`;
+  const calls = await setup({ overrides: {
+    bootstrap_info: () => windowsBootstrap,
+    workspace_info: () => ({ workspaceRoot: windowsBootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [] }),
+    open_project_folder: () => null,
+    environment_node_set: ({ nodePath }) => ({ ...environment, selection: 'explicit', configuredNodePath: nodePath }),
+    environment_git_set: ({ gitPath }) => ({ ...gitEnvironment, selection: 'explicit', configuredGitPath: gitPath }),
+  } });
+  await click(byText('在资源管理器中打开', document.querySelector('.radio-footer')));
+  assert.deepEqual(calls.find(([command]) => command === 'open_project_folder'), ['open_project_folder', { path: windowsBootstrap.workspaceRoot }]);
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.match(document.querySelector('#settings-general-panel').textContent, /关闭主窗口或从菜单退出/);
+  assert.doesNotMatch(document.querySelector('#settings-general-panel').textContent, /Dock|Cmd\+Q|macOS/);
+  await click(document.querySelector('#settings-runtime-tab'));
+  const nodePanel = document.querySelector('.build-environment');
+  const gitPanel = document.querySelector('.git-environment');
+  assert.match(document.getElementById('node-path').placeholder, /C:.*node\.exe/);
+  assert.match(document.getElementById('git-path').placeholder, /C:.*git\.exe/);
+  for (const [id, panel, path] of [['node-path', nodePanel, nodePath], ['git-path', gitPanel, gitPath]]) {
+    await change(document.getElementById(id), 'C:relative.exe');
+    assert.equal(byText('保存路径', panel).disabled, true);
+    const before = calls.filter(([command]) => command === 'environment_node_set' || command === 'environment_git_set').length;
+    await act(async () => panel.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+    assert.equal(calls.filter(([command]) => command === 'environment_node_set' || command === 'environment_git_set').length, before);
+    await change(document.getElementById(id), `  ${path}  `);
+    assert.equal(byText('保存路径', panel).disabled, false);
+    await click(byText('保存路径', panel));
+  }
+  assert.deepEqual(calls.find(([command]) => command === 'environment_node_set'), ['environment_node_set', { nodePath }]);
+  assert.deepEqual(calls.find(([command]) => command === 'environment_git_set'), ['environment_git_set', { gitPath }]);
+  await click(document.querySelector('#settings-storage-tab'));
+  const location = document.querySelector('.workspace-location-card');
+  await click(byText('在资源管理器中打开', location));
+  await click(byText('更换位置', location));
+  assert.match(location.querySelector('.settings-migration-notes').textContent, /NTFS.*本机内置/);
+  assert.doesNotMatch(location.querySelector('.settings-migration-notes').textContent, /APFS/);
+  const destination = location.querySelector('.path-input input');
+  await change(destination, String.raw`E:\中文 新工作区`);
+  const next = [...location.querySelectorAll('button')].find(button => button.textContent.startsWith('下一步：核对'));
+  assert.equal(next.disabled, false);
+  await click(next);
+  assert.match(location.querySelector('.workspace-migration-confirmation').textContent, /E:\\中文 新工作区/);
+  assert.equal(calls.some(([command]) => command === 'workspace_migrate'), false);
+});
+
+test('Missing bootstrap stays neutral and switches only after the real compiled target arrives', async () => {
+  const read = deferred();
+  await setup({ overrides: { bootstrap_info: () => read.promise } });
+  const footer = document.querySelector('.radio-footer');
+  assert.equal(byText('在文件管理器中打开', footer).disabled, true);
+  assert.equal(byText('在访达中打开', footer), undefined);
+  await click(document.querySelector('[aria-label="设置"]'));
+  assert.doesNotMatch(document.querySelector('#settings-general-panel').textContent, /Dock|Cmd\+Q|macOS/);
+  await act(async () => read.resolve({ ...bootstrap, platform: { build: { target: 'x86_64-pc-windows-msvc' } } }));
+  assert.equal(byText('在资源管理器中打开', footer).disabled, false);
+  assert.match(document.querySelector('#settings-general-panel').textContent, /关闭主窗口或从菜单退出/);
+});
 
 test('The real shell has one application home and the reorganized settings portal', async () => {
   const calls = await setup();

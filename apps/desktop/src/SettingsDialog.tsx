@@ -11,6 +11,7 @@ import { WorkspaceStoragePanel } from './WorkspaceStoragePanel';
 import type { Appearance } from './appearance';
 import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo, ProjectInfo } from './types';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 import type { NodeAppDetail } from './node-app-types';
 
 export type SettingsSection = 'general' | 'storage' | 'runtime' | 'ai' | 'about' | 'uninstall';
@@ -59,6 +60,7 @@ export interface SettingsDialogProps {
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const { info, section } = props;
+  const frontendPlatform = useFrontendPlatform();
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
   const [storagePending, setStoragePending] = useState(false);
   const settingsBlocked = props.closeDisabled || storagePending;
@@ -92,7 +94,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <button aria-label="切换暗色主题" title="深色" aria-pressed={props.theme === 'dark'} onClick={() => props.onTheme('dark')}><Moon size={15} aria-hidden="true" />深色</button>
           </div></div>
           <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => { if (!settingsBlocked) props.onSection('runtime'); }} onStorage={() => { if (!settingsBlocked) props.onSection('storage'); }} /></details>
-          <div className="runtime-explainer"><ShieldCheck size={17} /><p>当前是内部开发版，只使用专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。</p></div>
+          <div className="runtime-explainer"><ShieldCheck size={17} /><p>{frontendPlatform.exitExplanation}</p></div>
         </section>)}
         {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} cleanupBusy={props.cleanupBusy} cleanupTask={props.workspace?.cleanupTask} projects={props.projects ?? []} nodeApps={props.nodeApps ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
         {panel('runtime', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
@@ -136,6 +138,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
 }
 
 function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPendingChange?: (pending: boolean) => void }) {
+  const frontendPlatform = useFrontendPlatform();
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const [nodePath, setNodePath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -186,9 +189,9 @@ function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPe
       ? <p className="environment-issue">平台配套 Node/npm 暂不可用。请修复或重新安装平台，或明确选择兼容的本机 Node/npm。</p>
       : <p className="environment-issue">如需安装兼容的本机 Node/npm，可参考：<code>{environment.downloadUrl}</code></p>)}
     {environment?.selection === 'explicit' && !environment.ready && <p className="environment-issue">已保留你明确选择的路径，失效时不会自动改用其他工具。请修正路径，或点击“恢复默认工具”。</p>}
-    <form className="node-path-form" onSubmit={(event) => { event.preventDefault(); void configure(nodePath.trim()); }}>
+    <form className="node-path-form" onSubmit={(event) => { event.preventDefault(); const path = nodePath.trim(); if (frontendPlatform.isAbsolutePath(path)) void configure(path); }}>
       <label htmlFor="node-path">指定本机 Node 可执行文件的绝对路径<span className="optional-label">可选</span></label>
-      <div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder="例如 /opt/homebrew/bin/node" disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !nodePath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>恢复默认工具</button></div>
+      <div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder={frontendPlatform.nodePathPlaceholder} disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !frontendPlatform.isAbsolutePath(nodePath.trim())}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>恢复默认工具</button></div>
       <p>{environment ? environment.managedNodePath ? '恢复默认工具会清除显式路径，使用平台配套 Node/npm。' : '此环境没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境。' : '读取环境后可查看默认工具来源。'} 路径只保存在此开发版的本机设置中。</p>
     </form>
     {error && <p role="alert" className="environment-issue">{error}</p>}

@@ -664,3 +664,9 @@ Windows 11 25H2 / build 26200.9711 上，实际执行 `node scripts/desktop.mjs 
 只修 W1.24 唯一超时夹具：登记信号使用 test 内单一 30 秒上限；超时先释放该夹具的 release sender，避免失败后的阻塞 worker 阻止测试退出，再报告已结束提交的真实错误。原 Mac 成功路径锁/关闭断言和产品迁移代码保持，没有删除、跳过或将未实现功能改判通过。
 
 唯一真实 core `--exact` 最终在 **30.13 秒**正常结束，仍为 **0 通过、1 失败、0 忽略**：INVALID_MIGRATION_TARGET 包裹 workspace-native-migration / PLATFORM_FEATURE_UNAVAILABLE / not_started。最初 5 秒上限也实测能退出，复审后改为 30 秒，给自托管 Mac 的并发/磁盘等待保留余地。没有重跑完整 core，也不将上轮 1 timeout 私自换算成一次新的全组结果；迁移业务失败仍留待 W5。
+
+### W1.26 — 界面平台文案和原生路径提示
+
+将平台相关展示集中到 frontend-platform 适配，以 bootstrap.platform.build.target 的真实 Rust 编译目标选择文案，不依赖 UA、路径猜测或默认 Mac。Windows 显示资源管理器、本机内置 NTFS 迁移要求、关闭主窗口退出说明，以及 Node/Git/工作区的 Windows 路径示例。Node/Git 和迁移表单接受盘符、UNC、混合分隔符与扩展路径，拒绝相对/盘符相对路径；这是词法提示，提交原始修剪后的字符串，后端保留全部权限、身份和卷核验，未开放尚未实现的迁移。
+
+Mac 原文案及 `/` 开头规则逐字保留；metadata 尚未返回或不认识时使用中性文案。统一 React provider 让异步 bootstrap 到达后设置与工作区组件同时切换，不改诊断加载、pending 或繁忙状态规则。真实 tsc + Vite 构建通过；相关测试 **58/58**、完整 UI **486/486**，均无失败或跳过，包含实际 DOM 的延迟 metadata、Windows 表单提交和原 Mac Finder/草稿/忙碌回归。这里是前端测试；更新后的真实 Windows 主界面仍待下一次正常 dev 启动观察，Mac 实际运行仍待自托管 CI。

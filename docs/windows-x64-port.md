@@ -91,6 +91,7 @@
 | 网页下载与外部保存 | 原 WKWebView stage、写入归属、Finished 与用户所选位置发布 | WebView2 写入归属与外部发布未完成时，在 Requested 可见报告并拒绝；不修改 destination、不取得 writer，未受理的 Finished 不构成交付 | `browser_download.rs`；原 Unix 正文与 8 个测试在 `browser_download/unix.rs` 保持原模块层级；Windows 边界在 `browser_download/windows.rs` |
 | 编辑器确认的目录身份 | 求助摘录前后核对路径与 dev/ino，不按目录内容变化撤销确认 | 核对卷序列号与完整 128 位 FileId；不新增时间、权限或内容变化比较 | `desktop_path_io.rs`，由 `project_onboarding.rs` 调用；原生观察复用 `platform-native::tool_files::Facts` |
 | 管理器关闭与应用事件 | 关闭管理器隐藏窗口，Dock Reopen 显示；退出先等待受管服务排空 | 保留已有非 Mac 关闭后退出政策，退出同样等待排空；没有 Cocoa Reopen 事件 | `desktop_app_events.rs`；`main.rs` 仅注册两个事件处理入口 |
+| 界面平台文案与路径提示 | 原 Finder、Dock/Cmd+Q、Mac 路径示例及 `/` 开头提示 | 依据 bootstrap 的实际编译 target 集中选择资源管理器、关闭退出、Windows 路径示例与盘符/UNC/扩展路径提示；缺失 target 使用中性文案。仅为输入提示，实际路径、卷和权限仍由原生后端核验 | `apps/desktop/src/frontend-platform.tsx`；App 的统一 provider 供设置、Node/Git 工具和 WorkspaceLocation 使用；Mac 原文案和词法规则保持 |
 | 桌面平台图标 | 现有熊猫 PNG / ICNS | 从同一已跟踪 PNG 通过仓库已安装 Tauri CLI 转换 ICO，保留原 Mac 素材 | `apps/desktop/src-tauri/icons/icon.ico`；图标不是应用或安装包产物 |
 | 在文件管理器中打开 | `/usr/bin/open -a Finder` | SystemRoot 下的 `explorer.exe <路径>`；选文件为独立 `/select,<路径>` 参数。只确认创建派发进程，不等待不可靠的退出码或终止用户的 Explorer；真实窗口定位待验收 | `apps/desktop/src-tauri/src/local_directory.rs` |
 | 自动打开已安装编辑器 | 原 Mac bundle ID、Apple 签名验证及 workspace URL 派发 | 安装验证与自动打开暂未完成，入口明确拒绝；界面可继续提供手动选择目录与复制接手说明，不伪造已安装路径 | `codex_handoff.rs`；原 Mac 全文/测试在 `codex_handoff/macos.rs` 同层保留，临时边界在 `unavailable.rs` |
