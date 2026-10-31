@@ -1,11 +1,17 @@
 // Native Git transactions remain closed until Windows repository snapshots,
 // owned commands, publications and recovery are implemented.
 use crate::{
-    builds::BuildManager, git_environment::GitEnvironmentManager, ApiError, ProjectHandle,
-    ProjectStore, RuntimePaths, TaskRecord,
+    builds::BuildManager, git_environment::GitEnvironmentManager, ApiError, ProjectStore,
+    RuntimePaths, TaskRecord,
 };
 use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
+
+#[path = "windows/build_guard.rs"]
+mod build_guard;
+#[path = "windows/data_inventory.rs"]
+mod data_inventory;
+pub(crate) use build_guard::BuildGitGuard;
 
 fn unavailable() -> ApiError {
     ApiError::new(
@@ -157,12 +163,10 @@ impl ProjectGitManager {
 }
 
 pub(crate) fn check_data_operations_available(workspace: &Path, id: &str) -> Result<(), ApiError> {
-    let _ = (workspace, id);
-    Err(unavailable())
+    data_inventory::check_project(workspace, id)
 }
 pub(crate) fn check_data_workspace_available(workspace: &Path) -> Result<(), ApiError> {
-    let _ = workspace;
-    Err(unavailable())
+    data_inventory::check_workspace(workspace)
 }
 pub(crate) fn check_data_recovery_record(
     workspace: &Path,
@@ -187,30 +191,6 @@ pub(crate) fn inspect_data_restore_completion(
     Err(unavailable())
 }
 
-pub(crate) enum BuildGitGuard {}
-impl BuildGitGuard {
-    pub(crate) async fn capture_with_keep_alive(
-        project: &ProjectHandle,
-        environment: &GitEnvironmentManager,
-        stop: watch::Receiver<bool>,
-        processes: crate::owned_process::OwnedProcessRegistry,
-        keep_alive: Arc<dyn Send + Sync>,
-    ) -> Result<Self, ApiError> {
-        let _ = (project, environment, stop, processes, keep_alive);
-        Err(unavailable())
-    }
-    pub(crate) async fn recheck_with_keep_alive(
-        &self,
-        project: &ProjectHandle,
-        stop: watch::Receiver<bool>,
-        processes: crate::owned_process::OwnedProcessRegistry,
-        keep_alive: Arc<dyn Send + Sync>,
-    ) -> Result<(), ApiError> {
-        let _ = (project, stop, processes, keep_alive);
-        Err(unavailable())
-    }
-}
-
 #[cfg(test)]
 mod closed_boundary_tests {
     use super::*;
@@ -226,13 +206,22 @@ mod closed_boundary_tests {
         std::fs::write(&retained, b"disposable evidence; not a recovery record").unwrap();
         let before = crate::file_identity::PersistedIdentity::capture(&retained).unwrap();
         for error in [
-            check_data_operations_available(&root, "format-only").unwrap_err(),
-            check_data_workspace_available(&root).unwrap_err(),
             data_restore_metadata_usage(&root).unwrap_err(),
+            check_data_recovery_record(
+                &root,
+                "format-only",
+                &GitDataSaveFinalizeInput {
+                    save_task_id: "task_disposable".into(),
+                    expected_journal_digest: "a".repeat(64),
+                },
+            )
+            .unwrap_err(),
         ] {
             assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
             assert_eq!(error.details["operationOutcome"], "not_started");
         }
+        check_data_operations_available(&root, "format-only").unwrap();
+        check_data_workspace_available(&root).unwrap();
         let absent = root.join("missing-root");
         assert!(check_data_workspace_available(&absent).is_err());
         assert!(!absent.exists());

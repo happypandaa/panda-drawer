@@ -738,3 +738,11 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 实际新 native 专项 **3/3**，真实临时只读文件、空目录移除；已换名原件及同名替换对象保留；真实不共享删除的 open HANDLE 拒绝，释放后可移除；只读硬链接仅所选名字消失、外部另名内容与只读位保持。native 全目标严格 Clippy -Dwarnings 通过；Windows 专属清除只读位语句局部注明该 Clippy Unix mode 提示不适用，没有放宽 Unix 权限或整组屏蔽检查。
 
 本轮完整 native 另实测 **57 通过、2 失败、2 明确忽略**：原已通过的 suspended_owner_is_registered_before_any_child_code_and_then_resumes 与 observed_exit_259_is_not_reported_as_still_running 均在真实等待后未取得退出状态。large stderr/真实子孙 Job/异常 host 退出仍通过，不能把全组记为绿色。进程专项也在独立 native harness 复现入口前等待，正在定位，没有删/跳原失败测试。此提交仅移除原语，不宣称完整目录清理、删除任务、迁移或 W2 验收通过。
+
+### W2.7 — 无 Git 网页构建的实际准入和恢复只读观察
+
+Windows BuildGitGuard 只在实际 marker 扫描证明无仓库时通行，不解析 Git settings、不选择/探测工具、不创建进程或临时 Git 目录；存在根/祖先/嵌套仓库、gitfile 或异常 marker 时仍明确拒绝未实现的索引核验。原源码排除规则按原生组件转换，普通源码 reparse leaf 如 Mac symlink leaf 不跟入目标；没有添加源码目录时间戳或深度准入。capture/recheck 保持真实 keep_alive/read gate 到同步扫描结束，独立复审发现的 wildcard 提前 Drop 已修正并用实际许可验证。
+
+恢复 inventory 只对固定 .platform/project-state/git 真实缺失/空目录通行，保留整个扫描中的原生 pins，并重查早先空目录及列表变化。任何 pending、终态、损坏或未知记录均保留，不伪造恢复结果。项目目录 1000 上限与 Mac project_git_data.rs::check_data_workspace_available 一致；复审曾怀疑新增限制，核对实际 Mac 入口后保留原预算，没有对外改变契约。
+
+完整 core 实际 project_git 组 **20/20**（18 个 Windows 边界与 2 个共享 wire 测试），无失败、忽略。覆盖实际临时 ProjectStore、坏工具配置/缺失工具仍无进程、构建中新增 .git 被拒、同用户普通源码新增/改名允许、真实 junction、大小写、混合路径、早先项目迟到记录，以及 capture/recheck 扫描期间真实 lease 和 read gate 保持、返回后释放。第一次根代理误用 project_git::windows:: 过滤得到 0 项，不算验证；随后用实际注册名完整执行得到上述 20 项。Mac 相关原文件零改、实际 CI 仍待运行；仓库索引、Git 写入及崩溃恢复仍未完成。
