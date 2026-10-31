@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "service_workspace_migration/cleanup_admission.rs"]
+mod cleanup_admission;
+
 /// The native receipt belongs to this migration, never to a path supplied by a
 /// cleanup request. Native callbacks retain their own reversible pause tokens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +71,7 @@ pub(super) fn submit_selected_cleanup(
     shared: Arc<RuntimeSwitch>,
 ) -> std::result::Result<(), ApiError> {
     let state = shared.snapshot();
-    if let Some(journal) = crate::workspace::selected_cleanup(&state.paths)? {
+    cleanup_admission::with_selected(crate::workspace::selected_cleanup(&state.paths)?, |journal| {
         if let Err(error) = submit_cleanup(shared, state.clone(), &journal.task_id) {
             let _ = crate::workspace::retain_cleanup_reopen_failure(
                 &state.paths,
@@ -77,8 +80,8 @@ pub(super) fn submit_selected_cleanup(
             );
             return Err(error);
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub(super) fn submit_cleanup(
@@ -97,6 +100,7 @@ pub(super) fn submit_cleanup(
             "只能重试当前已登记迁移的原目录收尾。",
         )
     })?;
+    cleanup_admission::require_cleanup()?;
     if shared.migration_active.load(Ordering::Acquire) {
         if let Some(task) = journal
             .cleanup_task_id
