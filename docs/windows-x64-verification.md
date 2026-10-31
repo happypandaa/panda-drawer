@@ -1058,3 +1058,11 @@ Windows 登记交换在原 recovery permit、freeze 与独占 gate 中使用实�
 默认新增 3 项通过，真实 CommandLineToArgvW 验证中文、空格、引号、尾反斜线、shell 字符和长路径仍是单个项目参数；伪安装目录拒绝且不创建接手材料。实际已装官方 Store 包只读完整性专项 **1/1**，0.02 秒，未启动/修改 Codex。完整桌面默认 **104 通过、13 专用入口忽略**，0.93 秒；Clippy **-Dclippy::all 通过**（测试目标 5 Rust 警告保留）。首轮 HSTRING.as_wide 不存在，修为直接 &[u16] 后真实编译通过；尚未执行真实激活，不将其记为 GUI 打开编辑器成功。
 
 正常 GUI 点击“在资源管理器中打开”，实际打开 C 盘当前用户 PandaDrawer-Dev，窗口树与地址面包屑确认路径及 .platform/projects 内容。仅是当前开发版操作，不替代第 7 节安装版检查。
+
+### W5.12 — 正常 GUI 运行中 Node 项目的停止并完整删除
+
+本轮重新实际读取系统信息：Win32_OperatingSystem 为 Windows 11 Pro 10.0.26300 x64，CurrentVersion 为 DisplayVersion 26H2、CurrentBuild 26300、UBR 9711（内核文件自身版本 26100.9711）。后续证据以本次实际观察为准，不沿用早期 25H2/26200 的记录；这仍不是 Windows 10 22H2 证明。
+
+正常退出旧管理器，在原已核验 rZS2kg 资源/CLI 配置下重编最新冻结开发版，32.12 秒，真实独立启动；本轮复用原准备资源，没有称为 fresh npm run dev 或 NSIS 安装。实际 native folder picker 选新建的中文空格空目录“临时 W5 完整删除 Node 74e184d8”，生成并登记 UUID 015f4961-df19-44b4-a778-46baef078cf7，ownership.generatedSource 绑定真实 FullId。正常打开独立窗口，点击连接检查显示“你的本地应用已经连通。”，管理器 3 项/1 运行。
+
+保持应用窗口和后端运行，从管理器右键菜单进入完整删除。预览明确展示 C 盘实例、源码 owner、D 盘生成源码、ownership，跨盘标签正确；核对后按原复选框和最终按钮提交。任务成功返回主界面 2 项/0 运行，独立 Node 窗口实际消失，原服务监听端口不再存在；逐一物理核对上述四个项目路径及 node-UUID WebView2 目录均不存在。原网页 B、旧 Node 测试项目仍保留。该成功仅适用于这一个明确 disposable 项目，不推论其它项目残留、安装版、Task Manager 中断或全局卸载前清除已通过。
