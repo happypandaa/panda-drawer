@@ -100,3 +100,47 @@ fn synthetic_pid_change_after_sealing_never_changes_the_accepted_last_pid() {
     assert!(owner.retire().is_err());
     assert_eq!(released.load(Ordering::Acquire), 0);
 }
+
+#[test]
+fn actual_node_profile_identity_keeps_its_kind_and_pin_until_synthetic_receipts_finish() {
+    let temporary = tempfile::Builder::new()
+        .prefix("panda-disposable-node-browser-owner-中文 space-")
+        .tempdir()
+        .unwrap();
+    let ledger = StoreLedger::new(temporary.path().canonicalize().unwrap());
+    let id = "00000000-0000-4000-8000-000000000031";
+    ledger.record(ProjectKind::Node, id).unwrap();
+    ledger
+        .record(ProjectKind::Web, "prj_disposable_node_peer")
+        .unwrap();
+    let profile = Arc::new(ledger.bind_profile(ProjectKind::Node, id).unwrap());
+    let directory = profile.directory().to_path_buf();
+    let identity = native::open_no_reparse(&directory).unwrap().identity;
+    let web = Arc::new(
+        ledger
+            .bind_profile(ProjectKind::Web, "prj_disposable_node_peer")
+            .unwrap(),
+    );
+    assert!(!identity.same_object(&native::open_no_reparse(web.directory()).unwrap().identity));
+    assert!(BrowserOwner::new(format!("project-{id}"), 41, profile.clone()).is_err());
+    assert!(BrowserOwner::new(format!("node-app-{id}"), 41, web).is_err());
+    assert!(BrowserOwner::new("arbitrary-label".into(), 41, profile.clone()).is_err());
+    let owner = BrowserOwner::new(format!("node-app-{id}"), 41, profile).unwrap();
+    assert_eq!(owner.identity, identity);
+    let released = Arc::new(AtomicUsize::new(0));
+    owner.hold_resource(Release(released.clone())).unwrap();
+    owner.bind_pid(101).unwrap();
+    owner.seal_pid(101).unwrap();
+    owner.destroyed();
+    assert!(owner.retire().is_err());
+    let renamed = temporary.path().join("retired-node-profile");
+    assert!(std::fs::rename(&directory, &renamed).is_err());
+    assert_eq!(released.load(Ordering::Acquire), 0);
+    // These are synthetic ordering observations; the opt-in Node fixture uses
+    // actual Env7/Env5 callbacks to establish real browser release separately.
+    owner.browser_exited(101);
+    owner.retire().unwrap();
+    assert_eq!(released.load(Ordering::Acquire), 1);
+    std::fs::rename(&directory, &renamed).unwrap();
+    assert!(identity.same_object(&native::open_no_reparse(&renamed).unwrap().identity));
+}

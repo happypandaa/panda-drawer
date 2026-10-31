@@ -461,10 +461,21 @@ fn build_on_main_admitted(
         .handle
         .webview_stores()
         .record(platform_core::project_cleanup::ProjectKind::Node, id)?;
+    let profile = super::project_webview_profile::Profile::prepare(
+        app,
+        &state.handle.webview_stores(),
+        platform_core::project_cleanup::ProjectKind::Node,
+        id,
+        &label(id)?,
+        store_identifier,
+    )?;
     let receipt = state
         .window_lifetimes
         .reserve_project(&label(id)?, native)
         .map_err(|_| error("上次应用窗口尚未确认关闭，请保留当前状态。"))?;
+    profile.reserve(app, receipt.generation).inspect_err(|_| {
+        receipt.failed();
+    })?;
     let current = Arc::new(Mutex::new(Session {
         origin: Some(launch.clone()),
         phase: Phase::Opening,
@@ -476,19 +487,24 @@ fn build_on_main_admitted(
         .unwrap_or_else(|p| p.into_inner())
         .insert(id.into(), current.clone());
     let navigation = current.clone();
+    let navigation_profile = profile.clone();
     let title = detail["name"].as_str().unwrap_or("应用");
     let config = AppWindowConfig::from_value(detail.get("window").filter(|value| !value.is_null()))
         .unwrap_or_default();
     let identity = WindowIdentity::node(id);
     let size = state.window_sizes.initial(app, &identity, config);
-    let window =
-        tauri::WebviewWindowBuilder::new(app, label(id)?, tauri::WebviewUrl::External(launch))
-            .data_store_identifier(store_identifier)
-            .title(super::project_title(title))
-            .inner_size(size.width, size.height)
-            .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
-            .disable_drag_drop_handler()
-            .on_navigation(move |url| {
+    let window = profile
+        .configure(tauri::WebviewWindowBuilder::new(
+            app,
+            label(id)?,
+            profile.initial_url(launch.clone()),
+        ))
+        .title(super::project_title(title))
+        .inner_size(size.width, size.height)
+        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .disable_drag_drop_handler()
+        .on_navigation(move |url| {
+            navigation_profile.navigation(|| {
                 let current = navigation.lock().unwrap_or_else(|p| p.into_inner());
                 navigation_allowed(
                     url,
@@ -499,20 +515,23 @@ fn build_on_main_admitted(
                     ),
                 )
             })
-            // Node engine downloads are not yet a supported source-contract
-            // feature. Do not allow WebKit's untracked default file writes.
-            .on_download(|_, _| false)
-            .on_new_window(|_, _| NewWindowResponse::Deny)
-            // This source contract does not yet declare camera/microphone grants.
-            .on_permission_request(|_, _| PermissionResponse::Deny)
-            .build()
-            .map_err(|_| {
-                receipt.failed();
-                error("无法打开应用窗口，关闭状态须保留核对。")
-            })?;
+        })
+        // Node engine downloads are not yet a supported source-contract
+        // feature. Do not allow WebKit's untracked default file writes.
+        .on_download(|_, _| false)
+        .on_new_window(|_, _| NewWindowResponse::Deny)
+        // This source contract does not yet declare camera/microphone grants.
+        .on_permission_request(|_, _| PermissionResponse::Deny)
+        .build()
+        .map_err(|_| {
+            profile.creation_failed();
+            receipt.failed();
+            error("无法打开应用窗口，关闭状态须保留核对。")
+        })?;
     let event_app = app.clone();
     let event_id = id.to_owned();
     let event_session = current.clone();
+    let profile_generation = receipt.generation;
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {
             if close_requested_generation(&event_app, &event_id, &event_session) {
@@ -529,16 +548,40 @@ fn build_on_main_admitted(
                 }
                 state.window_sizes.untrack(&receipt.label);
             });
-            destroyed_generation(&event_app, &event_id, &event_session);
+            super::project_webview_profile::window_destroyed(
+                &event_app,
+                &receipt.label,
+                receipt.generation,
+            );
+            destroyed_generation(&event_app, &event_id, &event_session, receipt.generation);
         }
         _ => {}
     });
     state.window_sizes.track(&window, identity, config);
-    let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
-    if current.phase == Phase::Opening {
-        current.phase = Phase::Running;
+    {
+        let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
+        if current.phase == Phase::Opening {
+            current.phase = Phase::Running;
+        }
+    }
+    profile.bind_window(&window)?;
+    if let Err(issue) = profile.activate(&window, launch, || Ok(())) {
+        profile.abort_start(app, &window, profile_generation);
+        return Err(issue);
     }
     Ok(())
+}
+
+async fn destroy_window(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    window: tauri::WebviewWindow,
+) -> Result<(), ApiError> {
+    let generation = state
+        .window_lifetimes
+        .receipt(window.label())
+        .map(|receipt| receipt.generation);
+    super::project_webview_profile::destroy_node(app, window, generation).await
 }
 
 async fn blank(window: &tauri::WebviewWindow) -> Result<(), ApiError> {
@@ -618,7 +661,7 @@ async fn teardown_locked(
     // A window failure must not skip stopping the known owned backend.
     let mut window_issue = None;
     if let Some(window) = window {
-        if window.destroy().is_err() {
+        if destroy_window(app, state, window).await.is_err() {
             if let Some(current) = &current {
                 phase(current, Phase::Failed, None);
             }
@@ -635,7 +678,9 @@ async fn teardown_locked(
     if receipt_required {
         let receipt = receipt
             .ok_or_else(|| error("应用窗口关闭记录缺失，未继续删除，请重新启动平台后核对。"))?;
-        wait_destroyed(receipt).await?;
+        wait_destroyed(receipt.clone()).await?;
+        super::project_webview_profile::wait_closed(app, &receipt.label, Some(receipt.generation))
+            .await?;
     }
     stopped?;
     if let Some(current) = current {
@@ -715,7 +760,7 @@ pub(super) async fn restart(
             .await;
         if !closing(&current) {
             phase(&current, Phase::Failed, None);
-            let _ = window.destroy();
+            let _ = destroy_window(app, state, window).await;
         }
         return Err(error);
     }
@@ -776,7 +821,7 @@ pub(super) async fn restart(
             .await;
         if !closing(&current) {
             phase(&current, Phase::Failed, None);
-            let _ = window.destroy();
+            let _ = destroy_window(app, state, window).await;
         }
     }
     result
@@ -827,7 +872,12 @@ fn close_requested_generation(
     true
 }
 
-fn destroyed_generation(app: &tauri::AppHandle, id: &str, current: &Arc<Mutex<Session>>) {
+fn destroyed_generation(
+    app: &tauri::AppHandle,
+    id: &str,
+    current: &Arc<Mutex<Session>>,
+    generation: u64,
+) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
@@ -856,6 +906,15 @@ fn destroyed_generation(app: &tauri::AppHandle, id: &str, current: &Arc<Mutex<Se
         if state
             .node_apps
             .stop_runtime_with_reason(&id, RuntimeStopReason::WindowClosed)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Ok(label) = label(&id) else {
+            return;
+        };
+        if super::project_webview_profile::wait_closed(&app, &label, Some(generation))
             .await
             .is_err()
         {
@@ -928,7 +987,7 @@ pub(super) async fn reconcile(app: &tauri::AppHandle) {
         if let Ok(label) = label(&id) {
             if let Some(window) = app.get_webview_window(&label) {
                 let _ = blank(&window).await;
-                if window.destroy().is_err() {
+                if destroy_window(app, &state, window).await.is_err() {
                     phase(&current, Phase::Failed, None);
                 }
             }

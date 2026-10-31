@@ -24,8 +24,11 @@ const FIXTURE_ID: &str = "dev.happypandaa.pandadrawer.project-profile-fixture";
 const CHILD: &str =
     "project_webview_profile::windows::fixture::real_project_profile_fixture_process";
 const ROOT_VARIABLE: &str = "PANDA_DISPOSABLE_PROJECT_UDF_FIXTURE";
+const NODE_VARIABLE: &str = "PANDA_DISPOSABLE_NODE_UDF_FIXTURE";
 const A: &str = "prj_disposable_profile_a";
 const B: &str = "prj_disposable_profile_b";
+const NODE_A: &str = "00000000-0000-4000-8000-000000000041";
+const NODE_B: &str = "00000000-0000-4000-8000-000000000042";
 const PAGE: &str = r#"<!doctype html><meta charset=utf-8><title>Disposable project profile fixture</title>
 <script>
 const project = location.pathname.split('/')[2];
@@ -72,15 +75,39 @@ fn failure(message: &str) -> ApiError {
     ApiError::new("PROJECT_PROFILE_FIXTURE_FAILED", message)
 }
 fn label(id: &str) -> String {
-    format!("project-{id}")
+    match kind(id) {
+        ProjectKind::Web => format!("project-{id}"),
+        ProjectKind::Node => format!("node-app-{id}"),
+    }
+}
+fn kind(id: &str) -> ProjectKind {
+    match id {
+        NODE_A | NODE_B => ProjectKind::Node,
+        A | B => ProjectKind::Web,
+        _ => panic!("fixture only uses its own explicit disposable IDs"),
+    }
 }
 
 #[test]
 #[ignore = "Opt-in real two-project WebView2 fixture requires an interactive desktop"]
 fn real_same_origin_projects_keep_storage_isolated_and_wait_for_browser_exit() {
+    run_profile_fixture(false);
+}
+
+#[test]
+#[ignore = "Opt-in real Node-kind WebView2 profiles require an interactive desktop; no normal app data is read"]
+fn real_node_profiles_keep_storage_isolated_and_wait_for_their_actual_browser_exit() {
+    run_profile_fixture(true);
+}
+
+fn run_profile_fixture(node: bool) {
     for verbatim in [false, true] {
         let root = tempfile::Builder::new()
-            .prefix("panda-disposable-project-udf-real-")
+            .prefix(if node {
+                "panda-disposable-node-udf-real-"
+            } else {
+                "panda-disposable-project-udf-real-"
+            })
             .tempdir()
             .unwrap()
             .keep()
@@ -96,6 +123,7 @@ fn real_same_origin_projects_keep_storage_isolated_and_wait_for_browser_exit() {
                 "--test-threads=1",
             ])
             .env(ROOT_VARIABLE, &root)
+            .env(NODE_VARIABLE, if node { "true" } else { "false" })
             .env(
                 "PANDA_DISPOSABLE_PROJECT_VERBATIM_UDF_FIXTURE",
                 if verbatim { "true" } else { "false" },
@@ -129,6 +157,10 @@ fn real_same_origin_projects_keep_storage_isolated_and_wait_for_browser_exit() {
             "Real project profile fixture failed; retained {}: {status:?}; {report:?}; {}",
             root.display(),
             fs::read_to_string(root.join("child.log")).unwrap_or_default()
+        );
+        assert_eq!(
+            report.as_ref().unwrap()["details"]["projectKind"],
+            if node { "node" } else { "web" }
         );
         eprintln!(
             "Actual same-origin project profile fixture: {}",
@@ -291,9 +323,8 @@ fn open(
         phase,
         mark,
     } = page;
-    let identifier = ledger.record(ProjectKind::Web, id)?;
-    let profile =
-        profile::Profile::prepare(app, ledger, ProjectKind::Web, id, &label(id), identifier)?;
+    let identifier = ledger.record(kind(id), id)?;
+    let profile = profile::Profile::prepare(app, ledger, kind(id), id, &label(id), identifier)?;
     let receipt = lifetimes
         .reserve(&label(id))
         .map_err(|_| failure("Fixture generation still owned"))?;
@@ -380,17 +411,27 @@ async fn close(
     let receipt = lifetimes
         .receipt(&window_label)
         .ok_or_else(|| failure("Fixture destroy receipt missing"))?;
+    let node = kind(id) == ProjectKind::Node;
     let selected = window_label.clone();
-    on_main(app, move |app| {
+    let window = on_main(app, move |app| {
         let window = app
             .get_webview_window(&selected)
             .ok_or_else(|| failure("Fixture window missing before destroy"))?;
+        if node {
+            return Ok(Some(window));
+        }
         profile::before_destroy(app, &window, generation)?;
         window
             .destroy()
-            .map_err(|cause| failure(&cause.to_string()))
+            .map_err(|cause| failure(&cause.to_string()))?;
+        Ok(None)
     })
     .await?;
+    if let Some(window) = window {
+        // Exercise the same UI-thread sealing adapter as Node's real close,
+        // restart rollback and monitor paths, then require real Env5 exit.
+        profile::destroy_node(app, window, Some(generation)).await?;
+    }
     tokio::time::timeout(Duration::from_secs(5), receipt.wait())
         .await
         .map_err(|_| failure("Fixture native Destroyed missing"))?;
@@ -467,11 +508,17 @@ fn real_project_profile_fixture_process() {
         return;
     };
     let root = PathBuf::from(root).canonicalize().unwrap();
+    let node = std::env::var(NODE_VARIABLE).as_deref() == Ok("true");
+    let (a_id, b_id) = if node { (NODE_A, NODE_B) } else { (A, B) };
     assert!(root
         .file_name()
         .unwrap()
         .to_string_lossy()
-        .starts_with("panda-disposable-project-udf-real-"));
+        .starts_with(if node {
+            "panda-disposable-node-udf-real-"
+        } else {
+            "panda-disposable-project-udf-real-"
+        }));
     let flags = std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
     let text = flags
         .as_deref()
@@ -503,39 +550,39 @@ fn real_project_profile_fixture_process() {
         let data_root = if std::env::var("PANDA_DISPOSABLE_PROJECT_VERBATIM_UDF_FIXTURE").as_deref() == Ok("true") { root.clone() } else { PathBuf::from(std::ffi::OsString::from_wide(&units[4..])) };
         fs::write(root.join("path-presentation.json"),serde_json::to_vec_pretty(&json!({"dataRootPassedToLedger":data_root})).unwrap()).unwrap();
         let ledger = StoreLedger::new(data_root);
-        let a = open(app, &ledger, &lifetimes, PageRequest {id:A,origin:&origin,phase:"first-a",mark:"A1"}, &observations).unwrap();
+        let a = open(app, &ledger, &lifetimes, PageRequest {id:a_id,origin:&origin,phase:"first-a",mark:"A1"}, &observations).unwrap();
         let (app, root, finished, observations, origin) = (app.clone(), root.clone(), finishing.clone(), observations.clone(), origin.clone());
         tauri::async_runtime::spawn(async move {
             let result = async {
-                let first_a = report(&observations,A,"first-a").await?; expect(&first_a,None,"A1")?;
-                let native_a = native_cookie_facts(&app,A).await?;
+                let first_a = report(&observations,a_id,"first-a").await?; expect(&first_a,None,"A1")?;
+                let native_a = native_cookie_facts(&app,a_id).await?;
                 fs::write(root.join("native-cookies-first-a.json"),serde_json::to_vec_pretty(&native_a).unwrap())?;
                 let (ledger_b,lifetimes_b,origin_b,observations_b) = (ledger.clone(),lifetimes.clone(),origin.clone(),observations.clone());
-                let b = on_main(&app,move |app| open(app,&ledger_b,&lifetimes_b,PageRequest{id:B,origin:&origin_b,phase:"first-b",mark:"B1"},&observations_b)).await?;
+                let b = on_main(&app,move |app| open(app,&ledger_b,&lifetimes_b,PageRequest{id:b_id,origin:&origin_b,phase:"first-b",mark:"B1"},&observations_b)).await?;
                 if a.pid == b.pid || a.actual == b.actual || a.root_id == b.root_id { return Err(failure("Two projects shared a browser/profile identity")); }
-                let first_b = report(&observations,B,"first-b").await?; expect(&first_b,None,"B1")?;
-                let native_b = native_cookie_facts(&app,B).await?;
+                let first_b = report(&observations,b_id,"first-b").await?; expect(&first_b,None,"B1")?;
+                let native_b = native_cookie_facts(&app,b_id).await?;
                 fs::write(root.join("native-cookies-first-b.json"),serde_json::to_vec_pretty(&native_b).unwrap())?;
-                close(&app,&lifetimes,A,a.generation).await?;
-                if a.released.load(Ordering::Acquire) != 1 || b.released.load(Ordering::Acquire) != 0 || !owner::current(&app,&label(B),b.generation)?.document_allowed() { return Err(failure("A close released its peer or retained its own lease")); }
+                close(&app,&lifetimes,a_id,a.generation).await?;
+                if a.released.load(Ordering::Acquire) != 1 || b.released.load(Ordering::Acquire) != 0 || !owner::current(&app,&label(b_id),b.generation)?.document_allowed() { return Err(failure("A close released its peer or retained its own lease")); }
                 // The actual A leaf can be renamed only after its own browser
                 // exit and all of this generation's pinned profile handles end.
                 let renamed = root.join("webview-stores/disposable-closed-a-rename-check");
                 fs::rename(&a.actual,&renamed)?; fs::rename(&renamed,&a.actual)?;
-                evaluate(&app,B,"reportProfile('b-kept-open','B2')").await?;
-                let kept_b = report(&observations,B,"b-kept-open").await?; expect(&kept_b,Some("B1"),"B2")?;
+                evaluate(&app,b_id,"reportProfile('b-kept-open','B2')").await?;
+                let kept_b = report(&observations,b_id,"b-kept-open").await?; expect(&kept_b,Some("B1"),"B2")?;
                 let (ledger_a,lifetimes_a,origin_a,observations_a) = (ledger.clone(),lifetimes.clone(),origin.clone(),observations.clone());
-                let reopened = on_main(&app,move |app| open(app,&ledger_a,&lifetimes_a,PageRequest{id:A,origin:&origin_a,phase:"reopen-a",mark:"A2"},&observations_a)).await?;
+                let reopened = on_main(&app,move |app| open(app,&ledger_a,&lifetimes_a,PageRequest{id:a_id,origin:&origin_a,phase:"reopen-a",mark:"A2"},&observations_a)).await?;
                 if reopened.generation == a.generation || reopened.actual != a.actual || reopened.root_id != a.root_id { return Err(failure("A reopen changed profile identity or reused window generation")); }
-                let reopened_a = report(&observations,A,"reopen-a").await?;
-                let native_reopened = native_cookie_facts(&app,A).await?;
+                let reopened_a = report(&observations,a_id,"reopen-a").await?;
+                let native_reopened = native_cookie_facts(&app,a_id).await?;
                 fs::write(root.join("native-cookies-reopened-a.json"),serde_json::to_vec_pretty(&native_reopened).unwrap())?;
                 expect(&reopened_a,Some("A1"),"A2")?;
-                evaluate(&app,B,"reportProfile('b-after-reopen',null)").await?;
-                let after_b = report(&observations,B,"b-after-reopen").await?; expect(&after_b,Some("B2"),"B2")?;
-                close(&app,&lifetimes,A,reopened.generation).await?; close(&app,&lifetimes,B,b.generation).await?;
+                evaluate(&app,b_id,"reportProfile('b-after-reopen',null)").await?;
+                let after_b = report(&observations,b_id,"b-after-reopen").await?; expect(&after_b,Some("B2"),"B2")?;
+                close(&app,&lifetimes,a_id,reopened.generation).await?; close(&app,&lifetimes,b_id,b.generation).await?;
                 if reopened.released.load(Ordering::Acquire) != 1 || b.released.load(Ordering::Acquire) != 1 { return Err(failure("Final real exits did not retire native leases")); }
-                Ok::<Value,ApiError>(json!({"origin":origin,"firstA":first_a,"firstB":first_b,"bWhileAClosed":kept_b,"reopenedA":reopened_a,"bAfterAReopen":after_b,
+                Ok::<Value,ApiError>(json!({"projectKind":kind(a_id).as_str(),"origin":origin,"firstA":first_a,"firstB":first_b,"bWhileAClosed":kept_b,"reopenedA":reopened_a,"bAfterAReopen":after_b,
                     "actualUserDataFolders":[a.actual,b.actual],"fullRootIds":[a.root_id,b.root_id],"browserPids":[a.pid,b.pid,reopened.pid],
                     "nativeCookies":[native_a,native_b,native_reopened],"requestsBeforeActualVerification":[a.requests_before_verification,b.requests_before_verification,reopened.requests_before_verification],"allThreeBrowserGenerationsExitedAndRetired":true,"aLeaseReleasedBeforeBClosed":true}))
             }.await;

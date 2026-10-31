@@ -7,6 +7,36 @@ use tauri::{AppHandle, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry
 mod windows;
 type ProjectBuilder<'a> = WebviewWindowBuilder<'a, Wry, AppHandle>;
 
+#[cfg(windows)]
+fn profile_kind(label: &str) -> Option<ProjectKind> {
+    for (prefix, kind) in [
+        ("project-", ProjectKind::Web),
+        ("node-app-", ProjectKind::Node),
+    ] {
+        if let Some(id) = label.strip_prefix(prefix) {
+            return platform_core::webview_storage::project_identifier(kind, id)
+                .ok()
+                .map(|_| kind);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn require_profile_label(kind: ProjectKind, id: &str, label: &str) -> Result<(), ApiError> {
+    let prefix = match kind {
+        ProjectKind::Web => "project-",
+        ProjectKind::Node => "node-app-",
+    };
+    if profile_kind(label) != Some(kind) || label.strip_prefix(prefix) != Some(id) {
+        return Err(ApiError::new(
+            "WEBVIEW_PROFILE_LABEL_MISMATCH",
+            "项目浏览器标签与原项目种类及身份不一致。",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(super) struct Profile {
     #[cfg(windows)]
@@ -156,7 +186,7 @@ pub(super) fn before_destroy(
 ) -> Result<(), ApiError> {
     #[cfg(windows)]
     {
-        if window.label().starts_with("project-") {
+        if profile_kind(window.label()).is_some() {
             windows::before_destroy(app, window, generation)
         } else {
             Ok(())
@@ -175,7 +205,7 @@ pub(super) async fn wait_closed(
 ) -> Result<(), ApiError> {
     #[cfg(windows)]
     {
-        if let Some(generation) = generation.filter(|_| label.starts_with("project-")) {
+        if let Some(generation) = generation.filter(|_| profile_kind(label).is_some()) {
             windows::wait_closed(app, label, generation).await?;
         }
         Ok(())
@@ -189,11 +219,43 @@ pub(super) async fn wait_closed(
 
 pub(super) fn window_destroyed(app: &AppHandle, label: &str, generation: u64) {
     #[cfg(windows)]
-    if label.starts_with("project-") {
+    if profile_kind(label).is_some() {
         windows::window_destroyed(app, label, generation);
     }
     #[cfg(not(windows))]
     let _ = (app, label, generation);
+}
+
+/// Node's original Mac destruction stays direct. Windows first seals this
+/// exact browser generation on the UI thread, then requests native destruction.
+pub(super) async fn destroy_node(
+    app: &AppHandle,
+    window: WebviewWindow,
+    generation: Option<u64>,
+) -> Result<(), ApiError> {
+    #[cfg(windows)]
+    {
+        if profile_kind(window.label()) != Some(ProjectKind::Node) {
+            return Err(ApiError::new(
+                "WEBVIEW_PROFILE_LABEL_MISMATCH",
+                "Node 浏览器标签与项目种类不一致。",
+            ));
+        }
+        let generation = generation.ok_or_else(|| {
+            ApiError::new(
+                "WEBVIEW_PROFILE_GENERATION_CHANGED",
+                "原 Node 浏览器窗口凭据缺失。",
+            )
+        })?;
+        destroy_for_shutdown(app, window, generation).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, generation);
+        window
+            .destroy()
+            .map_err(|cause| ApiError::new("PROJECT_WINDOW_DESTROY_FAILED", cause.to_string()))
+    }
 }
 
 pub(super) async fn destroy_for_shutdown(
@@ -241,5 +303,38 @@ pub(super) async fn drain_shutdown(app: &AppHandle) -> Result<(), ApiError> {
     {
         let _ = app;
         Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_original_web_and_node_labels_select_their_own_kind() {
+        let id = "00000000-0000-4000-8000-000000000031";
+        let node = format!("node-app-{id}");
+        assert_eq!(profile_kind(&node), Some(ProjectKind::Node));
+        assert_eq!(
+            profile_kind("project-prj_disposable_profile"),
+            Some(ProjectKind::Web)
+        );
+        require_profile_label(ProjectKind::Node, id, &node).unwrap();
+        assert!(require_profile_label(ProjectKind::Web, id, &node).is_err());
+        assert!(require_profile_label(
+            ProjectKind::Node,
+            "00000000-0000-4000-8000-000000000032",
+            &node
+        )
+        .is_err());
+        for label in [
+            "manager",
+            "project-",
+            "node-app-",
+            "node-app-prj_disposable",
+            "node-app-arbitrary",
+            "project-00000000-0000-4000-8000-000000000031",
+        ] {
+            assert_eq!(profile_kind(label), None, "{label}");
+        }
     }
 }
