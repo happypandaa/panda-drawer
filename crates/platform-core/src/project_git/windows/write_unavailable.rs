@@ -1,18 +1,9 @@
 use super::*;
 
-impl GitSourceRestoreRecoverInput {
-    pub(super) fn task_kind(&self) -> &'static str {
-        match self.action {
-            RestoreAction::Continue => "gitSourceRestoreContinue",
-            RestoreAction::Undo => "gitSourceRestoreUndo",
-        }
-    }
-}
-
 pub(super) fn unavailable() -> ApiError {
     ApiError::new(
         "PLATFORM_FEATURE_UNAVAILABLE",
-        "Windows 暂不支持此功能：Git 源码/数据写入与恢复事务尚未完成；只读状态和版本列表可独立使用。",
+        "Windows 暂不支持此功能：已退役数据保存操作的提交收尾尚未适配；源码与数据取回入口独立核对。",
     )
     .detail("platform", "windows")
     .detail("capability", "project-native-git-versions")
@@ -20,84 +11,6 @@ pub(super) fn unavailable() -> ApiError {
 }
 
 impl ProjectGitManager {
-    pub async fn source_restore_preview(
-        &self,
-        id: &str,
-        input: GitSourceRestorePreviewInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<GitSourceRestorePreview, ApiError> {
-        let _ = (id, input, stop);
-        Err(unavailable())
-    }
-    pub async fn source_restore_apply(
-        self: &Arc<Self>,
-        id: &str,
-        input: GitSourceRestoreApplyInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        let _ = (id, input, stop);
-        Err(unavailable())
-    }
-    pub async fn source_restore_recover(
-        self: &Arc<Self>,
-        id: &str,
-        input: GitSourceRestoreRecoverInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        let _ = (id, input, stop);
-        Err(unavailable())
-    }
-    pub async fn source_restore_status(
-        &self,
-        id: &str,
-        stop: watch::Receiver<bool>,
-    ) -> Result<GitSourceRestoreRecoveryStatus, ApiError> {
-        let _ = (id, stop);
-        Err(unavailable())
-    }
-    pub async fn data_restore_preview(
-        &self,
-        id: &str,
-        input: GitDataRestorePreviewInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<GitDataRestorePreview, ApiError> {
-        let _ = (id, input, stop);
-        Err(unavailable())
-    }
-    pub async fn data_restore_apply(
-        self: &Arc<Self>,
-        id: &str,
-        input: GitDataRestoreApplyInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        let _ = (id, input, stop);
-        Err(unavailable())
-    }
-    pub async fn data_restore_recover(
-        self: &Arc<Self>,
-        id: &str,
-        input: GitDataRestoreRecoverInput,
-        stop: watch::Receiver<bool>,
-    ) -> Result<TaskRecord, ApiError> {
-        let _ = (id, input, stop);
-        Err(unavailable())
-    }
-    pub async fn data_restore_status(
-        &self,
-        id: &str,
-        stop: watch::Receiver<bool>,
-    ) -> Result<GitDataRestoreRecoveryStatus, ApiError> {
-        let _ = (id, stop);
-        Err(unavailable())
-    }
-    pub async fn data_save_status(
-        &self,
-        id: &str,
-        stop: watch::Receiver<bool>,
-    ) -> Result<serde_json::Value, ApiError> {
-        let _ = (id, stop);
-        Err(unavailable())
-    }
     pub async fn finalize_data_save(
         self: &Arc<Self>,
         id: &str,
@@ -108,24 +21,6 @@ impl ProjectGitManager {
         Err(unavailable())
     }
 
-    pub(super) async fn source_restore_apply_inner(
-        &self,
-        _: &ProjectHandle,
-        _: &str,
-        _: GitSourceRestoreApplyInput,
-        _: &mut Context,
-    ) -> Result<Value, ApiError> {
-        Err(unavailable())
-    }
-    pub(super) async fn source_restore_recover_inner(
-        &self,
-        _: &ProjectHandle,
-        _: &str,
-        _: GitSourceRestoreRecoverInput,
-        _: &mut Context,
-    ) -> Result<Value, ApiError> {
-        Err(unavailable())
-    }
     pub(super) async fn finalize_data_save_inner(
         &self,
         _: &ProjectHandle,
@@ -135,20 +30,6 @@ impl ProjectGitManager {
     ) -> Result<Value, ApiError> {
         Err(unavailable())
     }
-    #[cfg(test)]
-    pub(crate) fn test_data_restore_fault(&self, _: u32) {}
-}
-pub(crate) fn metadata_usage(_: &Path) -> Result<(usize, u64), ApiError> {
-    Err(unavailable())
-}
-pub(crate) fn inspect_completion(
-    _: &Path,
-    _: &crate::data_restore_guard::DataRestoreJournalHeader,
-    _: &[u8],
-    _: Option<&[u8]>,
-    _: Option<&[u8]>,
-) -> Result<bool, ApiError> {
-    Err(unavailable())
 }
 
 #[cfg(test)]
@@ -165,21 +46,20 @@ mod closed_boundary_tests {
         let retained = root.join("retained.json");
         std::fs::write(&retained, b"disposable evidence; not a recovery record").unwrap();
         let before = crate::file_identity::PersistedIdentity::capture(&retained).unwrap();
-        for error in [
-            data_restore_metadata_usage(&root).unwrap_err(),
-            check_data_recovery_record(
-                &root,
-                "format-only",
-                &GitDataSaveFinalizeInput {
-                    save_task_id: "task_disposable".into(),
-                    expected_journal_digest: "a".repeat(64),
-                },
-            )
-            .unwrap_err(),
-        ] {
-            assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-            assert_eq!(error.details["operationOutcome"], "not_started");
-        }
+        let error = data_restore_metadata_usage(&root).unwrap_err();
+        assert_eq!(error.code, "FILE_NOT_FOUND");
+        assert!(!root.join("metadata-attempts").exists());
+        let error = check_data_recovery_record(
+            &root,
+            "format-only",
+            &GitDataSaveFinalizeInput {
+                save_task_id: "task_disposable".into(),
+                expected_journal_digest: "a".repeat(64),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
+        assert_eq!(error.details["operationOutcome"], "not_started");
         check_data_operations_available(&root, "format-only").unwrap();
         check_data_workspace_available(&root).unwrap();
         let absent = root.join("missing-root");

@@ -126,9 +126,11 @@ pub(crate) fn publish_prepared<T: Serialize>(
         if observed != bytes {
             return Err(changed());
         }
-        crate::files::read(&staging_fd, "journal.json")?
-            .sync_all()
-            .map_err(|_| invalid())?;
+        file_io::sync_prepared_journal(
+            crate::files::read(&staging_fd, "journal.json")?,
+            &staging.join("journal.json"),
+            identity,
+        )?;
     } else {
         let mut file = crate::files::create(&staging_fd, "journal.json").map_err(|_| changed())?;
         file.write_all(&bytes).map_err(|_| invalid())?;

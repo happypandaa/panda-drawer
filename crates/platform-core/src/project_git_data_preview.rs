@@ -3,6 +3,8 @@
 use super::*;
 use crate::{files, projects::ProjectTaskLease};
 use unicode_normalization::UnicodeNormalization;
+#[path = "project_git_data_restore/preview_io.rs"]
+mod native_io;
 
 #[path = "project_git_data_objects.rs"]
 pub(super) mod objects;
@@ -17,12 +19,7 @@ impl ProjectGitManager {
         if input.target_commit.len() != 40 || !valid_oid(&input.target_commit) {
             return Err(input_error());
         }
-        if !cfg!(target_os = "macos") {
-            return Err(preview_error(
-                "UNSUPPORTED_PLATFORM",
-                "数据版本预览目前仅验证 macOS。",
-            ));
-        }
+        native_io::require_supported()?;
         self.available()?;
         let operation = Arc::new(
             self.store
@@ -90,9 +87,9 @@ impl ProjectGitManager {
             attachment_changes: attachment_changes(&current.manifest, &target.manifest),
             directory_changes: directory_changes(&current.manifest, &target.manifest),
             database_changed: current.manifest.database != target.manifest.database,
-            can_apply: cfg!(target_os = "macos"),
-            apply_implemented: cfg!(target_os = "macos"),
-            reason: if cfg!(target_os = "macos") {
+            can_apply: native_io::implemented(),
+            apply_implemented: native_io::implemented(),
+            reason: if native_io::implemented() {
                 "已核对目标数据版本和本次当前数据摘要；确认取回前仍会重新核对，完成后需重新打开业务页面。"
             } else {
                 "已核对目标数据版本和当前数据摘要；数据取回目前仅验证 macOS。"
@@ -156,10 +153,7 @@ pub(super) fn plan_digest(
     live: &str,
     target_digest: &str,
 ) -> Result<String, ApiError> {
-    let metadata = fs::metadata(&project.root)?;
-    Ok(sha256(&serde_json::to_vec(
-        &json!({"policy":"project-data-restore-preview-v1","projectId":project.manifest.id,"projectRoot":project.root,"projectRootIdentity":[metadata.dev(),metadata.ino()],"documentEpoch":project.document_epoch,"snapshotDigest":snapshot.view.snapshot_digest,"targetCommit":target,"targetSnapshotDigest":target_digest,"liveDataDigest":live}),
-    )?))
+    native_io::plan_digest(project, snapshot, target, live, target_digest)
 }
 
 pub(super) async fn target_snapshot(
@@ -175,7 +169,7 @@ pub(super) async fn target_snapshot(
     let temporary = Arc::new(temporary);
     context.retain(temporary.clone());
     let root = temporary.path().canonicalize()?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    native_io::make_temporary_private(&root)?;
     let key = "version-data/snapshot.json".to_string();
     let manifest_blob = BTreeMap::from([(key.clone(), tree.files[&key].clone())]);
     objects::materialize(project, tools, context, &root, &manifest_blob).await?;
@@ -509,6 +503,6 @@ fn preview_worker_failed() -> ApiError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_git_data_preview_tests.rs"]
 mod tests;

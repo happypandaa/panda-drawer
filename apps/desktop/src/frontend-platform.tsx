@@ -51,6 +51,7 @@ function windowsRelativeDirectory(dir: string, base: string): string {
   return root && path.toLowerCase().startsWith(prefix.toLowerCase()) ? `${path.slice(prefix.length)}\\` : `${path}\\`;
 }
 const common = {
+  migrationAvailable: true,
   aiPlatformDescription: '本地小应用平台',
   openFolderLabel: '在文件管理器中打开',
   nodePathPlaceholder: '选择本机 Node 可执行文件的绝对路径',
@@ -83,6 +84,7 @@ const mac = {
 };
 const windows = {
   ...common,
+  migrationAvailable: false,
   aiPlatformDescription: 'Windows x64 上的本地小应用平台',
   openFolderLabel: '在资源管理器中打开',
   nodePathPlaceholder: '例如 C:\\Program Files\\nodejs\\node.exe',

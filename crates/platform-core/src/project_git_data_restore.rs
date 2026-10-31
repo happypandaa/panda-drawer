@@ -12,6 +12,8 @@ use crate::{
         ProjectTaskLease,
     },
 };
+#[path = "project_git_data_restore/restore_io.rs"]
+mod native_io;
 #[path = "project_git_data_restore_files.rs"]
 mod slot_files;
 #[path = "project_git_data_restore_transaction.rs"]
@@ -90,9 +92,7 @@ impl ProjectGitManager {
     ) -> Result<TaskRecord, ApiError> {
         let _submission = self.submission.lock().unwrap();
         self.available()?;
-        if !cfg!(target_os = "macos") {
-            return Err(error("UNSUPPORTED_PLATFORM", "数据取回目前仅验证 macOS。"));
-        }
+        native_io::require_supported()?;
         if *stop.borrow() || stop.has_changed().is_err() {
             return Err(interrupted());
         }
@@ -387,8 +387,8 @@ impl ProjectGitManager {
                     undo_epoch: &undo_epoch,
                 },
             )?;
-            let stage_fd = files::root(&stage)?;
-            let mut prepared_journal = files::create(&stage_fd, "journal.json")?;
+            let journal_parent = files::root(&stage)?;
+            let mut prepared_journal = files::create(&journal_parent, "journal.json")?;
             let journal_identity =
                 PersistedIdentity::capture(&stage.join("journal.json")).map_err(|_| changed())?;
             let plan = transaction::Plan {
@@ -446,8 +446,8 @@ impl ProjectGitManager {
             if plan_bytes.len() as u64 > MAX_METADATA - 128 * 1024 {
                 return Err(limit());
             }
-            let stage_fd = files::root(&stage)?;
-            let mut file = files::create(&stage_fd, "plan.json")?;
+            let plan_parent = files::root(&stage)?;
+            let mut file = files::create(&plan_parent, "plan.json")?;
             file.write_all(&plan_bytes)?;
             file.sync_all()?;
             let proof = read_proof(&stage.join("plan.json"), MAX_METADATA, false)?.0;
@@ -470,6 +470,12 @@ impl ProjectGitManager {
             transaction::classify(&project.root, &stage, &plan, &mut check)?;
             faults.at("before-publication")?;
             check()?;
+            let _preparation_handles = native_io::release_preparation_handles((
+                journal_parent,
+                prepared_journal,
+                plan_parent,
+                file,
+            ));
             let operation = guard::publish_prepared(paths.workspace_root(), &stage, &journal)?;
             faults.at("after-publication").map_err(|e| {
                 e.detail("restoreTaskId", task.clone())
@@ -678,6 +684,14 @@ impl Faults {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_git_data_restore_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "project_git_data_restore/windows_tests.rs"]
+mod windows_tests;
+
+#[cfg(all(test, windows))]
+#[path = "project_git_data_restore/official_windows_tests.rs"]
+mod official_windows_tests;

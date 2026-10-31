@@ -56,7 +56,7 @@ async fn migration_waits_actual_non_artifact_attachment_reader_after_losing_its_
     let target = destination(&temp);
     let task = service
         .handle()
-        .workspace_migrate(json!({"destinationPath":target}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":target}))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -116,7 +116,7 @@ async fn source_cleanup_failure_keeps_new_business_available_and_id_retry_uses_s
         }));
     let task = service
         .handle()
-        .workspace_migrate(json!({"destinationPath":target}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":target}))
         .await
         .unwrap();
     wait_idle(&service).await;
@@ -137,7 +137,7 @@ async fn source_cleanup_failure_keeps_new_business_available_and_id_retry_uses_s
         .is_err());
     let error = service
         .handle()
-        .workspace_migrate(json!({"destinationPath":temp.path().join("unused")}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":temp.path().join("unused")}))
         .await
         .unwrap_err();
     assert_eq!(error.code, "WORKSPACE_SOURCE_CLEANUP_PENDING");
@@ -227,7 +227,7 @@ async fn committed_native_reopen_failure_retains_source_until_explicit_verified_
         }));
     let task = service
         .handle()
-        .workspace_migrate(json!({"destinationPath":target}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":target}))
         .await
         .unwrap();
     wait_idle(&service).await;
@@ -402,7 +402,7 @@ async fn commit_before_install_failure_never_releases_old_native_or_artifact_aut
     ));
     let task = service
         .handle()
-        .workspace_migrate(json!({"destinationPath":target}))
+        .workspace_migrate_backend_fixture(json!({"destinationPath":target}))
         .await
         .unwrap();
     wait_idle(&service).await;

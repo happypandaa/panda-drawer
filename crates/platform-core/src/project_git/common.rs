@@ -64,10 +64,8 @@ use process_io::{BlockingPipe, Context};
 mod build_guard;
 pub(crate) use build_guard::BuildGitGuard;
 
-#[cfg(unix)]
 #[path = "../project_git_data_preview.rs"]
 mod data_preview;
-#[cfg(unix)]
 #[path = "../project_git_data_restore.rs"]
 pub(crate) mod data_restore;
 #[cfg(unix)]
@@ -77,12 +75,11 @@ pub(crate) use data_restore::inspect_completion as inspect_data_restore_completi
 pub(crate) use data_restore::metadata_usage as data_restore_metadata_usage;
 #[cfg(windows)]
 #[path = "windows/write_unavailable.rs"]
-mod data_restore;
-#[cfg(unix)]
+mod retained_data_write;
 #[path = "../project_git_restore.rs"]
 mod source_restore;
 #[cfg(windows)]
-use data_restore::unavailable;
+use retained_data_write::unavailable;
 #[cfg(windows)]
 #[path = "windows/data_inventory.rs"]
 mod data_inventory;

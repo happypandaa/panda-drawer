@@ -51,20 +51,25 @@ async fn real_manager_construction_does_not_open_unfinished_write_transactions()
     let tasks =
         BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
     let git = GitEnvironmentManager::new(paths.data_root().into(), None);
-    let manager = ProjectGitManager::new(paths, store.clone(), tasks.clone(), git).unwrap();
+    let manager = ProjectGitManager::new(paths.clone(), store.clone(), tasks.clone(), git).unwrap();
     let (stop, receiver) = watch::channel(false);
     let error = manager
-        .source_restore_preview(
+        .data_restore_preview(
             "prj_missing",
-            GitSourceRestorePreviewInput {
+            GitDataRestorePreviewInput {
                 target_commit: "a".repeat(40),
             },
             receiver,
         )
         .await
         .unwrap_err();
-    assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-    assert_eq!(error.details["operationOutcome"], "not_started");
+    assert_eq!(error.code, "PROJECT_NOT_REGISTERED");
+    assert!(!paths.workspace_root().join("projects/prj_missing").exists());
+    assert!(!paths
+        .workspace_root()
+        .join(".platform/project-state/prj_missing.json")
+        .exists());
+    assert_eq!(store.registered_epoch("prj_missing").unwrap(), None);
     drop(stop);
     assert!(manager.shutdown().await.is_empty());
     tasks.shutdown().await;

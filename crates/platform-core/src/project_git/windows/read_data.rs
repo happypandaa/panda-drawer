@@ -17,6 +17,40 @@ pub(super) struct DataPublication {
 pub(super) fn is_data_path(path: &str) -> bool {
     path == version_data::DIRECTORY || path.starts_with("version-data/")
 }
+pub(super) async fn read_gate_for_data(
+    project: &ProjectHandle,
+    context: &mut Context,
+) -> Result<Arc<tokio::sync::OwnedRwLockReadGuard<()>>, ApiError> {
+    tokio::select! {biased;_ = watch_stop(&mut context.stop)=>Err(interrupted()),_ = watch_stop(&mut context.cancel)=>Err(interrupted()),_ = tokio::time::sleep_until(context.deadline)=>Err(interrupted()),gate=project.operation_gate.clone().read_owned()=>{let gate=Arc::new(gate);context.phase(gate.clone());Ok(gate)}}
+}
+
+impl ProjectGitManager {
+    /// Observe only the existing save inventory. A missing/empty directory is
+    /// clear; retained formats are never replayed, finalized or called complete.
+    pub async fn data_save_status(
+        &self,
+        id: &str,
+        stop: watch::Receiver<bool>,
+    ) -> Result<Value, ApiError> {
+        self.available()?;
+        let lease = Arc::new(
+            self.store
+                .reserve_transient_operation(id, "data-save-recovery-status")?,
+        );
+        let project = self.store.project(id)?;
+        let (_sender, cancel) = watch::channel(false);
+        let mut context = Context::new(stop, cancel)?;
+        context.bind(self.store.processes(), lease);
+        let _gate = read_gate_for_data(&project, &mut context).await?;
+        let issues = super::data_inventory::check_project(self.paths.workspace_root(), id)
+            .err()
+            .into_iter()
+            .collect::<Vec<_>>();
+        Ok(
+            json!({"state":if issues.is_empty(){"clear"}else{"blocked"},"operations":[],"issues":issues}),
+        )
+    }
+}
 pub(super) fn inspect_current_data(
     project: &ProjectHandle,
     context: &Context,

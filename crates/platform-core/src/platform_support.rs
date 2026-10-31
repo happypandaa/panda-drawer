@@ -117,6 +117,25 @@ pub fn require_runtime() -> Result<(), RuntimeSupportError> {
     }
 }
 
+/// Only new public workspace-migration admission is closed on Windows. Existing
+/// durable records retain their startup recovery and explicit cleanup paths.
+pub fn require_workspace_migration() -> Result<(), crate::ApiError> {
+    require_workspace_migration_for(HostPlatform::current())
+}
+
+fn require_workspace_migration_for(platform: HostPlatform) -> Result<(), crate::ApiError> {
+    if platform == HostPlatform::Windows {
+        return Err(crate::ApiError::new(
+            "PLATFORM_FEATURE_UNAVAILABLE",
+            "Windows 当前版本不提供工作区迁移，请继续使用当前项目文件夹。",
+        )
+        .detail("platform", "windows")
+        .detail("capability", "workspace-migration")
+        .outcome("not_started"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn require_for(platform: HostPlatform) -> Result<(), RuntimeSupportError> {
     let support = support_for(platform);
@@ -133,6 +152,16 @@ fn require_for(platform: HostPlatform) -> Result<(), RuntimeSupportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_workspace_migration_is_closed_only_on_windows_without_changing_runtime() {
+        let error = require_workspace_migration_for(HostPlatform::Windows).unwrap_err();
+        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
+        assert_eq!(error.details["capability"], "workspace-migration");
+        assert_eq!(error.details["operationOutcome"], "not_started");
+        assert!(require_workspace_migration_for(HostPlatform::MacOs).is_ok());
+        assert!(support_for(HostPlatform::Windows).runtime_available);
+    }
 
     #[test]
     fn windows_admits_startup_without_claiming_individual_features_or_acceptance() {
