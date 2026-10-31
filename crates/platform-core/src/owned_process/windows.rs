@@ -8,16 +8,13 @@ use super::{
 use crate::ApiError;
 use platform_native::windows::process::{OwnedProcess as NativeProcess, Spawn};
 use std::{
-    fs::File,
-    io::{self, Read, Write},
+    io,
     os::windows::process::ExitStatusExt,
     process::ExitStatus,
-    sync::{mpsc, Arc, Mutex},
-    thread::{self, JoinHandle},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
     runtime::Handle,
     sync::{oneshot, watch},
 };
@@ -115,91 +112,15 @@ impl ProcessGroup {
     }
 }
 
-pub(super) struct PipeThread {
-    handle: Option<JoinHandle<io::Result<()>>>,
-}
-impl PipeThread {
-    pub(super) fn is_finished(&self) -> bool {
-        self.handle.as_ref().is_some_and(JoinHandle::is_finished)
-    }
-    pub(super) fn join(&mut self) -> Result<Result<(), ApiError>, ()> {
-        let Some(handle) = self.handle.take() else {
-            return Err(());
-        };
-        handle
-            .join()
-            .map(|value| value.map_err(Into::into))
-            .map_err(|_| ())
-    }
-}
+#[path = "windows/pipe_bridge.rs"]
+pub(crate) mod pipe_bridge;
+pub(super) use pipe_bridge::PipeThread;
+use pipe_bridge::PreparedPumps;
 
-struct PreparedPumps {
-    senders: Vec<Option<mpsc::Sender<File>>>,
-    threads: Vec<(String, PipeThread)>,
-    pipes: Option<ProcessPipes>,
-}
 impl PreparedPumps {
-    fn new(runtime: &Handle, stop: watch::Receiver<bool>) -> Result<Self, ApiError> {
-        let (stdin, input_pump) = tokio::io::duplex(64 * 1024);
-        let (stdout, output_pump) = tokio::io::duplex(64 * 1024);
-        let (stderr, errors_pump) = tokio::io::duplex(64 * 1024);
-        let mut prepared = Self {
-            senders: Vec::new(),
-            threads: Vec::new(),
-            pipes: Some(ProcessPipes {
-                stdin,
-                stdout,
-                stderr,
-                stop,
-            }),
-        };
-        for (name, stream, input) in [
-            ("stdin-pump", input_pump, true),
-            ("stdout-pump", output_pump, false),
-            ("stderr-pump", errors_pump, false),
-        ] {
-            let (file_sender, file_receiver) = mpsc::channel::<File>();
-            let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-            let runtime = runtime.clone();
-            let handle = thread::Builder::new()
-                .name(format!("panda-owned-{name}"))
-                .spawn(move || {
-                    let _ = ready_sender.send(());
-                    let Ok(file) = file_receiver.recv() else {
-                        return Ok(());
-                    };
-                    if input {
-                        pump_input(&runtime, stream, file)
-                    } else {
-                        pump_output(&runtime, file, stream)
-                    }
-                })
-                .map_err(|_| {
-                    not_started(
-                        "PROCESS_STDIO_UNAVAILABLE",
-                        "Could not create an owned pipe worker before spawn",
-                    )
-                })?;
-            prepared.senders.push(Some(file_sender));
-            prepared.threads.push((
-                name.into(),
-                PipeThread {
-                    handle: Some(handle),
-                },
-            ));
-            ready_receiver.recv().map_err(|_| {
-                not_started(
-                    "PROCESS_STDIO_UNAVAILABLE",
-                    "Owned pipe worker did not become ready before spawn",
-                )
-            })?;
-        }
-        Ok(prepared)
-    }
-
     fn register<T>(&mut self) -> Vec<IoOwner<T>> {
-        self.threads
-            .drain(..)
+        self.take_workers()
+            .into_iter()
             .map(|(name, handle)| IoOwner {
                 name,
                 handle: Some(IoTask::Pipe(handle)),
@@ -207,81 +128,9 @@ impl PreparedPumps {
             })
             .collect()
     }
-
-    fn transfer(&mut self, owner: &mut NativeProcess) -> Result<(), ApiError> {
-        for (sender, slot) in
-            self.senders
-                .iter_mut()
-                .zip([&mut owner.stdin, &mut owner.stdout, &mut owner.stderr])
-        {
-            let file = slot.take().ok_or_else(|| {
-                failure(
-                    "PROCESS_PIPE_MISSING",
-                    "Created process pipe owner is missing",
-                )
-            })?;
-            let sender = sender.take().ok_or_else(|| {
-                failure(
-                    "PROCESS_PIPE_MISSING",
-                    "Created process pipe handoff is missing",
-                )
-            })?;
-            if let Err(mpsc::SendError(file)) = sender.send(file) {
-                // Keep an untransferred native pipe in the real process owner.
-                // The original worker handle is still registered separately.
-                *slot = Some(file);
-                return Err(failure(
-                    "PROCESS_PIPE_HANDOFF_FAILED",
-                    "Created process pipe worker was lost",
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-impl Drop for PreparedPumps {
-    fn drop(&mut self) {
-        self.senders.clear();
-        // Before process creation, ready workers only wait for their channel.
-        // Once a child exists their handles have already moved to the registry.
-        for (_, mut worker) in self.threads.drain(..) {
-            if let Some(handle) = worker.handle.take() {
-                let _ = handle.join();
-            }
-        }
-    }
 }
 
-fn pump_input(runtime: &Handle, mut producer: DuplexStream, mut file: File) -> io::Result<()> {
-    let mut bytes = [0u8; 8192];
-    loop {
-        let count = runtime.block_on(producer.read(&mut bytes))?;
-        if count == 0 {
-            return Ok(()); // Dropping the actual File sends real stdin EOF.
-        }
-        file.write_all(&bytes[..count])?;
-    }
-}
-
-fn pump_output(runtime: &Handle, mut file: File, mut consumer: DuplexStream) -> io::Result<()> {
-    let mut bytes = [0u8; 8192];
-    let mut consuming = true;
-    loop {
-        let count = file.read(&mut bytes)?;
-        if count == 0 {
-            return Ok(());
-        }
-        if consuming
-            && runtime
-                .block_on(consumer.write_all(&bytes[..count]))
-                .is_err()
-        {
-            consuming = false;
-        }
-    }
-}
-
-fn request(command: OwnedCommand) -> Result<Spawn, ApiError> {
+pub(crate) fn request(command: OwnedCommand) -> Result<Spawn, ApiError> {
     let inherit = match command.environment {
         Environment::Inherit => true,
         Environment::Clear => false,
@@ -422,7 +271,7 @@ pub(super) fn start<T: Send + 'static, G: Send + 'static>(
             setup_error.get_or_insert(error);
         }
     }
-    let pipes = pumps.pipes.take().expect("new prepared facades");
+    let pipes = pumps.take_pipes();
     let (started, start_result) = oneshot::channel();
     let driver_owner = record.clone();
     *record.driver.try_lock().expect("new driver slot") = Some(runtime.spawn(async move {

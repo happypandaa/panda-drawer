@@ -1,4 +1,4 @@
-//! Disposable macOS-only experiment. This is not a project runtime or a sandbox.
+//! Owned Node runtime lifecycle, with process and file policy in platform adapters.
 //!
 //! It never discovers a workspace, starts the platform, installs dependencies, or
 //! falls back to a Node from PATH. Callers must explicitly stop the instance.
@@ -16,28 +16,38 @@ use std::{
     collections::BTreeMap,
     fs,
     io::Read,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    process::{Child, ChildStdin, Command},
+    process::Command,
     sync::mpsc,
     task::JoinHandle,
 };
 use uuid::Uuid;
 
+#[cfg(not(windows))]
+#[path = "node_runtime_trial/macos.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "node_runtime_trial/windows.rs"]
+mod platform;
+use platform::{checked_path, checked_storage, Child, ChildStdin, ProcessOwnership};
+#[cfg(all(test, not(windows)))]
+use platform::{group_has_other_members, observe_without_reaping};
+
 pub const EXPECTED_NODE_VERSION: &str = "24.22.0";
 const MESSAGE_LIMIT: usize = 8192;
 const HTTP_LIMIT: usize = 16384;
-// Used only by the macOS ownership path. Keep unsupported-target compilation
-// independent of libc's platform-specific signal constant exports.
+// Existing escalation labels stay independent of libc. The Windows adapter
+// terminates its retained Job and never sends either as a Unix signal.
 const SIGNAL_TERM: i32 = 15;
 const SIGNAL_KILL: i32 = 9;
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -153,237 +163,8 @@ struct ExitObservation {
     signal: Option<i32>,
 }
 
-struct ProcessOwnership {
-    state: Mutex<OwnershipState>,
-    #[cfg(test)]
-    signals_sent: AtomicU64,
-}
-
-struct OwnershipState {
-    pid: u32,
-    armed: bool,
-}
-
-impl ProcessOwnership {
-    fn new(pid: u32) -> Self {
-        Self {
-            state: Mutex::new(OwnershipState { pid, armed: true }),
-            #[cfg(test)]
-            signals_sent: AtomicU64::new(0),
-        }
-    }
-
-    fn observe(&self) -> TrialResult<Option<ExitObservation>> {
-        let mut state = self.state.lock().unwrap();
-        Self::check_owned(&mut state)
-    }
-
-    fn check_owned(state: &mut OwnershipState) -> TrialResult<Option<ExitObservation>> {
-        if !state.armed {
-            return Err(fail(
-                "TRIAL_OWNERSHIP_RELEASED",
-                "Trial process ownership has been released",
-            ));
-        }
-        match observe_without_reaping(state.pid) {
-            Ok(status) => Ok(status),
-            Err(error) => {
-                // Never signal a numeric PID/PGID once child ownership is uncertain.
-                state.armed = false;
-                Err(error)
-            }
-        }
-    }
-
-    fn signal(&self, signal: i32) -> TrialResult<()> {
-        let _ = signal;
-        let mut state = self.state.lock().unwrap();
-        Self::check_owned(&mut state)?;
-        #[cfg(unix)]
-        {
-            // The unreaped leader pins this PID/PGID until disarm_before_reap.
-            let result = unsafe { libc::kill(-(state.pid as i32), signal) };
-            let error = std::io::Error::last_os_error().raw_os_error();
-            if result != 0
-                && error != Some(libc::ESRCH)
-                && !(Self::check_owned(&mut state)?.is_some()
-                    && !group_has_other_members(state.pid)?)
-            {
-                return Err(fail(
-                    "TRIAL_SIGNAL_FAILED",
-                    "Could not signal the owned trial group",
-                )
-                .detail("errno", serde_json::json!(error)));
-            }
-            #[cfg(test)]
-            self.signals_sent.fetch_add(1, Ordering::Relaxed);
-        }
-        Ok(())
-    }
-
-    async fn signal_with_reobserve(&self, signal: i32) -> TrialResult<()> {
-        // signal() releases its std MutexGuard before the async retry yields.
-        // Drop retains the synchronous best-effort path; real stop owns this
-        // bounded future and keeps the original unreaped Child throughout.
-        crate::owned_process::retry_owned_signal("TRIAL_SIGNAL_FAILED", || self.signal(signal))
-            .await
-    }
-
-    fn has_descendants(&self) -> TrialResult<bool> {
-        let mut state = self.state.lock().unwrap();
-        Self::check_owned(&mut state)?;
-        group_has_other_members(state.pid)
-    }
-
-    fn disarm_before_reap(&self) {
-        self.state.lock().unwrap().armed = false;
-    }
-}
-
-/// WNOWAIT keeps the exited leader reserved. Tokio's macOS SignalReaper does
-/// not reap a retained Child until wait/try_wait is polled or the handle drops.
-fn observe_without_reaping(pid: u32) -> TrialResult<Option<ExitObservation>> {
-    #[cfg(target_os = "macos")]
-    loop {
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let result = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                pid as libc::id_t,
-                &mut info,
-                libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
-            )
-        };
-        if result == 0 {
-            return if unsafe { info.si_pid() } == 0 {
-                Ok(None)
-            } else {
-                Ok(Some(ExitObservation {
-                    code: if info.si_code == libc::CLD_EXITED {
-                        Some(unsafe { info.si_status() })
-                    } else {
-                        None
-                    },
-                    signal: if matches!(info.si_code, libc::CLD_KILLED | libc::CLD_DUMPED) {
-                        Some(unsafe { info.si_status() })
-                    } else {
-                        None
-                    },
-                }))
-            };
-        }
-        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            return Err(fail(
-                "TRIAL_PROCESS_OWNERSHIP_LOST",
-                "Could not confirm unreaped child ownership",
-            ));
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pid;
-        Err(fail(
-            "TRIAL_PLATFORM_UNSUPPORTED",
-            "Non-reaping observation is only supported on macOS",
-        ))
-    }
-}
-
-fn group_has_other_members(pid: u32) -> TrialResult<bool> {
-    #[cfg(target_os = "macos")]
-    {
-        // ProcessOwnership (or the disposable test's retained Child) pins the
-        // unreaped leader throughout both complete member scans. Keep the
-        // established trial error vocabulary at this boundary.
-        crate::owned_process::group_has_other_members(pid).map_err(|_| {
-            fail(
-                "TRIAL_GROUP_UNCONFIRMED",
-                "Could not completely confirm the owned trial group",
-            )
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pid;
-        Err(fail(
-            "TRIAL_PLATFORM_UNSUPPORTED",
-            "Group inspection is only supported on macOS",
-        ))
-    }
-}
-
 fn fail(code: &str, message: &str) -> ApiError {
     ApiError::new(code, message)
-}
-
-fn checked_path(path: &Path, directory: bool) -> TrialResult<PathBuf> {
-    if !path.is_absolute() {
-        return Err(fail("TRIAL_PATH_INVALID", "Trial paths must be absolute"));
-    }
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        if !matches!(component, Component::RootDir | Component::Normal(_)) {
-            return Err(fail("TRIAL_PATH_INVALID", "Trial paths must be normalized"));
-        }
-        current.push(component.as_os_str());
-        let meta = fs::symlink_metadata(&current)
-            .map_err(|_| fail("TRIAL_PATH_INVALID", "A trial path does not exist"))?;
-        if meta.file_type().is_symlink() {
-            return Err(fail(
-                "TRIAL_PATH_INVALID",
-                "Linked trial paths are not accepted",
-            ));
-        }
-    }
-    let meta = fs::metadata(path)
-        .map_err(|_| fail("TRIAL_PATH_INVALID", "A trial path cannot be inspected"))?;
-    if (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
-        return Err(fail(
-            "TRIAL_PATH_INVALID",
-            "A trial path has the wrong file type",
-        ));
-    }
-    Ok(path.to_path_buf())
-}
-
-fn checked_storage(
-    data: PathBuf,
-    cache: PathBuf,
-    backend: &Path,
-    trial_root: &Path,
-) -> TrialResult<(PathBuf, PathBuf)> {
-    let data = checked_path(&data, true)?;
-    let cache = checked_path(&cache, true)?;
-    let overlaps = |left: &Path, right: &Path| left.starts_with(right) || right.starts_with(left);
-    if overlaps(&data, &cache)
-        || [&data, &cache]
-            .iter()
-            .any(|path| overlaps(path, backend) || overlaps(path, trial_root))
-    {
-        return Err(fail(
-            "TRIAL_STORAGE_INVALID",
-            "Persistent storage must be separate from source and run directories",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        for path in [&data, &cache] {
-            let metadata = fs::metadata(path).map_err(|_| {
-                fail(
-                    "TRIAL_STORAGE_INVALID",
-                    "Persistent storage cannot be inspected",
-                )
-            })?;
-            if metadata.uid() != unsafe { libc::geteuid() } {
-                return Err(fail(
-                    "TRIAL_STORAGE_INVALID",
-                    "Persistent storage must belong to the current user",
-                ));
-            }
-        }
-    }
-    Ok((data, cache))
 }
 
 fn validate_business_environment(values: &BTreeMap<String, String>) -> TrialResult<()> {
@@ -420,7 +201,7 @@ fn verify_node_digest(path: &Path, expected: &str) -> TrialResult<()> {
             "A verified Node SHA-256 is required",
         ));
     }
-    let mut file = fs::File::open(path)
+    let mut file = platform::open_node(path)
         .map_err(|_| fail("TRIAL_NODE_INVALID", "The private Node could not be read"))?;
     let mut digest = Sha256::new();
     let mut bytes = [0u8; 65536];
@@ -465,7 +246,7 @@ async fn verify_node_version_with_receipt(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut probe = processes.start(
-        command,
+        crate::owned_process::OwnedCommand::cleared(command),
         ProcessOptions::new("node-runtime/version-probe", Duration::from_secs(3)),
         (),
         |pipes| {
@@ -599,12 +380,7 @@ async fn prepare_launch(
     processes: &OwnedProcessRegistry,
     cleanup: &mut FailedLaunchCleanup,
 ) -> TrialResult<PreparedLaunch> {
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        return Err(fail(
-            "TRIAL_PLATFORM_UNSUPPORTED",
-            "This disposable experiment only supports macOS arm64",
-        ));
-    }
+    platform::require_supported()?;
     validate_business_environment(&config.business_env)?;
     let node = checked_path(&config.node_path, false)?;
     let cwd = checked_path(&config.working_directory, true)?;
@@ -751,37 +527,12 @@ impl NodeRuntimeTrial {
         // control bearer. Never persist or expose the bearer as a run identity.
         let identity_nonce = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let run_directory = trial_root.join(format!("run-{instance_id}"));
-        fs::create_dir(&run_directory)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&run_directory, fs::Permissions::from_mode(0o700))?;
-        }
-        let (data, cache) = if let Some(paths) = persistent {
-            paths
-        } else {
-            fs::create_dir(run_directory.join("data"))?;
-            fs::create_dir(run_directory.join("cache"))?;
-            (run_directory.join("data"), run_directory.join("cache"))
-        };
-        for directory in [&data, &cache] {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-            }
-        }
-        fs::create_dir(run_directory.join("tmp"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(run_directory.join("tmp"), fs::Permissions::from_mode(0o700))?;
-        }
+        let (data, cache) = platform::prepare_directories(&run_directory, persistent)?;
         let log = RuntimeLog::start(&config.control_directory)?;
         let mut command = Command::new(node);
         command
-            .arg(entry)
-            .current_dir(cwd)
+            .arg(platform::argument(&entry)?)
+            .current_dir(platform::argument(&cwd)?)
             .env_clear()
             .env("LANG", "en_US.UTF-8")
             .env("LC_ALL", "en_US.UTF-8")
@@ -789,26 +540,31 @@ impl NodeRuntimeTrial {
             .env(RUN_IDENTITY_ENV, &identity_nonce)
             .env("APP_HOST", "127.0.0.1")
             .env("APP_PORT", "0")
-            .env("APP_DATA_DIR", data)
-            .env("APP_CACHE_DIR", cache)
-            .env("APP_TEMP_DIR", run_directory.join("tmp"))
-            .env("TMPDIR", run_directory.join("tmp"))
+            .env("APP_DATA_DIR", platform::argument(&data)?)
+            .env("APP_CACHE_DIR", platform::argument(&cache)?)
+            .env(
+                "APP_TEMP_DIR",
+                platform::argument(&run_directory.join("tmp"))?,
+            )
+            .env("TMPDIR", platform::argument(&run_directory.join("tmp"))?)
             .envs(config.business_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(false);
-        #[cfg(unix)]
-        command.process_group(0);
+        platform::configure_environment(&mut command, &run_directory.join("tmp"))?;
         // Tokio spawn can fail after OS work has begun. From this boundary on,
         // only the runtime's verified normal stop may authorize intent removal.
         *cleanup = FailedLaunchCleanup::Unconfirmed;
-        let mut child = command.spawn().map_err(|_| {
-            fail(
-                "TRIAL_PROCESS_FAILED",
-                "Private Node could not start the trial entry",
-            )
-        })?;
+        let mut child = match platform::spawn(command) {
+            Ok(child) => child,
+            Err(error) => {
+                if platform::spawn_failed_before_creation(&error) {
+                    *cleanup = FailedLaunchCleanup::NoApplicationSpawned;
+                }
+                return Err(error);
+            }
+        };
         let pid = child
             .id()
             .ok_or_else(|| fail("TRIAL_PROCESS_FAILED", "Trial process has no identity"))?;
@@ -823,7 +579,7 @@ impl NodeRuntimeTrial {
             .take()
             .ok_or_else(|| fail("TRIAL_PROCESS_FAILED", "Missing diagnostic stream"))?;
         let (sender, messages) = mpsc::channel(16);
-        let ownership = Arc::new(ProcessOwnership::new(pid));
+        let ownership = Arc::new(platform::ownership(&child, pid));
 
         let stopping = Arc::new(AtomicBool::new(false));
         let control_failed = Arc::new(AtomicBool::new(false));
@@ -915,6 +671,7 @@ impl NodeRuntimeTrial {
             },
         };
         let started = tokio::time::timeout(START_TIMEOUT, async {
+            platform::activate(runtime.child.as_mut().expect("created runtime child"))?;
             runtime.send(json!({"protocolVersion":1,"type":"initialize","instanceId":runtime.status.instance_id,"token":runtime.token})).await?;
             match runtime.receive().await? {
                 ControlMessage::Ready { protocol_version: 1, instance_id, host, port }
@@ -1250,6 +1007,7 @@ impl NodeRuntimeTrial {
                 }
             }
         }
+        platform::finish_io(&self.ownership, deadline).await?;
         match &self.reader_failure {
             Some(error) => Err(error.clone()),
             None => Ok(()),
@@ -1308,46 +1066,7 @@ fn log_termination(log: &RuntimeLog, recorded: &AtomicBool, reason: RuntimeStopR
 
 impl Drop for NodeRuntimeTrial {
     fn drop(&mut self) {
-        self.stopping.store(true, Ordering::Release);
-        self.stdin.take();
-        for reader in self.readers.drain(..) {
-            reader.abort();
-        }
-        if let Some(mut child) = self.child.take() {
-            // Signal only while waitid proves ownership. Disarm before moving
-            // the final wait into another task (or Tokio's orphan reaper).
-            let terminate = match self.ownership.observe() {
-                Ok(None) => true,
-                Ok(Some(exit)) => {
-                    self.record_exit(exit.code, exit.signal);
-                    self.ownership.has_descendants().unwrap_or(false)
-                }
-                Err(_) => false,
-            };
-            if terminate {
-                log_termination(
-                    &self.log,
-                    &self.termination_logged,
-                    RuntimeStopReason::OwnerDropped,
-                );
-                let _ = self.ownership.signal(SIGNAL_KILL);
-            }
-            self.ownership.disarm_before_reap();
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let log = self.log.clone();
-                let exit_logged = self.exit_logged;
-                handle.spawn(async move {
-                    if let Ok(exit) = child.wait().await {
-                        let signal = platform_native::process_status::signal(&exit);
-                        if !exit_logged {
-                            log.event("exited", json!({"exitCode":exit.code(),"signal":signal}));
-                        }
-                    }
-                });
-            }
-        }
-        self.token.clear();
-        self.identity_nonce.clear();
+        platform::drop_runtime(self);
     }
 }
 

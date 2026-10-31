@@ -31,7 +31,7 @@ mod command;
 pub(crate) use command::OwnedCommand;
 #[cfg(windows)]
 #[path = "owned_process/windows.rs"]
-mod windows;
+pub(crate) mod windows;
 #[cfg(windows)]
 use windows::{Child, ProcessGroup};
 
