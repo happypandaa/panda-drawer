@@ -998,7 +998,12 @@ async fn workspace_ranges_are_disjoint_include_retained_copy_and_exclude_program
         &json!({"committed":true,"sourcePath":retained,"sourceIdentity":identity}),
     )
     .unwrap();
-    let result = workspace_scan(&f.paths, Some(&app), "test-generation").unwrap();
+    let manager = f._temp.path().join("disposable-manager.exe");
+    let cli = f._temp.path().join("disposable-cli.exe");
+    fs::write(&manager, []).unwrap();
+    fs::write(&cli, []).unwrap();
+    let installation = crate::installation_scope::InstallationScope::for_test(&manager, &cli, &app);
+    let result = workspace_scan(&f.paths, Some(&installation), "test-generation").unwrap();
     assert_eq!(result["platformProgram"]["totalBytes"], 7);
     assert_eq!(result["platformProgram"]["complete"], false);
     let other = result["otherLocalLocations"].as_array().unwrap();

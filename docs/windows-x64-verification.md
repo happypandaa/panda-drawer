@@ -1020,3 +1020,9 @@ Windows 11 25H2 开发版正常界面实际发现网页删除预览仍用 `/` �
 Windows 外部文件交付采用实际完整身份、私有不可变 intent/decision、固定父 HANDLE 和不覆盖改名。新建与明确覆盖均有提交前恢复原文件、提交后仅向前完成及释放最终交付归属；碰撞、占用、替代物或未知状态保留证据。普通硬链接按原 Mac 允许，私有原文件观察不新增单链接门禁。实际 native publisher **6/6**，4.64 秒；每个已发布中断点恢复等事务 **4/4**，4.84 秒；native 私有硬链接原语 **2/2**，0.01 秒。包含真实公有项目删除后完成的外部交付、其它硬链接及外部旧原件保持，不保留最终交付的项目归属。
 
 WebView2 Requested/Finished 已接原 writer、stage 与取消流程，原生取消回收实际临时材料，未受理的 Finished 不取得交付权限。桌面默认 **103 通过、12 专用入口忽略**，0.47 秒；真实 WebView2 Requested/Finished/native cancel 专项 **1/1**，1.41 秒。尚未完成正常项目窗口到原生保存对话框的完整 GUI 交付，不能以该专项代替安装版验收。冻结 core/native/desktop Clippy **-Dclippy::all 通过**，保留原 Rust 警告；Mac 原正文和测试未改。
+
+### W5.7 — 桌面程序范围、空间报告与外部保存边界
+
+Windows 桌面启动从实际进程 exe、已选 CLI 与 resources 树构造进程内 typed InstallationScope；headless 不从 HTTP、环境变量或任意磁盘声明认领安装目录。父目录仅展示，计量三个精确成员，不统计整个 Cargo target 或相邻文件。实际完整身份、exe stamp、资源签名、双遍原生元数据与缓存绑定；替代物或扫描中变化保持部分/未知。外部下载、导出按同一成员范围及身份别名拒绝写入，普通相邻目录仍允许。Mac scope 为 None，原 `.app` 范围和处理正文保持。
+
+独立 scope **4/4**、0.03 秒；实际 Runtime 下载边界和 lifecycle 导出 **3/3**、0.59 秒；程序计量 **8/8**、0.14 秒。首次程序测试模块路径误指向既有 forget 测试，已显式指定 program/tests.rs 并核对实际注册名称后重编，未用错误过滤得到的通过数充数。完整 storage::windows 回归 **60/60**，17.87 秒，其中 19 项是既有网页存储回归，实际 Storage 41 项。core/native/desktop Clippy **-Dclippy::all 通过**。这些是开发资源范围及真实临时目录证明，尚非 NSIS 安装副本或正式版签名验收。

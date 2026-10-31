@@ -9,3 +9,13 @@ mod windows;
 pub(crate) use unix::StorageManager;
 #[cfg(windows)]
 pub(crate) use windows::StorageManager;
+
+pub(crate) fn configure_installation_scope(
+    manager: &StorageManager,
+    scope: Option<std::sync::Arc<crate::installation_scope::InstallationScope>>,
+) {
+    #[cfg(windows)]
+    manager.set_installation_scope(scope);
+    #[cfg(not(windows))]
+    let _ = (manager, scope);
+}

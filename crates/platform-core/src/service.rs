@@ -367,7 +367,7 @@ impl RuntimeHandle {
         Ok(value)
     }
     pub fn platform_info(&self) -> Value {
-        crate::platform_info::info()
+        crate::platform_info::with_resources(self.current().resources.as_deref())
     }
     pub fn validate_download_destination(
         &self,
@@ -380,6 +380,14 @@ impl RuntimeHandle {
                 "Choose an absolute download destination",
             ));
         }
+        crate::installation_scope::require_destination(
+            state
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.installation_scope())
+                .as_deref(),
+            destination,
+        )?;
         crate::projects::check_no_symlinks(destination, true)?;
         let parent = destination
             .parent()
@@ -1212,7 +1220,7 @@ impl RuntimeService {
         cli_path: PathBuf,
     ) -> Result<Self> {
         crate::platform_support::require_runtime()?;
-        let resources = Arc::new(ProjectResources::new(resource_root, cli_path)?);
+        let resources = Arc::new(ProjectResources::new(resource_root, cli_path)?.for_desktop());
         Self::start_inner(paths, lock, Some(resources), true).await
     }
     async fn start_inner(
@@ -1431,6 +1439,11 @@ fn make_state(
         builds.clone(),
         maintenance.clone(),
     )?;
+    let installation_scope = resources
+        .as_ref()
+        .and_then(|resources| resources.installation_scope());
+    crate::storage::configure_installation_scope(&storage, installation_scope.clone());
+    lifecycle.set_installation_scope(installation_scope);
     let history_cleanup = crate::history_cleanup::CleanupManager::new(
         paths.clone(),
         store.clone(),
@@ -1846,7 +1859,7 @@ async fn runtime(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> Res
     match admin(&state, &headers) {
         Ok(()) => {
             let mut info = json!(state.info);
-            info["platform"] = crate::platform_info::info();
+            info["platform"] = crate::platform_info::with_resources(state.resources.as_deref());
             Json(info).into_response()
         }
         Err(error) => failure(error, None),
@@ -4354,3 +4367,7 @@ mod io_lifetime_tests;
 #[cfg(test)]
 #[path = "service_workspace_migration_tests.rs"]
 mod workspace_migration_tests;
+
+#[cfg(all(test, windows))]
+#[path = "installation_scope/windows/runtime_tests.rs"]
+mod installation_scope_tests;

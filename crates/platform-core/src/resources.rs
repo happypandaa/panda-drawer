@@ -18,6 +18,7 @@ pub fn runtime_node_path(resource_root: &Path) -> PathBuf {
 pub struct ProjectResources {
     root: PathBuf,
     pub cli_path: PathBuf,
+    installation_scope: Option<std::sync::Arc<crate::installation_scope::InstallationScope>>,
 }
 impl ProjectResources {
     pub fn new(root: PathBuf, cli_path: PathBuf) -> Result<Self, ApiError> {
@@ -49,7 +50,21 @@ impl ProjectResources {
                 "The bundled CLI is missing",
             ));
         }
-        Ok(Self { root, cli_path })
+        Ok(Self {
+            root,
+            cli_path,
+            installation_scope: None,
+        })
+    }
+    pub(crate) fn for_desktop(mut self) -> Self {
+        self.installation_scope =
+            crate::installation_scope::InstallationScope::for_desktop(&self.root, &self.cli_path);
+        self
+    }
+    pub(crate) fn installation_scope(
+        &self,
+    ) -> Option<std::sync::Arc<crate::installation_scope::InstallationScope>> {
+        self.installation_scope.clone()
     }
     /// Development tools are optional for running published apps. A missing or
     /// damaged bundle is reported by the build environment, not startup.
