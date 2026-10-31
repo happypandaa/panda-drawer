@@ -730,3 +730,11 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 将 hash_tree 的路径标签转换集中到适配层。Mac 原 to_str 字节不变，包括文件名中合法的反斜杠；Windows 逐组件连接 `/`，与既有 package-template 的跨平台摘要规则相同。遍历、文件内容、长度编码、摘要 v1 格式和源码准入保持，不做旧 Windows 数据兼容。
 
 实际完整 core 二进制默认专项 **2 通过、1 个新增资源 opt-in**：原生相对路径与中文空格 TempDir 的真实文件树通过独立 Node crypto 黄金向量。随后显式 opt-in **1/1**，只读本轮正常 Windows 桌面准备的 template/app 和 template/starter，两棵真实树分别与 starter.json 的 sourceDigest、artifactDigest 相同。没有写入准备资源或真实应用数据。Unix 反斜杠文件名专项已保留，尚未在 Mac 实际执行；此处不证明完整 npm 构建、产物发布或三次构建清理已完成，CI 仍待运行。
+
+### W2.6 — 单项实际 HANDLE 移除原语
+
+新增 Windows 原生已归属名字移除边界，固定普通父目录及祖先，打开 leaf 本身并用完整卷序列号、128 位 FileId 与目录类型核对，然后以该 DELETE HANDLE 请求移除。观察允许重解析 leaf 而不进入其目标，删除不新增私有 DACL 或单链接准入。原有 Mac 边界零改。按已确认只读处理原则，实际 HANDLE 清除只读位；移除失败或有其他硬链接时，在同一 HANDLE 恢复原属性，避免改变外部原件。SetDisposition 成功仅是请求，core 尚须实际缺失证明。
+
+实际新 native 专项 **3/3**，真实临时只读文件、空目录移除；已换名原件及同名替换对象保留；真实不共享删除的 open HANDLE 拒绝，释放后可移除；只读硬链接仅所选名字消失、外部另名内容与只读位保持。native 全目标严格 Clippy -Dwarnings 通过；Windows 专属清除只读位语句局部注明该 Clippy Unix mode 提示不适用，没有放宽 Unix 权限或整组屏蔽检查。
+
+本轮完整 native 另实测 **57 通过、2 失败、2 明确忽略**：原已通过的 suspended_owner_is_registered_before_any_child_code_and_then_resumes 与 observed_exit_259_is_not_reported_as_still_running 均在真实等待后未取得退出状态。large stderr/真实子孙 Job/异常 host 退出仍通过，不能把全组记为绿色。进程专项也在独立 native harness 复现入口前等待，正在定位，没有删/跳原失败测试。此提交仅移除原语，不宣称完整目录清理、删除任务、迁移或 W2 验收通过。
