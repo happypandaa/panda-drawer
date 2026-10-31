@@ -658,3 +658,9 @@ Windows 11 25H2 / build 26200.9711 上，实际执行 `node scripts/desktop.mjs 
 同时在独立 TempDir 夹具运行当前完整 core `--lib`，注册 **443 项：345 通过、94 失败、3 忽略、1 超时**，总计 196.105 秒；没有正常 libtest 汇总，不能记为全组通过。唯一超时 `service::shutdown_coordinator::tests::migration_registration_and_shutdown_share_the_same_submission_lock` 在 entered_rx.recv 无界等待，记录精确身份后只终止该次测试进程，夹具将改为有界失败，不删/跳测试。94 失败分布：service 32、build_artifacts 13、backups 11、metadata 9、object_layout 7、source_restore_guard 4、web_project_ownership 4、webview_storage 4、node_apps 3、project_cleanup_tests 3、projects 2、environment 1、resources 1。
 
 有界精确复现确认当前 W2 多项目创建先报 PROJECT_DIRECTORY_MAPPING_INVALID，附带 owned-directory-cleanup 错误只是回退诊断；网页 SQL/附件端到端尚未到达。原生附件 CRUD、数据库队列/结果限制、基础 HTTP health 已实际通过，旧 W0 的门禁失败不能继续用作当前缺陷结论。未改/跳过原 Mac 测试，没有 Mac 运行结果；W0/W1 尚未正式完成，不合入 main。
+
+### W1.25 — 迁移注册测试失约时有界结束
+
+只修 W1.24 唯一超时夹具：登记信号使用 test 内单一 30 秒上限；超时先释放该夹具的 release sender，避免失败后的阻塞 worker 阻止测试退出，再报告已结束提交的真实错误。原 Mac 成功路径锁/关闭断言和产品迁移代码保持，没有删除、跳过或将未实现功能改判通过。
+
+唯一真实 core `--exact` 最终在 **30.13 秒**正常结束，仍为 **0 通过、1 失败、0 忽略**：INVALID_MIGRATION_TARGET 包裹 workspace-native-migration / PLATFORM_FEATURE_UNAVAILABLE / not_started。最初 5 秒上限也实测能退出，复审后改为 30 秒，给自托管 Mac 的并发/磁盘等待保留余地。没有重跑完整 core，也不将上轮 1 timeout 私自换算成一次新的全组结果；迁移业务失败仍留待 W5。
