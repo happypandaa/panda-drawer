@@ -6,7 +6,7 @@ use crate::{
     environment::Toolchain,
     node_app_manifest::TrialManifest,
     node_process_scope::NodeProcessScope,
-    owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
+    owned_process::{IoPlan, OwnedCommand, ProcessOptions, ProcessPhase, ProcessPipes},
     process_diagnostics::ProcessDiagnostics,
     projects::check_no_symlinks,
     ApiError,
@@ -17,7 +17,14 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::{process::Command, sync::watch, time::Instant};
+use tokio::{sync::watch, time::Instant};
+
+#[cfg(not(windows))]
+#[path = "node_dependency_prepare/unix.rs"]
+mod npm_platform;
+#[cfg(windows)]
+#[path = "node_dependency_prepare/windows.rs"]
+mod npm_platform;
 type Result<T> = std::result::Result<T, ApiError>;
 const MAX_METADATA: u64 = 256 * 1024;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
@@ -518,35 +525,15 @@ async fn npm_ci_with_budget(
     write_new(&user_config, b"", false)?;
     write_new(&global_config, b"", false)?;
     check_npm_space(operation, project_root, control).await?;
-    let mut command = Command::new(&tools.node.path);
-    command
-        .arg(&tools.npm.path)
-        .arg("--prefix")
-        .arg(cwd)
-        .arg("--global=false")
-        .arg("--logs-dir")
-        .arg(operation.join("npm-disabled-output"))
-        .args([
-            "ci",
-            "--omit=dev",
-            "--ignore-scripts",
-            "--logs-max=0",
-            "--no-audit",
-            "--no-fund",
-            "--fetch-retries=2",
-            "--fetch-timeout=60000",
-        ])
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", &tools.path)
-        .env("HOME", &home)
-        .env("NPM_CONFIG_USERCONFIG", &user_config)
-        .env("NPM_CONFIG_GLOBALCONFIG", &global_config)
-        .env("NPM_CONFIG_CACHE", &cache)
-        .env("NPM_CONFIG_LOGS_MAX", "0")
-        .env("NPM_CONFIG_UPDATE_NOTIFIER", "false")
-        .env("GIT_CEILING_DIRECTORIES", operation)
-        .env("NO_COLOR", "1");
+    let command = npm_platform::command(
+        tools,
+        cwd,
+        operation,
+        home,
+        cache,
+        user_config,
+        global_config,
+    )?;
     let diagnostics = ProcessDiagnostics::default();
     let stdout_diagnostics = diagnostics.clone();
     let stderr_diagnostics = diagnostics.clone();
@@ -554,7 +541,7 @@ async fn npm_ci_with_budget(
     let mut run = processes
         .processes
         .start(
-            command,
+            OwnedCommand::cleared(command),
             ProcessOptions::new(
                 "node-install/npm",
                 control.deadline.saturating_duration_since(Instant::now()),
@@ -683,3 +670,6 @@ pub(crate) fn read_small(path: &Path) -> Result<Vec<u8>> {
 #[cfg(all(test, unix))]
 #[path = "node_dependency_prepare_tests.rs"]
 mod tests;
+#[cfg(all(test, windows))]
+#[path = "node_dependency_prepare/windows_runtime_tests.rs"]
+mod windows_runtime_tests;
