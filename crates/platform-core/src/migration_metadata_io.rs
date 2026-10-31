@@ -6,6 +6,14 @@ use std::{io::Read, path::Path};
 
 const MAX_METADATA: u64 = 32_000_000;
 
+#[cfg(unix)]
+#[path = "migration_metadata_io/unix.rs"]
+mod schema;
+#[cfg(windows)]
+#[path = "migration_metadata_io/windows.rs"]
+mod schema;
+pub(crate) use schema::{entries, CopyEntry};
+
 fn blocked(message: &str) -> ApiError {
     ApiError::new("WORKSPACE_SOURCE_CLEANUP_PENDING", message)
 }

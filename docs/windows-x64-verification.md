@@ -978,3 +978,13 @@ Node 删除日志用完整 128 位 FileId、原同父卷 stage 和持久 previou
 Windows 配置锁 guard 关闭前显式 unlock，Mac/common save 业务不改。配置默认 **24 通过、1 子夹具入口忽略**，2.73 秒，含真实 DuplicateHandle 与三工作线程保存/读取实际 join；新的官方 Node、Runtime-bound+IoLease+并发 list/config、运行后新增配置声明再保存/重启整链旧裸 File **1/1**（14.31 秒）、新 guard **1/1**（14.85 秒）均过。因此这只是独立锁释放健壮性修正，不能据此声称 GUI 保存卡住根因已修。正常 GUI 曾实际写入 revision1 后持续显示保存中；只读 WCT 无可解析多节点等待，Ctrl+R 后管理器正常显示已保存 2 项/1 运行/待重启，正在再做真实界面复现和立即重启。
 
 冻结完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（52 Rust 警告保留）；最终网页测试仅改正确断言后重编专项通过。迁移、公有停止并删除整链、磁盘 WebView2 purge、卸载前清除、任务管理器中断与安装版验收继续进行，W5 尚未全部完成。
+
+### W5.2 — 迁移复制、真实重开和原目录自动清理
+
+Windows 工作区 IO 已接本机内置 NTFS / 原生同步根核验，目录范围用实际 pins，文件原写 HANDLE 刷新后核验原摘要；Entry/删除清单使用真实 readOnly，不伪造 Unix mode。链接通过 Microsoft FSCTL_GET/SET_REPARSE_POINT 保留原 symlink/junction 数据，不进入外部目标，不替换同名物；特殊非链接 reparse 报错保留。目录 sync 委托已有 facade，Mac 仍原 File::open/sync_all；Node 删除预览摘要包含完整高半 FileId。原 Unix CopyEntry/entries 校验和启动 recover 函数正文机械比对保持。
+
+真实新 TempDir 默认专项：复制 **5/5**，0.32 秒（中文空格、超过260字符、readonly、普通hardlink独立副本、排除项、junction外部原件、变更/越界/目标已存在拒绝、private实际追加日志）；启动只读 inventory **10/10**，0.06 秒；RuntimePaths 真实选中恢复 **6/6**，0.29 秒；复制证明/重开清源 **16/16**，0.33 秒；Node migration 原根/Prefix路径规则 **1/1**；删除 revision 高半位 **1/1**。首次 root copy 编译4错是误用私有separator函数和不存在PinnedDirectory.identity字段，修为公开纯词法函数/读取真实HANDLE身份后重编通过，没有削弱断言。
+
+完成原目录清理适配后开放该能力派发，不把派发当删除授权；保留无选中无工作与原失败传播。真正 RuntimeService 公有迁移/IO lease/丢失waiter、附件reader实际排空、提交后native重开失败/retry、新业务保持、旧版本不增删除权等原专项在本机 **9/9**，2.97 秒，另派发 **3/3**，0.02 秒。完成冻结 core --lib --tests --no-deps Clippy **-Dclippy::all通过**（53既有Rust警告）。这些是真实临时运行环境与文件行为，尚未声称GUI迁移到第二块内置盘或安装版验收。
+
+真实GUI第二轮保存普通配置成功返回“已保存，重启后生效”，点“立即重启”后新起始页面实际后端显示“GUI 第二轮配置 · 第1次启动”；原W4 binary未换，因此初次长时间pending不能归因于新RAII修复，尚未重现。该次disposable后端实际写出root/child/grand PID并输出96行各超1KiB stderr，未因大输出终止。TaskMgr已实际打开但其高权限进程不接受本工具输入，精确TaskMgr交互验收未通过；改用核对原image/启动时间的Stop-Process强制结束平台，实际原root25256/child3012/grand13648全部不存在，证明该次Job kill-on-close，并不等同TaskMgrGUI或安装版通过。项目和数据继续保留给W5删除验收。

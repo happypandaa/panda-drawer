@@ -71,6 +71,20 @@ impl<'de> Deserialize<'de> for PersistedIdentity {
 }
 
 impl PersistedIdentity {
+    /// The reviewed directory's native identity, for deletion preview revisions.
+    /// Unix keeps its original serialized fields; Windows includes all 128 bits.
+    pub(crate) fn deletion_revision_value(&self) -> serde_json::Value {
+        #[cfg(unix)]
+        {
+            serde_json::json!({"inode":self.inode,
+                "volume":self.volume_uuid,"device":if self.volume_uuid.is_none(){Some(self.device)}else{None}})
+        }
+        #[cfg(windows)]
+        {
+            serde_json::json!({"device":self.device,"windowsFileId":self.windows_file_id})
+        }
+    }
+
     /// Existing damaged-database diagnostic marker, never a captured object.
     /// Keep its platform fields here so callers do not construct native IDs.
     pub(crate) fn unavailable() -> Self {
@@ -229,6 +243,27 @@ impl PersistedIdentity {
             }
         }
         bail!("The material's expected volume cannot be verified")
+    }
+}
+
+#[cfg(all(test, windows))]
+mod revision_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_revision_includes_the_high_half_of_the_native_file_id() {
+        let temporary = tempfile::Builder::new()
+            .prefix("panda-disposable-delete-revision-")
+            .tempdir()
+            .unwrap();
+        let original = PersistedIdentity::capture(temporary.path()).unwrap();
+        let mut different = original.clone();
+        different.windows_file_id.as_mut().unwrap()[15] ^= 1;
+        assert_eq!(original.legacy_pair(), different.legacy_pair());
+        assert_ne!(
+            original.deletion_revision_value(),
+            different.deletion_revision_value()
+        );
     }
 }
 

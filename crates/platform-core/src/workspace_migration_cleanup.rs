@@ -3,7 +3,7 @@
 //! This module does not decide that a runtime has reopened. Its caller must
 //! supply that receipt only after the new runtime is usable and all old native
 //! and HTTP file access has actually drained. It never pauses the new store.
-use crate::migration_metadata_io::read_metadata;
+use crate::migration_metadata_io::{entries, read_metadata, CopyEntry};
 use crate::{file_identity::PersistedIdentity, ApiError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -121,17 +121,6 @@ pub(crate) struct CleanupRequest<'a> {
     pub(crate) epochs_applied: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct CopyEntry {
-    path: PathBuf,
-    kind: String,
-    bytes: u64,
-    digest: Option<String>,
-    target: Option<PathBuf>,
-    mode: u32,
-}
-
 /// Returned only after settings, target identity and both saved copy inventories
 /// agree. The target's current business contents are intentionally not read:
 /// the reopened runtime may already have accepted legitimate writes there.
@@ -222,34 +211,6 @@ fn validate_exclusions(paths: &BTreeSet<PathBuf>) -> Result<(), ApiError> {
         }
     }
     Ok(())
-}
-
-fn entries(value: Value) -> Result<BTreeMap<PathBuf, CopyEntry>, ApiError> {
-    let list: Vec<CopyEntry> =
-        serde_json::from_value(value).map_err(|_| blocked("迁移文件清单无法解析。"))?;
-    let mut result = BTreeMap::new();
-    for entry in list {
-        relative(&entry.path)?;
-        let valid = entry.mode <= 0o777
-            && match entry.kind.as_str() {
-                "file" => {
-                    entry.target.is_none()
-                        && entry.digest.as_ref().is_some_and(|digest| {
-                            digest.len() == 64
-                                && digest.bytes().all(|byte| {
-                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-                                })
-                        })
-                }
-                "directory" => entry.bytes == 0 && entry.digest.is_none() && entry.target.is_none(),
-                "symlink" => entry.bytes == 0 && entry.digest.is_none() && entry.target.is_some(),
-                _ => false,
-            };
-        if !valid || result.insert(entry.path.clone(), entry).is_some() {
-            return Err(blocked("迁移文件清单含重复或无效项目。"));
-        }
-    }
-    Ok(result)
 }
 
 fn authorize(
@@ -407,3 +368,7 @@ pub(crate) fn cleanup_source(
 #[cfg(all(test, unix))]
 #[path = "workspace_migration_cleanup_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "workspace_migration_cleanup/windows_tests.rs"]
+mod windows_tests;

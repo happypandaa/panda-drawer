@@ -587,7 +587,7 @@ pub(crate) fn copy_and_commit(
         }
         fs::remove_dir(&j.destination_path)?;
         fs::rename(&j.stage_path, &j.destination_path)?;
-        File::open(j.destination_path.parent().unwrap())?.sync_all()?;
+        platform_native::filesystem::sync_directory(j.destination_path.parent().unwrap())?;
         j.published = true;
         j.phase = "committing".into();
         save_journal(paths, &j)?;

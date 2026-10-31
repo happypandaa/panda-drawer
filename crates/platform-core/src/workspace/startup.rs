@@ -1,10 +1,5 @@
 //! Startup recovery is selected here so platform code owns its recovery proof.
-#[cfg(not(windows))]
 use super::*;
-#[cfg(windows)]
-use crate::{ApiError, RuntimePaths};
-#[cfg(windows)]
-use std::path::Path;
 
 #[cfg(windows)]
 #[path = "startup/windows.rs"]
@@ -22,13 +17,13 @@ pub(super) fn require_before_initialization(data_root: &Path) -> Result<(), ApiE
     }
 }
 
-#[cfg(windows)]
 pub(super) fn recover_startup(paths: &RuntimePaths) -> Result<(), ApiError> {
-    windows::recover_startup(paths.data_root())
+    #[cfg(windows)]
+    let _inventory = windows::pin_recovery(paths.data_root())?;
+    recover_selected(paths)
 }
 
-#[cfg(not(windows))]
-pub(super) fn recover_startup(paths: &RuntimePaths) -> Result<(), ApiError> {
+fn recover_selected(paths: &RuntimePaths) -> Result<(), ApiError> {
     let selected: Value = read_json(&paths.data_root().join("settings.json")).map_err(ioerr)?;
     for entry in fs::read_dir(paths.migrations_dir())? {
         let entry = entry?;

@@ -4,6 +4,7 @@ pub mod boot_session;
 pub mod files;
 pub mod process;
 pub mod removal;
+pub mod reparse_copy;
 pub mod system_paths;
 pub mod volume;
 pub mod workspace;
@@ -27,7 +28,8 @@ pub(crate) fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     Ok(result)
 }
 
-pub(crate) fn separator_path(path: &Path) -> PathBuf {
+/// Normalize native separator spelling only; this grants no filesystem claim.
+pub fn separator_path(path: &Path) -> PathBuf {
     let units: Vec<u16> = path
         .as_os_str()
         .encode_wide()

@@ -15,8 +15,7 @@ pub(super) fn revision(slot: &Path) -> Result<String> {
     digest.update(read_small(&slot.join("registration.json"))?);
     // A copied registration at a replaced directory is not the reviewed target.
     // Stable volumes may receive a new device number after a reboot.
-    digest.update(serde_json::to_vec(&json!({"inode":identity.inode,
-        "volume":identity.volume_uuid,"device":if identity.volume_uuid.is_none(){Some(identity.device)}else{None}}))?);
+    digest.update(serde_json::to_vec(&identity.deletion_revision_value())?);
     Ok(format!("{:x}", digest.finalize()))
 }
 
