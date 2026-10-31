@@ -754,3 +754,11 @@ Windows writer 在既有私有 Node/Web owner（或显式平台 owner）内独�
 实际完整 core writer 专项 **18/18**，无失败、忽略。包括私有创建/刷新/发布及显式 finish、原字节/高位 FileId/硬链接改变保留、并发准备与目的名字保留、原 HANDLE 发布、真实共享 reader 延迟删除、Node/Web owner 缺失不重建、junction/混合分隔符、早先空 scope 迟到 marker 的完整重查。独立只读审查通过；Mac 原 writer 文件与业务规则保持。
 
 此步只实现本进程掌握的活 writer，不伪造崩溃恢复。启动 inventory 对真实 Missing/Empty 通行，任何 preparing/live/终态样式/未知字节均保留 unknown，错误明确不能确认实际进程及 I/O，未许诺重启电脑即可修复。真实 Windows boot/崩溃后的安全退役仍待 W3/W5；全目录删除及卸载不能据本步称已完成。Registry 新接线另有实际专项，待独立提交记录，不重复累加到这 18 项。
+
+### W2.9 — Win32 参数路径与实际系统目录
+
+新增两个独立原生适配。api_paths 参考 [Rust Windows make_dirp](https://raw.githubusercontent.com/rust-lang/rust/main/library/std/src/sys/process/windows.rs)，只在 GetFullPathNameW 对候选 UTF-16 完全等值时，把标准扩展盘符/UNC 表示转换成普通绝对路径；不检查或授权目录、不改文件操作的扩展路径规则，特殊文件名和其它命名空间保留。SystemPaths 只从 Win32 系统目录 API 取得真实路径，处理实际返回容量，不读 SystemRoot/WINDIR/PATH 猜位置；不引入新依赖。
+
+对应 native 策略/系统目录专项 **6/6**，覆盖盘符/UNC、超 260 字符的纯词法转换、未配对 surrogate、不能安全改写的名字、实际现有系统目录、动态容量及错误返回。它们包含在本轮完整 native **71 通过、0 失败、2 明确忽略**，全目标严格 Clippy -Dwarnings 通过。调用方的 cwd/项目 profile 接线将分别提交记录；本提交本身不宣称产品路径已全部接通。
+
+实际短 cwd 的 std/native 对照已能保持 GetCurrentDirectoryW 和根相对 GetFullPathNameW 一致；本机超 260 中文空格 cwd 两种输入的 std/native 均在 CreateProcess 前返回 OS 267。没有跳过测试、加产品路径长度门槛或改注册表；纯词法不加长度限制不等于 OS 支持该 cwd。长文件树操作另有实际通过证据，Windows 10 及安装包仍未验收。
