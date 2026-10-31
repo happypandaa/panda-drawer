@@ -826,3 +826,17 @@ Windows 启动恢复采用实际固定 task scope/no-reparse HANDLE；沿用 Mac
 新增 publisher 回滚边界 **3/3**（0.17 秒）。其中 provenance 场景真实 flush 私有 stage→原生 rename 成功→新记录移名并置旧/缺失，按实际身份确认失败，经很窄 writer seam 返回 unknown；断言 outer journal、新产物/新记录/旧代均保留且禁止回滚。它验证 publisher 消费提交不确定回执的规则，不是 native 原 callback 的端到端故障或实际断电。独立复审发现并修复该缺口，其余恢复/skip/commit 顺序无新阻断。上述并非完整 GUI 新建/三次 Vite 构建或安装包验收，继续实际桌面验证；CI 按用户要求后置。
 
 完整 core --lib --tests 的额外 Clippy -Dclippy::all 本轮失败两处：已有 node_git_import/capability.rs 测试对字面 Err 调 unwrap_err、build_support/signed_resources.rs 测试模块后还有项；另有 65 项 Rust dead_code/unused 警告。没有报告静态检查全绿，也没有删除/跳过测试；后续做不改变断言/行为的代码整理再重跑。
+
+### W2.17 — 完整开发版的实际网页项目验收
+
+2026-10-31，本机 Windows 11 25H2 x64（26200.9711）、WebView2 156.0.4314.50，正常 **npm run dev**，未用安装包或测试数据根覆盖。准备本次独立资源/target 后正常管理器启动，固定开发 identity/root 保持。主界面原 0 项；通过真实新建表单创建“临时移植验收 W2 A 中文 space”，经实际 CLI 创建同样明确 disposable 的 B，A 初始 bundled 页面在独立 Tauri 窗口显示“本地已连接”。实际 env doctor 返回 managed ready、Node 24.22.0/npm 11.19.1，无问题、未改用户工具设置。UI 的“操作状态暂未核实”与存储 unavailable 仍属 W5 未完门禁，不当作全部功能可用。
+
+使用两个新项目实际 session/document epoch API，各做 SQLite CREATE/INSERT/UPDATE/DELETE/SELECT，分别保留 A/B 中文行；附件 PUT 上传和 GET 返回各自不同的中文内容。没有操作既有用户项目。仅在这两个 disposable 源码加入相同 origin/key/database/cookie 名的交互验收页，经生产 build 接口执行真实 npm/Vite：A 三次、B 一次均成功，使用内置工具，并保留每次本地结果。第二次后 A 旧 starter 窗口仍显示并收到“新的网页已准备好，当前页面会继续保留”，没有破坏其晚资源。
+
+真实 UI 写 A1 后打开 B：B 的 localStorage/IndexedDB/Cookie 均为空；写 B1 再回 A 点击重新读取，A 的三项仍为 A1。A 第三次构建后旧 A 窗口仍运行，磁盘保留其实际租用的第二代与当前第三代；正常关闭 A/B 后，只读核实各 .platform/artifacts **恰好一个 current generation**，.platform/builds 均空。重新从管理器打开 A，实际 URL 已是第三代，localStorage/IndexedDB 仍 A1；测试 Cookie 为未设 Max-Age 的 session Cookie，浏览器退出后为空，未把它记成持久 Cookie 失败或持久化通过。W2.10 另有明确持久 Cookie 的实际引擎验证。
+
+构建后及重开后再次通过真实 API 核实两项目的数据库行和附件原内容，全部一致。正常关闭项目及管理器，日志给出 ReadyForNativeExit、外层 dev 退出码 0；仍有 WebView2 注销类 OS 1412 和 Vite 结束码 4294967295 的退出日志，未宣称日志无错误。两个 disposable 项目、所有资源 stage/失败和成功本地证据均保留，未提交证据、应用、安装包或凭据。
+
+W2 的本机开发模式功能标准已完成；CI/合入 main 按用户要求后置，Windows 10、中文/空格的实际用户名或工作区、安装包和第 7 节完整验收尚未完成。本轮产品项目显示名/内容含中文空格，项目目录为自动转写名，不能据此宣称实际工作区路径含中文空格（TempDir 专项另有覆盖）。继续堆叠 W3，不将本记录算作安装版或两套 CI 绿色。
+
+W2 收尾静态检查：保留 source-failure 两次原断言，仅用 let-else 取出原 Err；把 signed_resources 的原两个路径测试原样移到文件末尾。原对应测试各 **2/2**，完整 core --lib --tests --no-deps **-Dclippy::all 通过**，既有 65 项 Rust 警告仍保留。没有跳过 Mac 测试或把本地 Clippy 当 macOS CI。
