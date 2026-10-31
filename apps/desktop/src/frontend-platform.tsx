@@ -16,6 +16,39 @@ function windowsAbsolutePath(value: string): boolean {
 }
 
 const macAbsolutePath = (value: string) => value.startsWith('/');
+function macTrimSlash(path: string): string { return path.length > 1 ? path.replace(/\/+$/, '') : path; }
+function macParent(path: string): string { const value = macTrimSlash(path); const index = value.lastIndexOf('/'); return index <= 0 ? '/' : value.slice(0, index); }
+function macBaseName(path: string): string { const value = macTrimSlash(path); return value.slice(value.lastIndexOf('/') + 1) || value; }
+function macCommonDirectory(paths: string[]): string {
+  const parts = paths.map(path => macParent(path).split('/').filter(Boolean));
+  if (!parts.length) return '/';
+  let length = 0;
+  while (parts.every(segments => segments.length > length && segments[length] === parts[0][length])) length++;
+  return `/${parts[0].slice(0, length).join('/')}`;
+}
+const macRelativeDirectory = (dir: string, base: string) => dir === base ? '' : dir.startsWith(base === '/' ? '/' : `${base}/`) ? `${dir.slice(base === '/' ? 1 : base.length + 1)}/` : `${dir}/`;
+const windowsSpelling = (path: string) => path.replaceAll('/', '\\');
+function windowsRoot(path: string): string {
+  return path.match(/^(?:\\\\\?\\UNC\\[^\\]+\\[^\\]+\\?|\\\\\?\\[a-z]:\\|\\\\\?\\[^\\]+\\|\\\\[^\\]+\\[^\\]+\\?|[a-z]:\\)/i)?.[0] ?? '';
+}
+function windowsTrim(path: string): string { const value = windowsSpelling(path); const root = windowsRoot(value); return value.length > root.length ? value.replace(/\\+$/, '') : value; }
+function windowsParent(path: string): string { const value = windowsTrim(path); const root = windowsRoot(value); const at = value.lastIndexOf('\\'); return at < root.length ? root : value.slice(0, at); }
+function windowsBaseName(path: string): string { const value = windowsTrim(path); return value.slice(value.lastIndexOf('\\') + 1) || value; }
+function windowsCommonDirectory(paths: string[]): string {
+  const parts = paths.map(path => windowsParent(path).split('\\'));
+  if (!parts.length) return '';
+  let length = 0;
+  while (parts.every(segments => segments.length > length && segments[length].toLowerCase() === parts[0][length].toLowerCase())) length++;
+  const common = parts[0].slice(0, length).join('\\');
+  if (!common || !windowsAbsolutePath(`${common}\\`)) return '';
+  return windowsTrim(`${common}\\`);
+}
+function windowsRelativeDirectory(dir: string, base: string): string {
+  const path = windowsTrim(dir); const root = windowsTrim(base);
+  if (path.toLowerCase() === root.toLowerCase()) return '';
+  const prefix = root.endsWith('\\') ? root : `${root}\\`;
+  return root && path.toLowerCase().startsWith(prefix.toLowerCase()) ? `${path.slice(prefix.length)}\\` : `${path}\\`;
+}
 const common = {
   openFolderLabel: '在文件管理器中打开',
   nodePathPlaceholder: '选择本机 Node 可执行文件的绝对路径',
@@ -28,6 +61,11 @@ const common = {
   localDirectoryCompletionHelp: (_ownership?: string) => '没有临时下载文件需要清理。以后删除应用时，你的文件夹仍会保留。',
   localDirectoryReviewDeletion: '此入口直接使用你的文件夹。删除应用只移除平台登记及独立的配置、应用数据和缓存，你的文件夹会保留。',
   isAbsolutePath: (value: string) => macAbsolutePath(value) || windowsAbsolutePath(value),
+  parentPath: macParent,
+  pathBaseName: macBaseName,
+  commonDirectory: macCommonDirectory,
+  relativeDirectory: macRelativeDirectory,
+  directoryLabel: (path: string) => path === '/' ? '/' : `${path}/`,
 };
 const mac = {
   ...common,
@@ -57,6 +95,11 @@ const windows = {
   },
   localDirectoryReviewDeletion: '此入口直接使用所选文件夹。删除应用会一并删除平台生成的项目文件夹；你选择的已有原始文件夹仍会保留。',
   isAbsolutePath: windowsAbsolutePath,
+  parentPath: windowsParent,
+  pathBaseName: windowsBaseName,
+  commonDirectory: windowsCommonDirectory,
+  relativeDirectory: windowsRelativeDirectory,
+  directoryLabel: (path: string) => path ? `${windowsTrim(path).replace(/\\+$/, '')}\\` : '多个磁盘位置',
 };
 
 export type FrontendPlatform = typeof common;

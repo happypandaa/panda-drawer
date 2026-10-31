@@ -9,6 +9,7 @@ import type { ByteCount, ProjectInfo, TaskRecord } from './types';
 import { bigBytes, bigText, partBytes } from './storage-utils';
 import { projectRegenerable, regenerableCategories } from './workspace-storage-data';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 type CleanupKind = 'restoreOriginal';
 interface CleanupItem {
@@ -56,13 +57,13 @@ const groups: { kind: CleanupKind; description: string }[] = [
 // Protected items carry a user-facing reason after a stable code prefix.
 const reasonText = (reason: string) => reason.startsWith('CLEANUP_ITEM_PROTECTED: ') ? reason.slice('CLEANUP_ITEM_PROTECTED: '.length) : reason;
 const confirmationPhrase = '永久清理所选内容';
-function readPlan(result: Record<string, unknown> | null): CleanupPlan {
+function readPlan(result: Record<string, unknown> | null, isAbsolutePath: (path: string) => boolean): CleanupPlan {
   if (!result || typeof result.planId !== 'string' || !result.planId || typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt) || typeof result.workspaceRoot !== 'string' || !Array.isArray(result.items) || !Array.isArray(result.preserved) || result.confirmationText !== confirmationPhrase) throw new Error('清理范围返回不完整，请重新扫描；未提交任何清理操作。');
   const ids = new Set<string>();
   for (const value of result.items) {
     if (!value || typeof value !== 'object') throw new Error('清理范围中的条目无效，请重新扫描。');
     const item = value as Record<string, unknown>;
-    if (typeof item.id !== 'string' || !item.id || ids.has(item.id) || !Object.prototype.hasOwnProperty.call(kinds, String(item.kind)) || typeof item.label !== 'string' || typeof item.path !== 'string' || !item.path.startsWith('/') || typeof item.canClean !== 'boolean' || !Array.isArray(item.blockedReasons) || !item.blockedReasons.every((reason) => typeof reason === 'string')) throw new Error('清理范围中的条目不完整，请重新扫描。');
+    if (typeof item.id !== 'string' || !item.id || ids.has(item.id) || !Object.prototype.hasOwnProperty.call(kinds, String(item.kind)) || typeof item.label !== 'string' || typeof item.path !== 'string' || !isAbsolutePath(item.path) || typeof item.canClean !== 'boolean' || !Array.isArray(item.blockedReasons) || !item.blockedReasons.every((reason) => typeof reason === 'string')) throw new Error('清理范围中的条目不完整，请重新扫描。');
     ids.add(item.id);
   }
   if (!result.preserved.every((value) => typeof value === 'string')) throw new Error('清理范围缺少明确的保留内容，请重新扫描。');
@@ -96,6 +97,7 @@ function focusAndReveal(element: HTMLElement | null) {
 }
 
 export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
+  const platform = useFrontendPlatform();
   const [reviewOpen, setReviewOpen] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [projectResults, setProjectResults] = useState<TaskRecord[]>([]);
@@ -144,7 +146,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
     if (task.type === 'workspaceCleanupPreview') {
       if (task.status === 'succeeded') {
         try {
-          const value = readPlan(task.result);
+          const value = readPlan(task.result, platform.isAbsolutePath);
           setPlan(value); setSelected([]); setSelectedProjects([]); setConsumed(false); setNow(Date.now()); setScannedAt(Date.now()); clearConfirmation();
           publishHistoryScan(value.workspaceRoot, value.items);
         } catch (cause) { setError(messageFrom(cause)); }
@@ -154,7 +156,7 @@ export function WorkspaceCleanupPanel(props: CleanupPanelProps) {
       if (runningCleanupTasks.current.delete(task.taskId)) setResultFocus({ taskId: task.taskId });
       if (!operation.current) void callbacks.current.onRefresh().catch((cause) => { if (alive.current) setError(`清理任务已结束，但重新读取空间失败：${messageFrom(cause)}`); });
     }
-  }, [clearConfirmation]);
+  }, [clearConfirmation, platform.isAbsolutePath]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { if (props.cleanupTask) track(props.cleanupTask, false); }, [props.cleanupTask, track]);
   useEffect(() => { clearConfirmation(); }, [props.active, props.migrating, props.revision, props.workspaceRoot, props.instanceId, clearConfirmation]);

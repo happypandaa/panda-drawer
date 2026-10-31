@@ -1006,3 +1006,11 @@ core StoreLedger/binding/session实际临时文件专项 **23/23**，2.41秒；n
 Windows lifecycle外部导出新增同父目录、完整源/父HANDLE身份与不覆盖改名；普通硬链接按Mac允许，替代文件不发布/不归属，提交后不确定明确unknown并保留。Mac原Unix publisher不改。真实TempDir专项 **5/5**，0.01秒，含其它硬链接原件保持、目标碰撞、高半身份错、改名前源替换、改名后目标替换与实际父pin。冻结core --lib --tests --no-deps Clippy **-Dclippy::all通过**（51 Rust警告）。浏览器下载包含用户明确覆盖的交付事务是另一接口，仍在独立实现，不以此不覆盖publisher替代。
 
 本组最终完整桌面 --bin local-projects-desktop-dev --tests --no-deps Clippy **-Dclippy::all通过**（4 Rust警告保留），包含最后的manager重开封门；该封门的真实manager专项重编后再次1/1通过。
+
+### W5.5 — 正常界面删除、配置重启与路径适配
+
+Windows 11 25H2 开发版正常界面实际发现网页删除预览仍用 `/` 开头判断，合法的本机 Windows 路径因而被拒绝。删除、清理、导入、求助五处统一委托已有 frontend-platform 绝对路径策略；Node 删除预览的父目录、文件名及共同目录也移入同一适配层，支持盘符、UNC 与扩展路径，不同盘符显示多个磁盘位置。Mac 原词法和分组函数正文保持。TypeScript/Vite build 通过，完整界面测试 **490/490**、0 跳过，15.67 秒，包含实际组件接纳 Windows 绝对路径、拒绝盘符相对路径和跨盘分组。
+
+正常 GUI 对明确 disposable 的 W2 网页 A 展示完整删除预览，勾选确认后公有任务成功；管理器由 3 项变 2 项。实际核对其项目根、该 UUID 独立 WebView2 数据目录和 web-project-ownership 目录全部不存在；网页 B 和 Node 测试项目仍保留。没有据此声称其余所有历史路径逐个完成核对，也没有删除用户外部原始目录。
+
+已有 disposable Node 在正常 GUI 第二次保存配置和立即重启成功，页面显示新值及第 1 次启动。真实日志 100280 字节，人工密钥原串不存在且有 `***`，ACL 为当前用户私有。此操作发生于原 W4 二进制，不能归因于后来配置锁 guard 修正；之前一次保存写入 revision1 后界面持续等待的原因仍未确证。精确核对平台进程后以 Stop-Process 强制结束，原 Node 根、child、grandchild 全部结束，重开为 0 运行。Task Manager 窗口提升完整性使本轮自动化不能实际操作，故这项只记真实强制终止验证，不记为第 7 节 Task Manager/安装版验收。

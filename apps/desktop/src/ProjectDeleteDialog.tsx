@@ -7,20 +7,21 @@ import { Modal } from './Modal';
 import { ProjectTask } from './ProjectTask';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 interface DeletePreview {
   projectId: string; instanceId: string; projectRoot: string | null;
   expectedDocumentEpoch: string | null; mode: string; maintenanceId: string | null;
   deletePaths: string[]; alreadyAbsent: boolean; cleanupOnly: boolean;
 }
-function validPreview(value: DeletePreview, project: ProjectInfo, instanceId?: string) {
+function validPreview(value: DeletePreview, project: ProjectInfo, instanceId: string | undefined, isAbsolutePath: (path: string) => boolean) {
   const absent = value?.alreadyAbsent === true || value?.cleanupOnly === true;
   return Boolean(value && value.projectId === project.id && typeof value.instanceId === 'string' && value.instanceId.length > 0 && (!instanceId || value.instanceId === instanceId)
     && typeof value.alreadyAbsent === 'boolean' && typeof value.cleanupOnly === 'boolean' && !(value.alreadyAbsent && value.cleanupOnly)
     && (absent ? value.projectRoot === null && value.expectedDocumentEpoch === null : value.projectRoot === project.projectRoot && typeof value.expectedDocumentEpoch === 'string' && value.expectedDocumentEpoch.length > 0)
     && ['ready', 'maintenance', 'unknown'].includes(value.mode) && (value.maintenanceId === null || typeof value.maintenanceId === 'string')
     && (value.mode !== 'maintenance' || Boolean(value.maintenanceId))
-    && Array.isArray(value.deletePaths) && value.deletePaths.every(path => typeof path === 'string' && path.startsWith('/')) && (!value.alreadyAbsent || value.deletePaths.length === 0));
+    && Array.isArray(value.deletePaths) && value.deletePaths.every(path => typeof path === 'string' && isAbsolutePath(path)) && (!value.alreadyAbsent || value.deletePaths.length === 0));
 }
 
 export function ProjectDeleteDialog({ project, status, task, instanceId, disabled, onTask, onClose, onPendingChange, feedback }: {
@@ -34,6 +35,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
   onPendingChange?: (pending: boolean) => void;
   feedback?: ReactNode;
 }) {
+  const platform = useFrontendPlatform();
   const [acknowledgedIdentity, setAcknowledgedIdentity] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [accepted, setAccepted] = useState<TaskRecord | null>(null);
@@ -76,7 +78,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
     try {
       const value = await invoke<DeletePreview>('project_delete_preview', { projectId: project.id });
       if (!current()) return;
-      if (!validPreview(value, project, instanceId)) throw new Error('删除范围或项目身份不符，请重新核对。');
+      if (!validPreview(value, project, instanceId, platform.isAbsolutePath)) throw new Error('删除范围或项目身份不符，请重新核对。');
       setPreview(value);
     } catch (cause) { if (current()) setReadError(messageFrom(cause)); }
     finally { if (current()) setReading(false); }
