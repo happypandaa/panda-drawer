@@ -4,6 +4,26 @@ const RUNTIME: &[u8] = include_bytes!("../../../../scripts/node-runtime-release.
 const DEVELOPMENT: &[u8] =
     include_bytes!("../../../../scripts/development-node-release.windows-x64.json");
 
+/// Staged native creation can fail after a real child exists. Keep every
+/// enclosing probe scope before any success/failure cleanup continuation runs.
+/// Probe wrappers may preserve only the original reason's text, so recognize
+/// both the established probe receipt and the native created-owner receipt.
+pub(super) fn preserve_unknown_probe<T>(
+    result: Result<T>,
+    scope: &Path,
+    otherwise: impl FnOnce(Result<T>) -> Result<T>,
+) -> Result<T> {
+    if let Err(error) = &result {
+        let reason = error.to_string();
+        if reason.contains("Probe outcome is unknown")
+            || reason.contains("resource closure outcome is unknown")
+        {
+            return Err(invalid(format!("{error}; retained {}", scope.display())));
+        }
+    }
+    otherwise(result)
+}
+
 fn release(kind: &std::ffi::OsStr) -> Result<(&'static [u8], bool)> {
     match kind.to_str() {
         Some("runtime") => Ok((RUNTIME, false)),
@@ -405,11 +425,8 @@ pub(super) fn prepare(
         }
         verify(kind, output)
     })();
-    match result {
+    preserve_unknown_probe(result, &stage, |result| match result {
         Ok(value) => Ok(value),
-        Err(error) if error.to_string().contains("Probe outcome is unknown") => {
-            Err(invalid(format!("{error}; retained {}", stage.display())))
-        }
         Err(error) if moved || error.to_string().contains("Publication outcome is unknown") => {
             Err(invalid(format!(
                 "Publication outcome is unknown after the move: {error}; retained {}",
@@ -423,12 +440,83 @@ pub(super) fn prepare(
                 stage.display()
             ))),
         },
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_created_process_retains_each_enclosing_real_probe_scope() {
+        use std::cell::Cell;
+        let root = tempfile::Builder::new()
+            .prefix("panda-unknown-probe-中文 space-")
+            .tempdir()
+            .unwrap();
+        // These are the exact shared boundary used by Node staging, MinGit's
+        // nested probe scratch and MinGit's outer staging, not real resources.
+        for (index, label) in ["node-stage", "git-probe-scratch", "git-stage"]
+            .into_iter()
+            .enumerate()
+        {
+            let scope = root.path().join(label);
+            let mut created = Created {
+                files: Vec::new(),
+                directories: Vec::new(),
+            };
+            created.directory(&scope).unwrap();
+            created
+                .write(&scope, "owned-evidence", b"preserve actual scope")
+                .unwrap();
+            let expected = native::open_no_reparse(&scope).unwrap().identity;
+            let reason = if index == 0 {
+                "Probing verified Node: Created process setup failed; resource closure outcome is unknown: controlled setup failure"
+            } else if index == 1 {
+                "Created process setup failed; resource closure outcome is unknown: controlled setup failure"
+            } else {
+                "Probe outcome is unknown: MinGit process closure could not be confirmed"
+            };
+            let entered_cleanup = Cell::new(false);
+            let result: Result<()> =
+                preserve_unknown_probe(Err(invalid(reason)), &scope, |result| {
+                    entered_cleanup.set(true);
+                    created.cleanup()?;
+                    result
+                });
+            assert!(result.unwrap_err().to_string().contains(reason));
+            assert!(!entered_cleanup.get());
+            assert!(expected.same_object(&native::open_no_reparse(&scope).unwrap().identity));
+            assert_eq!(
+                fs::read(scope.join("owned-evidence")).unwrap(),
+                b"preserve actual scope"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_probe_failure_still_runs_its_original_owned_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let scope = root.path().join("ordinary-probe-failure");
+        let mut created = Created {
+            files: Vec::new(),
+            directories: Vec::new(),
+        };
+        created.directory(&scope).unwrap();
+        created.write(&scope, "owned-only", b"disposable").unwrap();
+        let result: Result<()> = preserve_unknown_probe(
+            Err(invalid("Node probe failed or timed out")),
+            &scope,
+            |result| {
+                created.cleanup()?;
+                result
+            },
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Node probe failed or timed out"
+        );
+        assert!(!scope.exists());
+    }
     #[test]
     fn private_writer_and_cleanup_use_actual_native_ids_and_protected_files() {
         let root = tempfile::tempdir().unwrap();

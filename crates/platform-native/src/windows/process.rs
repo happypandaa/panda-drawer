@@ -207,13 +207,86 @@ pub struct OwnedProcess {
     // before the remaining root/pipe handles are released.
     job: OwnedHandle,
     process: OwnedHandle,
+    thread: Option<OwnedHandle>,
+    job_assigned: bool,
     pub stdin: Option<File>,
     pub stdout: Option<File>,
     pub stderr: Option<File>,
     pub pid: u32,
 }
+
+/// A process was created, so the error retains its actual resource owner. An
+/// error message, termination request or timeout is never a closure receipt.
+/// New runtime callers use the staged methods and keep the owner directly.
+pub struct SpawnSetupFailure {
+    cause: io::Error,
+    owner: OwnedProcess,
+}
+impl SpawnSetupFailure {
+    pub fn into_parts(self) -> (io::Error, OwnedProcess) {
+        (self.cause, self.owner)
+    }
+    pub fn owner(&self) -> &OwnedProcess {
+        &self.owner
+    }
+}
+impl std::fmt::Debug for SpawnSetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SpawnSetupFailure")
+            .field("cause", &self.cause)
+            .field("pid", &self.owner.pid)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for SpawnSetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Created process setup failed; resource closure outcome is unknown: {}",
+            self.cause
+        )
+    }
+}
+impl std::error::Error for SpawnSetupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+impl Drop for OwnedProcess {
+    fn drop(&mut self) {
+        // An assignment failure can leave a never-resumed root outside the Job.
+        // This best-effort request uses only the retained creation handle. Drop
+        // is not a wait, a joined-I/O receipt or permission to clean its files.
+        if !self.job_assigned {
+            unsafe {
+                TerminateProcess(self.process.as_raw_handle(), 1);
+            }
+        }
+    }
+}
 impl OwnedProcess {
     pub fn spawn(request: Spawn) -> io::Result<Self> {
+        let mut process = Self::create_suspended(request)?;
+        if let Err(cause) = process.assign_job().and_then(|()| process.resume()) {
+            return Err(process.setup_failure(cause));
+        }
+        Ok(process)
+    }
+
+    fn setup_failure(self, cause: io::Error) -> io::Error {
+        // Preserve the child even when termination itself fails. Callers can
+        // recover this owner from the error; no ignored wait can turn this
+        // into the pre-CreateProcess failure case.
+        let _ = self.terminate(1);
+        io::Error::other(SpawnSetupFailure { cause, owner: self })
+    }
+
+    /// Create a root suspended with all of its native owners retained. Every
+    /// Err from this method precedes successful CreateProcessW. The caller must
+    /// assign the Job, register its actual owner/pumps, then resume explicitly.
+    pub fn create_suspended(request: Spawn) -> io::Result<Self> {
         let program = native_path(&request.program)?;
         let directory = native_path(&request.current_directory)?;
         let mut arguments = command_line(&request.program, &request.arguments)?;
@@ -263,23 +336,11 @@ impl OwnedProcess {
                 &mut created,
             ))?;
         }
-        let process = owned(created.hProcess)?;
-        let thread = owned(created.hThread)?;
-        unsafe {
-            if AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle()) == 0 {
-                let error = io::Error::last_os_error();
-                TerminateProcess(process.as_raw_handle(), 1);
-                WaitForSingleObject(process.as_raw_handle(), 5000);
-                return Err(error);
-            }
-            if ResumeThread(thread.as_raw_handle()) == u32::MAX {
-                let error = io::Error::last_os_error();
-                TerminateJobObject(job.as_raw_handle(), 1);
-                WaitForSingleObject(process.as_raw_handle(), 5000);
-                return Err(error);
-            }
-        }
-        drop(thread);
+        // Successful CreateProcessW returns valid process and primary-thread
+        // handles. From this point there is no fallible setup before the full
+        // owner is returned, so a created root cannot be mistaken for no child.
+        let process = unsafe { OwnedHandle::from_raw_handle(created.hProcess) };
+        let thread = unsafe { OwnedHandle::from_raw_handle(created.hThread) };
         // Only the child owns these ends after CreateProcess. Keeping one parent
         // copy would prevent EOF and could leave deletion waiting forever.
         drop(input.child);
@@ -288,11 +349,51 @@ impl OwnedProcess {
         Ok(Self {
             job,
             process,
+            thread: Some(thread),
+            job_assigned: false,
             stdin: Some(input.parent),
             stdout: Some(output.parent),
             stderr: Some(errors.parent),
             pid: created.dwProcessId,
         })
+    }
+
+    pub fn assign_job(&mut self) -> io::Result<()> {
+        if self.job_assigned {
+            return Ok(());
+        }
+        unsafe {
+            checked(AssignProcessToJobObject(
+                self.job.as_raw_handle(),
+                self.process.as_raw_handle(),
+            ))?;
+        }
+        self.job_assigned = true;
+        Ok(())
+    }
+
+    /// Failure leaves the actual suspended owner in the caller's custody.
+    pub fn resume(&mut self) -> io::Result<()> {
+        if !self.job_assigned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot resume a process before assigning its owned Job",
+            ));
+        }
+        let thread = self.thread.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Process was already resumed")
+        })?;
+        let previous = unsafe { ResumeThread(thread.as_raw_handle()) };
+        if previous == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        if previous != 1 {
+            return Err(io::Error::other(
+                "Owned primary thread did not have its original suspend count",
+            ));
+        }
+        self.thread.take();
+        Ok(())
     }
     pub fn identity(&self) -> io::Result<ProcessIdentity> {
         read_identity(self.pid, &self.process)
@@ -311,7 +412,15 @@ impl OwnedProcess {
     /// The caller first writes its normal protocol shutdown message and waits.
     /// After that grace period this kills the complete owned Job, never a PID.
     pub fn terminate(&self, exit: u32) -> io::Result<()> {
-        unsafe { checked(TerminateJobObject(self.job.as_raw_handle(), exit)) }
+        unsafe {
+            if self.job_assigned {
+                checked(TerminateJobObject(self.job.as_raw_handle(), exit))
+            } else {
+                // The only unassigned root is still suspended. Its real
+                // creation handle authorizes this request, never a saved PID.
+                checked(TerminateProcess(self.process.as_raw_handle(), exit))
+            }
+        }
     }
     pub fn active_processes(&self) -> io::Result<u32> {
         let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
@@ -538,8 +647,149 @@ mod tests {
             "sleep" => loop {
                 std::thread::sleep(Duration::from_secs(60));
             },
+            "exit259" => std::process::exit(259),
+            "marker" => {
+                std::fs::write(std::env::var_os("PANDA_NATIVE_MARKER").unwrap(), b"ran").unwrap();
+            }
             _ => panic!("Unknown disposable fixture mode"),
         }
+    }
+
+    #[test]
+    fn suspended_owner_is_registered_before_any_child_code_and_then_resumes() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-staged-中文 space-")
+            .tempdir()
+            .unwrap();
+        let directory = temp.path().canonicalize().unwrap();
+        let marker = directory.join("child-ran");
+        let mut plan = request("marker", &directory);
+        plan.environment
+            .push(("PANDA_NATIVE_MARKER".into(), marker.clone().into()));
+        let mut process = OwnedProcess::create_suspended(plan).unwrap();
+        assert!(!marker.exists());
+        assert_eq!(process.wait(Duration::from_millis(20)).unwrap(), None);
+        assert_eq!(process.active_processes().unwrap(), 0);
+        assert!(!marker.exists());
+        assert!(process.resume().is_err());
+        assert_eq!(process.exit_code().unwrap(), None);
+        process.assign_job().unwrap();
+        assert!(process.active_processes().unwrap() >= 1);
+        process.resume().unwrap();
+        drop(process.stdin.take());
+        assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(0));
+        assert_eq!(std::fs::read(marker).unwrap(), b"ran");
+        assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+    }
+
+    #[test]
+    fn post_creation_setup_error_keeps_the_real_owner_until_explicit_receipts() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-staged-failure-")
+            .tempdir()
+            .unwrap();
+        let directory = temp.path().canonicalize().unwrap();
+        let mut process = OwnedProcess::create_suspended(request("sleep", &directory)).unwrap();
+        let identity = process.identity().unwrap();
+        let cause = process.resume().unwrap_err();
+        assert!(observe(&identity).unwrap());
+        let failure = process.setup_failure(cause);
+        assert!(failure.to_string().contains("outcome is unknown"));
+        let failure = failure
+            .into_inner()
+            .unwrap()
+            .downcast::<SpawnSetupFailure>()
+            .unwrap();
+        assert_eq!(failure.owner().pid, identity.pid);
+        let (_, mut process) = failure.into_parts();
+        drop(process.stdin.take());
+        let mut output = Vec::new();
+        process
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        let mut errors = Vec::new();
+        process
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_end(&mut errors)
+            .unwrap();
+        assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(1));
+        assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+        assert!(!observe(&identity).unwrap());
+        assert!(output.is_empty());
+        assert!(errors.is_empty());
+
+        let mut missing = request("sleep", &directory);
+        missing.program = directory.join("does-not-exist.exe");
+        let error = OwnedProcess::create_suspended(missing).err().unwrap();
+        assert!(error
+            .get_ref()
+            .and_then(|value| value.downcast_ref::<SpawnSetupFailure>())
+            .is_none());
+    }
+
+    #[test]
+    fn observed_exit_259_is_not_reported_as_still_running() {
+        let temp = tempfile::Builder::new()
+            .prefix("panda-exit259-")
+            .tempdir()
+            .unwrap();
+        let process =
+            OwnedProcess::spawn(request("exit259", &temp.path().canonicalize().unwrap())).unwrap();
+        assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(259));
+        assert_eq!(process.exit_code().unwrap(), Some(259));
+        assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+    }
+
+    #[test]
+    #[ignore = "requires PANDA_NATIVE_TEST_NODE pointing to the verified official Windows Node"]
+    fn official_node_runs_only_after_the_staged_owner_is_ready() {
+        let node = std::env::var_os("PANDA_NATIVE_TEST_NODE")
+            .expect("explicit verified official Node path is required");
+        let temp = tempfile::Builder::new()
+            .prefix("panda-node-staged-中文 space-")
+            .tempdir()
+            .unwrap();
+        let directory = temp.path().canonicalize().unwrap();
+        let marker = directory.join("official-node-ran");
+        let mut process = OwnedProcess::create_suspended(Spawn {
+            program: node.into(),
+            arguments: vec![
+                "-e".into(),
+                "require('node:fs').writeFileSync(process.argv[1], process.version); process.stdout.write('官方 Node 中文'); process.stderr.write('e'.repeat(200000));".into(),
+                marker.clone().into(),
+            ],
+            current_directory: directory,
+            environment: std::env::vars_os().collect(),
+        })
+        .unwrap();
+        assert_eq!(process.wait(Duration::from_millis(20)).unwrap(), None);
+        assert!(!marker.exists());
+        process.assign_job().unwrap();
+        let mut stderr = process.stderr.take().unwrap();
+        let drain = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        process.resume().unwrap();
+        drop(process.stdin.take());
+        let mut output = String::new();
+        process
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(0));
+        assert!(process.wait_empty(Duration::from_secs(5)).unwrap());
+        assert_eq!(drain.join().unwrap(), vec![b'e'; 200000]);
+        assert_eq!(output, "官方 Node 中文");
+        assert!(std::fs::read_to_string(marker).unwrap().starts_with("v24."));
     }
     #[test]
     fn real_pipes_drain_large_stderr_and_preserve_protocol_stdin() {
