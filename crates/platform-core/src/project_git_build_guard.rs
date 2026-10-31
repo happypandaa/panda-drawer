@@ -134,6 +134,7 @@ pub(super) fn unavailable(cause: ApiError) -> ApiError {
     }
     issue
 }
+#[cfg(unix)]
 fn discover(project: &ProjectHandle) -> Result<Option<Repository>, ApiError> {
     check_no_symlinks(&project.root, false)?;
     let source = checked_relative(&project.root, &project.manifest.source_dir, false)?;
@@ -330,6 +331,12 @@ fn validate_unmerged(bytes: &[u8]) -> Result<(), ApiError> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_git_build_guard_tests.rs"]
 mod tests;
+
+#[cfg(windows)]
+#[path = "project_git/windows/build_guard.rs"]
+mod native_discovery;
+#[cfg(windows)]
+use native_discovery::discover_project as discover;

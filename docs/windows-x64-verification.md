@@ -1034,3 +1034,11 @@ Windows 桌面启动从实际进程 exe、已选 CLI 与 resources 树构造进�
 目录报告 7 个原测试和服务整链的失败源于查询孤立 Windows Prefix，改委托已有 native 路径组件与 reparse 适配，**9/9** 通过；Node 交接日志用原生逐层 join，原 Mac 输出保持，**1/1**。原 identity 测试在 Windows 活 SQLite 句柄时不能先改名，保留完整 Mac 测试，新增对应 Windows 用例实测活句柄阻止改名、仍未删除时明确 incomplete、真实关闭后才移动，且保留原 writer/gate/cache/epoch/retained-handle 断言。M4 归档交付删除/迁移 **5/5**、退出协调 **21/21** 通过；其余退出问题由下一节真实 Git 管理器实现解决。
 
 最终组合快照完整 core **877 通过、0 失败、32 专用入口忽略**，97.33 秒；core Clippy **-Dclippy::all 通过**（61 Rust 警告保留）。该组合还包括以下独立小步记录的 Git 读取和登记恢复。测试全部使用新 TempDir/明确 disposable 项目，未据此称 macOS CI、Windows 10 或安装版已验收。
+
+### W5.9 — 实际 MinGit 版本读取与构建准入
+
+ProjectGitManager 在 Windows 接真实 manager、只读 status/versions 和私有索引 BuildGitGuard；数据版本原 schema 的只读清单/详情/校验也已接原生文件观察。原 49 个 free-function 中 47 个正文原样，其余仅委托 inspect tuple/hash 路径；13 个 manager 方法、Output.success 和原 BuildGuard 正文保持，原 Mac 测试文件未改。Windows 处理本机盘符、NUL、实际 SystemRoot、Windows vendor suffix、UTF-16/API 路径、完整 FileId/readOnly/ChangeTime，Git registry 调用显式声明已清空环境，不继承宿主配置和凭据。
+
+默认 Git 分组 **29 通过、2 官方入口忽略**，1.27 秒；首次真实官方进程 0/2 暴露缺失 OwnedCommand::cleared 声明，补原 Command 的环境来源标记后，官方 MinGit 2.56.0.windows.4 **2/2**，32.29 秒。实际验证 status/versions、100755 不产生虚假 dirty、dirty 源码允许构建、config 改动 recheck 拒绝、busy/unmerged 拒绝，原 index/config/HEAD 完整身份及字节不变，真实 registry driver 已 join。新只读数据专项 7 项也在默认分组和完整回归通过。
+
+完整 core 回归和 Clippy 结果见 W5.8。此小步仍关闭 source/data restore 写 API，不复活 Mac 已退休的 init/save/create-branch/data-save 功能；源码恢复和数据恢复整链必须继续实现后才能声称完整功能一致。

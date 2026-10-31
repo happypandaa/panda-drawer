@@ -36,10 +36,7 @@ impl Context {
             .tempdir()
             .map_err(|_| git_failed())?;
         let root = temporary.path().canonicalize().map_err(|_| unsafe_path())?;
-        if root
-            .to_str()
-            .is_none_or(|path| path.contains(':') || path.chars().any(char::is_control))
-        {
+        if !native_io::valid_context_root(&root) {
             return Err(unsafe_path());
         }
         private_dir(&root.join("empty-hooks"))?;
@@ -144,9 +141,11 @@ impl Context {
         make_io: impl FnOnce(crate::owned_process::ProcessPipes) -> IoPlan<T> + Send + 'static,
     ) -> Result<ProcessRun<T>, ApiError> {
         self.checkpoint().map_err(|error| closure(error, true))?;
+        let command =
+            native_io::prepare_git_command(command).map_err(|error| closure(error, true))?;
         self.processes
             .start(
-                command,
+                crate::owned_process::OwnedCommand::cleared(command),
                 ProcessOptions::new(
                     "project-git",
                     self.deadline.saturating_duration_since(Instant::now()),
@@ -291,7 +290,7 @@ pub(super) fn expect_blocking_line(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_git_process_tests.rs"]
 mod tests;
 

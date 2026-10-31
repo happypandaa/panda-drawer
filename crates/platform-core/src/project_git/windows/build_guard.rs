@@ -1,23 +1,5 @@
-//! Windows build admission, independent of unfinished Git-write transactions.
-//! No marker means no tool selection or process. Marked repositories remain
-//! closed until private-index inspection uses the real owned Job registry.
-use crate::{
-    git_environment::GitEnvironmentManager,
-    projects::{checked_relative, ProjectManifest},
-    ApiError, ProjectHandle,
-};
+use super::*;
 use platform_native::windows::files::{self as native, FileIdentity};
-use std::{
-    fs,
-    path::{Component, Path, PathBuf},
-    sync::Arc,
-};
-use tokio::sync::watch;
-
-pub(crate) struct BuildGitGuard {
-    _unversioned: (),
-}
-
 #[derive(Debug)]
 struct Repository {
     git_dir: PathBuf,
@@ -53,50 +35,6 @@ fn changed() -> ApiError {
 
 fn observation_error(error: impl std::fmt::Display) -> ApiError {
     unavailable().detail("cause", error.to_string())
-}
-
-impl BuildGitGuard {
-    fn capture_at(root: &Path, manifest: &ProjectManifest) -> Result<Self, ApiError> {
-        if let Some(repository) = discover(root, manifest)? {
-            return Err(unavailable()
-                .detail("platform", "windows")
-                .detail("capability", "build-git-index-check")
-                .detail("repository", repository.git_dir.display().to_string())
-                .outcome("not_started"));
-        }
-        Ok(Self { _unversioned: () })
-    }
-
-    fn recheck_at(&self, root: &Path, manifest: &ProjectManifest) -> Result<(), ApiError> {
-        if discover(root, manifest)?.is_some() {
-            return Err(changed());
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn capture_with_keep_alive(
-        project: &ProjectHandle,
-        environment: &GitEnvironmentManager,
-        stop: watch::Receiver<bool>,
-        processes: crate::owned_process::OwnedProcessRegistry,
-        keep_alive: Arc<dyn Send + Sync>,
-    ) -> Result<Self, ApiError> {
-        // Match the Mac no-repository fast path: no settings/probe, temporary
-        // process directory, cancellation checkpoint or detached task is made.
-        let _owners = (environment, stop, processes, keep_alive);
-        Self::capture_at(&project.root, &project.manifest)
-    }
-
-    pub(crate) async fn recheck_with_keep_alive(
-        &self,
-        project: &ProjectHandle,
-        stop: watch::Receiver<bool>,
-        processes: crate::owned_process::OwnedProcessRegistry,
-        keep_alive: Arc<dyn Send + Sync>,
-    ) -> Result<(), ApiError> {
-        let _owners = (stop, processes, keep_alive);
-        self.recheck_at(&project.root, &project.manifest)
-    }
 }
 
 fn marker(path: &Path, permitted: bool, markers: &mut Vec<Marker>) -> Result<(), ApiError> {
@@ -288,6 +226,45 @@ fn discover_with(
         git_dir: repository.path,
         _identity: repository.identity.unwrap(),
     }))
+}
+
+pub(super) fn discover_project(
+    project: &ProjectHandle,
+) -> Result<Option<super::Repository>, ApiError> {
+    discover(&project.root, &project.manifest).map(|found| {
+        found.map(|repo| super::Repository {
+            git_dir: repo.git_dir,
+            identity: format!(
+                "{}:{:02x?}",
+                repo._identity.volume_serial, repo._identity.file_id
+            ),
+        })
+    })
+}
+#[cfg(test)]
+impl super::BuildGitGuard {
+    // Existing synchronous fixtures contain no valid HEAD/config. This helper
+    // exercises discovery only; actual repository admission uses the async API.
+    fn capture_at(root: &Path, manifest: &ProjectManifest) -> Result<Self, ApiError> {
+        if let Some(repository) = discover(root, manifest)? {
+            return Err(unavailable()
+                .detail("platform", "windows")
+                .detail("capability", "build-git-index-check")
+                .detail("repository", repository.git_dir.display().to_string())
+                .outcome("not_started"));
+        }
+        Ok(Self {
+            repository: None,
+            tools: None,
+            digest: None,
+        })
+    }
+    fn recheck_at(&self, root: &Path, manifest: &ProjectManifest) -> Result<(), ApiError> {
+        if discover(root, manifest)?.is_some() {
+            return Err(changed());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
