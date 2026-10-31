@@ -51,6 +51,96 @@ fn registered_root_alias_is_resolved_to_its_actual_volume_and_unknown_is_not_cle
     drop(selected_scope);
     fs::remove_dir(alias).unwrap();
 }
+
+#[test]
+fn unsupported_cloud_query_requires_complete_inventory_and_exact_root_scope() {
+    // These paths exercise inventory scope decisions; they are not advertised
+    // as real OS provider registrations. The separate native registration test
+    // continues to verify the actual Cloud Files positive case.
+    let temporary = tempfile::Builder::new()
+        .prefix("panda-disposable-unsupported-sync-inventory-")
+        .tempdir()
+        .unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let selected = root.join("selected 中文 space");
+    let unrelated = root.join("unrelated-inventory-root");
+    fs::create_dir(&selected).unwrap();
+    fs::create_dir(&unrelated).unwrap();
+    fs::write(selected.join("retained"), b"preserve disposable material").unwrap();
+    let pin = files::pin_directory(&selected).unwrap();
+    let original = files::identity(&pin.file).unwrap();
+
+    let issue =
+        require_unsynced_with_inventory(&pin.file, Ok(CloudMembership::QueryUnsupported), || {
+            Err(unknown(
+                "Independent registration enumeration is unconfirmed",
+            ))
+        })
+        .unwrap_err();
+    assert!(issue.to_string().contains("enumeration is unconfirmed"));
+    let issue =
+        require_unsynced_with_inventory(&pin.file, Ok(CloudMembership::QueryUnsupported), || {
+            Ok(vec![root.join("missing-inventory-root")])
+        })
+        .unwrap_err();
+    assert!(issue.to_string().contains("resolution is unconfirmed"));
+    let issue =
+        require_unsynced_with_inventory(&pin.file, Ok(CloudMembership::QueryUnsupported), || {
+            Ok(vec![root.clone()])
+        })
+        .unwrap_err();
+    assert!(issue.to_string().contains("inside a system registered"));
+    require_unsynced_with_inventory(&pin.file, Ok(CloudMembership::QueryUnsupported), || {
+        Ok(vec![unrelated])
+    })
+    .unwrap();
+
+    let mut inventory_called = false;
+    let issue =
+        require_unsynced_with_inventory(&pin.file, Err(io::Error::from_raw_os_error(5)), || {
+            inventory_called = true;
+            Ok(Vec::new())
+        })
+        .unwrap_err();
+    assert_eq!(issue.raw_os_error(), Some(5));
+    assert!(
+        !inventory_called,
+        "An unknown CF result must not fall back to absence"
+    );
+    assert!(original.same_object(&files::open_no_reparse(&selected).unwrap().identity));
+    assert_eq!(
+        fs::read(selected.join("retained")).unwrap(),
+        b"preserve disposable material"
+    );
+}
+
+#[test]
+fn actual_current_volume_query_and_complete_inventory_preserve_disposable_directory() {
+    // Use a new directory on the checkout's actual volume. On the reported D:
+    // reproduction this exercises ERROR_INVALID_FUNCTION without attaching a
+    // filter, registering a provider, or changing the user's migration target.
+    let temporary = tempfile::Builder::new()
+        .prefix("panda-disposable-current-volume-sync-中文 space-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    fs::write(root.join("retained"), b"preserve current-volume evidence").unwrap();
+    let before = files::open_no_reparse(&root).unwrap().identity;
+    let observed = cloud_membership(&files::open_no_reparse(&root).unwrap().file).unwrap();
+    eprintln!("Actual current-volume Cloud Files query: {observed:?}");
+    let inventory = registered_roots_on_worker().unwrap();
+    eprintln!(
+        "Complete native registration inventory count: {}",
+        inventory.len()
+    );
+    require_unsynced(&root).unwrap();
+    assert!(before.same_object(&files::open_no_reparse(&root).unwrap().identity));
+    assert_eq!(
+        fs::read(root.join("retained")).unwrap(),
+        b"preserve current-volume evidence"
+    );
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+}
 #[test]
 fn actual_disposable_directory_sync_and_volume_queries_do_not_read_or_change_content() {
     let temporary = tempfile::Builder::new()

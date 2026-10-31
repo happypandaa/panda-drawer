@@ -13,7 +13,9 @@ use std::{
 use windows::Storage::Provider::StorageProviderSyncRootManager;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows_sys::Win32::{
-    Foundation::{ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_NOT_A_CLOUD_FILE},
+    Foundation::{
+        ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT, ERROR_INVALID_FUNCTION, ERROR_NOT_A_CLOUD_FILE,
+    },
     Globalization::{CompareStringOrdinal, CSTR_EQUAL},
     Storage::{
         CloudFilters::{
@@ -37,6 +39,10 @@ fn hresult_from_win32(code: u32) -> i32 {
 enum CloudMembership {
     Registered { sync_root_file_id: i64 },
     NotRegistered,
+    // This is a query capability result, never evidence of absent membership.
+    // Only the independent, complete OS registration inventory can decide the
+    // directory's scope when this operation is unsupported on its volume.
+    QueryUnsupported,
 }
 fn cloud_membership(file: &File) -> io::Result<CloudMembership> {
     let mut information = CF_SYNC_ROOT_BASIC_INFO::default();
@@ -64,6 +70,9 @@ fn cloud_membership(file: &File) -> io::Result<CloudMembership> {
         || result == hresult_from_win32(ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT)
     {
         return Ok(CloudMembership::NotRegistered);
+    }
+    if result == hresult_from_win32(ERROR_INVALID_FUNCTION) {
+        return Ok(CloudMembership::QueryUnsupported);
     }
     Err(unknown(format!(
         "Cloud Filter sync-root query is unconfirmed (HRESULT 0x{:08x})",
@@ -219,19 +228,35 @@ fn require_outside_registered_roots(selected: &File, roots: &[PathBuf]) -> io::R
     Ok(())
 }
 
-/// Only absence from both native inventories proves no registered sync-root
-/// membership. No provider path names, credentials or project content are read.
+fn require_unsynced_with_inventory(
+    selected: &File,
+    membership: io::Result<CloudMembership>,
+    inventory: impl FnOnce() -> io::Result<Vec<PathBuf>>,
+) -> io::Result<()> {
+    match membership? {
+        CloudMembership::Registered { .. } => Err(unknown(
+            "Workspace is inside a registered Cloud Files synchronization root",
+        )),
+        // GetCurrentSyncRoots returns all currently registered roots, including
+        // legacy registrations. The unsupported CF request is not converted
+        // to absence: the complete independent inventory must resolve every
+        // root and pass the same actual HANDLE/volume-GUID scope comparison.
+        CloudMembership::NotRegistered | CloudMembership::QueryUnsupported => {
+            require_outside_registered_roots(selected, &inventory()?)
+        }
+    }
+}
+
+/// Direct Cloud Files membership is checked when supported. A volume without
+/// that query still requires the complete independent OS registration inventory.
+/// All other query failures remain unknown; no project content is read.
 pub fn require_unsynced(path: &Path) -> io::Result<()> {
     let selected = files::pin_directory(path)?;
-    if matches!(
-        cloud_membership(&selected.file)?,
-        CloudMembership::Registered { .. }
-    ) {
-        return Err(unknown(
-            "Workspace is inside a registered Cloud Files synchronization root",
-        ));
-    }
-    require_outside_registered_roots(&selected.file, &registered_roots_on_worker()?)
+    require_unsynced_with_inventory(
+        &selected.file,
+        cloud_membership(&selected.file),
+        registered_roots_on_worker,
+    )
 }
 
 pub fn require_local_internal_ntfs(info: &volume::VolumeInfo) -> io::Result<()> {
