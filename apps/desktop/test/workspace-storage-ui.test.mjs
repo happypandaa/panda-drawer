@@ -40,6 +40,8 @@ const { createRoot } = await import('react-dom/client');
 const { WorkspaceStoragePanel } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/WorkspaceStoragePanel.tsx'))).href);
 const { resetHistoryScanForTests } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/history-scan-store.ts'))).href);
 const { SettingsDialog } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/SettingsDialog.tsx'))).href);
+const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
+const macPlatform = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -64,7 +66,7 @@ async function setup({ props = {}, overrides = {} } = {}) {
   };
   document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
   let current = { workspace: { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] }, revision: 1, enabled: true, active: true, migrating: false, cleanupBusy: false, projects, nodeApps: [{ id: 'node_one', name: 'Disposable node' }], onTask: task => tasks.push(task), onProjectTask: task => tasks.push(task), onRefresh: async () => {}, onPendingChange: value => pending.push(value), ...props };
-  const render = async changes => { current = { ...current, ...changes }; await act(async () => root.render(h(WorkspaceStoragePanel, current))); };
+  const render = async changes => { current = { ...current, ...changes }; await act(async () => root.render(h(FrontendPlatformProvider, { value: macPlatform }, h(WorkspaceStoragePanel, current)))); };
   await render({}); return { calls, pending, tasks, render };
 }
 const click = async element => { assert.ok(element); await act(async () => element.click()); };

@@ -3,6 +3,7 @@ import { RefreshCw, Terminal } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GitRemoteCheckPanel } from './GitRemoteCheckPanel';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 type ToolIssue = { code: string; message: string };
 type ExecutableInfo = { path: string; version: string };
@@ -18,6 +19,7 @@ export interface GitEnvironmentInfo {
 }
 
 export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boolean; onPendingChange?: (pending: boolean) => void }) {
+  const frontendPlatform = useFrontendPlatform();
   const [environment, setEnvironment] = useState<GitEnvironmentInfo | null>(null);
   const [gitPath, setGitPath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -76,9 +78,9 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
     {environment?.managedGitPath && <p>默认位置不代表工具可用，以本次检测结果为准。</p>}
     {environment?.issues.map(issue => <p key={issue.code} className="environment-issue">{issue.message} ({issue.code})</p>)}
     {environment && !environment.ready && <p className="environment-issue">{({ explicit: '已保留你明确选择的路径，失效时不会自动更换工具。请修正路径或恢复默认工具。', managed: '平台配套 Git 暂不可用。请修复平台安装，或明确选择兼容的本机 Git。', unresolved: '无法读取或解析 Git 工具选择设置，尚未选用默认工具。可填写并保存兼容的本机 Git 路径，或明确恢复默认工具。' })[environment.selection]}</p>}
-    <form className="node-path-form" onSubmit={event => { event.preventDefault(); void request(gitPath.trim()); }}>
+    <form className="node-path-form" onSubmit={event => { event.preventDefault(); const path = gitPath.trim(); if (frontendPlatform.isAbsolutePath(path)) void request(path); }}>
       <label htmlFor="git-path">指定本机 Git 可执行文件的绝对路径<span className="optional-label">可选</span></label>
-      <div className="node-path-controls"><input id="git-path" value={gitPath} onChange={event => setGitPath(event.target.value)} placeholder="例如 /usr/bin/git" disabled={busy} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || busy || !gitPath.trim().startsWith('/')}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || busy} onClick={() => void request(null)}>恢复默认工具</button></div>
+      <div className="node-path-controls"><input id="git-path" value={gitPath} onChange={event => setGitPath(event.target.value)} placeholder={frontendPlatform.gitPathPlaceholder} disabled={busy} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || busy || !frontendPlatform.isAbsolutePath(gitPath.trim())}>保存路径</button><button className="refresh-button" type="button" disabled={!enabled || busy} onClick={() => void request(null)}>恢复默认工具</button></div>
       <p>恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前开发版，不修改全局 Git 配置。</p>
     </form>
     {environment && <div className="git-authentication">

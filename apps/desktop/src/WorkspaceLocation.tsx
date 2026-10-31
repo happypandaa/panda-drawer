@@ -3,6 +3,7 @@ import { ArrowRight, Copy, FolderOpen, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { RetainedWorkspaceRoot, TaskRecord, WorkspaceInfo } from './types';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 import { ProjectTask } from './ProjectTask';
 
 // A submitted operation stays pending until its durable task reaches a final state.
@@ -61,6 +62,7 @@ export interface WorkspaceLocationProps {
 
 // Settings › 存储与清理: where things live, and moving the whole workspace.
 export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrating, onTask, onRefresh }: WorkspaceLocationProps) {
+  const frontendPlatform = useFrontendPlatform();
   const [expanded, setExpanded] = useState(false);
   const [destination, setDestination] = useState('');
   const [confirmedPath, setConfirmedPath] = useState<string | null>(null);
@@ -92,7 +94,7 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
     finally { if (sequence === generation.current) setChoosing(false); }
   }
   async function migrate() {
-    if (blocked || operation.current || !acknowledged || confirmedPath !== destination.trim() || !confirmedPath?.startsWith('/')) return;
+    if (blocked || operation.current || !acknowledged || confirmedPath !== destination.trim() || !frontendPlatform.isAbsolutePath(confirmedPath ?? '')) return;
     operation.current = true; setPending(true); setError('');
     try { const task = await invoke<TaskRecord>('workspace_migrate', { input: { destinationPath: confirmedPath } }); if (mounted.current) tracker.track(task); else onTask(task); }
     catch (cause) { if (mounted.current) setError(messageFrom(cause)); }
@@ -117,15 +119,15 @@ export function WorkspaceLocation({ workspace, dataRoot, enabled, active, migrat
   const step = tracker.running || pending ? 3 : confirmedPath ? 2 : 1;
   return <section className="lifecycle-card workspace-location-card" aria-labelledby="workspace-location-title">
     <div className="section-heading"><div><h2 id="workspace-location-title">项目文件夹</h2><p>新建和从 Git 添加的应用保存在这里。</p></div><button className="refresh-button" disabled={!enabled || refreshing || pending} onClick={() => void refresh()}><RefreshCw size={14} />{refreshing ? '刷新中…' : '刷新状态'}</button></div>
-    <div className="settings-location-row"><div><code>{workspace?.workspaceRoot ?? '尚未读取'}</code>{workspace?.filesystem && <small>文件系统 {workspace.filesystem}</small>}</div><button className="refresh-button" disabled={!workspace || !enabled || migrating} onClick={() => { if (workspace?.workspaceRoot) void invoke('open_project_folder', { path: workspace.workspaceRoot }).catch(cause => setError(messageFrom(cause))); }}><FolderOpen size={14} />在访达中打开</button><button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起' : '更换位置'}</button></div>
+    <div className="settings-location-row"><div><code>{workspace?.workspaceRoot ?? '尚未读取'}</code>{workspace?.filesystem && <small>文件系统 {workspace.filesystem}</small>}</div><button className="refresh-button" disabled={!workspace || !enabled || migrating} onClick={() => { if (workspace?.workspaceRoot) void invoke('open_project_folder', { path: workspace.workspaceRoot }).catch(cause => setError(messageFrom(cause))); }}><FolderOpen size={14} />{frontendPlatform.openFolderLabel}</button><button className="refresh-button" disabled={blocked} aria-expanded={expanded} aria-controls={`${inputId}-migration`} onClick={() => { setExpanded(!expanded); setConfirmedPath(null); setAcknowledged(false); }}><FolderOpen size={14} />{expanded ? '收起' : '更换位置'}</button></div>
     {expanded && <div className="settings-migration">
-      <div className="settings-migration-heading"><div><h3>迁移工作区</h3><p>把工作区移到新位置，比如外置磁盘。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。</p></div></div>
+      <div className="settings-migration-heading"><div><h3>迁移工作区</h3><p>{frontendPlatform.workspaceMigrationDescription}</p></div></div>
       <div className="workspace-migration-form" id={`${inputId}-migration`}>
         <ol className="settings-steps" aria-label="迁移步骤">{['选择位置', '核对', '迁移中'].map((label, index) => <li key={label} aria-current={step === index + 1 ? 'step' : undefined}>{index + 1} {label}</li>)}</ol>
-        <form onSubmit={(event) => { event.preventDefault(); if (!blocked && destination.trim().startsWith('/')) { setConfirmedPath(destination.trim()); setAcknowledged(false); } }}>
-          <div className="path-input"><label htmlFor={inputId}>新的工作区位置</label><div className="path-input-controls"><input id={inputId} value={destination} disabled={blocked} onChange={(event) => editDestination(event.target.value)} placeholder="/Volumes/磁盘/新工作区" autoComplete="off" /><button className="refresh-button" type="button" disabled={blocked} onClick={() => void choose()}><FolderOpen size={14} />{choosing ? '选择中…' : '选择…'}</button></div></div>
-          <div className="settings-migration-notes"><div><strong>位置要求</strong><p>空文件夹、可写入、APFS 格式，在本机或直连磁盘上。</p></div><div><strong>开始前请</strong><p>保存各项目窗口的草稿，关闭正在访问项目的 AI 或编辑器。迁移会短暂暂停服务。</p></div></div>
-          <button className="refresh-button" type="submit" disabled={blocked || !destination.trim().startsWith('/')}>下一步：核对<ArrowRight size={14} /></button>
+        <form onSubmit={(event) => { event.preventDefault(); if (!blocked && frontendPlatform.isAbsolutePath(destination.trim())) { setConfirmedPath(destination.trim()); setAcknowledged(false); } }}>
+          <div className="path-input"><label htmlFor={inputId}>新的工作区位置</label><div className="path-input-controls"><input id={inputId} value={destination} disabled={blocked} onChange={(event) => editDestination(event.target.value)} placeholder={frontendPlatform.workspacePathPlaceholder} autoComplete="off" /><button className="refresh-button" type="button" disabled={blocked} onClick={() => void choose()}><FolderOpen size={14} />{choosing ? '选择中…' : '选择…'}</button></div></div>
+          <div className="settings-migration-notes"><div><strong>位置要求</strong><p>{frontendPlatform.workspaceLocationRequirements}</p></div><div><strong>开始前请</strong><p>保存各项目窗口的草稿，关闭正在访问项目的 AI 或编辑器。迁移会短暂暂停服务。</p></div></div>
+          <button className="refresh-button" type="submit" disabled={blocked || !frontendPlatform.isAbsolutePath(destination.trim())}>下一步：核对<ArrowRight size={14} /></button>
         </form>
         {confirmedPath && <div className="operation-confirmation workspace-migration-confirmation"><strong>确认迁移整个工作区</strong><p>来源：<code>{workspace?.workspaceRoot}</code><br />目标：<code>{confirmedPath}</code></p><p>迁移包含网页项目和平台管理的 Node 项目文件夹。新位置成功重开后，原目录会自动永久删除。请处理窗口草稿后重新进入项目，并重新复制 AI 路径。</p><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={(event) => setAcknowledged(event.target.checked)} />我已核对来源和目标，并处理各窗口草稿与外部写入</label><div className="confirmation-actions"><button className="primary-button" disabled={blocked || !acknowledged} onClick={() => void migrate()}>{pending ? '提交中…' : '确认开始迁移'}</button><button className="refresh-button" disabled={pending || tracker.running} onClick={() => { setConfirmedPath(null); setAcknowledged(false); }}>取消</button></div></div>}
       </div>

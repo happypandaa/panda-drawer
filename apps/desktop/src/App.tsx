@@ -12,6 +12,7 @@ import { ProjectTask } from './ProjectTask';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
 import { SettingsDialog } from './SettingsDialog';
+import { FrontendPlatformProvider, frontendPlatformFromBootstrap } from './frontend-platform';
 import type { SettingsSection } from './SettingsDialog';
 import { TaskCenter } from './TaskCenter';
 import { PlatformAiIntroCompact } from './PlatformAiIntroButton';
@@ -60,6 +61,7 @@ function isDataRecoveryDiagnostic(status: MaintenanceStatus, project: ProjectInf
 
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
+  const frontendPlatform = frontendPlatformFromBootstrap(info?.platform);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const { theme, setTheme } = useAppearance();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -736,6 +738,7 @@ function App() {
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
   return (
+    <FrontendPlatformProvider value={frontendPlatform}>
     <div className="radio-shell" data-theme={theme}>
       <header className="radio-header">
         <div className="radio-brand">
@@ -778,7 +781,7 @@ function App() {
             </section>}
           </>}
       </main>
-      <footer className="radio-footer"><span title={info?.workspaceRoot}>项目文件夹 {info?.workspaceRoot ?? '等待读取'}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>在访达中打开</button></footer>
+      <footer className="radio-footer"><span title={info?.workspaceRoot}>项目文件夹 {info?.workspaceRoot ?? '等待读取'}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{frontendPlatform.openFolderLabel}</button></footer>
       {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} nodeApps={nodeApps} />}
 
         {!localDataLocked && <NodeAppsPanel apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
@@ -806,6 +809,7 @@ function App() {
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (['export', 'copy', 'delete'].includes(task.type)) acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
         </Modal>}
     </div>
+    </FrontendPlatformProvider>
   );
 }
 
