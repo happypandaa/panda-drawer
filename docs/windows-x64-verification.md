@@ -1110,3 +1110,41 @@ Node 归属更新原先使用普通 create_dir，私有权限设置只在 Unix �
 后续 project cleanup **3/3**，3.43 秒，M4 回归 **5/5**，2.02 秒。此前七个独立测试进程同时运行时有一项 PROJECT_BUSY；原失败项精确复验 **1/1** 后，正常 M4 整组 **5/5**，没有据此删测试、改原断言或记作已修复的产品故障。core Clippy **-Dclippy::all 通过**，9.77 秒（38 个 Rust 警告保留）；desktop Clippy 同样通过，9.96 秒（bin 7、test 5 个 Rust 警告保留）。这些是后续明确分组和 lint 结果，不改写 W5.15 那次 893 项快照的范围。
 
 桌面项目文件夹、README、普通外链和 Node 求助的系统派发统一委托 desktop_shell 适配。Windows 文件管理器通过实际 SystemPaths 获取 explorer.exe，原位置作为单个 literal 路径；浏览器通过独立 STA 的 ShellExecuteExW 派发单个 URL，无额外参数和环境扩展，实际 join 派发线程，不等待或终止用户进程。Mac 三处原正文机械保持。该实现的实际桌面默认测试 **105 通过、0 失败、13 专用入口忽略**，1.18 秒；覆盖原生参数和派发边界，**尚未执行真实浏览器派发**，不将它记作浏览器窗口已经打开。正在准备的正常 GUI 清理验证尚无成功回执，不计入本节。
+
+### W5.18 — 正常 GUI 全局清理预览的实际进度与阻断
+
+重编正常开发 GUI 实际用时 **47.30 秒**。新建明确 disposable 的外部原目录（名称后缀 `255ca4c8`），经 native folder picker 按已有非空项目登记，项目 UUID 前缀为 `84765e5d`；登记前后 9 个文件的 SHA256 和长度均保持，D 卷原目录完整 FileId `0x0000000000000000000300000007ed42` 未变。这是外部原目录登记及保持证明，不是删除或清理成功证明。
+
+此前唯一临时迁移试验（任务 ID 前缀 `task_d613`）实际为 queued、0 files、0 bytes，未 published/committed，没有 stage，外部目标为空，settings 也未选中它。正常退出 GUI 后，将该试验的 3 个文件完整复制至仓库忽略的 `.test-artifacts/w5-withdrawn-migration`，逐一核对 SHA256，再精确移出实际 migrations 目录，结束用户已撤回范围的这次临时试验；没有修改外部目标。这是人工处理明确临时试验的验证操作，**不是产品迁移恢复、自动清理或全局清除成功**，不赋予普通产品清理保留副本的权限。
+
+新的清理预览已不再被该迁移试验阻塞，但当时仍报 **FILESYSTEM_ERROR，Windows 33**，未删除文件或清除 WebView 数据。随后用独立真实 TempDir/fs2 复现：原 HANDLE 持锁时，新 HANDLE 的 try-lock 返回 raw 33、ErrorKind::Uncategorized，原 WouldBlock 判断为 false；实际释放原锁后，新 HANDLE 的 try-lock 成功，明确了 `local_cleanup::verify_controls` 的错误分类问题。原 local_cleanup 的 Unix 测试不在 W5.15 的 893 项 Windows 回归范围；后续 Windows 修复与真实测试见 W5.19。**全局清除和卸载前清除仍未通过真实 GUI 验收。**
+
+### W5.19 — 全局清理实例锁竞争的最小平台适配
+
+清理控制核验仅委托新增 `local_cleanup_io`：Mac 原 `error.kind() == WouldBlock` 表达式保持；Windows 仅接受 fs2 提供的原生锁竞争错误码（当前为 ERROR_LOCK_VIOLATION、raw 33），其它原生错误及人工构造的 WouldBlock 不证明持锁。原 root/lock/marker 完整身份、实际 try-lock、TTL/scope、writer、runtime shutdown 及原生窗口/Node 关闭前置条件均不放宽，不改变删除范围或归属政策。
+
+新增 Windows `local_cleanup::` 分组 **5/5**，3.63 秒。其中 4 组真实 RuntimePaths::for_test 用例验证：实际 Runtime 持锁时 prepare 成功，真实 quiesce 后 execute 仅保留原完整身份的环境 marker/instance lock；原锁实际释放或被替换时拒绝旧计划；真实未 closed writer 阻止预览及后续清理；公有 Node 登记/初始化入口产生的 managed 源码实际缺失，外部原目录及各文件完整 FileId/字节保持。另 1 项核对错误分类不误收其它错误。没有启动 Node 子进程或创建 WebView，不用伪造 native purge 回执证明闭合。
+
+初轮为 **4/5**：夹具在 writer finish 后仍持有自身 parent pin，明确 drop 这些夹具 guard 后全组通过，未修改产品权限、身份或实际缺失要求。NodeOwnership 回归 **2/2**，3.75 秒；core Clippy **-Dclippy::all 通过**，8.48 秒，保留 lib 30/test 38 个 Rust 警告。**正常 GUI 全局清除仍待包含此修复的新二进制验证**；首个 NSIS 包含旧清理 guard，不以本节测试替代其真实 GUI 收尾。
+
+## W6 — 安装包（进行中）
+
+### W6.1 — 独立 CLI 静态 CRT 与 fresh 准备阶段
+
+本次 fetch 后 `origin/main` 仍为 `ac3b5d7`；W5 已提交并推送 `dce7c83`，安装包工作叠放于 `win/w6-installer`，尚未合入 main，CI/运行器仍按用户授权后置。本小步仅修改 Windows 独立 CLI 构建环境 helper 及其调用、测试共 3 个文件：保留 Cargo encoded flags 对 RUSTFLAGS 的优先级、显式空值和已有参数，再追加静态 CRT 标志；明确 target 保持 host 构建隔离，helper 环境只交给独立 CLI Cargo 调用，Mac 及 manager 构建参数不改。相关纯脚本测试 **11/11、0 跳过，69.57 毫秒**。
+
+正常 fresh build 本次明确打印准备 stage `.tools/desktop-windows-preparation-x02kxw`，独立 CLI release 实际构建 **3 分 05 秒**。Cargo target 产物与复制至该 stage 的 CLI SHA256 均为 `0B826A442E2E08F2C10197A16F16F1D314BF0782FD22543603D56E5EA2B496CA`；实际 build-info 核对固定开发身份 `dev.happypandaa.pandadrawer`、版本 `0.0.0`、Windows x64、锚点 `development-source-v1` 和真实 runtime 标记为 true。没有将旧 CLI 或旧准备目录当作此次 fresh 产物。
+
+该新 CLI 的实际 PE 解析为 **13 个 normal import、0 个 delay import，无 VC 运行库名称匹配**；本地解析器夹具 **10/10**，覆盖两类目录、RVA/旧 VA 表示、终止和映射边界。旧 CLI 负控实际为 23 个 normal、0 个 delay，检出 VCRUNTIME140.dll 并拒绝；既有 manager 正控为 30 个 normal、0 个 delay，通过直接导入检查。该检查只覆盖 PE 直接 normal/delay DLL 描述符，不证明传递依赖、动态加载、干净机器运行或安装成功。
+
+截至本准备检查点，manager 与 NSIS 仍在构建，尚无结果；随后首包与本机安装事实见 W6.2。本节不是完整包、安装/卸载、WebView2 引导、干净机器或 Windows 10 验收证明，也不改写 W5.18 尚未通过的全局清除状态。所有 stage、二进制及本地解析证据保持忽略，不提交到仓库。
+
+### W6.2 — 首个未签名 NSIS 包与本机当前用户安装
+
+manager release 实际构建 **6 分 59 秒**，首个 NSIS 包成功生成，**63,220,105 字节**，SHA256 为 `6317AA6F8CDE322F980D26F12D1D99FAC4B48686F09E64498A44ABE2F128ACD2`，**未签名**。实际 PowerShell 会话不是管理员；直接执行 NSIS `/S` 返回 **Exit 0，8.20 秒**，HKCU 卸载项及 InstallLocation 均实际存在，安装位置为 `C:\Users\g\AppData\Local\熊猫小抽屉`。这证明本机此次当前用户安装，不代表其它系统或最终版本安装验收完成。
+
+实际启动安装目录内的 GUI，主界面显示 **3 个临时项目、0 运行**。最初 20 秒等待曾超时，之后实际窗口出现，未把该超时当作崩溃，也未把安装程序退出码当作 GUI 已启动的证明。安装后的 CLI SHA256 与 W6.1 stage 相同。安装后 manager 与 Cargo 原产物长度相同、差异仅 3 字节 `UNK`→`NSS`；本机 `tauri-utils 2.10.2` 的 `platform.rs:368` 定义该 NSIS 标记。**不声称 manager 与 Cargo 产物散列相同。**
+
+运行时 `runtime.platform.exe` 指向实际安装程序；typed scope 的主 exe、CLI、resources 三个成员均实际 bound，wholeDirectory 为 false，resources 指向安装资源，canonical 路径呈系统 PackageLocalCache 表示，未回退源码资源或把整个安装父目录当作程序范围。native-packager 对 runtime Node、development Node 和 Git 的实际验证 **3/3**；环境 doctor 实测 Node **24.22.0**、npm **11.19.1** 且 managed ready=true，Git **2.56.0.windows.4** 且 managed ready=true。独立 system SSH 诊断失败如实保留；这些结果不验证认证、远端访问或 SSH 可用性。
+
+**此第一包仍包含旧清理 guard，不能作为最终卸载前清除版本；包含 W5.19 修复的正常重建与 GUI 清除仍待执行。** 本机已经安装 WebView2，尚未测试缺失时引导；SmartScreen、干净 Windows 10/11、卸载重装也未测试。未由首包生成、静默安装和本机启动推出 W6 完成，安装包及证据均不提交。
