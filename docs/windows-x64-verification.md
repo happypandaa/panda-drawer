@@ -798,3 +798,9 @@ native 全目标严格 Clippy -Dwarnings 及桌面 --tests --no-deps -Dclippy::a
 定位 Windows artifact 失败之一为 copy_tree 已通过每个新输出 HANDLE sync_all 后，又调用 sync_tree 从只读 File::open HANDLE 重复刷新；Windows FlushFileBuffers 需要写权限，实际返回 OS 5。将复制完成处理集中到适配：Windows 保留所有原写入 HANDLE 的实际刷新，只对目录经既有 facade 观察（无目录 fsync 等价）；Mac 仍调用原 sync_tree，原逐文件二次刷新和目录顺序保持。没有清源只读位、提高源硬链接准入或省掉输出文件刷新。
 
 实际完整 core 新复制专项 **2/2**：中文空格及 Unicode 文件、真实只读外部硬链接源复制为独立私有可写副本，内容一致，原件完整身份及只读位不变；空树产生真实私有目标且父身份保持。未执行原始 staging 的最终发布/恢复验收；旧 artifact 选集此前 **2 通过、13 失败**，不能将复制两项转换成全组选集通过，下一步继续完整发布、启动恢复和真实三次构建。
+
+### W2.14 — 新目录继承和既有目录的单 leaf 权限修复
+
+新私有目录在 protected、唯一当前用户 FA 的原准入下增加 OI/CI，让 Node/WebView 等普通工具生成的子项仍能由同一用户读写；显式文件、credential slot 保持原 protected/不继承策略。真实启动恢复曾出现 OS 5，定位到 SetSecurityInfo 对既有目录权限修复会传播并移除子项 inherited ACE；改为在原 WRITE_DAC HANDLE 使用 [Microsoft 文档指定的用户态 NtSetSecurityObject](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-zwsetsecurityobject)，只更新选中 leaf。已私有目录直接保持原 ACL，不重新设置或递归修复。没有申请 MAXIMUM_ALLOWED（实际会与既有 pin 冲突）、变更 owner/SACL/父目录、增加准入或引入新二进制；仅启用既有 windows-sys 的 SDK feature。
+
+实际新增专项 **5 通过、0 失败、1 个仅供 parent 启动的明确忽略子进程入口**。覆盖普通真实子进程多层目录/文件继承、占用目的不改写、显式凭据策略、持有原 pin 时修复、重复修复，以及无 WRITE_DAC 的实际 OS 5。修复前后重新打开子项、孙项、兄弟、父目录与凭据，比对完整 FileId、内容及 NtQuerySecurityObject 原始 SD 字节保持；不用 GetSecurityInfo 对 inherited ACE 的重算显示代替原始字节。本轮完整 native **79 通过、0 失败、3 明确忽略**，严格全目标 Clippy -Dwarnings 通过，已包含本组。Mac 文件与策略未改，实际 Mac CI 按用户要求后置；没有 Windows 10 或安装版证据。

@@ -56,7 +56,7 @@ pub fn enable_private_directory_inheritance(
     if private_flags(&file)? == CHILD_INHERITANCE {
         return Ok(false);
     }
-    let security = inheritable_security()?;
+    let security = PrivateSecurity::new_directory()?;
     let (mut present, mut defaulted, mut dacl) = (0, 0, null_mut());
     unsafe {
         checked(GetSecurityDescriptorDacl(
@@ -91,23 +91,6 @@ pub fn enable_private_directory_inheritance(
         ));
     }
     Ok(true)
-}
-
-fn inheritable_security() -> io::Result<PrivateSecurity> {
-    let sid = CurrentUser::load()?.text()?;
-    let sddl = wide(OsStr::new(&format!("O:{sid}D:P(A;OICI;FA;;;{sid})")))?;
-    let mut descriptor = null_mut();
-    unsafe {
-        checked(ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            null_mut(),
-        ))?;
-    }
-    Ok(PrivateSecurity {
-        allocation: LocalAllocation(descriptor),
-    })
 }
 
 // The admission is exactly verify_private's existing policy. Keep the flags in
@@ -243,7 +226,10 @@ mod tests {
         let parent = open_no_reparse(temporary.path()).unwrap();
         let parent_acl = dacl_bytes(&parent.file);
         let root = temporary.path().join("selected-browser-root");
-        create_private_directory(&root).unwrap();
+        // Existing profiles may have been created before directory creation
+        // enabled inheritance. Preserve that real old-root repair regression.
+        std::fs::create_dir(&root).unwrap();
+        make_directory_private(&root).unwrap();
         let selected = open_no_reparse(&root).unwrap();
         assert_eq!(private_flags(&selected.file).unwrap(), 0);
         assert!(enable_private_directory_inheritance(&root, &selected.identity).unwrap());
