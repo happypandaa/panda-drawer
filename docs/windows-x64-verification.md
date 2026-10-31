@@ -896,3 +896,11 @@ Windows 使用绑定的实际目录 HANDLE/完整 128 位 FileId、UTF-16 名称
 完整 core 实际默认专项 **16 通过、0 失败、1 官方 Node opt-in 忽略**，1.39 秒。覆盖只读声明、外部目录与重复登记、两种生成入口同 UUID、登记失败后重查复用 UUID、过期预览、真实 pin、部分只读回滚、并发修改/外来文件/替换目录保持，以及 root/声明/unrelated junction 和硬链接/声明预算。另显式执行固定官方 Node 24.22.0 的生成后公有登记、启动及停止整链 **1/1**，4.58 秒；样本为新 disposable 中文空格目录，没有修改用户项目。
 
 完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（既有 Rust 警告保留）。首次 PowerShell 未给 lint 参数加引号导致 rustc 收到拆分的 :all，未计为检查结果；准确引号重跑通过。该组是真实公有 backend 和 Node 引擎的临时目录验证，正常产品 GUI/任务管理器、Git 导入、安装版与两系统验收继续进行。
+
+### W4.2 — 官方 MinGit 离线选择与隔离探测
+
+Git 工具路径、离线 Command、系统 SSH 位置和 Apple 开发工具选择抽到平台适配；Unix 原函数正文机械移动保持。Windows 用实际 Win32 系统目录和本机 PATH 分隔符，显式 SystemRoot、NUL 配置位置与 cleared Job，不继承宿主 Git 配置/凭据，不通过 PATH 发现替代 Git。原显式选择的跟随路径政策保持，版本识别保留 2.56.0.windows.4 后缀，识别成功不等于允许远程操作。
+
+独立完整 core 快照默认 Git 环境专项 **3 通过、0 失败、1 官方 MinGit opt-in 忽略**；显式官方测试 **1/1**，16.10 秒。在新 disposable 中文空格目录复制正常 dev 准备的固定 MinGit，先完整树核验，再实际 managed doctor/resolve 和 explicit configure_git，均 ready，实际 Git 2.56.0.windows.4，exec/template 路径一致。前后完整树和 manifest 字节一致、未产生隐式 settings，全部真实进程关闭。测试最初将接口 selection 文字误写 configured，按原公有接口修为 explicit 后重编执行通过，没有改产品接口。
+
+实际工作区完整 core Clippy **-Dclippy::all 通过**（与 W4.1 同一次已包含四份 Git 源码）；GitHub/Gitee HTTPS、clone、依赖安装与导入提交/中断仍在接线，不以离线 doctor 当作 W4 导入验收。
