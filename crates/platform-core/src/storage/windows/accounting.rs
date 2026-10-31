@@ -183,6 +183,18 @@ pub(super) fn walk_cancellable(
                 kind: kind(&metadata),
             };
             out.note(&entry);
+            // Keep sub-millisecond writes and native attribute changes in the
+            // two-pass signature too. Public timestamps remain Unix millis.
+            let metadata_digest = Sha256::digest(format!(
+                "{}\0{}\0{}\0{}",
+                entry.path,
+                metadata.creation_time(),
+                metadata.last_write_time(),
+                metadata.file_attributes(),
+            ));
+            for (byte, digest) in out.fingerprint.iter_mut().zip(metadata_digest) {
+                *byte ^= digest;
+            }
             match entry.kind {
                 EntryKind::File => visit(&entry),
                 EntryKind::Directory => match child_dir(dir, &name) {
@@ -396,12 +408,4 @@ pub(super) fn disk_identity(path: &Path) -> Option<u64> {
     native::open_no_reparse(path)
         .ok()
         .map(|file| file.identity.volume_serial)
-}
-pub(super) fn executable_stamp(path: &Path) -> Result<Value, ApiError> {
-    let file = native::open_read_file_allowing_hard_links(path)?;
-    let metadata = file.metadata()?;
-    let identity = native::identity(&file)?;
-    Ok(
-        json!({"device":identity.volume_serial,"fileId":identity.file_id,"bytes":metadata.len(),"modified":modified(&metadata)}),
-    )
 }

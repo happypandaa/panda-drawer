@@ -32,6 +32,8 @@ mod cleanup;
 mod coordinator;
 #[path = "windows/io.rs"]
 mod io;
+#[path = "windows/program.rs"]
+mod program;
 use accounting::{
     read_json, root_identity, walk, walk_cancellable, window_views_scan, window_views_signature,
 };
@@ -294,7 +296,7 @@ pub(crate) struct StorageManager {
     instance: String,
     coordinator: Coordinator,
     scans: Mutex<HashMap<String, String>>,
-    installation: Option<PathBuf>,
+    installation: Mutex<Option<Arc<crate::installation_scope::InstallationScope>>>,
     generations: Mutex<RootGenerations>,
     #[cfg(test)]
     scan_pause: Mutex<Option<Arc<ScanPause>>>,
@@ -308,10 +310,6 @@ impl StorageManager {
         tasks: Arc<BuildManager>,
         maintenance: Arc<MaintenanceManager>,
     ) -> Result<Arc<Self>, ApiError> {
-        // No declared Windows installation root exists in development. W6's
-        // bound NSIS executable/resources entry will provide that scope; never
-        // count a Cargo target or a generic exe parent as the installed app.
-        let installation = None;
         let manager = Arc::new(Self {
             paths,
             store,
@@ -320,7 +318,7 @@ impl StorageManager {
             instance: Uuid::new_v4().to_string(),
             coordinator: Coordinator::new(),
             scans: Mutex::new(HashMap::new()),
-            installation,
+            installation: Mutex::new(None),
             generations: Mutex::new(HashMap::new()),
             #[cfg(test)]
             scan_pause: Mutex::new(None),
@@ -328,6 +326,12 @@ impl StorageManager {
             aggregate_pause: Mutex::new(None),
         });
         Ok(manager)
+    }
+    pub(super) fn set_installation_scope(
+        &self,
+        scope: Option<Arc<crate::installation_scope::InstallationScope>>,
+    ) {
+        *self.installation.lock().unwrap() = scope;
     }
     fn cache(&self, id: &str) -> PathBuf {
         self.paths
@@ -986,7 +990,7 @@ impl StorageManager {
         self.store.check_workspace_available()?;
         self.require_aggregate_available()?;
         let paths = self.paths.clone();
-        let installation = self.installation.clone();
+        let installation = self.installation.lock().unwrap().clone();
         let generation = self.instance.clone();
         #[cfg(test)]
         let pause = self.aggregate_pause.lock().unwrap().clone();
@@ -1372,15 +1376,21 @@ fn node_source_storage(
 }
 fn workspace_scan(
     paths: &RuntimePaths,
-    installation: Option<&Path>,
+    installation: Option<&crate::installation_scope::InstallationScope>,
     generation: &str,
 ) -> Result<Value, ApiError> {
     let workspace = root_identity(paths.workspace_root())?;
     let data = root_identity(paths.data_root())?;
     let mut roots = vec![("workspace".to_owned(), workspace.path.clone())];
-    if let Some(p) = installation {
-        roots.push(("platformProgram".into(), p.to_path_buf()));
-    }
+    let program_paths = installation
+        .map(|scope| {
+            scope
+                .members()
+                .iter()
+                .map(|member| member.path.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut missing = vec![];
     if paths.migrations_dir().is_dir() {
         for entry in fs::read_dir(paths.migrations_dir())? {
@@ -1459,7 +1469,11 @@ fn workspace_scan(
         .values()
         .filter(|source| source.identity.is_some())
     {
-        if !roots.iter().any(|(_, root)| source.path.starts_with(root)) {
+        if !roots.iter().any(|(_, root)| source.path.starts_with(root))
+            && !program_paths
+                .iter()
+                .any(|root| source.path.starts_with(root))
+        {
             roots.push(("nodeSource".into(), source.path.clone()));
         }
     }
@@ -1467,7 +1481,11 @@ fn workspace_scan(
         .values()
         .filter(|source| source.identity.is_none())
     {
-        if !roots.iter().any(|(_, root)| source.path.starts_with(root)) {
+        if !roots.iter().any(|(_, root)| source.path.starts_with(root))
+            && !program_paths
+                .iter()
+                .any(|root| source.path.starts_with(root))
+        {
             missing.push(unknown_scope(
                 "nodeSource",
                 Some(&source.path),
@@ -1481,6 +1499,11 @@ fn workspace_scan(
             .iter()
             .filter(|(_, p)| p != root && p.starts_with(root))
             .filter_map(|(_, p)| p.strip_prefix(root).ok().map(Path::to_path_buf))
+            .chain(
+                program_paths
+                    .iter()
+                    .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf)),
+            )
             .collect::<Vec<_>>();
         let mut value = scope_scan(root, json!({"kind":kind}), &exclusions, |p| {
             if kind == "workspace" {
@@ -1511,14 +1534,35 @@ fn workspace_scan(
         }
         measured.push((kind.clone(), value));
     }
-    let mut program = unknown_scope(
-        "platformProgram",
-        None,
-        "running_executable_has_no_declared_installation_root",
-    );
+    let mut program = match installation {
+        Some(scope) => program::scan(
+            scope,
+            &roots
+                .iter()
+                .map(|(_, root)| root.clone())
+                .collect::<Vec<_>>(),
+        ),
+        None => unknown_scope(
+            "platformProgram",
+            None,
+            "running_executable_has_no_declared_installation_root",
+        ),
+    };
+    program["rootGeneration"] = generation.into();
     let mut current = unknown_scope("workspace", Some(paths.workspace_root()), "not_scanned");
     let mut other = missing;
     let mut disks = BTreeMap::new();
+    for member in installation.into_iter().flat_map(|scope| scope.members()) {
+        let path = &member.path;
+        if let Some(device) = accounting::disk_identity(path) {
+            let disk_path = if member.directory {
+                path.as_path()
+            } else {
+                path.parent().unwrap_or(path)
+            };
+            disks.entry(device).or_insert_with(||json!({"device":device,"exampleRoot":disk_path,"availableBytes":fs2::available_space(disk_path).ok().map(int)}));
+        }
+    }
     for (kind, mut value) in measured {
         if let Some(root) = value["root"].as_str() {
             if let Some(device) = accounting::disk_identity(Path::new(root)) {
@@ -1526,9 +1570,7 @@ fn workspace_scan(
             }
         }
         value["rootGeneration"] = generation.into();
-        if kind == "platformProgram" {
-            program = value;
-        } else if kind == "workspace" {
+        if kind == "workspace" {
             current = value;
         } else {
             other.push(value);
@@ -1704,15 +1746,12 @@ fn workspace_scan(
         &workspace_cache,
         &json!({"schemaVersion":SCHEMA,"scope":{"kind":"workspace"},"workspaceRootIdentity":workspace,"rootGeneration":generation,"result":current}),
     )?;
-    if let Some(root) = installation {
+    if installation.is_some() {
         let cache = paths.data_root().join("cache/storage/platform.json");
         check_no_symlinks(&cache, true)?;
-        let executable = std::env::current_exe()
-            .ok()
-            .and_then(|path| accounting::executable_stamp(&path).ok());
         builds::atomic_json(
             &cache,
-            &json!({"schemaVersion":SCHEMA,"scope":{"kind":"platformProgram"},"installationRootIdentity":root_identity(root).ok(),"installedBuild":executable,"version":crate::APP_VERSION,"result":program}),
+            &json!({"schemaVersion":SCHEMA,"scope":{"kind":"platformProgram"},"installationBinding":program["installationBinding"],"version":crate::APP_VERSION,"target":crate::build_profile::BUILD_TARGET,"result":program}),
         )?;
     }
     Ok(

@@ -75,6 +75,7 @@ type DeleteCleanupCheckpoint = (
 );
 
 pub(crate) struct LifecycleManager {
+    installation_scope: Mutex<Option<Arc<crate::installation_scope::InstallationScope>>>,
     project_cleanup: Mutex<Arc<crate::project_cleanup::ProjectCleanupCoordinator>>,
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
@@ -219,6 +220,13 @@ fn copy_verified(from: &Path, to: &Path) -> Result<(), ApiError> {
 }
 
 impl LifecycleManager {
+    pub(crate) fn set_installation_scope(
+        &self,
+        scope: Option<Arc<crate::installation_scope::InstallationScope>>,
+    ) {
+        *self.installation_scope.lock().unwrap() = scope;
+    }
+
     pub fn new(
         paths: RuntimePaths,
         store: Arc<ProjectStore>,
@@ -231,6 +239,7 @@ impl LifecycleManager {
         store.set_node_source_data_root(paths.data_root().to_path_buf());
         let (events, _) = broadcast::channel(64);
         let manager = Arc::new(Self {
+            installation_scope: Mutex::new(None),
             project_cleanup: Mutex::new(crate::project_cleanup::ProjectCleanupCoordinator::new(
                 paths.data_root(),
             )),
@@ -940,6 +949,10 @@ impl LifecycleManager {
         source: &Path,
         _overwrite: bool,
     ) -> Result<PathBuf, ApiError> {
+        crate::installation_scope::require_destination(
+            self.installation_scope.lock().unwrap().as_deref(),
+            path,
+        )?;
         validated_export_destination(&self.paths, &self.store, path, source)
     }
     async fn snapshot(
@@ -1041,6 +1054,7 @@ impl LifecycleManager {
         let copy_destination = destination.clone();
         let copy_root = root.clone();
         let copy_parent = delivery_parent.clone();
+        let installation_scope = self.installation_scope.lock().unwrap().clone();
         tokio::task::spawn_blocking(move || {
             write_owned_export_stage(
                 &copy_owner,
@@ -1058,6 +1072,10 @@ impl LifecycleManager {
                             "导出文件夹已变化，请重新选择。",
                         ));
                     }
+                    crate::installation_scope::require_destination(
+                        installation_scope.as_deref(),
+                        &copy_destination,
+                    )?;
                     validated_export_destination(
                         &copy_paths,
                         &copy_store,
@@ -1971,3 +1989,7 @@ impl Drop for DeleteOperationRetirement {
             .remove(&self.task_id);
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "installation_scope/windows/lifecycle_tests.rs"]
+mod installation_scope_tests;
