@@ -1125,7 +1125,27 @@ Node 归属更新原先使用普通 create_dir，私有权限设置只在 Unix �
 
 新增 Windows `local_cleanup::` 分组 **5/5**，3.63 秒。其中 4 组真实 RuntimePaths::for_test 用例验证：实际 Runtime 持锁时 prepare 成功，真实 quiesce 后 execute 仅保留原完整身份的环境 marker/instance lock；原锁实际释放或被替换时拒绝旧计划；真实未 closed writer 阻止预览及后续清理；公有 Node 登记/初始化入口产生的 managed 源码实际缺失，外部原目录及各文件完整 FileId/字节保持。另 1 项核对错误分类不误收其它错误。没有启动 Node 子进程或创建 WebView，不用伪造 native purge 回执证明闭合。
 
-初轮为 **4/5**：夹具在 writer finish 后仍持有自身 parent pin，明确 drop 这些夹具 guard 后全组通过，未修改产品权限、身份或实际缺失要求。NodeOwnership 回归 **2/2**，3.75 秒；core Clippy **-Dclippy::all 通过**，8.48 秒，保留 lib 30/test 38 个 Rust 警告。**正常 GUI 全局清除仍待包含此修复的新二进制验证**；首个 NSIS 包含旧清理 guard，不以本节测试替代其真实 GUI 收尾。
+初轮为 **4/5**：夹具在 writer finish 后仍持有自身 parent pin，明确 drop 这些夹具 guard 后全组通过，未修改产品权限、身份或实际缺失要求。NodeOwnership 回归 **2/2**，3.75 秒；core Clippy **-Dclippy::all 通过**，8.48 秒，保留 lib 30/test 38 个 Rust 警告。该检查点尚待包含此修复的新二进制验证；后续真实 GUI 执行失败见 W5.20。首个 NSIS 包含旧清理 guard，不以本节测试替代其真实 GUI 收尾。
+
+### W5.20 — 真实 GUI 执行全局清除后原生阶段拒绝访问
+
+在原 debug 资源根重编正常 GUI，实际用时 **17.65 秒**；直接 StartProcess 并核对 debug PID **17116**。界面实际有 **4 个临时项目**：网页项目 `prj_f43`（第一安装版检查项目）和 W2 B，以及生成 Node `b1ead` 和外部原目录 Node `84765`（均为 ID 前缀/测试名称）。新 Windows 清除预览文案实际显示正确；随后实际勾选、输入确认文字，完成两次确认并执行全局清除。
+
+普通 manager 窗口实际 Destroyed，随后不使用 UDF 的原生结果窗“熊猫小抽屉 · 本机数据清理结果”显示 **FILESYSTEM_ERROR，拒绝访问，OS 5**，**14 个路径全部列为 remaining**。实际核对原 workspace 根、生成源码根及外部原目录仍存在，DataRoot 原顶层条目也仍全在；这不证明每个子文件都未被删除，原生清理可能已局部执行，尚未完整核对其影响。不能据根目录仍在推断没有任何删除或 WebView 数据变更。
+
+随后只读 native probe 明确定位访问失败：根 metadata 和原根 DELETE-access open 成功，观察到 32 个条目后，对 `Cache_Data` 的属性访问 open 返回 OS 5。manager root 的私有当前用户 FA ACE 为 flags=0、无 OI/CI，Cache 父目录同样没有当前用户继承；`Cache_Data` 仅有继承的 AppContainer capability ACE、没有当前用户 ACE，owner 仍为当前用户。DOS/canonical 指向同一实际对象，未见 readonly 或 delete-pending 状态。`ManagerProfile::initialize` 遗漏了 project profile 已使用的 `enable_private_directory_inheritance`；当时开始最小接线及新 TempDir 真实回归，没有现场手工 ACL 写入，随后专项结果见 W5.21。
+
+原生结果窗已正常点击“确定”并退出，确认 PID 17116 不再存在；外部原目录 9 个文件的 SHA256/长度仍逐项匹配。**本次真实全局清除失败，未通过验收。** 原因定位和源码修复进展不是清除成功回执，也不将后续处理称为删除项目的恢复。
+
+### W5.21 — 管理器原绑定私有目录的继承初始化修复
+
+仅 Windows `ManagerProfile::initialize` 在原完整 FileId/private 校验及目录 pin 绑定后，调用现有 `enable_private_directory_inheritance`；project profile 早已调用同一 helper。本步只有该接线及新测试两个源码文件，native helper 和 Mac 没有改动；不在现场手工修 ACL，也不增加父目录 ACL 准入或认领其它目录。
+
+真实新 TempDir 人工构造旧 flags=0 根及 capability-only `Cache_Data`，先实际得到 OS 5，再经正常 initialize，使原 root/child/payload 完整 FileId 和字节保持；显式 protected 子项、外部 parent/sibling 的原二进制 SD 保持，重复初始化幂等，释放实际 pins 后真实 clear_contents 成功。该旧根组、新 fresh 根组及原 3 项合计 **5/5**，8.46 秒。desktop no-run **23.03 秒**；默认桌面回归 **107 通过、0 失败、13 专用入口忽略**，5.48 秒；Clippy **-Dclippy::all 通过**，18.37 秒，保留 core lib 30、desktop bin 7/test 5 个 Rust 警告。
+
+既有实际 manager 专用入口另 **1/1**，1.24 秒：独立 TempDir 的 Env7 actual UDF 匹配，pageLoaded=true、requestsBeforeVerification=0，browserExited=true；原根保留到最终移除，之后实际 absent。为运行该夹具，先核对自有 Vite PID 23320 的 exe、完整命令和启动时间，只停止该进程以释放 1420；没有因此清理默认数据根。该真实引擎专项不替代默认根全局 GUI 验收。
+
+接下来仍需在同一 fresh stage 重建包含此修复的新包，通过正常 manager 初始化而非手工 ACL 写入，再重试全局 GUI 清除。**截至本检查点，该默认根 GUI 重试尚未通过，W5.20 的失败不改写为成功。**
 
 ## W6 — 安装包（进行中）
 
@@ -1147,7 +1167,7 @@ manager release 实际构建 **6 分 59 秒**，首个 NSIS 包成功生成，**
 
 运行时 `runtime.platform.exe` 指向实际安装程序；typed scope 的主 exe、CLI、resources 三个成员均实际 bound，wholeDirectory 为 false，resources 指向安装资源，canonical 路径呈系统 PackageLocalCache 表示，未回退源码资源或把整个安装父目录当作程序范围。native-packager 对 runtime Node、development Node 和 Git 的实际验证 **3/3**；环境 doctor 实测 Node **24.22.0**、npm **11.19.1** 且 managed ready=true，Git **2.56.0.windows.4** 且 managed ready=true。独立 system SSH 诊断失败如实保留；这些结果不验证认证、远端访问或 SSH 可用性。
 
-**此第一包仍包含旧清理 guard，不能作为最终卸载前清除版本；包含 W5.19 修复的正常重建与 GUI 清除仍待执行。** 本机已经安装 WebView2，尚未测试缺失时引导；SmartScreen、干净 Windows 10/11、卸载重装也未测试。未由首包生成、静默安装和本机启动推出 W6 完成，安装包及证据均不提交。
+**此第一包仍包含旧清理 guard，不能作为最终卸载前清除版本。** 该检查点尚待包含 W5.19 修复的正常重建及 GUI 清除；后续 debug GUI 的失败见 W5.20，最新包构建见 W6.5。本机已经安装 WebView2，尚未测试缺失时引导；SmartScreen、干净 Windows 10/11、卸载重装也未测试。未由首包生成、静默安装和本机启动推出 W6 完成，安装包及证据均不提交。
 
 ### W6.3 — 第一安装版 CLI/公开 HTTP 的临时网页项目验证
 
@@ -1163,4 +1183,12 @@ manager release 实际构建 **6 分 59 秒**，首个 NSIS 包成功生成，**
 
 scope 界面分组 **21/21**，2.26 秒；完整 UI **496/496、0 跳过**，14.70 秒；TypeScript/Vite build 通过，保留原 chunk 大小警告。测试核对 Windows 文案与 Mac 原文，不把文字修正作为实际清除范围或原生闭合证明。
 
-正在构建的第二个正常 fresh 包（stage 后缀 `1HCHrQ`，CLI 已实际构建 **3 分 12 秒**）早于本次 UI 文案修改，不能作为最终 UI 版本；后续需使用本轮 fresh 资源、实际逐项验证后重新生成 NSIS。**全局 GUI 清除尚未执行，不记成功；W6 仍未完成。**
+本次文案检查点正在构建的第二个正常 fresh 包（stage 后缀 `1HCHrQ`，CLI 已实际构建 **3 分 12 秒**）早于该 UI 文案修改，不能作为最终 UI 版本；随后复用本轮资源的增量重建见 W6.5。当时全局 GUI 清除尚未执行，之后真实执行失败见 W5.20；**没有全局清除成功回执，W6 仍未完成。**
+
+### W6.5 — 第二轮 fresh 资源上的文案版本增量重建
+
+Windows 清除预览文案提交 `2655210` 已推送。第二轮正常 fresh 准备（stage 后缀 `1HCHrQ`）的 CLI **3 分 12 秒**、manager **6 分 56 秒**已完成，但开始于该文案修改之前；文案更新后使用这个本轮新鲜准备目录进行 **incremental Tauri rebuild，没有重新运行 prepare，不记为第三次 fresh 构建**。
+
+重建前对该 stage 的 runtime Node、development Node 和 Git 再次实际原生验证 **3/3**；CLI target 与 sidecar SHA256 同为 `3BBCE4FF47EB879B5BD963C6145D054AD094992AC6BC48A4CF471802D7EAC46C`，实际 build-info 为固定开发身份、版本 **0.0.0**、Windows x64。desktopInvocation 保持原 reset、精确 resource config 及 target；before-build TypeScript/Vite 通过。实际 release 重建 **4 分 03 秒**后，NSIS 成功生成，实际 **63,182,688 字节（60.26 MiB）**，SHA256 为 `4D54CB07F5BB1E2EB1440187BD9083584DF1CB6E368BB2E1170E86B9C28D7132`，日志为本机 `w6-cleanup-copy-prepared-nsis-rebuild.log`。该包的实际 PE 检查为 CLI 13、manager 30 个 normal import，各 0 个 delay import，均无 VC 运行库直接导入匹配；仍不证明传递依赖或动态加载。
+
+该包随后已再次实际当前用户 `/S` 安装，**Exit 0，8.43 秒**；原 workspace 与外部原目录仍存在，安装后 CLI build-info 核对正确。**此包早于 ManagerProfile 继承接线，不能作为最终可通过全局清除的版本。** 修复专项见 W5.21，包含接线的新包与默认根全局 GUI 重试仍待完成；不由旧包安装成功推出清除成功。按执行标准第 7 节及第 9 节第 6 项，已异步询问用户 Windows 10 验收选择，尚待回答；本机 Windows 11 的其余工作继续，不把未运行的 Windows 10 检查记为通过。
