@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::PathBuf};
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::BoundProfile;
+
 type Result<T> = std::result::Result<T, ApiError>;
 fn invalid() -> ApiError {
     ApiError::new(

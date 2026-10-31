@@ -700,3 +700,11 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 原有多项目测试实际 **1/1**：创建两个网页项目，各建独立 SQLite 表，只向 A 写入后 B 仍为空；关闭 store、重开后 A 数据与 document epoch 保留。这里只执行完整 core 测试二进制和明确新临时根，不涉及真实开发工作区，也不是前端或 WebView 浏览器存储隔离证明。
 
 首次较宽 directory_ 选集实际 **36 通过、5 失败**；除上述已纠正夹具外，剩余为 backups ZIP64、Node object-layout 和两项 WebView 删除/收尾未完成测试，均未删除或跳过。最终只重跑所列精确专项，不将其换算成新的全组通过数；core 仍有 63 项既有/阶段警告，Mac CI 仍待运行。
+
+### W2.2 — 按持久凭据绑定项目浏览器目录
+
+新增 Windows StoreLedger.bind_profile 与不透明 BoundProfile。只读取既有项目记录，实际 pin 数据根、container、所选目录，并用记录中原有完整 Windows 身份核对已开 HANDLE；不把另一次 capture 当作替换目录的授权。选中的 profile 要求原合同私有 DACL，祖先仅做普通/no-reparse 绑定，不检查系统父 ACL；record 读取保持 Mac 允许硬链接的规则。没有凭据、凭据损坏或移除待收尾时拒绝，不创建/清空材料。
+
+实际完整 core 二进制专项 **6/6**，包括两个独立真实私有目录与持续 pin、完整 FileId 高字节篡改、替换根、未知根、实际 junction、record 硬链接，以及 pending/坏收据的原字节保留。实际目录接口核对接受本根、拒绝另一项目根与缺失根，但此步没有创建 WebView2，不能称 localStorage/IndexedDB 已隔离。只读独立复审通过；Mac 原 StoreLedger 正文和测试零改。首轮编译遇到并行 Git 模块尚未落齐而失败，未运行测试；跨模块稳定后重编才得到上述真实结果。
+
+下一步桌面窗口会先用空白文档、读回实际引擎目录，再加载项目页，并持有浏览器退出 owner 及原产物租约到真实进程族退出。当前公开 API 仅完成绑定，尚未接到真实产品窗口；Windows 磁盘 purge/forget 收尾仍待后续实现，没有伪造删除成功或提前退役 ledger。
