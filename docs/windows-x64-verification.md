@@ -862,3 +862,15 @@ Node 校验探测显式保留 cleared policy。Windows preflight 只核对原 Ma
 完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（63 项既有 Rust 警告保留），native 全目标 **-Dwarnings 通过**。修复两个 drain/collect 为 mem::take；子孙 fixture 显式进程 exit 保持“根先退出、子孙待实际 Job 清理”条件，不用 wait 消除被测条件或加 lint allow。并行验证使用 source snapshot 时发现 Windows 复制保留旧写入时间可使 Cargo 误判 fresh，0-test 结果未计入，显式使快照入口重编后确认实际注册/执行；随后真实工作区全编译及上述同组复验通过。
 
 本组是真实 Node 引擎与原生产 Runtime facade 的 TempDir 回归，尚不是 NodeApps 公有配置/管理器、任务管理器终止平台、安装版或 Windows 10 验收。StartIntent 持久退役、Node 专属桌面 UDF 和公有管理器整链继续完成；不据此称 W3 全部完成或两套 CI 绿色。
+
+### W3.3 — 启动标记持久退役、公有 NodeApps 和真实 fixture host 崩溃
+
+将 NodeApps 的原记录/目录/StartIntent 文件操作集中到平台适配，11 个 Mac 原函数正文机械比对保持；原测试仍保留。Windows 新记录私有独占创建、普通记录按原单链接/256 KiB/属主政策读取，不要求或修复已有普通记录的私有 DACL。StartIntent 绑定实际原 HANDLE/完整身份/原字节，运行后原地更新，保留原创建时间；停止后独占捕获到私有 gate，原读 HANDLE 关闭后才观察实际缺失，短暂占用有限重试。
+
+初版只保留 Rust owner 中的退役状态，直接 owner 重试 6 项通过；独立复审指出公有 Inspection::stop_and_retire(self) 在失败时消耗 owner，会丢失该重试状态。补为 gate 外的私有不可变 v1 receipt：仅在原调用方已确认 no-child 或全部运行资源闭合后发布该事实，包含实际 parent/gate/source/journal 完整身份、原 bytes 和 UTF-16 active leaf，实际刷盘后才 capture。恢复按真实 prepared/captured/absent 状态继续，永远先 marker 缺失、再 gate 缺失、最后 receipt 缺失；不借 PID/boot 推导闭合、不重新收养外来对象。原 unknown/preboot 门禁保持：未知或 preboot 损坏材料原样交 Mac skip 规则，boot 不能授权执行删除。读取收据按 compact 编码的 256 KiB×4+64 KiB 上界有界，原记录预算未收紧。
+
+最终实际 Windows receipt 专项 **13 通过、0 失败、1 专用子进程入口忽略**，2.35 秒。覆盖原地更新完整身份/创建时间、普通非私有 DACL 记录不修复、共享 reader 实际延迟与释放重试、原 owner 已丢失后的 prepared/captured 收敛、真实 gate HANDLE 占用时保留外部 receipt、receipt/gate/source/bytes/closed=false/parent 高位身份冲突全部保留、未知/preboot 材料原身份与字节保持、大于收据预算的真实文件不读不改、接近原 256 KiB 的中文记录仍可完成。Inspection 公有续退测试先取得真实子进程完整 100ns 身份并实际退出其 Job，再让真实共享 reader 使已消费 owner 的首次退役失败，释放后重新 inspect/stop 完成。受控 panic 中断只证明已刷盘阶段续退，不算物理断电。
+
+另外明确执行官方 Node 24.22.0 的 **2 个 NodeApps 公有整链 opt-in，2/2**：14.66 秒验证 register→必填配置门禁→save 密钥→start/open_url 的真实代理页面/API→大 stderr/私有脱敏日志→save 保持旧快照→restart 同 UUID/data 计数 2→stop→全新 manager 读持久密钥/数据再 start 计数 3→stop_all；16.97 秒用专用 Rust fixture host 持实际 Node 根/子/孙，父亲保留原 host Child HANDLE 并实际 kill/wait，逐个原完整身份均证明 Stopped，新 manager 还实测占用后 stop 失败、释放 reader 后持久续退。Node SHA 按独立固定 release JSON 核验，未 override digest 或借 PATH/模拟解释器证明 Node。
+
+真实工作区完整 core 编译通过，--lib --tests --no-deps Clippy **-Dclippy::all 通过**（63 Rust 警告保留）。上述使用明确 disposable 源码/数据；旧 register API 仅为核心集成夹具，未替代 W4 的本机目录确认流程。fixture host 退出证明实际 Job/恢复链，仍不等于在任务管理器结束正常产品 GUI 或安装包验收；继续 Node 桌面 profile 接线与后续整机验收。

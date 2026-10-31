@@ -108,6 +108,7 @@ pub(super) fn inspect(slot: &Path, id: &str, boot: SystemTime) -> Result<Inspect
 }
 
 pub(super) fn cleanup_pending(slot: &Path, boot: SystemTime) -> Result<bool> {
+    file_io::resume_cleanup_receipts(slot, boot)?;
     match fs::symlink_metadata(slot) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
