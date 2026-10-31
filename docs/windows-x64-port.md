@@ -66,7 +66,7 @@
 | 传给子程序/引擎的目录路径表示 | 原本地绝对路径 | 共用 UTF-16 conventional_path，标准扩展盘符/UNC 仅在 GetFullPathNameW 逐单元保持原路径时去前缀，特殊名字/命名空间保留；文件操作仍用原扩展路径，不由转换取得目录归属 | `platform-native/src/windows/api_paths.rs`；子进程 cwd 与 WebView2 接线分别验证，普通 API 路径不等于放宽 no-reparse/完整身份规则 |
 | 系统工具目录 | 固定系统 Unix 位置 | 由 GetSystemDirectoryW / GetSystemWindowsDirectoryW 实际查询，不读取环境变量猜 C:\\Windows；按原生容量返回扩容、UTF-16 保留，失败明确拒绝 | `platform-native/src/windows/system_paths.rs`；供隔离 Node/npm 探测环境适配使用 |
 | 原子改名 | `rename`、`renameatx_np(RENAME_EXCL / RENAME_SWAP)` | 文件用 `MoveFileExW`（需要覆盖时加 `MOVEFILE_REPLACE_EXISTING`）；目录只在目标不存在时改名，发布后核对完整身份。改名成功后的任何观察失败均为 unknown，保留原始错误原因，不能冒充提交前失败。没有 SWAP，用"日志 + 两步改名"实现，并覆盖中途崩溃 | 文件 API 已接入 `files/windows.rs`；项目目录发布：`project_directory_io.rs` / `platform-native/src/windows/files.rs`；原生交付的 Mac 实现在 `native_project_files/unix.rs`，Windows 入口在 journal 未实现前明确拒绝；其他待接入：`durable_writer.rs`、`project_git*.rs`、`object_layout.rs` |
-| 已归属名字的原生移除 | 按已绑定父目录 unlinkat；允许源码硬链接，只移除所选名字 | 固定父 HANDLE，打开实际 leaf 并匹配完整 FileId，以原 DELETE HANDLE 设置 FileDispositionInfo；重解析 leaf 只观察自身。只读属性仅临时调整原 HANDLE，失败或仍有其他硬链接时恢复；成功设置请求不代替实际名字缺失回执 | `platform-native/src/windows/removal.rs`；原生专项通过，core 清理接线、有限重试及快照核验仍在 W2/W5 实现中 |
+| 已归属名字的原生移除 | 按已绑定父目录 unlinkat；允许源码硬链接，只移除所选名字 | 固定父 HANDLE，打开实际 leaf 并匹配完整 FileId，以原 DELETE HANDLE 设置 FileDispositionInfoEx 的 DELETE/IGNORE_READONLY_ATTRIBUTE；不改只读位，不用 POSIX 提前移除打开名字。重解析 leaf 只移除自身，实际缺失才完成 | `platform-native/src/windows/removal.rs`；core `history_cleanup/windows/removal.rs` 实际 inventory、父 scope 持续 pin、占用短暂重试及剩余路径；迁移内容快照另待 W5 |
 | 本机目录登记与可编辑源码发布 | 描述符绑定的只读检查、空目录初始化、候选复制与发布恢复 | 对应的 HANDLE 绑定与候选发布完成前明确拒绝，不写入用户目录、不假定已登记；待 W4 实现 | `node_app_directory.rs`、`source_publication.rs`；Mac 原实现分别保留在各自 `unix.rs` 子模块 |
 | 外部 ZIP 导出发布 | 原子不覆盖改名、目录/文件身份复核、替代材料保留或独占归还 | 发布和中断恢复未完成时，在改名或验证回调前明确拒绝，保留已准备的临时材料；待后续补齐 | `lifecycle_file_io.rs`；原 Unix 发布实现在 `lifecycle_file_io/unix.rs`，生命周期目录类型预检查也经该边界 |
 | 受控 Git 源码获取 | 原生磁盘预算、文件树/摘要核对、非执行复制 | URL/分支政策和输入/候选数据共用；实际获取、复制、就绪或归属核对尚未完成时明确拒绝 | `source_acquisition.rs`；共用 `source_acquisition/types.rs` / `url.rs`；Unix 原流程在 `unix.rs`，Windows 临时门禁在 `windows.rs`，待 W4 完成 |
@@ -87,7 +87,7 @@
 | 数据恢复登记的不可变证明捕获 | 原已开文件的完整 Unix metadata tuple、摘要、稳定身份及 mode；原业务错误政策 | 原生不可变证明未实现时在读取或调用错误策略之前明确拒绝；不为 Windows 构造 Unix mode 证明 | `data_restore_proof_io.rs`，Unix 原实现在 `data_restore_proof_io/unix.rs`；`project_data_restore_registration.rs` 转交原错误函数；后续恢复实现必须补齐 |
 | 旧卷身份离线修复 | 已确认旧 Mac 迁移材料的卷 UUID 绑定 | 本轮不兼容旧 Windows 实验数据，不能用 Mac 卷身份修复取得 Windows 归属；直接明确拒绝 | `identity_upgrade.rs`；Mac 原实现与测试：`identity_upgrade/unix.rs` |
 | 持久化 | 文件和目录 fsync | 文件 `FlushFileBuffers`；目录无法 fsync，跳过，并在注释中说明。控制 JSON 在发布后观察失败时保留 unknown，不走提交前清理 | `atomic_control_file.rs`（`builds::atomic_json` 保留原入口）、`platform-native/src/filesystem.rs`；持久进程写入者仍在 `durable_writer.rs` 的未完成边界内 |
-| 历史清理与已归属目录移除 | 描述符相对快照、内容/身份核对、unlinkat | 需实现对应原生快照、占用短暂重试与只读属性处理；完成前在任何扫描、核对回调或删除前明确拒绝 | 边界：`history_cleanup.rs`；Mac 原实现与测试：`history_cleanup/unix.rs`；Windows 临时门禁：`history_cleanup/windows.rs`，待 W5 补齐 |
+| 历史清理与已归属目录移除 | 描述符相对快照、内容/身份核对、unlinkat | 普通已归属目录按完整身份/类型/大小/原生只读位 inventory 逐项移除，保留新出现内容、替代对象与外部原件；沿用原深度/条目预算。历史计划与迁移内容摘要回调尚未完成时仍在其入口明确拒绝 | 边界：`history_cleanup.rs`；Mac 原 `history_cleanup/unix.rs` 零改；Windows 普通移除已接 `windows/removal.rs`，完整任务/计划与迁移待 W5 |
 | 持久写入者与空间核算 | 私有持久标记、Mac boot session UUID、描述符扫描/核算与任务清理 | live writer 私有 preparing 文件真实刷新、原 HANDLE 不覆盖发布；finish 匹配完整身份/原字节并等实际名字缺失，Drop 不删除。任何崩溃存留 marker 仍 unknown，真实 boot/崩溃恢复待 W3/W5；空间扫描与清理能力仍未完成 | `durable_writer/windows/{io,live,inventory}.rs`；Registry 接线须 Job/root/I/O/driver 全闭合，不按 PID、随机 boot UUID 或任务终态清标记；`storage` / `history_cleanup` coordinator 构造与 latest=None 不代表磁盘已清 |
 | 网页项目独立文件删除 | 同卷私有暂存、原子不覆盖改名、状态 journal、身份核对后 unlink | Windows 删除/恢复尚未完成时，移除与范围核对入口明确拒绝，不将纯计划校验当作删除权限 | `web_file_deletion.rs` 及其平台子模块；待 W5 完成 |
 | 单实例锁 | 文件锁 | `LockFileEx` | `paths.rs` |
@@ -138,6 +138,8 @@
 每个里程碑在 `win/<里程碑>` 短分支上完成（例如 `win/w0-ci`），合并前先变基到最新 main，两套 CI 通过后快进合并到 main 并推送，然后开始下一个。
 
 **全程无人值守。** 用户不会盯着进度，也不会在里程碑之间做验收：
+
+2026-10-31 用户执行补充：CI 和运行器注册后置，先完成其余 Windows 功能、安装包与真机验收。继续按未验收栈分支推进，已完成的小步检查后提交并推送；未运行 CI 不记绿色，也不提前合入 main。Mac 行为保持要求不变。
 - 推送后用 `gh run watch` / `gh run view` 查看 CI 结果。失败就自己修复、重新推送，直到通过。
 - macOS 运行器离线（用户的 Mac 关机或睡眠）导致检查排队时，**不要干等**：在当前分支的基础上开下一个里程碑的分支继续工作，等检查通过后按顺序依次合并。排队超过 24 小时，在验证记录里注明，并在下次汇报时提醒用户。
 - 每个里程碑合并后，只用几句话汇报结果，然后直接继续，不等待回复。
