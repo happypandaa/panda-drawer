@@ -886,3 +886,13 @@ Node 校验探测显式保留 cleared policy。Windows preflight 只核对原 Ma
 桌面 --tests --no-deps Clippy **-Dclippy::all 通过**，3 项既有 Rust 警告保留。仅提交源码与验证文字，实际引擎 JSON/数据目录/生成应用均保留在本机未提交。该 parent 是生产 Profile 适配的 Node-kind 真引擎测试，不是正常产品 NodeApps backend 的端到端 GUI、物理设备或安装包验收。
 
 W3 本机引擎/公有管理器/持久标记和独立浏览器专项已通过，正常管理器添加起始 Node 应用的入口还受 W4 本机目录四入口门禁影响，随 W4 补完后做正常 GUI 与任务管理器验收。CI/合入 main 仍按用户要求后置，继续从最新 main 信息上堆叠 W4，不把上述夹具结果算作第 7 节两种系统的安装版验收。
+
+### W4.1 — 本机目录四入口与真实生成后启动
+
+W4 开始前实际 fetch --prune 成功，origin/main 仍 ac3b5d7；在已推送 W3 9c0e412 上继续 win/w4-import。用户再次确认 CI 后置；不重试运行器注册，不把栈分支当已合并。原 Unix 本机目录文件零改动，Windows facade 替换明确拒绝的门禁，提供只读检查、初始化、初始化并登记及已有目录登记四入口。
+
+Windows 使用绑定的实际目录 HANDLE/完整 128 位 FileId、UTF-16 名称及原类型/只读属性/mtime 观察戳，沿用顶层 4096 项和声明 64 KiB 预算，不新增父目录 ACL 门禁或修复。已有外部目录只登记原路径、不复制、不运行 npm；生成流程先记录 UUID 与目录归属，再独占创建原起始文件。失败仅回滚实际捕获身份与原字节一致的创建项；创建已发生而无法确认时保留 UUID/归属及未知项，不声称清干净。
+
+完整 core 实际默认专项 **16 通过、0 失败、1 官方 Node opt-in 忽略**，1.39 秒。覆盖只读声明、外部目录与重复登记、两种生成入口同 UUID、登记失败后重查复用 UUID、过期预览、真实 pin、部分只读回滚、并发修改/外来文件/替换目录保持，以及 root/声明/unrelated junction 和硬链接/声明预算。另显式执行固定官方 Node 24.22.0 的生成后公有登记、启动及停止整链 **1/1**，4.58 秒；样本为新 disposable 中文空格目录，没有修改用户项目。
+
+完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（既有 Rust 警告保留）。首次 PowerShell 未给 lint 参数加引号导致 rustc 收到拆分的 :all，未计为检查结果；准确引号重跑通过。该组是真实公有 backend 和 Node 引擎的临时目录验证，正常产品 GUI/任务管理器、Git 导入、安装版与两系统验收继续进行。
