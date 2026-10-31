@@ -9,10 +9,10 @@ use std::{
 use tokio::task::JoinHandle;
 
 pub(super) struct Coordinator {
-    stopping: AtomicBool,
-    running: Mutex<Vec<JoinHandle<()>>>,
+    pub(super) stopping: AtomicBool,
+    pub(super) running: Mutex<Vec<JoinHandle<()>>>,
     pub(super) latest: Mutex<Option<String>>,
-    deleting: Mutex<BTreeSet<String>>,
+    pub(super) deleting: Mutex<BTreeSet<String>>,
 }
 
 impl Coordinator {

@@ -1,6 +1,7 @@
 //! Live Windows writer admission. Durable markers outlive a dropped caller;
 //! only actual no-child or joined Job/I/O closure can finish a live guard.
-//! Crash-surviving markers stay unknown until real recovery is implemented.
+//! Complete markers from another observed Windows boot can be retired; current
+//! boot writers and records without boot evidence remain unconfirmed.
 use crate::ApiError;
 use std::{
     ffi::OsString,
@@ -15,6 +16,8 @@ mod inventory;
 mod io;
 #[path = "windows/live.rs"]
 mod live;
+#[path = "windows/schema.rs"]
+mod schema;
 pub(crate) use live::WriterGuard;
 
 fn lexical_path(data: &Path) -> PathBuf {

@@ -1755,7 +1755,10 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{local_cleanup_owned_paths, NodeDeletionJournal};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub(crate) use windows::{local_cleanup_owned_paths, NodeDeletionJournal};
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod unsupported {
     use crate::ApiError;
     use serde_json::{json, Value};
@@ -1864,10 +1867,10 @@ mod unsupported {
         }
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) use unsupported::NodeDeletionJournal;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) fn local_cleanup_owned_paths(
     _data_root: &std::path::Path,
 ) -> Result<Vec<std::path::PathBuf>, crate::ApiError> {
@@ -1882,7 +1885,7 @@ mod windows_list_tests {
     use super::*;
 
     #[test]
-    fn list_observes_empty_inventory_while_creation_recovery_and_removal_stay_closed() {
+    fn list_observes_empty_inventory_and_retains_unknown_entries_without_adopting_them() {
         let temporary = tempfile::Builder::new()
             .prefix("panda-disposable-node-deletion-list-")
             .tempdir()
@@ -1891,16 +1894,18 @@ mod windows_list_tests {
         assert!(NodeDeletionJournal::list(&root).unwrap().is_empty());
         assert!(NodeDeletionJournal::create(&root, serde_json::json!({})).is_err());
         assert!(NodeDeletionJournal::load(&root, "50bfcf0c-5102-4a27-8446-b3c7312e2bc1").is_err());
-        assert!(local_cleanup_owned_paths(&root).is_err());
+        assert!(local_cleanup_owned_paths(&root).unwrap().is_empty());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
         let journal = root.join("node-deletion-tasks");
         std::fs::create_dir(&journal).unwrap();
         assert!(NodeDeletionJournal::list(&root).unwrap().is_empty());
-        std::fs::write(journal.join("retained"), b"disposable existing journal evidence").unwrap();
+        std::fs::write(
+            journal.join("retained"),
+            b"disposable existing journal evidence",
+        )
+        .unwrap();
         let error = NodeDeletionJournal::list(&root).err().unwrap();
-        assert_eq!(error.code, "PLATFORM_FEATURE_UNAVAILABLE");
-        assert_eq!(error.details["operationOutcome"], "not_started");
-        assert_eq!(error.details["inventory"], "retained");
+        assert_eq!(error.code, "NODE_DELETION_JOURNAL_UNCONFIRMED");
         assert_eq!(
             std::fs::read(journal.join("retained")).unwrap(),
             b"disposable existing journal evidence"

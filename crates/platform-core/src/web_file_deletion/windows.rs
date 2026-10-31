@@ -1,4 +1,4 @@
-//! Closed until Windows file retirement, interruption recovery and retry are implemented.
+//! Windows counterpart of the identity-bound, same-volume file deletion plan.
 use crate::{
     file_identity::PersistedIdentity, web_project_ownership::WebProjectOwnership, ApiError,
 };
@@ -56,6 +56,12 @@ impl FileDeletionPlan {
         if self.staging_identity.is_none() && self.state != FileDeletionState::Preparing {
             return Err(changed("文件删除暂存身份缺失。"));
         }
+        for identity in std::iter::once(&self.expected)
+            .chain(std::iter::once(&self.parent_identity))
+            .chain(self.staging_identity.iter())
+        {
+            require_windows_identity(identity)?;
+        }
         Ok(())
     }
 
@@ -82,33 +88,20 @@ impl FileDeletionPlan {
 fn changed(message: impl Into<String>) -> ApiError {
     ApiError::new("WEB_PROJECT_MATERIAL_CHANGED", message)
 }
-fn unavailable() -> ApiError {
-    ApiError::new(
-        "PLATFORM_FEATURE_UNAVAILABLE",
-        "Windows 暂不支持此功能：网页项目文件删除与恢复尚未完成。",
-    )
-    .detail("platform", "windows")
-    .detail("capability", "owned-web-file-deletion")
-    .outcome("not_started")
+fn unavailable(error: impl std::fmt::Display) -> ApiError {
+    ApiError::new("WEB_PROJECT_MATERIAL_UNAVAILABLE", error.to_string())
 }
-pub(crate) fn remove_owned_file(
-    _: &WebProjectOwnership,
-    _: &str,
-    _: &Path,
-    _: &PersistedIdentity,
-) -> Result<()> {
-    Err(unavailable())
+fn require_windows_identity(identity: &PersistedIdentity) -> Result<()> {
+    if identity.windows_file_id.is_none() || identity.volume_uuid.is_some() {
+        return Err(changed("文件删除计划缺少完整 Windows 文件身份。"));
+    }
+    Ok(())
 }
-pub(crate) fn owned_scopes(_: &FileDeletionPlan) -> Result<Vec<PathBuf>> {
-    Err(unavailable())
-}
+
+#[path = "windows/backend.rs"]
+mod backend;
+#[path = "windows/io.rs"]
+mod io;
 #[cfg(test)]
-pub(crate) fn fixture_remove_after_capture(
-    _: &WebProjectOwnership,
-    _: &str,
-    _: &Path,
-    _: &PersistedIdentity,
-    _: impl FnMut() -> Result<()>,
-) -> Result<()> {
-    Err(unavailable())
-}
+pub(crate) use backend::fixture_remove_after_capture;
+pub(crate) use backend::{owned_scopes, remove_owned_file};

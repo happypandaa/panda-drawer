@@ -72,13 +72,25 @@ fn open_configuration_file(path: &Path, write: bool, create: bool) -> Result<Fil
     Ok(file)
 }
 
+// LockFileEx does not promise immediate unlock when a HANDLE is closed. In
+// particular, save is immediately followed by a view through a new HANDLE.
+// Release the byte-range lock explicitly before closing its owning HANDLE.
+// Closing remains the fallback if unlock fails; an already committed save must
+// never be reported as failed (or discard its referenced keys) during Drop.
+struct ConfigurationLock(File);
+impl Drop for ConfigurationLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
 impl NodeConfigurationStore {
-    fn lock(&self) -> Result<File> {
+    fn lock(&self) -> Result<ConfigurationLock> {
         checked_directory(&self.directory)?;
         let file = open_configuration_file(&self.directory.join("configuration.lock"), true, true)?;
         file.lock_exclusive()
             .map_err(|_| invalid("无法锁定应用配置。"))?;
-        Ok(file)
+        Ok(ConfigurationLock(file))
     }
 
     fn read(&self) -> Result<StoredConfiguration> {
@@ -157,6 +169,11 @@ impl NodeConfigurationStore {
         }
         result
     }
+}
+
+#[cfg(test)]
+mod windows_lock_tests {
+    include!("lock_tests.rs");
 }
 
 pub struct LocalFileVault {

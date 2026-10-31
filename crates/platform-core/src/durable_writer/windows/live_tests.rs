@@ -1,3 +1,4 @@
+use super::super::Kind;
 use super::*;
 use std::fs;
 
@@ -19,6 +20,12 @@ fn a_real_private_marker_is_flushed_published_and_retired_only_by_explicit_finis
     let marker: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(marker["platform"], "windows");
     assert_eq!(marker["ownerId"], "platform");
+    assert_eq!(marker["version"], 2);
+    assert_eq!(marker["bootEvidence"]["source"], boot_session::SOURCE);
+    assert_eq!(
+        marker["bootEvidence"]["bootId"],
+        boot_session::current_boot_id().unwrap()
+    );
     assert!(marker.get("bootSessionUuid").is_none());
     assert_eq!(
         marker["fileIdentity"]["windowsFileId"]
@@ -86,27 +93,59 @@ fn occupied_publication_preserves_both_our_preparation_and_the_foreign_destinati
 
 #[test]
 fn source_name_replacement_cannot_redirect_bound_handle_publication() {
-    let (_temporary, owner) = fixture();
-    let mut foreign = None;
-    let mut guard = begin_with(&owner, "disposable source-name race", |preparing, _| {
-        let moved = preparing.with_extension("held-original");
-        fs::rename(preparing, &moved).unwrap();
-        fs::write(preparing, b"foreign replacement preparation").unwrap();
-        foreign = Some((preparing.to_owned(), moved));
-        Ok(())
-    })
-    .unwrap();
-    let (foreign, original_alias) = foreign.unwrap();
-    assert!(!original_alias.exists());
-    assert!(guard
-        .identity
-        .same_object(&native::open_no_reparse(&guard.path).unwrap().identity));
-    guard.finish().unwrap();
-    assert_eq!(
-        fs::read(foreign).unwrap(),
-        b"foreign replacement preparation"
-    );
-    assert!(super::super::require_owner_clear(&owner).is_err());
+    for private in [false, true] {
+        let (_temporary, owner) = fixture();
+        let mut foreign = None;
+        let mut guard = begin_with(&owner, "disposable source-name race", |preparing, _| {
+            let moved = preparing.with_extension("held-original");
+            fs::rename(preparing, &moved).unwrap();
+            if private {
+                let mut replacement = native::create_private_file(preparing).unwrap();
+                replacement
+                    .write_all(b"foreign replacement preparation")
+                    .unwrap();
+                replacement.sync_all().unwrap();
+            } else {
+                fs::write(preparing, b"foreign replacement preparation").unwrap();
+            }
+            foreign = Some((preparing.to_owned(), moved));
+            Ok(())
+        })
+        .unwrap();
+        let (foreign, original_alias) = foreign.unwrap();
+        assert!(!original_alias.exists());
+        assert!(guard
+            .identity
+            .same_object(&native::open_no_reparse(&guard.path).unwrap().identity));
+        guard.finish().unwrap();
+        assert_eq!(
+            fs::read(&foreign).unwrap(),
+            b"foreign replacement preparation"
+        );
+        let replacement = native::open_no_reparse(&foreign).unwrap();
+        let replacement_identity = replacement.identity.clone();
+        assert_eq!(native::verify_private(&replacement.file).is_ok(), private);
+        drop(replacement);
+        if private {
+            // Complete recovery may collect an unlocked, bounded ordinary
+            // private preparation, as on Mac. The live guard never adopted it.
+            super::super::require_owner_clear(&owner).unwrap();
+            assert!(!foreign.exists());
+        } else {
+            // An inherited DACL is not a private preparation. Recovery must
+            // preserve the foreign replacement rather than repair or adopt it.
+            assert_eq!(
+                super::super::require_owner_clear(&owner).unwrap_err().code,
+                "PROJECT_WRITER_UNCONFIRMED"
+            );
+            assert!(replacement_identity
+                .same_object(&native::open_no_reparse(&foreign).unwrap().identity));
+            assert_eq!(
+                fs::read(&foreign).unwrap(),
+                b"foreign replacement preparation"
+            );
+        }
+    }
 }
 
 #[test]

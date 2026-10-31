@@ -33,9 +33,9 @@ fn genuine_missing_and_empty_scopes_do_not_create_or_adopt_material() {
 }
 
 #[test]
-fn every_prepared_published_or_unknown_child_remains_unconfirmed_and_unchanged() {
+fn unknown_preparation_names_published_or_unknown_children_remain_unchanged() {
     for name in [
-        ".preparing-50bfcf0c-5102-4a27-8446-b3c7312e2bc1",
+        ".preparing-not-a-uuid",
         "50bfcf0c-5102-4a27-8446-b3c7312e2bc1.json",
         "unknown",
     ] {

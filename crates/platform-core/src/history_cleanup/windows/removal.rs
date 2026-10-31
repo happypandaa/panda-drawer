@@ -3,9 +3,11 @@
 use crate::{file_identity::PersistedIdentity, ApiError};
 use platform_native::windows::{files as native, removal};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -23,6 +25,7 @@ struct Entry {
     bytes: u64,
     readonly: bool,
     target: Option<PathBuf>,
+    digest: Option<String>,
 }
 
 fn blocked(path: &Path, message: impl std::fmt::Display) -> ApiError {
@@ -59,7 +62,51 @@ fn observed(path: &Path, relative: PathBuf) -> Result<Entry, ApiError> {
         readonly: metadata.permissions().readonly(),
         kind,
         target,
+        digest: None,
     })
+}
+
+fn hash_file(path: &Path, expected: &Entry) -> Result<String, ApiError> {
+    // Historical payloads admit hard links on Mac. Bind and hash just this
+    // original name; another name never grants authority to its external owner.
+    let mut file = native::open_read_file_allowing_hard_links(path)?;
+    let matches_file = |file: &fs::File| -> Result<bool, ApiError> {
+        let identity = native::identity(file)?;
+        let metadata = file.metadata()?;
+        Ok(expected.identity.same_object(&identity)
+            && !identity.directory
+            && metadata.is_file()
+            && !platform_native::filesystem::is_reparse(&metadata)
+            && metadata.len() == expected.bytes
+            && metadata.permissions().readonly() == expected.readonly)
+    };
+    if !matches_file(&file)? {
+        return Err(blocked(path, "File changed before cleanup content read"));
+    }
+    let mut hash = Sha256::new();
+    let mut bytes = [0u8; 128 * 1024];
+    loop {
+        let count = file.read(&mut bytes)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&bytes[..count]);
+    }
+    if !matches_file(&file)? {
+        return Err(blocked(path, "File changed during cleanup content read"));
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn inventory_value(entries: &[Entry]) -> Value {
+    Value::Array(entries.iter().map(|entry| {
+        let kind = match &entry.kind { Kind::File => "file", Kind::Directory => "directory", Kind::Reparse => "symlink" };
+        json!({"path":entry.relative,"kind":kind,
+            "identity":{"device":entry.identity.volume_serial,
+                "inode":u64::from_le_bytes(entry.identity.file_id[..8].try_into().unwrap()),
+                "windowsFileId":entry.identity.file_id},
+            "bytes":entry.bytes,"digest":entry.digest,"target":entry.target,"readOnly":entry.readonly})
+    }).collect())
 }
 
 fn matches(path: &Path, expected: &Entry) -> Result<(), ApiError> {
@@ -83,6 +130,7 @@ fn scan(
     directory: &Path,
     volume: u64,
     entries: &mut Vec<Entry>,
+    contents: bool,
 ) -> Result<(), ApiError> {
     let relative = directory
         .strip_prefix(root)
@@ -108,15 +156,18 @@ fn scan(
         if relative.to_str().is_none() {
             return Err(blocked(&path, "Cleanup filename is not valid text"));
         }
-        let entry = observed(&path, relative)?;
+        let mut entry = observed(&path, relative)?;
         if entry.identity.volume_serial != volume {
             return Err(blocked(&path, "Nested volume or changed filesystem"));
         }
         let is_directory = entry.kind == Kind::Directory;
+        if contents && entry.kind == Kind::File {
+            entry.digest = Some(hash_file(&path, &entry)?);
+        }
         entries.push(entry);
         let index = entries.len() - 1;
         if is_directory {
-            scan(root, &path, volume, entries)?;
+            scan(root, &path, volume, entries, contents)?;
         }
         matches(&path, &entries[index])?;
     }
@@ -186,10 +237,29 @@ pub(super) fn remove(path: &Path, expected: &PersistedIdentity) -> Result<Value,
     remove_with_hook(path, expected, || Ok(()))
 }
 
+pub(super) fn remove_checked(
+    path: &Path,
+    expected: &PersistedIdentity,
+    verify: impl FnOnce(&Value) -> Result<(), ApiError>,
+) -> Result<Value, ApiError> {
+    remove_impl(path, expected, true, |entries| {
+        verify(&inventory_value(entries))
+    })
+}
+
 fn remove_with_hook(
     path: &Path,
     expected: &PersistedIdentity,
     after_scan: impl FnOnce() -> Result<(), ApiError>,
+) -> Result<Value, ApiError> {
+    remove_impl(path, expected, false, |_| after_scan())
+}
+
+fn remove_impl(
+    path: &Path,
+    expected: &PersistedIdentity,
+    contents: bool,
+    after_scan: impl FnOnce(&[Entry]) -> Result<(), ApiError>,
 ) -> Result<Value, ApiError> {
     let root = native::pin_directory(path)?;
     if !expected.matches_open_runtime(&root.file)? {
@@ -198,8 +268,17 @@ fn remove_with_hook(
     let identity = native::identity(&root.file)?;
     let (path, scope) = native::directory_scope(&root.file)?;
     let mut entries = Vec::new();
-    scan(&path, &path, identity.volume_serial, &mut entries)?;
-    after_scan()?;
+    scan(&path, &path, identity.volume_serial, &mut entries, contents)?;
+    after_scan(&entries)?;
+    // Match Mac's second complete content scan after the migration callback.
+    // An unknown new name or same-size edit cannot be accepted by re-inventory.
+    if entries.iter().any(|entry| entry.digest.is_some()) {
+        let mut current = Vec::new();
+        scan(&path, &path, identity.volume_serial, &mut current, true)?;
+        if inventory_value(&current) != inventory_value(&entries) {
+            return Err(blocked(&path, "Content changed immediately before removal"));
+        }
+    }
     let by_path = entries
         .iter()
         .map(|entry| (entry.relative.clone(), entry))
@@ -245,6 +324,12 @@ fn remove_with_hook(
             }
             let target = path.join(&entry.relative);
             matches(&target, entry)?;
+            if let Some(digest) = &entry.digest {
+                if &hash_file(&target, entry)? != digest {
+                    return Err(blocked(&target, "Cleanup file changed before removal"));
+                }
+                matches(&target, entry)?;
+            }
             unlink(&target, &entry.identity)?;
             removed_bytes = removed_bytes
                 .checked_add(entry.bytes)
@@ -271,3 +356,7 @@ fn remove_with_hook(
 #[cfg(test)]
 #[path = "removal_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "checked_tests.rs"]
+mod checked_tests;

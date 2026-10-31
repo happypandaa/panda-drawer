@@ -962,3 +962,19 @@ Windows SourceAcquisitionManager 保留 Mac 同名字段/API、原 10 分钟/文
 按原 desktopInvocation 复用本次已核验的 rZS2kg 开发资源/target 重编，23.96 秒，未更改固定 identity/data/workspace。真实 native picker 再选同一空目录，GUI 检查成功，生成并登记“临时 W3 W4 GUI Node 2029ec8a”，实例 b1ead98e-4512-4426-8761-3bc4040d4128；实际 ownership.generatedSource 记录原根完整身份。真实成功页打开独立 Node 窗口，起始页点击“检查应用连接”显示“你的本地应用已经连通。”；管理器显示 3 项/1 运行。源码仅在明确 .test-artifacts disposable 目录，平台数据在固定开发数据根，保留供 W5 真正删除验收。
 
 同时修正 Windows 空目录/成功/复查三处说明，按真实 ownership 说明平台生成目录随删除、已有外部原始目录保留；仅 frontend-platform 适配提供文案，Mac 原文及删除业务保持。TypeScript build **通过**，完整界面测试 **486/486**、0 跳过，15.70 秒。当前继续在这一 disposable 起始项目验证配置立即重启与任务管理器终止；尚非安装版/Windows 10 或 CI 验收，不据此宣称 W0–W6 全完。
+
+### W5.1 — 删除持久任务、历史清理与真实空间核算
+
+从已推送 W4 f1cd1d2 开 win/w5-storage；fetch 后 origin/main 仍 ac3b5d7。CI/运行器继续按用户要求后置，未合入 main，不把新增测试写成 macOS 或安装版验收。下面均是 Windows 11 25H2 本机新 TempDir/明确 disposable 项目专项；Mac 原平台实现与测试不删除、不跳过。
+
+Node 删除日志用完整 128 位 FileId、原同父卷 stage 和持久 previous/next CAS intent，文件原写 HANDLE 先刷新，不覆盖替代物；保留未确认和 delete-pending 现场，改名前放弃/重开续做不重放别的对象。默认专项 **51/51**，10.85 秒，含真实改名/移除每个中断点、父/根/暂存替换、长中文空格、只读、junction 外部原件保持及实际 pending HANDLE。
+
+历史清理完整计划/TTL/确认/任务保护/forget 与内容摘要回调已接；真实 runner join 后才清结果，回调后重扫及逐项核对真实身份/字节/只读位，不新增时间戳准入。专项 **23/23**，2.31 秒。Storage 完整信息/逻辑字节/附件分页/缓存失效、白名单清理及删除 forget 专项最终 **39/39**，15.04 秒（含 6 个既有 WebView storage 回归）。首轮 36 pass/3 fail 的 OS5 实际来自 maintenance 目录 File::open+sync_all 与 Windows mtime 夹具：前者委托已有 native 目录同步 facade，Unix 原 File::open/sync_all 保持；后者改真实 BACKUP_SEMANTICS/WRITE_ATTRIBUTES HANDLE 后重跑通过。开发版程序占用尚无安装根证明，报告 unknown，不把整个 Cargo target 计成程序安装目录。
+
+网页普通文件删除继续原 owner 计划和所有原状态，用同卷私有目录捕获原名字，再经实际 DELETE HANDLE 移除；硬链接不额外拒绝，readonly 不修改外部其它名字属性。默认 **21/21**，13.59 秒；独立 native allowing-hardlinks 改名 **5/5**，0.03 秒。首轮 19 pass/2 fail 是两项新断言写错 outcome 字段，按原 API 改为 operationOutcome 并保留 unknown/file_in_use/full-ID/释放后实际缺失断言；产品未加另一字段或放宽失败语义。
+
+持久 writer v2 使用 Microsoft 文档的当前进程 ProcessTelemetryIdInformation class64 BootId 与显式来源，0 为合法；不与 Prefetch 注册表计数混比，不用 PID 或当前时间差授权删除。原无 boot 标记不自动升级，same boot unknown，different boot 全组核验后再回收。native 实际父子进程同 boot **2 通过、1 子夹具入口忽略**；core recovery/live/inventory **30/30**，0.87 秒。首次一项失败来自新 fixture 以 fs::write 创建非 protected DACL 却要求可回收，已扩成真实 private 与 nonprivate 两种：私有按原规则回收，非私有精确原物保持且 unknown。未修改生产准入来满足测试；冷启动、休眠和 Fast Startup 尚未物理验证。官方依据：https://learn.microsoft.com/en-us/windows/win32/devnotes/process_telemetry_id_information_type 。
+
+Windows 配置锁 guard 关闭前显式 unlock，Mac/common save 业务不改。配置默认 **24 通过、1 子夹具入口忽略**，2.73 秒，含真实 DuplicateHandle 与三工作线程保存/读取实际 join；新的官方 Node、Runtime-bound+IoLease+并发 list/config、运行后新增配置声明再保存/重启整链旧裸 File **1/1**（14.31 秒）、新 guard **1/1**（14.85 秒）均过。因此这只是独立锁释放健壮性修正，不能据此声称 GUI 保存卡住根因已修。正常 GUI 曾实际写入 revision1 后持续显示保存中；只读 WCT 无可解析多节点等待，Ctrl+R 后管理器正常显示已保存 2 项/1 运行/待重启，正在再做真实界面复现和立即重启。
+
+冻结完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（52 Rust 警告保留）；最终网页测试仅改正确断言后重编专项通过。迁移、公有停止并删除整链、磁盘 WebView2 purge、卸载前清除、任务管理器中断与安装版验收继续进行，W5 尚未全部完成。

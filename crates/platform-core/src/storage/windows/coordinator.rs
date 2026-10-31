@@ -3,16 +3,20 @@ use std::{
     collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
 };
 use tokio::{sync::RwLock, task::JoinHandle};
 
 pub(super) struct Coordinator {
-    stopping: AtomicBool,
-    runners: Mutex<Vec<JoinHandle<()>>>,
-    readers: RwLock<()>,
-    forgotten: Mutex<HashSet<String>>,
+    pub(super) stopping: AtomicBool,
+    pub(super) runners: Mutex<Vec<StorageRunner>>,
+    pub(super) readers: Arc<RwLock<()>>,
+    pub(super) forgotten: Mutex<HashSet<String>>,
+}
+pub(super) struct StorageRunner {
+    pub(super) project_id: String,
+    pub(super) handle: JoinHandle<()>,
 }
 
 impl Coordinator {
@@ -20,7 +24,7 @@ impl Coordinator {
         Self {
             stopping: AtomicBool::new(false),
             runners: Mutex::new(Vec::new()),
-            readers: RwLock::new(()),
+            readers: Arc::new(RwLock::new(())),
             forgotten: Mutex::new(HashSet::new()),
         }
     }
@@ -30,7 +34,11 @@ impl Coordinator {
     pub(super) async fn quiesce(&self) -> Vec<crate::shutdown::ShutdownIssue> {
         self.request_stop();
         let runners = std::mem::take(&mut *self.runners.lock().unwrap());
-        let issues = crate::shutdown::join_all("storage", runners).await;
+        let issues = crate::shutdown::join_all(
+            "storage",
+            runners.into_iter().map(|runner| runner.handle).collect(),
+        )
+        .await;
         let _drained = self.readers.write().await;
         issues
     }
@@ -52,15 +60,14 @@ mod tests {
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (release, release_rx) = tokio::sync::oneshot::channel();
         let (finished, finished_rx) = tokio::sync::oneshot::channel();
-        coordinator
-            .runners
-            .lock()
-            .unwrap()
-            .push(tokio::spawn(async {
+        coordinator.runners.lock().unwrap().push(StorageRunner {
+            project_id: "disposable-project".into(),
+            handle: tokio::spawn(async {
                 entered.send(()).unwrap();
                 release_rx.await.unwrap();
                 finished.send(()).unwrap();
-            }));
+            }),
+        });
         entered_rx.await.unwrap();
         let reader = coordinator.readers.read().await;
         let quiesce = coordinator.quiesce();
@@ -91,13 +98,12 @@ mod tests {
     #[tokio::test]
     async fn registered_runner_failure_is_reported_without_a_closure_receipt() {
         let coordinator = Coordinator::new();
-        coordinator
-            .runners
-            .lock()
-            .unwrap()
-            .push(tokio::spawn(async {
+        coordinator.runners.lock().unwrap().push(StorageRunner {
+            project_id: "disposable-project".into(),
+            handle: tokio::spawn(async {
                 panic!("disposable storage coordinator runner failure");
-            }));
+            }),
+        });
         let issues = coordinator.quiesce().await;
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].component, "storage");
