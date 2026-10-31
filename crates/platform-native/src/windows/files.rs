@@ -3,6 +3,9 @@
 #[path = "files/private_inheritance.rs"]
 mod private_inheritance;
 pub use private_inheritance::enable_private_directory_inheritance;
+#[cfg(test)]
+#[path = "files/private_creation_tests.rs"]
+mod private_creation_tests;
 
 use super::{checked, native_path, normalized_path, wide};
 use std::{
@@ -17,8 +20,11 @@ use std::{
     path::{Path, PathBuf},
     ptr::{null, null_mut},
 };
+use windows_sys::Wdk::Storage::FileSystem::NtSetSecurityObject;
 use windows_sys::Win32::{
-    Foundation::{LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{
+        LocalFree, RtlNtStatusToDosError, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    },
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -237,8 +243,14 @@ struct PrivateSecurity {
 }
 impl PrivateSecurity {
     fn new() -> io::Result<Self> {
+        Self::with_ace_flags("")
+    }
+    fn new_directory() -> io::Result<Self> {
+        Self::with_ace_flags("OICI")
+    }
+    fn with_ace_flags(flags: &str) -> io::Result<Self> {
         let sid = CurrentUser::load()?.text()?;
-        let sddl = wide(OsStr::new(&format!("O:{sid}D:P(A;;FA;;;{sid})")))?;
+        let sddl = wide(OsStr::new(&format!("O:{sid}D:P(A;{flags};FA;;;{sid})")))?;
         let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
         unsafe {
             checked(ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -444,7 +456,9 @@ fn remove_file_with_link_policy(
 
 pub fn create_private_directory(path: &Path) -> io::Result<()> {
     let _parent = pin_parent(path)?;
-    let security = PrivateSecurity::new()?;
+    // Future ordinary child creations retain this same user's access. The
+    // protected root still inherits no access from its external parent.
+    let security = PrivateSecurity::new_directory()?;
     let name = native_path(path)?;
     unsafe {
         checked(CreateDirectoryW(name.as_ptr(), &security.attributes()))?;
@@ -494,6 +508,12 @@ fn make_opened_object_private(file: &File, directory: bool) -> io::Result<()> {
             "Admitted object has an unexpected file type",
         ));
     }
+    // Existing private directories already satisfy this operation's policy.
+    // Keep their chosen inheritance flags and every descendant's security.
+    // File/credential repairs continue through the original path below.
+    if directory && verify_private(file).is_ok() {
+        return Ok(());
+    }
     let current = CurrentUser::load()?;
     let mut owner = null_mut();
     let mut descriptor = null_mut();
@@ -520,6 +540,26 @@ fn make_opened_object_private(file: &File, directory: bool) -> io::Result<()> {
         ));
     }
     let security = PrivateSecurity::new()?;
+    if directory {
+        // SetSecurityInfo propagates inheritance changes into existing child
+        // objects. Update only this already-open directory's DACL instead,
+        // preserving descendant security and the existing HANDLE/pin policy.
+        // User-mode callers use NtSetSecurityObject, as documented by Microsoft:
+        // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-zwsetsecurityobject
+        let status = unsafe {
+            NtSetSecurityObject(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                security.allocation.0,
+            )
+        };
+        if status < 0 {
+            return Err(io::Error::from_raw_os_error(
+                unsafe { RtlNtStatusToDosError(status) } as i32,
+            ));
+        }
+        return verify_private(file);
+    }
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl = null_mut();
