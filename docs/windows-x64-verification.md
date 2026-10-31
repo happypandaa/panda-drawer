@@ -1050,3 +1050,11 @@ FileProof 捕获、匹配与稳定观察移入平台适配，Mac 原 tuple/mode/
 Windows 登记交换在原 recovery permit、freeze 与独占 gate 中使用实际三次不覆盖改名、精确不可变 journal 与 FullId；可见前恢复原物，可见后仅向前，重启后不重复交换。只读状态/容量扫描不移动文件，额外元数据仅按实际精确名称和字节纳入原预算。Mac 原 swap_preserving/move_directory_exclusive 函数体机械保持，Windows 目录同步与移动进入专用 I/O 适配层，Unix 原 staging HANDLE 生命周期保持。
 
 首轮 **10/11**，真实 OldHeld 暂缺 live 登记使普通 control 检查返回 PROJECT_REMOVED；没有绕开普通项目门禁。修为仅在原 permit、根、epoch、任务身份均核验且精确 pending=OldHeld 时提供恢复 control。新增 fresh manager 用例确认普通 control/project 仍拒绝，只有原许可+lock 能复位，最终专项 **12/12**，4.40 秒；包含每个移动/退休中断、占用释放重试、外物/父替换、完整高半身份、readonly/hardlink、实际 header→permit→gate 和预算。完整 core **877/877** 及 Clippy 通过；Clippy 唯一新测试多余借用已最小修正，不改变断言。整体数据 apply 仍关闭，不能把这一登记子事务称为完整项目数据恢复。
+
+### W5.11 — Windows 已安装 Codex 识别与定向派发适配
+
+用 current-user PackageManager 核对官方 Store 包 name/family/publisher、SignatureKind、Status 和实际 VerifyContentIntegrityAsync；在独立 MTA 线程运行原生操作。派发重新核对当前注册及完整安装目录身份，显式 ActivateApplication(family!App, --open-project 参数)，不猜 exe/PATH 或用环境协议。路径按原生 UTF-16 和 Windows 命令行规则转义。依据本机安装 26.1027.3384.0 的 manifest/Explorer verb 和原模块实际参数；[官方 Windows 部署说明](https://learn.chatgpt.com/docs/enterprise/windows-deployment)、[Microsoft ActivateApplication 契约](https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-iapplicationactivationmanager-activateapplication)作为平台依据。Mac 文件、include 和原测试零改动；只扩已有 windows crate 功能，无新依赖二进制。
+
+默认新增 3 项通过，真实 CommandLineToArgvW 验证中文、空格、引号、尾反斜线、shell 字符和长路径仍是单个项目参数；伪安装目录拒绝且不创建接手材料。实际已装官方 Store 包只读完整性专项 **1/1**，0.02 秒，未启动/修改 Codex。完整桌面默认 **104 通过、13 专用入口忽略**，0.93 秒；Clippy **-Dclippy::all 通过**（测试目标 5 Rust 警告保留）。首轮 HSTRING.as_wide 不存在，修为直接 &[u16] 后真实编译通过；尚未执行真实激活，不将其记为 GUI 打开编辑器成功。
+
+正常 GUI 点击“在资源管理器中打开”，实际打开 C 盘当前用户 PandaDrawer-Dev，窗口树与地址面包屑确认路径及 .platform/projects 内容。仅是当前开发版操作，不替代第 7 节安装版检查。
