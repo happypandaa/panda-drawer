@@ -20,11 +20,16 @@ use std::{
 };
 use tauri::{AppHandle, Manager, Url, WebviewWindowBuilder};
 
+mod crash {
+    include!("crash_fixture.rs");
+}
+
 const FIXTURE_ID: &str = "dev.happypandaa.pandadrawer.project-profile-fixture";
 const CHILD: &str =
     "project_webview_profile::windows::fixture::real_project_profile_fixture_process";
 const ROOT_VARIABLE: &str = "PANDA_DISPOSABLE_PROJECT_UDF_FIXTURE";
 const NODE_VARIABLE: &str = "PANDA_DISPOSABLE_NODE_UDF_FIXTURE";
+const PURGE_VARIABLE: &str = "PANDA_DISPOSABLE_PROJECT_UDF_PURGE_FIXTURE";
 const A: &str = "prj_disposable_profile_a";
 const B: &str = "prj_disposable_profile_b";
 const NODE_A: &str = "00000000-0000-4000-8000-000000000041";
@@ -100,7 +105,17 @@ fn real_node_profiles_keep_storage_isolated_and_wait_for_their_actual_browser_ex
     run_profile_fixture(true);
 }
 
+#[test]
+#[ignore = "Opt-in actual WebView2 exit and precise Windows profile purge; disposable roots only"]
+fn real_owned_profiles_purge_after_actual_exit_and_keep_the_peer_profile() {
+    run_profile_fixture_mode(false, true);
+    run_profile_fixture_mode(true, true);
+}
+
 fn run_profile_fixture(node: bool) {
+    run_profile_fixture_mode(node, false);
+}
+fn run_profile_fixture_mode(node: bool, purge: bool) {
     for verbatim in [false, true] {
         let root = tempfile::Builder::new()
             .prefix(if node {
@@ -124,6 +139,7 @@ fn run_profile_fixture(node: bool) {
             ])
             .env(ROOT_VARIABLE, &root)
             .env(NODE_VARIABLE, if node { "true" } else { "false" })
+            .env(PURGE_VARIABLE, if purge { "true" } else { "false" })
             .env(
                 "PANDA_DISPOSABLE_PROJECT_VERBATIM_UDF_FIXTURE",
                 if verbatim { "true" } else { "false" },
@@ -557,6 +573,12 @@ fn real_project_profile_fixture_process() {
                 let first_a = report(&observations,a_id,"first-a").await?; expect(&first_a,None,"A1")?;
                 let native_a = native_cookie_facts(&app,a_id).await?;
                 fs::write(root.join("native-cookies-first-a.json"),serde_json::to_vec_pretty(&native_a).unwrap())?;
+                if std::env::var(crash::CRASH_VARIABLE).as_deref() == Ok("true") {
+                    let processes=crash::processes(&app,a_id).await?;
+                    fs::write(root.join("crash-ready.tmp"),serde_json::to_vec(&json!({"kind":kind(a_id),"id":a_id,"directory":a.actual,"rootId":a.root_id,"processes":processes})).unwrap())?;
+                    fs::rename(root.join("crash-ready.tmp"),root.join("crash-ready.json"))?;
+                    return std::future::pending::<Result<Value,ApiError>>().await;
+                }
                 let (ledger_b,lifetimes_b,origin_b,observations_b) = (ledger.clone(),lifetimes.clone(),origin.clone(),observations.clone());
                 let b = on_main(&app,move |app| open(app,&ledger_b,&lifetimes_b,PageRequest{id:b_id,origin:&origin_b,phase:"first-b",mark:"B1"},&observations_b)).await?;
                 if a.pid == b.pid || a.actual == b.actual || a.root_id == b.root_id { return Err(failure("Two projects shared a browser/profile identity")); }
@@ -582,9 +604,34 @@ fn real_project_profile_fixture_process() {
                 let after_b = report(&observations,b_id,"b-after-reopen").await?; expect(&after_b,Some("B2"),"B2")?;
                 close(&app,&lifetimes,a_id,reopened.generation).await?; close(&app,&lifetimes,b_id,b.generation).await?;
                 if reopened.released.load(Ordering::Acquire) != 1 || b.released.load(Ordering::Acquire) != 1 { return Err(failure("Final real exits did not retire native leases")); }
+                let mut purged = false;
+                if std::env::var(PURGE_VARIABLE).as_deref() == Ok("true") {
+                    let retained = ledger.bind_profile(kind(a_id),a_id)?;
+                    if crate::native_stores::purge_project(&app,&ledger,kind(a_id),a_id).await.is_ok() {
+                        return Err(failure("Held actual profile pin was reported purged"));
+                    }
+                    if !a.actual.join("store.json").is_file() || !b.actual.join("store.json").is_file() {
+                        return Err(failure("Held-root preflight removed profile payload or peer"));
+                    }
+                    drop(retained);
+                    crate::native_stores::purge_project(&app,&ledger,kind(a_id),a_id).await?;
+                    if a.actual.try_exists()? || ledger.contains(kind(a_id),a_id)? {
+                        return Err(failure("Actual purged A profile or receipt remained"));
+                    }
+                    let (ledger_b,lifetimes_b,origin_b,observations_b)=(ledger.clone(),lifetimes.clone(),origin.clone(),observations.clone());
+                    let kept=on_main(&app,move |app| open(app,&ledger_b,&lifetimes_b,PageRequest{id:b_id,origin:&origin_b,phase:"b-after-a-purge",mark:"B3"},&observations_b)).await?;
+                    let after=report(&observations,b_id,"b-after-a-purge").await?;
+                    expect(&after,Some("B2"),"B3")?;
+                    close(&app,&lifetimes,b_id,kept.generation).await?;
+                    crate::native_stores::purge_project(&app,&ledger,kind(b_id),b_id).await?;
+                    if b.actual.try_exists()? || !ledger.records()?.is_empty() {
+                        return Err(failure("Final peer profile or ledger remained"));
+                    }
+                    purged=true;
+                }
                 Ok::<Value,ApiError>(json!({"projectKind":kind(a_id).as_str(),"origin":origin,"firstA":first_a,"firstB":first_b,"bWhileAClosed":kept_b,"reopenedA":reopened_a,"bAfterAReopen":after_b,
                     "actualUserDataFolders":[a.actual,b.actual],"fullRootIds":[a.root_id,b.root_id],"browserPids":[a.pid,b.pid,reopened.pid],
-                    "nativeCookies":[native_a,native_b,native_reopened],"requestsBeforeActualVerification":[a.requests_before_verification,b.requests_before_verification,reopened.requests_before_verification],"allThreeBrowserGenerationsExitedAndRetired":true,"aLeaseReleasedBeforeBClosed":true}))
+                    "nativeCookies":[native_a,native_b,native_reopened],"requestsBeforeActualVerification":[a.requests_before_verification,b.requests_before_verification,reopened.requests_before_verification],"allThreeBrowserGenerationsExitedAndRetired":true,"aLeaseReleasedBeforeBClosed":true,"exactProfilesPurgedAfterExit":purged}))
             }.await;
             let report = match result { Ok(details) => json!({"success":true,"details":details,"fixtureIdentifier":FIXTURE_ID}), Err(error) => json!({"success":false,"error":error,"fixtureIdentifier":FIXTURE_ID}) };
             fs::write(root.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();

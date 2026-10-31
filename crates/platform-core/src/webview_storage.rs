@@ -3,12 +3,14 @@
 use crate::{project_cleanup::ProjectKind, projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Read, path::PathBuf};
+#[cfg(unix)]
+use std::io::Read;
+use std::{fs, path::PathBuf};
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::BoundProfile;
+pub use windows::{BoundProfile, ProfileSession};
 
 type Result<T> = std::result::Result<T, ApiError>;
 fn invalid() -> ApiError {
@@ -76,6 +78,7 @@ impl StoreLedger {
             .directory()
             .join(format!("clear-{}-{id}.json", kind.as_str())))
     }
+    #[cfg(unix)]
     fn decode(
         &self,
         kind: ProjectKind,
@@ -126,6 +129,17 @@ impl StoreLedger {
         }
         Ok(Some(record))
     }
+    #[cfg(windows)]
+    fn decode(
+        &self,
+        kind: ProjectKind,
+        id: &str,
+        path: &std::path::Path,
+        confirmed: bool,
+    ) -> Result<Option<StoreRecord>> {
+        windows::ledger::decode(self, kind, id, path, confirmed)
+    }
+    #[cfg(unix)]
     fn read(&self, kind: ProjectKind, id: &str) -> Result<Option<StoreRecord>> {
         if let Some(record) = self.decode(kind, id, &self.confirmation_path(kind, id)?, true)? {
             return Ok(Some(record));
@@ -135,6 +149,16 @@ impl StoreLedger {
             return Err(invalid());
         }
         Ok(record)
+    }
+    #[cfg(windows)]
+    fn read(&self, kind: ProjectKind, id: &str) -> Result<Option<StoreRecord>> {
+        windows::ledger::read(self, kind, id)
+    }
+    /// A prior trusted native call observed browser exit before publishing
+    /// this receipt. Its presence never claims that UDF deletion is complete.
+    #[cfg(windows)]
+    pub fn confirmed_cleanup_pending(&self, kind: ProjectKind, id: &str) -> Result<bool> {
+        windows::ledger::confirmed_cleanup_pending(self, kind, id)
     }
     pub fn contains(&self, kind: ProjectKind, id: &str) -> Result<bool> {
         self.read(kind, id).map(|record| record.is_some())
@@ -177,6 +201,7 @@ impl StoreLedger {
     }
     /// Only call after the native API acknowledged removal and enumeration
     /// confirmed absence. A failed file removal retains the retry authority.
+    #[cfg(unix)]
     fn persist_confirmation(&self, record: &StoreRecord) -> Result<()> {
         use std::io::Write;
         let path = self.confirmation_path(record.kind, &record.id)?;
@@ -197,6 +222,11 @@ impl StoreLedger {
         fs::File::open(directory)?.sync_all()?;
         Ok(())
     }
+    #[cfg(windows)]
+    fn persist_confirmation(&self, record: &StoreRecord) -> Result<()> {
+        windows::ledger::persist_confirmation(self, record)
+    }
+    #[cfg(unix)]
     pub fn forget_confirmed(&self, kind: ProjectKind, id: &str) -> Result<()> {
         if let Some(record) = self.read(kind, id)? {
             self.persist_confirmation(&record)?;
@@ -212,6 +242,11 @@ impl StoreLedger {
         }
         self.sync_absence(kind, id)
     }
+    #[cfg(windows)]
+    pub fn forget_confirmed(&self, kind: ProjectKind, id: &str) -> Result<()> {
+        windows::ledger::forget_confirmed(self, kind, id)
+    }
+    #[cfg(unix)]
     pub(crate) fn sync_absence(&self, kind: ProjectKind, id: &str) -> Result<()> {
         if self.read(kind, id)?.is_some() {
             return Err(ApiError::new(
@@ -226,6 +261,10 @@ impl StoreLedger {
             Err(error) => return Err(error.into()),
         }
         Ok(())
+    }
+    #[cfg(windows)]
+    pub(crate) fn sync_absence(&self, kind: ProjectKind, id: &str) -> Result<()> {
+        windows::ledger::sync_absence(self, kind, id)
     }
     pub fn records(&self) -> Result<Vec<StoreRecord>> {
         let directory = self.directory();

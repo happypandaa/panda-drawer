@@ -30,6 +30,7 @@ struct Prepared {
     engine_scope: Arc<platform_native::windows::files::PinnedDirectory>,
     label: String,
     owner: OnceLock<Arc<BrowserOwner>>,
+    recovering: bool,
 }
 #[derive(Clone)]
 pub(crate) struct Binding(Arc<Prepared>);
@@ -40,6 +41,25 @@ impl Binding {
         kind: ProjectKind,
         id: &str,
         label: &str,
+    ) -> Result<Self, ApiError> {
+        Self::prepare_with(app, ledger, kind, id, label, false)
+    }
+    pub(crate) fn prepare_for_cleanup(
+        app: &AppHandle,
+        ledger: &StoreLedger,
+        kind: ProjectKind,
+        id: &str,
+        label: &str,
+    ) -> Result<Self, ApiError> {
+        Self::prepare_with(app, ledger, kind, id, label, true)
+    }
+    fn prepare_with(
+        app: &AppHandle,
+        ledger: &StoreLedger,
+        kind: ProjectKind,
+        id: &str,
+        label: &str,
+        recovering: bool,
     ) -> Result<Self, ApiError> {
         super::super::require_profile_label(kind, id, label)?;
         owner::require_available(app, label)?;
@@ -71,6 +91,7 @@ impl Binding {
             engine_scope: Arc::new(engine_scope),
             label: label.into(),
             owner: OnceLock::new(),
+            recovering,
         })))
     }
     pub(crate) fn directory(&self) -> &std::path::Path {
@@ -80,7 +101,11 @@ impl Binding {
         if self.0.owner.get().is_some() {
             return Err(unknown("本次项目浏览器目录已登记，未替换原凭据。"));
         }
-        let owner = BrowserOwner::new(self.0.label.clone(), generation, self.0.profile.clone())?;
+        let owner = if self.0.recovering {
+            BrowserOwner::new_for_cleanup(self.0.label.clone(), generation, self.0.profile.clone())?
+        } else {
+            BrowserOwner::new(self.0.label.clone(), generation, self.0.profile.clone())?
+        };
         // Keep the SDK's canonical namespace pinned until the real exit, too;
         // a DOS alias must not shorten the original scope's ancestor lifetime.
         owner.hold_resource(self.0.engine_scope.clone())?;
@@ -343,23 +368,26 @@ pub(crate) async fn wait_closed(
     let owner = owner::current(app, label, generation)?;
     owner.wait_exit().await?;
     let (send, receive) = tokio::sync::oneshot::channel();
-    let app = app.clone();
     let dispatch = app.clone();
-    let label = label.to_owned();
+    let first_app = app.clone();
+    let first_label = label.to_owned();
     dispatch
         .run_on_main_thread(move || {
             let result = (|| {
-                let current = owner::current(&app, &label, generation)?;
+                let current = owner::current(&first_app, &first_label, generation)?;
                 if !Arc::ptr_eq(&owner, &current) {
                     return Err(unknown("项目浏览器目录凭据已经更换。"));
                 }
                 if owner.closed_and_retired() {
                     return Ok(());
                 }
+                if owner.observer_removed() {
+                    return Ok(());
+                }
                 OBSERVERS.with(|observers| {
                     let mut observers = observers.borrow_mut();
                     let observer = observers
-                        .get(&label)
+                        .get(&first_label)
                         .filter(|observer| observer.generation == generation)
                         .ok_or_else(|| unknown("原项目浏览器退出观察缺失，未释放目录凭据。"))?;
                     unsafe {
@@ -368,15 +396,39 @@ pub(crate) async fn wait_closed(
                             .remove_BrowserProcessExited(observer.token)
                     }
                     .map_err(|_| unknown("项目浏览器退出观察尚未结束。"))?;
-                    observers.remove(&label);
+                    observers.remove(&first_label);
+                    owner.mark_observer_removed();
                     Ok::<(), ApiError>(())
                 })?;
-                owner.retire()
+                Ok(())
             })();
             let _ = send.send(result);
         })
         .map_err(|_| unknown("项目浏览器退出收尾派发失败。"))?;
     receive
         .await
-        .map_err(|_| unknown("项目浏览器退出收尾回执缺失。"))?
+        .map_err(|_| unknown("项目浏览器退出收尾回执缺失。"))??;
+    let owner = owner::current(app, label, generation)?;
+    let finish = owner.clone();
+    tauri::async_runtime::spawn_blocking(move || finish.finish_session())
+        .await
+        .map_err(|_| unknown("项目浏览器会话凭据收尾未确认。"))??;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let dispatch = app.clone();
+    let check_app = app.clone();
+    let label = label.to_owned();
+    dispatch
+        .run_on_main_thread(move || {
+            let result = owner::current(&check_app, &label, generation).and_then(|current| {
+                if !Arc::ptr_eq(&owner, &current) {
+                    return Err(unknown("项目浏览器目录凭据已经更换。"));
+                }
+                owner.retire()
+            });
+            let _ = send.send(result);
+        })
+        .map_err(|_| unknown("项目浏览器凭据释放派发失败。"))?;
+    receive
+        .await
+        .map_err(|_| unknown("项目浏览器凭据释放回执缺失。"))?
 }

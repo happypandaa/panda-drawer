@@ -8,6 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) mod ledger;
+mod session;
+pub use session::ProfileSession;
+
 /// The directory identity comes from the persisted store record. Keeping this
 /// value alive pins both that directory and its actual ancestors against rename.
 /// Its fields cannot be constructed from an arbitrary caller-selected path.

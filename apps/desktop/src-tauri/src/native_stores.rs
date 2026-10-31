@@ -1,5 +1,5 @@
-//! WebKit deletion is complete only after its native callback and a second
-//! read. All Objective-C work is dispatched without blocking Cocoa's run loop.
+//! Native browser cleanup requires real system closure. Mac keeps its WebKit
+//! callbacks and second reads; Windows binds the original UDF and Env5 exit.
 use platform_core::ApiError;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
@@ -9,6 +9,34 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn error(code: &str, message: impl Into<String>) -> ApiError {
     ApiError::new(code, message)
+}
+
+pub(crate) async fn purge_project(
+    app: &tauri::AppHandle,
+    ledger: &platform_core::webview_storage::StoreLedger,
+    kind: platform_core::project_cleanup::ProjectKind,
+    id: &str,
+) -> Result<(), ApiError> {
+    #[cfg(windows)]
+    {
+        super::project_webview_profile::confirm_purge_closed(app, ledger, kind, id).await?;
+        let ledger = ledger.clone();
+        let id = id.to_owned();
+        tauri::async_runtime::spawn_blocking(move || ledger.forget_confirmed(kind, &id))
+            .await
+            .map_err(|_| {
+                error(
+                    "WEBVIEW_STORE_DELETE_UNCONFIRMED",
+                    "浏览器目录清理工作尚未确认。",
+                )
+            })?
+    }
+    #[cfg(not(windows))]
+    {
+        let identifier = platform_core::webview_storage::project_identifier(kind, id)?;
+        purge_identifier(app, identifier).await?;
+        ledger.forget_confirmed(kind, id)
+    }
 }
 
 pub(crate) async fn identifiers(app: &tauri::AppHandle) -> Result<Vec<[u8; 16]>, ApiError> {
@@ -72,8 +100,8 @@ pub(crate) async fn purge_identifier(app: &tauri::AppHandle, id: [u8; 16]) -> Re
     }
 }
 
-/// Full cleanup can clear global manager preferences while keeping its status
-/// window alive. This never removes the store or creates an absent identifier.
+/// Mac clears manager preferences while its status view stays alive. Windows
+/// closes that exact UDF's browser family and uses a native result dialog.
 pub(crate) async fn clear_identifier_and_verify(
     app: &tauri::AppHandle,
     id: [u8; 16],
@@ -95,7 +123,17 @@ pub(crate) async fn clear_identifier_and_verify(
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        if id != platform_core::webview_storage::manager_identifier() {
+            return Err(error(
+                "WEBVIEW_STORE_ID_INVALID",
+                "此原生接口只清理本平台原管理器存储。",
+            ));
+        }
+        super::desktop_webview_profile::close_and_clear_manager(app).await
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = app;
         Err(error(

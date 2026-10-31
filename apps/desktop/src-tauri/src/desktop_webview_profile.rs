@@ -8,6 +8,22 @@ mod windows;
 
 type ManagerBuilder<'a> = WebviewWindowBuilder<'a, Wry, AppHandle>;
 
+#[cfg(windows)]
+pub(super) async fn close_and_clear_manager(app: &AppHandle) -> Result<(), ApiError> {
+    windows::close_and_clear_manager(app).await
+}
+pub(super) fn manager_closed_for_cleanup(app: &AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        windows::manager_closed_for_cleanup(app)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 pub(super) fn manager_from_config<'a>(
     app: &'a AppHandle,
     config: &tauri::utils::config::WindowConfig,

@@ -1,6 +1,9 @@
 //! A project profile remains pinned beyond WindowEvent::Destroyed. Only its
 //! own environment's last browser-process exit can release the native owner.
-use platform_core::{webview_storage::BoundProfile, ApiError};
+use platform_core::{
+    webview_storage::{BoundProfile, ProfileSession},
+    ApiError,
+};
 use platform_native::windows::files as native;
 use std::{
     collections::BTreeMap,
@@ -26,6 +29,7 @@ struct Lifecycle {
     sealed: bool,
     destroyed: bool,
     retired: bool,
+    observer_removed: bool,
 }
 impl Lifecycle {
     fn released(&self) -> bool {
@@ -37,6 +41,7 @@ pub(super) struct BrowserOwner {
     pub(super) generation: u64,
     pub(super) identity: native::FileIdentity,
     profile: Mutex<Option<Arc<BoundProfile>>>,
+    session: Mutex<Option<ProfileSession>>,
     state: Mutex<Lifecycle>,
     resources: Mutex<Vec<Box<dyn Send + Sync>>>,
     changed: Notify,
@@ -47,21 +52,46 @@ impl BrowserOwner {
         generation: u64,
         profile: Arc<BoundProfile>,
     ) -> Result<Arc<Self>, ApiError> {
+        Self::new_with_session(label, generation, profile, false)
+    }
+    pub(super) fn new_for_cleanup(
+        label: String,
+        generation: u64,
+        profile: Arc<BoundProfile>,
+    ) -> Result<Arc<Self>, ApiError> {
+        Self::new_with_session(label, generation, profile, true)
+    }
+    fn new_with_session(
+        label: String,
+        generation: u64,
+        profile: Arc<BoundProfile>,
+        recovering: bool,
+    ) -> Result<Arc<Self>, ApiError> {
         super::super::require_profile_label(profile.kind(), profile.id(), &label)?;
         // This capture is inside the scope already bound to the persisted ID;
         // it cannot turn an unregistered same-name directory into authority.
         profile.verify()?;
         let identity = native::open_no_reparse(profile.directory())?.identity;
+        let session = if recovering {
+            match profile.recover_browser_session()? {
+                Some(session) => session,
+                None => profile.begin_browser_session()?,
+            }
+        } else {
+            profile.begin_browser_session()?
+        };
         Ok(Arc::new(Self {
             label,
             generation,
             identity,
             profile: Mutex::new(Some(profile)),
+            session: Mutex::new(Some(session)),
             state: Mutex::new(Lifecycle {
                 browser: BrowserState::Preparing,
                 sealed: false,
                 destroyed: false,
                 retired: false,
+                observer_removed: false,
             }),
             resources: Mutex::new(vec![]),
             changed: Notify::new(),
@@ -180,6 +210,35 @@ impl BrowserOwner {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         state.released() && state.retired
     }
+    pub(super) fn observer_removed(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .observer_removed
+    }
+    pub(super) fn mark_observer_removed(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .observer_removed = true;
+    }
+    pub(super) fn finish_session(&self) -> Result<(), ApiError> {
+        if !self.ready_to_retire() {
+            return Err(failure(
+                "WEBVIEW_PROFILE_EXIT_UNCONFIRMED",
+                "原生浏览器退出尚未确认。",
+            ));
+        }
+        if let Some(session) = self
+            .session
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+        {
+            session.finish_after_native_close()?;
+        }
+        Ok(())
+    }
     pub(super) async fn wait_exit(&self) -> Result<(), ApiError> {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
@@ -219,6 +278,12 @@ impl BrowserOwner {
                 ));
             }
         }
+        self.finish_session()?;
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         let resources =
             std::mem::take(&mut *self.resources.lock().unwrap_or_else(|p| p.into_inner()));
         let profile = self
@@ -228,6 +293,7 @@ impl BrowserOwner {
             .take();
         // Dropping build pins can schedule core work; hold no owner mutex.
         drop(resources);
+        drop(session);
         drop(profile);
         self.state.lock().unwrap_or_else(|p| p.into_inner()).retired = true;
         Ok(())
@@ -298,6 +364,15 @@ pub(super) fn all(app: &AppHandle) -> Vec<Arc<BrowserOwner>> {
         .values()
         .cloned()
         .collect()
+}
+
+pub(super) fn lookup(app: &AppHandle, label: &str) -> Option<Arc<BrowserOwner>> {
+    registry(app)
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(label)
+        .cloned()
 }
 
 #[cfg(test)]

@@ -32,6 +32,9 @@ impl Navigation {
     fn activate(&self) {
         self.active.store(true, Ordering::Release);
     }
+    fn seal(&self) {
+        self.active.store(false, Ordering::Release);
+    }
 }
 
 struct ManagerTarget(Url);
@@ -121,7 +124,8 @@ fn verify_on_main(app: &AppHandle, window: &WebviewWindow) -> Result<(), ApiErro
                 owner
                     .try_state::<profile::ManagerProfile>()
                     .ok_or_else(profile::not_initialized)?
-                    .verify_actual_directory(&actual)
+                    .verify_actual_directory(&actual)?;
+                super::exit::install(&owner, &webview)
             });
             if checked.is_err() {
                 // Close only this exact controller. An override's actual directory
@@ -134,7 +138,14 @@ fn verify_on_main(app: &AppHandle, window: &WebviewWindow) -> Result<(), ApiErro
     // Locked Tauri-runtime-wry dispatches WithWebview inline on its main
     // thread. Unexpected deferred execution is unknown, never a success.
     let checked = result.lock().unwrap_or_else(|p| p.into_inner()).take();
-    checked.ok_or_else(|| unknown("WebView2 实际目录检查未在主线程完成，管理页面尚未加载。"))?
+    checked.ok_or_else(|| unknown("WebView2 实际目录检查未在主线程完成，管理页面尚未加载。"))??;
+    let exit_app = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            super::exit::destroyed(&exit_app);
+        }
+    });
+    Ok(())
 }
 
 pub(super) fn build(app: &AppHandle, builder: ManagerBuilder<'_>) -> Result<(), ApiError> {
@@ -162,6 +173,18 @@ pub(super) fn build(app: &AppHandle, builder: ManagerBuilder<'_>) -> Result<(), 
         return Err(unknown("管理窗口目录凭据已经存在，未替换原凭据。"));
     }
     Ok(())
+}
+
+pub(super) fn destroy_for_cleanup(app: &AppHandle) -> Result<(), ApiError> {
+    let binding = app
+        .try_state::<VerifiedManager>()
+        .ok_or_else(|| unknown("原管理器窗口凭据缺失。"))?;
+    binding.navigation.seal();
+    super::exit::seal(app, &binding.window)?;
+    binding
+        .window
+        .destroy()
+        .map_err(|_| unknown("管理器原生窗口销毁未确认。"))
 }
 
 pub(super) fn activate(app: &AppHandle) -> Result<(), ApiError> {

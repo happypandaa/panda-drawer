@@ -24,11 +24,27 @@ const FIXTURE_TEST: &str =
     "desktop_webview_profile::windows::actual::fixture::real_engine_fixture_process";
 const ROOT_VARIABLE: &str = "PANDA_DISPOSABLE_MANAGER_UDF_FIXTURE";
 const OVERRIDE_VARIABLE: &str = "PANDA_DISPOSABLE_MANAGER_UDF_OVERRIDE_CASE";
+const PURGE_VARIABLE: &str = "PANDA_DISPOSABLE_MANAGER_UDF_PURGE_CASE";
 
 #[test]
 #[ignore = "Opt-in real WebView2 fixture requires an interactive desktop and unused port 1420"]
 fn real_engine_readback_accepts_expected_profile_and_rejects_udf_override_before_navigation() {
-    for overridden in [false, true] {
+    run_manager_fixture(false);
+}
+
+#[test]
+#[ignore = "Opt-in actual manager Env5 exit, released UDF pins and exact original-root cleanup"]
+fn real_manager_cleanup_releases_the_engine_and_preserves_root_until_final_plan_removal() {
+    run_manager_fixture(true);
+}
+
+fn run_manager_fixture(purge: bool) {
+    let cases = if purge {
+        vec![false]
+    } else {
+        vec![false, true]
+    };
+    for overridden in cases {
         let temporary = tempfile::Builder::new()
             .prefix("panda-disposable-manager-udf-real-")
             .tempdir()
@@ -55,6 +71,7 @@ fn real_engine_readback_accepts_expected_profile_and_rejects_udf_override_before
             ])
             .env(ROOT_VARIABLE, &root)
             .env(OVERRIDE_VARIABLE, if overridden { "true" } else { "false" })
+            .env(PURGE_VARIABLE, if purge { "true" } else { "false" })
             .env_remove("WEBVIEW2_USER_DATA_FOLDER")
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
@@ -86,6 +103,10 @@ fn real_engine_readback_accepts_expected_profile_and_rejects_udf_override_before
             panic!("Real manager UDF fixture failed; retained {}: status={status:?}, report={report:?}, log={}", root.display(), fs::read_to_string(root.join("child.log")).unwrap_or_default());
         }
         let report = report.unwrap();
+        if purge {
+            assert_eq!(report["managerRootPreservedUntilFinalRemoval"], true);
+            assert_eq!(report["managerProfileActuallyAbsent"], true);
+        }
         assert_eq!(report["overridden"], overridden);
         assert_eq!(report["requestsBeforeVerification"], 0);
         assert_eq!(report["pageLoaded"], !overridden);
@@ -315,12 +336,45 @@ fn real_engine_fixture_process() {
         let loaded = page_loaded.clone();
         let finished = finishing.clone();
         tauri::async_runtime::spawn(async move {
+            let purge = std::env::var(PURGE_VARIABLE).as_deref() == Ok("true");
+            let mut root_preserved = false;
+            let mut profile_absent = false;
             let result = async {
                 if !overridden {
                     tokio::time::timeout(Duration::from_secs(15), async {
                         while !loaded.load(Ordering::Acquire) { tokio::time::sleep(Duration::from_millis(10)).await; }
                     }).await.map_err(|_| unknown("Verified fixture page did not load"))?;
-                    on_main(&app, move || window.destroy().map_err(|_| unknown("Fixture window destroy failed"))).await?;
+                    if purge {
+                        let identity = platform_native::windows::files::open_no_reparse(&actual)?.identity;
+                        let check_app = app.clone();
+                        let check_window = window.clone();
+                        on_main(&app, move || {
+                            super::super::exit::seal(&check_app,&check_window)?;
+                            // Reproduce the real tray/reopen window: cleanup is
+                            // sealed, but the original directory pin is valid
+                            // and the old browser has not been destroyed yet.
+                            check_app.state::<profile::ManagerProfile>().verify()?;
+                            let candidate = tauri::WebviewWindowBuilder::new(
+                                &check_app,"disposable-manager-reopen-probe",
+                                tauri::WebviewUrl::External(Url::parse("about:blank").unwrap()),
+                            );
+                            if !matches!(super::super::manager_builder(&check_app,candidate),Err(issue) if issue.code=="MANAGER_PROFILE_RETIRED") {
+                                return Err(unknown("Sealed manager unexpectedly admitted a second browser builder"));
+                            }
+                            Ok(())
+                        }).await?;
+                        super::super::close_and_clear_manager(&app).await?;
+                        root_preserved = identity.same_object(&platform_native::windows::files::open_no_reparse(&actual)?.identity)
+                            && fs::read_dir(&actual)?.next().transpose()?.is_none();
+                        if !root_preserved { return Err(unknown("Manager cleanup replaced the reviewed root or retained contents")); }
+                        // Represents the original full cleanup plan's final
+                        // bound-root removal, after the native phase kept its ID.
+                        platform_native::windows::removal::remove(&actual,&identity)?;
+                        profile_absent = matches!(fs::symlink_metadata(&actual),Err(error) if error.kind()==std::io::ErrorKind::NotFound);
+                        if !profile_absent { return Err(unknown("Manager UDF removal was not an actual absence receipt")); }
+                    } else {
+                        on_main(&app, move || window.destroy().map_err(|_| unknown("Fixture window destroy failed"))).await?;
+                    }
                 }
                 tokio::time::timeout(Duration::from_secs(20), async {
                     loop {
@@ -343,6 +397,7 @@ fn real_engine_fixture_process() {
             let report = json!({"success":result.is_ok(),"error":result.err(),"overridden":overridden,
                 "actualUserDataFolder":actual,"requestsBeforeVerification":before,"pageLoaded":loaded.load(Ordering::Acquire),
                 "verificationCode":verification_code,"browserProcessId":receipt.pid.load(Ordering::Acquire),"browserExited":receipt.exited.load(Ordering::Acquire),
+                "managerRootPreservedUntilFinalRemoval":root_preserved,"managerProfileActuallyAbsent":profile_absent,
                 "fixtureIdentifier":FIXTURE_ID});
             fs::write(root.join("report.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
             finished.store(true, Ordering::Release);
