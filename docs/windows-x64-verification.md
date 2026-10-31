@@ -636,3 +636,11 @@ Windows Paths 经适配层在新候选创建前检查最近实际既有普通父
 启动审计发现 native startup 完成或非桌面服务启动会延后调用 selected cleanup；仅有 earlier migration inventory 不足以授权该公开/延后路径。自动路径现在经独立适配，在实际 Some journal 时先拒绝，再可能进入原提交及 retain_cleanup_reopen_failure 闭包；实际 None 保持真实无工作。公开 retry 保留原 selection/ID 授权顺序，随后在 active task、新任务、journal 变更或旧源 worker 前拒绝。未把 submit_cleanup 错误传到会写入失败记录的旧分支，Windows accepted=false / not_started，材料均保留。
 
 真实 core 适配专项 **3/3**：真实临时 pending journal 加 task/settings/source 字节检查，自动提交与失败记录回调均未进入，None 不调用提交，retry guard 字段准确。这里直接测试生产分派适配，不构造虚假的 RuntimeSwitch/store 或声称完整服务已启动。Windows 适配和 Mac ARM64 metadata 严格 Clippy 通过；Mac 原提交/错误保留正文机械一致，未实际运行。总运行门禁尚未改，实际迁移旧根收尾仍待 W5。
+
+### W1.23 — 开放 x64 开发启动入口，真实基础服务通过
+
+在上述未实现自动恢复/删除路径各自接纳前拒绝、私有路径/资源/管理器 WebView2 准备完成后，开放 Windows x64 开发 runtime policy；其他 Windows 架构保持 unsupported，Mac 原准入和正式版签名/资源证明门禁不变。此纯策略不授予旧 journal 权限，也不声明 UI/功能验收。更新旧独立 policy 检查脚本：它已依赖真实 build_profile/production anchors，不能继续单文件 rustc 或伪造常量；现在直接执行完整 core 编译后的专项测试。
+
+本机实际 `node scripts/platform-support-test.mjs` **5/5**；完整 core Paths 组 **16/16**，覆盖临时根的真实初始化、私有凭据、单实例 LockFileEx 拒绝第二实例及释放复用、设置/marker 选择、目录保留，以及新卷/迁移检查。实际原基础服务测试 **1/1**：使用 RuntimePaths 临时夹具启动真实 loopback HTTP 服务，native readiness 前阻断、显式失败保持、完成后 health 成功，真实 shutdown 返回；该测试通过调用 readiness API，不创建真实 WebView，不能据此证明 WebView2 隔离或 GUI。
+
+没有增加任意数据根覆盖，没有让普通 CI 启动真实应用。core 测试目标仍有 63 项既有/阶段警告；完整 Rust 回归尚未在新门禁后重跑。下一步正常 `npm run dev` 实际固定身份首次启动和设置检查；W1、双端 CI及第 7 节仍未完成。
