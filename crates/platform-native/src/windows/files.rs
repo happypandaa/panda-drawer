@@ -1,5 +1,9 @@
 //! Handle-bound identity, no-reparse access and private creation. Parent ACLs
 //! are not audited or changed; protection is applied only to objects we create.
+#[path = "files/private_inheritance.rs"]
+mod private_inheritance;
+pub use private_inheritance::enable_private_directory_inheritance;
+
 use super::{checked, native_path, normalized_path, wide};
 use std::{
     ffi::{c_void, OsStr, OsString},

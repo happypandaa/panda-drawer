@@ -201,6 +201,8 @@ async fn destroy_and_wait(
     receipt: Option<Arc<super::business_window_lifetime::Receipt>>,
 ) -> Result<(), ApiError> {
     let expected = receipt.clone();
+    let generation = receipt.as_ref().map(|receipt| receipt.generation);
+    let profile_label = window_label.clone();
     let destruction_label = window_label.clone();
     let window = on_main(app, move |app, state| {
         if expected
@@ -220,6 +222,11 @@ async fn destroy_and_wait(
                     "项目窗口关闭记录缺失，已保留状态供核对。",
                 ));
             }
+            super::project_webview_profile::before_destroy(
+                app,
+                window,
+                expected.as_ref().unwrap().generation,
+            )?;
             window.destroy().map_err(|_| {
                 error(
                     "PROJECT_WINDOW_DESTROY_FAILED",
@@ -244,7 +251,8 @@ async fn destroy_and_wait(
         }
         Ok(())
     })
-    .await
+    .await?;
+    super::project_webview_profile::wait_closed(app, &profile_label, generation).await
 }
 
 pub(super) async fn purge(
