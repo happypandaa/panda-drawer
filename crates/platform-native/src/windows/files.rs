@@ -988,6 +988,14 @@ fn publication_unknown(cause: io::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, UnconfirmedPublication(cause))
 }
 
+/// The native move succeeded, but its final identity confirmation failed. Keep
+/// this distinction typed: ordinary pre-move I/O failures grant no commit fact.
+pub fn publication_outcome_unknown(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<UnconfirmedPublication>())
+}
+
 /// Read-only counterpart of Unix uid ownership checks. This does not require
 /// or repair a DACL, inheritance policy, link count, or any system ancestor.
 pub fn verify_current_user_owner(file: &File) -> io::Result<()> {

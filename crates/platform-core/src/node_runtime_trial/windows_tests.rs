@@ -2,6 +2,7 @@
 //! supplied independently pinned binary and never discover installed app data.
 use super::*;
 use std::io::{Read, Write};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 
 const CHILD: &str = "node_runtime_trial::platform::tests::native_fixture_child";
 const CHILD_MODE: &str = "PANDA_DISPOSABLE_RUNTIME_CHILD_MODE";
@@ -23,6 +24,37 @@ fn native_fixture_child() {
         }
     }
     fs::write(root.join("executed"), b"real child code executed").unwrap();
+    if mode == "exit-before-input" {
+        // Exit really closes the inherited stdin HANDLE. The parent retains
+        // its own writer and writes only after observing this actual exit.
+        std::process::exit(0);
+    }
+    if mode == "close-input-stay-live" {
+        let raw = std::io::stdin().as_raw_handle();
+        assert!(!raw.is_null() && raw as isize != -1);
+        // This isolated fixture deliberately takes ownership of its one actual
+        // inherited stdin HANDLE. It never reads stdin again and stays alive
+        // until its parent's retained Job owner terminates it. No stream-close
+        // callback or CRT descriptor is used as a substitute for CloseHandle.
+        let input = unsafe { OwnedHandle::from_raw_handle(raw) };
+        fs::write(
+            root.join("real-child-ready"),
+            b"actual inherited stdin remains open",
+        )
+        .unwrap();
+        while !root.join("close-real-stdin").is_file() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(input);
+        fs::write(
+            root.join("real-stdin-closed"),
+            b"actual inherited input HANDLE closed",
+        )
+        .unwrap();
+        loop {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     if mode == "descendant-root" {
         let mut descendant = std::process::Command::new(std::env::current_exe().unwrap());
         descendant
@@ -89,6 +121,16 @@ async fn drain(child: &mut Child) -> Vec<JoinHandle<Vec<u8>>> {
         .collect()
 }
 
+async fn require_empty_job(owner: &ProcessOwnership) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while owner.has_descendants().unwrap() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the retained native Job must actually report no processes");
+}
+
 #[tokio::test]
 async fn suspended_runtime_keeps_owner_and_real_pumps_until_explicit_resume_and_full_join() {
     let (temporary, mut child) = fixture("input");
@@ -152,6 +194,44 @@ async fn an_actual_resume_failure_retains_the_created_owner_until_real_cleanup()
     finish_io(&owner, tokio::time::Instant::now() + Duration::from_secs(3))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_actual_early_exit_during_queued_stdin_closes_all_runtime_pipe_workers() {
+    let (temporary, mut child) = fixture("exit-before-input");
+    let owner = ownership(&child, child.id().unwrap());
+    let readers = drain(&mut child).await;
+    activate(&mut child).unwrap();
+    assert!(wait_for_owned_exit(&owner, Duration::from_secs(5))
+        .await
+        .unwrap());
+    assert!(temporary.path().join("executed").is_file());
+    require_empty_job(&owner).await;
+    // More than the facade's capacity guarantees a native write is attempted;
+    // the genuine peer is already gone, rather than a fabricated OS error.
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(&vec![b'x'; 256 * 1024]),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    child.stdin.take();
+    owner.disarm_before_reap();
+    assert!(child.wait().await.unwrap().success());
+    for reader in readers {
+        reader.await.unwrap();
+    }
+    finish_io(&owner, tokio::time::Instant::now() + Duration::from_secs(3))
+        .await
+        .unwrap();
+    let state = owner.owner.0.lock().unwrap();
+    assert!(state.process.is_none() && state.workers.is_empty() && state.io_error.is_none());
 }
 
 #[tokio::test]
@@ -355,4 +435,119 @@ async fn official_node_protocol_timeout_forces_the_actual_job_and_joins_every_pi
     assert!(runtime.readers.is_empty());
     let state = runtime.ownership.owner.0.lock().unwrap();
     assert!(state.process.is_none() && state.workers.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Explicit pinned official Node required; real startup failure uses only new disposable files"]
+async fn official_node_early_exit_after_initialize_confirms_startup_rollback_resources_stopped() {
+    let (_temporary, config) = official_fixture("early-exit");
+    let root = config.control_directory.clone();
+    fs::write(&config.entry_path, r#"
+const fs = require('node:fs');
+const path = require('node:path');
+process.stdin.once('data', () => {
+  fs.writeFileSync(path.join(process.env.APP_DATA_DIR, 'actual-initialize-observed'), 'real initialize bytes');
+  process.exit(23);
+});
+"#).unwrap();
+    let processes = OwnedProcessRegistry::default();
+    let (result, pending, cleanup) = tokio::time::timeout(
+        Duration::from_secs(15),
+        NodeRuntimeTrial::launch_retaining_failed(
+            config,
+            root.join("data"),
+            root.join("cache"),
+            &processes,
+        ),
+    )
+    .await
+    .unwrap();
+    let error = result
+        .err()
+        .expect("the real application intentionally exits before ready");
+    assert_eq!(error.code, "TRIAL_CONTROL_CLOSED");
+    assert_eq!(
+        fs::read(root.join("data/actual-initialize-observed")).unwrap(),
+        b"real initialize bytes"
+    );
+    assert!(
+        pending.is_none(),
+        "a normal closed stdin must not retain a failed runtime forever"
+    );
+    // This receipt is granted only after the actual root/Job, native workers
+    // and accepted async readers all close. Merely dropping a pipe is not it.
+    assert_eq!(cleanup, FailedLaunchCleanup::ResourcesStopped);
+    assert!(processes.shutdown().await.is_empty());
+    assert!(processes
+        .snapshot()
+        .iter()
+        .all(|process| process.resource_closed()));
+}
+
+#[tokio::test]
+async fn a_live_native_child_closes_stdin_during_blocked_write_and_all_resources_join() {
+    let (temporary, mut child) = fixture("close-input-stay-live");
+    let root = temporary.path().canonicalize().unwrap();
+    let ready = root.join("real-child-ready");
+    let close = root.join("close-real-stdin");
+    let closed = root.join("real-stdin-closed");
+    let owner = ownership(&child, child.id().unwrap());
+    let readers = drain(&mut child).await;
+    activate(&mut child).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !ready.is_file() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let (started, writing) = tokio::sync::oneshot::channel();
+    let writer = tokio::spawn(async move {
+        let _ = started.send(());
+        stdin.write_all(&vec![b'x'; 4 * 1024 * 1024]).await
+    });
+    writing.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !writer.is_finished(),
+        "the real child has not read any stdin bytes"
+    );
+    fs::write(&close, b"close the actual inherited input HANDLE now").unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), writer)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !closed.is_file() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fs::read(&closed).unwrap(),
+        b"actual inherited input HANDLE closed"
+    );
+    assert!(owner.observe().unwrap().is_none());
+    assert!(owner.has_descendants().unwrap());
+    // A disconnected stdin is no process-closure receipt: the still-live
+    // original owner must stop its real Job before any full cleanup succeeds.
+    owner.signal_with_reobserve(SIGNAL_KILL).await.unwrap();
+    assert!(wait_for_owned_exit(&owner, Duration::from_secs(5))
+        .await
+        .unwrap());
+    require_empty_job(&owner).await;
+    owner.disarm_before_reap();
+    child.wait().await.unwrap();
+    for reader in readers {
+        reader.await.unwrap();
+    }
+    finish_io(&owner, tokio::time::Instant::now() + Duration::from_secs(3))
+        .await
+        .unwrap();
+    let state = owner.owner.0.lock().unwrap();
+    assert!(state.process.is_none() && state.workers.is_empty() && state.io_error.is_none());
 }

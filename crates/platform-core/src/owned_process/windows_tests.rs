@@ -173,6 +173,7 @@ fn child_fixture() {
             std::process::exit(0);
         }
         "exit259" => std::process::exit(259),
+        "exit-before-input" => std::process::exit(0),
         "sleep" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
@@ -220,6 +221,58 @@ async fn windows_real_stdin_eof_joins_all_owners_before_releasing_tempdir() {
     assert!(output.status.success());
     assert!(output.value.ends_with("完整 UTF8 输入\n".as_bytes()));
     closed(&registry).await;
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn windows_real_closed_child_stdin_still_joins_registry_workers_and_driver() {
+    let lease = tempfile::Builder::new()
+        .prefix("panda-disposable-registry-early-stdin-")
+        .tempdir()
+        .unwrap();
+    let path = lease.path().canonicalize().unwrap();
+    let registry = OwnedProcessRegistry::default();
+    let run = registry
+        .start(
+            OwnedCommand::inherited(command("exit-before-input", &path)),
+            options(),
+            lease,
+            |pipes| {
+                let ProcessPipes {
+                    mut stdin,
+                    mut stdout,
+                    mut stderr,
+                    ..
+                } = pipes;
+                IoPlan::new(async move {
+                    let mut bytes = Vec::new();
+                    // Actual process exit closes stdout and the inherited stdin.
+                    stdout.read_to_end(&mut bytes).await?;
+                    let error = stdin
+                        .write_all(&vec![b'x'; 256 * 1024])
+                        .await
+                        .expect_err("the actual child input is gone");
+                    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+                    drop(stdin);
+                    Ok(bytes)
+                })
+                .drain("early-exit-stderr", async move {
+                    tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await?;
+                    Ok(())
+                })
+            },
+        )
+        .unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(output.status.success());
+    closed(&registry).await;
+    let states = registry.snapshot();
+    assert!(!states.is_empty());
+    assert!(states.iter().all(ProcessSnapshot::resource_closed));
+    assert!(registry.shutdown().await.is_empty());
     assert!(!path.exists());
 }
 

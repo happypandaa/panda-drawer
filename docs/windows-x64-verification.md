@@ -922,3 +922,37 @@ npm Command 抽到平台适配，Unix 原构造正文机械比对保持；共享
 完整 core 默认依赖准备专项 **6 通过、0 失败、1 官方 opt-in 忽略**：4 个参数/环境/UTF-16/无 shell 边界，另 2 个实际临时目录验证无包跳过、预取消、缺锁/双根/.npmrc 均在执行工具前失败且不产生 operation 材料。显式固定官方 Node 24.22.0/npm 11.19.1 整链 **1/1**，13.31 秒：在新 disposable 中文空格、根和 backend 两种超过 260 字符目录分别实际 npm ci，从官方 npm registry 按固定版本与 SHA-512 integrity 装入 is-number 7.0.0；实际 node_modules 文件存在且超过 260 字符，项目 package 原字节保持，preinstall/install/postinstall/prepare 均未执行。全部实际 Job/reader/driver 关闭。没有更改机器长路径注册表或宿主 npm 设置。
 
 完整冻结快照 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（63 Rust 警告保留）。这是实际 npm/依赖文件测试，尚非 GitHub 导入整链、正常 GUI 或安装版；长 cwd 的一般应用子进程能力未据此宣称完成。
+
+### W4.5 — 非执行源码获取、持久发布和未知结果保留
+
+Windows SourceAcquisitionManager 保留 Mac 同名字段/API、原 10 分钟/文件数/字节/磁盘预算及非执行序列；Mac acquisition 与 process 两个原文件零改动。Windows 记录使用完整 FileId 与原 len/mtime/单链接规则，普通既有源码不要求私有 DACL；独占新写文件私有创建且实际 flush，原 blocking writer 和 Registry/Job 排空流程保持。目录摘要按 '/' 相对名和 Windows 无执行位的实际语义固定执行字节 0，materialize/recheck 两端一致；原 Git mode 仍留在 index，不伪造 Windows 宿主执行权限。
+
+发布用实际父 HANDLE/祖先 pin、原 payload 完整身份和原来源/task/app 三 ID 计划；复制预算保持 Mac 50000/512 MiB，原写 HANDLE flush，目标只不覆盖改名。native 仅新增 8 行错误分类 helper，真实 rename 后核验不确定保持 unknown，已确认移动后的 journal/归属收尾错误标 committed；两者都保留原 author reservation。重开接受已发布原对象的后续编辑，不重复制、回滚或误删它。只读 reconcile 在目标/副本均缺失、替换、坏记录时保留 unknown 和显示路径；显示路径不取得删除权限。仓库名 CON/NUL.txt/foo. 只映射新本地可读目录名，原 URL 保留；合法长中文组件按 Windows 255 UTF-16 处理，不沿用附件 API 的 255 UTF-8 字节限制。
+
+最终完整 core 源码/发布默认专项 **26 通过、0 失败、1 官方 Git opt-in 忽略**，2.55 秒（含原 2 URL、Windows 获取 5、发布 19）。涵盖真实长路径、86 中文字符目录/文件、readonly、完整高位身份、hardlink/junction/祖先替换与原件保持、部分复制不二次创建、租约、目标碰撞、实际移动后 journal 失败及新 manager 重试、unknown 保留、坏/超预算记录，以及本机合法保留名映射。首次 22 pass/1 fail 的 Σ/ς 断言经真实 NTFS 核实为错误假设：两者为不同完整 FileId，Σ/σ 才实际碰撞；改 fixture 保留合法名字，最终 native create_new 的真实 AlreadyExists 也返回需要修改并保持原文件。
+
+显式官方 MinGit 非网络引擎专项 **1/1**，5.54 秒：真实新 disposable Git 仓库、commit/fsck/ls-tree/cat-file/read-tree、required filter 配置故意不能执行，实际原字节正确展开、index 就绪、全部进程关闭，原 writer clear 并实际清除 owned 临时目录。首轮完整 public Git 导入另实际走通 HTTPS 下载、npm、发布和登记；仍在完成公有启动和正常 GUI 的收尾验证，不把上述离线/文件专项称为全部 W4 完成。
+
+### W4.6 — 公有导入协调器、真实取消和公开原码运行
+
+完整 core coordinator 默认 **9/9**，0.96 秒，含原来源错误保持、真实 TempDir 接纳/同 importId 去重/取消信号/中断接纳恢复/坏 journal 原物保持/登记三态；publishing 无路径时的缺失或坏 receipt+实际 author reservation 公有 recover/retry 均 Unknown/cleanup_pending，原 UUID/完整身份/字节保持且不创建进程。目录 sync 委托原 Unix 等值 facade；新增 Windows 恢复 hook 在 Mac no-op。完整冻结快照 core Clippy **-Dclippy::all 通过**（62 Rust 警告保留）。
+
+已显式执行固定官方 Git/Node 的真实公开导入与真实 materializer barrier 取消。取消已通过：实际 writer 阻塞时取消保持 source slot/任务租约及 CleanupPending，释放后实际结束 root/Job/I/O，原临时 source/owner 不存在；显式 Registry shutdown join final driver 后完整收据成立，同 importId 不重放。最初错误地把仅 Closed 当成已 JoinHandle join，已改为明确执行原 Registry 收尾并保留完整断言，不改产品规则。公开 demo 零依赖 npm 成功可以不创建 node_modules，移除此错误样本假设，保留真实 npm 成功/进程收据；W4.4 另有实际 registry 依赖长路径证明。
+
+公开 demo 已实际 import/npm/登记成功，启动先按正常必填配置拒绝，再保存人工配置和人工密钥。其 src/server/main.mjs 自身直接 directory.sync；独立固定 Node 24.22.0 新 TempDir 对照实际返回 EPERM/syscall=fsync。未修改平台来模拟该 API、未修改远端，也未执行临时源码适配草稿；改选已有 Windows 自然文件适配的公开 RadioBob 进行原码验收。第三轮早退另暴露 stdin-pump 的 OS 232 永久未闭合问题，见 W4.7 实际修复。
+
+最终显式官方 Git 2.56.0.windows.4/Node 24.22.0 公有成功整链 **1/1**，80.91 秒：HTTPS 从 https://github.com/happypandaa/radio-bob.git main 获取，实际 commit 必须为 163923d99f4b8cce188e3372dc135d4ae41bee78；下载、原码发布、真实 npm、登记和三处临时材料清理成功。缺配置实际拒绝启动且无 child，再以公有 save 保存人工 ANTHROPIC_API_KEY，FISH 保持未配置；实际 NodeApps start、本机静态页及 GET /api/status、/api/state 成功，stop 后新 manager 重开，持久配置和同一 source/app UUID 正确，import 恢复及重复 ID 均不重放。所有原 author 文件完整 FileId/SHA 与原 commit 在两次运行后保持，没有修改下载源码；npm 生成树和 .git 内部单独按其原流程处理。只证明本机生命周期，不调用或宣称外部 AI、音乐业务可用。
+
+完整冻结快照 core Clippy **-Dclippy::all 通过**（62 Rust 警告保留），最终默认 coordinator 再 **9/9**，0.95 秒。正常 npm run dev 已可启动；为让正在并行的测试源码编辑不自动重开 GUI，正常关闭旧会话（ReadyForNativeExit、外层 0，仍有原 WebView2 1412/Vite 退出日志），改用原脚本转发的 npm run dev -- --no-watch 进行稳定 GUI 验收。当前 GUI 空目录确认继续进行，尚不据后端专项声称安装版或两种系统验收。
+
+### W4.7 — 应用真实早退时 stdin 断管的闭合
+
+仅 Windows 共享 pipe_bridge 的实际 File.write_all 分支把 BrokenPipe/109/232/233 当作对端断开而结束该 worker；原始 5/6/13/29/87/995 等其它错误仍报告。微软 WriteFile/WinError 定义为依据；这一分支不授予 root、Job、其它 reader 或 driver 的闭合回执，仍逐项实际观察/join。Mac 代码不改。
+
+完整 Registry 默认 **32 通过、0 失败、2 opt-in 忽略**，0.22 秒；Runtime 默认最终 **7 通过、0 失败、4 专用/官方入口忽略**，包括真实 Rust child 早退、仍存活的 native child 在父 4 MiB 写已阻塞时关闭实际继承 stdin HANDLE，父实际 BrokenPipe、root/Job 仍活，最后原 Job 强停和全部 worker/reader join。另显式官方 Node 三项 **3/3**，9.17 秒：真实 initialize 后 exit 23 的启动回滚给出 ResourcesStopped、无 pending owner，原大 stderr/协议/日志/持久数据和协议超时回归均保持。
+
+新夹具曾仅 fs.closeSync(0) 导致 writer 实际未断开，3/4 官方测试中该项超时；独立对照 process.stdin.destroy 也仍保持别的 endpoint，未增加超时或假称断开。替换为直接接管并关闭实际继承 HANDLE 的新 disposable 原生 child，官方 Node 早退真实专项仍保留。完整 core Clippy **-Dclippy::all 通过**（62 原 Rust 警告保留）；本轮不改变或跳过任何 Mac 测试。
+
+### W4.8 — 正常 GUI 本机入口（进行中检查点）
+
+正常开发版主界面保持原两个 W2 disposable 网页项目，未触碰用户旧项目。新建明确 disposable 的中文空格空文件夹，从真实本机文件夹入口与 Windows native folder picker 选择；实际返回“目录检查结果不完整或路径不符”，尚未生成或登记 Node 项目。正在核对 Windows canonical verbatim 与 picker DOS 路径的响应表示，不能把 W4.1 后端临时目录专项当作 GUI 已通过。稳定会话使用原 npm run dev -- --no-watch，避免并行 Rust 测试编辑触发自动重开；所有本机应用/资源/证据未提交。

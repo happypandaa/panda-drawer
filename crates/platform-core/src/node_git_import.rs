@@ -556,7 +556,7 @@ impl NodeGitImportManager {
             };
             self.save(&j)?;
             fs::remove_file(request_path)?;
-            fs::File::open(ownership.directory(&app_id)?)?.sync_all()?;
+            platform_native::filesystem::sync_directory(&ownership.directory(&app_id)?)?;
             Ok((task, scope, j))
         })();
         let (task, scope, mut j) = match prepared {
@@ -826,6 +826,7 @@ impl NodeGitImportManager {
         self.save(j)
     }
     async fn reconcile(&self, apps: &NodeApps, j: &mut Journal) -> Result<()> {
+        capability::reconcile_source_publication(self, j)?;
         if !j.registration_attempted {
             j.commit_state = CommitState::NotCommitted;
             return Ok(());
@@ -888,7 +889,9 @@ impl NodeGitImportManager {
                 check_no_symlinks(&path, true)?;
                 if path.exists() {
                     fs::remove_file(path)?;
-                    fs::File::open(self.ownership().directory(&j.app_id)?)?.sync_all()?;
+                    platform_native::filesystem::sync_directory(
+                        &self.ownership().directory(&j.app_id)?,
+                    )?;
                 }
             }
         }
@@ -919,6 +922,7 @@ impl NodeGitImportManager {
                 paths.push(self.paths.data_root().join("node-apps").join(&j.app_id));
             }
         }
+        capability::retain_pending_paths(j, &mut paths);
         paths.retain(|path| !matches!(fs::symlink_metadata(path), Err(issue) if issue.kind() == std::io::ErrorKind::NotFound));
         paths.sort();
         paths.dedup();
@@ -1164,3 +1168,6 @@ fn read_manifest(root: &Path) -> Result<Vec<u8>> {
 #[cfg(all(test, unix))]
 #[path = "node_git_import_tests.rs"]
 mod tests;
+#[cfg(all(test, windows))]
+#[path = "node_git_import/windows_tests.rs"]
+mod windows_tests;
