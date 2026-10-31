@@ -83,6 +83,182 @@ impl Fixture {
             .unwrap()
     }
 }
+fn source_argument(fixture: &Fixture, style: &str) -> PathBuf {
+    if style == "verbatim" {
+        return fixture.source.clone();
+    }
+    let conventional =
+        platform_native::windows::api_paths::conventional_path(&fixture.source).unwrap();
+    assert!(!conventional.to_str().unwrap().starts_with(r"\\?\"));
+    if style == "forward-slashes" {
+        PathBuf::from(conventional.to_str().unwrap().replace('\\', "/"))
+    } else {
+        conventional
+    }
+}
+
+#[tokio::test]
+async fn dos_folder_picker_paths_roundtrip_inspect_initialize_and_confirm_with_canonical_identity()
+{
+    for style in ["forward-slashes", "backslashes"] {
+        let fixture = Fixture::new();
+        let source = source_argument(&fixture, style);
+        assert_ne!(source.as_os_str(), fixture.source.as_os_str());
+        let identity = PersistedIdentity::capture(&fixture.source).unwrap();
+        let preview = fixture.manager.inspect_directory(&source).unwrap();
+        assert_eq!(preview["sourcePath"], json!(source));
+        assert_eq!(preview["state"], "empty");
+        assert_eq!(
+            preview["expectedRevision"],
+            fixture.preview()["expectedRevision"]
+        );
+        assert!(preview["reviewPrompt"]
+            .as_str()
+            .unwrap()
+            .contains(&serde_json::to_string(&source).unwrap()));
+        let initialized = fixture
+            .manager
+            .initialize_directory(
+                &source,
+                DirectoryInitializeInput {
+                    expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                    name: "DOS 路径往返起始应用".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(initialized["sourcePath"], json!(source));
+        assert_eq!(initialized["state"], "ready");
+        let pending = initialized["pendingAppId"].as_str().unwrap();
+        let registered = fixture
+            .manager
+            .register_directory(
+                source.clone(),
+                initialized["expectedRevision"].as_str().unwrap().into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registered["sourcePath"], json!(source));
+        assert_eq!(registered["id"], pending);
+        assert_eq!(registered["ownership"], "managed");
+        let stored = fixture.manager.registrations().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].source_path, fixture.source);
+        assert!(identity.matches_path(&stored[0].source_path).unwrap());
+        assert_eq!(
+            fixture
+                .manager
+                .project_ownership()
+                .generated_source(pending)
+                .unwrap(),
+            Some(fixture.source.clone())
+        );
+        let repeated = fixture.manager.inspect_directory(&source).unwrap();
+        assert_eq!(repeated["sourcePath"], json!(source));
+        assert_eq!(repeated["existingApp"]["id"], pending);
+        let exact = fixture.manager.inspect_directory(&fixture.source).unwrap();
+        assert_eq!(exact["sourcePath"], json!(fixture.source));
+        assert_eq!(exact["existingApp"]["id"], pending);
+        assert!(fixture.manager.owned_process_ids().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn dos_and_explicit_verbatim_paths_roundtrip_both_combined_and_external_registration() {
+    for style in ["forward-slashes", "backslashes", "verbatim"] {
+        for external in [false, true] {
+            let fixture = Fixture::new();
+            if external {
+                fixture.existing();
+            }
+            let source = source_argument(&fixture, style);
+            let identity = PersistedIdentity::capture(&fixture.source).unwrap();
+            let before = snapshot(&fixture.source);
+            let preview = fixture.manager.inspect_directory(&source).unwrap();
+            assert_eq!(preview["sourcePath"], json!(source));
+            let revision = preview["expectedRevision"].as_str().unwrap().to_string();
+            let registered = if external {
+                fixture
+                    .manager
+                    .register_directory(source.clone(), revision)
+                    .await
+                    .unwrap()
+            } else {
+                fixture
+                    .manager
+                    .initialize_and_register_directory(
+                        source.clone(),
+                        DirectoryInitializeInput {
+                            expected_revision: revision,
+                            name: "原路径表示保持不变".into(),
+                        },
+                    )
+                    .await
+                    .unwrap()
+            };
+            assert_eq!(registered["sourcePath"], json!(source));
+            assert_eq!(
+                registered["ownership"],
+                if external { "external" } else { "managed" }
+            );
+            let id = registered["id"].as_str().unwrap();
+            let stored = fixture.manager.registrations().unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].source_path, fixture.source);
+            assert!(identity.matches_path(&stored[0].source_path).unwrap());
+            let rechecked = fixture.manager.inspect_directory(&source).unwrap();
+            assert_eq!(rechecked["sourcePath"], json!(source));
+            assert_eq!(rechecked["existingApp"]["id"], id);
+            if external {
+                assert_eq!(snapshot(&fixture.source), before);
+            }
+            assert!(!fixture.source.join("node_modules").exists());
+            assert!(fixture.manager.owned_process_ids().await.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn explicit_verbatim_trailing_dot_keeps_its_namespace_and_never_uses_the_dotless_sibling() {
+    let fixture = Fixture::new();
+    let source = fixture.root.join("CLI exact namespace.");
+    let sibling = fixture.root.join("CLI exact namespace");
+    native::create_private_directory(&source).unwrap();
+    fs::create_dir(&sibling).unwrap();
+    fs::write(sibling.join("foreign.txt"), b"different physical directory").unwrap();
+    let before = snapshot(&sibling);
+    let identity = PersistedIdentity::capture(&source).unwrap();
+    assert!(!identity.matches_path(&sibling).unwrap());
+    assert_eq!(
+        platform_native::windows::api_paths::conventional_path(&source).unwrap(),
+        source
+    );
+    let preview = fixture.manager.inspect_directory(&source).unwrap();
+    assert_eq!(preview["sourcePath"], json!(source));
+    assert!(preview["reviewPrompt"]
+        .as_str()
+        .unwrap()
+        .contains(&serde_json::to_string(&source).unwrap()));
+    let registered = fixture
+        .manager
+        .initialize_and_register_directory(
+            source.clone(),
+            DirectoryInitializeInput {
+                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                name: "Exact verbatim namespace".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(registered["sourcePath"], json!(source));
+    let stored = fixture.manager.registrations().unwrap();
+    assert_eq!(stored.len(), 1);
+    assert!(identity.matches_path(&stored[0].source_path).unwrap());
+    assert_eq!(snapshot(&sibling), before);
+    assert!(source.join("local-app.json").is_file());
+    assert!(!sibling.join("local-app.json").exists());
+    assert!(fixture.manager.owned_process_ids().await.is_empty());
+}
+
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, (native::FileIdentity, Vec<u8>)> {
     fn collect(
         root: &Path,

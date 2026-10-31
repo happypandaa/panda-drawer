@@ -953,6 +953,12 @@ Windows SourceAcquisitionManager 保留 Mac 同名字段/API、原 10 分钟/文
 
 新夹具曾仅 fs.closeSync(0) 导致 writer 实际未断开，3/4 官方测试中该项超时；独立对照 process.stdin.destroy 也仍保持别的 endpoint，未增加超时或假称断开。替换为直接接管并关闭实际继承 HANDLE 的新 disposable 原生 child，官方 Node 早退真实专项仍保留。完整 core Clippy **-Dclippy::all 通过**（62 原 Rust 警告保留）；本轮不改变或跳过任何 Mac 测试。
 
-### W4.8 — 正常 GUI 本机入口（进行中检查点）
+### W4.8 — 正常 GUI 目录选择、生成登记和起始应用
 
 正常开发版主界面保持原两个 W2 disposable 网页项目，未触碰用户旧项目。新建明确 disposable 的中文空格空文件夹，从真实本机文件夹入口与 Windows native folder picker 选择；实际返回“目录检查结果不完整或路径不符”，尚未生成或登记 Node 项目。正在核对 Windows canonical verbatim 与 picker DOS 路径的响应表示，不能把 W4.1 后端临时目录专项当作 GUI 已通过。稳定会话使用原 npm run dev -- --no-watch，避免并行 Rust 测试编辑触发自动重开；所有本机应用/资源/证据未提交。
+
+已修实际阻断：LocalDirectoryPanel 按契约严格核对响应 sourcePath===请求路径，Windows canonicalize 的 verbatim 与 picker DOS 表示不同。仅 Windows 四入口成功 JSON/preview prompt 原样回显已经验证的请求表示；内部 canonical Preview.source、完整 FileId、revision、生成归属及登记持久路径均不变，不改前端确认条件或 Mac。DOS 正反斜杠、明确 verbatim 与真实尾点目录不混用其 dotless sibling。完整 core 目录默认 **19/19**（另 1 opt-in），3.21 秒；官方 starter 公有登记/启动专项 **1/1**，4.58 秒；core Clippy **-Dclippy::all 通过**（59 Rust 警告保留）。
+
+按原 desktopInvocation 复用本次已核验的 rZS2kg 开发资源/target 重编，23.96 秒，未更改固定 identity/data/workspace。真实 native picker 再选同一空目录，GUI 检查成功，生成并登记“临时 W3 W4 GUI Node 2029ec8a”，实例 b1ead98e-4512-4426-8761-3bc4040d4128；实际 ownership.generatedSource 记录原根完整身份。真实成功页打开独立 Node 窗口，起始页点击“检查应用连接”显示“你的本地应用已经连通。”；管理器显示 3 项/1 运行。源码仅在明确 .test-artifacts disposable 目录，平台数据在固定开发数据根，保留供 W5 真正删除验收。
+
+同时修正 Windows 空目录/成功/复查三处说明，按真实 ownership 说明平台生成目录随删除、已有外部原始目录保留；仅 frontend-platform 适配提供文案，Mac 原文及删除业务保持。TypeScript build **通过**，完整界面测试 **486/486**、0 跳过，15.70 秒。当前继续在这一 disposable 起始项目验证配置立即重启与任务管理器终止；尚非安装版/Windows 10 或 CI 验收，不据此宣称 W0–W6 全完。
