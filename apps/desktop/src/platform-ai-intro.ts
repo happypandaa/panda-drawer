@@ -1,11 +1,12 @@
 import { PROJECT_AI_REQUIREMENTS } from './project-ai-requirements';
+import { defaultPlatformAiDescription } from './frontend-platform';
 
 /**
  * A project-independent introduction for any external AI: used before a new
  * project starts, or to judge whether a project built elsewhere can join.
  * It never carries a project path, ID or diagnostics.
  */
-export function buildPlatformAiIntroPrompt(platformVersion?: string): string {
+export function buildPlatformAiIntroPrompt(platformVersion?: string, platformDescription = defaultPlatformAiDescription): string {
   const version = platformVersion?.trim() || '未读取，请以用户实际安装版为准';
   return `下面是“熊猫小抽屉”平台的介绍和接入要求。请先读完，再根据我接下来说的情况帮我：
 - 如果我准备做一个新项目：按平台的要求帮我规划和开发；
@@ -13,7 +14,7 @@ export function buildPlatformAiIntroPrompt(platformVersion?: string): string {
 我不懂代码，请用通俗易懂的中文回答，先给结论。这份说明只是背景材料，在我说清需求之前，不要创建或修改任何文件。
 
 【熊猫小抽屉是什么】
-macOS 上的本地小应用平台（当前版本：${version}）。用户在平台里打开、配置和运行一个个小应用，每个应用有自己的窗口，数据保存在这台电脑上。
+${platformDescription}（当前版本：${version}）。用户在平台里打开、配置和运行一个个小应用，每个应用有自己的窗口，数据保存在这台电脑上。
 平台负责：启动和停止应用、保存配置和密钥并在启动时注入、为每个应用分配独立的数据目录。
 外部 AI 负责：写代码、构建、用 Git 管理版本、出问题时读日志修复。
 
