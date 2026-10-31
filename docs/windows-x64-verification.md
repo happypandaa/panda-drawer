@@ -912,3 +912,13 @@ Git 工具路径、离线 Command、系统 SSH 位置和 Apple 开发工具选�
 独立完整 core 默认 remote 专项 **6 通过、0 失败、1 网络 opt-in 忽略**，包括原四个 URL/HEAD/版本测试与两个 Windows 实际请求构造检查。显式官方 MinGit 2.56.0.windows.4 通过生产 GitRemoteChecker 对公开 demo 仓库真实 **ls-remote HTTPS，1/1**，8.80 秒；HEAD 指向 refs/heads/codex/manual-demo、返回有效对象名，全部实际 Job/reader/driver 关闭、完整 Git 树再次核验一致、无工具设置文件产生。没有继承代理、降低 TLS 校验或修改用户 Git 设置。
 
 完整冻结快照 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（65 Rust 警告保留）。未执行 Gitee 网络、clone/取消/注册或实际依赖安装，不把 HEAD 检查当作完整导入验收。
+
+### W4.4 — 真实 npm、长路径安装和原脚本禁用
+
+npm Command 抽到平台适配，Unix 原构造正文机械比对保持；共享原输入/下载/空间预算、250ms 扫描、有界诊断和实际 reader/driver 收尾保持，声明原 env_clear sidecar。Windows 直接 Node 加原 npm-cli.js/完整原参数，精确 API 路径用于 prefix/cwd/私有配置缓存；SystemRoot/WINDIR/ComSpec 来自 Win32，Windows home/temp 均在已经过原空间扫描的本次私有 operation 内。
+
+首次真实超 260 字符 cwd 测试实际 PROCESS_SPAWN_FAILED；对照已有 native/std cwd 测试及 Microsoft SetCurrentDirectory 文档确认 Win32 限制。尝试固定 Node eval 先 chdir 再载入 npm 也实际 ENAMETOOLONG，未保留该失败方案。最终 Windows 保留直接官方 npm 和原 --prefix 的安装目标，只有 cwd 的 UTF-16 长度已超过 Win32 可用范围时，从实际系统目录启动；不增加路径准入上限、不用 shell、短项目仍原 cwd，Mac 无变化。文档依据：https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setcurrentdirectory 。
+
+完整 core 默认依赖准备专项 **6 通过、0 失败、1 官方 opt-in 忽略**：4 个参数/环境/UTF-16/无 shell 边界，另 2 个实际临时目录验证无包跳过、预取消、缺锁/双根/.npmrc 均在执行工具前失败且不产生 operation 材料。显式固定官方 Node 24.22.0/npm 11.19.1 整链 **1/1**，13.31 秒：在新 disposable 中文空格、根和 backend 两种超过 260 字符目录分别实际 npm ci，从官方 npm registry 按固定版本与 SHA-512 integrity 装入 is-number 7.0.0；实际 node_modules 文件存在且超过 260 字符，项目 package 原字节保持，preinstall/install/postinstall/prepare 均未执行。全部实际 Job/reader/driver 关闭。没有更改机器长路径注册表或宿主 npm 设置。
+
+完整冻结快照 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（63 Rust 警告保留）。这是实际 npm/依赖文件测试，尚非 GitHub 导入整链、正常 GUI 或安装版；长 cwd 的一般应用子进程能力未据此宣称完成。
