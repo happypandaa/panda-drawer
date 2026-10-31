@@ -15,11 +15,21 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, process::Command};
 
+#[cfg(not(windows))]
+#[path = "git_environment/unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "git_environment/windows.rs"]
+mod platform;
+#[cfg(all(test, unix))]
+use platform::developer_git;
+
 #[path = "git_environment/files.rs"]
 mod files;
 use files::{absolute_clean, ordinary_executable, read_settings_bytes, settings_error};
 
 const MAX_PROBE_BYTES: usize = 16 * 1024;
+#[cfg(not(windows))]
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -183,7 +193,15 @@ impl GitEnvironmentManager {
             return info;
         }
         // SSH availability is independent; failure never invalidates a usable Git.
-        info.ssh = inspect_ssh(Path::new("/usr/bin/ssh"), &self.processes).await;
+        info.ssh = match platform::system_ssh() {
+            Ok(path) => inspect_ssh(&path, &self.processes).await,
+            Err(issue) => SshEnvironmentInfo {
+                ready: false,
+                selection: "system".into(),
+                executable: None,
+                issues: vec![issue],
+            },
+        };
         let configured = match self.configured() {
             Ok(value) => value,
             Err(error) => {
@@ -268,40 +286,19 @@ impl GitEnvironmentManager {
 }
 
 fn tool_path(executable: &Path) -> Result<String, ApiError> {
-    std::env::join_paths([
-        executable
-            .parent()
-            .unwrap_or(Path::new("/usr/bin"))
-            .to_path_buf(),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-        PathBuf::from("/usr/sbin"),
-        PathBuf::from("/sbin"),
-    ])
-    .ok()
-    .and_then(|value| value.into_string().ok())
-    .ok_or_else(|| ApiError::new("INVALID_GIT_PATH", "所选工具路径无法用于隔离的 PATH。"))
+    platform::tool_path(executable)
 }
-fn isolated_command(executable: &Path, path: &str) -> Command {
-    let mut command = Command::new(executable);
-    command
-        .env_clear()
-        .current_dir("/")
-        .env("PATH", path)
-        .env("LC_ALL", "C")
-        .env("HOME", "/dev/null")
-        .env("XDG_CONFIG_HOME", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    crate::owned_process::prepare_command(&mut command);
-    command
+fn isolated_command(executable: &Path, path: &str) -> Result<Command, ApiError> {
+    platform::probe(executable, path)
 }
+async fn local_git_path(
+    candidate: &Path,
+    processes: &OwnedProcessRegistry,
+    keep_alive: ProbeKeepAlive,
+) -> Result<PathBuf, ApiError> {
+    platform::local_git_path(candidate, processes, keep_alive).await
+}
+
 struct ProbeOutput {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -336,7 +333,7 @@ async fn run_probe(
 ) -> Result<ProbeOutput, ApiError> {
     let (stderr_sender, mut stderr_receiver) = tokio::sync::oneshot::channel();
     let mut run = processes.start(
-        command,
+        crate::owned_process::OwnedCommand::cleared(command),
         ProcessOptions::new("git-environment", timeout),
         keep_alive,
         move |pipes| {
@@ -400,51 +397,7 @@ fn git_version(bytes: &[u8]) -> Result<String, ApiError> {
     // Preserve vendor suffixes. This is identification, not a feature support claim.
     Ok(value.to_owned())
 }
-fn developer_git(output: &[u8]) -> Result<PathBuf, ApiError> {
-    let developer = single_line(output)
-        .map(PathBuf::from)
-        .filter(|path| absolute_clean(path))
-        .ok_or_else(|| developer_tools_error("无法识别已选择的 Apple 开发工具目录。"))?;
-    let git = ordinary_executable(&developer.join("usr/bin/git"))
-        .map_err(|_| developer_tools_error("已选择的 Apple 开发工具中没有可执行的 Git。"))?;
-    if git == Path::new("/usr/bin/git") {
-        return Err(developer_tools_error("Apple Git 路径仍指向系统安装入口。"));
-    }
-    Ok(git)
-}
-fn developer_tools_error(message: &str) -> ApiError {
-    ApiError::new("GIT_DEVELOPER_TOOLS_UNAVAILABLE", message)
-}
-async fn local_git_path(
-    candidate: &Path,
-    processes: &OwnedProcessRegistry,
-    keep_alive: ProbeKeepAlive,
-) -> Result<PathBuf, ApiError> {
-    let path = ordinary_executable(candidate)?;
-    if cfg!(target_os = "macos") && path == Path::new("/usr/bin/git") {
-        // Never execute Apple's shim or xcrun: either may offer an installation UI.
-        let mut command = isolated_command(Path::new("/usr/bin/xcode-select"), SYSTEM_PATH);
-        command.arg("-p");
-        let output = run_probe(command, Duration::from_secs(5), processes, keep_alive)
-            .await
-            .map_err(|error| {
-                if error.code.starts_with("PROCESS_") {
-                    error
-                } else {
-                    developer_tools_error(
-                        "无法查询已安装的 Apple 开发工具；未运行系统 Git 安装入口。",
-                    )
-                }
-            })?;
-        if !output.status.success() {
-            return Err(developer_tools_error(
-                "尚未选择可用的 Apple 开发工具；未运行系统 Git 安装入口。",
-            ));
-        }
-        return developer_git(&output.stdout);
-    }
-    Ok(path)
-}
+
 async fn probe_git(
     git: PathBuf,
     exec_path: Option<PathBuf>,
@@ -453,13 +406,19 @@ async fn probe_git(
     keep_alive: ProbeKeepAlive,
 ) -> Result<GitToolchain, ApiError> {
     let path = tool_path(&git)?;
-    let mut command = isolated_command(&git, &path);
+    let mut command = isolated_command(&git, &path)?;
     command.arg("--version");
     if let Some(value) = &exec_path {
-        command.env("GIT_EXEC_PATH", value);
+        command.env(
+            "GIT_EXEC_PATH",
+            crate::node_tool_layout::command_argument(value)?,
+        );
     }
     if let Some(value) = &template_path {
-        command.env("GIT_TEMPLATE_DIR", value);
+        command.env(
+            "GIT_TEMPLATE_DIR",
+            crate::node_tool_layout::command_argument(value)?,
+        );
     }
     let output = run_probe(command, Duration::from_secs(5), processes, keep_alive).await?;
     if !output.status.success() {
@@ -524,7 +483,7 @@ async fn inspect_ssh(path: &Path, processes: &OwnedProcessRegistry) -> SshEnviro
     let result = async {
         let path = ordinary_executable(path)
             .map_err(|_| ApiError::new("SSH_NOT_FOUND", "未找到可用的系统 SSH 工具。"))?;
-        let mut command = isolated_command(&path, SYSTEM_PATH);
+        let mut command = isolated_command(&path, &platform::ssh_path(&path)?)?;
         command.arg("-V");
         let output = run_probe(command, Duration::from_secs(5), processes, Arc::new(())).await?;
         if !output.status.success() {
@@ -817,7 +776,7 @@ mod tests {
         let (_temp, root) = disposable();
         let large = script(&root, "synthetic-large-output", "printf '%20000s' x");
         let error = run_probe(
-            isolated_command(&large, SYSTEM_PATH),
+            isolated_command(&large, SYSTEM_PATH).unwrap(),
             Duration::from_secs(2),
             &OwnedProcessRegistry::default(),
             Arc::new(()),
@@ -829,7 +788,7 @@ mod tests {
         let stalled = script(&root, "synthetic-stalled-output", "/bin/sleep 60 & wait");
         let started = std::time::Instant::now();
         let error = run_probe(
-            isolated_command(&stalled, SYSTEM_PATH),
+            isolated_command(&stalled, SYSTEM_PATH).unwrap(),
             Duration::from_millis(50),
             &OwnedProcessRegistry::default(),
             Arc::new(()),
@@ -971,3 +930,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "git_environment/windows_tests.rs"]
+mod windows_tests;
