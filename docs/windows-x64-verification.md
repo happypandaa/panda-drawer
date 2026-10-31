@@ -630,3 +630,9 @@ Windows Paths 经适配层在新候选创建前检查最近实际既有普通父
 实际 core Paths 检查 **8/8**（新增卷 3 + 既有迁移 5）；完整 native **51 通过、1 个既有专用子进程夹具 ignored**；Windows 和 Mac ARM64 交叉全目标严格 Clippy 通过，Mac 仅类型检查。新增 native 六项包括实际 STA、GUID 别名、unknown、并行查询、本机 NTFS 和临时 Cloud Files 正向注册：仅对新建 disposable 目录注册，根/子目录均被同步原语拒绝，而 volume-only 仍接受；按绑定完整身份实际注销并查询 NotRegistered，测试目录已不存在。所有成功注册的历次试验（含失败的 MTA 那轮）均确认注销，无测试注册遗留，没有改变既有 provider 或读取项目内容。
 
 普通临时目录查询真实系统注册根仅记录数量，不记录用户根路径。外置 USB、网络/映射盘和真实移动工作区尚未验收；未运行真实 initialize/GUI，不能据本步称 W1/W5 或 Windows 10 验收完成。
+
+### W1.22 — 延后迁移清理在任何接纳写入前拒绝
+
+启动审计发现 native startup 完成或非桌面服务启动会延后调用 selected cleanup；仅有 earlier migration inventory 不足以授权该公开/延后路径。自动路径现在经独立适配，在实际 Some journal 时先拒绝，再可能进入原提交及 retain_cleanup_reopen_failure 闭包；实际 None 保持真实无工作。公开 retry 保留原 selection/ID 授权顺序，随后在 active task、新任务、journal 变更或旧源 worker 前拒绝。未把 submit_cleanup 错误传到会写入失败记录的旧分支，Windows accepted=false / not_started，材料均保留。
+
+真实 core 适配专项 **3/3**：真实临时 pending journal 加 task/settings/source 字节检查，自动提交与失败记录回调均未进入，None 不调用提交，retry guard 字段准确。这里直接测试生产分派适配，不构造虚假的 RuntimeSwitch/store 或声称完整服务已启动。Windows 适配和 Mac ARM64 metadata 严格 Clippy 通过；Mac 原提交/错误保留正文机械一致，未实际运行。总运行门禁尚未改，实际迁移旧根收尾仍待 W5。
