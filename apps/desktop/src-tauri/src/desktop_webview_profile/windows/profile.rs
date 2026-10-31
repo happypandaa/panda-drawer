@@ -57,6 +57,25 @@ impl ManagerProfile {
         }
         Ok(())
     }
+
+    pub(super) fn verify_actual_directory(&self, directory: &Path) -> Result<(), ApiError> {
+        self.verify()?;
+        let actual = native::open_no_reparse(directory).map_err(|_| {
+            ApiError::new(
+                "MANAGER_PROFILE_ACTUAL_UNKNOWN",
+                "无法核实 WebView2 实际使用的浏览器目录，管理页面尚未加载。",
+            )
+            .outcome("not_started")
+        })?;
+        if !actual.identity.directory || !self.identity.same_object(&actual.identity) {
+            return Err(ApiError::new(
+                "MANAGER_PROFILE_ACTUAL_MISMATCH",
+                "WebView2 实际浏览器目录与平台私有目录不一致。请检查 WebView2 的目录覆盖设置后重新启动。管理页面尚未加载，实际目录已保留。",
+            )
+            .outcome("not_started"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

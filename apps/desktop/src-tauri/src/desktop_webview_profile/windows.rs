@@ -2,6 +2,15 @@ use super::*;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
+#[path = "windows/actual.rs"]
+mod actual;
+
+pub(super) fn manager_from_config<'a>(
+    app: &'a AppHandle,
+    config: &tauri::utils::config::WindowConfig,
+) -> Result<ManagerBuilder<'a>, ApiError> {
+    actual::builder_from_config(app, config)
+}
 #[path = "windows/profile.rs"]
 mod profile;
 #[path = "windows/runtime.rs"]
@@ -56,6 +65,59 @@ pub(super) fn manager_builder<'a>(
         .ok_or_else(profile::not_initialized)?;
     profile.verify()?;
     Ok(builder.data_directory(profile.directory().to_path_buf()))
+}
+
+pub(super) fn build_manager(app: &AppHandle, builder: ManagerBuilder<'_>) -> Result<(), ApiError> {
+    actual::build(app, builder)
+}
+
+pub(super) fn build_failure_manager(app: &AppHandle) -> Result<(), ApiError> {
+    match super::super::build_manager_window(app) {
+        Err(error) if error.code == "MANAGER_PROFILE_NOT_INITIALIZED" => Ok(()),
+        result => result.and_then(|()| actual::activate(app)),
+    }
+}
+
+pub(super) fn finish_startup(app: AppHandle, result: Result<(), ApiError>) {
+    let handle = app.state::<super::super::AppState>().handle.clone();
+    let owner = app.clone();
+    let dispatched = app.run_on_main_thread(move || {
+        let state = owner.state::<super::super::AppState>();
+        // Keep readiness sealed through real engine UDF readback. Even an
+        // unrelated startup error can use this verified manager to show status.
+        if let Err(error) = super::super::build_manager_window(&owner) {
+            state.handle.fail_native_startup(error.clone());
+            eprintln!("Manager actual profile: {}", error.code);
+            owner
+                .dialog()
+                .message(error.message)
+                .title("熊猫小抽屉 · 浏览器目录无法核实")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+            return;
+        }
+        match result {
+            Ok(()) => state.handle.complete_native_startup(),
+            Err(error) => state.handle.fail_native_startup(error),
+        }
+        if let Err(error) = actual::activate(&owner) {
+            state.handle.fail_native_startup(error.clone());
+            eprintln!("Manager actual profile: {}", error.code);
+            owner
+                .dialog()
+                .message(error.message)
+                .title("熊猫小抽屉 · 浏览器目录无法核实")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+        }
+    });
+    if let Err(error) = dispatched {
+        handle.fail_native_startup(ApiError::new(
+            "MANAGER_PROFILE_ACTUAL_UNKNOWN",
+            "管理窗口目录检查未完成，平台尚未就绪。",
+        ));
+        eprintln!("Manager UI dispatch: {error}");
+    }
 }
 
 pub(super) fn is_bundled_url(url: &Url) -> bool {
