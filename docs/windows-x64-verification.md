@@ -804,3 +804,13 @@ native 全目标严格 Clippy -Dwarnings 及桌面 --tests --no-deps -Dclippy::a
 新私有目录在 protected、唯一当前用户 FA 的原准入下增加 OI/CI，让 Node/WebView 等普通工具生成的子项仍能由同一用户读写；显式文件、credential slot 保持原 protected/不继承策略。真实启动恢复曾出现 OS 5，定位到 SetSecurityInfo 对既有目录权限修复会传播并移除子项 inherited ACE；改为在原 WRITE_DAC HANDLE 使用 [Microsoft 文档指定的用户态 NtSetSecurityObject](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-zwsetsecurityobject)，只更新选中 leaf。已私有目录直接保持原 ACL，不重新设置或递归修复。没有申请 MAXIMUM_ALLOWED（实际会与既有 pin 冲突）、变更 owner/SACL/父目录、增加准入或引入新二进制；仅启用既有 windows-sys 的 SDK feature。
 
 实际新增专项 **5 通过、0 失败、1 个仅供 parent 启动的明确忽略子进程入口**。覆盖普通真实子进程多层目录/文件继承、占用目的不改写、显式凭据策略、持有原 pin 时修复、重复修复，以及无 WRITE_DAC 的实际 OS 5。修复前后重新打开子项、孙项、兄弟、父目录与凭据，比对完整 FileId、内容及 NtQuerySecurityObject 原始 SD 字节保持；不用 GetSecurityInfo 对 inherited ACE 的重算显示代替原始字节。本轮完整 native **79 通过、0 失败、3 明确忽略**，严格全目标 Clippy -Dwarnings 通过，已包含本组。Mac 文件与策略未改，实际 Mac CI 按用户要求后置；没有 Windows 10 或安装版证据。
+
+### W2.15 — 真实 Registry Job、管道闭合和 Node/npm 探测
+
+Windows Registry 接通挂起创建、实际 Job/根/主线程 owner、创建前准备的三条原生管道 thread、恢复和原共享 driver。实际 root 退出、Job 空、所有 session/drain/pump join 及 driver join 才退役 keep_alive/live writer；消费者提前退出仍实际排空输出。std Command 不公开 env_clear，新增显式 inherited/cleared sidecar；Windows 缺 sidecar 在任何 marker/child 前拒绝，Mac 仍原 Command 原策略。创建后设置失败保留实际 owner，终止/管道闭合后才解决 setup issue，不把“有错误”当作永久无法观察。Windows 环境 block 按 CompareStringOrdinal 的 UTF-16 大小写规则排序/应用覆盖，保留隐藏 =C: 与未配对 surrogate，不用 lossy/Unicode 大写合并不同 key。
+
+实际完整 core owned_process 组 **28 通过、0 失败、2 明确忽略**；其中新增 Windows **8/8**，另显式官方 Node **1/1**。覆盖 4 MiB 双输出及提前丢消费者、真实 stdin EOF、丢 waiter 后 TempDir/reader 继续保持、超时实际 Job、退出码 259、环境继承/清空、无 executor/no-policy/seal 的无 child 拒绝，以及真实挂起/已入 Job 后控制注入 setup 错误（不是 OS AssignJob/Resume 故障注入），工厂未调用且最终 owner/writer/driver 均实际退役。native 环境纯测试 **4/4** 已计入 W2.14 的 79；原生 std/native 子进程逐 UTF-16 观察及 cwd 对照也在该全组中。官方 Node 原生 staged 专项另显式 **1/1**，0.54 秒。
+
+Windows 环境适配只找 node.exe、由 Win32 查询系统路径、用本机分隔符拼 PATH；managed 探测清空继承后显式注入 Windows 必需目录并禁用 compile cache/npm log 写入。实际 global npm 发现 Node 不接受 canonical verbatim npm-cli.js 参数（EISDIR/lstat C:），改经共用精确 conventional_path 适配 npm 脚本、prefix、cwd、outDir，文件身份/文件操作仍用原路径。Mac candidates/tool_path/managed Command 原正文移入 unix 适配；参数 facade 在 Mac 返回原 PathBuf，不加过滤。
+
+实际环境选集 **10 通过、0 失败、1 明确忽略**（6 项 environment 与 4 项同名过滤匹配的 Git 文件边界），node layout **2/2**。显式官方 managed/explicit 全 npm 模块树测试 **1/1**，30.56 秒：新 disposable 中文空格路径中 Node 24.22.0、npm 11.19.1，清空环境 managed 与显式 configure_node 都就绪，运行前后完整受管树核验一致。较早旧样本 metadata 超声明预算曾如实拒绝，保留原样，未放宽生产预算；后来从正常 dev 资源新建样本通过。非交互 libtest 子进程仅 fixture 移除 TERM，生产环境继承不变。真实项目运行/协议/日志/崩溃恢复仍归 W3；没有把这些专项称 W3 或 CI 完成。

@@ -1229,6 +1229,7 @@ impl BuildManager {
         ensure_unchanged(project, baseline)?;
         self.phase(id, "build")?;
         let staging = task_root.join("dist");
+        let staging_argument = crate::node_tool_layout::command_argument(&staging)?;
         let script = project.manifest.build["script"].as_str().unwrap();
         self.command(
             id,
@@ -1239,7 +1240,7 @@ impl BuildManager {
                 script,
                 "--",
                 "--outDir",
-                staging
+                staging_argument
                     .to_str()
                     .ok_or_else(|| ApiError::new("INVALID_PATH", "Build path must be UTF-8"))?,
             ],
@@ -1330,13 +1331,14 @@ impl BuildManager {
             .join(".platform/cache/npm")
             .join(&project);
         ensure_dir(&cache)?;
+        let command_cwd = crate::node_tool_layout::command_argument(cwd)?;
         let mut command = Command::new(&tools.node.path);
         command
-            .arg(&tools.npm.path)
+            .arg(crate::node_tool_layout::command_argument(&tools.npm.path)?)
             // CLI options override inherited npm prefix/global settings, so ci
             // cannot select the original project as its installation target.
             .arg("--prefix")
-            .arg(cwd)
+            .arg(&command_cwd)
             .arg("--global=false")
             // CLI configuration wins over inherited environment/.npmrc values.
             // npm may rotate logs even with logs-max=0: keep that lookup away
@@ -1345,7 +1347,7 @@ impl BuildManager {
             .arg(self.task_dir(id).join("npm-disabled-output"))
             .arg("--logs-max=0")
             .args(args)
-            .current_dir(cwd)
+            .current_dir(&command_cwd)
             .env("PATH", &tools.path)
             .env("npm_config_cache", cache)
             .env("npm_config_update_notifier", "false")
@@ -1371,7 +1373,7 @@ impl BuildManager {
             .store
             .project_processes(&project)?
             .start(
-                command,
+                crate::owned_process::OwnedCommand::inherited(command),
                 ProcessOptions::new("web-build/npm", remaining),
                 keep_alive,
                 move |pipes| {

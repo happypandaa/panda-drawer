@@ -3,27 +3,41 @@
 use crate::{shutdown::ShutdownIssue, ApiError};
 use futures_util::{future::BoxFuture, FutureExt};
 use serde::Serialize;
+#[cfg(not(windows))]
+use std::process::Child;
 #[cfg(unix)]
 use std::process::Stdio;
 use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
-    process::{Child, ExitStatus},
+    process::ExitStatus,
     sync::{Arc, Mutex, Weak},
     task::{Context, Poll},
     time::Duration,
 };
+#[cfg(target_os = "macos")]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, DuplexStream},
+    io::DuplexStream,
     process::Command,
     sync::{oneshot, watch, Notify},
     task::JoinHandle,
     time::Instant,
 };
 
+#[path = "owned_process/command.rs"]
+mod command;
+pub(crate) use command::OwnedCommand;
+#[cfg(windows)]
+#[path = "owned_process/windows.rs"]
+mod windows;
+#[cfg(windows)]
+use windows::{Child, ProcessGroup};
+
 #[path = "owned_process_group.rs"]
 mod group;
+#[cfg(not(windows))]
 use group::ProcessGroup;
 
 /// Re-observe a signal failure only while the caller keeps its original Child
@@ -229,8 +243,34 @@ enum IoValue<T> {
 }
 struct IoOwner<T> {
     name: String,
-    handle: Option<JoinHandle<Result<IoValue<T>, ApiError>>>,
+    handle: Option<IoTask<T>>,
     joined: bool,
+}
+enum IoTask<T> {
+    Async(JoinHandle<Result<IoValue<T>, ApiError>>),
+    #[cfg(windows)]
+    Pipe(windows::PipeThread),
+}
+impl<T> From<JoinHandle<Result<IoValue<T>, ApiError>>> for IoTask<T> {
+    fn from(handle: JoinHandle<Result<IoValue<T>, ApiError>>) -> Self {
+        Self::Async(handle)
+    }
+}
+impl<T> IoTask<T> {
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::Async(handle) => handle.is_finished(),
+            #[cfg(windows)]
+            Self::Pipe(handle) => handle.is_finished(),
+        }
+    }
+    async fn join(&mut self) -> Result<Result<IoValue<T>, ApiError>, ()> {
+        match self {
+            Self::Async(handle) => handle.await.map_err(|_| ()),
+            #[cfg(windows)]
+            Self::Pipe(handle) => handle.join().map(|result| result.map(|()| IoValue::Drain)),
+        }
+    }
 }
 struct Resources<T, G> {
     child: Option<Child>,
@@ -271,14 +311,13 @@ pub(crate) fn prepare_command(command: &mut Command) {
     let _ = command;
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 type OsPipe = tokio::net::UnixStream;
-#[cfg(not(unix))]
-type OsPipe = DuplexStream;
 
 /// Register I/O before a child can exist. Tokio's Command::spawn performs its
 /// reactor/SIGCHLD registration after spawning; its error cannot return ownership
 /// of that std Child. Keep std Child directly and reap only after WNOWAIT proof.
+#[cfg(target_os = "macos")]
 fn prepare_stdio(command: &mut Command) -> Result<(OsPipe, OsPipe, OsPipe), ApiError> {
     #[cfg(unix)]
     {
@@ -329,6 +368,7 @@ fn prepare_stdio(command: &mut Command) -> Result<(OsPipe, OsPipe, OsPipe), ApiE
 }
 
 /// A closed consumer switches to a sink; it never abandons the actual reader.
+#[cfg(target_os = "macos")]
 async fn pump_output(
     mut reader: impl AsyncRead + Unpin,
     mut consumer: DuplexStream,
@@ -357,6 +397,35 @@ impl OwnedProcessRegistry {
     /// The keep-alive must contain the operation lease and disposable directory
     /// owners that would otherwise disappear when the result waiter is dropped.
     pub fn start<T: Send + 'static, G: Send + 'static>(
+        &self,
+        command: impl Into<OwnedCommand>,
+        options: ProcessOptions,
+        keep_alive: G,
+        make_io: impl FnOnce(ProcessPipes) -> IoPlan<T> + Send + 'static,
+    ) -> Result<ProcessRun<T>, ApiError> {
+        let command = command.into();
+        #[cfg(windows)]
+        {
+            windows::start(self, command, options, keep_alive, make_io)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // The original Command itself remains the complete Mac policy.
+            let _ = command.environment;
+            self.start_macos(command.command, options, keep_alive, make_io)
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            let _ = (command, options, keep_alive, make_io);
+            Err(not_started(
+                "PROCESS_PLATFORM_UNSUPPORTED",
+                "Owned process verification is unavailable on this platform",
+            ))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn start_macos<T: Send + 'static, G: Send + 'static>(
         &self,
         mut command: Command,
         options: ProcessOptions,
@@ -460,33 +529,45 @@ impl OwnedProcessRegistry {
         let mut stdin = stdin;
         resources.io.push(IoOwner {
             name: "stdin-pump".into(),
-            handle: Some(runtime.spawn(async move {
-                tokio::io::copy(&mut input_pump, &mut stdin).await?;
-                if let Err(error) = stdin.shutdown().await {
-                    if error.kind() != std::io::ErrorKind::NotConnected {
-                        return Err(error.into());
-                    }
-                }
-                Ok(IoValue::Drain)
-            })),
+            handle: Some(
+                runtime
+                    .spawn(async move {
+                        tokio::io::copy(&mut input_pump, &mut stdin).await?;
+                        if let Err(error) = stdin.shutdown().await {
+                            if error.kind() != std::io::ErrorKind::NotConnected {
+                                return Err(error.into());
+                            }
+                        }
+                        Ok(IoValue::Drain)
+                    })
+                    .into(),
+            ),
             joined: false,
         });
         resources.io.push(IoOwner {
             name: "stdout-pump".into(),
-            handle: Some(runtime.spawn(async move {
-                pump_output(stdout, output_pump)
-                    .await
-                    .map(|()| IoValue::Drain)
-            })),
+            handle: Some(
+                runtime
+                    .spawn(async move {
+                        pump_output(stdout, output_pump)
+                            .await
+                            .map(|()| IoValue::Drain)
+                    })
+                    .into(),
+            ),
             joined: false,
         });
         resources.io.push(IoOwner {
             name: "stderr-pump".into(),
-            handle: Some(runtime.spawn(async move {
-                pump_output(stderr, diagnostics_pump)
-                    .await
-                    .map(|()| IoValue::Drain)
-            })),
+            handle: Some(
+                runtime
+                    .spawn(async move {
+                        pump_output(stderr, diagnostics_pump)
+                            .await
+                            .map(|()| IoValue::Drain)
+                    })
+                    .into(),
+            ),
             joined: false,
         });
         drop(resources);
@@ -605,17 +686,19 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                 Ok(plan) => {
                     resources.io.push(IoOwner {
                         name: "session".into(),
-                        handle: Some(tokio::spawn(async move {
-                            plan.session.await.map(IoValue::Session)
-                        })),
+                        handle: Some(
+                            tokio::spawn(async move { plan.session.await.map(IoValue::Session) })
+                                .into(),
+                        ),
                         joined: false,
                     });
                     for (name, drain) in plan.drains {
                         resources.io.push(IoOwner {
                             name,
-                            handle: Some(tokio::spawn(async move {
-                                drain.await.map(|()| IoValue::Drain)
-                            })),
+                            handle: Some(
+                                tokio::spawn(async move { drain.await.map(|()| IoValue::Drain) })
+                                    .into(),
+                            ),
                             joined: false,
                         });
                     }
@@ -630,6 +713,24 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                 }
             }
         }
+        self.drain_driver().await;
+    }
+
+    #[cfg(windows)]
+    async fn run_failed_start(self: Arc<Self>, pipes: ProcessPipes, error: ApiError) {
+        // A child already exists. Drop only the facades, never its real pumps,
+        // owner or G, and do not invoke the component's I/O factory.
+        drop(pipes);
+        // This is an operation setup failure, not a lost I/O join receipt. The
+        // actual suspended owner, Job and registered pumps still provide the
+        // closure proof; retain this issue until that proof is observed.
+        self.issue(&error.code, &error.message, true);
+        self.cancel.send_replace(true);
+        self.send(Err(error));
+        self.drain_driver().await;
+    }
+
+    async fn drain_driver(self: Arc<Self>) {
         let result = std::panic::AssertUnwindSafe(self.drive())
             .catch_unwind()
             .await;
@@ -667,6 +768,7 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                         .handle
                         .as_mut()
                         .expect("observed handle")
+                        .join()
                         .await;
                     resources.io[index].joined = true;
                     resources.io[index].handle = None;
@@ -714,17 +816,15 @@ impl<T: Send + 'static, G: Send + 'static> Record<T, G> {
                 cleanup_start = Some(Instant::now());
                 self.update(|m| m.phase = ProcessPhase::Stopping);
                 if resources.exit.is_none() {
-                    retry_owned_signal("PROCESS_SIGNAL_FAILED", || {
-                        resources.group.signal(group::TERMINATE)
-                    })
-                    .await?;
+                    retry_owned_signal("PROCESS_SIGNAL_FAILED", || resources.group.request_stop())
+                        .await?;
                 }
             }
             if let Some(cleanup) = cleanup_start {
                 if resources.exit.is_none() {
                     if !killed && cleanup.elapsed() >= self.options.terminate_grace {
                         retry_owned_signal("PROCESS_SIGNAL_FAILED", || {
-                            resources.group.signal(group::KILL)
+                            resources.group.force_stop()
                         })
                         .await?;
                         killed = true;
@@ -869,3 +969,7 @@ mod tests;
 #[cfg(test)]
 #[path = "owned_process_signal_tests.rs"]
 mod signal_tests;
+
+#[cfg(all(test, windows))]
+#[path = "owned_process/windows_tests.rs"]
+mod windows_tests;
