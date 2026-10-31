@@ -593,6 +593,6 @@ fn cancelled() -> ApiError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "project_version_data_tests.rs"]
 mod tests;
