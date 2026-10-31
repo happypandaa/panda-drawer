@@ -746,3 +746,11 @@ Windows BuildGitGuard 只在实际 marker 扫描证明无仓库时通行，不�
 恢复 inventory 只对固定 .platform/project-state/git 真实缺失/空目录通行，保留整个扫描中的原生 pins，并重查早先空目录及列表变化。任何 pending、终态、损坏或未知记录均保留，不伪造恢复结果。项目目录 1000 上限与 Mac project_git_data.rs::check_data_workspace_available 一致；复审曾怀疑新增限制，核对实际 Mac 入口后保留原预算，没有对外改变契约。
 
 完整 core 实际 project_git 组 **20/20**（18 个 Windows 边界与 2 个共享 wire 测试），无失败、忽略。覆盖实际临时 ProjectStore、坏工具配置/缺失工具仍无进程、构建中新增 .git 被拒、同用户普通源码新增/改名允许、真实 junction、大小写、混合路径、早先项目迟到记录，以及 capture/recheck 扫描期间真实 lease 和 read gate 保持、返回后释放。第一次根代理误用 project_git::windows:: 过滤得到 0 项，不算验证；随后用实际注册名完整执行得到上述 20 项。Mac 相关原文件零改、实际 CI 仍待运行；仓库索引、Git 写入及崩溃恢复仍未完成。
+
+### W2.8 — 实际 live writer 发布与闭合退役
+
+Windows writer 在既有私有 Node/Web owner（或显式平台 owner）内独占创建 preparing 文件，记录 kind/id/token/component 和实际完整身份，刷新后用原 HANDLE 不覆盖发布；并发目的名字或源名字替换不能让平台覆盖/改收养外来对象。finish 只供实际 no-child 或真实 Job/I/O 全闭合路径调用，匹配原身份及原字节后请求删除，仍有 reader 导致 delete-pending 时保持 guard，实际固定名字缺失才闭合。Drop 不删除 marker，不以任务状态代替进程资源回执。
+
+实际完整 core writer 专项 **18/18**，无失败、忽略。包括私有创建/刷新/发布及显式 finish、原字节/高位 FileId/硬链接改变保留、并发准备与目的名字保留、原 HANDLE 发布、真实共享 reader 延迟删除、Node/Web owner 缺失不重建、junction/混合分隔符、早先空 scope 迟到 marker 的完整重查。独立只读审查通过；Mac 原 writer 文件与业务规则保持。
+
+此步只实现本进程掌握的活 writer，不伪造崩溃恢复。启动 inventory 对真实 Missing/Empty 通行，任何 preparing/live/终态样式/未知字节均保留 unknown，错误明确不能确认实际进程及 I/O，未许诺重启电脑即可修复。真实 Windows boot/崩溃后的安全退役仍待 W3/W5；全目录删除及卸载不能据本步称已完成。Registry 新接线另有实际专项，待独立提交记录，不重复累加到这 18 项。
