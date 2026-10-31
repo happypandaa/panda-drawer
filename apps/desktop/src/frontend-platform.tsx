@@ -59,6 +59,7 @@ const common = {
   workspacePathPlaceholder: '选择新工作区的绝对路径',
   workspaceMigrationDescription: '把工作区移到新位置。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。',
   workspaceLocationRequirements: '空文件夹、可写入；支持的位置以本机核对结果为准。',
+  projectDirectorySettingsLabel: '更改项目目录…',
   exitExplanation: '当前是内部开发版，只使用专用数据目录。退出软件时会关闭应用窗口并停止受管服务。',
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，这个文件夹仍会保留。',
   localDirectoryCompletionHelp: (_ownership?: string) => '没有临时下载文件需要清理。以后删除应用时，你的文件夹仍会保留。',
@@ -95,6 +96,7 @@ const windows = {
   workspacePathPlaceholder: '例如 D:\\项目\\新工作区',
   workspaceMigrationDescription: '把工作区移到另一处本机内置 NTFS 磁盘位置。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。',
   workspaceLocationRequirements: '空文件夹、可写入、NTFS 格式，位于本机内置磁盘。',
+  projectDirectorySettingsLabel: '查看项目目录…',
   exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从菜单退出时，会关闭应用窗口并停止受管服务。',
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，平台生成的项目文件夹会一并删除。',
   localDirectoryCompletionHelp: (ownership?: string) => {

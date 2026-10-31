@@ -16,6 +16,7 @@ import { messageFrom } from './ui-utils';
 import { onProjectDeleted } from './project-deletion';
 import { canDismissGitImport } from './git-import-view-state';
 import type { GitImportViewState } from './git-import-view-state';
+import { useFrontendPlatform } from './frontend-platform';
 export { gitRepositoryAddress } from './git-repository';
 
 type ExistingRepository = GitRepositorySource & { appId: string; name: string };
@@ -35,6 +36,7 @@ export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
   return <GitImportWorkflow key={props.instanceId ?? ''} {...props} />;
 }
 function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenLocal, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter, onStateChange }: SourceAcquisitionPanelProps) {
+  const frontendPlatform = useFrontendPlatform();
   const [url, setUrl] = useState(''); const [branch, setBranch] = useState(''); const [name, setName] = useState('');
   const [directory, setDirectory] = useState(suppliedDirectory ?? '');
   const [view, setView] = useState<'form' | 'duplicate' | 'running' | 'failed' | 'unknown' | 'success'>('form');
@@ -126,7 +128,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     {view === 'form' && <form onSubmit={event => { event.preventDefault(); void start(); }}>
       <label htmlFor="git-import-url">公开仓库地址</label><input id="git-import-url" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://github.com/作者/仓库" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
       <p>支持 GitHub、Gitee 的公开 HTTPS 仓库。</p>
-      <section className="add-project-after" aria-label="添加后文件在哪里"><strong>添加后</strong><dl><dt>项目文件夹</dt><dd><code>{directory || '正在读取项目目录…'}/{address?.repository ?? '仓库名'}</code>平台和 AI 直接使用这一份代码。同名时自动另取名字，删除项目时一起删除。</dd><dt>应用数据</dt><dd>配置、密钥、数据和日志单独保存在平台中。</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>更改项目目录…</button>}</section>
+      <section className="add-project-after" aria-label="添加后文件在哪里"><strong>添加后</strong><dl><dt>项目文件夹</dt><dd><code>{directory || '正在读取项目目录…'}/{address?.repository ?? '仓库名'}</code>平台和 AI 直接使用这一份代码。同名时自动另取名字，删除项目时一起删除。</dd><dt>应用数据</dt><dd>配置、密钥、数据和日志单独保存在平台中。</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{frontendPlatform.projectDirectorySettingsLabel}</button>}</section>
       <details className="git-import-options"><summary>高级选项</summary><label htmlFor="git-import-branch">分支（选填）</label><input id="git-import-branch" value={branch} onChange={event => setBranch(event.target.value)} placeholder="留空使用默认分支" /><label htmlFor="git-import-name">显示名称（选填）</label><input id="git-import-name" value={name} onChange={event => setName(event.target.value)} /></details>
       <p>平台只准备生产依赖，不执行仓库脚本。需要构建时，请让 AI 构建后用“添加本地项目”添加。</p>
       <div className="confirmation-actions"><button type="submit" className="primary-button" disabled={disabled || !address || !directory}>开始添加</button><button type="button" className="refresh-button" onClick={() => onClose()}>取消</button></div>
