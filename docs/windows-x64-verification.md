@@ -840,3 +840,13 @@ Windows 启动恢复采用实际固定 task scope/no-reparse HANDLE；沿用 Mac
 W2 的本机开发模式功能标准已完成；CI/合入 main 按用户要求后置，Windows 10、中文/空格的实际用户名或工作区、安装包和第 7 节完整验收尚未完成。本轮产品项目显示名/内容含中文空格，项目目录为自动转写名，不能据此宣称实际工作区路径含中文空格（TempDir 专项另有覆盖）。继续堆叠 W3，不将本记录算作安装版或两套 CI 绿色。
 
 W2 收尾静态检查：保留 source-failure 两次原断言，仅用 let-else 取出原 Err；把 signed_resources 的原两个路径测试原样移到文件末尾。原对应测试各 **2/2**，完整 core --lib --tests --no-deps **-Dclippy::all 通过**，既有 65 项 Rust 警告仍保留。没有跳过 Mac 测试或把本地 Clippy 当 macOS CI。
+
+### W3.1 — Node 声明与实际静态网页 HTTP 文件边界
+
+开始 W3 前实际 fetch --prune 成功，origin/main 仍 ac3b5d7；CI 后置，在已推送 W2 fbbb826 上堆叠 win/w3-node，未合入 main。Node manifest/read_bytes/checked_child 和代理 open_at/open_root/open_file 抽到平台文件适配；六个 Mac 原函数正文在仅忽略格式与可见性后机械比对保持，Mac 测试保留。Windows 声明按完整 FileId、原 len/mtime/links=1 前后比较，不拿 Unix metadata tuple 或 DACL/owner/ctime 加严。路径在与原 Mac 相同位置拒绝 junction/reparse，原 root canonicalize 政策保持。
+
+Windows 代理以原根 HANDLE 解析实际名字并核对原身份，固定各层目录至实际叶文件读取，沿用 Mac 静态文件单链接政策，不增加私有 ACL/属主要求。启用原 portable HTTP/停止测试，两个真正 Unix symlink/rename 专项保留原 Mac 注册，Windows 新增实际 junction/硬链接与原生 pin 专项。
+
+为与并行 runtime 源码隔离，使用新 disposable detached checkout 复制这六份实际源文件、其余为 W2 HEAD，实际编译完整 core（不是替身模块）。Node proxy **25/25**，2.19 秒，覆盖真实本机 HTTP/CSP、独立 cookie/host/origin、只转发 backend bearer、请求预算、重定向/流、慢文件/真实上游 socket/driver join、丢 stop/start waiter、中文空格超 260 文件树、junction/硬链接不泄露和外部原件保持。manifest **14/14**，0.03 秒，其中两个新增实际文件/链接专项。Windows pin 对原根 rename 返回真实 OS 占用错误并保持内容，未把这当成 Mac 也会拒绝改名。不是 Node 应用进程启动或完整产品开窗验收，runtime/StartIntent/崩溃恢复继续实现。
+
+该独立完整 core --lib --tests --no-deps Clippy **-Dclippy::all 通过**（64 项原有 Rust 警告保留），git diff --check 通过；实际 macOS 和 Windows 自托管 CI 仍按用户要求后置。
