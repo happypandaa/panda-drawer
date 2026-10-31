@@ -718,3 +718,9 @@ Node/Git doctor 仍明确 PROCESS_PLATFORM_UNSUPPORTED，包内固定工具位�
 实际完整 native all-targets **54 通过、0 失败、2 明确忽略**（精确 child 夹具和官方 Node opt-in）；另显式官方已核验 Windows Node **1/1**，在中文空格临时目录实际运行、200 KB stderr 完整排空。native 全目标严格 Clippy -Dwarnings 通过。新增默认测试实际验证挂起期间未执行、加入 Job 后恢复、真实已创建挂起根的 resume-before-assignment 本地验证失败仍可取回 owner 并取得退出/EOF，以及退出码 259 不冒充仍运行；后两类 OS 原生设置失败尚未故障注入。
 
 既有真实父/子孙 Job、丢 Job 与异常终止专用 host 的测试在上述完整组继续通过。这里仍是原生 API 与打包边界；尚未接到产品 OwnedProcessRegistry、持久 writer 和 Node 应用，不是 W3 产品运行或任务管理器验收，也未取得 Mac CI 结果。
+
+### W2.4 — 网页归属目录实际私有创建
+
+发现 WebProjectOwnership 原目录创建仍只在 Unix chmod，Windows 普通 create_dir 不能作为原私有 DACL 的证明。将原 check_no_symlinks、缺失时单层创建、已选目录权限修复收拢到适配层；Mac 语句和顺序保持，Windows 原生私有创建或仅修已选 leaf，不递归补数据根、不改系统或工作区父 ACL，不改变 ownership 索引提交顺序。
+
+实际完整 core 二进制专项 **2/2**：新的两级 scope 及既有普通 leaf 修复后保持完整身份和 sentinel；原临时父目录身份和非私有状态保持；父目录缺失不创建额外根；实际 junction 拒绝且外部目标身份、内容和原访问状态保持。全部仅新 disposable TempDir，没有访问真实开发目录。此步补齐持久 writer 所需的原私有 owner 基础，不证明构建、删除或迁移已完整接通；Mac 实际运行仍待 CI。

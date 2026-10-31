@@ -86,6 +86,7 @@ pub mod tasks;
 mod web_file_deletion;
 mod web_project_cleanup;
 mod web_project_ownership;
+mod web_project_ownership_io;
 pub mod webview_storage;
 mod window_cache_io;
 mod workspace;
