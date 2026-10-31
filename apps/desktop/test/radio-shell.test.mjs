@@ -167,6 +167,27 @@ test('Windows shell preserves native tool arguments and current-folder controls 
   assert.equal(calls.some(([command]) => command === 'workspace_migrate' || command === 'choose_path'), false);
 });
 
+for (const [platformName, target, linkLabel, otherLabel, migrationAvailable] of [
+  ['Windows', 'x86_64-pc-windows-msvc', '查看项目目录…', '更改项目目录…', false],
+  ['Mac', 'aarch64-apple-darwin', '更改项目目录…', '查看项目目录…', true],
+]) {
+  test(`${platformName} Git addition labels its existing storage link accurately without changing its destination`, async () => {
+    const platformBootstrap = { ...bootstrap, platform: { build: { target } } };
+    const calls = await setup({ overrides: { bootstrap_info: () => platformBootstrap } });
+    await click(byText('从 Git 添加', addGroup()));
+    const sourceDialog = document.querySelector('.source-acquisition-modal');
+    assert.ok(byText(linkLabel, sourceDialog));
+    assert.equal(byText(otherLabel, sourceDialog), undefined);
+    await click(byText(linkLabel, sourceDialog));
+    assert.equal(document.querySelector('.source-acquisition-modal'), null);
+    assert.equal(document.querySelector('#settings-storage-tab').getAttribute('aria-selected'), 'true');
+    const location = document.querySelector('.workspace-location-card');
+    assert.ok(location.textContent.includes(bootstrap.workspaceRoot));
+    assert.equal(Boolean(byText('更换位置', location)), migrationAvailable);
+    assert.equal(calls.some(([command]) => /^(node_git_import_start|source_acquire|source_capture|workspace_migrate|choose_path)$/.test(command)), false);
+  });
+}
+
 test('Missing bootstrap stays neutral and switches only after the real compiled target arrives', async () => {
   const read = deferred();
   await setup({ overrides: { bootstrap_info: () => read.promise } });

@@ -1145,7 +1145,7 @@ Node 归属更新原先使用普通 create_dir，私有权限设置只在 Unix �
 
 既有实际 manager 专用入口另 **1/1**，1.24 秒：独立 TempDir 的 Env7 actual UDF 匹配，pageLoaded=true、requestsBeforeVerification=0，browserExited=true；原根保留到最终移除，之后实际 absent。为运行该夹具，先核对自有 Vite PID 23320 的 exe、完整命令和启动时间，只停止该进程以释放 1420；没有因此清理默认数据根。该真实引擎专项不替代默认根全局 GUI 验收。
 
-接下来仍需在同一 fresh stage 重建包含此修复的新包，通过正常 manager 初始化而非手工 ACL 写入，再重试全局 GUI 清除。**截至本检查点，该默认根 GUI 重试尚未通过，W5.20 的失败不改写为成功。**
+截至本修复专项检查点，仍待在同一 fresh stage 重建包含修复的新包，经正常 manager 初始化而非手工 ACL 写入重试默认根 GUI 清除。后续安装版实际成功见 W6.6；W5.20 那次失败仍如实保留，不改写其结果。
 
 ## W6 — 安装包（进行中）
 
@@ -1183,7 +1183,7 @@ manager release 实际构建 **6 分 59 秒**，首个 NSIS 包成功生成，**
 
 scope 界面分组 **21/21**，2.26 秒；完整 UI **496/496、0 跳过**，14.70 秒；TypeScript/Vite build 通过，保留原 chunk 大小警告。测试核对 Windows 文案与 Mac 原文，不把文字修正作为实际清除范围或原生闭合证明。
 
-本次文案检查点正在构建的第二个正常 fresh 包（stage 后缀 `1HCHrQ`，CLI 已实际构建 **3 分 12 秒**）早于该 UI 文案修改，不能作为最终 UI 版本；随后复用本轮资源的增量重建见 W6.5。当时全局 GUI 清除尚未执行，之后真实执行失败见 W5.20；**没有全局清除成功回执，W6 仍未完成。**
+本次文案检查点正在构建的第二个正常 fresh 包（stage 后缀 `1HCHrQ`，CLI 已实际构建 **3 分 12 秒**）早于该 UI 文案修改，不能作为最终 UI 版本；随后复用本轮资源的增量重建见 W6.5。当时全局 GUI 清除尚未执行，之后真实执行失败见 W5.20，包含继承修复后的安装版成功见 W6.6；**W6 仍未完成。**
 
 ### W6.5 — 第二轮 fresh 资源上的文案版本增量重建
 
@@ -1191,4 +1191,20 @@ Windows 清除预览文案提交 `2655210` 已推送。第二轮正常 fresh 准
 
 重建前对该 stage 的 runtime Node、development Node 和 Git 再次实际原生验证 **3/3**；CLI target 与 sidecar SHA256 同为 `3BBCE4FF47EB879B5BD963C6145D054AD094992AC6BC48A4CF471802D7EAC46C`，实际 build-info 为固定开发身份、版本 **0.0.0**、Windows x64。desktopInvocation 保持原 reset、精确 resource config 及 target；before-build TypeScript/Vite 通过。实际 release 重建 **4 分 03 秒**后，NSIS 成功生成，实际 **63,182,688 字节（60.26 MiB）**，SHA256 为 `4D54CB07F5BB1E2EB1440187BD9083584DF1CB6E368BB2E1170E86B9C28D7132`，日志为本机 `w6-cleanup-copy-prepared-nsis-rebuild.log`。该包的实际 PE 检查为 CLI 13、manager 30 个 normal import，各 0 个 delay import，均无 VC 运行库直接导入匹配；仍不证明传递依赖或动态加载。
 
-该包随后已再次实际当前用户 `/S` 安装，**Exit 0，8.43 秒**；原 workspace 与外部原目录仍存在，安装后 CLI build-info 核对正确。**此包早于 ManagerProfile 继承接线，不能作为最终可通过全局清除的版本。** 修复专项见 W5.21，包含接线的新包与默认根全局 GUI 重试仍待完成；不由旧包安装成功推出清除成功。按执行标准第 7 节及第 9 节第 6 项，已异步询问用户 Windows 10 验收选择，尚待回答；本机 Windows 11 的其余工作继续，不把未运行的 Windows 10 检查记为通过。
+该包随后已再次实际当前用户 `/S` 安装，**Exit 0，8.43 秒**；原 workspace 与外部原目录仍存在，安装后 CLI build-info 核对正确。**此包早于 ManagerProfile 继承接线，不能作为最终可通过全局清除的版本。** 修复专项见 W5.21，当时尚待包含接线的新包和默认根 GUI 重试，后续结果见 W6.6；不由旧包安装成功推出清除成功。按执行标准第 7 节及第 9 节第 6 项，已异步询问用户 Windows 10 验收选择，尚待回答；本机 Windows 11 的其余工作继续，不把未运行的 Windows 10 检查记为通过。
+
+### W6.6 — 包含管理器继承修复的安装版全局清除与卸载
+
+包含 `0e0da54` 的正常 manager 增量 NSIS release 实际构建 **4 分 03 秒**，生成 **63,205,799 字节**安装包，SHA256 为 `FF9479A68BBBD7608DBCEB069B8846A81BDB0B4C6ECC8FAC5FCC6DED419F5E61`。实际当前用户 `/S` 安装 **Exit 0，8.09 秒**，正常启动安装目录主程序，PID **25888**。正常 manager 初始化后，旧 `Cache_Data` 的 fsutil FileId 查询已成功；manager 原根完整 FileId 仍为 `0x000000000000000000090000000326b2`，没有任何现场手工 ACL 写入。
+
+实际安装版针对原 **4 个临时项目**重试全局清除，走完真实两次确认。普通 manager 关闭后，原生结果窗明确显示“本软件管理的本机项目数据和代码已清理…”。随后物理核对：C 盘原 workspace 不存在，D 盘生成 Node 源目录（名称后缀 `2029ec8a`）不存在；DataRoot 只剩 `.environment.json` 和 `instance.lock`，此次预览的 **14 个 target 全部实际 absent**，包括实例日志、ownership、UDF 和 journals。清理后程序 manager/CLI 仍在，没有把安装程序本身作为项目内容删除。
+
+外部原目录（名称后缀 `255ca4c8`）仍有完整 **9 个文件**，逐一 SHA256/长度及文件数保持，根完整 FileId 仍为 `0x0000000000000000000300000007ed42`。正常点击结果窗“确定”并退出后，实际执行 `uninstall.exe /S`，**Exit 0，3.15 秒**；安装的 manager、CLI 和 HKCU 卸载项均实际 absent，外部原目录仍存在。
+
+**本次 Windows 11 安装版的全局清除及随后卸载通过，卸载后重装仍待下一步。** 成功仅覆盖这次明确 disposable 项目、预览范围及实际安装副本，不推出 Windows 10、其它第 7 节场景、Task Manager 精确交互或干净机器验收均已通过，CI 仍按用户授权后置。
+
+### W6.7 — Git 添加页项目目录链接按 Windows 实际能力显示
+
+Windows Git 添加页原“更改项目目录…”改为“查看项目目录…”，文案通过 frontend-platform 适配；仍使用同一个回调进入 storage 设置，没有改后端、增加迁移能力或另开不受限的新迁移入口。Mac 原 label 和行为保持。本小步只有 3 个前端文件及本记录/对照表，不修改实际路径、权限或迁移门禁。
+
+相关 scope 分组 **43/43**，3.35 秒；完整 UI **498/498、0 跳过**，14.37 秒；TypeScript/Vite build 通过，保留原 chunk 大小警告。本节改动在 W6.6 安装包之后，仍需重新打包、重装及继续其它场景；不把 UI 测试当作该新版安装验证，**W6 仍未完成**。
