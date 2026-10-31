@@ -40,6 +40,8 @@ const DIGEST_RULE: u32 = 1;
 mod build_result;
 #[path = "build_candidate.rs"]
 mod candidate;
+#[path = "build_digest_path_io.rs"]
+mod digest_paths;
 #[path = "builds/startup.rs"]
 mod startup;
 pub use build_result::BuildResultRecovery;
@@ -1522,7 +1524,7 @@ fn hash_tree(root: &Path, source: bool, hasher: &mut Sha256) -> Result<(), ApiEr
     let mut files = vec![];
     collect_files(root, Path::new(""), source, &mut files)?;
     for path in &files {
-        let label = path.to_str().unwrap();
+        let label = digest_paths::label(path);
         hasher.update((label.len() as u64).to_le_bytes());
         hasher.update(label.as_bytes());
         let full = root.join(path);
