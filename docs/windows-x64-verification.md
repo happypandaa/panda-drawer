@@ -762,3 +762,13 @@ Windows writer 在既有私有 Node/Web owner（或显式平台 owner）内独�
 对应 native 策略/系统目录专项 **6/6**，覆盖盘符/UNC、超 260 字符的纯词法转换、未配对 surrogate、不能安全改写的名字、实际现有系统目录、动态容量及错误返回。它们包含在本轮完整 native **71 通过、0 失败、2 明确忽略**，全目标严格 Clippy -Dwarnings 通过。调用方的 cwd/项目 profile 接线将分别提交记录；本提交本身不宣称产品路径已全部接通。
 
 实际短 cwd 的 std/native 对照已能保持 GetCurrentDirectoryW 和根相对 GetFullPathNameW 一致；本机超 260 中文空格 cwd 两种输入的 std/native 均在 CreateProcess 前返回 OS 267。没有跳过测试、加产品路径长度门槛或改注册表；纯词法不加长度限制不等于 OS 支持该 cwd。长文件树操作另有实际通过证据，Windows 10 及安装包仍未验收。
+
+### W2.10 — 网页窗口实际 WebView2 隔离、持久化及退出占用
+
+网页窗口通过平台 facade 绑定原 StoreLedger 凭据。Windows 先创建 about:blank，读回真实 Env7.UserDataFolder 并核对一直 pin 的完整身份，再导航原项目页；不以 builder 输入代替实际证据。owner 保持原 profile 与产物租约，只有封住本 generation、收到真实 Destroyed 及匹配最后浏览器 PID 的 Env5 BrowserProcessExited 后，下一主队列才退役 COM handler/资源。过期 PID、未封 generation 或未知关闭不提前释放；全局 shutdown 同样排空实际 owners。Mac 原 identifier、导航、许可、产物 receipt 与 destroy 顺序经 facade 保持并独立复审，实际 Mac CI 未运行。
+
+初次真实两窗口已证 localStorage/IndexedDB 隔离，但 Cookie 重开丢失，未按成功计。实际引擎日志及新临时目录 ACL 观察定位到当前用户权限未继承；仅在新临时 profile 为同一 user FA 添加 OI/CI 后，真实 Cookie 数据库出现且持久化通过。生产 helper 仅修已由原记录/full ID 授权的 selected 私有 profile，自身 protected/唯一用户保持，不新增 SID、不改系统祖先/owner/SACL、不放宽 sandbox，重复调用无写入。后续产品 helper 实测还发现 verbatim UDF 的 Cookie 失败，改用 W2.9 共享精确路径适配，并再次以原完整身份验证转换结果、持有其原生 scope，未盲目去前缀。
+
+最终 native helper **2/2**；桌面默认 owner 专项 **4 通过、2 个新增交互 opt-in**。显式真实 parent **1/1**（Windows 11 25H2，4.28 秒），分别在两个新 disposable root 使用普通 DOS 和 verbatim 输入：每轮同一 origin 的 A/B localStorage、IndexedDB、Cookie 不互见，A 关闭/真实退出后重开仍保留 A1，仍开着的 B 可继续写 B2，A2 更新不影响 B；各三代真实 Env5 NORMAL、lease 全部退役，核验前请求数均 [0,0,0]。每轮 A/B 各有实际 20480-byte Cookies DB，只读确认后保留全部现场。没有通过 sleep、清 Cookie 或减弱断言放行。
+
+native 全目标严格 Clippy -Dwarnings 及桌面 --tests --no-deps -Dclippy::all 通过；桌面既有 dead_code Rust 警告保留。这里是复用生产适配的真实 Tauri/WebView2 夹具，不是完整管理器新建/三次构建 GUI 或安装包验收；没有磁盘 purge/物理媒体/长 UDF 路径证明，不宣称 W2 或完整删除完成。失败与成功临时证据均未提交，真实开发数据未读取/删除。

@@ -98,7 +98,15 @@ impl Backend for NativeBackend {
                     if receipt.label.starts_with("node-app-") {
                         let _ = window.navigate(tauri::Url::parse("about:blank").unwrap());
                     }
-                    if window.destroy().is_err() && !receipt.destroyed() {
+                    if super::project_webview_profile::destroy_for_shutdown(
+                        &app,
+                        window.clone(),
+                        receipt.generation,
+                    )
+                    .await
+                    .is_err()
+                        && !receipt.destroyed()
+                    {
                         eprintln!(
                             "Native business window destroy rejected: generation={}",
                             receipt.generation
@@ -113,6 +121,9 @@ impl Backend for NativeBackend {
             for (receipt, _) in bindings {
                 receipt.wait().await;
             }
+            super::project_webview_profile::drain_shutdown(&app)
+                .await
+                .map_err(|issue| Issue::new(&issue.code, false, true))?;
             Ok(())
         })
     }

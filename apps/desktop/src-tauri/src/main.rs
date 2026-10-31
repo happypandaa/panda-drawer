@@ -6,8 +6,8 @@ mod codex_handoff;
 mod desktop_app_events;
 mod desktop_installation;
 mod desktop_monitor;
-mod desktop_path_io;
 mod desktop_partial_startup;
+mod desktop_path_io;
 mod desktop_shutdown;
 mod desktop_shutdown_native;
 mod desktop_webview_profile;
@@ -19,6 +19,7 @@ mod native_stores;
 mod node_development;
 mod node_windows;
 mod project_onboarding;
+mod project_webview_profile;
 mod project_window_cleanup;
 mod source_import;
 mod window_sizes;
@@ -901,6 +902,7 @@ fn observe_project_window(
                 }
                 state.window_sizes.untrack(&receipt.label);
             });
+            project_webview_profile::window_destroyed(&app, &receipt.label, receipt.generation);
         }
         _ => {}
     });
@@ -945,82 +947,112 @@ fn build_project_window(
         platform_core::project_cleanup::ProjectKind::Web,
         &project_id,
     )?;
+    let profile = project_webview_profile::Profile::prepare(
+        app,
+        &state.handle.webview_stores(),
+        platform_core::project_cleanup::ProjectKind::Web,
+        &project_id,
+        &project_label(&project_id),
+        store_identifier,
+    )?;
     let receipt = state
         .window_lifetimes
         .reserve_project(&project_label(&project_id), &native_admission)
         .map_err(|_| ApiError::new("WINDOW_GENERATION_STILL_OWNED", "上次项目窗口尚未确认关闭"))?;
-    if let Some(artifact_lease) = artifact_lease {
-        receipt
-            .hold_resource(artifact_lease)
-            .map_err(|issue| ApiError::new(issue.code, "项目窗口已关闭，未创建新窗口"))?;
-    }
-    let project_window = tauri::WebviewWindowBuilder::new(
-        app,
-        project_label(&project_id),
-        tauri::WebviewUrl::External(launch_url),
-    )
-    .data_store_identifier(store_identifier)
-    .title(project_title(&name))
-    .inner_size(size.width, size.height)
-    .min_inner_size(
-        platform_core::app_windows::MIN_WIDTH,
-        platform_core::app_windows::MIN_HEIGHT,
-    )
-    .on_navigation(move |url| {
-        let local = Url::parse(&runtime_handle.info().base_url)
-            .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
-        if !local {
-            request_external_link(&navigation_app, url.clone());
-        }
-        local
-    })
-    .on_download(browser_download::handler(
-        app.clone(),
-        state.handle.clone(),
-        project_id.clone(),
-        document_epoch,
-        state.engine_downloads.clone(),
-    ))
-    .disable_drag_drop_handler()
-    .on_permission_request(move |webview, kind| {
-        use tauri::webview::{PermissionKind, PermissionResponse};
-        let Some(device) = (match kind {
-            PermissionKind::Camera => Some("camera"),
-            PermissionKind::Microphone => Some("microphone"),
-            _ => None,
-        }) else {
-            return PermissionResponse::Deny;
-        };
-        let Ok(_io_lease) = permission_handle.io_lifetime().admit() else {
-            return PermissionResponse::Deny;
-        };
-        let info = permission_handle.info();
-        let allowed = webview
-            .url()
-            .ok()
-            .zip(Url::parse(&info.base_url).ok())
-            .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
-            && permission_handle.device_permission_declared(&permission_id, device);
-        if allowed {
-            PermissionResponse::Default
-        } else {
-            PermissionResponse::Deny
-        }
-    })
-    // Project windows have browser APIs, never native management access.
-    .on_new_window(move |url, _| {
-        request_external_link(&new_window_app, url);
-        NewWindowResponse::Deny
-    })
-    .build()
-    .map_err(|_| {
+    profile.reserve(app, receipt.generation).inspect_err(|_| {
         receipt.failed();
-        ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，关闭状态须保留核对")
     })?;
+    if let Some(artifact_lease) = artifact_lease {
+        profile.hold_resource(&receipt, artifact_lease)?;
+    }
+    let navigation_profile = profile.clone();
+    let project_window = profile
+        .configure(tauri::WebviewWindowBuilder::new(
+            app,
+            project_label(&project_id),
+            profile.initial_url(launch_url.clone()),
+        ))
+        .title(project_title(&name))
+        .inner_size(size.width, size.height)
+        .min_inner_size(
+            platform_core::app_windows::MIN_WIDTH,
+            platform_core::app_windows::MIN_HEIGHT,
+        )
+        .on_navigation(move |url| {
+            navigation_profile.navigation(|| {
+                let local = Url::parse(&runtime_handle.info().base_url)
+                    .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
+                if !local {
+                    request_external_link(&navigation_app, url.clone());
+                }
+                local
+            })
+        })
+        .on_download(browser_download::handler(
+            app.clone(),
+            state.handle.clone(),
+            project_id.clone(),
+            document_epoch,
+            state.engine_downloads.clone(),
+        ))
+        .disable_drag_drop_handler()
+        .on_permission_request(move |webview, kind| {
+            use tauri::webview::{PermissionKind, PermissionResponse};
+            let Some(device) = (match kind {
+                PermissionKind::Camera => Some("camera"),
+                PermissionKind::Microphone => Some("microphone"),
+                _ => None,
+            }) else {
+                return PermissionResponse::Deny;
+            };
+            let Ok(_io_lease) = permission_handle.io_lifetime().admit() else {
+                return PermissionResponse::Deny;
+            };
+            let info = permission_handle.info();
+            let allowed = webview
+                .url()
+                .ok()
+                .zip(Url::parse(&info.base_url).ok())
+                .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
+                && permission_handle.device_permission_declared(&permission_id, device);
+            if allowed {
+                PermissionResponse::Default
+            } else {
+                PermissionResponse::Deny
+            }
+        })
+        // Project windows have browser APIs, never native management access.
+        .on_new_window(move |url, _| {
+            request_external_link(&new_window_app, url);
+            NewWindowResponse::Deny
+        })
+        .build()
+        .map_err(|_| {
+            receipt.failed();
+            profile.creation_failed();
+            ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，关闭状态须保留核对")
+        })?;
     state
         .window_sizes
         .track(&project_window, window_identity, window_config);
-    observe_project_window(app, &project_window, project_id, receipt, native_admission);
+    let activation_admission = native_admission.clone();
+    observe_project_window(
+        app,
+        &project_window,
+        project_id,
+        receipt.clone(),
+        native_admission,
+    );
+    profile.bind_window(&project_window)?;
+    if let Err(issue) = profile.activate(&project_window, launch_url, || {
+        window_creation_allowed(state)?;
+        activation_admission
+            .check()
+            .map_err(|issue| ApiError::new(issue.code, "项目窗口接纳已经结束，项目页面尚未加载"))
+    }) {
+        profile.abort_start(app, &project_window, receipt.generation);
+        return Err(issue);
+    }
     Ok(())
 }
 
