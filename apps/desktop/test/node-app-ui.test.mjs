@@ -2284,6 +2284,48 @@ test('Configuration submission carries the displayed manifest revision', () => {
  const value=app({manifestDigest:'a'.repeat(64)});const input=nodeConfigurationInput(value,{ordinary:{},secrets:{}});assert.equal(input.manifestDigest,value.manifestDigest);
 });
 
+test('Local dependency warnings remain visible through adding without installing or opening the project', async () => {
+  const warning = '应用所需的运行组件尚未安装，请先在这个项目文件夹中安装依赖。';
+  const review = directoryReview();
+  review.inspection.dependencyWarnings = [warning];
+  const calls = [];
+  await setupDirectory(async command => {
+    calls.push(command);
+    if (command === 'choose_path') return review.sourcePath;
+    if (command === 'node_app_directory_inspect') return review;
+    if (command === 'node_app_directory_register') return app({ sourcePath: review.sourcePath, dependencyWarnings: [warning] });
+    throw new Error(command);
+  });
+  await click(byText('选择文件夹…'));
+  assert.match(document.querySelector('[aria-label="运行组件提示"]').textContent, /尚未安装/);
+  assert.equal(byText('添加').disabled, false, 'The advisory must not create a new registration gate');
+  await click(byText('添加'));
+  assert.match(document.querySelector('[aria-label="运行组件提示"]').textContent, /尚未安装/);
+  assert.match(document.querySelector('.import-result [role="status"]').textContent, /请先准备/);
+  assert.deepEqual(calls, ['choose_path', 'node_app_directory_inspect', 'node_app_directory_register']);
+});
+
+test('A refreshed dependency warning clears after preparation while keeping unsaved configuration drafts', async () => {
+  const value = app({ dependencyWarnings: ['运行组件尚未安装。'] });
+  const calls = [];
+  await setup(baseMock(value, async command => {
+    calls.push(command);
+    assert.equal(command, 'node_app_status');
+    return app({ dependencyWarnings: [] });
+  }));
+  assert.equal(byText('打开').disabled, false, 'A dependency warning is advisory');
+  await change(input('MODEL'), 'keep this model draft');
+  await change(input('AI_KEY'), 'artificial-keep-dependency-warning-draft');
+  await showDetails();
+  assert.match(document.querySelector('[aria-label="运行组件提示"]').textContent, /尚未安装/);
+  await act(async () => window.dispatchEvent(new window.Event('focus')));
+  assert.equal(document.querySelector('[aria-label="运行组件提示"]'), null);
+  await click(byText('修改'));
+  assert.equal(input('MODEL').value, 'keep this model draft');
+  assert.equal(input('AI_KEY').value, 'artificial-keep-dependency-warning-draft');
+  assert.deepEqual(calls, ['node_app_status']);
+});
+
 test('A retired installation stays removable and cannot advertise a source update or start', async()=>{
  const value=app({installation:{kind:'managed',generation:'old-generation',sourceId:'old-source',sourceDigest:'old-digest'}});
  await setup(baseMock(value));await showDetails();assert.match(document.body.textContent,/请删除后重新添加/);assert.equal(byText('打开').disabled,true);assert.equal(byText('复制提示词').disabled,true);assert.equal(byText('停止并删除…').disabled,false);assert.equal(byText('应用修改'),undefined);

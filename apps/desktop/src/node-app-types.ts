@@ -71,6 +71,7 @@ export interface NodeConfigurationField {
 }
 
 export interface NodeAppDetail {
+  dependencyWarnings?: string[];
   version?: string;
   manifestDigest?: string;
   gitSource?: { url: string; branch: string | null } | null;
@@ -103,6 +104,7 @@ export interface NodeAppDetail {
 }
 
 export interface NodeAppInspection {
+  dependencyWarnings?: string[];
   runtime: string;
   runtimeLabel: string;
   app: { id: string; name: string; version: string; description?: string };

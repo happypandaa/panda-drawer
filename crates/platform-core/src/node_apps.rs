@@ -532,7 +532,8 @@ impl NodeApps {
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
                 "missingRequired":view.missing_required,"invalidFields":view.invalid_fields,"canStart":view.can_start && runtime_phase != Some(RUNTIME_STARTING) && !cleanup_pending && (!marker || running.is_some()) && !inner.shutting_down},
-            "fields":inspected["configuration"]["fields"]
+            "fields":inspected["configuration"]["fields"],
+            "dependencyWarnings":inspected["dependencyWarnings"]
         }))
     }
 
@@ -1825,6 +1826,62 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "node_apps_manifest_refresh_tests.rs"]
 mod manifest_refresh_tests;
+
+#[cfg(test)]
+mod dependency_hint_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn detail_refreshes_dependency_advice_without_changing_registration_or_configuration() {
+        let (temporary, paths) = crate::RuntimePaths::for_test();
+        let source = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("disposable-dependency-advice");
+        fs::create_dir_all(source.join("public")).unwrap();
+        fs::create_dir_all(source.join("server")).unwrap();
+        fs::write(source.join("public/index.html"), "disposable").unwrap();
+        fs::write(
+            source.join("server/main.mjs"),
+            "throw Error('must not execute');",
+        )
+        .unwrap();
+        let manifest = json!({
+            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
+            "app":{"id":"disposable.dependency-advice","name":"Disposable advice","version":"1.0.0"},
+            "web":{"root":"public","entry":"index.html","routing":"files"},
+            "backend":{"root":"server","entry":"main.mjs","protocolVersion":1,"nodeMajor":24}
+        });
+        fs::write(
+            source.join("local-app.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let package = br#"{"dependencies":{"example":"1.0.0"}}"#;
+        fs::write(source.join("package.json"), package).unwrap();
+        let apps = NodeApps::new(
+            paths.data_root().into(),
+            source.join("disposable-missing-runtime-node"),
+        )
+        .unwrap();
+        let added = apps.register(source.clone()).await.unwrap();
+        assert_eq!(added["dependencyWarnings"].as_array().unwrap().len(), 1);
+        assert_eq!(added["state"], "stopped");
+        assert_eq!(added["configuration"]["canStart"], true);
+        let id = added["id"].as_str().unwrap();
+        let registration = apps.root.join(id).join("registration.json");
+        let registration_before = fs::read(&registration).unwrap();
+        let before = apps.configuration(id).await.unwrap();
+        fs::create_dir(source.join("node_modules")).unwrap();
+        let refreshed = apps.configuration(id).await.unwrap();
+        assert_eq!(refreshed["dependencyWarnings"], json!([]));
+        assert_eq!(refreshed["configuration"], before["configuration"]);
+        assert_eq!(refreshed["state"], before["state"]);
+        assert_eq!(fs::read(&registration).unwrap(), registration_before);
+        assert_eq!(fs::read(source.join("package.json")).unwrap(), package);
+    }
+}
 
 #[cfg(all(test, windows))]
 #[path = "node_apps/windows_runtime_tests.rs"]
