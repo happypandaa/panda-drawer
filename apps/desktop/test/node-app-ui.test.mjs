@@ -64,7 +64,7 @@ const fields = [
   field('ENABLED', 'boolean', { default: true }),
   field('MODE', 'select', { default: 'one', options: [{ label: '第一个', value: 'one' }, { label: '第二个', value: 'two' }] }),
 ];
-function app(extra = {}) { return { id: 'node_fixture', name: 'Disposable Node fixture', sourcePath: '/not-a-real-source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true }, fields, ...extra }; }
+function app(extra = {}) { return { id: 'node_fixture', name: 'Disposable Node fixture', sourcePath: '/not-a-real-source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true }, fields, ...extra }; }
 async function setup(mock, props = {}, Component = NodeAppsPanel) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
@@ -172,7 +172,8 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     assert.match(confirmation.textContent, /不会为本次删除保存可恢复副本/);
     assert.match(confirmation.textContent, /会关闭应用窗口，未保存的内容将丢失/);
     assert.doesNotMatch(confirmation.querySelector('.checkbox-label').textContent, /我已关闭项目窗口/);
-    assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本项目的全部平台管理内容/ : /原始应用目录中的源码、Git 版本及用户文件保持原样/);
+    assert.match(confirmation.textContent, ownership === 'managed' ? /将永久删除本项目的全部平台管理内容/ : /项目代码、Git 和 data\/ 文件数据保留/);
+    assert.match(confirmation.textContent, /浏览器数据/);
     const listed = [...confirmation.querySelectorAll('[data-path]')].map(element => element.getAttribute('data-path'));
     for (const path of [...preview.deletePaths, ...preview.preservedPaths]) assert.ok(listed.includes(path), `missing ${path}`);
     assert.match(confirmation.querySelector('.node-delete-base').textContent, /\/disposable\//);
@@ -1322,7 +1323,7 @@ test('Saving configuration does not reopen a running window; applying it require
 });
 
 function directoryReview(state = 'ready', extra = {}) {
-  return { sourcePath: '/artificial/node-source', state, expectedRevision: 'directory-revision-1', issues: [], reviewPrompt: state === 'needs-review' ? '完整后端说明\n请先读取 /artificial/node-source 再检查。\n不得直接运行。' : '', ...(state === 'ready' ? { inspection: { runtime: 'node-service', runtimeLabel: 'Node 服务', app: { id: 'org.example.preview', name: 'Artificial preview', version: '0.1.0' }, dataContract: { id: 'org.example.inspected-data', version: 1 }, configuration: { fields, missingRequired: ['AI_KEY'] } } } : {}), ...extra };
+  return { sourcePath: '/artificial/node-source', state, expectedRevision: 'directory-revision-1', issues: [], reviewPrompt: state === 'needs-review' ? '完整后端说明\n请先读取 /artificial/node-source 再检查。\n不得直接运行。' : '', ...(state === 'ready' ? { inspection: { runtime: 'node', runtimeLabel: 'Node 服务', app: { id: 'org.example.preview', name: 'Artificial preview', version: '0.1.0' }, dataContract: { id: 'org.example.inspected-data', version: 1 }, configuration: { fields, missingRequired: ['AI_KEY'] } } } : {}), ...extra };
 }
 async function setupDirectory(mock, props = {}) {
   await setup(mock, { instanceId: 'directory-instance', onPendingChange() {}, onAdded() {}, ...props }, LocalDirectoryPanel);
@@ -1759,19 +1760,6 @@ test('Local result categories preserve the native uncertainty and never invent a
     assert.ok(byText(category === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '复制说明给 AI'));
     await act(async () => root.unmount()); root = null;
   }
-});
-
-test('A project-v1 folder directs the user to the complete-project workflow without changing its files', async () => {
-  let imports = 0; const calls = [];
-  await setupDirectory(async (command, args) => {
-    calls.push([command, args]);
-    if (command === 'choose_path') return '/artificial/node-source';
-    if (command === 'node_app_directory_inspect') return directoryReview('needs-review', { category: 'insufficient', projectFormat: 'project-v1', issues: ['发现 project.json，应使用正确入口。'] });
-    throw new Error(command);
-  }, { onImportArchive: () => imports++ });
-  await click(byText('选择文件夹…')); await click(byText('改用导入完整项目'));
-  assert.equal(imports, 1);
-  assert.equal(calls.some(([command]) => /register|initialize|start/.test(command)), false);
 });
 
 test('Recent folders retain only five paths in the same workspace and always perform a fresh inspection', async () => {
@@ -2324,11 +2312,6 @@ test('A refreshed dependency warning clears after preparation while keeping unsa
   assert.equal(input('MODEL').value, 'keep this model draft');
   assert.equal(input('AI_KEY').value, 'artificial-keep-dependency-warning-draft');
   assert.deepEqual(calls, ['node_app_status']);
-});
-
-test('A retired installation stays removable and cannot advertise a source update or start', async()=>{
- const value=app({installation:{kind:'managed',generation:'old-generation',sourceId:'old-source',sourceDigest:'old-digest'}});
- await setup(baseMock(value));await showDetails();assert.match(document.body.textContent,/请删除后重新添加/);assert.equal(byText('打开').disabled,true);assert.equal(byText('复制提示词').disabled,true);assert.equal(byText('停止并删除…').disabled,false);assert.equal(byText('应用修改'),undefined);
 });
 
 

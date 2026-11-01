@@ -117,7 +117,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       <h3>永久删除「{project.name}」？此操作无法撤销。</h3>
       <p className="project-delete-warning"><TriangleAlert size={18} />本次删除不进入平台或系统回收站，无法从回收站恢复。</p>
       <p>项目 ID：<code>{project.id}</code></p>
-      <div className="project-delete-scope"><h4>本次删除</h4><p>将永久删除此项目目录内的源码（包括 Git 和未提交修改）、数据库、附件、图标、当前网页和说明，同时清除本项目的导出 ZIP、平台管理的构建、维护、恢复、任务材料及迁移前的项目副本。</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
+      <div className="project-delete-scope"><h4>本次删除</h4><p>将永久删除此项目目录内的源码（包括 Git 和未提交修改）、数据库、附件、图标、当前网页和说明，同时清除本项目的平台管理构建、任务材料及迁移前的项目副本。</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
       <div className="project-delete-scope"><h4>继续保留</h4><p>其他项目、外部原始目录、导入原件，以及平台全局运行环境和设置。</p></div>
       <p>已有项目窗口将无法继续保存。请先处理未保存内容；详情页的草稿不会因删除而自动保存。</p>
       {reading && <p className="project-help" role="status">正在核对删除范围…</p>}

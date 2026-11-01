@@ -25,10 +25,10 @@ impl Fixture {
             "<p>Artificial lifecycle fixture</p>",
         )
         .unwrap();
-        fs::write(source.join("local-app.json"), serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"test.disposable.lifecycle","name":"可丢弃生命周期测试","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+        fs::write(source.join("panda.json"), serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"可丢弃生命周期测试","version":"1"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"server","entry":"fixture.mjs","nodeMajor":24},
             "configuration":{"version":1,"fields":[{
                 "name":"TRIAL_BEHAVIOR","label":"人工测试行为","type":"string","required":false,"secret":false,
@@ -48,7 +48,7 @@ if os.environ['TRIAL_BEHAVIOR'] == 'leak-descendants':
     while not os.path.isfile(os.path.join(os.environ['APP_DATA_DIR'],'grandchild-pid')):
         if time.monotonic()>deadline: raise RuntimeError('artificial descendants were not ready')
         time.sleep(.01)
-source_manifest = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'local-app.json')
+source_manifest = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'panda.json')
 with open(os.path.join(os.environ['APP_DATA_DIR'], 'artificial-pid'), 'w') as output:
     output.write(str(os.getpid()))
 class Handler(BaseHTTPRequestHandler):
@@ -110,15 +110,23 @@ server.shutdown(); server.server_close()
         self.data.join("node-apps").join(id)
     }
 
+    fn project_data(&self, id: &str) -> PathBuf {
+        self.manager
+            .registration(id)
+            .unwrap()
+            .source_path
+            .join("data")
+    }
+
     fn pid(&self, id: &str) -> u32 {
-        fs::read_to_string(self.slot(id).join("data/artificial-pid"))
+        fs::read_to_string(self.project_data(id).join("artificial-pid"))
             .unwrap()
             .parse()
             .unwrap()
     }
 
     fn port(&self, id: &str) -> u16 {
-        fs::read_to_string(self.slot(id).join("data/artificial-port"))
+        fs::read_to_string(self.project_data(id).join("artificial-port"))
             .unwrap()
             .parse()
             .unwrap()
@@ -224,7 +232,7 @@ async fn failed_final_detail_rolls_back_only_the_newly_started_backend() {
     );
     assert!(fixture
         .source
-        .join("local-app.json.artificial-hidden")
+        .join("panda.json.artificial-hidden")
         .is_file());
 }
 
@@ -240,8 +248,8 @@ async fn failed_detail_during_reuse_does_not_stop_the_already_running_instance()
     fixture.manager.start(id).await.unwrap();
     let original_pid = fixture.pid(id);
     fs::rename(
-        fixture.source.join("local-app.json"),
-        fixture.source.join("local-app.json.artificial-hidden"),
+        fixture.source.join("panda.json"),
+        fixture.source.join("panda.json.artificial-hidden"),
     )
     .unwrap();
     assert!(fixture.manager.start(id).await.is_err());
@@ -280,7 +288,7 @@ fn copy_source(source: &Path, destination: &Path) {
     for name in ["public", "server"] {
         fs::create_dir(destination.join(name)).unwrap();
     }
-    for name in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+    for name in ["panda.json", "public/index.html", "server/fixture.mjs"] {
         fs::copy(source.join(name), destination.join(name)).unwrap();
     }
 }
@@ -297,7 +305,7 @@ async fn shutdown_cleans_every_owned_group_and_preserves_an_unrelated_process() 
     let first_id = first["id"].as_str().unwrap();
     let second_source = fixture.source.with_file_name("second-disposable-source");
     copy_source(&fixture.source, &second_source);
-    let path = second_source.join("local-app.json");
+    let path = second_source.join("panda.json");
     let mut declaration: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     declaration["configuration"]["fields"][0]["default"] = json!("hang-stop");
     fs::write(path, serde_json::to_vec(&declaration).unwrap()).unwrap();
@@ -315,11 +323,11 @@ async fn shutdown_cleans_every_owned_group_and_preserves_an_unrelated_process() 
     let pids = [
         fixture.pid(first_id) as i32,
         fixture.pid(second_id) as i32,
-        fs::read_to_string(fixture.slot(first_id).join("data/child-pid"))
+        fs::read_to_string(fixture.project_data(first_id).join("child-pid"))
             .unwrap()
             .parse()
             .unwrap(),
-        fs::read_to_string(fixture.slot(first_id).join("data/grandchild-pid"))
+        fs::read_to_string(fixture.project_data(first_id).join("grandchild-pid"))
             .unwrap()
             .parse()
             .unwrap(),
@@ -360,22 +368,22 @@ async fn health_failure_and_missing_source_still_clean_the_whole_owned_group() {
     fixture.manager.start(id).await.unwrap();
     let pids = [
         fixture.pid(id) as i32,
-        fs::read_to_string(fixture.slot(id).join("data/child-pid"))
+        fs::read_to_string(fixture.project_data(id).join("child-pid"))
             .unwrap()
             .parse()
             .unwrap(),
-        fs::read_to_string(fixture.slot(id).join("data/grandchild-pid"))
+        fs::read_to_string(fixture.project_data(id).join("grandchild-pid"))
             .unwrap()
             .parse()
             .unwrap(),
     ];
     fs::rename(
-        fixture.source.join("local-app.json"),
-        fixture.source.join("local-app.json.artificial-hidden"),
+        fixture.source.join("panda.json"),
+        fixture.source.join("panda.json.artificial-hidden"),
     )
     .unwrap();
     fs::write(
-        fixture.slot(id).join("data/force-health-failure"),
+        fixture.project_data(id).join("force-health-failure"),
         b"artificial",
     )
     .unwrap();
@@ -491,10 +499,10 @@ async fn deleting_a_forced_stop_preserves_external_source_and_another_running_in
         .source
         .with_file_name("other-disposable-running-source");
     copy_source(&fixture.source, &second_source);
-    let declaration_path = second_source.join("local-app.json");
+    let declaration_path = second_source.join("panda.json");
     let mut declaration: Value =
         serde_json::from_slice(&fs::read(&declaration_path).unwrap()).unwrap();
-    declaration["app"]["id"] = json!("test.disposable.lifecycle.unrelated");
+    declaration["app"]["name"] = json!("test.disposable.lifecycle.unrelated");
     declaration["configuration"]["fields"][0]["default"] = json!("normal");
     fs::write(&declaration_path, serde_json::to_vec(&declaration).unwrap()).unwrap();
     let second = fixture
@@ -508,7 +516,7 @@ async fn deleting_a_forced_stop_preserves_external_source_and_another_running_in
     fixture.manager.start(second_id).await.unwrap();
     let first_pid = fixture.pid(first_id) as i32;
     let second_pid = fixture.pid(second_id) as i32;
-    let other_sentinel = fixture.slot(second_id).join("data/other-app-kept.txt");
+    let other_sentinel = fixture.project_data(second_id).join("other-app-kept.txt");
     fs::write(
         &other_sentinel,
         b"another app remains running and keeps its data",
@@ -536,6 +544,7 @@ async fn deleting_a_forced_stop_preserves_external_source_and_another_running_in
     assert!(!fixture.slot(first_id).join("registration.json").exists());
     assert!(!fixture.slot(first_id).join("configuration").exists());
     assert!(!fixture.slot(first_id).join("data").exists());
+    assert!(fixture.source.join("data/artificial-pid").is_file());
     assert!(!fixture.slot(first_id).join("cache").exists());
     assert!(!fixture.slot(first_id).join("active.json").exists());
     assert_eq!(
@@ -546,7 +555,7 @@ async fn deleting_a_forced_stop_preserves_external_source_and_another_running_in
         fs::read(fixture.source.join("server/fixture.mjs")).unwrap(),
         source_before
     );
-    assert!(second_source.join("local-app.json").is_file());
+    assert!(second_source.join("panda.json").is_file());
     assert!(process_is_live(second_pid));
     assert_eq!(fixture.manager.running_ids().await, [second_id]);
     assert_eq!(
@@ -608,7 +617,7 @@ async fn direct_manifest_changes_keep_current_proxy_and_take_effect_after_restar
     let id = registered["id"].as_str().unwrap();
     fixture.manager.start(id).await.unwrap();
     let first_pid = fixture.pid(id);
-    let sentinel = fixture.slot(id).join("data/preserved-business-value");
+    let sentinel = fixture.project_data(id).join("preserved-business-value");
     fs::write(&sentinel, "keep-business-data").unwrap();
     fs::write(
         fixture.source.join("public/updated.html"),
@@ -620,9 +629,9 @@ async fn direct_manifest_changes_keep_current_proxy_and_take_effect_after_restar
         fixture.source.join("server/updated.mjs"),
     )
     .unwrap();
-    let manifest_path = fixture.source.join("local-app.json");
+    let manifest_path = fixture.source.join("panda.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["app"]["id"] = json!("disposable.changed.author.identity");
+    manifest["app"]["name"] = json!("disposable.changed.author.identity");
     manifest["app"]["version"] = json!("2");
     manifest["web"]["entry"] = json!("updated.html");
     manifest["backend"]["entry"] = json!("updated.mjs");
@@ -695,7 +704,7 @@ async fn proxy_drain_failure_retains_running_even_after_the_actual_runtime_exits
     let id = registered["id"].as_str().unwrap();
     fixture.manager.start(id).await.unwrap();
     let marker = fixture.slot(id).join("active.json");
-    let evidence = fixture.slot(id).join("data/artificial-preserved-value");
+    let evidence = fixture.project_data(id).join("artificial-preserved-value");
     fs::write(&evidence, b"artificial retained business bytes").unwrap();
     fixture
         .manager
@@ -728,10 +737,10 @@ async fn one_blocked_proxy_does_not_prevent_the_other_real_runtime_from_stopping
     let fixture = Fixture::new("normal");
     let second = Fixture::new("normal");
     let mut manifest: Value =
-        serde_json::from_slice(&fs::read(second.source.join("local-app.json")).unwrap()).unwrap();
-    manifest["app"]["id"] = json!("test.disposable.lifecycle.second");
+        serde_json::from_slice(&fs::read(second.source.join("panda.json")).unwrap()).unwrap();
+    manifest["app"]["name"] = json!("test.disposable.lifecycle.second");
     fs::write(
-        second.source.join("local-app.json"),
+        second.source.join("panda.json"),
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();
@@ -1020,7 +1029,9 @@ async fn marker_retirement_failure_keeps_closed_runtime_blocked_and_preserves_re
         let marker = fixture.slot(id).join("active.json");
         let displaced = fixture.slot(id).join("displaced-owned-active.json");
         let original = fs::read(&marker).unwrap();
-        let sentinel = fixture.slot(id).join("data/retained-after-retire-failure");
+        let sentinel = fixture
+            .project_data(id)
+            .join("retained-after-retire-failure");
         fs::write(&sentinel, b"business data must survive failed retirement").unwrap();
         let (entered, ready) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
@@ -1116,7 +1127,8 @@ async fn sealed_after_start_intent_confirms_no_spawn_and_allows_reopen() {
         .unwrap();
     let id = registration["id"].as_str().unwrap();
     let marker = fixture.slot(id).join("active.json");
-    let sentinel = fixture.slot(id).join("data/preserved-startup-record");
+    let sentinel = fixture.project_data(id).join("preserved-startup-record");
+    fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
     fs::write(&sentinel, "人工数据保持 🌱").unwrap();
     let (entered, observed) = tokio::sync::oneshot::channel();
     let (release, resume) = tokio::sync::oneshot::channel();
@@ -1124,7 +1136,7 @@ async fn sealed_after_start_intent_confirms_no_spawn_and_allows_reopen() {
     let (result, ()) = tokio::join!(fixture.manager.start(id), async {
         observed.await.unwrap();
         assert!(marker.is_file());
-        assert!(!fixture.slot(id).join("data/artificial-pid").exists());
+        assert!(!fixture.project_data(id).join("artificial-pid").exists());
         fixture.manager.processes.seal();
         release.send(()).unwrap();
     });
@@ -1209,7 +1221,7 @@ print('v24.22.0',flush=True)
     assert!(records.iter().all(|p| p.resource_closed()));
     let pid: i32 = fs::read_to_string(admitted).unwrap().parse().unwrap();
     assert!(!process_is_live(pid));
-    assert!(!fixture.slot(id).join("data/artificial-pid").exists());
+    assert!(!fixture.project_data(id).join("artificial-pid").exists());
     assert!(!marker.exists());
     assert!(fixture.manager.processes.shutdown().await.is_empty());
 }
@@ -1307,7 +1319,7 @@ async fn confirmed_no_spawn_never_removes_replaced_modified_or_retyped_intent() 
         if replacement == "modified-in-place" {
             assert_eq!(fs::read(&marker).unwrap(), b"foreign-intent");
         }
-        assert!(!fixture.slot(id).join("data/artificial-pid").exists());
+        assert!(!fixture.project_data(id).join("artificial-pid").exists());
     }
 }
 
@@ -1418,7 +1430,8 @@ async fn residual_intent_cleanup_gate_blocks_reopen_even_without_an_active_marke
             .unwrap();
         let id = registration["id"].as_str().unwrap();
         let preview = fixture.manager.delete_preview(id).await.unwrap();
-        let sentinel = fixture.slot(id).join("data/preserved-cleanup-record");
+        let sentinel = fixture.project_data(id).join("preserved-cleanup-record");
+        fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
         fs::write(&sentinel, b"preserve-runtime-data").unwrap();
         let before = fixture.manager.configuration(id).await.unwrap();
         assert_eq!(before["state"], "stopped");
@@ -1755,7 +1768,7 @@ async fn deferred_old_workspace_proof_preserves_current_runs_and_rejects_unknown
     let id = added["id"].as_str().unwrap();
     apps.start(id).await.unwrap();
     let slot = paths.data_root().join("node-apps").join(id);
-    let pid: i32 = fs::read_to_string(slot.join("data/artificial-pid"))
+    let pid: i32 = fs::read_to_string(fixture.source.join("data/artificial-pid"))
         .unwrap()
         .parse()
         .unwrap();
@@ -1873,7 +1886,7 @@ async fn pending_old_workspace_sources_cannot_gain_new_node_ownership() {
     )
     .unwrap();
     let old_source = old_workspace.join("custom/disposable-unregistered-node");
-    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+    for relative in ["panda.json", "public/index.html", "server/fixture.mjs"] {
         let target = old_source.join(relative);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, fs::read(fixture.source.join(relative)).unwrap()).unwrap();
@@ -1961,8 +1974,8 @@ async fn pending_old_workspace_sources_cannot_gain_new_node_ownership() {
     );
     assert!(fs::read_dir(&old_empty).unwrap().next().is_none());
     assert_eq!(
-        fs::read(old_source.join("local-app.json")).unwrap(),
-        fs::read(fixture.source.join("local-app.json")).unwrap()
+        fs::read(old_source.join("panda.json")).unwrap(),
+        fs::read(fixture.source.join("panda.json")).unwrap()
     );
     let plain = NodeApps::new(paths.data_root().into(), fixture.manager.node_path.clone()).unwrap();
     assert_eq!(
@@ -1994,7 +2007,7 @@ async fn pending_old_workspace_sources_cannot_gain_new_node_ownership() {
     assert!(!old_workspace.exists());
     // A terminal receipt no longer claims the old pathname. A later ordinary
     // user-selected replacement is independent and can be registered normally.
-    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+    for relative in ["panda.json", "public/index.html", "server/fixture.mjs"] {
         let target = old_source.join(relative);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, fs::read(fixture.source.join(relative)).unwrap()).unwrap();
@@ -2002,7 +2015,7 @@ async fn pending_old_workspace_sources_cannot_gain_new_node_ownership() {
     let replacement = apps.register(old_source.clone()).await.unwrap();
     assert_eq!(replacement["sourcePath"], json!(old_source));
     assert_ne!(replacement["id"], added["id"]);
-    assert!(old_source.join("local-app.json").is_file());
+    assert!(old_source.join("panda.json").is_file());
     service.shutdown().await.unwrap();
 }
 
@@ -2047,7 +2060,7 @@ async fn public_workspace_migration_preserves_external_original_inside_the_sourc
     )
     .unwrap();
     let source = workspace.join("custom/disposable-external-original");
-    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+    for relative in ["panda.json", "public/index.html", "server/fixture.mjs"] {
         let target = source.join(relative);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, fs::read(fixture.source.join(relative)).unwrap()).unwrap();
@@ -2072,7 +2085,7 @@ async fn public_workspace_migration_preserves_external_original_inside_the_sourc
     assert_eq!(error.details["sourcePath"], json!(source));
     assert!(fs::read_dir(&destination).unwrap().next().is_none());
     assert_eq!(handle.info().workspace_root, workspace);
-    assert!(source.join("local-app.json").is_file());
+    assert!(source.join("panda.json").is_file());
     assert!(workspace.is_dir());
     service.shutdown().await.unwrap();
 }
@@ -2149,21 +2162,9 @@ async fn migrated_owned_node_reopens_after_old_root_cleanup_and_deletes_every_so
     )
     .unwrap();
     apps.digest = interpreter.manager.digest.clone();
-    let source = old_workspace.join("custom/disposable-owned-node");
+    let source = old_workspace.join("project-sources/disposable-owned-node");
     fs::create_dir_all(&source).unwrap();
-    let preview = apps.inspect_directory(&source).unwrap();
-    let added = apps
-        .initialize_and_register_directory(
-            source.clone(),
-            DirectoryInitializeInput {
-                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-                name: "Disposable owned migration runtime".into(),
-            },
-        )
-        .await
-        .unwrap();
-    let id = added["id"].as_str().unwrap();
-    for relative in ["local-app.json", "public/index.html", "server/fixture.mjs"] {
+    for relative in ["panda.json", "public/index.html", "server/fixture.mjs"] {
         let target = source.join(relative);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(
@@ -2172,6 +2173,30 @@ async fn migrated_owned_node_reopens_after_old_root_cleanup_and_deletes_every_so
         )
         .unwrap();
     }
+    let id = Uuid::new_v4().to_string();
+    let ownership = apps.project_ownership();
+    ownership.initialize(&id).unwrap();
+    let identity = crate::file_identity::PersistedIdentity::capture(&source).unwrap();
+    ownership
+        .reserve_published_source_identity(&id, "disposable-owned-node", &identity)
+        .unwrap();
+    let added = apps
+        .register_published_source(
+            &id,
+            crate::node_git_import::VerifiedPublishedSource {
+                source_root: source.clone(),
+                source_identity: identity,
+                manifest_digest: format!(
+                    "{:x}",
+                    Sha256::digest(fs::read(source.join("panda.json")).unwrap())
+                ),
+                source_url: "https://github.com/disposable/owned-node".into(),
+                source_branch: Some("main".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let id = added["id"].as_str().unwrap();
     assert!(apps
         .project_ownership()
         .owns_source_directory(id, &source)
@@ -2207,7 +2232,7 @@ async fn migrated_owned_node_reopens_after_old_root_cleanup_and_deletes_every_so
     );
     pause.validate_reopened(&destination).unwrap();
     drop(pause);
-    let moved = destination.join("custom/disposable-owned-node");
+    let moved = destination.join("project-sources/disposable-owned-node");
     assert_eq!(apps.status(id).await.unwrap()["sourcePath"], json!(moved));
     apps.start(id).await.unwrap();
     apps.stop_runtime(id).await.unwrap();

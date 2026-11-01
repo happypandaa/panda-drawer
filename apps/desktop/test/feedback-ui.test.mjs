@@ -84,7 +84,7 @@ async function advance(milliseconds) {
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const bootstrap = { displayName: 'Disposable feedback fixture', identifier: 'dev.disposable.feedback', environment: 'development', apiVersion: 1, instanceId: 'feedback-instance', workspaceRoot: '/disposable/feedback/workspace', dataRoot: '/disposable/feedback/data', baseUrl: 'http://127.0.0.1:1', sqliteVersion: 'fixture', version: 'fixture', resources: { sdk: true, template: true, readme: true, cli: true }, cliPath: '/disposable/feedback/cli' };
 const web = (id = 'prj_feedback_a', name = 'Fixture Web A') => ({ id, name, description: '', projectRoot: `${bootstrap.workspaceRoot}/projects/${id}`, documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [], manifest: { database: 'data/main.sqlite', sourceDir: 'app', outputDir: 'dist', attachmentsDir: 'data/attachments', docs: { readme: 'README.md', database: 'docs/database.md', platform: 'docs/platform.md' } } });
-const node = { id: 'feedback_node_fixture', name: 'Fixture Node', sourcePath: '/disposable/feedback/external-node', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, fields: [], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: true } };
+const node = { id: 'feedback_node_fixture', name: 'Fixture Node', sourcePath: '/disposable/feedback/external-node', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, fields: [], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: true } };
 const storage = { platformProgram: { totalBytes: 0, complete: true }, workspace: { totalBytes: 0, complete: true, categories: {} }, otherLocalLocations: [] };
 const task = (extra = {}) => ({ taskId: 'task_feedback_fixture', projectId: null, type: 'workspaceMigration', status: 'running', final: false, phase: 'copying', result: null, error: null, ...extra });
 
@@ -323,13 +323,13 @@ test('An old snapshot without the latestBuild field keeps its earlier epoch-free
 });
 
 test('An active project operation keeps display precedence over recovered build history', async () => {
-  const active = buildTask({ type: 'export', status: 'running', final: false, error: null });
+  const active = buildTask({ type: 'storageCleanup', status: 'running', final: false, error: null });
   await setup({ projects: [web()], overrides: {
     maintenance_status: () => ({ projectId: web().id, documentEpoch: web().documentEpoch, mode: 'ready', recoveryRequired: false,
       activeTask: active.taskId, latestBuild: latestBuild() }),
     task_get: () => active,
   } });
-  await details(); assert.match(dialog().querySelector('.build-task').textContent, /导出项目 · 正在执行/);
+  await details(); assert.match(dialog().querySelector('.build-task').textContent, /清理可重新生成文件 · 正在执行/);
   assert.doesNotMatch(dialog().querySelector('.build-task').textContent, /Artificial retained interrupted build/);
 });
 
@@ -548,18 +548,7 @@ test('Local Node and directory success messages remain local instead of entering
   await closeDialog(); assert.equal(success(), null);
 });
 
-for (const type of ['workspaceMigration', 'workspaceCleanup']) {
-  test(`${type} feedback follows task.final even while the service snapshot retains an old active task`, async () => {
-    let finished = false;
-    const running = task({ type });
-    const workspace = { workspaceRoot: bootstrap.workspaceRoot, migrationState: type === 'workspaceMigration' ? 'migrating' : 'ready', activeTask: type === 'workspaceMigration' ? { taskId: running.taskId } : null, cleanupTask: type === 'workspaceCleanup' ? running : null, retainedRoots: [] };
-    await setup({ workspace, overrides: { task_get: () => finished ? { ...running, status: 'succeeded', final: true, phase: 'completed', result: { completed: true } } : running } });
-    const phrase = type === 'workspaceMigration' ? /工作区正在迁移，新操作暂时暂停/ : /历史清理正在进行，管理写操作暂时停用/;
-    assert.match(document.querySelector('.radio-notices').textContent, phrase);
-    await advance(10000); assert.match(document.querySelector('.radio-notices').textContent, phrase);
-    finished = true; await advance(1000);
-    assert.doesNotMatch(document.querySelector('.radio-notices').textContent, phrase);
-  });
+for (const type of ['workspaceMigration']) {
 }
 
 test('An automatic migration-source cleanup is tracked before settings opens while projects remain usable', async () => {
@@ -586,56 +575,6 @@ const dataRecoveryProject = (state = 'pending') => ({ ...web(), state: 'error', 
 const dataRecoveryMaintenance = () => ({ mode: 'ready', recoveryRequired: false, documentEpoch: null, activeTask: buildTask().taskId,
   lastTaskId: scanTask().taskId, latestBuild: latestBuild(buildTask(), { issues: [{ code: 'DO_NOT_READ_OLD_SCOPE', message: 'Artificial unverified old build' }] }) });
 
-test('Expected pending or blocked data recovery keeps diagnostic maintenance without consuming tasks or build results', async () => {
-  for (const state of ['pending', 'blocked']) {
-    const calls = await setup({ projects: [dataRecoveryProject(state)], overrides: { maintenance_status: dataRecoveryMaintenance,
-      task_get: () => assert.fail('diagnostic null epoch must not read a task') } });
-    await details();
-    assert.doesNotMatch(document.body.textContent, /维护状态读取失败|项目数据代次已变化或无法核对|Artificial retained interrupted build|Artificial unverified old build/);
-    assert.match(dialog().textContent, /数据取回尚未处理完成/);
-    assert.equal(byText('构建更新', dialog()).disabled, true);
-    assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
-    await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
-  }
-});
-
-test('Entering data recovery clears earlier same-scope build and scan display then reloads a verified new epoch', async () => {
-  let recovery = false;
-  let completed = false;
-  const current = () => completed ? { ...web(), documentEpoch: '22222222-2222-4222-8222-222222222222' } : recovery ? dataRecoveryProject() : web();
-  const calls = await setup({ projects: [web()], overrides: {
-    project_list: () => [current()],
-    maintenance_status: () => recovery ? dataRecoveryMaintenance() : ({ mode: 'ready', recoveryRequired: false, documentEpoch: current().documentEpoch,
-      activeTask: null, lastTaskId: completed ? null : scanTask().taskId, latestBuild: latestBuild(completed ? buildTask({ error: { code: 'NEW_VERIFIED_EPOCH', message: 'Artificial verified later build' } }) : buildTask()) }),
-    task_get: () => scanTask(),
-  } });
-  await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/); await closeDialog();
-  recovery = true;
-  await refreshHome(); await details();
-  assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|Artificial unverified old build|BUILD_INTERRUPTED|空间扫描 · 已完成|维护状态读取失败/);
-  assert.match(dialog().textContent, /数据取回尚未处理完成/);
-  assert.equal(calls.filter(([command]) => command === 'task_get').length, 1);
-  await closeDialog(); recovery = false; completed = true;
-  await refreshHome(); await details();
-  assert.match(dialog().textContent, /Artificial verified later build/);
-  assert.doesNotMatch(dialog().textContent, /维护状态读取失败|项目数据代次已变化或无法核对/);
-});
-
-test('Only the complete explicit data recovery diagnostic permits a null epoch and malformed epochs remain rejected', async () => {
-  const bad = [web(), { ...dataRecoveryProject(), state: 'ready' }, { ...dataRecoveryProject(), documentEpoch: '' },
-    { ...dataRecoveryProject(), buildInfo: { sourceState: 'unknown', dataRecoveryRequired: false, dataRecoveryState: 'pending' } }, dataRecoveryProject('clear')];
-  const cases = [...bad.map(project => [project, null]), ...[undefined, 17, '', '22222222-2222-4222-8222-222222222222'].map(epoch => [dataRecoveryProject(), epoch])];
-  for (const [project, epoch] of cases) {
-    const calls = await setup({ projects: [project], overrides: {
-      maintenance_status: () => { const status = dataRecoveryMaintenance(); if (epoch === undefined) delete status.documentEpoch; else status.documentEpoch = epoch; return status; },
-      task_get: () => assert.fail('unmatched epoch must not read tasks'),
-    } });
-    await details(); assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
-    assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
-    await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
-  }
-});
-
 test('Build preflight continues to reject a null epoch before submitting any build', async () => {
   let reads = 0;
   const calls = await setup({ projects: [web()], overrides: {
@@ -647,47 +586,3 @@ test('Build preflight continues to reject a null epoch before submitting any bui
   assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
   assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
 });
-
-test('A late old build poll cannot repopulate while a pending diagnostic maintenance read waits', async () => {
-  const poll = deferred(); const diagnostic = deferred(); let pending = false; let gets = 0;
-  const active = buildTask({ status: 'running', final: false, phase: 'artificial-old-build-running', error: null });
-  const calls = await setup({ projects: [web()], overrides: {
-    project_list: () => [pending ? dataRecoveryProject() : web()],
-    maintenance_status: () => pending ? diagnostic.promise : ({ mode: 'ready', recoveryRequired: false, documentEpoch: web().documentEpoch, activeTask: active.taskId, latestBuild: latestBuild(active) }),
-    task_get: () => ++gets === 1 ? active : poll.promise,
-  } });
-  await advance(1000); assert.equal(gets, 2);
-  pending = true; await refreshHome();
-  await act(async () => poll.resolve(active));
-  await act(async () => diagnostic.resolve(dataRecoveryMaintenance()));
-  await details();
-  assert.doesNotMatch(dialog().textContent, /artificial-old-build-running|维护状态读取失败/);
-  assert.match(dialog().textContent, /数据取回尚未处理完成/);
-  const count = calls.filter(([command]) => command === 'task_get').length;
-  await advance(2000);
-  assert.equal(calls.filter(([command]) => command === 'task_get').length, count, 'old build no longer polls');
-  await click(dialog().querySelector('.application-detail-more > summary'));
-  assert.equal(byText('导出 ZIP', dialog()).disabled, true);
-  assert.equal(byText('停止并删除…', dialog()).disabled, true);
-});
-
-for (const operation of ['gitDataRestoreContinue', 'gitDataRestoreUndo']) {
-test(`Diagnostic refresh keeps an already accepted ${operation} task visible and polling`, async () => {
-  let pending = false; let gets = 0;
-  const recovery = buildTask({ type: operation, status: 'running', final: false, phase: 'artificial-real-data-recovery-running', error: null });
-  await setup({ projects: [web()], overrides: {
-    project_list: () => [pending ? dataRecoveryProject() : web()],
-    maintenance_status: () => pending ? dataRecoveryMaintenance() : ({ mode: 'ready', recoveryRequired: false, documentEpoch: web().documentEpoch,
-      activeTask: recovery.taskId, latestBuild: latestBuild(null, { selection: 'none' }) }),
-    task_get: () => { gets++; return recovery; },
-  } });
-  assert.equal(gets, 1);
-  pending = true; await refreshHome(); await details();
-  assert.match(dialog().textContent, /artificial-real-data-recovery-running/);
-  const beforePoll = gets;
-  await advance(1000);
-  assert.ok(gets > beforePoll, 'accepted recovery task still polls');
-  assert.match(dialog().textContent, /artificial-real-data-recovery-running/);
-  assert.equal(byText('构建更新', dialog()).disabled, true);
-});
-}

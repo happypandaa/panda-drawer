@@ -1,8 +1,8 @@
 //! One-shot disposable proof: strict declaration -> private Node -> health/ping -> stop.
 //! No platform RuntimePaths, project registration, desktop service, or account input.
 use platform_core::{
-    node_app_manifest::{TrialManifest, TrialRuntime},
     node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, EXPECTED_NODE_VERSION},
+    panda_manifest::{PandaManifest, PandaRuntime},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -53,8 +53,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let app = &paths["--app"];
-    let manifest = TrialManifest::load(app)?;
-    if manifest.runtime != TrialRuntime::NodeService {
+    let manifest = PandaManifest::load(app)?;
+    if manifest.runtime != PandaRuntime::Node {
         return Err("A webpage declaration does not start a Node service".into());
     }
     let business_env = manifest.business_defaults()?;
@@ -75,7 +75,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         runtime.verify_health().await?;
         println!(
             "{}",
-            json!({"stage":"verified","runtime":"node-service","status":runtime.status()?})
+            json!({"stage":"verified","runtime":"node","status":runtime.status()?})
         );
         Ok::<(), platform_core::ApiError>(())
     }

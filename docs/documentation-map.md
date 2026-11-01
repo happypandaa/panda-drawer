@@ -1,5 +1,7 @@
 # 文档地图与阅读顺序
 
+2026-11-01：[统一 panda.json 与网页接入](unified-project-manifest-proposal.md)已确认并直接分批实施，覆盖旧清单、版本／恢复／ZIP 和数据位置约定。当前完成范围与测试见[分批实施记录](unified-project-manifest-implementation.md)。Node 作者清单使用 `panda.json`；下方较早阅读顺序、功能和数量均为历史盘点。
+
 2026-10-29 [Node 单目录运行](node-single-directory.md)：所有 Node 项目直接运行项目文件夹，Git 导入由单一任务负责并保留地址／分支；移除安装副本、平台 Node 构建／Git／源码取回，有效清单在下次启动接纳。[网页构建代次](web-build-generation-retention.md)继续收敛为当前代与真实窗口／读者占用的旧代；迁移自动收尾属于第三批。
 
 

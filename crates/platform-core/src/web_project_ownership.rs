@@ -1296,7 +1296,7 @@ mod tests {
         )
         .initialize(&node)
         .unwrap();
-        crate::node_apps::development::claim_source_after_verified_migration(
+        crate::node_apps::source_ownership::claim_source_after_verified_migration(
             &owner.data,
             &owner.workspace,
             &node,

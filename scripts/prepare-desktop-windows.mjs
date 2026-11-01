@@ -41,6 +41,8 @@ export async function prepareDesktopWindows({ release = false, offline = false }
   const resources = path.join(preparationRoot, 'resources');
   const binaries = path.join(preparationRoot, 'binaries');
   await mkdir(resources);
+  await mkdir(path.join(resources, 'schemas'));
+  await cp(path.join(root, 'schemas/panda.schema.json'), path.join(resources, 'schemas/panda.schema.json'));
   await mkdir(binaries);
   await run(process.execPath, ['scripts/package-sdk.mjs'], { windowsHide: true });
   const cacheDir = path.join(tools, 'node-runtime-cache-windows-x64');

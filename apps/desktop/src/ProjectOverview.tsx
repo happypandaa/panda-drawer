@@ -2,19 +2,16 @@ import { invoke } from '@tauri-apps/api/core';
 import { BookOpen, ChevronRight, FolderOpen, Save, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ProjectOperationRecovery } from './ProjectOperationRecovery';
-import { ProjectExportAction } from './LifecyclePanels';
 import { ApplicationDetails, ApplicationDetailRow } from './ApplicationDetails';
 import { ProjectAttachmentBrowser } from './StoragePanels';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
-import { ProjectGitPanel } from './ProjectGitPanel';
 import { projectRowFor } from './workspace-storage-data';
 import type { WorkspaceStorage } from './workspace-storage-data';
 import type { StoragePart } from './types';
 import type { MaintenanceStatus, ProjectInfo, ProjectMetadata, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { bytesText, partBytes } from './storage-utils';
-export function ProjectOverview({ project, instanceId, status, task, disabled, onTask, onChanged, onClose, onDismissGuardChange, onDevelopmentStateChange, technicalDetails, actions, handoff, notices, onDelete }: {
+export function ProjectOverview({ project, instanceId, status, task, disabled, onTask: _onTask, onChanged, onClose, onDismissGuardChange, onDevelopmentStateChange, technicalDetails, actions, handoff, notices, onDelete }: {
   project: ProjectInfo; instanceId?: string; status?: MaintenanceStatus; task?: TaskRecord; disabled: boolean;
   onTask: (task: TaskRecord) => void; onChanged: () => Promise<void>; onClose: () => void;
   technicalDetails?: ReactNode; actions?: ReactNode; handoff?: ReactNode; notices?: ReactNode; onDelete?: () => void; running?: boolean;
@@ -36,14 +33,8 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
   const [folderError, setFolderError] = useState('');
   const [notice, setNotice] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
-  const [recoveryPending, setRecoveryPending] = useState(false);
-  const [lifecycleDraft, setLifecycleDraft] = useState({ dirty: false, pending: false });
-  const dataRecoveryRequired = Boolean(project.buildInfo?.dataRecoveryRequired);
-  const [moreVisited, setMoreVisited] = useState(dataRecoveryRequired);
-  const [moreOpen, setMoreOpen] = useState(dataRecoveryRequired);
-  const [versionsOpen, setVersionsOpen] = useState(dataRecoveryRequired);
-  const [versionDraft, setVersionDraft] = useState({ dirty: false, pending: false });
-  const completedVersionTasks = useRef(new Set<string>());
+  const [moreVisited, setMoreVisited] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const developmentCallback = useRef(onDevelopmentStateChange); developmentCallback.current = onDevelopmentStateChange;
   const [dismissConfirm, setDismissConfirm] = useState(false);
   const [dismissMessage, setDismissMessage] = useState('');
@@ -52,16 +43,15 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
   const alive = useRef(true);
   const discardApproved = useRef(false);
   const dismissNotice = useRef<HTMLDivElement>(null);
-  const editingBlocked = disabled || dataRecoveryRequired || versionDraft.pending || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
+  const editingBlocked = disabled || !status || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || (status.mode === 'maintenance' && !status.readyForChanges);
   const maintenanceInput = status?.mode === 'maintenance' ? { maintenanceId: status.maintenanceId } : {};
   const dirty = Boolean(metadata && (draft.name !== metadata.name || draft.description !== metadata.description));
-  const morePending = busy || fileBusy || lifecycleDraft.pending || versionDraft.pending;
-  const operationPending = morePending || recoveryPending;
+  const morePending = busy || fileBusy;
+  const operationPending = morePending;
   const guardState = useRef({ dirty: false, pending: false });
-  guardState.current = { dirty: dirty || lifecycleDraft.dirty || versionDraft.dirty, pending: operationPending };
-  useEffect(() => { developmentCallback.current?.(versionDraft); }, [versionDraft]);
+  guardState.current = { dirty: dirty, pending: operationPending };
+  useEffect(() => { developmentCallback.current?.({ dirty: false, pending: false }); }, []);
   useEffect(() => () => { developmentCallback.current?.({ dirty: false, pending: false }); }, []);
-  useEffect(() => { if (dataRecoveryRequired) { setMoreVisited(true); setMoreOpen(true); setVersionsOpen(true); } }, [dataRecoveryRequired]);
   useEffect(() => {
     onDismissGuardChange?.(() => {
       if (pending.current || guardState.current.pending) { setDismissMessage('操作、恢复核对或文件选择仍在进行，请等待完成后再关闭。'); return false; }
@@ -115,11 +105,10 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
     {(dismissConfirm || dismissMessage) && <div ref={dismissNotice} tabIndex={-1} className="operation-confirmation overview-dismiss-confirmation" role="group" aria-label="关闭详情确认">
       {dismissConfirm ? <><strong>有尚未保存或提交的内容</strong><p>关闭将放弃基本信息或尚未提交的操作选择。已保存的应用数据不受影响。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="danger-button" disabled={operationPending} onClick={() => { discardApproved.current = true; onClose(); }}>放弃未提交内容并关闭</button></div></> : <><p role="status">{dismissMessage}</p><button className="text-button" onClick={() => setDismissMessage('')}>知道了</button></>}
     </div>}
-    <ProjectOperationRecovery key={`${instanceId ?? ''}:${project.id}:${project.projectRoot}`} projectId={project.id} instanceId={instanceId} status={status} task={task} disabled={disabled} onTask={onTask} onChanged={onChanged} onPendingChange={setRecoveryPending} />
     <ApplicationDetails actions={actions} handoff={handoff} notices={<>{folderError && <p className="task-error" role="alert">{folderError}</p>}{notices}</>}
       information={<><ApplicationDetailRow label="项目文件夹" action={project.projectRoot ? <button className="text-button" onClick={() => { setFolderError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setFolderError(messageFrom(cause)); }); }}>打开</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow><ApplicationDetailRow label="占用空间">{bytesText(storage ? partBytes(storage) : project.storage?.currentProject?.totalBytes)}{storage ? storage.complete !== true ? ' · 部分统计' : '' : project.storage?.currentProject?.stale ? ' · 待更新' : ''}</ApplicationDetailRow></>}
-      deleteAction={onDelete ? <button className="danger-button" disabled={disabled || operationPending || !status || Boolean(status.activeTask) || status.recoveryRequired || dataRecoveryRequired} onClick={onDelete}><Trash2 size={15} />停止并删除…</button> : undefined}
-      more={<details className="detail-overview-body application-detail-more" open={moreOpen || dataRecoveryRequired || guardState.current.dirty || morePending} onToggle={event => { if ((guardState.current.dirty || morePending || dataRecoveryRequired) && !event.currentTarget.open) event.currentTarget.open = true; else { if (event.currentTarget.open) setMoreVisited(true); setMoreOpen(event.currentTarget.open); } }}><summary>更多</summary>
+      deleteAction={onDelete ? <button className="danger-button" disabled={disabled || operationPending || !status || Boolean(status.activeTask) || status.recoveryRequired} onClick={onDelete}><Trash2 size={15} />停止并删除…</button> : undefined}
+      more={<details className="detail-overview-body application-detail-more" open={moreOpen || guardState.current.dirty || morePending} onToggle={event => { if ((guardState.current.dirty || morePending) && !event.currentTarget.open) event.currentTarget.open = true; else { if (event.currentTarget.open) setMoreVisited(true); setMoreOpen(event.currentTarget.open); } }}><summary>更多</summary>
       <section className="detail-information">
         <div className="detail-section-heading"><h3>应用信息</h3><button className="text-button" aria-expanded={editing} onClick={() => setEditing(value => !value)}>{editing ? '收起编辑' : '编辑信息'}<ChevronRight size={16} /></button></div>
         <p className="detail-description">{metadata?.description || project.description || '尚未填写简介。可以编辑信息，补充这个应用的用途。'}</p>
@@ -138,12 +127,8 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
       <section className="detail-usage-section"><h3>使用与数据</h3>
         {manifest?.docs?.readme && <button className="detail-document-row" disabled={disabled} onClick={() => void reveal('readme')}><BookOpen size={24} /><span><strong>查看使用说明</strong><small>了解{metadata?.name || project.name}的功能与使用方法。</small></span><ChevronRight size={18} /></button>}
       </section>
-      {dataRecoveryRequired && <p className="maintenance-warning" role="status">数据取回尚未处理完成。请在下方核对恢复状态，明确继续或撤回后再使用应用。</p>}
-      <details className="detail-technical-information" open={versionsOpen || dataRecoveryRequired || versionDraft.dirty || versionDraft.pending} onToggle={event => { if ((dataRecoveryRequired || versionDraft.dirty || versionDraft.pending) && !event.currentTarget.open) event.currentTarget.open = true; else setVersionsOpen(event.currentTarget.open); }}><summary>源码与数据版本</summary>
-        {versionsOpen && <ProjectGitPanel projectId={project.id} instanceId={instanceId} task={task} disabled={disabled || busy || fileBusy || recoveryPending || lifecycleDraft.pending} onTask={value => { onTask(value); if (value.final && !completedVersionTasks.current.has(value.taskId)) { completedVersionTasks.current.add(value.taskId); void onChanged(); } }} onDraftStateChange={setVersionDraft} />}
-      </details>
-      {moreVisited && <ProjectAttachmentBrowser project={project} blocked={disabled || !status || status.mode === 'maintenance' || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || busy || versionDraft.dirty || versionDraft.pending} onBusyChange={setFileBusy} />}
-      <ProjectExportAction project={project} instanceId={instanceId} status={status} disabled={disabled || versionDraft.dirty || versionDraft.pending} onTask={onTask} onDraftStateChange={setLifecycleDraft} />
+
+      {moreVisited && <ProjectAttachmentBrowser project={project} blocked={disabled || !status || status.mode === 'maintenance' || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final) || busy} onBusyChange={setFileBusy} />}
       <details className="detail-requirements"><summary>联网与设备要求<span>{!devices.length && !networks.some(([, items]) => items.length) ? '未声明额外需求' : '查看用途声明'}<ChevronRight size={16} /></span></summary><p>这些是应用声明的用途；使用摄像头或麦克风时仍需系统授权。</p>{networks.map(([kind, origins]) => <div key={kind}><h4>{({ connect: '网络连接', images: '外部图片', media: '外部音视频' } as Record<string, string>)[kind] ?? kind}</h4>{origins.map((item, index) => <p key={`${item.origin}:${index}`}><code>{item.origin}</code> · {item.purpose || '未说明用途'}{item.dataSent ? ` · 发送数据：${item.dataSent}` : ''}</p>)}</div>)}{devices.map(([device, value]) => <p key={device}>{device === 'camera' ? '摄像头' : device === 'microphone' ? '麦克风' : device} · {value.purpose || '未说明用途'}</p>)}{!devices.length && !networks.some(([, items]) => items.length) && <p>未声明外部连接或设备用途。</p>}</details>
       <details className="detail-technical-information"><summary>详细运行信息</summary><code className="overview-project-id">{project.id}</code><ObjectLayoutPanel layout={project.objectLayout} />{technicalDetails}</details>
       </details>}

@@ -1,8 +1,9 @@
 //! Every delivery and destructive recovery here uses an isolated TempDir.
 use super::*;
 use crate::{
-    builds::BuildManager, lifecycle::LifecycleManager, maintenance::MaintenanceManager,
-    CreateProjectInput, ProjectStore, RuntimePaths, TaskStatus,
+    builds::BuildManager, maintenance::MaintenanceManager,
+    web_project_deletion::WebProjectDeletionManager, CreateProjectInput, ProjectStore,
+    RuntimePaths, TaskStatus,
 };
 use serde_json::json;
 use std::{path::PathBuf, sync::Arc};
@@ -12,7 +13,7 @@ struct Fixture {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
-    lifecycle: Arc<LifecycleManager>,
+    lifecycle: Arc<WebProjectDeletionManager>,
     project: ProjectHandle,
     source: PathBuf,
     destination: PathBuf,
@@ -34,9 +35,13 @@ impl Fixture {
         let tasks =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
         let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
-        let lifecycle =
-            LifecycleManager::new(paths.clone(), store.clone(), tasks.clone(), maintenance)
-                .unwrap();
+        let lifecycle = WebProjectDeletionManager::new(
+            paths.clone(),
+            store.clone(),
+            tasks.clone(),
+            maintenance,
+        )
+        .unwrap();
         let external = temp
             .path()
             .canonicalize()
@@ -679,7 +684,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
                         entered_tx.send(()).unwrap();
                         wait(&worker_validated);
                     }
-                    crate::node_apps::development::require_export_location_unclaimed(
+                    crate::node_apps::source_ownership::require_delivery_location_unclaimed(
                         copied.paths.data_root(),
                         path.parent().unwrap(),
                     )
@@ -699,7 +704,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         let copied = &fixture;
         let node = &node;
         let claimant = scope.spawn(move || {
-            let result = crate::node_apps::development::claim_source_after_verified_migration(
+            let result = crate::node_apps::source_ownership::claim_source_after_verified_migration(
                 copied.paths.data_root(),
                 copied.paths.workspace_root(),
                 node,
@@ -722,7 +727,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
             .unwrap()
             .join("independent-node-B");
         fs::create_dir(&unrelated).unwrap();
-        crate::node_apps::development::claim_source_after_verified_migration(
+        crate::node_apps::source_ownership::claim_source_after_verified_migration(
             fixture.paths.data_root(),
             fixture.paths.workspace_root(),
             node,
@@ -742,7 +747,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         fixture.paths.workspace_root().into(),
     );
     owner.initialize(&node).unwrap();
-    crate::node_apps::development::claim_source_after_verified_migration(
+    crate::node_apps::source_ownership::claim_source_after_verified_migration(
         fixture.paths.data_root(),
         fixture.paths.workspace_root(),
         &node,
@@ -759,7 +764,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         &fixture.project,
         File::open(&fixture.source).unwrap(),
         &fixture.destination,
-        |path| crate::node_apps::development::require_export_location_unclaimed(
+        |path| crate::node_apps::source_ownership::require_delivery_location_unclaimed(
             fixture.paths.data_root(),
             path.parent().unwrap()
         )

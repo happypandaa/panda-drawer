@@ -537,7 +537,7 @@ fn scope_metadata(
     if node_root.try_exists()? {
         for entry in fs::read_dir(&node_root)? {
             let entry = entry?;
-            for name in ["registration.json", "development-source.json"] {
+            for name in ["registration.json", "source-binding.json"] {
                 let registration = entry.path().join(name);
                 crate::projects::check_no_symlinks(&registration, true)?;
                 if !registration.try_exists()? {
@@ -548,22 +548,6 @@ fn scope_metadata(
                     add_preserved_unless_owned(&mut preserved, &external, paths, &owned_paths)?;
                 }
                 files.push(registration);
-            }
-        }
-        let installations = node_root.join(".installations");
-        crate::projects::check_no_symlinks(&installations, true)?;
-        if installations.try_exists()? {
-            for entry in fs::read_dir(&installations)? {
-                let entry = entry?;
-                if entry.file_name() == ".pending-deletions" {
-                    continue;
-                }
-                let path = entry.path().join("install.json");
-                let value: Value = serde_json::from_slice(&read_small(&path)?)?;
-                for external in installation_references(&node_root, &path, &value)? {
-                    add_preserved_unless_owned(&mut preserved, &external, paths, &owned_paths)?;
-                }
-                files.push(path);
             }
         }
     }
@@ -581,13 +565,6 @@ fn scope_metadata(
             }
             let value: Value = serde_json::from_slice(&read_small(&source)?)?;
             validate_source_record(&source, &value)?;
-            // A build candidate points to an owned build output, not the
-            // original author tree; that payload is part of this cleanup.
-            if value["capturePolicy"] != "node-development-build-v1" {
-                if let Some(external) = value["localSourcePath"].as_str() {
-                    add_preserved_unless_owned(&mut preserved, external, paths, &owned_paths)?;
-                }
-            }
             files.push(source);
         }
     }
@@ -605,7 +582,7 @@ fn node_references(
     node_root: &Path,
     slot: &Path,
     name: &str,
-    mut value: Value,
+    value: Value,
 ) -> Result<Vec<String>, ApiError> {
     let id = slot
         .file_name()
@@ -619,156 +596,14 @@ fn node_references(
             .into_string()
             .map_err(|_| fail("源码绑定目录不是有效文本路径。"))
     };
-    if name == "development-source.json" {
+    if name == "source-binding.json" {
         return Ok(vec![string(
             crate::node_registration::source_binding_path(&value)?,
         )?]);
     }
-    if let Some(pending) = value
-        .as_object_mut()
-        .and_then(|value| value.remove("removalPending"))
-    {
-        if !pending.is_boolean() {
-            return Err(fail("当前应用可用状态无效，未开始清理。"));
-        }
-    }
-    match crate::node_registration::decode_registration(value, id, node_root)? {
-        crate::node_registration::StoredNodeRegistration::Direct(record) => {
-            Ok(vec![string(record.source_path)?])
-        }
-        crate::node_registration::StoredNodeRegistration::Retired(record) => record
-            .development_source
-            .as_ref()
-            .map(|value| crate::node_registration::source_binding_path(value).and_then(string))
-            .transpose()
-            .map(|path| path.into_iter().collect()),
-    }
-}
-
-fn installation_references(
-    node_root: &Path,
-    path: &Path,
-    value: &Value,
-) -> Result<Vec<String>, ApiError> {
-    let bad = || fail("历史安装记录无效，无法核对原始源码目录；未开始清理。");
-    let id = path
-        .parent()
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .ok_or_else(bad)?;
-    let fields = [
-        "version",
-        "candidateId",
-        "sourceId",
-        "prepareTaskId",
-        "applyTaskId",
-        "state",
-        "target",
-        "prepared",
-        "registration",
-        "error",
-    ];
-    if value["version"] != 1
-        || value["candidateId"] != id
-        || !id.strip_prefix("install_").is_some_and(|suffix| {
-            suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-        || !value
-            .as_object()
-            .is_some_and(|object| object.keys().all(|key| fields.contains(&key.as_str())))
-        || !value["prepareTaskId"]
-            .as_str()
-            .is_some_and(crate::projects::valid_id)
-        || !value["state"].as_str().is_some_and(|state| {
-            matches!(
-                state,
-                "preparing"
-                    | "prepared"
-                    | "committing"
-                    | "committed"
-                    | "failed"
-                    | "interrupted"
-                    | "needs-attention"
-            )
-        })
-    {
-        return Err(bad());
-    }
-    // A retired journal is read only to preserve an author-selected original.
-    // It does not need an executable installer or update compatibility gates.
-    let target = &value["target"];
-    let app_id = target["appId"]
-        .as_str()
-        .filter(|id| Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
-        .ok_or_else(bad)?;
-    let target_fields = [
-        "appId",
-        "registrationDigest",
-        "generation",
-        "manifest",
-        "configurationRevision",
-        "externalRegistration",
-        "developmentSource",
-    ];
-    if !target.as_object().is_some_and(|object| {
-        object
-            .keys()
-            .all(|key| target_fields.contains(&key.as_str()))
-    }) || target["configurationRevision"].as_u64().is_none()
-    {
-        return Err(bad());
-    }
-    let digest = target["registrationDigest"].as_str();
-    let generation = target["generation"].as_str();
-    let is_hex =
-        |value: &str, len| value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit());
-    if (!target["registrationDigest"].is_null() && digest.is_none_or(|value| !is_hex(value, 64)))
-        || (!target["generation"].is_null()
-            && generation.is_none_or(|value| {
-                !value
-                    .strip_prefix("gen_")
-                    .is_some_and(|value| is_hex(value, 32))
-            }))
-        || (!target["manifest"].is_null() && !target["manifest"].is_object())
-        || (digest.is_none()
-            && (!target["generation"].is_null()
-                || !target["externalRegistration"].is_null()
-                || !target["developmentSource"].is_null()
-                || target["configurationRevision"] != 0))
-        || (digest.is_some() && (generation.is_some() == !target["externalRegistration"].is_null()))
-        || (digest.is_some() == target["manifest"].is_null())
-    {
-        return Err(bad());
-    }
-    let mut paths = Vec::new();
-    if !target["externalRegistration"].is_null() {
-        if target["externalRegistration"]["version"] != 1 {
-            return Err(bad());
-        }
-        paths.extend(node_references(
-            node_root,
-            &node_root.join(app_id),
-            "registration.json",
-            target["externalRegistration"].clone(),
-        )?);
-    }
-    if !target["developmentSource"].is_null() {
-        paths.push(
-            crate::node_registration::source_binding_path(&target["developmentSource"])?
-                .into_os_string()
-                .into_string()
-                .map_err(|_| bad())?,
-        );
-    }
-    if !value["registration"].is_null() {
-        paths.extend(node_references(
-            node_root,
-            &node_root.join(app_id),
-            "registration.json",
-            value["registration"].clone(),
-        )?);
-    }
-    Ok(paths)
+    let crate::node_registration::StoredNodeRegistration::Direct(record) =
+        crate::node_registration::decode_registration(value, id, node_root)?;
+    Ok(vec![string(record.source_path)?])
 }
 
 fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {
@@ -784,10 +619,6 @@ fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {
         "url",
         "branch",
         "provider",
-        "localSourcePath",
-        "capturePolicy",
-        "buildSourceDigest",
-        "excludedPaths",
         "createdAt",
         "completedAt",
         "repository",
@@ -819,7 +650,7 @@ fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {
         || value["repository"] != "repository"
         || !value["provider"]
             .as_str()
-            .is_some_and(|provider| matches!(provider, "local" | "github" | "gitee"))
+            .is_some_and(|provider| matches!(provider, "github" | "gitee"))
         || !value["status"].as_str().is_some_and(|status| {
             matches!(
                 status,
@@ -831,22 +662,10 @@ fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {
             .any(|field| value[field].as_str().is_none())
         || value["createdAt"].as_u64().is_none()
         || value["shallow"].as_bool().is_none()
-        || (!value["localSourcePath"].is_null() && value["localSourcePath"].as_str().is_none())
-        || (!value["capturePolicy"].is_null() && value["capturePolicy"].as_str().is_none())
+        || !value["ownerAppId"]
+            .as_str()
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
     {
-        return Err(bad());
-    }
-    if value["provider"] == "local" {
-        if value["localSourcePath"].as_str().is_none()
-            || !value["branch"].is_null()
-            || !matches!(
-                value["capturePolicy"].as_str(),
-                Some("local-source-v1" | "node-development-build-v1")
-            )
-        {
-            return Err(bad());
-        }
-    } else if !value["localSourcePath"].is_null() || !value["capturePolicy"].is_null() {
         return Err(bad());
     }
     Ok(())

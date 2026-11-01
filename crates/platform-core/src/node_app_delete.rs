@@ -65,18 +65,17 @@ impl NodeApps {
         let expected_revision = revision(&slot)?;
         let blocker = run_recovery_blocker(&slot, inner.running.contains_key(id))?
             .map(|error| json!({"code":error.code,"message":error.message}));
-        let managed = record.managed.is_some()
-            || self
-                .project_ownership()
-                .owns_source_directory(id, &record.source_path)?;
+        let managed = self
+            .project_ownership()
+            .owns_source_directory(id, &record.source_path)?;
         // The name is display metadata, not permission to execute this program.
         // `manifest()` verifies every installed file, which can make opening the
         // confirmation scan all of node_modules while holding the Node lock.
-        let name = read_small(&record.source_path.join("local-app.json"))
+        let name = read_small(&record.source_path.join("panda.json"))
             .ok()
             .filter(|bytes| format!("{:x}", Sha256::digest(bytes)) == record.manifest_digest)
-            .and_then(|bytes| TrialManifest::parse(&bytes).ok())
-            .filter(|manifest| manifest.runtime == TrialRuntime::NodeService)
+            .and_then(|bytes| PandaManifest::parse(&bytes).ok())
+            .filter(|manifest| manifest.runtime == PandaRuntime::Node)
             .map(|value| value.app.name)
             .unwrap_or_else(|| {
                 record

@@ -1,6 +1,7 @@
 // Actual candidate/npm pipeline plus controlled reader completion/panic.
 // The reader barrier does not simulate a physical device or power loss.
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 
 fn candidate_path(project: &ProjectHandle, id: &str) -> PathBuf {
     let root = project.root.join(".platform/builds").join(id);

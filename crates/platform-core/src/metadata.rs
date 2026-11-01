@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 const MANIFEST_MAX: u64 = 2_000_000;
 // Internal implementation limits, not the product's finalized general media quota.
-const ICON_MAX: u64 = 8 * 1024 * 1024;
+pub(crate) const ICON_MAX: u64 = 8 * 1024 * 1024;
 const ICON_PIXELS: u64 = 4 * 1024 * 1024;
 const ICON_DIMENSION: u32 = 4096;
 const DECODE_MAX: usize = 32 * 1024 * 1024;
@@ -205,18 +205,12 @@ impl MetadataManager {
             }
         }
         let revision = format!("metadata_{:x}", digest.finalize());
-        let source_restore = crate::source_restore_guard::inspect(self.store.workspace_root(), id);
-        let development = source_restore.check();
-        if let Err(error) = &development {
-            issues.push(error.message.clone());
-        }
-        let editable = valid.is_ok() && registration_valid && development.is_ok();
+        let editable = valid.is_ok() && registration_valid;
         let response = json!({
             "projectId":id,"projectRoot":root,"name":manifest.as_ref().and_then(|m|m["name"].as_str()).unwrap_or(id),
             "description":manifest.as_ref().and_then(|m|m["description"].as_str()).unwrap_or(""),
             "icon":icon,"metadataRevision":if editable{Some(&revision)}else{None},"iconStatus":icon_status,
             "iconDataUrl":data_url,"metadataIssues":issues,"manifest":manifest,
-            "sourceRestore":source_restore,
             "iconLimits":{"maxBytes":ICON_MAX,"maxDimension":ICON_DIMENSION,"maxPixels":ICON_PIXELS,"classification":"internalTest"}
         });
         Ok(Snapshot {
@@ -386,7 +380,7 @@ fn icon_path(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
 }
 use crate::metadata_file_io::read_file;
 
-fn decode_png(bytes: &[u8]) -> Result<(u32, u32), ApiError> {
+pub(crate) fn decode_png(bytes: &[u8]) -> Result<(u32, u32), ApiError> {
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(invalid("Icon must be a decodable PNG"));
     }

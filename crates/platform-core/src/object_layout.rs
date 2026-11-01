@@ -5,7 +5,7 @@
 //! configuration, executes Git, certifies a repository, or claims database coverage.
 //! Filesystem observations can become stale; mutating operations must validate again.
 
-use crate::{node_app_manifest::TrialManifest, projects::ProjectManifest};
+use crate::{panda_manifest::PandaManifest, projects::ProjectManifest};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -243,7 +243,7 @@ pub fn project_layout(root: &Path, manifest: &ProjectManifest) -> Value {
     })
 }
 
-pub fn node_layout(source: &Path, slot: &Path, manifest: Option<&TrialManifest>) -> Value {
+pub fn node_layout(source: &Path, slot: &Path, manifest: Option<&PandaManifest>) -> Value {
     let mut issues = Vec::new();
     let source = checked_boundary(source.to_path_buf(), true, &mut issues);
     let slot = checked_boundary(slot.to_path_buf(), true, &mut issues);
@@ -252,10 +252,11 @@ pub fn node_layout(source: &Path, slot: &Path, manifest: Option<&TrialManifest>)
     if let (Some(source), Some(manifest)) = (&source, manifest) {
         match manifest.inspect(source) {
             Ok(_) => {
-                web = checked_boundary(source.join(&manifest.web.root), true, &mut issues);
-                backend = manifest.backend.as_ref().and_then(|backend| {
-                    checked_boundary(source.join(&backend.root), true, &mut issues)
-                });
+                web = manifest.resolve_web_root(source).ok();
+                backend = manifest
+                    .backend
+                    .as_ref()
+                    .and_then(|_| manifest.resolve_backend(source).ok().map(|(_, root)| root));
             }
             Err(error) => issues.push(format!(
                 "应用声明或声明文件未通过校验，未派生运行路径：{}",
@@ -265,9 +266,9 @@ pub fn node_layout(source: &Path, slot: &Path, manifest: Option<&TrialManifest>)
     } else if manifest.is_none() {
         issues.push("未提供已解析的应用声明，无法确定网页与后端运行路径。".into());
     }
-    let data = slot
+    let data = source
         .as_ref()
-        .and_then(|slot| checked_boundary(slot.join("data"), true, &mut issues));
+        .and_then(|source| checked_boundary(source.join("data"), true, &mut issues));
     let configuration = slot.as_ref().and_then(|slot| {
         checked_boundary(
             slot.join("configuration/configuration.json"),
@@ -317,17 +318,17 @@ mod tests {
         })).unwrap()
     }
 
-    fn node_manifest(root: &Path) -> TrialManifest {
+    fn node_manifest(root: &Path) -> PandaManifest {
         for directory in ["public", "server"] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
         fs::write(root.join("public/index.html"), "disposable page").unwrap();
         fs::write(root.join("server/main.mjs"), "never executed").unwrap();
-        TrialManifest::parse(
+        PandaManifest::parse(
             &serde_json::to_vec(&json!({
-                "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-                "app":{"id":"disposable-layout-node","name":"可丢弃 Node 样本","version":"1"},
-                "web":{"root":"public","entry":"index.html","routing":"files"},
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":"可丢弃 Node 样本","version":"1"},
+                "web":{"root":"public","entry":"index.html"},
                 "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24}
             }))
             .unwrap(),
@@ -473,7 +474,8 @@ mod tests {
             layout["configurationPath"],
             json!(slot.join("configuration/configuration.json"))
         );
-        assert_eq!(layout["data"]["root"], json!(slot.join("data")));
+        assert_eq!(layout["data"]["root"], json!(source.join("data")));
+        assert!(!source.join("data").exists());
         assert!(layout["data"]["database"].is_null());
         assert_eq!(layout["build"]["state"], "unavailable");
         assert_eq!(fs::read_dir(&slot).unwrap().count(), 0);
@@ -529,7 +531,10 @@ mod tests {
         fs::create_dir(&private).unwrap();
         std::os::unix::fs::symlink(&private, root.join("linked-slot")).unwrap();
         let layout = node_layout(&source, &root.join("linked-slot"), Some(&manifest));
-        assert!(layout["data"]["root"].is_null());
+        // Project data belongs to the independently checked author source,
+        // while an unsafe private slot never exposes its control/config paths.
+        assert_eq!(layout["data"]["root"], json!(source.join("data")));
+        assert!(!source.join("data").exists());
         assert!(layout["configurationPath"].is_null());
         assert!(layout["controlPath"].is_null());
         assert_eq!(layout["runtime"]["webRoot"], json!(source.join("public")));

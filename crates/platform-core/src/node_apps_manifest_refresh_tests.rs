@@ -5,7 +5,6 @@ struct Fixture {
     _temporary: tempfile::TempDir,
     apps: NodeApps,
     source: PathBuf,
-    paths: crate::RuntimePaths,
 }
 impl Fixture {
     fn new() -> Self {
@@ -24,9 +23,9 @@ impl Fixture {
         )
         .unwrap();
         let value = json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"disposable.original","name":"Disposable original","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"Disposable original","version":"1"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"root":"server","entry":"main.mjs","protocolVersion":1,"nodeMajor":24},
             "configuration":{"version":1,"fields":[
                 {"name":"MODEL","label":"Model","type":"string","required":false,"secret":false,
@@ -34,7 +33,7 @@ impl Fixture {
             ]}
         });
         fs::write(
-            source.join("local-app.json"),
+            source.join("panda.json"),
             serde_json::to_vec(&value).unwrap(),
         )
         .unwrap();
@@ -47,11 +46,10 @@ impl Fixture {
             _temporary: temporary,
             apps,
             source,
-            paths,
         }
     }
     fn change(&self, edit: impl FnOnce(&mut Value)) {
-        let path = self.source.join("local-app.json");
+        let path = self.source.join("panda.json");
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         edit(&mut value);
         fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
@@ -66,7 +64,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn changed_author_identity_and_declaration_are_previewed_and_accepted_on_start() {
+async fn changed_display_metadata_is_previewed_and_accepted_on_start() {
     let fixture = Fixture::new();
     let original = fixture.apps.register(fixture.source.clone()).await.unwrap();
     let id = original["id"].as_str().unwrap();
@@ -82,10 +80,7 @@ async fn changed_author_identity_and_declaration_are_previewed_and_accepted_on_s
     let registration_before = fs::read(slot.join("registration.json")).unwrap();
     let configuration_before = fs::read(slot.join("configuration/configuration.json")).unwrap();
     fixture.change(|value| {
-        value["app"] =
-            json!({"id":"disposable.renamed","name":"Renamed author metadata","version":"2"});
-        value["development"] = json!({"retired":"ignored by runtime"});
-        value["dataContract"] = json!({"retired":"ignored by runtime"});
+        value["app"] = json!({"name":"Renamed author metadata","version":"2"});
     });
     let preview = fixture.apps.configuration(id).await.unwrap();
     assert_eq!(preview["id"], original["id"]);
@@ -179,7 +174,7 @@ async fn invalid_or_missing_entry_does_not_replace_the_accepted_declaration() {
     );
     assert!(fixture.apps.start(id).await.is_err());
     assert_eq!(fs::read(slot.join("registration.json")).unwrap(), before);
-    fs::write(fixture.source.join("local-app.json"), "{invalid").unwrap();
+    fs::write(fixture.source.join("panda.json"), "{invalid").unwrap();
     assert!(fixture.apps.start(id).await.is_err());
     assert_eq!(fs::read(slot.join("registration.json")).unwrap(), before);
     assert!(!slot.join("active.json").exists());
@@ -209,197 +204,48 @@ async fn running_snapshot_is_frozen_while_configuration_reads_preview_changes() 
     assert_eq!(preview["state"], "running");
     assert_eq!(preview["restartRequired"], true);
     assert_eq!(preview["version"], "next-version");
-    assert_eq!(entry.manifest.app.version, "1");
+    assert_eq!(entry.manifest.app.version.as_deref(), Some("1"));
     assert_eq!(entry.manifest.source_digest, manifest.source_digest);
     assert_ne!(preview["manifestDigest"], entry.manifest.source_digest);
     fixture.apps.inner.lock().await.running.remove(id);
 }
 
 #[tokio::test]
-async fn retired_registration_is_unavailable_but_all_owned_materials_are_deletable() {
+async fn unsupported_author_fields_do_not_change_registration_or_data() {
     let fixture = Fixture::new();
-    let store = Arc::new(crate::ProjectStore::new(fixture.paths.workspace_root().into()).unwrap());
-    let tasks = crate::builds::BuildManager::new(
-        fixture.paths.clone(),
-        store.clone(),
-        "http://127.0.0.1:1".into(),
-    )
-    .unwrap();
-    fixture.apps.set_deletion_store(store.clone()).unwrap();
-    fixture.apps.set_import_task_manager(tasks.clone()).unwrap();
-    let id = Uuid::new_v4().to_string();
-    let generation = format!("gen_{}", Uuid::new_v4().simple());
-    let source_id = format!("src_{}", Uuid::new_v4().simple());
-    let candidate_id = format!("install_{}", Uuid::new_v4().simple());
-    let task_id = format!("task_{}", Uuid::new_v4().simple());
-    let slot = fixture.apps.root.join(&id);
-    let program = slot.join("generations").join(&generation);
-    for path in [
-        program.join("node_modules"),
-        slot.join("data"),
-        slot.join("configuration"),
-        slot.join("runs"),
-    ] {
-        fs::create_dir_all(path).unwrap();
-    }
-    fs::write(
-        program.join("local-app.json"),
-        "broken retired program declaration",
-    )
-    .unwrap();
-    fs::write(program.join("node_modules/dependency"), "retired code").unwrap();
-    fs::write(
-        slot.join("data/business.sqlite"),
-        "disposable business data",
-    )
-    .unwrap();
-    fs::write(
-        slot.join("configuration/private-value"),
-        "disposable saved configuration",
-    )
-    .unwrap();
-    fs::write(slot.join("runs/runtime.log"), "disposable runtime log").unwrap();
-    let registration = json!({
-        "version":2,"kind":"managed","id":id,"generation":generation,
-        "manifestDigest":"a".repeat(64),
-        "provenance":{"sourceId":source_id,"sourceDigest":"b".repeat(64)}
-    });
-    fs::write(
-        slot.join("registration.json"),
-        serde_json::to_vec(&registration).unwrap(),
-    )
-    .unwrap();
-    let ownership = fixture.apps.project_ownership();
-    ownership.initialize(&id).unwrap();
-    let owned_source = fixture
-        .apps
-        .deletion_workspace()
-        .join("project-sources/disposable-retired-owned-source");
-    let download = fixture
-        .apps
-        .deletion_workspace()
-        .join(".platform/sources")
-        .join(&source_id);
-    let candidate = fixture.apps.root.join(".installations").join(&candidate_id);
-    let task = fixture
-        .apps
-        .deletion_workspace()
-        .join(".platform/tasks")
-        .join(&task_id);
-    for path in [&owned_source, &download, &candidate, &task] {
-        fs::create_dir_all(path).unwrap();
-        fs::write(path.join("disposable-payload"), "owned material").unwrap();
-    }
-    ownership
-        .record_generated_source(&id, &owned_source)
-        .unwrap();
-    ownership.record_source(&id, &source_id).unwrap();
-    ownership.record_installation(&id, &candidate_id).unwrap();
-    ownership.record_task(&id, &task_id).unwrap();
-    let listed = fixture.apps.list().await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(
-        listed[0]["lastError"],
-        node_registration::RETIRED_NODE_MESSAGE
-    );
-    assert_eq!(listed[0]["configuration"]["canStart"], false);
-    assert_eq!(
-        fixture.apps.start(&id).await.unwrap_err().code,
-        "NODE_REGISTRATION_RETIRED"
-    );
-    let preview = fixture.apps.delete_preview(&id).await.unwrap();
-    let input: DeleteNodeAppInput =
-        serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap();
-    fixture.apps.delete(&id, input).await.unwrap();
-    for path in [
-        &slot,
-        &program,
-        &owned_source,
-        &download,
-        &candidate,
-        &task,
-        &ownership.directory(&id).unwrap(),
-    ] {
-        assert!(
-            !path.exists(),
-            "retired project residue: {}",
-            path.display()
-        );
-    }
+    let original = fixture.apps.register(fixture.source.clone()).await.unwrap();
+    let id = original["id"].as_str().unwrap();
+    let registration = fixture.apps.root.join(id).join("registration.json");
+    let before = fs::read(&registration).unwrap();
+    fixture.change(|value| value["app"]["id"] = json!("not-an-instance-id"));
     assert!(
-        fixture.source.join("local-app.json").is_file(),
-        "unowned original source must remain"
+        !fixture.apps.configuration(id).await.unwrap()["configuration"]["canStart"]
+            .as_bool()
+            .unwrap()
     );
-    assert!(fixture.apps.list().await.unwrap().is_empty());
-    assert!(tasks.shutdown().await.is_empty());
-    assert!(store.shutdown().await.is_empty());
+    assert!(fixture.apps.start(id).await.is_err());
+    assert_eq!(fs::read(registration).unwrap(), before);
+    assert!(!fixture.source.join("data").exists());
 }
 
 #[tokio::test]
-async fn damaged_retired_display_metadata_does_not_block_its_deletion_or_other_projects() {
+async fn changing_runtime_refuses_start_without_rebinding_or_removing_file_data() {
     let fixture = Fixture::new();
-    let store = Arc::new(crate::ProjectStore::new(fixture.paths.workspace_root().into()).unwrap());
-    let tasks = crate::builds::BuildManager::new(
-        fixture.paths.clone(),
-        store.clone(),
-        "http://127.0.0.1:1".into(),
-    )
-    .unwrap();
-    fixture.apps.set_deletion_store(store.clone()).unwrap();
-    fixture.apps.set_import_task_manager(tasks.clone()).unwrap();
-    let normal = fixture.apps.register(fixture.source.clone()).await.unwrap();
-    let normal_id = normal["id"].as_str().unwrap();
-    let id = Uuid::new_v4().to_string();
-    let slot = fixture.apps.root.join(&id);
-    fs::create_dir_all(slot.join("generations/disposable-program")).unwrap();
-    fs::create_dir_all(slot.join("data")).unwrap();
-    fs::write(
-        slot.join("generations/disposable-program/code.js"),
-        b"retired program",
-    )
-    .unwrap();
-    fs::write(slot.join("data/business"), b"retired data").unwrap();
-    fixture.apps.project_ownership().initialize(&id).unwrap();
-    fs::write(
-        slot.join("registration.json"),
-        serde_json::to_vec(&json!({
-            "version":2,"id":id,"kind":null,"generation":"/outside/the/owned/slot",
-            "manifestDigest":null,"provenance":{"sourceId":"damaged","sourceDigest":false},
-            "sourcePath":fixture.source
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let listed = fixture.apps.list().await.unwrap();
-    assert_eq!(listed.len(), 2);
-    let retired = listed.iter().find(|app| app["id"] == id).unwrap();
+    let original = fixture.apps.register(fixture.source.clone()).await.unwrap();
+    let id = original["id"].as_str().unwrap();
+    fs::create_dir(fixture.source.join("data")).unwrap();
+    fs::write(fixture.source.join("data/keep"), "user data").unwrap();
+    let registration = fixture.apps.root.join(id).join("registration.json");
+    let before = fs::read(&registration).unwrap();
+    fixture.change(|value| {
+        value["runtime"] = json!("web");
+        value.as_object_mut().unwrap().remove("backend");
+    });
+    let error = fixture.apps.start(id).await.unwrap_err();
+    assert_eq!(error.code, "APP_RUNTIME_CHANGED");
+    assert_eq!(fs::read(registration).unwrap(), before);
     assert_eq!(
-        retired["lastError"],
-        node_registration::RETIRED_NODE_MESSAGE
+        fs::read_to_string(fixture.source.join("data/keep")).unwrap(),
+        "user data"
     );
-    assert_eq!(retired["sourcePath"], json!(slot));
-    assert_eq!(retired["configuration"]["canStart"], false);
-    assert_eq!(
-        fixture.apps.configuration(normal_id).await.unwrap()["id"],
-        normal_id
-    );
-    let preview = fixture.apps.delete_preview(&id).await.unwrap();
-    fixture
-        .apps
-        .delete(
-            &id,
-            serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(!slot.exists());
-    assert!(fixture.source.join("local-app.json").is_file());
-    assert_eq!(fixture.apps.list().await.unwrap().len(), 1);
-    assert_eq!(
-        fixture.apps.configuration(normal_id).await.unwrap()["id"],
-        normal_id
-    );
-    assert!(tasks.shutdown().await.is_empty());
-    assert!(store.shutdown().await.is_empty());
 }

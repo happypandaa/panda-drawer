@@ -7,7 +7,7 @@ struct Fixture {
     _temp: tempfile::TempDir,
     project: PathBuf,
     operation: PathBuf,
-    manifest: TrialManifest,
+    manifest: PandaManifest,
     _stop: watch::Sender<bool>,
     cancel: watch::Sender<bool>,
     control: DependencyControl,
@@ -35,11 +35,11 @@ impl Fixture {
         .unwrap();
         let operation = base.join("operation 中文 space");
         private_dir(&operation).unwrap();
-        let manifest = TrialManifest::parse(
+        let manifest = PandaManifest::parse(
             &serde_json::to_vec(&json!({
-                "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-                "app":{"id":"disposable.npm.windows","name":"临时 npm","version":"1"},
-                "web":{"root":"web","entry":"index.html","routing":"files"},
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":"临时 npm","version":"1"},
+                "web":{"root":"web","entry":"index.html"},
                 "backend":{"root":"backend","entry":"main.mjs","protocolVersion":1,"nodeMajor":24}
             }))
             .unwrap(),

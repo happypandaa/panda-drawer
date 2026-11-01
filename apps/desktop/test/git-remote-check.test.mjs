@@ -68,7 +68,7 @@ const bootstrap = {
 };
 const environment = { ready: true, node: { path: '/disposable/node', version: 'v24.0.0' }, npm: { path: '/disposable/npm', version: '11.0.0' }, selection: 'detected', configuredNodePath: null, supportedNodeRange: 'fixture', recommendedNode: 'fixture', downloadUrl: 'https://example.invalid/node', issues: [] };
 const gitEnvironment = { ready: true, git: { path: '/disposable/platform/git/bin/git', version: '2.56.0' }, selection: 'managed', configuredGitPath: null, managedGitPath: '/disposable/platform/git/bin/git', ssh: { ready: true, selection: 'system', executable: { path: '/usr/bin/ssh', version: 'OpenSSH fixture' }, issues: [] }, authentication: { state: 'not-checked', reason: '只检测工具，不访问仓库。' }, issues: [] };
-const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
+const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
   const calls = [];

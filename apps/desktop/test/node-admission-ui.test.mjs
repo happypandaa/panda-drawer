@@ -45,7 +45,7 @@ afterEach(async () => { if (root) await act(async () => root.unmount()); root = 
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 const field = (name, extra = {}) => ({ name, label: `设置 ${name}`, type: 'string', required: false, secret: false, description: '', howToGet: [], ...extra });
 function app(extra = {}) {
-  return { id: 'disposable_node_admission', name: '可丢弃·运行准入界面样本', sourcePath: '/disposable/nonexistent-source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null,
+  return { id: 'disposable_node_admission', name: '可丢弃·运行准入界面样本', sourcePath: '/disposable/nonexistent-source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null,
     fields: [field('GREETING', { default: '人工默认值' })], configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: false }, ...extra };
 }
 async function render(Component, props) {
@@ -152,10 +152,4 @@ test('A runtime restriction keeps restart disabled and does not ask to fill none
   assert.match(document.querySelector('.node-config-warning').textContent, /当前暂不能重启，请先核对运行状态/);
   assert.doesNotMatch(document.querySelector('.node-config-warning').textContent, /补齐必填/);
   assert.equal(button('立即重启'), undefined); noLaunch(calls);
-});
-
-test('Retired Node registrations explain their unsupported installation directly in the launcher',async()=>{
- const value={id:'retired-fixture',name:'Retired fixture',runtime:'node-service',sourcePath:'/disposable/retired',installation:{kind:'managed',retired:true},state:'failed',restartRequired:false,lastError:'这个应用使用旧的安装方式，已不再支持。请删除后重新添加。',fields:[],configuration:{unavailable:true,revision:0,values:{},secretStatus:{},missingRequired:[],canStart:false}};
- await render(NodeProjectCard,{app:value,blocked:false,opening:false,onEnter(){},onDetails(){},onDelete(){}});
- const notice=document.querySelector('.launcher-retired-note');assert.ok(notice);assert.match(notice.textContent,/请删除后重新添加/);
 });

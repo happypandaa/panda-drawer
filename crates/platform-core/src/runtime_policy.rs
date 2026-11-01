@@ -1,11 +1,12 @@
 //! Declarative browser policy. This is disclosure and browser enforcement, not isolation
 //! between arbitrary same-origin project scripts or a network egress firewall.
 use crate::ApiError;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::{Host, Url};
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimePolicy {
     #[serde(default)]
@@ -14,7 +15,7 @@ pub struct RuntimePolicy {
     pub devices: DeviceRequirements,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkRequirements {
     #[serde(default)]
@@ -25,7 +26,7 @@ pub struct NetworkRequirements {
     pub media: Vec<NetworkRequirement>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NetworkRequirement {
     pub origin: String,
@@ -33,19 +34,33 @@ pub struct NetworkRequirement {
     pub data_sent: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceRequirements {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present_device",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub microphone: Option<DeviceRequirement>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present_device",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub camera: Option<DeviceRequirement>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceRequirement {
     pub purpose: String,
+}
+
+fn present_device<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 impl RuntimePolicy {

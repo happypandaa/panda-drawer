@@ -45,7 +45,7 @@ async fn disposable_runtime_bound_configuration_host() {
         .canonicalize()
         .unwrap();
     let mut fixture = Fixture::create(&root, "normal");
-    let declaration_path = fixture.source.join("local-app.json");
+    let declaration_path = fixture.source.join("panda.json");
     let declared_bytes = fs::read(&declaration_path).unwrap();
     let mut initial: Value = serde_json::from_slice(&declared_bytes).unwrap();
     initial.as_object_mut().unwrap().remove("configuration");

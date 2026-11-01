@@ -7,7 +7,7 @@ struct Fixture {
     root: PathBuf,
     project: PathBuf,
     operation: PathBuf,
-    manifest: TrialManifest,
+    manifest: PandaManifest,
     tools: Toolchain,
     _stop: watch::Sender<bool>,
     cancel: watch::Sender<bool>,
@@ -31,12 +31,16 @@ impl Fixture {
             "throw Error('must not start app');",
         )
         .unwrap();
-        let manifest = TrialManifest::parse(&serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"disposable-direct-dependencies","name":"Disposable dependencies","version":"1"},
-            "web":{"root":"web","entry":"index.html","routing":"files"},
-            "backend":{"root":"backend","entry":"server.mjs","protocolVersion":1,"nodeMajor":24}
-        })).unwrap()).unwrap();
+        let manifest = PandaManifest::parse(
+            &serde_json::to_vec(&json!({
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":"Disposable dependencies","version":"1"},
+                "web":{"root":"web","entry":"index.html"},
+                "backend":{"root":"backend","entry":"server.mjs","protocolVersion":1,"nodeMajor":24}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let fake = root.join("fake-npm.sh");
         fs::write(&fake, "set -eu\n[ \"$1\" = '--prefix' ]\n[ \"$2\" = \"$PWD\" ]\n[ -f \"$NPM_CONFIG_USERCONFIG\" ]\n[ -f \"$NPM_CONFIG_GLOBALCONFIG\" ]\n[ \"$NPM_CONFIG_USERCONFIG\" != \"$NPM_CONFIG_GLOBALCONFIG\" ]\n[ -z \"${NODE_OPTIONS-}\" ]\n[ -z \"${NODE_PATH-}\" ]\nprintf '%s\\n' \"$@\" > dependency-arguments.txt\n").unwrap();
         let tools = Toolchain {

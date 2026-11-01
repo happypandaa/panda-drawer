@@ -51,15 +51,5 @@ export function deriveWorkspaceTaskState(workspace: WorkspaceInfo | null, knownT
   ));
   const paused = migrationPhase === 'paused' && !migrating && !resumed;
 
-  const snapshotCleanup = workspace?.cleanupTask ?? null;
-  const currentCleanup = resolveTask(snapshotCleanup, snapshotCleanup ? knownTasks[snapshotCleanup.taskId] : undefined, 'workspaceCleanup');
-  const pendingCleanups = known.filter((task) => task.type === 'workspaceCleanup' && !task.final && !(
-    currentCleanup?.taskId === task.taskId && currentCleanup.final
-  ));
-  // The snapshot's different active cleanup is authoritative even when a final
-  // historical task was inserted into the local map more recently.
-  const cleanupTask = currentCleanup && !currentCleanup.final ? currentCleanup
-    : pendingCleanups.at(-1) ?? currentCleanup ?? known.filter((task) => task.type === 'workspaceCleanup').at(-1) ?? null;
-  const cleanupBusy = pendingCleanups.length > 0 || Boolean(currentCleanup && !currentCleanup.final);
-  return { migrating, migrationTask, paused, cleanupBusy, cleanupTask };
+  return { migrating, migrationTask, paused };
 }

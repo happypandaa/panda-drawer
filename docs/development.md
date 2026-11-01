@@ -1,5 +1,7 @@
 # 开发环境与数据隔离
 
+2026-11-01 配置与 Node 批次更新：本机 Node 应用改用 `panda.json`，`runtime: "node"`，没有作者 ID；文件数据位于项目 `data/`，配置和密钥、缓存、日志及浏览器数据仍由平台按实例保存。用户选择的本地文件夹（包括空目录生成的项目）在删除应用时保留，浏览器数据一律清除。平台源码／数据版本、取回、ZIP 导入导出和复制已移除；代码版本交给外部 AI 使用标准 Git。本批网页仍沿用原运行与构建，新的网页接入和独立服务尚未交付。历史段落与此冲突时以本条及[现行实施契约](unified-project-manifest-proposal.md)为准。
+
 2026-10-29 当前 Node 规则由[单目录运行契约](node-single-directory.md)覆盖：直接运行登记的项目文件夹，不再创建安装副本或提供平台 Node 构建更新、Git 面板和源码取回；有效 `local-app.json`（包括 `app.id`、版本和配置声明）在下次启动时接受。旧 version 2 项目不可启动，删除后重新添加。下文较早的 Node 副本与更新说明仅保留为历史记录。
 
 2026-10-27 最新确认：[操作记录精简与外部 AI 分工](operation-record-simplification.md)覆盖本文中日志留存、清理回执、平台 Git 保存／新分支、程序退回及导入导出历史的旧规则。构建／发布状态继续保留，导入导出功能继续提供；当前登记、迁移和源码／数据恢复门禁不在本轮移除范围。下方历史验证仍只证明当时版本。
@@ -30,7 +32,7 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 `npm run test:platform-support` 直接使用所选 Rust 编译、运行 `platform_support.rs` 的无依赖生产策略测试，输出位于新的 `.test-artifacts/w1-platform-support-*`，不启动平台或读取用户工作区。Windows 使用真实 `x86_64-pc-windows-msvc` 目标；Mac 分支的策略断言不是 Mac 实机回归。这个独立检查不编译整个 core、CLI 或 Tauri，不能替代后续完整构建、入口拒绝和现场保护验收。
 
-`npm run test:preflight` 通过根 Cargo 锁文件单独编译、测试 `platform-preflight` 生产库和合成的维护/恢复记录字节，不编译整个 core 或启动任何服务。该库只有 JSON 解码依赖，不接受文件路径，也不执行恢复、修复或写入；它不会访问平台数据根。首次测试需要取得锁定的 Rust 依赖，不能据此承诺离线平台构建。解码分类与安全文件读取分别验收，后者及完整现场汇总尚未完成。
+旧 `platform-preflight` 库及其 `test:preflight` 命令已退役：它只分类旧备份、维护与恢复字节，没有当前运行调用方。当前检查使用完整工作区回归，不另保留旧记录兼容解码。
 
 ## 管理界面入口
 

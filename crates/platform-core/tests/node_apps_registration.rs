@@ -49,11 +49,11 @@ impl Fixture {
         )
         .unwrap();
         fs::write(
-            source.join("local-app.json"),
+            source.join("panda.json"),
             serde_json::to_vec_pretty(&json!({
-                "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-                "app":{"id":"test.disposable.node","name":name,"version":"0.1.0"},
-                "web":{"root":"public","entry":"index.html","routing":"files"},
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":name,"version":"0.1.0"},
+                "web":{"root":"public","entry":"index.html"},
                 "backend":{"protocolVersion":1,"root":"server","entry":"managed.mjs","nodeMajor":24},
                 "configuration":{"version":1,"fields":[
                     {"name":"MODEL","label":"测试模型","type":"string","required":false,"secret":false,
@@ -102,9 +102,9 @@ fn save(revision: u64, values: Value, detail: &Value) -> SaveConfigurationReques
 async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute_it() {
     let fixture = Fixture::new("read-only-node-fixture");
     let manager = fixture.manager();
-    let before = fs::read(fixture.source.join("local-app.json")).unwrap();
+    let before = fs::read(fixture.source.join("panda.json")).unwrap();
     let preview = manager.inspect(&fixture.source).unwrap();
-    assert_eq!(preview["inspectionKind"], "read-only-trial");
+    assert_eq!(preview["inspectionKind"], "read-only");
     let registrations = fixture.data.join("node-apps");
     assert!(
         !registrations.exists()
@@ -114,7 +114,7 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
                 .any(|entry| { entry.unwrap().path().join("registration.json").exists() })
     );
     let detail = manager.register(fixture.source.clone()).await.unwrap();
-    assert_eq!(detail["runtime"], "node-service");
+    assert_eq!(detail["runtime"], "node");
     assert_eq!(detail["state"], "stopped");
     let layout = &detail["objectLayout"];
     assert_eq!(layout["kind"], "local-node-source");
@@ -127,7 +127,7 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
         .data
         .join("node-apps")
         .join(id(&detail))
-        .join("development-source.json")
+        .join("source-binding.json")
         .exists());
     assert_eq!(layout["build"]["state"], "unavailable");
     assert_eq!(layout["runtime"]["external"], true);
@@ -135,14 +135,7 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
         layout["runtime"]["webRoot"],
         json!(fixture.source.join("public"))
     );
-    assert_eq!(
-        layout["data"]["root"],
-        json!(fixture
-            .data
-            .join("node-apps")
-            .join(id(&detail))
-            .join("data"))
-    );
+    assert_eq!(layout["data"]["root"], json!(fixture.source.join("data")));
     assert!(layout["data"]["database"].is_null());
     assert_eq!(layout["versioning"]["database"]["state"], "not-supported");
     assert_eq!(detail["configuration"]["canStart"], false);
@@ -151,10 +144,7 @@ async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute
         json!(["AI_KEY"])
     );
     assert_eq!(manager.list().await.unwrap().len(), 1);
-    assert_eq!(
-        fs::read(fixture.source.join("local-app.json")).unwrap(),
-        before
-    );
+    assert_eq!(fs::read(fixture.source.join("panda.json")).unwrap(), before);
     fixture.assert_not_executed();
 }
 
@@ -256,7 +246,7 @@ async fn missing_required_credentials_block_before_creating_an_active_marker() {
 #[tokio::test]
 async fn a_missing_private_node_does_not_leave_a_false_active_process_marker() {
     let fixture = Fixture::new("missing-runtime-node-fixture");
-    let manifest_path = fixture.source.join("local-app.json");
+    let manifest_path = fixture.source.join("panda.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     manifest["configuration"]["fields"]
         .as_array_mut()
@@ -297,12 +287,12 @@ async fn changed_source_metadata_is_readable_and_preserves_saved_configuration()
     let slot = fixture.data.join("node-apps").join(original_id);
     let registration_before = fs::read(slot.join("registration.json")).unwrap();
     let configuration_before = fs::read(slot.join("configuration/configuration.json")).unwrap();
-    let manifest_before = fs::read(fixture.source.join("local-app.json")).unwrap();
+    let manifest_before = fs::read(fixture.source.join("panda.json")).unwrap();
     let mut changed: Value = serde_json::from_slice(&manifest_before).unwrap();
     changed["app"]["name"] = json!("Changed declaration accepted on restart");
-    changed["app"]["id"] = json!("dev.disposable.changed-author-id");
+    changed["app"]["description"] = json!("changed author metadata");
     fs::write(
-        fixture.source.join("local-app.json"),
+        fixture.source.join("panda.json"),
         serde_json::to_vec_pretty(&changed).unwrap(),
     )
     .unwrap();
@@ -323,7 +313,7 @@ async fn changed_source_metadata_is_readable_and_preserves_saved_configuration()
         fs::read(slot.join("configuration/configuration.json")).unwrap(),
         configuration_before
     );
-    fs::write(fixture.source.join("local-app.json"), manifest_before).unwrap();
+    fs::write(fixture.source.join("panda.json"), manifest_before).unwrap();
     assert_eq!(
         manager.configuration(original_id).await.unwrap()["configuration"]["values"]["MODEL"],
         "keep-this-user-value"
@@ -344,7 +334,7 @@ async fn one_changed_declaration_does_not_hide_the_other_registered_application(
     copy_fixture(&fixture.source, &other_source);
     let second = manager.register(other_source).await.unwrap();
     fs::write(
-        fixture.source.join("local-app.json"),
+        fixture.source.join("panda.json"),
         "{broken artificial fixture}",
     )
     .unwrap();
@@ -368,7 +358,7 @@ fn copy_fixture(source: &Path, destination: &Path) {
     fs::create_dir(destination).unwrap();
     fs::create_dir(destination.join("public")).unwrap();
     fs::create_dir(destination.join("server")).unwrap();
-    for relative in ["local-app.json", "public/index.html", "server/managed.mjs"] {
+    for relative in ["panda.json", "public/index.html", "server/managed.mjs"] {
         fs::copy(source.join(relative), destination.join(relative)).unwrap();
     }
 }

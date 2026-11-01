@@ -1,4 +1,6 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
 
 fn preserved(project: &ProjectHandle) -> (String, String) {
     (

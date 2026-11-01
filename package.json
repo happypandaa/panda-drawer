@@ -27,7 +27,6 @@
     "test:development-node": "node --test scripts/package-development-node-test.mjs",
     "test:development-git": "node --test scripts/package-development-git-test.mjs",
     "test:platform-support": "node scripts/platform-support-test.mjs",
-    "test:preflight": "node scripts/rust.mjs test --locked -p platform-preflight --lib",
     "cli": "node scripts/rust.mjs run -p platform-cli --",
     "prepare:desktop": "node scripts/prepare-desktop.mjs",
     "tauri": "node scripts/desktop.mjs",
@@ -47,11 +46,15 @@
     "test:desktop-package": "node --test scripts/desktop-package-output-test.mjs",
     "release:mac:preflight": "node scripts/production-macos-preflight.mjs",
     "test:production-macos-preflight": "node --test scripts/production-macos-preflight-test.mjs",
-    "test:updates": "node --test scripts/update-manifest-test.mjs scripts/update-artifact-verification-test.mjs"
+    "test:updates": "node --test scripts/update-manifest-test.mjs scripts/update-artifact-verification-test.mjs",
+    "generate:panda-manifest": "node scripts/generate-panda-manifest.mjs",
+    "test:panda-manifest": "node scripts/generate-panda-manifest.mjs --check && node --test scripts/panda-manifest-schema-test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3",
+    "ajv": "^8.20.0",
     "jsdom": "26.1.0",
+    "json-schema-to-typescript": "^16.0.0",
     "transliteration": "2.6.2"
   },
   "description": "熊猫小抽屉：帮助你制作、获取、使用、定制和分享个人小应用的本地应用平台。",
@@ -62,5 +65,6 @@
   "homepage": "https://github.com/happypandaa/panda-drawer#readme",
   "bugs": {
     "url": "https://github.com/happypandaa/panda-drawer/issues"
-  }
+  },
+  "packageManager": "pnpm@12.16.1"
 }

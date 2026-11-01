@@ -71,7 +71,7 @@ fn publish(
     let task = format!("task_{}", uuid::Uuid::new_v4().simple());
     let stage = parent_path.join(format!(".export-{task}.partial"));
     let (parent, parent_identity, expected, mut output, stage_identity) =
-        crate::node_apps::development::with_source_ownership_admission(|| {
+        crate::node_apps::source_ownership::with_source_ownership_admission(|| {
             project.validate_epoch(Some(&project.document_epoch))?;
             validate(destination)?;
             check_no_symlinks(destination, true)?;

@@ -9,7 +9,7 @@ const source = await readFile(new URL('../src/node-configuration-validation.ts',
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 const { validateNodeConfiguration: validate } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 const field = (name, type = 'string', extra = {}) => ({ name, type, label: `人工设置 ${name}`, required: false, secret: false, description: '人工说明', howToGet: ['人工步骤'], ...extra });
-const app = (fields, configuration = {}) => ({ id: 'disposable-validation-fixture', name: '可丢弃配置校验样本', sourcePath: '/not-a-real-source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, fields, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: false, ...configuration } });
+const app = (fields, configuration = {}) => ({ id: 'disposable-validation-fixture', name: '可丢弃配置校验样本', sourcePath: '/not-a-real-source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, fields, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: false, ...configuration } });
 const draft = (ordinary = {}, secrets = {}) => ({ ordinary, secrets });
 const key = { action: 'replace', value: 'artificial-key-only' };
 const linkedFields = [field('URL', 'url', { required: true, default: 'https://example.invalid/api' }), field('KEY', 'string', { required: true, secret: true, endpointField: 'URL' })];

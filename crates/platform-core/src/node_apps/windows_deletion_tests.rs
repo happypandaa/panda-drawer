@@ -36,7 +36,7 @@ impl DeletionFixture {
             fs::read_dir(&root).unwrap().next().is_none(),
             "only a new empty named disposable root may be initialized"
         );
-        let source = root.join("generated-owned-source 中文 space");
+        let source = root.join("selected-user-source 中文 space");
         let data = root.join("disposable-platform-data");
         fs::create_dir(&source).unwrap();
         fs::create_dir(&data).unwrap();
@@ -69,7 +69,7 @@ impl DeletionFixture {
         // This is an ordinary author edit of the freshly generated source,
         // followed by the public reinspection/registration path. Product
         // configuration checks and the fixed Node digest remain unchanged.
-        let manifest = self.source.join("local-app.json");
+        let manifest = self.source.join("panda.json");
         let mut declaration: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
         declaration["configuration"] = json!({"version":1,"fields":[
             {"name":"GREETING","label":"Disposable text","type":"string","required":true,"secret":false,"description":"Artificial deletion fixture text","howToGet":["Use artificial text"]},
@@ -97,7 +97,7 @@ process.stderr.write('W5 actual official Node backend log\n');
             .await
             .unwrap();
         assert_eq!(registered["id"], pending);
-        assert_eq!(registered["ownership"], "managed");
+        assert_eq!(registered["ownership"], "external");
         assert_eq!(
             apps.start(&pending).await.unwrap_err().code,
             "NODE_CONFIGURATION_REQUIRED"
@@ -121,7 +121,7 @@ process.stderr.write('W5 actual official Node backend log\n');
             response.json::<Value>().await.unwrap()["message"],
             "你的本地应用已经连通。"
         );
-        let pid = fs::read_to_string(self.slot(id).join("data/w5-pid"))
+        let pid = fs::read_to_string(self.source.join("data/w5-pid"))
             .unwrap()
             .parse::<u32>()
             .unwrap();
@@ -160,7 +160,8 @@ process.stderr.write('W5 actual official Node backend log\n');
             );
         }
         absent(&self.slot(id));
-        absent(&self.source);
+        assert!(self.source.is_dir());
+        assert!(self.source.join("data/w5-business.json").is_file());
         absent(&self.data.join("node-project-ownership").join(id));
         assert!(apps.deletion_tasks().unwrap().is_empty());
         assert!(
@@ -244,8 +245,7 @@ fn owned(apps: &NodeApps, id: &str) -> Vec<(PathBuf, PersistedIdentity)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Explicit pinned PANDA_W3_OFFICIAL_NODE; backend-only real generated Node project deletion in new TempDir"]
-async fn official_generated_configuration_runtime_writer_and_all_owned_material_are_actually_deleted(
-) {
+async fn official_selected_starter_deletion_clears_private_material_and_preserves_source_data() {
     let fixture = DeletionFixture::new();
     let apps = fixture.manager();
     let id = fixture.generate(&apps).await;
@@ -257,7 +257,7 @@ async fn official_generated_configuration_runtime_writer_and_all_owned_material_
         .unwrap()
         .next()
         .is_some());
-    assert!(slot.join("data/w5-business.json").is_file());
+    assert!(fixture.source.join("data/w5-business.json").is_file());
     assert!(slot.join("logs/current.log").is_file());
     fs::create_dir_all(fixture.source.join(".git/objects/aa")).unwrap();
     let git_object = fixture
@@ -322,9 +322,10 @@ async fn official_generated_configuration_runtime_writer_and_all_owned_material_
     let result = result.unwrap();
     assert_eq!(result["operationOutcome"], "deleted", "{settled}");
     assert_eq!(result["evidenceRetained"], false);
-    assert_eq!(result["sourcePreserved"], false);
+    assert_eq!(result["sourcePreserved"], true);
     stopped(&[process]).await;
     fixture.assert_deleted(&apps, &id, &paths);
+    native_files::set_read_only(&git_object, false).unwrap();
     // Local generation has no download publication or external delivery. Do
     // not invent those authorities to make the deletion scope look broader.
     absent(
@@ -352,7 +353,6 @@ async fn official_external_original_remains_the_same_full_identity_and_bytes_aft
     )
     .unwrap();
     let source_id = PersistedIdentity::capture(&fixture.source).unwrap();
-    let originals = tree(&fixture.source);
     let apps = fixture.manager();
     let id = apps.register(fixture.source.clone()).await.unwrap()["id"]
         .as_str()
@@ -369,6 +369,7 @@ async fn official_external_original_remains_the_same_full_identity_and_bytes_aft
     let state = Browser::open(&apps, &id).await.state().await;
     let process = CapturedProcess::capture(state["pid"].as_u64().unwrap().try_into().unwrap());
     let paths = owned(&apps, &id);
+    let originals = tree(&fixture.source);
     let preview = apps.delete_preview(&id).await.unwrap();
     assert_eq!(preview["ownership"], "external");
     assert_eq!(preview["preservedPaths"], json!([fixture.source]));
@@ -573,7 +574,7 @@ async fn official_abandon_before_rename_preserves_original_objects_and_never_res
     }
     assert_tree(&fixture.source, &source_before);
     assert_eq!(
-        fs::read_to_string(fixture.slot(&id).join("data/w5-launch-count")).unwrap(),
+        fs::read_to_string(fixture.source.join("data/w5-launch-count")).unwrap(),
         "1"
     );
     assert!(apps.running_ids().await.is_empty());

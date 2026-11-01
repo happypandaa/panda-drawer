@@ -12,6 +12,7 @@ type ManagerBuilder<'a> = WebviewWindowBuilder<'a, Wry, AppHandle>;
 pub(super) async fn close_and_clear_manager(app: &AppHandle) -> Result<(), ApiError> {
     windows::close_and_clear_manager(app).await
 }
+#[cfg(windows)]
 pub(super) fn manager_closed_for_cleanup(app: &AppHandle) -> bool {
     #[cfg(windows)]
     {

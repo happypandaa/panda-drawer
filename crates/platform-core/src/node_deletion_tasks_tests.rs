@@ -27,12 +27,16 @@ impl Fixture {
             b"preserve external author files",
         )
         .unwrap();
-        crate::builds::atomic_json(&source.join("local-app.json"), &json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"test.disposable.persistent-delete","name":"可丢弃持久删除","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
-            "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24}
-        })).unwrap();
+        crate::builds::atomic_json(
+            &source.join("panda.json"),
+            &json!({
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":"可丢弃持久删除","version":"1"},
+                "web":{"root":"public","entry":"index.html"},
+                "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24}
+            }),
+        )
+        .unwrap();
         let apps = NodeApps::new(data.clone(), "/disposable/nonexistent-node".into()).unwrap();
         Self {
             _temp: temp,
@@ -509,7 +513,8 @@ async fn changed_registration_fails_before_rename_and_abandon_preserves_replacem
         .unwrap();
     phase(&fixture.apps, &task, "abandoned").await;
     assert_eq!(fs::read(&registration).unwrap(), replacement);
-    assert!(slot.join("data").is_dir());
+    assert!(!slot.join("data").exists());
+    assert!(!fixture.source.join("data").exists());
     fixture.assert_source();
 }
 
@@ -563,7 +568,7 @@ async fn platform_stop_waits_for_the_actual_accepted_file_worker() {
 }
 
 #[tokio::test]
-async fn failed_task_keeps_migration_and_cleanup_blocked_without_blocking_platform_stop() {
+async fn failed_task_keeps_migration_blocked_without_blocking_platform_stop() {
     let fixture = Fixture::new();
     let id = fixture.register().await;
     let workspace = fixture
@@ -594,10 +599,6 @@ async fn failed_task_keeps_migration_and_cleanup_blocked_without_blocking_platfo
     assert!(
         store.check_workspace_available().is_ok(),
         "failed admission must not freeze new management work"
-    );
-    assert_eq!(
-        store.begin_workspace_cleanup().unwrap_err().code,
-        "NODE_DELETION_PENDING"
     );
     fixture
         .apps
@@ -686,7 +687,7 @@ async fn killed_disposable_manager_process_resumes_the_same_staged_task_and_pres
         .with_file_name("disposable-crash-other-source");
     fs::create_dir_all(other_source.join("public")).unwrap();
     fs::create_dir(other_source.join("server")).unwrap();
-    for relative in ["local-app.json", "public/index.html", "server/main.mjs"] {
+    for relative in ["panda.json", "public/index.html", "server/main.mjs"] {
         fs::copy(fixture.source.join(relative), other_source.join(relative)).unwrap();
     }
     fs::write(
@@ -697,8 +698,9 @@ async fn killed_disposable_manager_process_resumes_the_same_staged_task_and_pres
     let other = fixture.apps.register(other_source.clone()).await.unwrap();
     let other_id = other["id"].as_str().unwrap();
     let other_slot = fixture.data.join("node-apps").join(other_id);
+    fs::create_dir(other_source.join("data")).unwrap();
     fs::write(
-        other_slot.join("data/other-instance-sentinel"),
+        other_source.join("data/other-instance-sentinel"),
         b"preserve another instance data",
     )
     .unwrap();
@@ -788,7 +790,7 @@ async fn killed_disposable_manager_process_resumes_the_same_staged_task_and_pres
         other_registration
     );
     assert_eq!(
-        fs::read(other_slot.join("data/other-instance-sentinel")).unwrap(),
+        fs::read(other_source.join("data/other-instance-sentinel")).unwrap(),
         b"preserve another instance data"
     );
     assert_eq!(
@@ -857,19 +859,16 @@ async fn writer_material_created_after_admission_is_bound_after_join_before_any_
         let id = fixture.register().await;
         let ownership = fixture.apps.project_ownership();
         let source = format!("src_{}", Uuid::new_v4().simple());
-        let installation = format!("install_{}", Uuid::new_v4().simple());
-        let build = format!("task_{}", Uuid::new_v4().simple());
+        let onboarding = format!("task_{}", Uuid::new_v4().simple());
+        let task_material = format!("task_{}", Uuid::new_v4().simple());
         let paths = [
             fixture
                 .apps
                 .deletion_workspace()
                 .join(".platform/sources")
                 .join(&source),
-            fixture
-                .data
-                .join("node-apps/.installations")
-                .join(&installation),
-            fixture.data.join("node-development-builds").join(&build),
+            fixture.data.join("onboarding/imports").join(&onboarding),
+            fixture.data.join("onboarding/imports").join(&task_material),
         ];
         // The task announced its source path before deletion, while the two
         // later downstream IDs are allocated by the already admitted writer.
@@ -883,15 +882,15 @@ async fn writer_material_created_after_admission_is_bound_after_join_before_any_
             .submit_deletion(&id, fixture.input(&id).await)
             .await
             .unwrap();
-        ownership.record_installation(&id, &installation).unwrap();
-        ownership.record_build(&id, &build).unwrap();
+        ownership.record_onboarding(&id, &onboarding).unwrap();
+        ownership.record_onboarding(&id, &task_material).unwrap();
         for path in &paths {
             fs::create_dir_all(path).unwrap();
             fs::write(path.join("writer-outcome"), outcome).unwrap();
         }
         ownership.record_source(&id, &source).unwrap();
-        ownership.record_installation(&id, &installation).unwrap();
-        ownership.record_build(&id, &build).unwrap();
+        ownership.record_onboarding(&id, &onboarding).unwrap();
+        ownership.record_onboarding(&id, &task_material).unwrap();
         assert!(fixture.data.join("node-apps").join(&id).exists());
         drop(writer);
         phase(&fixture.apps, &task, "deleted").await;
@@ -931,11 +930,11 @@ async fn a_missing_slot_with_a_remaining_owner_ledger_is_never_falsely_reported_
 }
 
 #[tokio::test]
-async fn platform_generated_source_has_no_preservation_receipt_and_is_deleted_with_git_edits() {
+async fn platform_downloaded_source_is_deleted_with_git_edits() {
     let fixture = Fixture::new();
     let id = fixture.register().await;
-    // The real generation path writes this proof before its first starter file;
-    // this temp fixture supplies the same trusted ownership proof directly.
+    // Git publication establishes this trusted permanent platform ownership;
+    // a user-selected empty directory never receives this proof.
     fixture
         .apps
         .project_ownership()
@@ -1067,24 +1066,6 @@ async fn terminal_deleted_journal_survives_restart_until_three_stage_cleanup_and
         .admit_operation(&id, "late writer after terminal recovery")
         .is_err());
     fixture.assert_source();
-}
-
-#[tokio::test]
-async fn pending_source_restore_marker_is_deleted_without_requiring_recovery_first() {
-    let fixture = Fixture::new();
-    let id = fixture.register().await;
-    let slot = fixture.data.join("node-apps").join(&id);
-    fs::write(
-        slot.join("source-restore.json"),
-        b"disposable interrupted recovery marker",
-    )
-    .unwrap();
-    let input = fixture.input(&id).await;
-    let result = fixture.apps.delete(&id, input).await.unwrap();
-    assert_eq!(result["operationOutcome"], "deleted");
-    assert!(!slot.exists());
-    fixture.assert_source();
-    assert!(fixture.apps.deletion_tasks().unwrap().is_empty());
 }
 
 #[tokio::test]

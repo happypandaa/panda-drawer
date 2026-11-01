@@ -233,12 +233,16 @@ fn node_source(path: &Path) {
         "throw Error('never executed')",
     )
     .unwrap();
-    crate::builds::atomic_json(&path.join("local-app.json"), &json!({
-        "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-        "app":{"id":"disposable.coordinator.node","name":"Disposable coordinated Node","version":"1.0.0"},
-        "web":{"root":"public","entry":"index.html","routing":"files"},
-        "backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
-    })).unwrap();
+    crate::builds::atomic_json(
+        &path.join("panda.json"),
+        &json!({
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"Disposable coordinated Node","version":"1.0.0"},
+            "web":{"root":"public","entry":"index.html"},
+            "backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
+        }),
+    )
+    .unwrap();
 }
 async fn node_phase(apps: &NodeApps, task: &Value, expected: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(15), async {

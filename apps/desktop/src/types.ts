@@ -56,8 +56,6 @@ export interface OpenProjectResult {
 }
 
 export interface BuildInfo {
-  dataRecoveryRequired?: boolean;
-  dataRecoveryState?: 'clear' | 'pending' | 'blocked';
   origin?: 'bundledTemplate' | 'projectBuild';
   templateVersion?: string;
   sourceState: 'unbuilt' | 'matched' | 'modified' | 'unknown';
@@ -141,7 +139,6 @@ export interface WorkspaceInfo {
   migrationState: string;
   activeTask: string | { taskId: string } | null;
   lastTaskId?: string | null;
-  cleanupTask?: TaskRecord | null;
   migrationCleanupTask?: TaskRecord | null;
   retainedRoots: (string | RetainedWorkspaceRoot)[];
 }

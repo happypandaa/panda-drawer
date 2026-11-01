@@ -289,6 +289,72 @@ fn ordinary_same_user_storage_preflight_does_not_require_or_repair_a_private_dac
 }
 
 #[test]
+fn project_storage_is_read_only_then_creates_data_without_rewriting_existing_dacl() {
+    let temporary = tempfile::Builder::new()
+        .prefix("panda-disposable-project-storage-")
+        .tempdir()
+        .unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let source = root.join("project");
+    let cache = root.join("private-cache");
+    let trial = root.join("node-runtime-trial-disposable");
+    for directory in [&source, &cache, &trial] {
+        fs::create_dir(directory).unwrap();
+    }
+    let data = source.join("data");
+    let checked = checked_project_storage(&source, &cache, &source, &trial).unwrap();
+    assert_eq!(checked.0, data);
+    assert!(!data.exists());
+    prepare_project_data(&source).unwrap();
+    let before = native_files::open_no_reparse(&data).unwrap();
+    assert!(native_files::verify_private(&before.file).is_err());
+    fs::write(data.join("retained-user-file"), b"retain existing data").unwrap();
+    prepare_directories(
+        &trial.join("run-disposable"),
+        Some((data.clone(), cache)),
+        false,
+    )
+    .unwrap();
+    let after = native_files::open_no_reparse(&data).unwrap();
+    assert!(before.identity.same_object(&after.identity));
+    assert!(native_files::verify_private(&after.file).is_err());
+    assert_eq!(
+        fs::read(data.join("retained-user-file")).unwrap(),
+        b"retain existing data"
+    );
+}
+
+#[test]
+fn project_data_rejects_a_junction_without_touching_the_external_target() {
+    let temporary = tempfile::Builder::new()
+        .prefix("panda-disposable-project-data-link-")
+        .tempdir()
+        .unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let source = root.join("project");
+    let outside = root.join("outside");
+    let cache = root.join("cache");
+    let trial = root.join("node-runtime-trial-disposable");
+    for directory in [&source, &outside, &cache, &trial] {
+        fs::create_dir(directory).unwrap();
+    }
+    let marker = outside.join("untouched");
+    fs::write(&marker, b"outside user data").unwrap();
+    let system = platform_native::windows::system_paths::SystemPaths::current().unwrap();
+    let output = std::process::Command::new(system.system.join("cmd.exe"))
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(source.join("data"))
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(checked_project_storage(&source, &cache, &source, &trial).is_err());
+    assert!(prepare_project_data(&source).is_err());
+    assert_eq!(fs::read(&marker).unwrap(), b"outside user data");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+}
+
+#[test]
 fn runtime_environment_is_cleared_with_native_system_root_and_explicit_temporary_paths() {
     let temporary = tempfile::Builder::new()
         .prefix("panda-disposable-w3-runtime-environment-")

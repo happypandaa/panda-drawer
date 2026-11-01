@@ -1,11 +1,7 @@
+import type { AppDecl, ConfigurationField } from './generated/panda-manifest';
 import type { ObjectLayout } from './object-layout-types';
 
 export type NodeConfigurationValue = string | number | boolean;
-
-export interface NodeDataContract {
-  id: string;
-  version: number;
-}
 
 export interface NodeAppDeletePreview {
   appId: string;
@@ -55,36 +51,22 @@ export interface NodeDeletionTaskSnapshot {
   result: NodeAppDeleteResult | null;
 }
 
-export interface NodeConfigurationField {
-  name: string;
-  label: string;
-  type: 'string' | 'url' | 'integer' | 'boolean' | 'select';
-  required: boolean;
-  secret: boolean;
-  description: string;
-  howToGet: string[];
-  placeholder?: string;
-  default?: NodeConfigurationValue;
-  endpointField?: string;
-  helpUrl?: string;
-  options?: { value: string; label: string }[];
-}
+export type NodeConfigurationField = ConfigurationField;
 
 export interface NodeAppDetail {
   dependencyWarnings?: string[];
-  version?: string;
+  version?: string | null;
+  description?: string | null;
+  iconDataUrl?: string | null;
   manifestDigest?: string;
   gitSource?: { url: string; branch: string | null } | null;
   ownership?: 'managed' | 'external';
   unavailableReason?: string | null;
-  development?: { sourcePath: string; runtimeIsSource: boolean; manifestId: string } | null;
   id: string;
   name: string;
   sourcePath: string;
   objectLayout?: ObjectLayout | null;
-  dataContract?: NodeDataContract | null;
-  installation?: { kind: 'managed'; generation: string; sourceId: string; sourceDigest: string } | null;
-  runtime: 'node-service';
+  runtime: 'node';
   window?: { width: number; height: number; rememberSize?: boolean } | null;
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
   runRecovery?: { state: 'orphaned' | 'unconfirmed'; canStop: boolean; message: string } | null;
@@ -107,8 +89,7 @@ export interface NodeAppInspection {
   dependencyWarnings?: string[];
   runtime: string;
   runtimeLabel: string;
-  app: { id: string; name: string; version: string; description?: string };
-  dataContract?: NodeDataContract | null;
+  app: AppDecl;
   configuration: { fields: NodeConfigurationField[]; missingRequired: string[] };
 }
 
@@ -121,7 +102,6 @@ export interface NodeDirectoryReview {
   reviewPrompt: string;
   category?: 'needs-changes' | 'unsupported' | 'insufficient';
   reasonCodes?: string[];
-  projectFormat?: 'project-v1';
   existingApp?: { id: string; name: string };
 }
 

@@ -60,11 +60,8 @@ const { ProjectOverview } = await component('ProjectOverview.tsx');
 const { WorkspaceStoragePanel } = await component('WorkspaceStoragePanel.tsx');
 const { WorkspaceLocation } = await component('WorkspaceLocation.tsx');
 const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await component('frontend-platform.tsx');
-const { resetHistoryScanForTests } = await component('history-scan-store.ts');
-const { WorkspaceCleanupPanel } = await component('WorkspaceCleanupPanel.tsx');
 const { default: App } = await component('App.tsx');
 const { resetProjectDeletionsForTests, acceptProjectDeletion, observeDeletionRuntime, projectWasDeleted } = await component('project-deletion.ts');
-const { ImportPanel } = await component('ArchiveImportPanel.tsx');
 const { ProjectDeleteDialog } = await component('ProjectDeleteDialog.tsx');
 const { ProjectTask } = await component('ProjectTask.tsx');
 let root;
@@ -128,32 +125,6 @@ afterEach(async () => {
   delete navigator.clipboard;
 });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
-
-test('Project import always requests a new independent identity', async () => {
-  await setup(); const calls = []; const tasks = [];
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    assert.equal(command, 'project_import'); calls.push(args);
-    const projectId = `prj_disposable_${calls.length}`;
-    return { taskId: `task_disposable_import_${calls.length}`, projectId, type: 'import', status: 'succeeded', final: true, phase: 'completed', result: { projectId, targetProjectId: projectId, operationOutcome: 'imported', cleanupPending: false, cleanup: { completed: true } }, error: null };
-  };
-  const props = { disabled: false, onTask(value) { tasks.push(value); }, onClose() {} };
-  await render(h(ImportPanel, props));
-  assert.equal(document.querySelector('input[name="import-mode"]'), null);
-  assert.match(document.querySelector('.project-help').textContent, /重复导入可以并存/);
-  await inputValue(document.querySelector('.path-input input'), '/disposable/shared-project.zip');
-  await inputValue(document.querySelector('form > label input'), 'My independent project');
-  await click(buttonNamed('校验并导入'));
-  assert.deepEqual(calls, [{ input: { archivePath: '/disposable/shared-project.zip', cleanupTemporaryFiles: true, name: 'My independent project' } }]);
-  assert.match(dialog().textContent, /导入成功/);
-  await act(async () => root.unmount()); root = null;
-  await setup(); await render(h(ImportPanel, props));
-  await inputValue(document.querySelector('.path-input input'), '/disposable/shared-project.zip');
-  assert.equal(document.querySelector('input[value="original"]'), null);
-  assert.match(document.querySelector('.project-help').textContent, /每次导入都生成新 ID/);
-  await click(buttonNamed('校验并导入'));
-  assert.deepEqual(calls[1], { input: { archivePath: '/disposable/shared-project.zip', cleanupTemporaryFiles: true } });
-  assert.equal(tasks.length, 2);
-});
 
 test('Modal names itself, focuses its heading, locks the background, and restores focus/scroll/inert state', async () => {
   await setup();
@@ -264,23 +235,6 @@ function overviewProps(extra = {}) {
 }
 const buttonNamed = (name) => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === name);
 
-test('Ordinary application details have information rows and one collapsed More disclosure without tabs', async () => {
-  await setup(); const calls = [];
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    calls.push(command);
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status') return clearRecovery;
-    throw new Error(`Ordinary details must remain read-only: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ onDelete() {} })));
-  assert.equal(document.querySelector('[role="tablist"]'), null);
-  assert.equal(document.querySelector('.application-detail-more').open, false);
-  assert.deepEqual([...document.querySelectorAll('.application-detail-row dt')].map(item => item.textContent), ['项目文件夹', '占用空间']);
-  assert.equal(document.querySelector('.project-git-panel'), null);
-  assert.equal(buttonNamed('停止并删除…').closest('details'), null);
-  assert.equal(calls.some(command => /^(backup_|maintenance_begin|project_git_(initialize|save|branch|source_restore_(apply|recover)))/.test(command)), false);
-});
-
 function overviewGitStatus(extra = {}) {
   return { repository: { state: 'project-root', root: '/disposable/dom-fixture', markers: [], head: { oid: 'a'.repeat(40), branch: 'refs/heads/main' }, indexState: 'matched', git: { path: '/disposable/git', version: '2.56.0' } }, scope: { policy: 'project-source-v1', includedRoots: ['app'], includedPaths: ['app/src/App.tsx'], excluded: [], unclassifiedPaths: [], protectedTrackedPaths: [], complete: true }, changes: [{ path: 'app/src/App.tsx', kind: 'modify', staged: false }], snapshotDigest: 'b'.repeat(64), canInitialize: false, canSave: true, canListVersions: true, canCreateBranch: false, branchCreationIssue: null, database: { state: 'available', canSave: true, reason: 'Disposable data' }, issues: [], ...extra };
 }
@@ -290,141 +244,6 @@ async function openOverviewVersions() {
   await act(async () => { details.open = true; details.dispatchEvent(new window.Event('toggle')); });
   return details;
 }
-
-test('Web details explicitly mount retained read-only version tools without save drafts', async () => {
-  await setup(); const calls = []; const states = [];
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    calls.push(command);
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status' || command === 'project_git_data_restore_status') return clearRecovery;
-    if (command === 'project_git_status') return overviewGitStatus();
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'storage_info') return emptyProjectStorage;
-    if (command === 'storage_files') return emptyStorageFiles;
-    throw new Error(`Unexpected version integration request: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ onDevelopmentStateChange: value => states.push(value) })));
-  assert.equal(calls.includes('project_git_status'), false);
-  const details = await openOverviewVersions();
-  assert.ok(document.querySelector('.project-git-panel'));
-  assert.equal([...document.querySelectorAll('label')].some(element => element.textContent === '版本说明'), false);
-  assert.equal(calls.some(command => /project_git_(save|initialize|branch_create|data_save)$/.test(command)), false);
-  await act(async () => { details.open = false; details.dispatchEvent(new window.Event('toggle')); });
-  assert.equal(details.open, false);
-
-  assert.equal(document.querySelector('[aria-label="关闭详情确认"]'), null);
-  await render(h('div'));
-  assert.deepEqual(states.at(-1), { dirty: false, pending: false });
-});
-
-test('A project requiring data recovery opens its recovery entry even when ordinary Git and metadata are unavailable', async () => {
-  await setup(); const calls = [];
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    calls.push(command);
-    if (command === 'project_git_data_restore_status') return { state: 'pending', businessBlocked: true, operations: [], issues: [{ message: '保留的恢复现场需要核对' }] };
-    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
-    if (command === 'project_git_status') throw new Error('当前活库缺失，普通 Git 检查不可用');
-    if (command === 'project_metadata') throw new Error('元信息暂不可读取');
-    throw new Error(`Recovery details must not mutate: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ project: { ...project, state: 'error', projectRoot: '/disposable/dom-fixture', buildInfo: { sourceState: 'unknown', dataRecoveryRequired: true, dataRecoveryState: 'pending' } } })));
-  const section = document.querySelector('[aria-label="业务数据取回恢复"]');
-  assert.ok(section);
-  assert.match(section.textContent, /保留的恢复现场需要核对/);
-  assert.equal(document.querySelector('[role=tablist]'), null);
-  assert.match(document.querySelector('.project-git-panel').textContent, /当前活库缺失/);
-  assert.ok(calls.indexOf('project_git_data_restore_status') < calls.indexOf('project_git_status'));
-  const details = section.closest('details');
-  await act(async () => { details.open = false; details.dispatchEvent(new window.Event('toggle')); });
-  assert.equal(details.open, true);
-  assert.equal(calls.some(command => /_(apply|recover|save|initialize)$/.test(command)), false);
-});
-
-test('An immediately completed data recovery refreshes the parent project information', async () => {
-  await setup(); let restored = false; let changes = 0;
-  const operation = { restoreTaskId: 'task_recovery_original', targetCommit: 'a'.repeat(40), planDigest: 'b'.repeat(64), journalDigest: 'c'.repeat(64), phase: 'exchanging', operationOutcome: 'not_committed', dataState: 'before', documentEpoch: null, canContinue: true, canUndo: false, completionPublished: false, originalRetained: true, retainedPath: '/disposable/recovery-evidence', slots: [], issues: [] };
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_data_restore_status') return { state: restored ? 'clear' : 'pending', businessBlocked: !restored, operations: restored ? [] : [operation], issues: [] };
-    if (command === 'project_git_source_restore_status' || command === 'project_git_data_save_status') return clearRecovery;
-    if (command === 'project_git_status') return overviewGitStatus();
-    if (command === 'project_git_data_restore_recover') {
-      restored = true;
-      return { taskId: 'task_recovery_complete', projectId: project.id, type: 'gitDataRestoreContinue', status: 'succeeded', final: true, phase: 'complete', result: { operation: 'data-restore-continue', operationOutcome: 'committed', dataState: 'applied', pending: false, businessBlocked: false }, error: null };
-    }
-    throw new Error(`Unexpected recovery request: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ project: { ...project, buildInfo: { sourceState: 'unknown', dataRecoveryRequired: true } }, onChanged: async () => { changes++; } })));
-  assert.equal(changes, 0);
-  await click(document.querySelector('[aria-label="业务数据取回恢复"] input[type="checkbox"]'));
-  await click(buttonNamed('继续并核对数据取回'));
-  assert.equal(changes, 1);
-  assert.equal(document.querySelector('[aria-label="业务数据取回恢复"]'), null);
-  assert.match(document.querySelector('.build-task').textContent, /数据库和附件已取回/);
-});
-
-test('Application details preserve metadata while disclosures change and require explicit discard to close', async () => {
-  await setup(); let guard; let closes = 0;
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status') return clearRecovery;
-    throw new Error(`Unexpected native request: ${command}`);
-  };
-  const close = () => { if (!guard || guard()) closes++; };
-  await render(h(Modal, { title: '项目详情', onClose: close }, h(ProjectOverview, overviewProps({ onDismissGuardChange: value => { guard = value; }, onClose: close }))));
-  await openMore(); await openMore(); await click(buttonNamed('编辑信息'));
-  const name = document.querySelector('.detail-metadata-form input');
-  await inputValue(name, 'Unsaved display name');
-  const more = document.querySelector('.application-detail-more');
-  await act(async () => { more.open = false; more.dispatchEvent(new window.Event('toggle')); });
-  assert.equal(more.open, true, 'Unsubmitted edits cannot be hidden by collapsing More');
-  assert.equal(name.value, 'Unsaved display name');
-  await key('Escape');
-  assert.equal(closes, 0); assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
-  await click(buttonNamed('继续编辑'));
-  assert.equal(name.value, 'Unsaved display name');
-  await click(closeButton()); await click(buttonNamed('放弃未提交内容并关闭'));
-  assert.equal(closes, 1);
-});
-
-test('Project icon chooser blocks closing and ignores a late selected file after unmount', async () => {
-  await setup(); const chooser = deferred(); let guard; const requests = [];
-  globalThis.__UI_TEST_INVOKE__ = async (command) => {
-    requests.push(command);
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status') return clearRecovery;
-    if (command === 'choose_path') return chooser.promise;
-    throw new Error(`A closed chooser must not write: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ onDismissGuardChange: (value) => { guard = value; } })));
-  await openMore(); await click(buttonNamed('编辑信息')); await click(buttonNamed('导入 PNG 图标'));
-  let canClose;
-  await act(async () => { canClose = guard(); });
-  assert.equal(canClose, false);
-  assert.equal(document.querySelector('[role="tablist"]'), null);
-  await render(null);
-  await act(async () => chooser.resolve('/disposable/late-image.png'));
-  assert.deepEqual(requests.filter(command => !['workspace_storage', 'storage_files'].includes(command)), ['project_git_source_restore_status', 'project_metadata', 'choose_path']);
-  assert.equal(guard, null);
-});
-
-test('Application More retains export and version tools while deletion stays in the footer', async () => {
-  await setup(); let deletions = 0;
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status') return clearRecovery;
-    throw new Error(`Opening details must not mutate: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ onDelete() { deletions++; } })));
-  await openMore();
-  assert.equal(document.querySelector('[role="tablist"]'), null);
-  assert.equal(document.querySelector('[aria-label="删除项目确认"]'), null);
-  assert.ok(buttonNamed('导出 ZIP'));
-  assert.ok([...document.querySelectorAll('summary')].some(item => item.textContent === '源码与数据版本'));
-  const remove = buttonNamed('停止并删除…');
-  assert.ok(remove.closest('.application-detail-footer')); assert.equal(remove.closest('details'), null);
-  await click(remove); assert.equal(deletions, 1);
-});
 
 test('Permanent deletion never submits when the read-only identity preview cannot be verified', async () => {
   await setup(); const calls = [];
@@ -668,27 +487,8 @@ function storagePanelProps(extra = {}) {
 }
 const workspaceStorage = { platformProgram: { totalBytes: null }, workspace: { totalBytes: null, projects: [] }, otherLocalLocations: [] };
 
-test('Storage settings show a single panel and opening cleanup first reads a detailed plan', async () => {
-  await setup(); resetHistoryScanForTests(); const requests = [];
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    requests.push(command);
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'workspace_cleanup_preview') return cleanupPreview(cleanupPlan());
-    throw new Error(`Opening storage must not mutate: ${command}`);
-  };
-  await render(h(WorkspaceStoragePanel, storagePanelProps()));
-  assert.deepEqual(requests, ['workspace_storage']);
-  assert.equal(document.querySelector('[role="tablist"]'), null);
-  assert.match(document.querySelector('.space-totals').textContent, /应用共占用.*可以清理.*磁盘剩余/);
-  await click(buttonNamed('清理'));
-  assert.equal(requests.filter(command => command === 'workspace_cleanup_preview').length, 1);
-  assert.ok(document.querySelector('[role="dialog"]'));
-  assert.match(dialog().textContent, /Disposable restore original|取回前原件/);
-  assert.equal(requests.some(command => command === 'workspace_cleanup' || command === 'storage_cleanup'), false);
-});
-
 test('Application storage sums only current application rows and reports unknown measurements', async () => {
-  await setup(); resetHistoryScanForTests();
+  await setup();
   const data = { ...workspaceStorage, knownLocalTotal: { totalBytes: 999999 }, workspace: { totalBytes: 3000, projects: [{ scope: { projectId: 'prj_space_a' }, totalBytes: 2500, complete: true }] }, nodeApps: [{ scope: { appId: 'node_space_fixture' }, totalBytes: 700, complete: true }], disks: [{ exampleRoot: '/disposable/workspace', availableBytes: 5000 }] };
   globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'workspace_storage'); return data; };
   await render(h(WorkspaceStoragePanel, storagePanelProps({ projects: [{ ...project, id: 'prj_space_a', name: 'Space A' }, { ...project, id: 'prj_unknown', name: 'Unknown' }], nodeApps: [{ id: 'node_space_fixture', name: 'Node space fixture' }] })));
@@ -699,7 +499,7 @@ test('Application storage sums only current application rows and reports unknown
 });
 
 test('Application occupancy defaults to five rows and expands the size-sorted list', async () => {
-  await setup(); resetHistoryScanForTests();
+  await setup();
   const projects = Array.from({ length: 7 }, (_, index) => ({ ...project, id: `space_${index}`, name: `App ${index}` }));
   const data = { ...workspaceStorage, workspace: { projects: projects.map((value, index) => ({ scope: { projectId: value.id }, totalBytes: 100 * (index + 1), complete: true })) } };
   globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'workspace_storage'); return data; };
@@ -725,226 +525,6 @@ async function acknowledgeCleanup() {
   await click(buttonNamed('清理所选…'));
   await click(cleanupConfirmation().querySelector('input[type="checkbox"]'));
 }
-
-test('Cleanup lists every history category and shows protected reasons without internal codes', async () => {
-  await setup();
-  const items = [
-    { id: 'datarestore_task_a', kind: 'restoreOriginal', label: '数据取回前的原件', name: 'Fixture project', projectId: 'prj_a', path: '/disposable/workspace/.platform/project-state/data-restore/prj_a/task_a', totalBytes: 10, fileCount: 1, canClean: true, blockedReasons: [] },
-    { id: 'install_a', kind: 'restoreOriginal', label: '取回前的原件', name: 'Fixture app', path: '/disposable/workspace/.platform/data-restores/restore_pending/original', totalBytes: 20, fileCount: 2, canClean: false, blockedReasons: ['CLEANUP_ITEM_PROTECTED: 这个恢复操作尚未完成，保留'] },
-  ];
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan({ items })); };
-  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
-  const rows = [...document.querySelectorAll('.workspace-cleanup-item')];
-  assert.equal(rows.length, 2);
-  assert.deepEqual([...document.querySelectorAll('.history-group h3')].map((heading) => heading.textContent), ['取回前的原件']);
-  const blocked = rows.find((row) => row.textContent.includes('这个恢复操作尚未完成'));
-  assert.match(blocked.textContent, /这个恢复操作尚未完成/);
-  assert.doesNotMatch(blocked.textContent, /CLEANUP_ITEM_PROTECTED/);
-  assert.equal(blocked.querySelector('input').disabled, true);
-  // Selecting a whole group skips protected items.
-  await click(buttonNamed('全选本组'));
-  assert.equal(document.querySelectorAll('.workspace-cleanup-item input:checked').length, 1);
-  assert.match(document.querySelector('.history-selection-bar').textContent, /已选 1 项/);
-});
-
-test('Cleanup controls identify same-name projects and copy or submit only the associated scope', async () => {
-  await setup(); const copied = []; const submissions = [];
-  const items = ['kept', 'disposable'].map((suffix) => ({ id: `restore_${suffix}`, kind: 'restoreOriginal', label: '取回前的原件', name: 'Same display name', projectId: `prj_${suffix}`, path: `/disposable/restore-original-${suffix}`, totalBytes: 42, fileCount: 1, canClean: true, blockedReasons: [] }));
-  const plan = cleanupPlan({ items });
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    if (command === 'workspace_cleanup_preview') return cleanupPreview(plan);
-    assert.equal(command, 'workspace_cleanup'); submissions.push(args.input);
-    return { taskId: 'task_cleanup_named_scope', type: 'workspaceCleanup', projectId: null, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
-  };
-  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
-  const rows = [...document.querySelectorAll('.workspace-cleanup-item')];
-  const names = rows.map((row) => row.querySelector('input').getAttribute('aria-label'));
-  assert.equal(new Set(names).size, items.length);
-  for (const [index, row] of rows.entries()) {
-    const checkbox = row.querySelector('input'); const copy = row.querySelector('button');
-    for (const control of [checkbox, copy]) {
-      const name = control.getAttribute('aria-label');
-      assert.ok(name.includes('取回前的原件')); assert.ok(name.includes(items[index].name));
-      assert.ok(name.includes(items[index].projectId)); assert.ok(name.includes(items[index].path));
-    }
-    await click(copy);
-  }
-  assert.deepEqual(copied, items.map((item) => item.path));
-  await click(rows[1].querySelector('input')); await acknowledgeCleanup();
-  assert.equal(rows[0].querySelector('input').checked, false);
-  await click(confirmCleanupButton());
-  assert.deepEqual(submissions, [{ planId: plan.planId, itemIds: ['restore_disposable'], confirmation: plan.confirmationText }]);
-});
-
-test('Cleanup review opens a named dialog and cancelling returns focus to the review action', async () => {
-  await setup();
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan()); };
-  const props = cleanupProps();
-  await render(h(WorkspaceCleanupPanel, props)); await click(buttonNamed('扫描可清理范围'));
-  assert.equal(document.activeElement.id, 'trigger');
-  await click(document.querySelector('.workspace-cleanup-item input'));
-  const review = buttonNamed('清理所选…'); review.focus(); await click(review);
-  const heading = cleanupConfirmation().querySelector('h2');
-  assert.match(heading.textContent, /永久清理 1 项历史资料/);
-  assert.equal(document.activeElement, heading);
-  assert.match(cleanupConfirmation().textContent, /Disposable restore original.*1\.2 KB/);
-  assert.equal(confirmCleanupButton().disabled, true);
-  await click(cleanupConfirmation().querySelector('input[type="checkbox"]'));
-  assert.equal(confirmCleanupButton().disabled, false);
-  await render(h(WorkspaceCleanupPanel, { ...props }));
-  assert.equal(cleanupConfirmation().querySelector('input[type="checkbox"]').checked, true, 'Ordinary rerenders keep the acknowledgement');
-  await click(buttonNamed('取消，保留'));
-  assert.equal(cleanupConfirmation(), null); assert.equal(document.activeElement, review);
-  await click(review);
-  assert.equal(cleanupConfirmation().querySelector('input[type="checkbox"]').checked, false, 'Reopening requires a fresh acknowledgement');
-});
-
-test('Cleanup acceptance and its first final transition reveal results without ordinary updates stealing focus', async () => {
-  await setup(); const accepted = deferred(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this); };
-  try {
-    const oldTask = { taskId: 'task_cleanup_historical', type: 'workspaceCleanup', projectId: null, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
-    let props = cleanupProps({ cleanupTask: oldTask });
-    globalThis.__UI_TEST_INVOKE__ = async (command) => {
-      if (command === 'workspace_cleanup_preview') return cleanupPreview(cleanupPlan());
-      assert.equal(command, 'workspace_cleanup'); return accepted.promise;
-    };
-    await render(h(WorkspaceCleanupPanel, props));
-    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0, 'Historical results must not take focus on entry');
-    await click(buttonNamed('扫描可清理范围')); await click(document.querySelector('.workspace-cleanup-item input')); await acknowledgeCleanup();
-    await click(confirmCleanupButton()); document.getElementById('trigger').focus();
-    const running = { ...oldTask, taskId: 'task_cleanup_new', final: false, status: 'queued', phase: 'queued', result: null };
-    await act(async () => accepted.resolve(running));
-    const resultHeading = document.querySelector('.workspace-cleanup-result h3');
-    assert.equal(document.activeElement, resultHeading); assert.equal(scrolled.at(-1), resultHeading);
-    const acceptedScrollCount = scrolled.length;
-    document.getElementById('trigger').focus();
-    props = { ...props, cleanupTask: { ...running, status: 'running', phase: 'cleaning-restoreOriginal' } };
-    await render(h(WorkspaceCleanupPanel, props));
-    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, acceptedScrollCount);
-    const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
-    props = { ...props, cleanupTask: final }; await render(h(WorkspaceCleanupPanel, props));
-    assert.equal(document.activeElement, resultHeading); assert.equal(scrolled.length, acceptedScrollCount + 1);
-    document.getElementById('trigger').focus(); await render(h(WorkspaceCleanupPanel, { ...props, cleanupTask: { ...final } }));
-    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, acceptedScrollCount + 1, 'Duplicate final polls must not take focus again');
-  } finally { HTMLElement.prototype.scrollIntoView = scrollIntoView; }
-});
-
-test('Cleanup completion in a hidden tab does not move focus then or when returning to the tab', async () => {
-  await setup(); const scrolled = []; const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this); };
-  try {
-    const running = { taskId: 'task_cleanup_hidden', type: 'workspaceCleanup', projectId: null, final: false, status: 'running', phase: 'cleaning-restoreOriginal', result: null };
-    const props = cleanupProps({ active: false, cleanupTask: running });
-    await render(h(WorkspaceCleanupPanel, props));
-    const final = { ...running, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } };
-    await render(h(WorkspaceCleanupPanel, { ...props, cleanupTask: final }));
-    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0);
-    await render(h(WorkspaceCleanupPanel, { ...props, active: true, cleanupTask: final }));
-    assert.equal(document.activeElement.id, 'trigger'); assert.equal(scrolled.length, 0);
-  } finally { HTMLElement.prototype.scrollIntoView = scrollIntoView; }
-});
-
-test('Historical cleanup is read-only until selected IDs and the irreversible scope are acknowledged', async () => {
-  await setup(); const plan = cleanupPlan(); const accepted = deferred(); const requests = []; let refreshes = 0;
-  globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
-    requests.push({ command, args });
-    if (command === 'workspace_cleanup_preview') return cleanupPreview(plan);
-    assert.equal(command, 'workspace_cleanup'); return accepted.promise;
-  };
-  await render(h(WorkspaceCleanupPanel, cleanupProps({ onRefresh: async () => { refreshes++; } })));
-  assert.deepEqual(requests, []);
-  await click(buttonNamed('扫描可清理范围'));
-  const items = [...document.querySelectorAll('.workspace-cleanup-item input[type="checkbox"]')];
-  assert.equal(items[0].checked, false); assert.equal(items[1].checked, false); assert.equal(items[1].disabled, true);
-  assert.match(document.querySelector('.workspace-cleanup-blocked').textContent, /Unresolved recovery/);
-  assert.match(document.querySelector('.workspace-cleanup-plan').textContent, /不等于实际可释放/);
-  assert.equal(buttonNamed('清理所选…').disabled, true);
-  await click(items[0]); await click(buttonNamed('清理所选…'));
-  assert.equal(confirmCleanupButton().disabled, true);
-  assert.match(cleanupConfirmation().textContent, /disposable\/restore-original/);
-  await click(cleanupConfirmation().querySelector('input[type="checkbox"]'));
-  await click(confirmCleanupButton());
-  assert.equal(cleanupConfirmation(), null);
-  assert.deepEqual(requests[1].args.input, { planId: plan.planId, itemIds: ['restore_fixture'], confirmation: '永久清理所选内容' });
-  assert.equal(buttonNamed('清理所选…').disabled, true);
-  await act(async () => accepted.resolve({ taskId: 'task_cleanup_partial', type: 'workspaceCleanup', projectId: null, final: true, status: 'failed', phase: 'failed', result: { completed: false, deleted: [{ path: '/disposable/old-workspace/old-file', logicalBytes: 10 }], failures: [{ path: '/disposable/old-workspace/new-file', reason: 'TARGET_CHANGED fixture' }], remaining: [{ path: '/disposable/restore-original' }] }, error: { code: 'CLEANUP_INCOMPLETE', message: 'Partial cleanup fixture' } }));
-  assert.equal(refreshes, 1);
-  assert.match(document.querySelector('.workspace-cleanup-result-details').textContent, /实际已删除|TARGET_CHANGED fixture|不会恢复/);
-  assert.equal(requests.filter((request) => request.command === 'workspace_cleanup').length, 1);
-});
-
-test('Changing cleanup selection, refreshing or leaving the tab revokes the permanent-cleanup confirmation', async () => {
-  await setup(); const plan = cleanupPlan();
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(plan); };
-  let props = cleanupProps();
-  await render(h(WorkspaceCleanupPanel, props)); await click(buttonNamed('扫描可清理范围'));
-  const selected = () => document.querySelector('.workspace-cleanup-item input[type="checkbox"]');
-  await click(selected()); await acknowledgeCleanup();
-  assert.equal(confirmCleanupButton().disabled, false);
-  props = { ...props, revision: 2 }; await render(h(WorkspaceCleanupPanel, props));
-  assert.equal(cleanupConfirmation(), null); assert.equal(selected().checked, true);
-  await acknowledgeCleanup();
-  props = { ...props, active: false }; await render(h(WorkspaceCleanupPanel, props));
-  props = { ...props, active: true }; await render(h(WorkspaceCleanupPanel, props));
-  assert.equal(cleanupConfirmation(), null); assert.equal(selected().checked, true);
-  await acknowledgeCleanup();
-  props = { ...props, migrating: true }; await render(h(WorkspaceCleanupPanel, props));
-  assert.equal(cleanupConfirmation(), null); assert.equal(selected().disabled, true);
-  props = { ...props, migrating: false }; await render(h(WorkspaceCleanupPanel, props));
-  await click(buttonNamed('取消选择'));
-  assert.equal(selected().checked, false); assert.equal(buttonNamed('清理所选…').disabled, true);
-});
-
-test('Expired cleanup plans and plans for a different workspace cannot submit destructive actions', async () => {
-  await setup(); const plan = cleanupPlan({ expiresAt: Date.now() - 1 }); const requests = [];
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { requests.push(command); assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(plan); };
-  const props = cleanupProps();
-  await render(h(WorkspaceCleanupPanel, props)); await click(buttonNamed('扫描可清理范围'));
-  assert.equal(document.querySelector('.workspace-cleanup-item input').disabled, true);
-  assert.match(document.querySelector('.workspace-cleanup-card').textContent, /范围已过期/);
-  assert.equal(buttonNamed('清理所选…').disabled, true);
-  await render(h(WorkspaceCleanupPanel, { ...props, workspaceRoot: '/disposable/new-workspace' }));
-  assert.match(document.querySelector('.workspace-cleanup-card').textContent, /工作区已改变/);
-  assert.deepEqual(requests, ['workspace_cleanup_preview']);
-});
-
-test('Historical cleanup shows current per-item results and uncertain lower bounds without a receipt', async () => {
-  await setup();
-  const task = { taskId: 'task_cleanup_results', type: 'workspaceCleanup', projectId: null, final: true, status: 'failed', phase: 'failed', result: {
-    completed: false, items: [
-      { id: 'one', kind: 'restoreOriginal', path: '/disposable/old-one', status: 'removed', completed: true, removed: { removedLogicalBytes: 1234, removedFileCount: 5, completed: true } },
-      { id: 'two', kind: 'restoreOriginal', path: '/disposable/old-two', status: 'failed', completed: false, error: { code: 'TARGET_CHANGED', message: 'Disposable partial fixture', details: { cleanupResult: { removedLogicalBytes: 42, removedFileCount: 1, accountingComplete: false, countsAreLowerBounds: true, remainingPath: '/disposable/old-two' } } } },
-      { id: 'three', kind: 'restoreOriginal', path: '/disposable/retained', status: 'skipped', completed: false, reason: 'A preceding item needs attention' },
-    ],
-  } };
-  await render(h(WorkspaceCleanupPanel, cleanupProps({ cleanupTask: task })));
-  const results = [...document.querySelectorAll('.workspace-cleanup-item-result')];
-  assert.equal(results.length, 3);
-  assert.match(results[0].textContent, /已清理.*实际删除.*5 个/);
-  assert.match(results[1].textContent, /已确认至少删除.*42 B.*下限.*待核对的残留目录/);
-  assert.match(results[2].textContent, /未处理.*没有继续处理/);
-  assert.equal(document.querySelector('.workspace-cleanup-receipt'), null);
-});
-
-test('An absent retired workspace reports current absence without claiming a recorded deletion', async () => {
-  await setup();
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { throw new Error(`Reading locations must not call ${command}`); };
-  const workspace = { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [{ path: '/disposable/old-workspace', available: false, absent: true, cleanup: { status: 'absent', completed: false } }] };
-  await render(h(WorkspaceLocation, { workspace, dataRoot: '/disposable/development', enabled: true, active: true, migrating: false, onTask() {}, onRefresh: async () => {} }));
-  const record = document.querySelector('.retained-roots');
-  assert.match(record.textContent, /目录当前不存在/);
-  assert.match(record.textContent, /不保留删除历史/);
-  assert.match(record.textContent, /disposable\/old-workspace/);
-  assert.equal(document.querySelector('.settings-history-notice'), null, 'A cleaned root is not offered for cleanup again');
-  // Migration roots no longer enter the manual history-cleanup flow.
-  globalThis.__UI_TEST_INVOKE__ = async (command) => { assert.equal(command, 'workspace_cleanup_preview'); return cleanupPreview(cleanupPlan({ items: [] })); };
-  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
-  assert.equal(document.querySelector('.workspace-cleanup-item'), null);
-  assert.doesNotMatch(document.querySelector('.workspace-cleanup-card').textContent, /disposable\/old-workspace/);
-
-});
 
 test('A failed migration submission still settles after leaving and returning to its settings section', async () => {
   await setup(); const result = deferred(); let submissions = 0;
@@ -1108,23 +688,6 @@ test('A cleanup acknowledgement still reaches task tracking after leaving settin
   assert.deepEqual(tracked, [running]);
   assert.equal(calls.length, 1);
   assert.equal(document.querySelector('.workspace-source-cleanup-result'), null);
-});
-
-test('Old migration records do not gain retry authority and retired manual plans are rejected', async () => {
-  await setup();
-  const workspace = migrationCleanupWorkspace({ retainedRoots: [{ taskId: 'task_old_migration', path: '/disposable/legacy-root', available: true }] });
-  globalThis.__UI_TEST_INVOKE__ = async command => { throw Error(`Read-only record invoked ${command}`); };
-  await render(h(WorkspaceLocation, migrationCleanupProps(workspace)));
-  assert.match(document.querySelector('.retained-roots').textContent, /旧记录仅供核对.*不会自动取得新的删除许可/);
-  assert.equal(buttonNamed('重试删除'), undefined); assert.equal(buttonNamed('去清理'), undefined);
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    assert.equal(command, 'workspace_cleanup_preview');
-    return cleanupPreview(cleanupPlan({ items: [{ id: 'retired_manual_root', kind: 'retainedWorkspace', label: 'Retired migration root', path: '/disposable/legacy-root', totalBytes: 1, fileCount: 1, canClean: true, blockedReasons: [] }] }));
-  };
-  await render(h(WorkspaceCleanupPanel, cleanupProps())); await click(buttonNamed('扫描可清理范围'));
-  assert.equal(document.querySelector('.workspace-cleanup-item'), null);
-  assert.equal(buttonNamed('清理所选…'), undefined);
-  assert.match(document.querySelector('.workspace-cleanup-card [role="alert"]').textContent, /清理范围中的条目不完整/);
 });
 
 const appProject = (id, name) => ({ ...project, id, name, description: '', projectRoot: `/disposable/workspace/projects/${id}`, manifest: metadata.manifest });
@@ -1526,7 +1089,7 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.equal(dialog().querySelector('[role="tablist"]'), null);
   assert.doesNotMatch(dialog().textContent, /复制提示词|在 Codex 打开|构建更新/);
   assert.match(dialog().textContent, /永久删除.*无法撤销/);
-  assert.match(dialog().textContent, /恢复、任务材料及迁移前的项目副本/);
+  assert.match(dialog().textContent, /平台管理构建、任务材料及迁移前的项目副本/);
   assert.ok(dialog().textContent.includes(state.projects[0].projectRoot));
   assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(document.querySelector('.project-delete-confirmation input'));
@@ -1795,39 +1358,4 @@ test('An obsolete bootstrap reply cannot change the deletion runtime or erase a 
   assert.equal(projectWasDeleted(a.id), true);
   assert.equal(document.querySelector(`[aria-label="进入项目「${a.name}」"]`), null);
   assert.ok(document.querySelector(`[aria-label="进入项目「${b.name}」"]`));
-});
-
-
-test('Folder failures stay visible above a collapsed More and undeclared documentation has no disabled entry', async () => {
-  await setup();
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'project_metadata') return { ...metadata, manifest: null };
-    if (command === 'project_git_source_restore_status') return clearRecovery;
-    if (command === 'workspace_storage') return workspaceStorage;
-    if (command === 'open_project_folder') throw new Error('Artificial Finder path unavailable');
-    throw new Error(`Unexpected read-only details request: ${command}`);
-  };
-  await render(h(ProjectOverview, overviewProps({ project: { ...project, manifest: null } })));
-  await click(document.querySelector('.application-detail-row .text-button'));
-  assert.equal(document.querySelector('.application-detail-more').open, false);
-  assert.match(document.querySelector('.application-detail-notices [role="alert"]').textContent, /Artificial Finder path unavailable/);
-  await openMore();
-  assert.equal(document.querySelector('.detail-document-row'), null);
-});
-
-test('A newly completed space scan refreshes the open application detail occupancy', async () => {
-  await setup(); let size = 1000; let reads = 0;
-  globalThis.__UI_TEST_INVOKE__ = async command => {
-    if (command === 'project_metadata') return metadata;
-    if (command === 'project_git_source_restore_status') return clearRecovery;
-    if (command === 'workspace_storage') { reads++; return { ...workspaceStorage, workspace: { projects: [{ scope: { projectId: project.id }, totalBytes: size, complete: true }] } }; }
-    throw new Error(`Unexpected read-only details request: ${command}`);
-  };
-  const measured = completedAt => ({ ...project, storage: { currentProject: { totalBytes: size, completedAt, complete: true } } });
-  await render(h(ProjectOverview, overviewProps({ project: measured(1) })));
-  assert.match(document.querySelectorAll('.application-detail-row dd')[1].textContent, /1\.0 KB/);
-  size = 4000;
-  await render(h(ProjectOverview, overviewProps({ project: measured(2) })));
-  assert.match(document.querySelectorAll('.application-detail-row dd')[1].textContent, /4\.0 KB/);
-  assert.equal(reads, 2);
 });

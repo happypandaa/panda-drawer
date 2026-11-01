@@ -41,7 +41,7 @@ afterEach(async () => { if (root) await act(async () => root.unmount()); root = 
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 const fixture = { id: 'prj_disposable_launcher', name: 'My actual app', description: 'An artificial description', projectRoot: '/disposable/project', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
-const nodeFixture = { id: 'node_disposable_launcher', name: 'My Node app', sourcePath: '/disposable/source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: true }, fields: [] };
+const nodeFixture = { id: 'node_disposable_launcher', name: 'My Node app', sourcePath: '/disposable/source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: true }, fields: [] };
 const defaults = { blocked: false, opening: false, deletingDisabled: false, onEnter() {}, onDetails() {}, onDelete() {} };
 async function render(Component = ProjectCard, props = {}) {
   if (!root) { document.body.innerHTML = '<div id="root"></div><button id="outside">Outside</button>'; root = createRoot(document.getElementById('root')); }

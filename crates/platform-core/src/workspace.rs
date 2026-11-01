@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs,
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
@@ -206,7 +206,7 @@ pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Valu
         clean_absolute(destination)?;
         check_no_symlinks(destination, false)?;
         let target = destination.canonicalize()?;
-        crate::node_apps::development::require_new_web_project_location(
+        crate::node_apps::source_ownership::require_new_web_project_location(
             paths.data_root(),
             &target.join("projects"),
         )
@@ -311,15 +311,28 @@ pub(crate) fn require_source_outside_pending_migrations(
 fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(), ApiError> {
     let root = paths.data_root().join("node-apps");
     check_no_symlinks(&root, true)?;
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    for source in ownership.user_source_roots()? {
+        if source.starts_with(paths.workspace_root()) {
+            return Err(ApiError::new(
+                "WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE",
+                format!(
+                    "用户选择的文件夹位于当前工作区内，不能随整根迁移删除：{}。",
+                    source.display()
+                ),
+            )
+            .detail("sourcePath", json!(source))
+            .outcome("not_started"));
+        }
+    }
     let slots = match fs::read_dir(&root) {
         Ok(slots) => slots,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
     for slot in slots {
         let slot = slot?;
         let id = slot.file_name().to_string_lossy().into_owned();
@@ -336,17 +349,9 @@ fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(),
             &id,
             &root,
         )?;
-        let source = match stored {
-            crate::node_registration::StoredNodeRegistration::Direct(direct) => {
-                Some(direct.source_path)
-            }
-            crate::node_registration::StoredNodeRegistration::Retired(retired) => retired
-                .development_source
-                .as_ref()
-                .map(crate::node_registration::source_binding_path)
-                .transpose()?,
-        };
-        if let Some(source) = source {
+        let crate::node_registration::StoredNodeRegistration::Direct(record) = stored;
+        let source = record.source_path;
+        {
             if source.starts_with(paths.workspace_root())
                 && !ownership.owns_source_directory(&id, &source)?
             {
@@ -450,14 +455,8 @@ pub(crate) fn save_journal(paths: &RuntimePaths, j: &MigrationJournal) -> Result
 }
 pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
     crate::durable_writer::require_all_clear(paths.data_root())?;
-    crate::node_apps::development::require_source_restores_clear_for_migration(
-        paths.data_root(),
-        paths.workspace_root(),
-    )?;
     crate::projects::check_pending_deletions(paths.workspace_root())?;
-    crate::source_restore_guard::check_workspace_available(paths.workspace_root())?;
-    crate::data_restore_guard::check_workspace_available(paths.workspace_root())?;
-    crate::project_git::check_data_workspace_available(paths.workspace_root())?;
+
     let directory = paths.workspace_root().join(".platform/operations");
     check_no_symlinks(&directory, true)?;
     if directory.is_dir() {
@@ -618,7 +617,7 @@ pub(crate) fn initialize_selected(
         }
     }
     j.epochs_applied = true;
-    crate::node_apps::development::rebind_published_after_migration(
+    crate::node_apps::source_ownership::rebind_published_after_migration(
         paths.data_root(),
         &j.source_path,
         &j.destination_path,

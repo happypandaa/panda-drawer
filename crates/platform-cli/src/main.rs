@@ -177,11 +177,6 @@ struct OutputOptions {
 
 #[derive(Subcommand)]
 enum ProjectCommand {
-    /// Inspect and explicitly save this project's local source versions.
-    Git {
-        #[command(subcommand)]
-        command: ProjectGitCommand,
-    },
     List(OutputOptions),
     Metadata {
         #[command(subcommand)]
@@ -197,66 +192,11 @@ enum ProjectCommand {
     Build(ProjectMutationOptions),
     /// Read project-specific instructions to give an external AI editor.
     Handoff(ProjectOptions),
-    /// Export a validated complete ZIP to destinationPath in JSON.
-    Export(ProjectInputOptions),
-    /// Import archivePath as a fresh project by default; never overwrites a project.
-    ///
-    /// Every import receives a new identity; JSON mode may be omitted or set to copy.
-    Import(InputOptions),
-    /// Create an independent project copy, optionally choosing a name in JSON.
-    Copy(ProjectMutationOptions),
     /// Permanently delete this project's files without using platform or system trash.
     ///
     /// This cannot be undone. Project recovery records and owned tasks are deleted too.
     /// Omitted expectedDocumentEpoch is read from current project info before submission.
     Delete(ProjectMutationOptions),
-}
-
-#[derive(Subcommand)]
-enum ProjectGitCommand {
-    Status(ProjectOptions),
-    /// Read bounded local history reachable from the current HEAD, without fetching.
-    Versions {
-        #[command(flatten)]
-        project: ProjectOptions,
-        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
-        limit: u32,
-    },
-    /// Preview exact local source files to retrieve, without changing them.
-    SourceRestorePreview(ProjectGitInputOptions),
-    /// Apply a freshly confirmed source retrieval plan; do not change HEAD, index or business data.
-    SourceRestore(ProjectGitInputOptions),
-    /// Inspect retained source-retrieval state without replaying it.
-    SourceRecovery(ProjectOptions),
-    /// Explicitly continue or undo exactly the retained source-retrieval operation.
-    SourceRecover(ProjectGitInputOptions),
-    /// Compare a saved local data version with a fresh consistent snapshot of live data.
-    DataRestorePreview(ProjectGitInputOptions),
-    /// Apply a freshly confirmed local project-v1 database and attachment version.
-    DataRestore(ProjectGitInputOptions),
-    /// Inspect retained data retrieval even when the live database is displaced.
-    DataRecovery(ProjectOptions),
-    /// Explicitly continue or undo the same retained data retrieval operation.
-    DataRecover(ProjectGitInputOptions),
-    /// Inspect retained data-save finalization state without changing live data.
-    DataSaveRecovery(ProjectOptions),
-    /// Check and finalize an interrupted data save using the current journal digest.
-    DataSaveFinalize(ProjectGitInputOptions),
-    /// Request cancellation, then inspect the persistent final result.
-    Cancel {
-        #[command(flatten)]
-        project: ProjectOptions,
-        #[arg(long)]
-        task: String,
-    },
-}
-
-#[derive(Args)]
-struct ProjectGitInputOptions {
-    #[arg(long)]
-    project: String,
-    #[command(flatten)]
-    input: InputOptions,
 }
 
 #[derive(Subcommand)]
@@ -268,9 +208,7 @@ enum WorkspaceCommand {
     /// Confirm the exact offline preview. Preserves original migration records and project data.
     IdentityRepair(InputOptions),
     /// Inspect registered historical cleanup candidates without deleting files.
-    CleanupPlan(OutputOptions),
     /// Permanently clean explicitly selected IDs from an unexpired preview plan.
-    Cleanup(InputOptions),
     /// Retry automatic old-root cleanup for one registered migration.
     CleanupRetry {
         migration_id: String,
@@ -450,7 +388,6 @@ fn write_result(json_output: bool, result: Result<Value>) -> ExitCode {
 
 fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
     match command {
-        ProjectCommand::Git { command } => project_git_command(command),
         ProjectCommand::Metadata { command } => match command {
             MetadataCommand::Get(options) => (
                 options.output.json,
@@ -474,21 +411,6 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
             read_input(&options.input)
                 .and_then(|input| business_request("POST", "/api/v1/projects", None, Some(input))),
         ),
-        ProjectCommand::Export(options) => (
-            options.input.output.json,
-            input_request(options, "/exports"),
-        ),
-        ProjectCommand::Import(options) => (
-            options.output.json,
-            read_input(&options.input)
-                .and_then(prepare_project_import_input)
-                .and_then(|input| {
-                    business_request("POST", "/api/v1/projects/imports", None, Some(input))
-                }),
-        ),
-        ProjectCommand::Copy(options) => {
-            (options.output.json, mutation_request(options, "/copies"))
-        }
         ProjectCommand::Delete(options) => {
             (options.output.json, mutation_request(options, "/deletions"))
         }
@@ -510,88 +432,6 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
         ProjectCommand::Refresh(options) => {
             (options.output.json, mutation_request(options, "/refresh"))
         }
-    }
-}
-
-fn project_git_command(command: ProjectGitCommand) -> (bool, Result<Value>) {
-    match command {
-        ProjectGitCommand::Status(options) => (
-            options.output.json,
-            project_request(&options.project, "GET", "/git", None),
-        ),
-        ProjectGitCommand::Versions { project, limit } => (
-            project.output.json,
-            project_request(&project.project, "GET", &format!("/git/versions?limit={limit}"), None),
-        ),
-        ProjectGitCommand::SourceRestorePreview(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitSourceRestorePreviewInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide targetCommit as a complete local commit ID."))?;
-                project_request(&options.project, "POST", "/git/source-restore-preview", Some(body))
-            }),
-        ),
-        ProjectGitCommand::SourceRestore(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitSourceRestoreApplyInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide targetCommit, expectedHead, expectedBranch, expectedSnapshot and expectedPlanDigest from a fresh preview."))?;
-                project_request(&options.project, "POST", "/git/source-restores", Some(body))
-            }),
-        ),
-        ProjectGitCommand::SourceRecover(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitSourceRestoreRecoverInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide restoreTaskId, expectedPlanDigest, expectedJournalDigest and action continue or undo from current recovery status."))?;
-                project_request(&options.project, "POST", "/git/source-recoveries", Some(body))
-            }),
-        ),
-        ProjectGitCommand::SourceRecovery(options) => (
-            options.output.json,
-            project_request(&options.project, "GET", "/git/source-recovery", None),
-        ),
-        ProjectGitCommand::DataRestorePreview(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitDataRestorePreviewInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide the full local targetCommit. This previews data without replacing live resources."))?;
-                project_request(&options.project, "POST", "/git/data-restore-preview", Some(body))
-            }),
-        ),
-        ProjectGitCommand::DataRestore(options)=>(
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body|{
-                serde_json::from_value::<platform_core::project_git::GitDataRestoreApplyInput>(body.clone()).map_err(|_|CliError::new("INPUT_INVALID","Provide targetCommit and the exact expectedHead, expectedBranch, expectedSnapshot, expectedDocumentEpoch, expectedLiveDataDigest, expectedTargetSnapshotDigest and expectedPlanDigest from a fresh data preview."))?;
-                project_request(&options.project,"POST","/git/data-restores",Some(body))
-            }),
-        ),
-        ProjectGitCommand::DataRecovery(options)=>(options.output.json,project_request(&options.project,"GET","/git/data-recovery",None)),
-        ProjectGitCommand::DataRecover(options)=>(
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body|{
-                serde_json::from_value::<platform_core::project_git::GitDataRestoreRecoverInput>(body.clone()).map_err(|_|CliError::new("INPUT_INVALID","Provide restoreTaskId, expectedPlanDigest, expectedJournalDigest and action continue or undo. Live slot state is reclassified before every action."))?;
-                project_request(&options.project,"POST","/git/data-recoveries",Some(body))
-            }),
-        ),
-        ProjectGitCommand::DataSaveRecovery(options) => (
-            options.output.json,
-            project_request(&options.project, "GET", "/git/data-save-recovery", None),
-        ),
-        ProjectGitCommand::DataSaveFinalize(options) => (
-            options.input.output.json,
-            read_input(&options.input.input).and_then(|body| {
-                serde_json::from_value::<platform_core::project_git::GitDataSaveFinalizeInput>(body.clone())
-                    .map_err(|_| CliError::new("INPUT_INVALID", "Provide saveTaskId and expectedJournalDigest from current data-save recovery status."))?;
-                project_request(&options.project, "POST", "/git/data-save-finalizations", Some(body))
-            }),
-        ),
-        ProjectGitCommand::Cancel { project, task } => (
-            project.output.json,
-            validate_reference_id(&task, "task").and_then(|()| project_request(
-                &project.project, "POST", &format!("/git/tasks/{task}/cancel"), Some(json!({})),
-            )),
-        ),
     }
 }
 
@@ -621,21 +461,6 @@ fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
                             CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
                         })
                 }),
-        ),
-        WorkspaceCommand::CleanupPlan(options) => (
-            options.json,
-            business_request(
-                "POST",
-                "/api/v1/workspace/cleanup-plans",
-                None,
-                Some(json!({})),
-            ),
-        ),
-        WorkspaceCommand::Cleanup(options) => (
-            options.output.json,
-            read_input(&options.input).and_then(|input| {
-                business_request("POST", "/api/v1/workspace/cleanups", None, Some(input))
-            }),
         ),
         WorkspaceCommand::CleanupRetry {
             migration_id,
@@ -730,21 +555,6 @@ fn validate_path_field(input: &Value, field: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn prepare_project_import_input(mut input: Value) -> Result<Value> {
-    validate_path_field(&input, "archivePath")?;
-    match input.get("mode") {
-        None => input["mode"] = json!("copy"),
-        Some(Value::String(mode)) if mode == "copy" => {}
-        Some(_) => {
-            return Err(CliError::new(
-                "INPUT_INVALID",
-                "Import mode must be copy or omitted; every import creates a fresh project.",
-            ));
-        }
-    }
-    Ok(input)
 }
 
 fn database_command(command: DatabaseCommand) -> (bool, Result<Value>) {
@@ -1608,168 +1418,6 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    #[test]
-    fn project_git_cli_requires_explicit_input_and_never_accepts_maintenance_alias() {
-        for command in [
-            "source-restore-preview",
-            "source-restore",
-            "source-recover",
-            "data-restore-preview",
-            "data-restore",
-            "data-recover",
-            "data-save-finalize",
-        ] {
-            assert!(Cli::try_parse_from([
-                "local-projects-dev",
-                "project",
-                "git",
-                command,
-                "--project",
-                "prj_disposable"
-            ])
-            .is_err());
-            assert!(Cli::try_parse_from([
-                "local-projects-dev",
-                "project",
-                "git",
-                command,
-                "--project",
-                "prj_disposable",
-                "--input",
-                "-",
-                "--json"
-            ])
-            .is_ok());
-            assert!(Cli::try_parse_from([
-                "local-projects-dev",
-                "project",
-                "git",
-                command,
-                "--project",
-                "prj_disposable",
-                "--input",
-                "-",
-                "--maintenance",
-                "maintenance_sample"
-            ])
-            .is_err());
-        }
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "source-recovery",
-            "--project",
-            "prj_disposable",
-            "--json"
-        ])
-        .is_ok());
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "data-recovery",
-            "--project",
-            "prj_disposable",
-            "--json"
-        ])
-        .is_ok());
-        for limit in ["1", "50", "100"] {
-            assert!(Cli::try_parse_from([
-                "local-projects-dev",
-                "project",
-                "git",
-                "versions",
-                "--project",
-                "prj_disposable",
-                "--limit",
-                limit,
-                "--json"
-            ])
-            .is_ok());
-        }
-        for limit in ["0", "101", "-1", "bad"] {
-            assert!(Cli::try_parse_from([
-                "local-projects-dev",
-                "project",
-                "git",
-                "versions",
-                "--project",
-                "prj_disposable",
-                "--limit",
-                limit
-            ])
-            .is_err());
-        }
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "branch-create",
-            "--project",
-            "prj_disposable"
-        ])
-        .is_err());
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "branch-create",
-            "--project",
-            "prj_disposable",
-            "--input",
-            "disposable-input.json",
-            "--json"
-        ])
-        .is_err());
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "status",
-            "--project",
-            "prj_disposable",
-            "--json"
-        ])
-        .is_ok());
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "save",
-            "--project",
-            "prj_disposable"
-        ])
-        .is_err());
-        assert!(Cli::try_parse_from([
-            "local-projects-dev",
-            "project",
-            "git",
-            "save",
-            "--project",
-            "prj_disposable",
-            "--input",
-            "-",
-            "--maintenance",
-            "maintenance_sample"
-        ])
-        .is_err());
-        for command in ["init", "save", "save-data", "branch-create"] {
-            assert!(Cli::try_parse_from([
-                "local-projects-dev",
-                "project",
-                "git",
-                command,
-                "--project",
-                "prj_disposable",
-                "--input",
-                "-",
-                "--json"
-            ])
-            .is_err());
-        }
-    }
-
     fn discovery() -> Discovery {
         Discovery {
             api_version: API_VERSION,
@@ -2042,50 +1690,8 @@ mod tests {
     }
 
     #[test]
-    fn project_import_defaults_to_fresh_identity_and_preserves_explicit_modes() {
-        let archive = std::env::temp_dir().join("disposable-project.zip");
-        let input = json!({"archivePath":archive,"name":"Shared project"});
-        let mut expected = input.clone();
-        expected["mode"] = json!("copy");
-        assert_eq!(prepare_project_import_input(input).unwrap(), expected);
-
-        let input = json!({"archivePath":archive,"mode":"copy","name":"Shared project"});
-        assert_eq!(prepare_project_import_input(input.clone()).unwrap(), input);
-        for mode in [
-            json!("original"),
-            json!(null),
-            json!(true),
-            json!(1),
-            json!([]),
-            json!({}),
-            json!(""),
-            json!("fresh"),
-        ] {
-            assert_eq!(
-                prepare_project_import_input(json!({"archivePath":archive,"mode":mode}))
-                    .unwrap_err()
-                    .code,
-                "INPUT_INVALID"
-            );
-        }
-    }
-
-    #[test]
-    fn lifecycle_commands_require_explicit_targets_and_inputs() {
+    fn management_commands_require_targets_and_reject_retired_archive_operations() {
         for args in [
-            vec![
-                "cli",
-                "project",
-                "export",
-                "--project",
-                "p_test",
-                "--input",
-                "-",
-                "--maintenance",
-                "maintenance_a",
-            ],
-            vec!["cli", "project", "import", "--input", "-"],
-            vec!["cli", "project", "copy", "--project", "p_test"],
             vec![
                 "cli",
                 "project",
@@ -2111,6 +1717,18 @@ mod tests {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         for args in [
+            vec![
+                "cli",
+                "project",
+                "export",
+                "--project",
+                "p_test",
+                "--input",
+                "-",
+            ],
+            vec!["cli", "project", "import", "--input", "-"],
+            vec!["cli", "project", "copy", "--project", "p_test"],
+            vec!["cli", "project", "git", "status", "--project", "p_test"],
             vec!["cli", "project", "export", "--project", "p_test"],
             vec!["cli", "project", "import"],
             vec!["cli", "workspace", "migrate"],
@@ -2121,7 +1739,7 @@ mod tests {
         }
         for value in [
             json!({}),
-            json!({"destinationPath": "relative/archive.zip"}),
+            json!({"destinationPath": "relative/workspace"}),
             json!({"destinationPath": null}),
         ] {
             assert_eq!(
@@ -2132,8 +1750,8 @@ mod tests {
             );
         }
         assert!(validate_path_field(
-            &json!({"archivePath": "/Users/test/export.zip"}),
-            "archivePath"
+            &json!({"destinationPath": "/Users/test/workspace"}),
+            "destinationPath"
         )
         .is_ok());
     }

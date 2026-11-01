@@ -6,7 +6,7 @@ use crate::{
     builds::{atomic_json, BuildManager},
     environment::ExecutableInfo,
     git_environment::{GitEnvironmentManager, GitToolchain},
-    node_app_manifest::{TrialManifest, TrialRuntime},
+    panda_manifest::{PandaManifest, PandaRuntime},
     projects::{check_no_symlinks, checked_relative, valid_id, validate_manifest},
     ApiError, ProjectManifest, ProjectStore, RuntimePaths,
 };
@@ -32,10 +32,13 @@ use tokio::{
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
+#[path = "unix_budget.rs"]
+mod budget;
 #[path = "../source_acquisition_process.rs"]
 mod process;
 #[path = "../source_publication.rs"]
 mod publication;
+use budget::{check_disk, check_final_disk};
 #[cfg(test)]
 use process::SourceHooks;
 use process::{execute, materialize, resolve_source_git, SourceScope};
@@ -428,7 +431,7 @@ impl SourceAcquisitionManager {
         self.phase(record, "inspecting")?;
         control.check()?;
         record.inspection = Some(inspect_directory(&repository)?);
-        check_disk(&slot)?;
+        check_final_disk(&slot)?;
         control.check()?;
         let published = slot.join("repository");
         if published.try_exists()? {
@@ -654,14 +657,8 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         issues: Vec::new(),
     };
     let project = path.join("project.json");
-    let app = path.join("local-app.json");
-    if project.try_exists()? && app.try_exists()? {
-        result
-            .issues
-            .push(invalid("目录同时包含两种项目声明，需明确接入类型。"));
-        return Ok(result);
-    }
-    if project.try_exists()? {
+    let app = path.join("panda.json");
+    if project.try_exists()? && !app.try_exists()? {
         let parsed = (|| {
             let manifest: ProjectManifest = serde_json::from_slice(&read_small(&project)?)
                 .map_err(|_| invalid("project.json 不是有效项目声明。"))?;
@@ -688,24 +685,16 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
         }
     } else if app.try_exists()? {
         let parsed = read_small(&app).and_then(|bytes| {
-            // Retired data-contract/build-output declarations never gate the
-            // one-directory runtime. Only the import's build kind is read.
-            let declaration: serde_json::Value = serde_json::from_slice(&bytes)?;
-            let requires_build = match declaration["development"]["build"]["kind"].as_str() {
-                None | Some("none") => false,
-                Some("npm") => true,
-                Some(_) => return Err(invalid("构建方式无法识别，请让 AI 修改后重新添加。")),
-            };
-            let manifest = TrialManifest::parse_runtime(&bytes)
+            let manifest = PandaManifest::parse(&bytes)
                 .map_err(|_| invalid("应用声明不是有效的受支持格式。"))?;
             manifest
                 .inspect(path)
                 .map_err(|_| invalid("应用声明所需文件不完整。"))?;
-            Ok((manifest, requires_build))
+            Ok(manifest)
         });
         match parsed {
-            Ok((manifest, requires_build)) if manifest.runtime == TrialRuntime::NodeService => {
-                result.requires_build = requires_build;
+            Ok(manifest) if manifest.runtime == PandaRuntime::Node => {
+                result.requires_build = false;
                 result.kind = "node-service-source".into();
                 result.name = Some(manifest.app.name);
                 result.next_step = "prepare-node-runtime-before-registration".into();
@@ -799,42 +788,6 @@ async fn supervise<T, F: std::future::Future<Output = Result<T, ApiError>>>(
             _=interval.tick()=>{control.check()?;check_disk(&control.monitor)?;}
         }
     }
-}
-fn check_disk(root: &Path) -> Result<(), ApiError> {
-    fn scan(path: &Path, bytes: &mut u64, count: &mut usize) -> Result<(), ApiError> {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let metadata = match fs::symlink_metadata(entry.path()) {
-                Ok(metadata) => metadata,
-                Err(problem) if problem.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(problem) => return Err(problem.into()),
-            };
-            *count += 1;
-            if *count > 60_000 {
-                return Err(limit());
-            }
-            if metadata.is_dir() {
-                scan(&entry.path(), bytes, count)?;
-            } else if metadata.is_file() && metadata.nlink() == 1 {
-                *bytes = bytes.checked_add(metadata.len()).ok_or_else(limit)?;
-                if *bytes > MAX_DISK {
-                    return Err(limit());
-                }
-            } else {
-                return Err(invalid("获取目录包含不支持的链接或特殊文件。"));
-            }
-        }
-        Ok(())
-    }
-    check_no_symlinks(root, false)?;
-    scan(root, &mut 0, &mut 0)?;
-    if fs2::available_space(root)? < MIN_FREE {
-        return Err(error(
-            "SOURCE_SPACE_INSUFFICIENT",
-            "磁盘可用空间不足，源码获取已停止。",
-        ));
-    }
-    Ok(())
 }
 fn isolated_command(tools: &GitToolchain, cwd: &Path, home: &Path, template: &Path) -> Command {
     let mut command = Command::new(&tools.git.path);

@@ -37,7 +37,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 dom.window.HTMLElement.prototype.scrollIntoView = function () {};
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { SourceRecoveryNotice } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/SourceRecoveryNotice.tsx'))).href);
+const { GitImportRecoveryNotice } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/GitImportRecoveryNotice.tsx'))).href);
 let root; let nextTimer = 0;
 const timeouts = new Map(); const intervals = new Map();
 dom.window.setTimeout = fn => { const id = ++nextTimer; timeouts.set(id, fn); return id; };
@@ -55,7 +55,7 @@ async function setup(recover,initialProps={}){
   globalThis.__SOURCE_RECOVERY_INVOKE__=async(command,args)=>{calls.push([command,args]);assert.equal(command,'source_import_recover');return recover(args);};
   document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root'));
   let props={instanceId:'instance_one',onFound(){found++;},onOpenExisting:id=>opened.push(id),...initialProps};
-  const render=async(next={})=>{props={...props,...next};await act(async()=>root.render(h(SourceRecoveryNotice,props)));};
+  const render=async(next={})=>{props={...props,...next};await act(async()=>root.render(h(GitImportRecoveryNotice,props)));};
   await render();return {calls,opened,render,get found(){return found;}};
 }
 

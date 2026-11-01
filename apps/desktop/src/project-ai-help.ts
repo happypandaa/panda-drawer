@@ -101,7 +101,7 @@ ${JSON.stringify(information, null, 2)}
 3. 先用几句话告诉我：原因是什么、打算改哪里、会不会影响数据。等我同意再修改；复制这段说明不代表我已经同意执行项目、安装依赖或改写文件。
 
 【修改时请遵守】
-- 只修改上面的项目文件夹。${AI_PROMPT_RULES.secrets}不修改平台登记和控制文件来绕过检查，可以修改 local-app.json（包括 app.id、版本号和配置项），重启后生效；修改后请确认清单有效、入口文件存在。
+- 只修改上面的项目文件夹。${AI_PROMPT_RULES.secrets}不修改平台登记和控制文件来绕过检查，可以修改 panda.json（包括名称、版本号和配置项），重启后生效；修改后请确认清单有效、入口文件存在。Node 的文件数据使用项目 data/；浏览器数据在平台窗口存储，删除应用时清除。本地文件夹及 data/ 保留，平台下载的项目整根删除。
 - ${AI_PROMPT_RULES.gitSave}
 - ${AI_PROMPT_RULES.dataConsent}
 - ${AI_PROMPT_RULES.stdout}

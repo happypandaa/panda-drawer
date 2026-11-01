@@ -351,9 +351,58 @@ pub(super) fn checked_storage(
     Ok((data, cache))
 }
 
+/// Project data is the one deliberate source/storage overlap. Private cache
+/// and runtime directories still remain separate from the project root.
+pub(super) fn checked_project_storage(
+    source: &Path,
+    cache: &Path,
+    backend: &Path,
+    trial_root: &Path,
+) -> TrialResult<(PathBuf, PathBuf)> {
+    let source = checked_path(source, true)?;
+    let cache = checked_path(cache, true)?;
+    let overlaps = |left: &Path, right: &Path| left.starts_with(right) || right.starts_with(left);
+    if !backend.starts_with(&source)
+        || overlaps(&source, &cache)
+        || overlaps(&source, trial_root)
+        || overlaps(&cache, trial_root)
+    {
+        return Err(fail(
+            "TRIAL_STORAGE_INVALID",
+            "Project data must use its registered folder; cache and runtime must be separate",
+        ));
+    }
+    let data = source.join("data");
+    match fs::symlink_metadata(&data) {
+        Ok(_) => {
+            checked_path(&data, true)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    let opened = native_files::open_no_reparse(&cache)?;
+    native_files::verify_current_user_owner(&opened.file)?;
+    Ok((data, cache))
+}
+
+pub(super) fn prepare_project_data(source: &Path) -> TrialResult<()> {
+    // Retain the selected directory and all ancestors throughout creation.
+    let _source = native_files::pin_directory(source)?;
+    let data = source.join("data");
+    match fs::create_dir(&data) {
+        Ok(()) => (),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+        Err(error) => return Err(error.into()),
+    }
+    let _data = native_files::pin_directory(&data)?;
+    // Unlike private cache/control, do not rewrite the user's existing DACL.
+    Ok(())
+}
+
 pub(super) fn prepare_directories(
     run_directory: &Path,
     persistent: Option<(PathBuf, PathBuf)>,
+    private_data: bool,
 ) -> TrialResult<(PathBuf, PathBuf)> {
     native_files::create_private_directory(run_directory)?;
     let (data, cache) = if let Some(paths) = persistent {
@@ -365,7 +414,7 @@ pub(super) fn prepare_directories(
         native_files::create_private_directory(&cache)?;
         (data, cache)
     };
-    for directory in [&data, &cache] {
+    for directory in std::iter::once(&cache).chain(private_data.then_some(&data)) {
         native_files::make_directory_private(directory)?;
     }
     native_files::create_private_directory(&run_directory.join("tmp"))?;

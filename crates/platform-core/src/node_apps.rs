@@ -3,24 +3,22 @@
 
 use crate::{
     node_app_configuration::{LocalFileVault, NodeConfigurationStore, SaveConfigurationRequest},
-    node_app_manifest::{TrialManifest, TrialRuntime},
     node_app_proxy::NodeAppProxy,
     node_registration::{
         self, DirectNodeProvenance as DirectSourceProvenance,
-        DirectNodeRegistration as ExternalRegistration, RetiredNodeRegistration,
-        StoredNodeRegistration,
+        DirectNodeRegistration as ExternalRegistration, StoredNodeRegistration,
+        DIRECT_NODE_REGISTRATION_VERSION,
     },
     node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, RuntimeStopReason, TrialStatus},
+    panda_manifest::{PandaManifest, PandaRuntime},
     ApiError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
+    fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
@@ -61,8 +59,8 @@ mod migration;
 mod run_marker;
 pub use directory::DirectoryInitializeInput;
 pub use migration::NodeWorkspacePause;
-#[path = "node_app_development.rs"]
-pub(crate) mod development;
+#[path = "node_source_ownership.rs"]
+pub(crate) mod source_ownership;
 const START_INTENT_CLEANUP_PREFIX: &str = ".start-intent-cleanup-";
 
 type Result<T> = std::result::Result<T, ApiError>;
@@ -87,7 +85,6 @@ struct Registration {
     id: String,
     source_path: PathBuf,
     manifest_digest: String,
-    managed: Option<RetiredNodeRegistration>,
     provenance: Option<DirectSourceProvenance>,
 }
 impl From<ExternalRegistration> for Registration {
@@ -96,7 +93,6 @@ impl From<ExternalRegistration> for Registration {
             id: record.id,
             source_path: record.source_path,
             manifest_digest: record.manifest_digest,
-            managed: None,
             provenance: record.provenance,
         }
     }
@@ -118,13 +114,13 @@ struct RuntimeEntry {
     resources: Arc<Mutex<Option<Running>>>,
     revision: u64,
     registration_digest: String,
-    manifest: Arc<TrialManifest>,
+    manifest: Arc<PandaManifest>,
     workspace_root: Option<PathBuf>,
     source_root: Option<PathBuf>,
     phase: AtomicU8,
 }
 impl RuntimeEntry {
-    fn new(revision: u64, registration_digest: String, manifest: Arc<TrialManifest>) -> Self {
+    fn new(revision: u64, registration_digest: String, manifest: Arc<PandaManifest>) -> Self {
         Self {
             resources: Arc::new(Mutex::new(None)),
             revision,
@@ -158,7 +154,7 @@ impl Drop for RuntimePhaseGuard {
 
 struct PreparedRuntimeStart {
     record: Registration,
-    manifest: Arc<TrialManifest>,
+    manifest: Arc<PandaManifest>,
     slot: PathBuf,
     config: RuntimeLaunchConfig,
 }
@@ -276,7 +272,7 @@ impl NodeApps {
         )?)
     }
 
-    fn load_source(&self, source: &Path) -> Result<TrialManifest> {
+    fn load_source(&self, source: &Path) -> Result<PandaManifest> {
         ordinary_path(source, true)?;
         if source.starts_with(&self.data_root) && !self.is_published_source(source)
             || self.data_root.starts_with(source)
@@ -288,11 +284,12 @@ impl NodeApps {
                 "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
             ));
         }
-        let bytes = TrialManifest::read_bytes(source).map_err(|e| fail(e.to_string()))?;
-        let manifest = TrialManifest::parse_runtime(&bytes).map_err(|e| fail(e.to_string()))?;
-        if manifest.runtime != TrialRuntime::NodeService {
-            return Err(fail(
-                "此入口只登记带 Node 服务的应用。网页项目请继续使用我的项目。",
+        let bytes = PandaManifest::read_bytes(source).map_err(|e| fail(e.to_string()))?;
+        let manifest = PandaManifest::parse(&bytes).map_err(|e| fail(e.to_string()))?;
+        if manifest.runtime != PandaRuntime::Node {
+            return Err(ApiError::new(
+                "NODE_RUNTIME_NOT_SUPPORTED",
+                "此入口当前只登记 Node 应用。",
             ));
         }
         manifest.inspect(source).map_err(|e| fail(e.to_string()))?;
@@ -375,13 +372,6 @@ impl NodeApps {
             let value: Value = serde_json::from_slice(&bytes)?;
             let record = match node_registration::decode_registration(value, &name, &self.root)? {
                 StoredNodeRegistration::Direct(record) => Registration::from(record),
-                StoredNodeRegistration::Retired(record) => Registration {
-                    id: record.id.clone(),
-                    source_path: record.program_path.clone(),
-                    manifest_digest: record.manifest_digest.clone(),
-                    managed: Some(record),
-                    provenance: None,
-                },
             };
             if record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
@@ -416,23 +406,21 @@ impl NodeApps {
         Ok(())
     }
 
-    fn manifest(&self, record: &Registration) -> Result<TrialManifest> {
-        if record.managed.is_some() {
-            return Err(ApiError::new(
-                "NODE_REGISTRATION_RETIRED",
-                node_registration::RETIRED_NODE_MESSAGE,
-            ));
-        }
-        let manifest = self.load_source(&record.source_path)?;
-        if record.managed.is_none() {
-            let binding = self
-                .read_development_binding(&record.id)?
-                .ok_or_else(|| fail("项目文件夹归属记录缺失，请重新检查。"))?;
-            if binding.source_root != record.source_path {
-                return Err(fail("项目文件夹与当前登记不符，请重新检查。"));
+    fn manifest(&self, record: &Registration) -> Result<PandaManifest> {
+        let manifest = self.load_source(&record.source_path).map_err(|error| {
+            if error.code == "NODE_RUNTIME_NOT_SUPPORTED" {
+                ApiError::new("APP_RUNTIME_CHANGED", "应用类型变了，请删除后重新添加。")
+            } else {
+                error
             }
-            binding.validate_directory()?;
+        })?;
+        let binding = self
+            .read_source_binding(&record.id)?
+            .ok_or_else(|| fail("项目文件夹归属记录缺失，请重新检查。"))?;
+        if binding.source_root != record.source_path {
+            return Err(fail("项目文件夹与当前登记不符，请重新检查。"));
         }
+        binding.validate_directory()?;
         Ok(manifest)
     }
 
@@ -450,7 +438,7 @@ impl NodeApps {
     fn detail(
         &self,
         record: &Registration,
-        manifest: &TrialManifest,
+        manifest: &PandaManifest,
         inner: &Inner,
     ) -> Result<Value> {
         let view = self
@@ -521,13 +509,10 @@ impl NodeApps {
             "preservedOnDelete":!platform_owned});
         object_layout["build"] = json!({"state":"unavailable","reason":"直接运行项目文件夹；修改和构建由外部 AI 完成，关闭后重新进入生效。"});
         Ok(json!({
-            "id":record.id,"name":manifest.app.name,"version":manifest.app.version,"sourcePath":record.source_path,"runtime":"node-service","window":manifest.window,
+            "id":record.id,"name":manifest.app.name,"version":manifest.app.version,"description":manifest.app.description,"iconDataUrl":manifest.icon_data_url(&record.source_path),"sourcePath":record.source_path,"runtime":"node","window":manifest.window,
             "manifestDigest":manifest.source_digest,"gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
             "ownership":if platform_owned {"managed"} else {"external"},
-            "dataContract":null,
             "objectLayout":object_layout,
-            "development":null,
-            "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","retired":true,"generation":managed.generation,"sourceId":managed.source_id,"sourceDigest":managed.source_digest})),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision || r.manifest.source_digest != manifest.source_digest),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
@@ -600,11 +585,11 @@ impl NodeApps {
                     slot_identity: identity,
                 },
             )?;
-            for name in ["configuration", "data", "cache", "runs"] {
+            for name in ["configuration", "cache", "runs"] {
                 private_dir(&slot.join(name))?;
             }
             let record = ExternalRegistration {
-                version: 1,
+                version: DIRECT_NODE_REGISTRATION_VERSION,
                 id: id.into(),
                 source_path: source.source_root.clone(),
                 manifest_digest: manifest.source_digest.clone(),
@@ -613,7 +598,7 @@ impl NodeApps {
                     source_branch: source.source_branch.clone(),
                 }),
             };
-            self.initialize_development_binding(&record)?;
+            self.initialize_source_binding(&record)?;
             if !source
                 .source_identity
                 .matches_path(&source.source_root)
@@ -690,14 +675,13 @@ impl NodeApps {
         if registration.try_exists()? {
             let record = self.registration(id)?;
             let binding = self
-                .read_development_binding(id)?
+                .read_source_binding(id)?
                 .ok_or_else(|| fail("已提交登记缺少项目文件夹归属。"))?;
             let matches = record.provenance.as_ref().is_some_and(|provenance| {
                 provenance.source_url == source.source_url
                     && provenance.source_branch == source.source_branch
             });
-            if record.managed.is_some()
-                || record.source_path != source.source_root
+            if record.source_path != source.source_root
                 || !matches
                 || !binding.matches_identity(&source.source_root, &source.source_identity)
             {
@@ -742,15 +726,15 @@ impl NodeApps {
         check()?;
         self.require_external_source_boundary(&source)?;
         let manifest = if let Some(expected) = expected_manifest {
-            let bytes = read_small(&source.join("local-app.json"))?;
+            let bytes = read_small(&source.join("panda.json"))?;
             if format!("{:x}", Sha256::digest(&bytes)) != expected {
                 return Err(directory::stale());
             }
             // Parse the declaration whose bytes the user actually previewed.
             // A reload followed by a later matching digest could observe an ABA
             // swap and attach an unpreviewed declaration to the registration.
-            let manifest = TrialManifest::parse_runtime(&bytes).map_err(|e| fail(e.to_string()))?;
-            if manifest.runtime != TrialRuntime::NodeService {
+            let manifest = PandaManifest::parse(&bytes).map_err(|e| fail(e.to_string()))?;
+            if manifest.runtime != PandaRuntime::Node {
                 return Err(directory::stale());
             }
             manifest.inspect(&source).map_err(|e| fail(e.to_string()))?;
@@ -767,6 +751,15 @@ impl NodeApps {
                 // A previous publication may have reached disk but failed its
                 // parent sync. Explicit reuse must finish that durability step.
                 self.sync_registration_parents(&record.id)?;
+                self.project_ownership()
+                    .finish_initialization_source(&record.id, &record.source_path)
+                    .map_err(|error| {
+                        error
+                            .outcome("registered_needs_attention")
+                            .detail("registrationCommitted", true)
+                            .detail("requiresRecheck", true)
+                            .detail("appId", record.id.clone())
+                    })?;
                 return self
                     .manifest(&record)
                     .and_then(|manifest| self.detail(&record, &manifest, inner))
@@ -804,7 +797,7 @@ impl NodeApps {
                 crate::file_identity::PersistedIdentity::capture(&slot)
                     .map_err(|error| fail(error.to_string()))?,
             );
-            for name in ["configuration", "data", "cache", "runs"] {
+            for name in ["configuration", "cache", "runs"] {
                 private_dir(&slot.join(name))?;
             }
             let manifest_digest = manifest.source_digest.clone();
@@ -816,7 +809,7 @@ impl NodeApps {
                 .outcome("not_started"));
             }
             let record = ExternalRegistration {
-                version: 1,
+                version: DIRECT_NODE_REGISTRATION_VERSION,
                 id: id.clone(),
                 source_path: source.clone(),
                 manifest_digest,
@@ -824,7 +817,7 @@ impl NodeApps {
             };
             // Establish exclusive source ownership with the initial registration.
             // Detail reads no longer upgrade missing legacy bindings.
-            self.initialize_development_binding(&record)?;
+            self.initialize_source_binding(&record)?;
             check()?;
             Ok(record)
         })();
@@ -853,6 +846,15 @@ impl NodeApps {
                 .detail("requiresRecheck", true)
                 .detail("appId", record.id.clone())
         })?;
+        self.project_ownership()
+            .finish_initialization_source(&record.id, &record.source_path)
+            .map_err(|error| {
+                error
+                    .outcome("registered_needs_attention")
+                    .detail("registrationCommitted", true)
+                    .detail("requiresRecheck", true)
+                    .detail("appId", record.id.clone())
+            })?;
         let id = record.id.clone();
         self.detail(&record.into(), &manifest, inner)
             .map_err(|error| {
@@ -912,17 +914,16 @@ impl NodeApps {
                 })();
                 previous.unwrap_or_else(|_| json!({
                     "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
-                    "sourcePath":record.source_path,"runtime":"node-service","state":"failed",
-                    "ownership":if record.managed.is_some() || self.project_ownership().owns_source_directory(&record.id,&record.source_path).unwrap_or(false) {"managed"} else {"external"},
+                    "sourcePath":record.source_path,"runtime":"node","state":"failed",
+                    "ownership":if self.project_ownership().owns_source_directory(&record.id,&record.source_path).unwrap_or(false) {"managed"} else {"external"},
                     "gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
-                    "installation":record.managed.as_ref().map(|managed| json!({"kind":"managed","retired":true,"generation":managed.generation,"sourceId":managed.source_id,"sourceDigest":managed.source_digest})),
-                    "objectLayout":null,"dataContract":null,
+                    "objectLayout":null,
                     "restartRequired":false,"runningRevision":null,"lastError":error.message,
                     "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"invalidFields":[],"canStart":false},"fields":[]
                 }))
             }
         };
-        if record.managed.is_none() && !inner.running.contains_key(&record.id) {
+        if !inner.running.contains_key(&record.id) {
             let recovery = run_marker::inspect(
                 &self.root.join(&record.id),
                 &record.id,
@@ -1092,7 +1093,7 @@ impl NodeApps {
                     "上次运行尚未核对完成，已阻止再次启动。请查看运行状态。",
                 ));
             }
-            if record.managed.is_none() && record.manifest_digest != manifest.source_digest {
+            if record.manifest_digest != manifest.source_digest {
                 let current = self.registration(id)?;
                 if current.source_path != record.source_path
                     || current.manifest_digest != record.manifest_digest
@@ -1100,7 +1101,7 @@ impl NodeApps {
                     return Err(fail("应用登记已变化，请重新进入。"));
                 }
                 let updated = ExternalRegistration {
-                    version: 1,
+                    version: DIRECT_NODE_REGISTRATION_VERSION,
                     id: id.into(),
                     source_path: record.source_path.clone(),
                     manifest_digest: manifest.source_digest.clone(),
@@ -1225,9 +1226,9 @@ impl NodeApps {
         // The native manager outlives a public workspace switch. Probe owners
         // must belong to the currently installed runtime, not its constructor.
         let processes = self.current_processes();
-        NodeRuntimeTrial::preflight_with_processes(
+        NodeRuntimeTrial::preflight_project_with_processes(
             &config,
-            &slot.join("data"),
+            &record.source_path,
             &slot.join("cache"),
             &processes,
         )
@@ -1259,9 +1260,9 @@ impl NodeApps {
                 release.await.expect("fixture releases owned start intent");
             }
         }
-        let (launched, pending, cleanup) = NodeRuntimeTrial::launch_retaining_failed(
+        let (launched, pending, cleanup) = NodeRuntimeTrial::launch_project_retaining_failed(
             config,
-            slot.join("data"),
+            record.source_path.clone(),
             slot.join("cache"),
             &processes,
         )
@@ -1353,7 +1354,8 @@ impl NodeApps {
                 return Err(error);
             }
         };
-        match NodeAppProxy::start_retaining_failed(
+        match NodeAppProxy::start_project_retaining_failed(
+            record.source_path.clone(),
             record.source_path.join(&manifest.web.root),
             manifest.web.entry.clone(),
             port,
@@ -1722,7 +1724,7 @@ impl NodeApps {
 fn digest_manifest(source: &Path) -> Result<String> {
     Ok(format!(
         "{:x}",
-        Sha256::digest(read_small(&source.join("local-app.json"))?)
+        Sha256::digest(read_small(&source.join("panda.json"))?)
     ))
 }
 
@@ -1848,13 +1850,13 @@ mod dependency_hint_tests {
         )
         .unwrap();
         let manifest = json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"disposable.dependency-advice","name":"Disposable advice","version":"1.0.0"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"Disposable advice","version":"1.0.0"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"root":"server","entry":"main.mjs","protocolVersion":1,"nodeMajor":24}
         });
         fs::write(
-            source.join("local-app.json"),
+            source.join("panda.json"),
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();

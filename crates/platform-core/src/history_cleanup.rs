@@ -7,9 +7,9 @@ mod unix;
 mod windows;
 #[cfg(unix)]
 pub(crate) use unix::{
-    remove_owned_directory, remove_owned_directory_checked, retired_cleanup_status, CleanupManager,
+    remove_owned_directory, remove_owned_directory_checked, retired_cleanup_status,
 };
 #[cfg(windows)]
 pub(crate) use windows::{
-    remove_owned_directory, remove_owned_directory_checked, retired_cleanup_status, CleanupManager,
+    remove_owned_directory, remove_owned_directory_checked, retired_cleanup_status,
 };

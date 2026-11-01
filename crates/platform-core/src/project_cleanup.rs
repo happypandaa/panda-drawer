@@ -119,7 +119,6 @@ pub(crate) struct ProjectCleanupCoordinator {
     stores: crate::webview_storage::StoreLedger,
     windows: Arc<WindowSizeStore>,
     storage: Mutex<Vec<Weak<crate::storage::StorageManager>>>,
-    history: Mutex<Vec<Weak<crate::history_cleanup::CleanupManager>>>,
     artifacts: Mutex<Vec<crate::build_artifacts::WeakArtifactAccess>>,
     native: RwLock<Option<NativeProjectCleanup>>,
     migration_sources: Arc<tokio::sync::RwLock<()>>,
@@ -130,7 +129,6 @@ impl ProjectCleanupCoordinator {
             stores: crate::webview_storage::StoreLedger::new(data.into()),
             windows: Arc::new(WindowSizeStore::new(data)),
             storage: Mutex::new(vec![]),
-            history: Mutex::new(vec![]),
             artifacts: Mutex::new(vec![]),
             native: RwLock::new(None),
             migration_sources: Arc::new(tokio::sync::RwLock::new(())),
@@ -151,12 +149,6 @@ impl ProjectCleanupCoordinator {
             .unwrap_or_else(|p| p.into_inner())
             .push(Arc::downgrade(storage));
     }
-    pub(crate) fn register_history(&self, history: &Arc<crate::history_cleanup::CleanupManager>) {
-        self.history
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(Arc::downgrade(history));
-    }
     pub(crate) fn register_artifacts(&self, access: &crate::build_artifacts::ArtifactAccess) {
         access.coordinated();
         self.artifacts.lock().unwrap().push(access.downgrade());
@@ -176,12 +168,6 @@ impl ProjectCleanupCoordinator {
     }
     fn storages(&self) -> Vec<Arc<crate::storage::StorageManager>> {
         let mut list = self.storage.lock().unwrap_or_else(|p| p.into_inner());
-        let live = list.iter().filter_map(Weak::upgrade).collect();
-        list.retain(|weak| weak.strong_count() > 0);
-        live
-    }
-    fn histories(&self) -> Vec<Arc<crate::history_cleanup::CleanupManager>> {
-        let mut list = self.history.lock().unwrap_or_else(|p| p.into_inner());
         let live = list.iter().filter_map(Weak::upgrade).collect();
         list.retain(|weak| weak.strong_count() > 0);
         live
@@ -254,13 +240,6 @@ impl ProjectCleanupCoordinator {
                 .task_ids
                 .extend(storage.forget_deleted_project(&notice.id).await?);
         }
-        for history in self.histories() {
-            notice.task_ids.extend(
-                history
-                    .forget_deleted_project(&notice.id, &notice.source_ids, &notice.source_roots)
-                    .await?,
-            );
-        }
         notice.normalize()?;
         Ok(notice)
     }
@@ -297,9 +276,6 @@ impl ProjectCleanupCoordinator {
         }
         for storage in self.storages() {
             storage.finish_deleted_project(&notice.id);
-        }
-        for history in self.histories() {
-            history.finish_deleted_project(&notice.id);
         }
         if let Err(error) = self.native(NativeCleanupStage::Committed, notice).await {
             eprintln!("Project deletion notification: {}", error.code);

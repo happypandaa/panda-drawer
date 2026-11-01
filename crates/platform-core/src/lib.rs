@@ -4,17 +4,14 @@
 #[rustfmt::skip]
 pub mod ai_prompt_rules;
 pub mod app_windows;
-mod archive_permissions;
 mod atomic_control_file;
-pub mod backups;
+mod build_admission;
 pub mod build_artifacts;
 pub mod build_profile;
 mod build_source_io;
 pub mod builds;
 mod cleanup_file_io;
 mod control;
-mod data_restore_guard;
-mod data_restore_proof_io;
 mod database;
 mod dependency_file_io;
 mod durable_writer;
@@ -26,12 +23,9 @@ pub mod git_environment;
 pub mod git_remote;
 mod history_cleanup;
 mod identity_upgrade;
-mod installation_scope;
 mod import_directory_io;
+mod installation_scope;
 pub mod io_lifetime;
-mod journal_file_io;
-mod lifecycle;
-mod lifecycle_file_io;
 pub mod local_cleanup;
 mod maintenance;
 mod managed_git;
@@ -42,7 +36,6 @@ mod migration_metadata_io;
 mod native_project_files;
 pub mod native_project_io;
 pub mod node_app_configuration;
-pub mod node_app_manifest;
 mod node_app_proxy;
 pub mod node_apps;
 mod node_deletion_journal;
@@ -53,12 +46,13 @@ pub(crate) mod node_process_scope;
 mod node_project_ownership;
 pub(crate) mod node_registration;
 mod node_runtime_log;
-mod node_tool_layout;
 pub mod node_runtime_trial;
+mod node_tool_layout;
 pub mod object_layout;
 #[allow(dead_code)] // Registry foundation; legacy helper ports are a separate step.
 mod operation_directory;
 mod owned_process;
+pub mod panda_manifest;
 mod path_checks;
 mod paths;
 mod platform_info;
@@ -69,9 +63,8 @@ pub mod project_cleanup;
 #[cfg(test)]
 mod project_cleanup_tests;
 mod project_directory_io;
-mod project_file_io;
 mod project_directory_name;
-pub mod project_git;
+mod project_file_io;
 pub mod project_review;
 mod project_tool_boundary;
 pub mod projects;
@@ -81,11 +74,11 @@ pub mod runtime_policy;
 mod service;
 pub mod shutdown;
 pub mod source_acquisition;
-pub mod source_restore_guard;
 mod storage;
 pub mod tasks;
 mod web_file_deletion;
 mod web_project_cleanup;
+mod web_project_deletion;
 mod web_project_ownership;
 mod web_project_ownership_io;
 pub mod webview_storage;
@@ -96,7 +89,6 @@ mod workspace_migration_cleanup;
 pub use tasks::{TaskRecord, TaskStatus};
 
 pub use paths::{Discovery, InstanceLock, RuntimePaths};
-pub use platform_preflight as startup_preflight;
 pub use service::{
     BootstrapInfo, HealthInfo, LaunchInfo, NativeWorkspaceMigration, RuntimeHandle, RuntimeService,
     WorkspaceMigrationNotice, WorkspaceMigrationStage,

@@ -1,0 +1,971 @@
+[
+  {
+    "name": "minimal-node",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "minimal-web-root",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      }
+    }
+  },
+  {
+    "name": "optional-author-version",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node",
+        "version": "author-beta"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "editor-schema-not-fetched",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "$schema": "https://example.invalid/schema"
+    }
+  },
+  {
+    "name": "single-user-document",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "documentation": {
+        "readme": "README.md"
+      }
+    }
+  },
+  {
+    "name": "single-development-document",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "documentation": {
+        "development": "DEVELOPMENT.md"
+      }
+    }
+  },
+  {
+    "name": "web-build-default-root",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "development": {
+        "build": {
+          "kind": "npm",
+          "script": "build:web"
+        }
+      }
+    }
+  },
+  {
+    "name": "web-ordinary-configuration",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "node-secret-configuration",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "string",
+            "required": false,
+            "secret": true,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "unknown-top",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "unknown": true
+    }
+  },
+  {
+    "name": "removed-root-id",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "id": "old-instance"
+    }
+  },
+  {
+    "name": "removed-app-id",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node",
+        "id": "old-author"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "removed-routing",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html",
+        "routing": "files"
+      }
+    }
+  },
+  {
+    "name": "wrong-version",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "wrong-runtime",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node-service",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "node-wrong-major",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 22,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "node-wrong-protocol",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 2
+      }
+    }
+  },
+  {
+    "name": "node-no-platform",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "platform": {
+        "sdkApiVersion": 1
+      }
+    }
+  },
+  {
+    "name": "node-no-development",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "development": {
+        "build": {
+          "kind": "npm",
+          "script": "build"
+        }
+      }
+    }
+  },
+  {
+    "name": "node-no-policy",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "runtimeRequirements": {}
+    }
+  },
+  {
+    "name": "node-no-database-doc",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "documentation": {
+        "database": "data.md"
+      }
+    }
+  },
+  {
+    "name": "web-no-backend",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "optional-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node",
+        "version": null
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "document-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "documentation": null
+    }
+  },
+  {
+    "name": "individual-document-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "documentation": {
+        "readme": null
+      }
+    }
+  },
+  {
+    "name": "schema-is-string",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "$schema": {}
+    }
+  },
+  {
+    "name": "boolean-is-not-string",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": "24",
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "unknown-nested",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html",
+        "unknown": true
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "how-to-get-array",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "description": "显示测试文字",
+            "howToGet": "直接填写"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "web-no-secret",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "string",
+            "required": false,
+            "secret": true,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "configuration-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": null
+    }
+  },
+  {
+    "name": "window-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "window": null
+    }
+  },
+  {
+    "name": "policy-device-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试网页"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "runtimeRequirements": {
+        "devices": {
+          "camera": null
+        }
+      }
+    }
+  },
+  {
+    "name": "node-needs-backend",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      }
+    }
+  },
+  {
+    "name": "secret-default-forbidden",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "string",
+            "required": false,
+            "secret": true,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ],
+            "default": "not-a-real-key"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "secret-must-be-string",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "integer",
+            "required": false,
+            "secret": true,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "default-matches-type",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ],
+            "default": "not-an-integer"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "select-needs-options",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "select",
+            "required": false,
+            "secret": false,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "only-select-has-options",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "LABEL",
+            "label": "显示文字",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "description": "显示测试文字",
+            "howToGet": [
+              "自行填写"
+            ],
+            "options": [
+              {
+                "value": "one",
+                "label": "一个"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "relative-current-directory-components",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "./web",
+        "entry": "./index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  }
+]

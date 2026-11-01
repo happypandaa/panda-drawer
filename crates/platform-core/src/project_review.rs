@@ -278,8 +278,8 @@ pub fn context(source: &Path, data: &Path, workspace: &Path) -> Result<Value, Ap
     let mut used = TREE_LABEL.len() + listing.content.len();
     let mut truncated = listing.truncated;
     let mut excerpts = vec![json!({"path":TREE_LABEL,"content":listing.content})];
-    let mut paths = vec!["local-app.json".to_owned(), "package.json".to_owned()];
-    if let Some(excerpt) = public_file(&root, "local-app.json", FILE_READ_LIMIT)? {
+    let mut paths = vec!["panda.json".to_owned(), "package.json".to_owned()];
+    if let Some(excerpt) = public_file(&root, "panda.json", FILE_READ_LIMIT)? {
         if let Ok(manifest) = serde_json::from_str::<Value>(&excerpt.content) {
             for key in ["backend", "web"] {
                 if let (Some(folder), Some(entry)) = (
@@ -436,7 +436,7 @@ mod tests {
         fs::create_dir(&private).unwrap();
         fs::write(private.join("server.mjs"), "private-fixture").unwrap();
         fs::write(
-            project.join("local-app.json"),
+            project.join("panda.json"),
             r#"{"backend":{"root":"backend","entry":"server.mjs"}}"#,
         )
         .unwrap();
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn declarations_cannot_turn_arbitrary_business_json_into_source_excerpts() {
         let (_temporary, data, project) = fixture();
-        fs::write(project.join("local-app.json"), r#"{"backend":{"root":".","entry":"records.json"},"web":{"root":".","entry":"notes.txt"}}"#).unwrap();
+        fs::write(project.join("panda.json"), r#"{"backend":{"root":".","entry":"records.json"},"web":{"root":".","entry":"notes.txt"}}"#).unwrap();
         fs::write(project.join("records.json"), "private-record-fixture").unwrap();
         fs::write(project.join("notes.txt"), "private-note-fixture").unwrap();
         let result = context(&project, &data, &data.join("workspace")).unwrap();
@@ -528,7 +528,7 @@ mod tests {
         fs::create_dir(&private).unwrap();
         fs::write(private.join("server.mjs"), "private-fixture").unwrap();
         fs::write(
-            project.join("local-app.json"),
+            project.join("panda.json"),
             r#"{"backend":{"root":"backend","entry":"server.mjs"}}"#,
         )
         .unwrap();

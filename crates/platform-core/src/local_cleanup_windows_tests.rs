@@ -176,12 +176,11 @@ fn source_snapshot(root: &Path) -> BTreeMap<PathBuf, (FileIdentity, Vec<u8>)> {
 }
 
 #[tokio::test]
-async fn public_node_registration_cleanup_removes_generated_source_and_preserves_external_full_ids_and_bytes(
-) {
+async fn public_node_cleanup_preserves_both_existing_and_selected_starter_sources_and_file_data() {
     let (temporary, paths, service) = fixture().await;
     let root = temporary.path().canonicalize().unwrap();
     let original = root.join("external-original 中文 space");
-    let generated = root.join("platform-generated 中文 space");
+    let generated = root.join("selected-starter 中文 space");
     fs::create_dir(&original).unwrap();
     fs::create_dir(&generated).unwrap();
     fs::create_dir(original.join("web")).unwrap();
@@ -197,18 +196,17 @@ async fn public_node_registration_cleanup_removes_generated_source_and_preserves
     )
     .unwrap();
     fs::write(
-        original.join("local-app.json"),
+        original.join("panda.json"),
         serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"dev.disposable.cleanup.external","name":"External original","version":"1"},
-            "web":{"root":"web","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"External original","version":"1"},
+            "web":{"root":"web","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24}
         }))
         .unwrap(),
     )
     .unwrap();
     let original_id = identity(&original);
-    let original_before = source_snapshot(&original);
     let apps = NodeApps::with_runtime(
         paths.data_root().into(),
         root.join("never-executed-node.exe"),
@@ -246,13 +244,20 @@ async fn public_node_registration_cleanup_removes_generated_source_and_preserves
         .await
         .unwrap();
     assert_eq!(managed["id"], pending);
-    assert_eq!(managed["ownership"], "managed");
+    assert_eq!(managed["ownership"], "external");
     for app in [&external, &managed] {
         let slot = paths
             .data_root()
             .join("node-apps")
             .join(app["id"].as_str().unwrap());
-        for name in ["data", "cache", "runs"] {
+        let source = PathBuf::from(app["sourcePath"].as_str().unwrap());
+        fs::create_dir(source.join("data")).unwrap();
+        fs::write(
+            source.join("data/retained-business.txt"),
+            b"user business data remains",
+        )
+        .unwrap();
+        for name in ["cache", "runs"] {
             fs::write(
                 slot.join(name).join("disposable-owned-payload"),
                 b"owned material must disappear",
@@ -260,6 +265,9 @@ async fn public_node_registration_cleanup_removes_generated_source_and_preserves
             .unwrap();
         }
     }
+    let original_before = source_snapshot(&original);
+    let generated_before = source_snapshot(&generated);
+    let generated_id = identity(&generated);
     let project = service
         .store()
         .create(CreateProjectInput {
@@ -269,8 +277,14 @@ async fn public_node_registration_cleanup_removes_generated_source_and_preserves
         .await
         .unwrap();
     let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
-    assert_eq!(plan.preview()["preservedPaths"], json!([original]));
-    assert!(plan.targets.iter().any(|target| target.path == generated));
+    assert_eq!(
+        plan.preview()["preservedPaths"],
+        json!([original, generated])
+    );
+    assert!(!plan
+        .targets
+        .iter()
+        .any(|target| generated.starts_with(&target.path)));
     apps.stop_all().await.unwrap();
     assert!(apps.owned_process_ids().await.is_empty());
     drop(apps);
@@ -279,7 +293,13 @@ async fn public_node_registration_cleanup_removes_generated_source_and_preserves
         plan.execute_after_shutdown(&service).unwrap()["operationOutcome"],
         "deleted"
     );
-    assert!(!generated.exists());
+    assert!(generated_id.same_object(&identity(&generated)));
+    let generated_after = source_snapshot(&generated);
+    assert_eq!(generated_after.len(), generated_before.len());
+    for (name, (expected_id, expected_bytes)) in generated_before {
+        assert!(expected_id.same_object(&generated_after[&name].0));
+        assert_eq!(generated_after[&name].1, expected_bytes);
+    }
     assert!(!project.project_root.exists());
     assert!(!paths.data_root().join("node-apps").exists());
     assert!(!paths.data_root().join("node-project-ownership").exists());

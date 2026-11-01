@@ -143,17 +143,23 @@ impl Fixture {
         )
         .unwrap();
         fs::write(source.join("source-sentinel"), b"preserve external source").unwrap();
-        fs::write(source.join("local-app.json"), serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"test.disposable.orphan","name":"Disposable orphan recovery","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
-            "backend":{"protocolVersion":1,"root":"server","entry":"fixture.mjs","nodeMajor":24}
-        })).unwrap()).unwrap();
+        fs::write(
+            source.join("panda.json"),
+            serde_json::to_vec(&json!({
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":"Disposable orphan recovery","version":"1"},
+                "web":{"root":"public","entry":"index.html"},
+                "backend":{"protocolVersion":1,"root":"server","entry":"fixture.mjs","nodeMajor":24}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let manager = NodeApps::new(root.clone(), official_node().into()).unwrap();
         let registered = manager.register(source.clone()).await.unwrap();
         let id = registered["id"].as_str().unwrap().to_owned();
         let slot = root.join("node-apps").join(&id);
-        fs::write(slot.join("data/data-sentinel"), b"preserve instance data").unwrap();
+        fs::create_dir(source.join("data")).unwrap();
+        fs::write(source.join("data/data-sentinel"), b"preserve instance data").unwrap();
         drop(manager);
         Self {
             _temporary: temporary,
@@ -181,7 +187,7 @@ impl Fixture {
             b"preserve external source"
         );
         assert_eq!(
-            fs::read(self.slot.join("data/data-sentinel")).unwrap(),
+            fs::read(self.source.join("data/data-sentinel")).unwrap(),
             b"preserve instance data"
         );
         assert!(self.slot.join("registration.json").is_file());

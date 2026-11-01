@@ -3,8 +3,8 @@
 //! Configuration JSON contains only ordinary values and opaque entry IDs;
 //! credentials are never serialized back to the frontend or placed in logs.
 
-use crate::node_app_manifest::{
-    valid_business_variable, ConfigurationField, ConfigurationType, TrialManifest,
+use crate::panda_manifest::{
+    valid_business_variable, ConfigurationField, ConfigurationType, PandaManifest,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -168,7 +168,7 @@ impl NodeConfigurationStore {
         })
     }
 
-    pub fn view(&self, manifest: &TrialManifest) -> Result<ConfigurationView> {
+    pub fn view(&self, manifest: &PandaManifest) -> Result<ConfigurationView> {
         let _lock = self.lock()?;
         let record = self.read()?;
         self.view_record(manifest, &record)
@@ -176,7 +176,7 @@ impl NodeConfigurationStore {
 
     pub fn save(
         &self,
-        manifest: &TrialManifest,
+        manifest: &PandaManifest,
         request: SaveConfigurationRequest,
     ) -> Result<ConfigurationView> {
         let _lock = self.lock()?;
@@ -297,7 +297,7 @@ impl NodeConfigurationStore {
         attempt
     }
 
-    pub fn launch_snapshot(&self, manifest: &TrialManifest) -> Result<LaunchConfigurationSnapshot> {
+    pub fn launch_snapshot(&self, manifest: &PandaManifest) -> Result<LaunchConfigurationSnapshot> {
         let _lock = self.lock()?;
         let record = self.read()?;
         let view = self.view_record(manifest, &record)?;
@@ -343,7 +343,7 @@ impl NodeConfigurationStore {
 
     fn view_record(
         &self,
-        manifest: &TrialManifest,
+        manifest: &PandaManifest,
         record: &StoredConfiguration,
     ) -> Result<ConfigurationView> {
         let fields = checked_fields(manifest)?;
@@ -392,11 +392,11 @@ impl NodeConfigurationStore {
     }
 }
 
-fn checked_fields(manifest: &TrialManifest) -> Result<Vec<&ConfigurationField>> {
+fn checked_fields(manifest: &PandaManifest) -> Result<Vec<&ConfigurationField>> {
     // The manifest's typed declarations are public. Revalidate by round-tripping
     // just the declaration through its existing strict reader is unnecessary:
     // enforce each launch-relevant rule locally, including mutated Rust values.
-    if manifest.runtime != crate::node_app_manifest::TrialRuntime::NodeService {
+    if manifest.runtime != crate::panda_manifest::PandaRuntime::Node {
         return Err(invalid("此配置入口仅支持 Node 服务应用。"));
     }
     let Some(configuration) = &manifest.configuration else {
@@ -655,11 +655,11 @@ mod tests {
         }
     }
 
-    fn manifest() -> TrialManifest {
-        TrialManifest::parse(&serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app", "formatVersion":2, "runtime":"node-service",
-            "app":{"id":"dev.disposable.config","name":"可丢弃配置测试","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+    fn manifest() -> PandaManifest {
+        PandaManifest::parse(&serde_json::to_vec(&json!({
+            "manifestVersion":1, "runtime":"node",
+            "app":{"name":"可丢弃配置测试","version":"1"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"root":"server","entry":"managed.mjs","nodeMajor":24,"protocolVersion":1},
             "configuration":{"version":1,"fields":[
                 {"name":"BASE_URL","label":"服务地址","type":"url","required":true,"secret":false,

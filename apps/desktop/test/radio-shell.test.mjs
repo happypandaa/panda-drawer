@@ -78,7 +78,7 @@ const bootstrap = {
 };
 const environment = { ready: true, node: { path: '/disposable/node', version: 'v24.0.0' }, npm: { path: '/disposable/npm', version: '11.0.0' }, selection: 'detected', configuredNodePath: null, supportedNodeRange: 'fixture', recommendedNode: 'fixture', downloadUrl: 'https://example.invalid/node', issues: [] };
 const gitEnvironment = { ready: true, git: { path: '/disposable/platform/git/bin/git', version: '2.56.0' }, selection: 'managed', configuredGitPath: null, managedGitPath: '/disposable/platform/git/bin/git', ssh: { ready: true, selection: 'system', executable: { path: '/usr/bin/ssh', version: 'OpenSSH fixture' }, issues: [] }, authentication: { state: 'not-checked', reason: '只检测工具，不访问仓库。' }, issues: [] };
-const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', runtime: 'node-service', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
+const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 async function setup({ projects = [], nodes = [], overrides = {}, windows = [], recoveries = [] } = {}) {
   globalThis.__RADIO_SHELL_WINDOWS__ = windows;
@@ -453,54 +453,17 @@ test('Automatic refresh tracks actual web windows and Node state and the footer 
   assert.deepEqual(calls.filter(([command]) => command === 'open_project_folder'), [['open_project_folder', { path: bootstrap.workspaceRoot }]]);
 });
 
-test('Completed management history does not keep the header task entry visible', async () => {
-  const task = { taskId: 'disposable_completed_task', projectId: null, type: 'workspaceCleanup', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
-  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }) } });
-  assert.equal(document.querySelector('.radio-main .recent-tasks'), null);
-  assert.equal(document.querySelector('.radio-main .build-task'), null);
-  assert.equal(document.querySelector('.radio-notices').childElementCount, 0);
-  assert.equal(document.querySelector('.radio-task-button'), null);
-  assert.equal(document.querySelector('.task-center-panel'), null);
-  assert.equal(dialog(), null, 'Tasks never open the settings window');
-});
-
 test('Active management work appears only in the task capsule and opens its popover', async () => {
-  const task = { taskId: 'disposable_pending_task', projectId: null, type: 'workspaceCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
-  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], cleanupTask: task }), task_get: () => task } });
+  const task = { taskId: 'disposable_pending_task', projectId: null, type: 'workspaceMigrationCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
+  await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], migrationCleanupTask: task }), task_get: () => task } });
   assert.equal(document.querySelector('.radio-task-indicator'), null);
   assert.equal(document.querySelector('.radio-main .build-task'), null);
-  assert.match(document.querySelector('.radio-task-button').textContent, /正在清理历史资料/);
+  assert.match(document.querySelector('.radio-task-button').textContent, /正在删除迁移原目录/);
   await click(document.querySelector('.radio-task-button'));
   const active = document.querySelector('.task-center-panel [aria-label="进行中的任务"]');
   await click(active.querySelector('summary'));
-  assert.match(active.textContent, /清理历史资料 · 正在执行/);
+  assert.match(active.textContent, /删除迁移原目录 · 正在执行/);
   assert.equal(dialog(), null);
-});
-
-test('A service switch clears old unfinished cleanup gates and accepts only the replacement workspace tasks', async () => {
-  const running = { taskId: 'disposable_old_cleanup', projectId: null, type: 'workspaceCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
-  const finishing = { ...running, taskId: 'disposable_old_migration_cleanup', type: 'workspaceMigrationCleanup' };
-  const current = { ...finishing, taskId: 'disposable_current_migration_cleanup' };
-  let replaced = false;
-  const runtime = () => ({ ...bootstrap, ...(replaced ? { instanceId: 'replacement_workspace_instance', workspaceRoot: '/disposable/radio-shell/replacement-workspace' } : {}) });
-  const calls = await setup({ overrides: {
-    bootstrap_info: runtime,
-    workspace_info: () => ({ workspaceRoot: runtime().workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [], cleanupTask: replaced ? null : running, migrationCleanupTask: replaced ? current : finishing }),
-    task_get: ({ taskId }) => taskId === finishing.taskId && replaced ? { ...finishing, final: true, status: 'succeeded', phase: 'completed', result: { completed: true } } : taskId === current.taskId ? current : running,
-  } });
-  assert.match(document.querySelector('.radio-notices').textContent, /历史清理正在进行/);
-  assert.deepEqual([...addGroup().querySelectorAll('button')].map(item => item.disabled), [true, true, true]);
-  replaced = true;await tick(1000);
-  assert.match(document.querySelector('.radio-footer').textContent, /replacement-workspace/);
-  assert.doesNotMatch(document.querySelector('.radio-notices').textContent, /历史清理正在进行/);
-  assert.deepEqual([...addGroup().querySelectorAll('button')].map(item => item.disabled), [false, false, false]);
-  await click(document.querySelector('.radio-task-button'));
-  const active = document.querySelector('[aria-label="进行中的任务"]');await click(active.querySelector('summary'));
-  assert.match(active.textContent, /disposable_current_migration_cleanup/);
-  assert.doesNotMatch(active.textContent, /disposable_old_cleanup|disposable_old_migration_cleanup/);
-  const before = calls.filter(([command, args]) => command === 'task_get' && args.taskId === running.taskId).length;
-  await tick(1000);
-  assert.equal(calls.filter(([command, args]) => command === 'task_get' && args.taskId === running.taskId).length, before);
 });
 
 test('Add actions stay disabled before bootstrap and while a Node entry is pending', async () => {

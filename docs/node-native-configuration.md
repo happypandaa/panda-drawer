@@ -1,5 +1,7 @@
 # 内部 Node 应用：本机配置与运行
 
+2026-11-01 当前 Node 格式已改为 `panda.json`，文件数据使用项目 `data/`；配置、密钥、日志和缓存仍由平台私有保存。用户选择空目录生成的项目归用户所有，删除保留目录及文件数据，浏览器数据一律清除。不再提供平台版本、取回或项目 ZIP 功能。下文较早格式和存储位置只按历史理解，现行规则见[Node 单目录运行](node-single-directory.md)和[本轮契约](unified-project-manifest-proposal.md)。
+
 2026-10-29 新规则：[Node 单目录运行](node-single-directory.md)取代下方旧安装副本、构建更新和清单摘要门禁。所有 Node 项目直接运行登记文件夹；有效 local-app.json（包括 app.id、版本及配置声明）在下次启动生效，平台实例 UUID 和数据归属不变。旧验证仍只证明当时版本。
 
 
