@@ -17,8 +17,7 @@ impl Fixture {
     fn new() -> Self {
         let (temporary, paths) = RuntimePaths::for_test();
         let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
-        let tasks =
-            BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+        let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
         let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
         let storage =
             StorageManager::new(paths.clone(), store.clone(), tasks.clone(), maintenance).unwrap();

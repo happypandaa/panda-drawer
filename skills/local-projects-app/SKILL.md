@@ -9,7 +9,7 @@ description: 在熊猫小抽屉中接手业务项目，核对源码、数据和�
 
 ## 当前交付范围
 
-2026-11-01 统一清单批次 2：网页和 Node 均读取根部 panda.json，runtime 分别为 web、node；直接使用登记的项目文件夹。网页仍使用现有 /p/<实例ID>/ 地址和 SDK 包，独立地址及 /_platform/sdk.js 尚未提供。
+2026-11-01 统一清单批次 3：网页和 Node 均读取根部 panda.json，runtime 分别为 web、node；直接使用登记的项目文件夹。网页使用按实例固定的独立端口，入口在根路径；普通脚本 /_platform/sdk.js 提供 window.panda，SDK API 1 固定访问 /_platform/api/v1/。不要从 URL 解析实例 ID。
 
 平台不再提供源码／数据版本面板、版本取回、项目 ZIP 导入导出或复制。Git 版本由外部 AI 在项目自己的仓库完成。Git 获取、项目构建、SQL／附件和项目删除仍按实际平台能力提供。
 
@@ -36,7 +36,7 @@ development 可声明 sourceDir（默认点）及 build.kind:npm、build.script�
 
 阅读项目的数据库文档，通过实际 CLI 帮助确认命令。SQL 使用 db 命令或启用的 SDK，附件使用 SDK files。SQL 和上传不是同一事务，未知结果不要自动重放。修改表结构前核对实际 schema，同步字段、单位、关系和删除规则。不替换正在使用的数据库及 WAL/SHM。
 
-默认新建模板把源码和 package 放项目根，当前仍有 vendor SDK tgz 与 Vite base './'。不要求其他项目模仿模板，不改为尚未提供的 SDK 路径。不调用已删除的 project metadata、project git、导入导出、复制或历史清理命令。回退代码用标准 Git，业务数据另行备份。
+默认新建模板把源码和 package 放项目根，HTML 引入 /_platform/sdk.js；使用 window.panda，类型在交接给出的 sdkTypesPath，模板另有 src/panda.d.ts。不内置 tgz，不要求安装 SDK npm 包，不添加 Vite base。公开配置用 window.panda.config() 或 GET /_platform/config.json，返回类型化普通对象，选填未填项省略；无 SDK 声明也可读取配置。网页配置不允许 secret，保存后刷新或重开生效，无需构建。不调用已删除的 project metadata、project git、导入导出、复制或历史清理命令。回退代码用标准 Git，业务数据另行备份。
 
 ## 数据和删除
 

@@ -1,6 +1,6 @@
 # 项目格式：panda.json
 
-更新：2026-11-01，统一清单批次 2。当前实现及边界见[实施记录](unified-project-manifest-implementation.md)，确认的完整方向见[方案](unified-project-manifest-proposal.md)。本文描述当前可用格式。
+更新：2026-11-01，统一清单批次 3。当前实现及边界见[实施记录](unified-project-manifest-implementation.md)，确认的完整方向见[方案](unified-project-manifest-proposal.md)。本文描述当前可用格式。
 
 ## 一个项目文件夹，一份清单
 
@@ -45,7 +45,7 @@
 
 构建前关闭应用窗口；窗口打开时构建被拒绝。构建结束后重新打开，直接服务原目录文件。缺入口但有构建声明时显示 `needsBuild`；无构建声明则显示 `entryMissing`，均可完成本地登记。添加、只读检查和打开不隐式构建。
 
-批次 2 保留现有 `/p/<实例ID>/` 地址、SDK npm 包和模板内 tgz。模板 `base: './'` 适应该地址；独立地址和 `/_platform/sdk.js` 尚未交付。网页可选 `runtimeRequirements` 继续按当前网络及设备策略处理。
+每个实例使用固定端口，网页从根路径运行；地址被占用时明确报错，不静默换端口。HTML 通过普通 `<script src="/_platform/sdk.js"></script>` 获得 `window.panda`，API 固定 `/_platform/api/v1/`，不解析 URL 中的 ID。类型声明随资源，交接给出实际 `sdkTypesPath`；模板已有 `src/panda.d.ts`，不再有 vendor／tgz／SDK 依赖或 Vite base。网页可选 `runtimeRequirements` 继续按当前网络及设备策略处理。
 
 ## Node 项目
 
@@ -63,7 +63,7 @@
 
 ## 配置、文档及数据
 
-`configuration` 使用 `version: 1` 与 `fields`，声明变量用途及获取方法；`howToGet` 是非空字符串数组。真实值由平台表单保存；Node 秘密只注入目标后端，不写清单或网页。`documentation.readme`、`documentation.development` 可选，声明后文件必须存在。可选 `window` 控制初始窗口尺寸及记忆，详见 Schema。
+`configuration` 使用 `version: 1` 与 `fields`，声明变量用途及获取方法；`howToGet` 是非空字符串数组。真实值由平台表单保存；Node 秘密只注入目标后端，不写清单或网页。网页不允许 secret，通过 `GET /_platform/config.json` 或 `window.panda.config()` 获取裸类型化对象；整数为 number，开关为 boolean，其他值为 string，选填未填项省略。配置读取不依赖 SDK 开关，保存后刷新或重新打开生效，不需构建。`documentation.readme`、`documentation.development` 可选，声明后文件必须存在。可选 `window` 控制初始窗口尺寸及记忆，详见 Schema。
 
 文件数据在项目 `data/`：启用 SDK 的网页按需创建 `data/main.sqlite` 及 `data/attachments`，Node 通过 `APP_DATA_DIR` 写入。检查、登记和无数据操作的普通网页不会提前生成数据库。localStorage、IndexedDB、Cookie 是平台窗口的浏览器数据，与项目文件分开。
 

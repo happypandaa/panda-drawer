@@ -17,8 +17,7 @@ async fn startup_interrupts_waiting_confirmation_without_retrying_or_writing_pro
         error: None,
     };
     atomic_json(&directory.join("task.json"), &record).unwrap();
-    let manager =
-        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into()).unwrap();
+    let manager = BuildManager::new(paths.clone(), store.clone()).unwrap();
     let recovered = manager.task(&id).unwrap();
     assert_eq!(recovered.status, TaskStatus::Interrupted);
     assert_eq!(recovered.error.unwrap().code, "TASK_INTERRUPTED");
@@ -41,8 +40,7 @@ async fn latest_result_is_the_explicit_submission_even_after_unrelated_tasks() {
         })
         .await
         .unwrap();
-    let manager =
-        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1234".into()).unwrap();
+    let manager = BuildManager::new(paths.clone(), store.clone()).unwrap();
     let first = manager
         .create_readonly_operation(&project.id, "build")
         .unwrap();

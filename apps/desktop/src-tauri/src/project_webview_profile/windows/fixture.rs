@@ -36,7 +36,7 @@ const NODE_A: &str = "00000000-0000-4000-8000-000000000041";
 const NODE_B: &str = "00000000-0000-4000-8000-000000000042";
 const PAGE: &str = r#"<!doctype html><meta charset=utf-8><title>Disposable project profile fixture</title>
 <script>
-const project = location.pathname.split('/')[2];
+const project = new URL(location.href).searchParams.get('project');
 function db() { return new Promise((resolve, reject) => {
   const request = indexedDB.open('shared-profile-database', 1);
   request.onupgradeneeded = () => request.result.createObjectStore('values');
@@ -298,11 +298,7 @@ fn serve(stream: &mut TcpStream, observed: &Observations) -> std::io::Result<()>
         );
         observed.reports.lock().unwrap().insert(key, report);
     }
-    let body = if target.starts_with("/p/") {
-        PAGE
-    } else {
-        "ok"
-    };
+    let body = if target.starts_with("/?") { PAGE } else { "ok" };
     write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len())
 }
 
@@ -347,7 +343,7 @@ fn open(
     profile.reserve(app, receipt.generation)?;
     let released = Arc::new(AtomicUsize::new(0));
     profile.hold_resource(&receipt, Release(released.clone()))?;
-    let target = format!("/p/{id}?phase={phase}&mark={mark}");
+    let target = format!("/?project={id}&phase={phase}&mark={mark}");
     let launch = Url::parse(&format!("{origin}{target}")).unwrap();
     let navigation_profile = profile.clone();
     let admitted_origin = origin.to_owned();

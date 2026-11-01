@@ -24,9 +24,8 @@ pub(super) fn resource_info(
     let cli_path = cli.is_file().then(|| cli.to_string_lossy().into_owned());
     Ok(InstalledResources {
         info: ResourceInfo {
-            sdk: resources
-                .join("sdk/releases/local-projects-sdk-0.1.0.tgz")
-                .is_file(),
+            sdk: resources.join("sdk/sdk.js").is_file()
+                && resources.join("sdk/panda.d.ts").is_file(),
             template: resources.join("template/app/package.json").is_file(),
             readme: std::fs::read_to_string(resources.join("README.md")).is_ok(),
             cli: cli_path.is_some(),

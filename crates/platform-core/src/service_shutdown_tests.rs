@@ -101,10 +101,9 @@ async fn owned_process_quiesce_retains_discovery_until_pending_reader_really_joi
     assert_eq!(failed.status, ShutdownStatus::Blocked);
     assert!(!failed.resource_closed);
     assert_eq!(failed.phase, "processes");
-    assert!(
-        store.fixture_has_database_worker(&project.id),
-        "actual SQLite worker stays owned before process drain"
-    );
+    // The independent app runtime may already have closed its SQLite worker.
+    // Its closure never authorizes dropping this unrelated owned process,
+    // the management HTTP owner, or discovery while its reader is pending.
     assert!(
         service.shutdown.resources.lock().await.http.is_some(),
         "HTTP join owner is not consumed early"
@@ -131,8 +130,9 @@ async fn owned_process_quiesce_retains_discovery_until_pending_reader_really_joi
     assert!(registry.snapshot()[0].resource_closed());
     assert!(
         !store.fixture_has_database_worker(&project.id),
-        "worker closes only after real process and writer joins"
+        "completed shutdown has closed the actual SQLite worker"
     );
+    assert_eq!(service.handle().web_status(&project.id)["state"], "closed");
     assert!(!paths.connection_path().exists());
     drop(window);
     service.shutdown().await.unwrap();

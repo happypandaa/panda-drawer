@@ -88,7 +88,7 @@ export async function prepareDesktop({ release = false } = {}) {
     outputDir: path.join(resources, 'development-git'),
     cacheDir: path.join(root, '.tools/development-git-cache'),
   });
-  const resourceFilter = (source) => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests'].includes(part));
+  const resourceFilter = (source) => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests', 'releases', 'vendor'].includes(part));
   await cp(path.join(root, 'packages/sdk'), path.join(resources, 'sdk'), { recursive: true, filter: resourceFilter });
   await cp(path.join(root, 'templates/react'), path.join(resources, 'template'), { recursive: true, filter: resourceFilter });
   await cp(path.join(root, 'skills/local-projects-app'), path.join(resources, 'skills/local-projects-app'), { recursive: true, filter: resourceFilter });

@@ -1,8 +1,8 @@
 # 开发环境与数据隔离
 
-2026-11-01，统一清单批次 2：网页和 Node 均使用项目根 `panda.json`，直接运行登记的同一文件夹。网页构建在原目录执行声明的 npm 脚本；不再复制源码、保存产物代次或提供平台元数据编辑。格式、入口与数据规则见[当前项目格式](panda-project-format.md)，实际检查见[实施记录](unified-project-manifest-implementation.md)。
+2026-11-01，统一清单批次 3：网页和 Node 均使用项目根 `panda.json`，直接运行登记的同一文件夹。网页构建在原目录执行声明的 npm 脚本；不再复制源码、保存产物代次或提供平台元数据编辑。格式、入口与数据规则见[当前项目格式](panda-project-format.md)，实际检查见[实施记录](unified-project-manifest-implementation.md)。
 
-本地文件夹（包括在空目录生成的代码）属于用户，删除时保留代码和 `data/`；平台新建／Git 下载的文件夹随删除全部清除。两者的浏览器数据一律清除。平台源码／数据版本、取回、项目 ZIP 导入导出及复制已移除。独立网页地址、全局 SDK 脚本尚属后续批次，当前仍使用 `/p/<实例ID>/` 和 SDK 包。
+本地文件夹（包括在空目录生成的代码）属于用户，删除时保留代码和 `data/`；平台新建／Git 下载的文件夹随删除全部清除。两者的浏览器数据一律清除。平台源码／数据版本、取回、项目 ZIP 导入导出及复制已移除。网页使用每实例固定端口的根路径，普通脚本 `/_platform/sdk.js` 提供 `window.panda`；SDK API 为 `/_platform/api/v1/`，公开配置为 `/_platform/config.json`。
 
 历史验收及当时的限制保留在 [M0](m0-verification.md)、[M1](m1-verification.md)、[M2](m2-verification.md)、[M3](m3-verification.md)、[M4](m4-verification.md)、[M5](m5-verification.md)与各专题记录中；它们不是现行格式或命令说明。固定开发身份与数据重置授权见[开发环境重置](development-identity-reset.md)。
 
@@ -57,9 +57,9 @@
 
 ## 2 运行与构建
 
-本机按用户 2026-11-01 的约定，所有 Node 依赖安装统一使用 pnpm。根目录执行 `pnpm install --frozen-lockfile`，再使用 `pnpm run dev` 或 `pnpm run build:app`；模板打包的 pnpm 路径需要 pnpm 12.7+。`pnpm-workspace.yaml` 包含桌面工作区，并为仓库根目录的 UI 夹具提供其 React、图标、Tauri 与 TypeScript 依赖。原 npm 锁文件和其它环境的 npm 工作流继续保留；应用内受管 Node/npm 的运行与构建契约不随本机安装工具改变。
+本机按用户 2026-11-01 的约定，所有 Node 依赖安装统一使用 pnpm。根目录执行 `pnpm install --frozen-lockfile`，再使用 `pnpm run dev` 或 `pnpm run build:app`；`pnpm-workspace.yaml` 包含桌面工作区，并为仓库根目录的 UI 夹具提供其 React、图标、Tauri 与 TypeScript 依赖。原 npm 锁文件和其它环境的 npm 工作流继续保留；应用内受管 Node/npm 的运行与构建契约不随本机安装工具改变。
 
-准备步骤构建 CLI，在临时目录按锁文件构建标准模板，再生成包内 SDK、模板源码、预编译初始网页、skill 和说明资源副本；Tauri 启动管理界面和 Rust 服务。通过 pnpm 启动打包时，模板依赖先从其 npm 锁文件转换临时 pnpm 锁，再执行冻结锁安装，构建后仍核对原源码摘要。模板构建发生在平台开发／打包时，不发生在用户创建项目时。Vite 开发地址固定为 `127.0.0.1:1420`，端口被占用时不静默选择另一个端口。
+准备步骤构建 CLI，校验普通 SDK 脚本并同步模板类型，再复制 SDK、作者源码模板、skill 和说明资源；不安装模板依赖、不生成预编译网页或摘要基线。用户新建项目时在其原根执行初始构建。Vite 平台开发地址固定为 `127.0.0.1:1420`。
 
 Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及服务选定 Node/npm 的构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；现有静态网页不启动 Node 服务，独立本机 Node 槽的应用后端范围见[当前接入](node-native-configuration.md)。
 
@@ -67,7 +67,7 @@ Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突
 
 平台界面变更由 Vite 更新；Rust 变更由 Tauri 重新编译启动。开发构建和包构建属于相同开发环境，同一时刻只运行其中一个；先明确退出再切换，不能将单实例复用误当作运行了新二进制。
 
-`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含固定版本 `@local-projects/sdk 0.1.0` tarball、匹配说明、`react-ts-vite-0.1.4` 标准模板及其初始网页，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
+`npm run build:app` 生成内部 `.app`，`npm run build` 生成 `.app` 与 DMG，输出位于根 `target/release/bundle/`。页面资源全部本地打包，无需 Node 服务运行。CLI 作为原生外部二进制打入包内；包内包含 SDK API 1 的 `sdk.js` 和 `panda.d.ts`、`react-ts-vite-0.3.0` 作者源码模板，以及 `local-projects-app` skill。这些仍属于内部开发包，尚未作为正式产品对外发行。
 
 2026-10-20 起，标准 Mac 打包先检查运行状态；生成目录中的新旧任一名称的 `.app` 正在运行时明确拒绝打包，须先从菜单退出。当前名称「熊猫小抽屉」及历史「熊猫应用小抽屉」「Local Projects Dev」三个确切名字的旧生成应用与 arm64 DMG，分别在核对固定身份、各自包名、签名及镜像后暂存；新构建和验包全部成功才删除旧生成副本，`build:app` 成功后也删除失效的旧 DMG。构建或验包失败恢复上次可用生成包。范围仅 `target/<release|debug>/bundle/`，不扫描或清理安装目录、项目、数据、备份及 `.test-artifacts/`。自定义输出／身份参数不进入自动清理，`dev`、`--no-bundle` 和非 Mac 构建不清理包。中断后若留下 `target/.desktop-package-build.lock` 或 `.desktop-package-previous-*`，保留恢复现场，核查后处理，不自动删除。保护性回归：`node --test scripts/desktop-package-output-test.mjs`。
 
@@ -162,7 +162,9 @@ M1 客户端可用 `M1_TEST_CLI` 指定，M2／M5 使用 `M4_TEST_CLI` 指定。
 
 ## 7 SDK、模板与构建
 
-当前 `packages/sdk/` 提供 ESM 与类型，模板保留 `vendor/local-projects-sdk-0.1.0.tgz`。`pnpm package:sdk` 校验固定包，`pnpm prepare:desktop` 打包源码资源。模板内部资源目录仍为 `templates/react/app/`；安装后内容放项目根，版本为 `react-ts-vite-0.2.0`，Vite `base: './'`。资源打包不安装依赖、不预构建 starter 或生成摘要基线。
+`packages/sdk/sdk.js` 是普通 IIFE 的唯一运行实现，`panda.d.ts` 为共享类型。可选 npm 包 0.2.0 只把 `platform` 别名指向已加载的 `window.panda`。`pnpm package:sdk` 同步模板类型，不打 tgz、不安装依赖；`node scripts/package-sdk.mjs --check` 核对类型副本。macOS／Windows 资源校验均要求实际 `sdk/sdk.js` 与 `sdk/panda.d.ts`，交接给出真实路径。
+
+模板版本 `react-ts-vite-0.3.0`，作者内容安装到项目根。HTML 引入 `/_platform/sdk.js`，TS 使用 `window.panda` 和 `Panda` 类型；没有 SDK npm 依赖、vendor 或 Vite base。公开配置 `panda.config()` 直接读裸类型化对象，独立于 SQL SDK 开关，不会为配置读取创建数据库；配置保存后刷新或重新打开生效。
 
 模板新建时使用真实 EnvironmentManager 解析的 Node/npm，在项目原根执行 `npm ci` 后运行 `development.build.script`，脚本负责生成 web.entry。没有 outDir 注入、暂存副本、不可变代次、输入摘要匹配或失败回滚。普通本地添加与打开不执行安装或构建；Git 网页缺入口时须先明确同意，详见[Git 添加](git-app-import.md)。
 
@@ -172,6 +174,6 @@ M1 客户端可用 `M1_TEST_CLI` 指定，M2／M5 使用 `M4_TEST_CLI` 指定。
 
 启用 SDK 的网页使用懒创建的 SQLite／附件；Node 的 APP_DATA_DIR 为项目 data/。平台配置、密钥、日志和缓存是私有实例材料，浏览器存储另按实例保存。普通网页不强制使用平台数据接口。不要手工替换正在使用的数据库、WAL／SHM 或平台登记。
 
-`runtimeRequirements` 为网页可选声明，当前继续限定网络 origin 及设备用途；Node 禁止此字段。保存实际配置不自动启动 Node。当前对话框、导航、CSP 与 SDK 地址的既有限制仍有效，不提前使用后续批次路线。
+`runtimeRequirements` 为网页可选声明，当前继续限定网络 origin 及设备用途；Node 禁止此字段。保存实际配置不自动启动 Node。网页采用当前独立服务、CSP 及原生导航／对话框适配；真实系统行为需按测试方案验收。
 
 Windows 行为、实际验证及未开放范围以 [Windows x64 适配表](windows-x64-port.md)与对应主机／CI 记录为准。Mac 编译或 DOM 模拟不能证明 Windows、真实媒体设备、最低系统或原生窗口通过。

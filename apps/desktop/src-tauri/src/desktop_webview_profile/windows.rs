@@ -182,7 +182,7 @@ mod tests {
             "http://tauri.localhost.evil.test/",
             "http://user@tauri.localhost/",
             "http://tauri.localhost@evil.test/",
-            "http://127.0.0.1:49152/p/prj_a/",
+            "http://127.0.0.1:49152/",
             "http://localhost:1420/",
             "http://127.0.0.1.evil.test:1420/",
             "https://example.com/",

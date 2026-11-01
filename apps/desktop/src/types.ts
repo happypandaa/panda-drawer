@@ -35,6 +35,7 @@ export interface ProjectInfo {
   issues: string[];
   objectLayout?: ObjectLayout | null;
   buildInfo?: BuildInfo;
+  webRuntime?: { state: 'starting' | 'running' | 'closing' | 'closed' | 'failed'; error?: { code: string; message: string; details?: Record<string, unknown> } | null };
   iconDataUrl?: string | null;
   storage?: ProjectStorage;
   manifest: Extract<PandaManifest, { runtime: 'web' }> | null;

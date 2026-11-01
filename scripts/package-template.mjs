@@ -28,7 +28,7 @@ export async function packageTemplate(output) {
   }
   await readFile(path.join(source, 'index.html'));
   const template = JSON.parse(await readFile(path.join(output, 'template.json'), 'utf8'));
-  return { templateVersion: template.templateVersion, sourceDirectory: '.', sdkVersion: template.sdkVersion };
+  return { templateVersion: template.templateVersion, sourceDirectory: '.', sdkApiVersion: template.sdkApiVersion, sdkScript: template.sdkScript };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

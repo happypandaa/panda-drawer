@@ -2862,6 +2862,7 @@ dependencies = [
 name = "platform-desktop"
 version = "0.0.0"
 dependencies = [
+ "objc2-app-kit",
  "base64 0.22.1",
  "block2",
  "objc2",
@@ -2887,6 +2888,7 @@ name = "platform-native"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "socket2",
  "tempfile",
  "windows",
  "windows-sys 0.61.2",

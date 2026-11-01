@@ -56,8 +56,7 @@ impl Fixture {
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         manifest["web"]["root"] = "dist".into();
         fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        let tasks =
-            BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+        let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
         let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
         let storage = StorageManager::new(
             paths.clone(),
@@ -699,12 +698,7 @@ async fn interrupted_cleanup_uses_task_status_and_never_replays_deletion() {
     f.tasks.phase(&task.task_id, "deleting").unwrap();
     f.storage.shutdown().await;
     f.tasks.shutdown().await;
-    let tasks = BuildManager::new(
-        f.paths.clone(),
-        f.store.clone(),
-        "http://127.0.0.1:9".into(),
-    )
-    .unwrap();
+    let tasks = BuildManager::new(f.paths.clone(), f.store.clone()).unwrap();
     let maintenance = MaintenanceManager::new(f.store.clone(), tasks.clone());
     let restarted = StorageManager::new(
         f.paths.clone(),

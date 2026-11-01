@@ -32,8 +32,7 @@ impl Fixture {
             .await
             .unwrap();
         let project = store.project(&info.id).unwrap();
-        let tasks =
-            BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+        let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
         let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
         let lifecycle = WebProjectDeletionManager::new(
             paths.clone(),

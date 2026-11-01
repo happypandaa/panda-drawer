@@ -1,7 +1,7 @@
-/* M1 controlled verification client. The distributable SDK is an M2 deliverable. */
-const projectId = /^\/p\/([a-z][a-z0-9_-]*)\//.exec(location.pathname)?.[1];
-const documentEpoch = document.querySelector('meta[name="platform-document-epoch"]')?.content;
-const api = `/p/${projectId}/api/v1`;
+/* Controlled low-level protocol probe. Application code should use window.panda. */
+let projectId;
+let documentEpoch;
+const api = '/_platform/api/v1';
 const status = document.querySelector('#status');
 const wordForm = document.querySelector('#word-form');
 const noteForm = document.querySelector('#note-form');
@@ -16,7 +16,7 @@ function showStatus(message, error = false) {
 async function request(path, options = {}) {
   const response = await fetch(`${api}${path}`, {
     ...options,
-    headers: { 'X-Platform-Document-Epoch': documentEpoch, ...options.headers },
+    headers: { ...(documentEpoch ? { 'X-Platform-Document-Epoch': documentEpoch } : {}), ...options.headers },
     credentials: 'same-origin',
   });
   const result = await response.json();
@@ -105,8 +105,11 @@ document.querySelector('#epoch').textContent = documentEpoch || '缺少入口代
 document.querySelector('#client-kind').textContent = window.__TAURI_INTERNALS__ ? '桌面项目窗口' : '浏览器或受限桌面页面';
 (async () => {
   try {
-    if (!projectId || !documentEpoch) throw new Error('请从平台的项目入口打开本页');
-    await request('/context');
+    const context=await request('/context');
+    projectId=context.projectId;documentEpoch=context.documentEpoch;
+    if(!projectId||!documentEpoch)throw new Error('请从平台的项目入口打开本页');
+    document.querySelector('#project-id').textContent=projectId;
+    document.querySelector('#epoch').textContent=documentEpoch;
     sessionReady = true;
     await refresh();
     showStatus('已连接本机数据库。数据与附件只属于当前项目。');

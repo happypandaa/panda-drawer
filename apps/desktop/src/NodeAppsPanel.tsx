@@ -21,7 +21,7 @@ import { AiProjectHelp } from './AiProjectHelp';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { onProjectDeleted, projectWasDeleted } from './project-deletion';
-import type { NodeAppDeleteResult, NodeAppDetail, NodeConfigurationInput, NodeDeletionTaskSnapshot, NodeSecretChange } from './node-app-types';
+import type { ConfigurationFormApp, NodeAppDeleteResult, NodeAppDetail, NodeConfigurationInput, NodeDeletionTaskSnapshot, NodeSecretChange } from './node-app-types';
 
 let handoffClipboard = Promise.resolve();
 type Draft = NodeConfigurationDraft;
@@ -31,14 +31,14 @@ function runtimeStateLabel(app: NodeAppDetail): string {
   return app.runRecovery?.state === 'orphaned' ? '遗留运行' : app.runRecovery?.state === 'unconfirmed' ? '运行待核对' : stateLabels[app.state];
 }
 
-function draftFrom(app: NodeAppDetail): Draft {
+export function draftFrom(app: ConfigurationFormApp): Draft {
   return {
     ordinary: Object.fromEntries(app.fields.filter((field) => !field.secret).map((field) => [field.name, Object.hasOwn(app.configuration.values, field.name) ? String(app.configuration.values[field.name]) : ''])),
     secrets: Object.fromEntries(app.fields.filter((field) => field.secret).map((field) => [field.name, { action: 'keep', value: '' }])),
   };
 }
 
-export function nodeConfigurationInput(app: NodeAppDetail, draft: Draft): NodeConfigurationInput {
+export function nodeConfigurationInput(app: ConfigurationFormApp, draft: Draft): NodeConfigurationInput {
   const values: NodeConfigurationInput['values'] = {};
   const secrets: Record<string, NodeSecretChange> = {};
   for (const field of app.fields) {

@@ -1,6 +1,6 @@
 # 熊猫小抽屉
 
-2026-11-01：[统一 panda.json 方案](docs/unified-project-manifest-proposal.md)前两批已实施。网页和 Node 均使用同一根清单及原目录；网页原目录 npm 构建、本地／Git 接入及数据惰性创建已接入。平台版本／取回、ZIP 导入导出、复制和基本信息编辑已移除。当前格式见[项目格式](docs/panda-project-format.md)，验证见[实施记录](docs/unified-project-manifest-implementation.md)。独立网页地址和全局 SDK 脚本尚未交付；以下带日期的旧能力记录不是现行接口说明。
+2026-11-01：[统一 panda.json 方案](docs/unified-project-manifest-proposal.md)前三批按确认方案实施。网页和 Node 均使用同一根清单及原目录；网页原目录 npm 构建、本地／Git 接入及数据惰性创建已接入。平台版本／取回、ZIP 导入导出、复制和基本信息编辑已移除。当前格式见[项目格式](docs/panda-project-format.md)，验证见[实施记录](docs/unified-project-manifest-implementation.md)。网页独立固定地址、全局 window.panda SDK 和公开配置路径见当前格式；以下带日期的旧能力记录不是现行接口说明。
 
 2026-10-29 第一批：[Node 单目录运行](docs/node-single-directory.md)移除安装副本、应用修改与平台 Node Git／取回。Git 项目发布到项目文件夹后只安装生产依赖，不执行仓库脚本；有效清单（含 app.id）在重启时接受。旧 v2 项目提示删除后重新添加，完整删除能力保留。下方早期安装／更新说明已被本规则覆盖。
 
@@ -104,7 +104,7 @@ Git 使用独立的 `git-toolchain.json`：默认平台受管、显式本机路�
 | `apps/desktop` | 平台管理界面与 Tauri 宿主 |
 | `crates/platform-core` | 开发隔离、SQLite、本地服务、会话/附件、构建、备份恢复、项目生命周期及工作区迁移 |
 | `crates/platform-cli` | 只连接固定开发环境的原生 CLI |
-| `packages/sdk` | 内部 SDK `@local-projects/sdk 0.1.0`、类型、说明与固定 tarball |
+| `packages/sdk` | 平台全局 SDK API 1、共享类型及可选 npm 薄封装 |
 | `templates/react` | `react-ts-vite-0.1.4` 标准模板、组件、锁文件和项目自带 SDK；打包时生成匹配的初始网页 |
 | `skills/local-projects-app` | 外部 AI 接管业务项目的 skill，随新项目保存 |
 | `docs` | 已确认架构、计划及实际验证记录，包括 [M5 权限拒绝、设备释放与断网恢复实测](docs/m5-resilience-real-verification.md) |

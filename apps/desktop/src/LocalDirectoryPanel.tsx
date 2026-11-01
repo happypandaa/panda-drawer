@@ -32,7 +32,7 @@ function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDire
 
 function checkedAddedApp(value: AddedApp, sourcePath: string): AddedApp {
   if (value?.runtime === 'web') {
-    if (!value.id || !value.name || value.projectRoot !== sourcePath || value.ownership !== 'user' || !['ready', 'needsBuild', 'entryMissing'].includes(value.state)) throw new Error('网页项目添加结果尚不能确认，请重新检查登记状态。');
+    if (!value.id || !value.name || value.projectRoot !== sourcePath || value.ownership !== 'user' || !['ready', 'needsBuild', 'entryMissing', 'needsConfiguration'].includes(value.state)) throw new Error('网页项目添加结果尚不能确认，请重新检查登记状态。');
     return value;
   }
   if (!value || !value.id || value.sourcePath !== sourcePath || value.runtime !== 'node' || !Array.isArray(value.fields) || !value.configuration || typeof value.configuration.canStart !== 'boolean') throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');

@@ -54,7 +54,7 @@ async fn unconsumed_and_dropped_body_does_not_hide_a_blocked_real_file() {
     let receive = f
         .proxy
         .owner
-        .request(move |lease| static_file(state, false, vec![], lease))
+        .request(move |lease| static_file(state, false, vec![], false, lease))
         .unwrap();
     let body = receive.await.unwrap();
     ready.await.unwrap();
@@ -107,7 +107,7 @@ async fn accepted_request_transfers_its_lease_to_io_derived_after_seal() {
         .request(move |lease| async move {
             let _ = entered.send(());
             blocked.await.unwrap();
-            static_file(state, false, vec![], lease).await
+            static_file(state, false, vec![], false, lease).await
         })
         .unwrap();
     ready.await.unwrap();

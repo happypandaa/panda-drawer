@@ -21,8 +21,7 @@ async fn fixture() -> Fixture {
         )
         .unwrap(),
     );
-    let tasks =
-        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1".into()).unwrap();
+    let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
     let apps = Arc::new(
         NodeApps::new(
             paths.data_root().into(),
@@ -501,12 +500,7 @@ async fn large_display_icon_caches_do_not_overflow_journal_intent_or_restarted_t
         .get("iconDataUrl")
         .is_none());
     f.tasks.shutdown().await;
-    let restarted_tasks = BuildManager::new(
-        f.paths.clone(),
-        f.store.clone(),
-        "http://127.0.0.1:1".into(),
-    )
-    .unwrap();
+    let restarted_tasks = BuildManager::new(f.paths.clone(), f.store.clone()).unwrap();
     let restarted = NodeGitImportManager::new(
         f.paths.clone(),
         f.store.clone(),

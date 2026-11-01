@@ -52,7 +52,7 @@ export async function prepareDesktopWindows({ release = false, offline = false }
     outputDir: path.join(resources, 'development-git'),
     cacheDir: path.join(tools, 'development-git-cache-windows-x64'), offline,
   });
-  const filter = source => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests'].includes(part));
+  const filter = source => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests', 'releases', 'vendor'].includes(part));
   for (const [source, destination] of [
     ['packages/sdk', 'sdk'], ['templates/react', 'template'],
     ['skills/local-projects-app', 'skills/local-projects-app'],

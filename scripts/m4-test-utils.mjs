@@ -73,17 +73,24 @@ export function expectFailure(args, input, records) {
 export const projectIdOf = task => { const data = task.result ?? task; const value = data.projectId ?? data.project?.id ?? data.id; assert.equal(typeof value, 'string', JSON.stringify(task)); return value; };
 export async function session(current, id) {
   const launch = cli(['project', 'url', '--project', id]);
-  const ticket = new URLSearchParams(new URL(launch.launchUrl).hash.slice(1)).get('ticket'); assert.ok(ticket);
-  const response = await fetch(`${current.baseUrl}/_platform/session`, { method: 'POST', headers: { Origin: current.baseUrl, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
-  assert.equal(response.status, 200, await response.clone().text());
-  const cookie = response.headers.get('set-cookie').split(';')[0];
-  const page = await fetch(launch.url, { headers: { Cookie: cookie } }); assert.equal(page.status, 200, await page.clone().text());
-  const html = await page.text(); const epoch = /name="platform-document-epoch" content="([^"]+)"/.exec(html)?.[1]; assert.ok(epoch);
-  return { id, cookie, epoch, html, url: launch.url };
+  const origin = new URL(launch.url).origin;
+  assert.notEqual(origin, current.baseUrl, 'Application and management listeners are separate');
+  const response = await fetch(launch.launchUrl, { redirect: 'manual' });
+  assert.equal(response.status, 303, await response.clone().text());
+  const setCookie = response.headers.get('set-cookie');
+  assert.match(setCookie, /HttpOnly/i);assert.match(setCookie, /SameSite=Strict/i);
+  const cookie = setCookie.split(';')[0];
+  const page = await fetch(launch.url, { headers: { Cookie: cookie } });assert.equal(page.status,200,await page.clone().text());
+  const html=await page.text();
+  const context=await fetch(`${origin}/_platform/api/v1/context`, { headers: { Cookie: cookie } });
+  const wire=await context.json();assert.equal(wire.ok,true,JSON.stringify(wire));
+  const epoch=wire.data.documentEpoch;assert.ok(epoch);
+  return { id, cookie, epoch, html, url: launch.url, origin };
 }
 export function business(current, document, route, method = 'GET', body) {
   const json = body !== undefined && !(body instanceof Uint8Array);
-  return fetch(`${current.baseUrl}/p/${document.id}/api/v1/${route}`, { method, headers: { Cookie: document.cookie, Origin: current.baseUrl, 'X-Platform-Document-Epoch': document.epoch, ...(json ? { 'Content-Type': 'application/json' } : {}) }, body: body === undefined ? undefined : json ? JSON.stringify(body) : body });
+  const origin = new URL(document.url).origin;
+  return fetch(`${origin}/_platform/api/v1/${route}`, { method, headers: { Cookie: document.cookie, Origin: origin, 'X-Platform-Document-Epoch': document.epoch, ...(json ? { 'Content-Type': 'application/json' } : {}) }, body: body === undefined ? undefined : json ? JSON.stringify(body) : body });
 }
 export async function expectBusinessError(response, code) { const wire = await response.json(); assert.equal(wire.ok, false, JSON.stringify(wire)); assert.equal(wire.error.code, code, JSON.stringify(wire)); }
 export async function saveReport(name, value, privateFile = false) { const path = join(artifactRoot, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, JSON.stringify(value, null, 2), { mode: privateFile ? 0o600 : 0o644 }); return path; }

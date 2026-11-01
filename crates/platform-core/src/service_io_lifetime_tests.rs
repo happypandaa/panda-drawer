@@ -206,6 +206,7 @@ async fn a_closed_window_does_not_release_an_unpolled_direct_file_producer() {
     tokio::time::timeout(Duration::from_secs(3), registry.drain())
         .await
         .unwrap();
+    service.handle().close_web(&project.id).await.unwrap();
     let exclusive = gate.try_write().unwrap();
     assert!(
         source.is_file(),

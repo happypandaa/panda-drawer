@@ -21,7 +21,7 @@ description: 只读评估本地目录能否接入熊猫小抽屉；提供依据�
 
 网页不强制 SDK、React 或构建。platform.sdkApiVersion=1 可启用当前 SQL／附件接口。development 可声明 sourceDir（默认点）和 build:{kind:npm,script:build}，执行的脚本名以声明为准。本地添加不执行脚本；缺入口但有构建声明可添加并显示需要构建，没有声明显示入口缺失。Git 添加缺入口时必须在执行 npm ci 和脚本前得到具体构建确认。只读评估本身不授予安装或构建权限。
 
-网页现阶段仍使用 /p/<实例ID>/ 与现有 SDK 包；不要改为后续 /_platform/sdk.js。构建在原目录执行，不保存旧产物或撤销脚本改动；修改、构建前关闭应用窗口。
+网页在独立固定 origin 根路径运行，普通脚本 /_platform/sdk.js 提供 window.panda，API 固定 /_platform/api/v1/，不从 URL 解析实例 ID。类型声明随平台并由交接给出实际路径，npm 包仅为可选薄封装。公开配置用 /_platform/config.json 或 panda.config()，返回类型化对象，无需启用数据库 SDK；网页配置禁止 secret。构建在原目录执行，不保存旧产物或撤销脚本改动；修改、构建前关闭应用窗口。
 
 ### Node 应用
 

@@ -139,16 +139,13 @@ impl RuntimePolicy {
     }
 
     pub fn content_security_policy(&self) -> String {
-        let append = |entries: &[NetworkRequirement]| {
-            entries
-                .iter()
-                .map(|entry| format!(" {}", entry.origin))
-                .collect::<String>()
-        };
-        format!(
-            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{}; media-src 'self' blob:{}; connect-src 'self'{}; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
-            append(&self.network.images), append(&self.network.media), append(&self.network.connect)
-        )
+        let connect = self
+            .network
+            .connect
+            .iter()
+            .map(|entry| format!(" {}", entry.origin))
+            .collect::<String>();
+        format!("default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; worker-src 'self' blob:; connect-src 'self'{connect}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
     }
 
     pub fn permissions_policy(&self) -> String {
@@ -231,14 +228,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn omitted_requirements_are_local_only_and_devices_denied() {
+    fn omitted_requirements_keep_connect_local_and_devices_denied() {
         for value in [Value::Null, json!({}), json!({"network":{},"devices":{}})] {
             let policy = RuntimePolicy::parse(&value).unwrap();
             assert_eq!(policy, RuntimePolicy::default());
             assert!(policy
                 .permissions_policy()
                 .contains("camera=(), microphone=()"));
-            assert!(!policy.content_security_policy().contains("https:"));
+            assert!(policy
+                .content_security_policy()
+                .contains("connect-src 'self';"));
+            assert!(policy
+                .content_security_policy()
+                .contains("script-src 'self' 'unsafe-inline' 'unsafe-eval' https:"));
             assert_eq!(
                 policy.requirements(),
                 json!({"network":{"connect":[],"images":[],"media":[]},"devices":{}})
@@ -247,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn network_groups_do_not_grant_other_resource_types() {
+    fn connect_origins_are_exact_while_declared_public_resource_policy_is_relaxed() {
         let entry =
             |origin| json!({"origin":origin,"purpose":" public lookup ","dataSent":"search text"});
         let policy = RuntimePolicy::parse(&json!({"network":{
@@ -266,10 +268,10 @@ mod tests {
             .any(|line| line.trim() == "connect-src 'self' https://api.example.com"));
         assert!(directives
             .iter()
-            .any(|line| line.trim() == "img-src 'self' data: blob: https://images.example.com"));
+            .any(|line| line.trim() == "img-src 'self' data: blob: https:"));
         assert!(directives
             .iter()
-            .any(|line| line.trim() == "media-src 'self' blob: https://media.example.com:8443"));
+            .any(|line| line.trim() == "media-src 'self' blob: https:"));
         assert_eq!(policy.network.connect[0].purpose, "public lookup");
         assert!(policy
             .permissions_policy()

@@ -17,7 +17,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{any, get, post},
+    routing::{any, get},
     Json, Router,
 };
 use futures_util::{stream, StreamExt};
@@ -43,6 +43,9 @@ use tokio::{
 };
 use tower::ServiceExt;
 use uuid::Uuid;
+
+#[path = "service/web_runtime.rs"]
+mod web_runtime;
 
 const JSON_MAX: usize = 2_000_000;
 const FILE_MAX: u64 = 256_000_000;
@@ -117,11 +120,45 @@ struct HttpState {
     sessions: Mutex<HashMap<String, Session>>,
     events: broadcast::Sender<Change>,
     uploads: Arc<Semaphore>,
-    project_uploads: Mutex<HashMap<String, Arc<Semaphore>>>,
+    project_uploads: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    web_runtime: Option<Arc<web_runtime::WebRuntimeManager>>,
     stopping: AtomicBool,
     active: AtomicUsize,
     drained: Notify,
     stop: watch::Sender<bool>,
+}
+impl HttpState {
+    fn web_child(parent: &Arc<Self>, origin: &str) -> Self {
+        let mut info = parent.info.clone();
+        info.base_url = origin.into();
+        Self {
+            paths: parent.paths.clone(),
+            io_lifetime: crate::io_lifetime::IoLifetime::default(),
+            shared: parent.shared.clone(),
+            lifecycle: parent.lifecycle.clone(),
+            storage: parent.storage.clone(),
+            info,
+            token: secret(),
+            expected_host: origin.trim_start_matches("http://").into(),
+            store: parent.store.clone(),
+            builds: parent.builds.clone(),
+            git_environment: parent.git_environment.clone(),
+            git_remote: parent.git_remote.clone(),
+            node_git_import: parent.node_git_import.clone(),
+            maintenance: parent.maintenance.clone(),
+            resources: parent.resources.clone(),
+            tickets: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            events: parent.events.clone(),
+            uploads: parent.uploads.clone(),
+            project_uploads: parent.project_uploads.clone(),
+            web_runtime: None,
+            stopping: AtomicBool::new(false),
+            active: AtomicUsize::new(0),
+            drained: Notify::new(),
+            stop: watch::channel(false).0,
+        }
+    }
 }
 struct RuntimeSwitch {
     native_startup: StdRwLock<Option<ApiError>>,
@@ -166,7 +203,7 @@ pub struct RuntimeHandle {
 /// Keeps the resolved project in this workspace while a native editor is opened.
 /// This lease ends after dispatch; it does not track subsequent editing in the AI.
 pub struct WebWindowLease {
-    _task: crate::projects::ProjectTaskLease,
+    _token: web_runtime::WindowToken,
 }
 
 pub struct EditorHandoffLease {
@@ -298,13 +335,40 @@ impl RuntimeHandle {
         self.current().builds.clone()
     }
     pub async fn launch(&self, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
-        launch(&self.current(), id)
+        launch(&self.current(), id).await
     }
     pub async fn launch_window(
         &self,
         id: &str,
     ) -> std::result::Result<(LaunchInfo, Option<WebWindowLease>), ApiError> {
-        launch_inner(&self.current(), id, true)
+        launch_inner(&self.current(), id, true).await
+    }
+    pub fn web_status(&self, id: &str) -> Value {
+        self.current()
+            .web_runtime
+            .as_ref()
+            .map(|manager| manager.status(id))
+            .unwrap_or_else(|| json!({"state":"closed","resourceClosed":true}))
+    }
+    pub async fn close_web(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        match &state.web_runtime {
+            Some(manager) => manager.close(id).await,
+            None => Ok(json!({"state":"closed","resourceClosed":true})),
+        }
+    }
+    pub async fn web_configuration(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().store.web_configuration(id)?))
+    }
+    pub async fn save_web_configuration(
+        &self,
+        id: &str,
+        input: Value,
+    ) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self.current().store.save_web_configuration(
+            id,
+            serde_json::from_value(input)?
+        )?))
     }
     pub fn info(&self) -> BootstrapInfo {
         self.current().info.clone()
@@ -321,6 +385,7 @@ impl RuntimeHandle {
             }
         }
         let mut value = json!(info);
+        value["webRuntime"] = self.web_status(id);
         value["maintenance"] = self.current().maintenance.status(id)?;
         if value["maintenance"]["mode"] == "maintenance" {
             value["state"] = json!(if value["maintenance"]["recoveryRequired"] == true {
@@ -441,24 +506,12 @@ impl RuntimeHandle {
         Ok(())
     }
     pub fn device_permission_declared(&self, id: &str, device: &str) -> bool {
-        let state = self.current();
-        let Ok(project) = state.store.project(id) else {
-            return false;
-        };
-        if project.validate_epoch(None).is_err() {
-            return false;
-        }
-        let Ok(policy) = crate::runtime_policy::RuntimePolicy::parse(&json!(
-            project.manifest.runtime_requirements
-        )) else {
-            return false;
-        };
-        match device {
-            "camera" => policy.devices().camera.is_some(),
-            "microphone" => policy.devices().microphone.is_some(),
-            _ => false,
-        }
+        self.current()
+            .web_runtime
+            .as_ref()
+            .is_some_and(|manager| manager.device_declared(id, device))
     }
+
     pub async fn project_location(
         &self,
         id: &str,
@@ -979,7 +1032,7 @@ impl RuntimeService {
         self.shared.snapshot().store.clone()
     }
     pub async fn launch(&self, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
-        launch(&self.shared.snapshot(), id)
+        launch(&self.shared.snapshot(), id).await
     }
     pub fn shutdown_status(&self) -> crate::shutdown::ShutdownReport {
         self.shutdown.status()
@@ -1005,11 +1058,6 @@ fn runtime_router(state: Arc<HttpState>) -> Router {
         .route("/healthz", get(health))
         .route("/api/v1/runtime", get(runtime))
         .route("/api/v1/{*tail}", any(management))
-        .route("/_platform/connect", get(connect_page))
-        .route("/_platform/session", post(exchange))
-        .route("/p/{id}/api/v1/{*tail}", any(project_api))
-        .route("/p/{id}/", get(project_entry))
-        .route("/p/{id}/{*tail}", get(project_static))
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(state.clone(), validate_host))
         .with_state(state)
@@ -1075,7 +1123,6 @@ fn make_state(
     let builds = BuildManager::with_managed_node(
         paths.clone(),
         store.clone(),
-        info.base_url.clone(),
         resources
             .as_ref()
             .map(|resources| resources.development_node_root()),
@@ -1161,12 +1208,25 @@ fn make_state(
         sessions: Mutex::new(HashMap::new()),
         events,
         uploads: Arc::new(Semaphore::new(2)),
-        project_uploads: Mutex::new(HashMap::new()),
+        project_uploads: Arc::new(Mutex::new(HashMap::new())),
+        web_runtime: Some(web_runtime::WebRuntimeManager::new()),
         stopping: AtomicBool::new(false),
         active: AtomicUsize::new(0),
         drained: Notify::new(),
         stop,
     });
+    if let Some(manager) = &state.web_runtime {
+        let runtime = Arc::downgrade(manager);
+        cleanup.set_web_close(Arc::new(move |id| {
+            let runtime = runtime.clone();
+            Box::pin(async move {
+                if let Some(runtime) = runtime.upgrade() {
+                    runtime.close(&id).await?;
+                }
+                Ok(())
+            })
+        }));
+    }
     let removed_state = Arc::downgrade(&state);
     state.store.on_project_identity_removed(Arc::new(move |id| {
         if let Some(state) = removed_state.upgrade() {
@@ -1182,6 +1242,9 @@ fn make_state(
                 .retain(|_, ticket| ticket.project_id != id);
             state.project_uploads.lock().unwrap().remove(id);
             state.node_git_import.forget_deleted_project(id);
+            if let Some(manager) = &state.web_runtime {
+                manager.forget(id);
+            }
         }
     }));
     for mut receiver in [state.maintenance.subscribe(), state.lifecycle.subscribe()] {
@@ -1249,76 +1312,19 @@ fn validate_entry_format(path: &str) -> std::result::Result<(), ApiError> {
         ))
     }
 }
-fn launch(state: &HttpState, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
-    launch_inner(state, id, false).map(|(info, _)| info)
+async fn launch(state: &Arc<HttpState>, id: &str) -> std::result::Result<LaunchInfo, ApiError> {
+    launch_inner(state, id, false).await.map(|(info, _)| info)
 }
-fn launch_inner(
-    state: &HttpState,
+async fn launch_inner(
+    state: &Arc<HttpState>,
     id: &str,
     window: bool,
 ) -> std::result::Result<(LaunchInfo, Option<WebWindowLease>), ApiError> {
-    if state.stopping.load(Ordering::SeqCst) {
-        return Err(ApiError::new(
-            "SERVICE_STOPPING",
-            "Platform is shutting down",
-        ));
-    }
-    let project = state.store.project(id)?;
-    project.validate_epoch(Some(&project.document_epoch))?;
-    let window_lease = if window {
-        Some(WebWindowLease {
-            _task: state.store.reserve_web_open(id)?,
-        })
-    } else {
-        None
-    };
-    validate_entry_format(&project.manifest.web.entry)?;
-    project
-        .manifest
-        .resolve_web_entry(&project.root)
-        .map_err(|error| ApiError::new("WEB_ENTRY_MISSING", error.to_string()))?;
-    crate::web_files::open(
-        &project.root,
-        &project.manifest,
-        &project.manifest.web.entry,
-    )?;
-    let ticket = secret();
-    state
-        .store
-        .with_registered_epoch(id, &project.document_epoch, || {
-            let mut tickets = state.tickets.lock().unwrap();
-            tickets.retain(|_, value| value.expires > Instant::now());
-            if tickets.len() >= 1024 {
-                return Err(ApiError::new(
-                    "SERVICE_BUSY",
-                    "Too many unconsumed launch tickets",
-                ));
-            }
-            tickets.insert(
-                ticket.clone(),
-                Ticket {
-                    project: project.clone(),
-                    project_id: id.into(),
-                    epoch: project.document_epoch.clone(),
-                    expires: Instant::now() + Duration::from_secs(60),
-                },
-            );
-            Ok(())
-        })?
-        .ok_or_else(|| {
-            ApiError::new("PROJECT_REMOVED", "The launch project is no longer active")
-        })?;
-    Ok((
-        LaunchInfo {
-            project_id: id.into(),
-            url: format!("{}/p/{id}/", state.info.base_url),
-            launch_url: format!("{}/_platform/connect#ticket={ticket}", state.info.base_url),
-            expires_at: millis() + 60000,
-            instance_id: state.info.instance_id.clone(),
-            document_epoch: project.document_epoch,
-        },
-        window_lease,
-    ))
+    let manager = state
+        .web_runtime
+        .as_ref()
+        .ok_or_else(|| ApiError::new("WEB_RUNTIME_UNAVAILABLE", "网页服务管理器不存在。"))?;
+    manager.open(state.clone(), id, window).await
 }
 async fn bind_loopback(preferred: Option<u16>) -> Result<TcpListener> {
     if let Some(port) = preferred {
@@ -1429,6 +1435,10 @@ fn status(error: &ApiError) -> StatusCode {
         | "PROJECT_MAINTENANCE"
         | "MAINTENANCE_ID_MISMATCH"
         | "RECOVERY_REQUIRED"
+        | "APP_PORT_IN_USE"
+        | "WEB_CONFIGURATION_REQUIRED"
+        | "WEB_RUNTIME_CLOSING"
+        | "WEB_RUNTIME_CLOSE_FAILED"
         | "BUILD_REQUIRED" => StatusCode::CONFLICT,
         "SERVICE_BUSY" | "SERVICE_STOPPING" | "SQL_QUEUE_FULL" | "SQL_BUSY" => {
             StatusCode::SERVICE_UNAVAILABLE
@@ -1816,6 +1826,22 @@ async fn management(
                     .await
             }
             (Method::GET, ["projects", id]) => handle.project(id).await,
+            (Method::GET, ["projects", id, "configuration"]) => handle.web_configuration(id).await,
+            (Method::PUT, ["projects", id, "configuration"]) => {
+                handle
+                    .save_web_configuration(id, input::<Value>(request).await?)
+                    .await
+            }
+            (Method::GET, ["projects", id, "web-runtime"]) => Ok(handle.web_status(id)),
+            (Method::POST, ["projects", id, "web-runtime", "close"]) => {
+                if optional_json(request).await? != json!({}) {
+                    return Err(ApiError::new(
+                        "INVALID_INPUT",
+                        "关闭网页服务不接受额外参数。",
+                    ));
+                }
+                handle.close_web(id).await
+            }
             (Method::POST, ["projects", id, "builds"]) => {
                 handle
                     .build_project_with_input(id, optional_json(request).await?)
@@ -1880,7 +1906,7 @@ async fn management(
                 }
                 Ok(json!(value))
             }
-            (Method::POST, ["projects", id, "launch"]) => Ok(json!(launch(&state, id)?)),
+            (Method::POST, ["projects", id, "launch"]) => Ok(json!(launch(&state, id).await?)),
             (Method::POST, ["projects", id, "refresh"]) => {
                 let input: crate::maintenance::OperationInput =
                     serde_json::from_value(optional_json(request).await?)?;
@@ -1984,6 +2010,16 @@ fn epoch<'a>(
     })
 }
 fn query(request: &Request) -> std::result::Result<HashMap<String, String>, ApiError> {
+    if url::form_urlencoded::parse(request.uri().query().unwrap_or_default().as_bytes())
+        .filter(|(name, _)| name == "documentEpoch")
+        .count()
+        > 1
+    {
+        return Err(ApiError::new(
+            "PROJECT_RELOAD_REQUIRED",
+            "Provide one document epoch",
+        ));
+    }
     axum::extract::Query::<HashMap<String, String>>::try_from_uri(request.uri())
         .map(|q| q.0)
         .map_err(|_| ApiError::new("INVALID_INPUT", "Invalid query parameters"))
@@ -2004,7 +2040,15 @@ async fn project_api(
         )?;
         project.require_sdk()?;
         let query = query(&request)?;
-        let epoch = epoch(request.headers(), &query)?.to_string();
+        let epoch = if method == Method::GET
+            && tail == "context"
+            && !request.headers().contains_key("x-platform-document-epoch")
+            && !query.contains_key("documentEpoch")
+        {
+            project.document_epoch.clone()
+        } else {
+            epoch(request.headers(), &query)?.to_string()
+        };
         if !matches!(tail.as_str(), "context" | "events") {
             project.validate_epoch(Some(&epoch))?;
         }
@@ -2063,7 +2107,7 @@ async fn project_api(
     }
     let outcome:std::result::Result<Value,ApiError>=async {
         match(method,tail.as_str()) {
-            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
+            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
             (Method::GET,"db/schema")=>Ok(json!(state.store.schema_snapshot(&project,Some(&epoch),SqlCaller::Browser).await?)),
             (Method::POST,"db/execute")=>{let value=state.store.execute_snapshot(&project,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
             (Method::POST,"db/transaction")=>{let value=state.store.transaction_snapshot(&project,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
@@ -2072,95 +2116,6 @@ async fn project_api(
         }
     }.await;
     result(outcome, Some(&id), &rid)
-}
-async fn connect_page(State(_state): State<Arc<HttpState>>) -> Response {
-    let nonce = secret();
-    let html = format!(
-        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>连接项目</title><style nonce="{nonce}">body{{font:16px system-ui;max-width:38rem;margin:15vh auto;padding:2rem;line-height:1.8;color:#202020}}h1{{font-size:24px}}p{{color:#666}}</style></head><body><h1>正在连接项目</h1><p id="message">正在建立本机项目会话…</p><script nonce="{nonce}">const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket'); history.replaceState(null,'',location.pathname); (async()=>{{if(!ticket)throw new Error('请从平台重新打开项目，或让 AI 获取新的项目入口。'); const response=await fetch('/_platform/session',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ticket}})}}); const envelope=await response.json();if(!response.ok||!envelope.ok)throw new Error(envelope.error?.message||'连接失败，请重新打开项目。'); location.replace(envelope.data.url);}})().catch(error=>{{document.querySelector('h1').textContent='需要重新连接';document.querySelector('#message').textContent=error.message;}});</script></body></html>"#
-    );
-    let mut response = ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response();
-    response.headers_mut().insert("content-security-policy",format!("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'").parse().unwrap());
-    response
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Exchange {
-    ticket: String,
-}
-async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Response {
-    let rid = Uuid::new_v4().to_string();
-    let outcome: std::result::Result<_, ApiError> = async {
-        origin(&state, request.headers(), true)?;
-        let input = input::<Exchange>(request).await?;
-        let ticket = state
-            .tickets
-            .lock()
-            .unwrap()
-            .remove(&input.ticket)
-            .filter(|v| v.expires > Instant::now())
-            .ok_or_else(|| {
-                ApiError::new(
-                    "INVALID_TICKET",
-                    "Launch ticket expired or was already used; reopen the project",
-                )
-            })?;
-        if state.store.registered_epoch(&ticket.project_id)?.as_deref()
-            != Some(ticket.epoch.as_str())
-        {
-            return Err(ApiError::new(
-                "INVALID_TICKET",
-                "The launch project identity is no longer active; reopen it from the platform",
-            ));
-        }
-        let project = ticket.project.clone();
-        project.validate_epoch(Some(&ticket.epoch))?;
-        let token = secret();
-        state
-            .store
-            .with_registered_epoch(&ticket.project_id, &ticket.epoch, || {
-                let mut sessions = state.sessions.lock().unwrap();
-                if sessions.len() >= 4096 {
-                    return Err(ApiError::new(
-                        "SERVICE_BUSY",
-                        "Too many project sessions; restart the platform",
-                    ));
-                }
-                sessions.insert(
-                    token.clone(),
-                    Session {
-                        project: project.clone(),
-                        project_id: ticket.project_id.clone(),
-                        document_epoch: ticket.epoch.clone(),
-                    },
-                );
-                Ok(())
-            })?
-            .ok_or_else(|| {
-                ApiError::new(
-                    "INVALID_TICKET",
-                    "The launch project identity is no longer active",
-                )
-            })?;
-        Ok((ticket.project_id, token))
-    }
-    .await;
-    match outcome {
-        Err(error) => result::<Value>(Err(error), None, &rid),
-        Ok((id, token)) => {
-            let path = format!("/p/{id}/");
-            let mut response = result(Ok(json!({"projectId":id,"url":path})), Some(&id), &rid);
-            response.headers_mut().insert(
-                header::SET_COOKIE,
-                format!(
-                    "{}={token}; Path=/p/{id}/; HttpOnly; SameSite=Strict",
-                    cookie_name(&id)
-                )
-                .parse()
-                .unwrap(),
-            );
-            response
-        }
-    }
 }
 #[cfg(test)]
 fn network_origins(requirements: &Value, kind: &str) -> std::result::Result<String, ApiError> {
@@ -2230,26 +2185,6 @@ fn policy_fingerprint(requirements: &impl Serialize) -> String {
         sha2::Sha256::digest(serde_json::to_vec(requirements).unwrap_or_default())
     )
 }
-async fn project_entry(
-    State(state): State<Arc<HttpState>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    serve_project(state, id, None, headers).await
-}
-async fn project_static(
-    State(state): State<Arc<HttpState>>,
-    Path((id, tail)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    if tail == "api" || tail.starts_with("api/") {
-        return failure(
-            ApiError::new("NOT_FOUND", "Unknown project API route"),
-            Some(&id),
-        );
-    }
-    serve_project(state, id, Some(tail), headers).await
-}
 async fn serve_project(
     state: Arc<HttpState>,
     id: String,
@@ -2271,7 +2206,7 @@ async fn serve_project(
         let relative = path.unwrap_or_else(|| project.manifest.web.entry.clone());
         let path = relative.as_str();
         let mut file = crate::web_files::open(&project.root, &project.manifest, path)?;
-        let (mut csp, permissions) = policy(&project)?;
+        let (csp, permissions) = policy(&project)?;
         let mut response = if is_html(path) {
             if file.metadata().map_err(files::error)?.len() > ENTRY_MAX {
                 return Err(ApiError::new(
@@ -2299,12 +2234,13 @@ async fn serve_project(
                 .replace('<', "&lt;")
                 .replace('>', "&gt;");
             let nonce=secret();
-            csp=csp.replace("script-src 'self'",&format!("script-src 'self' 'nonce-{nonce}'"));
+
             let meta = format!(
-                "<meta name=\"platform-document-epoch\" content=\"{}\"><meta name=\"platform-runtime-policy\" content=\"{}\"><script nonce=\"{nonce}\">{}</script>",
+                "<meta name=\"platform-project-id\" content=\"{}\"><meta name=\"platform-document-epoch\" content=\"{}\"><meta name=\"platform-runtime-policy\" content=\"{}\"><script nonce=\"{nonce}\">{}</script>",
+                project.id,
                 safe_epoch,
                 policy_fingerprint(&project.manifest.runtime_requirements),
-                crate::runtime_notice::script()
+                if project.manifest.platform.is_some() { crate::runtime_notice::script() } else { "" }
             );
             let lower = html.to_ascii_lowercase();
             let position = lower
@@ -2758,15 +2694,8 @@ mod tests {
     }
     pub(super) async fn connect(service: &RuntimeService, client: &Client, id: &str) -> String {
         let launch = service.launch(id).await.unwrap();
-        let ticket = launch.launch_url.split("#ticket=").nth(1).unwrap();
-        let response = client
-            .post(format!("{}/_platform/session", service.info().base_url))
-            .header("origin", &service.info().base_url)
-            .json(&json!({"ticket":ticket}))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        let response = client.get(&launch.launch_url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let cookie = response.headers()[header::SET_COOKIE]
             .to_str()
             .unwrap()
@@ -2774,6 +2703,19 @@ mod tests {
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Strict"));
         cookie.split(';').next().unwrap().into()
+    }
+    pub(super) fn app_base(service: &RuntimeService, id: &str) -> String {
+        service.store().web_address(id).unwrap().origin()
+    }
+    pub(super) async fn app_state(service: &RuntimeService, id: &str) -> Arc<HttpState> {
+        service
+            .shared
+            .snapshot()
+            .web_runtime
+            .as_ref()
+            .unwrap()
+            .fixture_http(id)
+            .await
     }
     async fn sql(
         service: &RuntimeService,
@@ -2891,11 +2833,15 @@ mod tests {
             .is_success());
         }
         let cookie = connect(&service, &client, &a.id).await;
-        let base = &service.info().base_url;
+        let _ = connect(&service, &client, &b.id).await;
+        let base = &app_base(&service, &a.id);
         let body = json!({"sql":"SELECT value FROM records"});
         let request = || {
             client
-                .post(format!("{base}/p/{}/api/v1/db/execute", a.id))
+                .post(format!(
+                    "{}/_platform/api/v1/db/execute",
+                    app_base(&service, &a.id)
+                ))
                 .header("cookie", &cookie)
                 .header("origin", base)
                 .header("x-platform-document-epoch", &a.document_epoch)
@@ -2928,9 +2874,12 @@ mod tests {
             .unwrap();
         assert_eq!(old["error"]["code"], "PROJECT_RELOAD_REQUIRED");
         let wrong = client
-            .post(format!("{base}/p/{}/api/v1/db/execute", b.id))
+            .post(format!(
+                "{}/_platform/api/v1/db/execute",
+                app_base(&service, &b.id)
+            ))
             .header("cookie", &cookie)
-            .header("origin", base)
+            .header("origin", app_base(&service, &b.id))
             .header("x-platform-document-epoch", &b.document_epoch)
             .json(&body)
             .send()
@@ -2938,7 +2887,10 @@ mod tests {
             .unwrap();
         assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
         let no_origin = client
-            .post(format!("{base}/p/{}/api/v1/db/execute", a.id))
+            .post(format!(
+                "{}/_platform/api/v1/db/execute",
+                app_base(&service, &a.id)
+            ))
             .header("cookie", &cookie)
             .header("x-platform-document-epoch", &a.document_epoch)
             .json(&body)
@@ -2947,7 +2899,10 @@ mod tests {
             .unwrap();
         assert_eq!(no_origin.status(), StatusCode::FORBIDDEN);
         let context = client
-            .get(format!("{base}/p/{}/api/v1/context", a.id))
+            .get(format!(
+                "{}/_platform/api/v1/context",
+                app_base(&service, &a.id)
+            ))
             .header("cookie", &cookie)
             .header("x-platform-document-epoch", &a.document_epoch)
             .send()
@@ -2958,10 +2913,10 @@ mod tests {
             .unwrap();
         assert_eq!(context["data"]["projectId"], a.id);
         assert_eq!(context["data"]["limits"]["limitsStatus"], "internalTest");
-        assert!(context["data"].get("documentEpoch").is_none());
+        assert_eq!(context["data"]["documentEpoch"], a.document_epoch);
         assert!(context["data"].get("workspaceRoot").is_none());
         let html = client
-            .get(format!("{base}/p/{}/", a.id))
+            .get(format!("{}/", app_base(&service, &a.id)))
             .header("cookie", &cookie)
             .send()
             .await
@@ -2981,43 +2936,43 @@ mod tests {
         let (_temp, paths, service, client) = start().await;
         let project = create(&service, "A").await;
         let launch = service.launch(&project.id).await.unwrap();
-        let ticket = launch.launch_url.split("#ticket=").nth(1).unwrap();
-        let base = service.info().base_url.clone();
-        let exchange = || {
-            client
-                .post(format!("{base}/_platform/session"))
-                .header("origin", &base)
-                .json(&json!({"ticket":ticket}))
-        };
-        let first = exchange().send().await.unwrap();
-        assert_eq!(first.status(), StatusCode::OK);
+        let first = client.get(&launch.launch_url).send().await.unwrap();
+        assert_eq!(first.status(), StatusCode::SEE_OTHER);
         let cookie = first.headers()[header::SET_COOKIE]
             .to_str()
             .unwrap()
             .split(';')
             .next()
             .unwrap()
-            .to_string();
+            .to_owned();
         assert_eq!(
-            exchange().send().await.unwrap().status(),
+            client
+                .get(&launch.launch_url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
             StatusCode::UNAUTHORIZED
         );
         let expired = service.launch(&project.id).await.unwrap();
-        let expired_ticket = expired.launch_url.split("#ticket=").nth(1).unwrap();
-        service
-            .shared
-            .snapshot()
+        let token = url::Url::parse(&expired.launch_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .unwrap()
+            .1
+            .into_owned();
+        app_state(&service, &project.id)
+            .await
             .tickets
             .lock()
             .unwrap()
-            .get_mut(expired_ticket)
+            .get_mut(&token)
             .unwrap()
             .expires = Instant::now() - Duration::from_secs(1);
         assert_eq!(
             client
-                .post(format!("{base}/_platform/session"))
-                .header("origin", &base)
-                .json(&json!({"ticket":expired_ticket}))
+                .get(&expired.launch_url)
                 .send()
                 .await
                 .unwrap()
@@ -3025,24 +2980,20 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         let unused = service.launch(&project.id).await.unwrap();
-        let unused_ticket = unused
-            .launch_url
-            .split("#ticket=")
-            .nth(1)
-            .unwrap()
-            .to_string();
-        let instance = service.info().instance_id.clone();
+        let instance = service.info().instance_id;
+        let original_origin = app_base(&service, &project.id);
         service.shutdown().await.unwrap();
-        let lock = paths.acquire_lock().unwrap();
-        let restarted = RuntimeService::start(paths.clone(), lock).await.unwrap();
+        let restarted = RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+            .await
+            .unwrap();
         assert_ne!(restarted.info().instance_id, instance);
-        let base = &restarted.info().base_url;
-        let client = make_client();
+        let reopened = restarted.launch(&project.id).await.unwrap();
+        assert_eq!(reopened.url, format!("{original_origin}/"));
         assert_eq!(
             client
-                .get(format!("{base}/p/{}/api/v1/context", project.id))
+                .get(format!("{original_origin}/_platform/api/v1/context"))
                 .header("cookie", cookie)
-                .header("x-platform-document-epoch", project.document_epoch)
+                .header("x-platform-document-epoch", &project.document_epoch)
                 .send()
                 .await
                 .unwrap()
@@ -3051,9 +3002,7 @@ mod tests {
         );
         assert_eq!(
             client
-                .post(format!("{base}/_platform/session"))
-                .header("origin", base)
-                .json(&json!({"ticket":unused_ticket}))
+                .get(&unused.launch_url)
                 .send()
                 .await
                 .unwrap()
@@ -3162,33 +3111,26 @@ mod tests {
         let (_temp, paths, service, client) = start().await;
         let project = create(&service, "Disposable browser deletion identity").await;
         let cookie = connect(&service, &client, &project.id).await;
-        let events_response = client
+        let old_child = app_state(&service, &project.id).await;
+        let old_origin = app_base(&service, &project.id);
+        let response = client
             .get(format!(
-                "{}/p/{}/api/v1/events?documentEpoch={}",
-                service.info().base_url,
-                project.id,
+                "{old_origin}/_platform/api/v1/events?documentEpoch={}",
                 project.document_epoch
             ))
             .header("cookie", &cookie)
             .send()
             .await
             .unwrap();
-        assert_eq!(events_response.status(), StatusCode::OK);
-        let mut events = events_response.bytes_stream();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut events = response.bytes_stream();
         let unused = service.launch(&project.id).await.unwrap();
-        let ticket = unused
-            .launch_url
-            .split("#ticket=")
-            .nth(1)
-            .unwrap()
-            .to_owned();
-        let state = service.shared.snapshot();
-        state
+        let retained_handle = service.store().project(&project.id).unwrap();
+        old_child
             .project_uploads
             .lock()
             .unwrap()
             .insert(project.id.clone(), Arc::new(Semaphore::new(1)));
-        let retained_handle = service.store().project(&project.id).unwrap();
         let handle = service.handle();
         let task = handle
             .project_delete(
@@ -3212,84 +3154,41 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(deleted["status"], "succeeded", "{deleted}");
-        let removed_event = tokio::time::timeout(Duration::from_secs(2), async {
-            let mut received = String::new();
-            loop {
-                received.push_str(&String::from_utf8_lossy(
-                    &events.next().await.unwrap().unwrap(),
-                ));
-                if received.contains("\"removed\":true") {
-                    break received;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        assert!(!removed_event.contains("\"trashed\""));
+        let ended = tokio::time::timeout(Duration::from_secs(2), events.next())
+            .await
+            .unwrap();
+        assert!(ended.is_none() || ended.is_some_and(|chunk| chunk.is_err()));
         drop(events);
-
         assert_eq!(retained_handle.check().unwrap_err().code, "PROJECT_REMOVED");
-        assert!(state
-            .sessions
-            .lock()
-            .unwrap()
-            .values()
-            .all(|session| session.project_id != project.id));
-        assert!(state
-            .tickets
-            .lock()
-            .unwrap()
-            .values()
-            .all(|ticket| ticket.project_id != project.id));
-        assert!(!state
+        assert!(old_child.sessions.lock().unwrap().is_empty());
+        assert!(old_child.tickets.lock().unwrap().is_empty());
+        assert!(!old_child
             .project_uploads
             .lock()
             .unwrap()
             .contains_key(&project.id));
-        for kind in ["", "reservations", "retired", "deleting"] {
-            assert!(!paths
-                .workspace_root()
-                .join(".platform/project-state")
-                .join(kind)
-                .join(format!("{}.json", project.id))
-                .exists());
-        }
-        let base = service.info().base_url;
-        assert_eq!(
-            client
-                .post(format!("{base}/_platform/session"))
-                .header("origin", &base)
-                .json(&json!({"ticket":ticket}))
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            client
-                .get(format!("{base}/p/{}/api/v1/context", project.id))
-                .header("cookie", &cookie)
-                .header("x-platform-document-epoch", &project.document_epoch)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
+        assert!(!project.project_root.exists());
+        assert!(!paths
+            .data_root()
+            .join("web-apps")
+            .join(&project.id)
+            .exists());
+        assert!(client.get(&unused.launch_url).send().await.is_err());
         let recreated = create(&service, "Disposable browser deletion identity").await;
         assert_ne!(recreated.id, project.id);
-        assert_eq!(
-            client
-                .get(format!("{base}/p/{}/api/v1/context", recreated.id))
-                .header("cookie", cookie)
-                .header("x-platform-document-epoch", recreated.document_epoch)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
+        let _ = service.launch(&recreated.id).await.unwrap();
+        let stale = client
+            .get(format!(
+                "{}/_platform/api/v1/context",
+                app_base(&service, &recreated.id)
+            ))
+            .header("cookie", cookie)
+            .header("x-platform-document-epoch", &recreated.document_epoch)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+        assert!(!recreated.project_root.join("data").exists());
         service.shutdown().await.unwrap();
     }
     #[tokio::test]
@@ -3302,10 +3201,10 @@ mod tests {
             .join("web-apps")
             .join(&project.id)
             .join("registration.json");
+        let base = app_base(&service, &project.id);
         std::fs::remove_file(&registration).unwrap();
-        let base = service.info().base_url;
         let response = client
-            .get(format!("{base}/p/{}/api/v1/context", project.id))
+            .get(format!("{base}/_platform/api/v1/context"))
             .header("cookie", cookie)
             .header("x-platform-document-epoch", project.document_epoch)
             .send()
@@ -3416,8 +3315,11 @@ mod tests {
         let (_temp, _paths, service, client) = start().await;
         let project = create(&service, "Files").await;
         let cookie = connect(&service, &client, &project.id).await;
-        let base = &service.info().base_url;
-        let file_url = format!("{base}/p/{}/api/v1/file?path=notes/example.txt", project.id);
+        let base = &app_base(&service, &project.id);
+        let file_url = format!(
+            "{}/_platform/api/v1/file?path=notes/example.txt",
+            app_base(&service, &project.id)
+        );
         let put = || {
             client
                 .put(&file_url)
@@ -3476,7 +3378,7 @@ mod tests {
             "%2e%2e/panda.json",
         ] {
             let response = client
-                .get(format!("{base}/p/{}/{tail}", project.id))
+                .get(format!("{}/{tail}", app_base(&service, &project.id)))
                 .header("cookie", &cookie)
                 .send()
                 .await
@@ -3489,7 +3391,7 @@ mod tests {
         )
         .unwrap();
         assert!(!client
-            .get(format!("{base}/p/{}/leak", project.id))
+            .get(format!("{}/leak", app_base(&service, &project.id)))
             .header("cookie", &cookie)
             .send()
             .await
@@ -3498,8 +3400,8 @@ mod tests {
             .is_success());
         assert!(!client
             .put(format!(
-                "{base}/p/{}/api/v1/file?path=../escape",
-                project.id
+                "{}/_platform/api/v1/file?path=../escape",
+                app_base(&service, &project.id)
             ))
             .header("cookie", &cookie)
             .header("origin", base)
@@ -3511,7 +3413,10 @@ mod tests {
             .status()
             .is_success());
         let listing = client
-            .get(format!("{base}/p/{}/api/v1/files", project.id))
+            .get(format!(
+                "{}/_platform/api/v1/files",
+                app_base(&service, &project.id)
+            ))
             .header("cookie", &cookie)
             .header("x-platform-document-epoch", &project.document_epoch)
             .send()
@@ -3538,12 +3443,11 @@ mod tests {
         ]);
         let response = client
             .put(format!(
-                "{}/p/{}/api/v1/file?path=original.txt&overwrite=true",
-                service.info().base_url,
-                project.id
+                "{}/_platform/api/v1/file?path=original.txt&overwrite=true",
+                app_base(&service, &project.id)
             ))
             .header("cookie", cookie)
-            .header("origin", &service.info().base_url)
+            .header("origin", app_base(&service, &project.id))
             .header("x-platform-document-epoch", project.document_epoch)
             .body(reqwest::Body::wrap_stream(chunks))
             .send()
@@ -3573,9 +3477,8 @@ mod tests {
         .await;
         let response = client
             .get(format!(
-                "{}/p/{}/api/v1/events?documentEpoch={}",
-                service.info().base_url,
-                project.id,
+                "{}/_platform/api/v1/events?documentEpoch={}",
+                app_base(&service, &project.id),
                 project.document_epoch
             ))
             .header("cookie", cookie)
@@ -3656,10 +3559,10 @@ mod tests {
         let attachment = project.project_root.join("data/attachments/original.txt");
         std::fs::create_dir_all(attachment.parent().unwrap()).unwrap();
         std::fs::write(&attachment, b"original").unwrap();
-        let info = service.info();
-        let host = info.base_url.strip_prefix("http://").unwrap();
+        let application = app_base(&service, &project.id);
+        let host = application.strip_prefix("http://").unwrap();
         let mut socket = tokio::net::TcpStream::connect(host).await.unwrap();
-        let headers = format!("PUT /p/{}/api/v1/file?path=original.txt&overwrite=true HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: {}\r\nX-Platform-Document-Epoch: {}\r\nContent-Length: 1000000\r\n\r\npartial", project.id,host,service.info().base_url,cookie,project.document_epoch);
+        let headers = format!("PUT /_platform/api/v1/file?path=original.txt&overwrite=true HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: {}\r\nX-Platform-Document-Epoch: {}\r\nContent-Length: 1000000\r\n\r\npartial", host,application,cookie,project.document_epoch);
         socket.write_all(headers.as_bytes()).await.unwrap();
         let staging = service
             .store()
@@ -3696,14 +3599,11 @@ mod tests {
             std::fs::write(project.project_root.join("dist").join(entry), "<!doctype html><html><head><title>Alternate</title></head><body>HTML</body></html>").unwrap();
             manifest["web"]["entry"] = json!(entry);
             std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            service.handle().close_web(&project.id).await.unwrap();
             let cookie = connect(&service, &client, &project.id).await;
             for tail in ["", entry] {
                 let response = client
-                    .get(format!(
-                        "{}/p/{}/{tail}",
-                        service.info().base_url,
-                        project.id
-                    ))
+                    .get(format!("{}/{tail}", app_base(&service, &project.id)))
                     .header("cookie", &cookie)
                     .send()
                     .await
@@ -3734,11 +3634,7 @@ mod tests {
         )
         .unwrap();
         let response = client
-            .get(format!(
-                "{}/p/{}/image.svg",
-                service.info().base_url,
-                project.id
-            ))
+            .get(format!("{}/image.svg", app_base(&service, &project.id)))
             .header("cookie", &cookie)
             .send()
             .await
@@ -3752,12 +3648,8 @@ mod tests {
         assert!(response.headers().contains_key("permissions-policy"));
         manifest["web"]["entry"] = json!("image.svg");
         std::fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        assert_eq!(
-            service.launch(&project.id).await.unwrap_err().code,
-            "INVALID_PROJECT"
-        );
         let response = client
-            .get(format!("{}/p/{}/", service.info().base_url, project.id))
+            .get(format!("{}/", app_base(&service, &project.id)))
             .header("cookie", cookie)
             .send()
             .await
@@ -3772,6 +3664,11 @@ mod tests {
             .await
             .unwrap()
             .contains("platform-document-epoch"));
+        service.handle().close_web(&project.id).await.unwrap();
+        assert_eq!(
+            service.launch(&project.id).await.unwrap_err().code,
+            "INVALID_PROJECT"
+        );
         service.shutdown().await.unwrap();
     }
 

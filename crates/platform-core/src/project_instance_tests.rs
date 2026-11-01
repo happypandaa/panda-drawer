@@ -32,7 +32,15 @@ async fn local_plain_web_never_creates_data_or_source_control_and_readdition_get
     let root = t.path().canonicalize().unwrap().join("user-web");
     author(&root, false);
     let info = store.register_local(&root).await.unwrap();
+    assert_eq!(info.state, "ready");
     let project = store.project(&info.id).unwrap();
+    let configuration = store.web_configuration(&info.id).unwrap();
+    assert!(configuration.fields.is_empty());
+    assert_eq!(configuration.configuration.revision, 0);
+    assert!(configuration.configuration.values.is_empty());
+    assert!(configuration.configuration.can_start);
+    store.require_web_configuration_ready(&project).unwrap();
+    assert!(store.web_configuration_values(&project).unwrap().is_empty());
     assert_eq!(info.ownership, ProjectOwnership::User);
     assert_eq!(
         project.private_dir,
@@ -139,7 +147,7 @@ async fn local_delete_keeps_git_and_data_removes_instance_then_readd_gets_fresh_
     fs::create_dir(root.join("data")).unwrap();
     fs::write(root.join("data/author.bin"), b"user data").unwrap();
     let info = store.register_local(&root).await.unwrap();
-    let tasks = BuildManager::new(p.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+    let tasks = BuildManager::new(p.clone(), store.clone()).unwrap();
     let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
     let deletion =
         WebProjectDeletionManager::new(p.clone(), store.clone(), tasks.clone(), maintenance)
@@ -497,8 +505,7 @@ async fn delete_web_instance(
     store: Arc<ProjectStore>,
     info: &ProjectInfo,
 ) -> crate::TaskRecord {
-    let tasks =
-        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
+    let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
     let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
     let manager =
         WebProjectDeletionManager::new(paths.clone(), store, tasks.clone(), maintenance).unwrap();

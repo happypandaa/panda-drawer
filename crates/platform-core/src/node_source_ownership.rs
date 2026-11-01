@@ -511,7 +511,7 @@ pub(crate) fn rebind_published_after_migration(
         if registration["id"] != id {
             return Err(development_changed());
         }
-        if registration["version"] != 3 {
+        if registration["version"] != crate::node_registration::DIRECT_NODE_REGISTRATION_VERSION {
             return Err(development_changed());
         }
         let current = registration["sourcePath"]

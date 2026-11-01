@@ -52,6 +52,10 @@ export interface NodeDeletionTaskSnapshot {
 }
 
 export type NodeConfigurationField = ConfigurationField;
+export type ConfigurationFormApp = Pick<NodeAppDetail, 'fields' | 'configuration' | 'manifestDigest'>;
+export interface WebConfigurationDetail extends ConfigurationFormApp {
+  id: string; runtime: 'web'; name: string;
+}
 
 export interface NodeAppDetail {
   dependencyWarnings?: string[];

@@ -1,6 +1,6 @@
 # Browser tools 0.1.0
 
-This helper is copied with template `react-ts-vite-0.1.4`. It is independent of the unchanged `@local-projects/sdk 0.1.0` package. `src/lib/browser-tools.js` contains browser behavior; its `.d.ts` describes the API. `src/components/MediaToolsPanel.tsx` demonstrates the controls. A platform update does not copy these files into existing projects.
+This helper is copied with template `react-ts-vite-0.3.0`. It uses the platform-provided `window.panda` for explicit saves; load `/_platform/sdk.js` in HTML. It does not vendor a runtime SDK package. `src/lib/browser-tools.js` contains browser behavior; its `.d.ts` describes the API. `src/components/MediaToolsPanel.tsx` demonstrates the controls. A platform update does not copy these files into existing projects.
 
 The initial page does not request devices or write a schema. All network lists and device declarations are empty by default. Standard file picking, drag/drop, local previews, anchor downloads, manual paste and user-gesture clipboard writes work without device declarations. Clipboard denial displays selectable text; the helper never reads the clipboard silently. Browser downloads use the browser's normal download behavior. The native host uses a private temporary download, then a separate save-location dialog; cancelling that dialog removes only the temporary download.
 

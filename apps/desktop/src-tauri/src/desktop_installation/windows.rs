@@ -23,9 +23,8 @@ fn inspect(
     let cli_path = cli.is_file().then(|| cli.to_string_lossy().into_owned());
     Ok(InstalledResources {
         info: ResourceInfo {
-            sdk: resources
-                .join("sdk/releases/local-projects-sdk-0.1.0.tgz")
-                .is_file(),
+            sdk: resources.join("sdk/sdk.js").is_file()
+                && resources.join("sdk/panda.d.ts").is_file(),
             template: resources.join("template/app/package.json").is_file(),
             readme: std::fs::read_to_string(resources.join("README.md")).is_ok(),
             cli: cli_path.is_some(),
@@ -115,13 +114,14 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let resource_directory = temporary.path().canonicalize().unwrap();
         let resources = resource_directory.join("resources");
-        fs::create_dir_all(resources.join("sdk/releases")).unwrap();
-        fs::create_dir_all(resources.join("template/app")).unwrap();
+        fs::create_dir_all(resources.join("sdk")).unwrap();
         fs::write(
-            resources.join("sdk/releases/local-projects-sdk-0.1.0.tgz"),
-            b"disposable SDK marker",
+            resources.join("sdk/panda.d.ts"),
+            "declare const panda: unknown;",
         )
         .unwrap();
+        fs::create_dir_all(resources.join("template/app")).unwrap();
+        fs::write(resources.join("sdk/sdk.js"), b"disposable SDK marker").unwrap();
         fs::write(resources.join("template/app/package.json"), b"{}").unwrap();
         fs::write(resources.join("README.md"), b"disposable resource readme").unwrap();
         let executable = resource_directory.join("panda-drawer.exe");

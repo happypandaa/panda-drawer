@@ -134,7 +134,7 @@ async fn direct_project_files_and_nested_html_change_after_ai_build_and_reopen()
     std::fs::write(pages.join("main.js"), "initial script").unwrap();
     let (_, window) = service.handle().launch_window(&project.id).await.unwrap();
     let cookie = super::tests::connect(&service, &client, &project.id).await;
-    let base = format!("{}/p/{}/", service.info().base_url, project.id);
+    let base = format!("{}/", super::tests::app_base(&service, &project.id));
     let html = client
         .get(format!("{base}pages/index.HTML"))
         .header("cookie", &cookie)
@@ -158,6 +158,7 @@ async fn direct_project_files_and_nested_html_change_after_ai_build_and_reopen()
         .unwrap();
     assert_eq!(script, "initial script");
     drop(window);
+    service.handle().close_web(&project.id).await.unwrap();
     // An AI's direct build replaces the same folder. No platform build or input
     // fingerprint is needed before the next application open.
     std::fs::write(pages.join("main.js"), "AI rebuilt script").unwrap();
@@ -167,15 +168,9 @@ async fn direct_project_files_and_nested_html_change_after_ai_build_and_reopen()
     )
     .unwrap();
     let (launch, window) = service.handle().launch_window(&project.id).await.unwrap();
-    let ticket = launch.launch_url.split("#ticket=").nth(1).unwrap();
-    let exchange = client
-        .post(format!("{}/_platform/session", service.info().base_url))
-        .header("origin", &service.info().base_url)
-        .json(&json!({"ticket":ticket}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(exchange.status(), StatusCode::OK);
+    let exchange = client.get(&launch.launch_url).send().await.unwrap();
+    assert_eq!(exchange.status(), StatusCode::SEE_OTHER);
+    assert_eq!(exchange.headers()[header::LOCATION], "/");
     let cookie = exchange.headers()[header::SET_COOKIE]
         .to_str()
         .unwrap()
@@ -183,8 +178,6 @@ async fn direct_project_files_and_nested_html_change_after_ai_build_and_reopen()
         .next()
         .unwrap()
         .to_owned();
-    let value: Value = exchange.json().await.unwrap();
-    assert_eq!(value["data"]["url"], format!("/p/{}/", project.id));
     let html = client
         .get(&base)
         .header("cookie", &cookie)
@@ -219,6 +212,7 @@ async fn direct_project_files_and_nested_html_change_after_ai_build_and_reopen()
     );
     assert!(!project.project_root.join(".platform").exists());
     drop(window);
+    service.handle().close_web(&project.id).await.unwrap();
     service.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -241,6 +235,7 @@ async fn opening_and_building_use_the_same_admission_until_the_window_really_clo
         "WEB_APP_OPEN"
     );
     drop(window);
+    service.handle().close_web(&project.id).await.unwrap();
     let store = service.store();
     let build = store
         .reserve_web_build(&project.id, &format!("task_{}", Uuid::new_v4().simple()))
@@ -249,5 +244,6 @@ async fn opening_and_building_use_the_same_admission_until_the_window_really_clo
     drop(build);
     let (_, window) = service.handle().launch_window(&project.id).await.unwrap();
     drop(window);
+    service.handle().close_web(&project.id).await.unwrap();
     service.shutdown().await.unwrap();
 }

@@ -86,6 +86,7 @@ struct Registration {
     source_path: PathBuf,
     manifest_digest: String,
     provenance: Option<DirectSourceProvenance>,
+    pub address: crate::FixedAppAddress,
 }
 impl From<ExternalRegistration> for Registration {
     fn from(record: ExternalRegistration) -> Self {
@@ -94,6 +95,7 @@ impl From<ExternalRegistration> for Registration {
             source_path: record.source_path,
             manifest_digest: record.manifest_digest,
             provenance: record.provenance,
+            address: record.address,
         }
     }
 }
@@ -157,6 +159,7 @@ struct PreparedRuntimeStart {
     manifest: Arc<PandaManifest>,
     slot: PathBuf,
     config: RuntimeLaunchConfig,
+    address: crate::FixedAppAddress,
 }
 
 #[derive(Default)]
@@ -373,6 +376,12 @@ impl NodeApps {
             let record = match node_registration::decode_registration(value, &name, &self.root)? {
                 StoredNodeRegistration::Direct(record) => Registration::from(record),
             };
+            crate::app_address::require_app_address(
+                &self.data_root,
+                crate::app_address::AppAddressKind::Node,
+                &name,
+                record.address,
+            )?;
             if record.id != name {
                 return Err(fail("Node 应用登记记录无效，请保留现场。"));
             }
@@ -591,6 +600,11 @@ impl NodeApps {
             let record = ExternalRegistration {
                 version: DIRECT_NODE_REGISTRATION_VERSION,
                 id: id.into(),
+                address: crate::app_address::reserve_app_address(
+                    &self.data_root,
+                    crate::app_address::AppAddressKind::Node,
+                    id,
+                )?,
                 source_path: source.source_root.clone(),
                 manifest_digest: manifest.source_digest.clone(),
                 provenance: Some(DirectSourceProvenance {
@@ -811,6 +825,11 @@ impl NodeApps {
             let record = ExternalRegistration {
                 version: DIRECT_NODE_REGISTRATION_VERSION,
                 id: id.clone(),
+                address: crate::app_address::reserve_app_address(
+                    &self.data_root,
+                    crate::app_address::AppAddressKind::Node,
+                    &id,
+                )?,
                 source_path: source.clone(),
                 manifest_digest,
                 provenance: None,
@@ -1103,6 +1122,7 @@ impl NodeApps {
                 let updated = ExternalRegistration {
                     version: DIRECT_NODE_REGISTRATION_VERSION,
                     id: id.into(),
+                    address: record.address,
                     source_path: record.source_path.clone(),
                     manifest_digest: manifest.source_digest.clone(),
                     provenance: record.provenance.clone(),
@@ -1159,6 +1179,7 @@ impl NodeApps {
                 id,
                 &entry,
                 PreparedRuntimeStart {
+                    address: record.address,
                     record,
                     manifest,
                     slot,
@@ -1222,6 +1243,7 @@ impl NodeApps {
             manifest,
             slot,
             config,
+            address,
         } = plan;
         // The native manager outlives a public workspace switch. Probe owners
         // must belong to the currently installed runtime, not its constructor.
@@ -1360,6 +1382,7 @@ impl NodeApps {
             manifest.web.entry.clone(),
             port,
             token,
+            address,
         )
         .await
         {

@@ -1,4 +1,4 @@
-import type { NodeAppDetail, NodeConfigurationField, NodeConfigurationValue } from './node-app-types';
+import type { ConfigurationFormApp, NodeConfigurationField, NodeConfigurationValue } from './node-app-types';
 
 export type NodeConfigurationDraft = {
   ordinary: Record<string, string>;
@@ -28,7 +28,7 @@ function ordinaryIssue(field: NodeConfigurationField, value: string): string | u
 /** Missing required values may be saved as incomplete configuration; invalid
  * values and unconfirmed credential targets may not. The backend remains the
  * authority for saving and starting, including unreadable credential files. */
-export function validateNodeConfiguration(app: NodeAppDetail, draft: NodeConfigurationDraft): Record<string, ConfigurationIssue> {
+export function validateNodeConfiguration(app: ConfigurationFormApp, draft: NodeConfigurationDraft): Record<string, ConfigurationIssue> {
   const issues: Record<string, ConfigurationIssue> = {};
   const effective = new Map<string, NodeConfigurationValue>();
   for (const field of app.fields) {

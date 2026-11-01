@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPlatform, PlatformError } from '../index.js';
+import { readFile } from 'node:fs/promises';
+import { Script } from 'node:vm';
+const script = new Script(await readFile(new URL('../sdk.js', import.meta.url), 'utf8'));
+function loadSdk(environment) {
+  const globals = { ...environment, URL, Uint8Array, Blob, btoa, atob, structuredClone };
+  script.runInNewContext(globals);
+  return globals.panda;
+}
 
 const caps = ['db.execute', 'db.transaction', 'db.schema', 'files', 'events'];
-const baseContext = { projectId: 'prj_test', name: 'Test', sdkApiVersion: 1, instanceId: 'instance', capabilities: caps,
+const baseContext = { projectId: 'prj_test', name: 'Test', sdkApiVersion: 1, instanceId: 'instance', documentEpoch: 'original-epoch', capabilities: caps,
   limits: { fileUploadMaxBytes: 256 }, state: { mode: 'normal', busy: false, reloadRequired: false } };
 const result = { columns: [{ name: 'id' }], rows: [{ id: 1 }], changes: 0, changed: false };
 function envelope(data, extra = {}, status = 200) {
@@ -22,13 +29,13 @@ function harness(handler = () => envelope(result), context = baseContext) {
     close() { this.closed = true; }
     emit(type, data) { const event = new Event(type); event.data = JSON.stringify(data); this.dispatchEvent(event); }
   }
-  const environment = { document, window, location: { pathname: '/p/prj_test/', origin: 'http://127.0.0.1:1234' }, EventSource: Events,
+  const environment = { document, window, location: { pathname: '/tools/nested/page.html', origin: 'http://127.0.0.1:1234' }, EventSource: Events,
     fetch: async (url, init) => {
       const call = { url: new URL(url), ...init }; calls.push(call);
       if (call.url.pathname.endsWith('/context')) return envelope(typeof context === 'function' ? context() : context);
       return handler(call);
     } };
-  return { platform: createPlatform(environment), calls, meta, streams, document, window, environment };
+  return { platform: loadSdk(environment), calls, meta, streams, document, window, environment };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -71,7 +78,7 @@ test('context and error details are not recursively decoded and context cannot b
   assert.deepEqual(context.marker, { $bytes: 'AQ==' });
   context.capabilities.length = 0;
   await assert.rejects(h.platform.db.execute({ sql: 'SELECT x' }), error => {
-    assert.ok(error instanceof PlatformError);
+    assert.ok(error instanceof h.platform.PlatformError);
     assert.equal(error.code, 'SQL_ERROR');
     assert.deepEqual(error.details.marker, { $int64: '9007199254740993' });
     assert.equal(error.requestId, 'request');
@@ -79,15 +86,20 @@ test('context and error details are not recursively decoded and context cannot b
   });
 });
 
-test('the original epoch remains fixed after meta and context change', async () => {
-  const h = harness(undefined, { ...baseContext, documentEpoch: 'replacement-epoch' });
-  h.meta.content = 'replacement-epoch';
+test('context fixes identity without parsing the URL or requiring injected metadata', async () => {
+  let context = { ...baseContext };
+  const h = harness(undefined, () => context);
+  h.document.querySelector = () => null;
   await h.platform.context.get();
   await h.platform.db.execute({ sql: 'SELECT 1' });
   const url = await h.platform.files.url('中文/with ? & #.txt');
+  assert.equal(new URL(url).pathname, '/_platform/api/v1/file');
   assert.equal(new URL(url).searchParams.get('documentEpoch'), 'original-epoch');
   assert.equal(new URL(url).searchParams.get('path'), '中文/with ? & #.txt');
-  assert.ok(h.calls.every(call => call.headers['X-Platform-Document-Epoch'] === 'original-epoch'));
+  assert.equal(h.calls[0].headers['X-Platform-Document-Epoch'], undefined);
+  assert.equal(h.calls[1].headers['X-Platform-Document-Epoch'], 'original-epoch');
+  context = { ...baseContext, documentEpoch: 'replacement-epoch' };
+  await assert.rejects(h.platform.context.get(), { code: 'PROJECT_RELOAD_REQUIRED' });
 });
 
 test('missing capabilities or unsupported API versions never issue the requested operation', async () => {
@@ -167,12 +179,33 @@ test('stale sessions stop SSE retry and signal error without reloading or replay
   stop();
 });
 
-test('missing injected document context fails clearly without touching fetch', async () => {
+test('missing local platform origin fails before touching fetch', async () => {
   const h = harness();
-  h.environment.document.querySelector = () => null;
-  const sdk = createPlatform(h.environment);
+  const sdk = loadSdk({ ...h.environment, location: { origin: 'https://outside.example', pathname: '/' } });
   await assert.rejects(sdk.context.get(), { code: 'PLATFORM_CONTEXT_MISSING' });
   assert.equal(h.calls.length, 0);
+});
+
+test('typed public configuration works without context or enabled data SDK', async () => {
+  const calls = [];
+  const sdk = loadSdk({ location: { origin: 'http://127.0.0.1:1234', pathname: '/' }, fetch: async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ theme: 'dark', count: 4, enabled: false }));
+  } });
+  assert.deepEqual(await sdk.config(), { theme: 'dark', count: 4, enabled: false });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'http://127.0.0.1:1234/_platform/config.json');
+  assert.equal(calls[0].init.credentials, 'same-origin');
+});
+
+test('disabled SDK is an explicit service error and never requests SQL', async () => {
+  const calls = [];
+  const sdk = loadSdk({ location: { origin: 'http://127.0.0.1:1234', pathname: '/' }, fetch: async url => {
+    calls.push(url);
+    return envelope(null, { ok: false, error: { code: 'SDK_NOT_ENABLED', message: '这个应用没有启用平台 SDK' } }, 403);
+  } });
+  await assert.rejects(sdk.db.execute({ sql: 'SELECT 1' }), { code: 'SDK_NOT_ENABLED' });
+  assert.deepEqual(calls, ['http://127.0.0.1:1234/_platform/api/v1/context']);
 });
 
 test('malformed SQL wire tags are rejected instead of rounded or guessed', async () => {

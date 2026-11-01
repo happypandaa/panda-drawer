@@ -114,8 +114,7 @@ async fn fixture(kind: &str) -> Fixture {
     fs::write(&wrapper,format!("#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'git version 2.56.0\\n'; exit 0; fi\nis_clone=\nlast=\nfor argument do\n if [ \"$argument\" = clone ]; then is_clone=yes; fi\n last=$argument\ndone\nif [ \"$is_clone\" = yes ]; then GIT_ALLOW_PROTOCOL=file; export GIT_ALLOW_PROTOCOL; exec /usr/bin/git -c protocol.file.allow=always clone --no-checkout --no-local --depth=1 --single-branch --no-tags -- 'file://{}' \"$last\"; fi\nexec /usr/bin/git \"$@\"\n",author.display())).unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
     let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
-    let tasks =
-        BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1".into()).unwrap();
+    let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
     if ["locked-dependencies", "prebuilt"].contains(&kind) {
         let node = bin.join("node");
         fs::write(&node,"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'v24.22.0\\n'; exit 0; fi\nexec /bin/sh \"$@\"\n").unwrap();

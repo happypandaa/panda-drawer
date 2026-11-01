@@ -112,7 +112,7 @@ fn report_web_close_failure(app: &tauri::AppHandle, issue: &ApiError) {
     eprintln!("Project window close incomplete: {}", issue.code);
     use tauri_plugin_dialog::DialogExt;
     app.dialog()
-        .message("窗口尚未确认完整关闭。请等待下载或文件保存完成后，再次关闭窗口。")
+        .message("应用关闭尚未完成。请等待文件操作结束，并在应用详情中核对或重试关闭；数据库释放前不会显示已关闭。")
         .title("项目窗口关闭状态")
         .show(|_| {});
 }
@@ -160,6 +160,7 @@ pub(super) fn request_web_close(
             // real Finished and any already-claimed copy has completed.
             state.engine_downloads.seal_project_and_drain(&id).await?;
             destroy_and_wait(&app, receipt.label.clone(), Some(receipt.clone())).await?;
+            state.handle.close_web(&id).await?;
             if admission.check_closing().is_ok() {
                 state.engine_downloads.forget_project(&id)?;
             }
@@ -171,7 +172,7 @@ pub(super) fn request_web_close(
             // Deletion or global shutdown may have taken ownership while we
             // waited. Its cleanup reports the result; stale callbacks stay quiet.
             if admission.check_closing().is_ok()
-                && state.window_lifetimes.is_current(&receipt)
+                && (state.window_lifetimes.is_current(&receipt) || receipt.destroyed())
                 && !state.shutting_down.load(Ordering::Acquire)
             {
                 report_web_close_failure(&app, &issue);

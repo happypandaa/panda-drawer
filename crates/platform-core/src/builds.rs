@@ -48,7 +48,6 @@ struct BuildProtection {
 pub struct BuildManager {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
-    base_url: String,
     environment: EnvironmentManager,
     stop: watch::Sender<bool>,
     registry: Mutex<Registry>,
@@ -58,17 +57,12 @@ pub struct BuildManager {
     events: broadcast::Sender<BuildEvent>,
 }
 impl BuildManager {
-    pub fn new(
-        paths: RuntimePaths,
-        store: Arc<ProjectStore>,
-        base_url: String,
-    ) -> Result<Arc<Self>, ApiError> {
-        Self::with_managed_node(paths, store, base_url, None)
+    pub fn new(paths: RuntimePaths, store: Arc<ProjectStore>) -> Result<Arc<Self>, ApiError> {
+        Self::with_managed_node(paths, store, None)
     }
     pub fn with_managed_node(
         paths: RuntimePaths,
         store: Arc<ProjectStore>,
-        base_url: String,
         managed_node: Option<PathBuf>,
     ) -> Result<Arc<Self>, ApiError> {
         let tasks = paths.workspace_root().join(".platform/tasks");
@@ -85,7 +79,6 @@ impl BuildManager {
             .with_project_boundary(paths.workspace_root().into()),
             paths,
             store,
-            base_url,
             stop: watch::channel(false).0,
             registry: Mutex::new(Registry {
                 records,
@@ -900,7 +893,7 @@ impl BuildManager {
             progress: Arc::new(move |phase| manager.phase(&task, phase)),
         };
         let mut result = json!(WebBuildRunner::run(target, context).await?);
-        result["url"] = json!(format!("{}/p/{project_id}/", self.base_url));
+        result["url"] = json!(format!("{}/", project.address.origin()));
         Ok(result)
     }
 }

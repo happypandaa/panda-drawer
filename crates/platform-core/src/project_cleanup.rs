@@ -115,11 +115,14 @@ pub type NativeProjectCleanup = Arc<
         + Sync,
 >;
 
+type WebClose = Arc<dyn Fn(String) -> BoxFuture<'static, Result<()>> + Send + Sync>;
+
 pub(crate) struct ProjectCleanupCoordinator {
     stores: crate::webview_storage::StoreLedger,
     windows: Arc<WindowSizeStore>,
     storage: Mutex<Vec<Weak<crate::storage::StorageManager>>>,
     native: RwLock<Option<NativeProjectCleanup>>,
+    web_close: RwLock<Option<WebClose>>,
     migration_sources: Arc<tokio::sync::RwLock<()>>,
 }
 impl ProjectCleanupCoordinator {
@@ -129,6 +132,7 @@ impl ProjectCleanupCoordinator {
             windows: Arc::new(WindowSizeStore::new(data)),
             storage: Mutex::new(vec![]),
             native: RwLock::new(None),
+            web_close: RwLock::new(None),
             migration_sources: Arc::new(tokio::sync::RwLock::new(())),
         })
     }
@@ -140,6 +144,9 @@ impl ProjectCleanupCoordinator {
     }
     pub(crate) fn set_native(&self, hook: NativeProjectCleanup) {
         *self.native.write().unwrap_or_else(|p| p.into_inner()) = Some(hook);
+    }
+    pub(crate) fn set_web_close(&self, close: WebClose) {
+        *self.web_close.write().unwrap_or_else(|e| e.into_inner()) = Some(close);
     }
     pub(crate) fn register_storage(&self, storage: &Arc<crate::storage::StorageManager>) {
         self.storage
@@ -211,6 +218,16 @@ impl ProjectCleanupCoordinator {
         self.windows
             .forget_project(notice.kind.as_str(), &notice.id)?;
         self.native(NativeCleanupStage::Prepare, &notice).await?;
+        if notice.kind == ProjectKind::Web {
+            let close = self
+                .web_close
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(close) = close {
+                close(notice.id.clone()).await?;
+            }
+        }
         for storage in self.storages() {
             notice
                 .task_ids
